@@ -24,7 +24,7 @@ function desktopFonts(): Plugin {
 // Main's generated pages load these by fixed name; Rollup emits one file for identical stylesheets, so a page whose
 // stylesheet matches another's would silently get none.
 function requiredPageAssets(): Plugin {
-  const required = ['index', 'pane', 'overlay'].flatMap((page) => [`assets/${page}.js`, `assets/${page}.css`]);
+  const required = ['index', 'overlay'].flatMap((page) => [`assets/${page}.js`, `assets/${page}.css`]);
   return {
     name: 'damocles-required-page-assets',
     generateBundle(_options, bundle) {
@@ -34,7 +34,21 @@ function requiredPageAssets(): Plugin {
   };
 }
 
-// The desktop shell, pane and overlay pages; main generates their HTML (nonce CSP) and loads assets/index.{js,css}, assets/pane.{js,css} and assets/overlay.{js,css} by these fixed names.
+// The shell ships only Monaco's editor, JSON and TypeScript workers (docs/invariants.md, "Only the desktop chat panel page and the shell page allow workers"); any other worker entry fails the build.
+const SHELL_WORKER = /\/node_modules\/monaco-editor\/esm\/vs\/.*\/(?:editor|json|ts)\.worker\.js$/;
+function shellWorkersOnly(): Plugin {
+  return {
+    name: 'damocles-shell-workers-only',
+    generateBundle(_options, bundle) {
+      for (const file of Object.values(bundle)) {
+        const entry = file.type === 'chunk' && file.isEntry ? file.facadeModuleId?.replace(/\\/g, '/') ?? file.fileName : undefined;
+        if (entry !== undefined && !SHELL_WORKER.test(entry)) this.error(`worker ${entry} is not one the shell may ship`);
+      }
+    },
+  };
+}
+
+// The desktop shell and overlay pages; main generates their HTML (nonce CSP) and loads assets/index.{js,css} and assets/overlay.{js,css} by these fixed names.
 export default defineConfig({
   plugins: [vue(), tailwindcss(), desktopFonts(), requiredPageAssets()],
   root: 'src/desktop/shell',
@@ -50,13 +64,25 @@ export default defineConfig({
       // Each entry imports its own stylesheet; a stylesheet both imported would land in a shared chunk's CSS instead.
       input: {
         index: resolve(__dirname, 'src/desktop/shell/index.html'),
-        pane: resolve(__dirname, 'src/desktop/shell/pane/main.ts'),
         overlay: resolve(__dirname, 'src/desktop/shell/overlay/main.ts'),
       },
       output: {
         entryFileNames: 'assets/[name].js',
         chunkFileNames: 'assets/[name].js',
         assetFileNames: 'assets/[name].[ext]',
+      },
+    },
+  },
+  worker: {
+    // Module workers: Monaco's workers split into chunks, which the iife format cannot express. The shell CSP's worker-src is
+    // app://damocles/desktop-shell/assets/, so they stay there, prefixed apart from the pages' chunks.
+    format: 'es',
+    plugins: () => [shellWorkersOnly()],
+    rollupOptions: {
+      output: {
+        entryFileNames: 'assets/worker-[name].js',
+        chunkFileNames: 'assets/worker-[name].js',
+        assetFileNames: 'assets/worker-[name].[ext]',
       },
     },
   },

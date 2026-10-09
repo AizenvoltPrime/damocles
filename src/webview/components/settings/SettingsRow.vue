@@ -9,6 +9,8 @@ import { ROW_STAGGER_MS, STAGGERED_ROWS, useSettingsPage } from './settings-view
 
 const props = defineProps<{
   id: string;
+  /** Replaces the row's static label, which search still matches. */
+  label?: string | undefined;
   /** Replaces the row's static description, which search still matches. */
   description?: string | undefined;
 }>();
@@ -37,7 +39,7 @@ const rowDelay = computed(() => (index.value < STAGGERED_ROWS ? `${index.value *
 watch(visible, (shown) => (shown ? page.show(props.id, meta.value.section) : page.hide(props.id)), { immediate: true });
 onBeforeUnmount(() => page.hide(props.id));
 
-const label = computed(() => t(meta.value.label));
+const label = computed(() => props.label ?? t(meta.value.label));
 const descriptionText = computed(() => props.description ?? (meta.value.description ? t(meta.value.description) : ''));
 
 const feedback = computed(() => writes.latest(keys.value));
@@ -84,6 +86,7 @@ const labelId = computed(() => `settings-row-label-${props.id}`);
           :text="label"
           :query="page.query"
         /></span>
+        <slot name="label-extra" />
         <span
           v-if="keys.length > 0"
           :key="popSeq"

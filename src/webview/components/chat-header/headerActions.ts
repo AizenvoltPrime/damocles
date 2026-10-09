@@ -13,4 +13,5 @@ export type HeaderAction =
   | 'context'
   | 'usage'
   | 'stats'
-  | 'settings';
+  | 'settings'
+  | 'terminal';

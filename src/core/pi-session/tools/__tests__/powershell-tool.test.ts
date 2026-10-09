@@ -56,7 +56,12 @@ vi.mock('../process-tree', async (importOriginal) => {
 /** pi's own literal, mirrored because `powershell.js` keeps it module-local. */
 const UTF8_OUTPUT_PREFIX = 'try { [Console]::OutputEncoding=[System.Text.Encoding]::UTF8 } catch {}\n';
 
-const POWERSHELL_ARGS = ['-NoProfile', '-NonInteractive', '-Command'];
+const POWERSHELL_ARGS = [
+  '-NoProfile',
+  '-NonInteractive',
+  ...(process.platform === 'win32' ? ['-ExecutionPolicy', 'Bypass'] : []),
+  '-Command',
+];
 
 const CWD = process.cwd();
 

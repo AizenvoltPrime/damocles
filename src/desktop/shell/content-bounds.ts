@@ -13,9 +13,14 @@ function boundsOf(element: HTMLElement): ContentBounds {
   };
 }
 
+// Dispatched on window once the layout grid's panes have finished moving: a script animation (`element.animate()`) fires
+// no animationend, and a pane that changes slot may keep its size.
+export const LAYOUT_SETTLED_EVENT = 'damocles:layout-settled';
+
 /**
- * Reports the content element's rectangle whenever it or a layout neighbour resizes, and after every
- * devicePixelRatio change, which main needs to rescale the view even when the CSS rectangle is unchanged.
+ * Reports the content element's rectangle whenever it or a layout neighbour resizes, when an animation or transition ends
+ * or the layout settles (a transform, such as the focus overlay's zoom or a pane's glide, moves an element without resizing
+ * it), and after every devicePixelRatio change, which main needs to rescale the view even when the CSS rectangle is unchanged.
  */
 export function watchContentBounds(
   content: HTMLElement,
@@ -32,6 +37,10 @@ export function watchContentBounds(
 
   const observer = new ResizeObserver(() => send(false));
   for (const element of [content, ...neighbours]) observer.observe(element);
+  const settled = (): void => send(false);
+  window.addEventListener('animationend', settled, true);
+  window.addEventListener('transitionend', settled, true);
+  window.addEventListener(LAYOUT_SETTLED_EVENT, settled);
 
   let dprQuery: MediaQueryList | undefined;
   const onDprChange = (): void => {
@@ -48,6 +57,9 @@ export function watchContentBounds(
 
   return () => {
     observer.disconnect();
+    window.removeEventListener('animationend', settled, true);
+    window.removeEventListener('transitionend', settled, true);
+    window.removeEventListener(LAYOUT_SETTLED_EVENT, settled);
     dprQuery?.removeEventListener('change', onDprChange);
   };
 }

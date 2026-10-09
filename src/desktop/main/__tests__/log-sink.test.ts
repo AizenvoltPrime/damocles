@@ -3,22 +3,12 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const electron = vi.hoisted(() => ({ opened: [] as Array<{ path: string; text: string }> }));
+import { createDesktopLogSinkFactory as createFactory } from '../platform/log-sink';
 
-vi.mock('electron', async () => {
-  const nodeFs = await import('node:fs');
-  return {
-    shell: {
-      // What the file holds at the moment it is opened.
-      openPath: async (p: string) => {
-        electron.opened.push({ path: p, text: nodeFs.readFileSync(p, 'utf8') });
-        return '';
-      },
-    },
-  };
-});
-
-import { createDesktopLogSinkFactory } from '../platform/log-sink';
+const opened: Array<{ path: string; text: string; preserveFocus: boolean }> = [];
+// What the file holds at the moment it is opened.
+const createDesktopLogSinkFactory = (logsDir: string, echo: boolean) =>
+  createFactory(logsDir, echo, (p, preserveFocus) => opened.push({ path: p, text: fs.readFileSync(p, 'utf8'), preserveFocus }));
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 
@@ -27,7 +17,7 @@ let stderr: string[];
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-log-'));
-  electron.opened.length = 0;
+  opened.length = 0;
   stderr = [];
   vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
     stderr.push(String(chunk));
@@ -96,7 +86,7 @@ describe('desktop log sink', () => {
 
     sink.appendLine('before show');
     sink.show();
-    expect(electron.opened).toEqual([{ path: file, text: 'before show\n' }]);
+    expect(opened).toEqual([{ path: file, text: 'before show\n', preserveFocus: false }]);
 
     sink.appendLine('before dispose');
     sink.dispose();

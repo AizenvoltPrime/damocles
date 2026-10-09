@@ -16,6 +16,7 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
         msg.promptIndex,
         undefined,
         msg.isCommandEcho,
+        msg.terminalAttachments,
       );
     },
 

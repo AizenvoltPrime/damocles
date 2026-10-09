@@ -55,6 +55,8 @@ export interface SessionOptions {
     effort: EffortLevel | null;
     maxThinkingTokens: number | null;
   };
+  /** A resumed conversation continues on the model value and pi thinking level its session file recorded. */
+  onRecordedSelection?: (model: string, thinkingLevel: string | undefined) => void;
   /** Whether to prefer the OpenAI API key over a ChatGPT or Codex sign-in when both are configured. */
   getPreferOpenAIApiKey?: () => boolean;
   secrets?: SecretsStore;

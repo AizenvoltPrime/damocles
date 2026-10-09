@@ -145,6 +145,14 @@ describe('openFile', () => {
     expect(H.showTextDocument).toHaveBeenCalledWith(expect.anything(), { selection: new vscode.Range(2, 0, 2, 0) });
   });
 
+  it('passes preserveFocus to the text editor and to vscode.open, so an agent\'s open never takes focus', async () => {
+    await service.openFile('/ws/b.ts', { editor: 'text', preserveFocus: true });
+    await service.openFile('/ws/a.png', { preserveFocus: true });
+
+    expect(H.showTextDocument).toHaveBeenCalledWith(expect.anything(), { preserveFocus: true });
+    expect(H.executeCommand).toHaveBeenCalledWith('vscode.open', vscode.Uri.file('/ws/a.png'), { preserveFocus: true });
+  });
+
   it('ignores the originating panel', async () => {
     await service.openFile('/ws/a.png', { panelId: 'host-1' });
     await service.openFile('/ws/b.ts', { editor: 'text', line: 3, panelId: 'host-1' });
@@ -178,7 +186,8 @@ describe('documents', () => {
 
 describe('showDiff, proposal', () => {
   const proposal = {
-    title: 'a.ts (Current ↔ Proposed)',
+    title: (name: string) => `${name} (Current ↔ Proposed)`,
+    filePath: '/ws/a.ts',
     left: { name: 'd1-original-a.ts', content: 'old' },
     right: { name: 'd1-proposed-a.ts', content: 'new' },
     purpose: 'proposal' as const,
@@ -244,7 +253,8 @@ describe('showDiff, proposal', () => {
 
 describe('showDiff, checkpoint', () => {
   const checkpoint = (name: string) => ({
-    title: 'a.ts (At checkpoint ↔ Current)',
+    title: (fileName: string) => `${fileName} (At checkpoint ↔ Current)`,
+    filePath: '/ws/a.ts',
     left: { name, content: `before ${name}` },
     right: { path: '/ws/a.ts' },
     purpose: 'checkpoint' as const,
@@ -282,7 +292,7 @@ describe('showDiff, checkpoint', () => {
   });
 
   it('never drops proposal text when reconciling checkpoint tabs', async () => {
-    await service.showDiff({ title: 't', left: { name: 'p-original-a.ts', content: 'old' }, right: { name: 'p-proposed-a.ts', content: 'new' }, purpose: 'proposal' });
+    await service.showDiff({ title: () => 't', filePath: '/ws/a.ts', left: { name: 'p-original-a.ts', content: 'old' }, right: { name: 'p-proposed-a.ts', content: 'new' }, purpose: 'proposal' });
 
     await service.showDiff(checkpoint('c1-a.ts'));
 

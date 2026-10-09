@@ -9,13 +9,23 @@ import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../..
 import type { PanelHost } from '../../../../../platform/window-service';
 
 vi.mock('../../../../logger', () => ({ log: vi.fn() }));
-vi.mock('../claude-auth-handlers', () => ({ claudeAuthStatusMessage: () => ({ type: 'claudeAuthStatusChanged', mode: 'allowance' }) }));
 vi.mock('../openai-handlers', () => ({
   openaiAuthStatusMessage: async () => ({ type: 'openaiAuthStatusChanged', status: { chatgpt: { signedIn: true }, codex: { signedIn: false }, apikey: { configured: false } }, preferApiKey: false }),
 }));
 
 const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 const folder = { key: '/ws', fsPath: '/ws', name: 'ws', label: 'ws', projectScope: true };
+
+describe('toggleTerminal', () => {
+  it('runs the host\'s Toggle Terminal command for the chat header\'s toggle', () => {
+    const platform = createFakePlatform({ capabilities: { windowLayout: true } });
+    const posted: ExtensionToWebviewMessage[] = [];
+    const handlers = createWorkspaceHandlers({ platform, postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => posted.push(message) } as unknown as HandlerDependencies);
+    handlers.toggleTerminal!({ type: 'toggleTerminal' }, { host: {}, panelId: 'p1', folder } as unknown as HandlerContext);
+    expect(platform.window.terminalToggles()).toBe(1);
+    expect(posted).toEqual([]);
+  });
+});
 
 describe('openAppSettings', () => {
   function setup(settingsInPanel: boolean) {
@@ -91,6 +101,7 @@ describe('requestSettingsState', () => {
       sendVoiceConfig: vi.fn(async () => {}),
     };
     const postSettingsFileAvailability = vi.fn();
+    const postClaudeAuthState = vi.fn(() => posted.push({ type: 'claudeAuthStatusChanged', mode: 'allowance' }));
     const deps = {
       platform,
       postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => posted.push(message),
@@ -99,6 +110,7 @@ describe('requestSettingsState', () => {
       webviewPrompts: prompts,
       getPanels: () => new Map(),
       postSettingsFileAvailability,
+      postClaudeAuthState,
     } as unknown as HandlerDependencies;
     const ctx = { host: {}, panelId: 'p1', folder, permissionHandler: {}, session: { publishAccountInfo: vi.fn(), getToolStatus: () => ({ tools: [] }) } } as unknown as HandlerContext;
     const handlers = createSettingsHandlers(deps);

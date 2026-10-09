@@ -28,7 +28,9 @@ export async function readyShell(app: ElectronApplication): Promise<Page> {
 export async function listChats(app: ElectronApplication, projectKey?: string): Promise<ShellChatList> {
   const key = projectKey ?? (await selectedProjectKey(app));
   const shell = await readyShell(app);
-  return shell.evaluate((k) => window.damoclesShell!.listChats(k), key);
+  const list = await shell.evaluate(async (k) => window.damoclesShell!.listChats(k, (await window.damoclesShell!.getState()).revision), key);
+  if (!list) throw new Error(`the project ${key} left the project list`);
+  return list;
 }
 
 export async function chatEntry(app: ElectronApplication, chatId: string): Promise<ShellChat | undefined> {

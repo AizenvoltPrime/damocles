@@ -12,6 +12,7 @@ import type { HandlerContext, HandlerDependencies } from "../../types";
 import type { HostInstance } from "../../../types";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../../../../shared/types/messages";
 import { SESSION_LEASE_DIR, SESSION_LEASE_STALE_MS, releaseSessionLease, sessionLeasePath, sessionLeasesOf, type SessionLeaseHolder } from "../../../../pi-session/session-store/session-lease";
+import { TerminalAttachmentManager } from "../../../terminal-attachment-manager";
 
 vi.mock("../../../../pi-session/session-store", () => ({ renamePiSession: vi.fn(), deletePiSession: vi.fn(), tagPiSession: vi.fn() }));
 vi.mock("../../../../pi-session/pi-runtime", () => ({ PiRuntime: { liveSessionMutator: () => undefined } }));
@@ -51,7 +52,7 @@ function makePanel(panelId: string, holding: string | null) {
   const session = makeSession(holding);
   const host = { id: panelId, reveal: vi.fn() };
   const instance = { host, session, folder: FOLDER_A } as unknown as HostInstance;
-  const ctx = { host, session, panelId, permissionHandler: {}, folder: FOLDER_A } as unknown as HandlerContext;
+  const ctx = { host, session, panelId, permissionHandler: {}, terminalAttachments: new TerminalAttachmentManager(() => {}), folder: FOLDER_A } as unknown as HandlerContext;
   return { panelId, session, host, instance, ctx, target: () => session.target() };
 }
 

@@ -416,6 +416,72 @@ SOFTWARE.
 
 ---
 
+## Visual Studio Code (Code - OSS)
+
+Parts of the desktop app adapt Visual Studio Code source, rewritten for Damocles: the Quick Open file scoring, the search view's case-preserving replace and query rules, the Search Editor's `.code-search` format and the grammar that colours its results, and the integrated terminal's shell detection, pty handling, flow control, link detection, paste warning, shell integration scripts, command marks and navigation.
+
+- **Source**: https://github.com/microsoft/vscode
+- **Adapted code**:
+  - `src/core/quick-open/fuzzy-match.ts` from `src/vs/base/common/fuzzyScorer.ts` (`scoreFuzzy`, `prepareQuery`, `scoreItemFuzzy`, `compareItemsByFuzzyScore`)
+  - `src/shared/text-search.ts` from `src/vs/base/common/search.ts` (`buildReplaceStringWithCasePreserved`), `isMultilineRegexSource` from `src/vs/editor/common/model/textModelSearch.ts` and the `parseReplaceString` escapes from `src/vs/editor/contrib/find/browser/replacePattern.ts`; its line-break handling (`crlfLineBreaks`) from `src/vs/workbench/services/search/node/ripgrepTextSearchEngine.ts` (`fixRegexNewline`, `fixNewline`)
+  - `src/desktop/main/search/search-service.ts` (`findBufferMatches`) from `src/vs/editor/common/model/textModelSearch.ts`
+  - `src/desktop/main/search/search-editor-format.ts` from `src/vs/workbench/contrib/searchEditor/browser/searchEditorSerialization.ts`
+  - `src/desktop/shell/editor/search-result-language.ts` from `extensions/search-result/syntaxes/generateTMLanguage.js`
+  - `src/desktop/main/search/rg-args.ts` (`splitGlobAware` and the include and exclude glob rules) from `src/vs/base/common/glob.ts`
+  - `src/desktop/shell/terminal/pty-resize.ts` from `src/vs/workbench/contrib/terminal/browser/terminalResizeDebouncer.ts` (the resize delay)
+  - `src/desktop/main/terminal/terminal-service.ts` (the split group model: a pane right of its source, equal sizes after a split or a removal, the active pane after a removal, pane focus wrapping, Unsplit, Focus Next and Previous Terminal Group) from `src/vs/workbench/contrib/terminal/browser/terminalGroup.ts` and `terminalGroupService.ts`
+  - `src/desktop/main/commands.ts` (the Split, Unsplit, Focus Pane, Focus Terminal Group and Resize Pane titles, keys and `when` clauses) from `src/vs/workbench/contrib/terminal/browser/terminalActions.ts`
+  - `src/desktop/main/terminal/user-profiles.ts` and `executable-path.ts` (user profiles merged over detected ones, the first existing path, the PATH and PATHEXT lookup) from `src/vs/platform/terminal/node/terminalProfiles.ts` (`applyConfigProfilesToMap`, `validateProfilePaths`) and `src/vs/base/node/processes.ts` (`findExecutable`), and the `damocles.desktop.terminal.profiles` schema from `src/vs/platform/terminal/common/terminalPlatformConfiguration.ts`
+  - `src/desktop/shell/terminal/terminal-split.ts` and `TerminalPanes.vue` (split pane sizing: SplitPaneMinSize, ResizePartCellCount, resizePane, distributeViewSizes) from `terminalGroup.ts`, and the sash resize order from `src/vs/base/browser/ui/splitview/splitview.ts`
+  - `src/desktop/shell/terminal/TerminalList.vue` (the split group prefixes and aria label) from `src/vs/workbench/contrib/terminal/browser/terminalTabsList.ts`
+  - `src/desktop/main/commands.ts` (`keyFires`) and `src/desktop/main/menu.ts` (an accelerator run as a keybinding resolved against its when clause) from `src/vs/platform/menubar/electron-main/menubar.ts`
+  - `src/desktop/preload/file-names.ts` (`fileNameProblem`) from `src/vs/workbench/contrib/files/browser/fileActions.ts` (`validateFileName`), and the Files name box's Enter, Escape and blur rules in `src/desktop/shell/components/FilesSection.vue` from `src/vs/workbench/contrib/files/browser/views/explorerViewer.ts`
+  - `src/desktop/main/documents/document-service.ts` (`moved`) and `src/desktop/main/editor-pane.ts` (`fileMoved`) from `src/vs/workbench/services/editor/browser/editorService.ts` (`handleMovedFile`); the orphaned document rules and the Deleted tab decoration from `src/vs/workbench/services/textfile/common/textFileEditorModel.ts` (`setOrphaned`) and `src/vs/workbench/services/textfile/browser/textFileService.ts`
+  - `src/desktop/main/editor-pane.ts` (`showResolved`) and `src/desktop/shell/editor/ConflictBar.vue` (the Compare tab's actions) from `src/vs/workbench/contrib/files/browser/editors/textFileSaveErrorHandler.ts`
+  - `src/desktop/main/documents/document-service.ts` (`openMissing`) and `src/desktop/main/editor-pane.ts` (`restoreBackup`) from `src/vs/workbench/services/textfile/common/textFileEditorModel.ts` (`resolveFromBackup`, `doResolveFromBackup`) and `src/vs/workbench/services/workingCopy/common/workingCopyBackupTracker.ts` (`restoreBackups`)
+  - `src/desktop/main/documents/confine.ts` (`confineOrCreateFolder`) from `src/vs/platform/files/common/fileService.ts` (`writeFile`, `mkdirp`)
+  - `src/desktop/shell/editor/editor-store.ts` (`moveModel`) from `src/vs/workbench/services/textfile/common/textFileEditorModelManager.ts` (`onWillRunWorkingCopyFileOperation`, `onDidRunWorkingCopyFileOperation`), and the view-state carry-over from `src/vs/workbench/contrib/files/browser/editors/textFileEditor.ts` (`moveEditorViewState`)
+  - `src/desktop/main/documents/document-service.ts` (`write`, `inTurn`) and `src/desktop/shell/editor/editor-store.ts` (`save`, `startSave`, `saveNow`) from `src/vs/workbench/services/textfile/common/textFileEditorModel.ts` (`doSave`, `handleSaveSuccess`, `saveSequentializer`) and `src/vs/base/common/async.ts` (`TaskSequentializer`)
+  - `src/shared/text-search.ts` (`compareSearchResults`) from `src/vs/workbench/contrib/search/browser/searchCompare.ts` (`searchMatchComparer`) and `src/vs/base/common/comparers.ts` (`compareFileNames`, `compareFileExtensions`, `comparePaths`); its replace case operations from `src/vs/workbench/services/search/common/replace.ts` (`ReplacePattern`)
+  - `src/desktop/quick-open-worker/file-search.ts` (scoring only the previous result set when a query extends it, and scoring in batches between event-loop turns) from `src/vs/workbench/services/search/node/rawSearchService.ts` (`getResultsFromCache`, `sortResults`)
+  - `src/shared/relative-path.ts` (the reserved Windows names) from `src/vs/base/common/extpath.ts` (`WINDOWS_FORBIDDEN_NAMES`)
+  - `src/desktop/main/terminal/terminal-env.ts` (`langFromLocale`, the `LANG` check, and the integration variables a terminal never inherits) from `src/vs/workbench/contrib/terminal/common/terminalEnvironment.ts` (`shouldSetLangEnvVariable`, `getLangEnvVariable`) and `src/vs/base/common/processes.ts` (`sanitizeProcessEnvironment`); the Windows launch failure codes in `src/desktop/main/terminal/terminal-service.ts` from `src/vs/workbench/contrib/terminal/browser/terminalInstance.ts` (`parseExitResult`)
+  - `src/desktop/main/editor-pane.ts` (diff titles from the file they show) from `src/vs/workbench/common/editor/diffEditorInput.ts` (`computeLabels`)
+  - `src/desktop/main/files/file-tree.ts` (`delete`, `deletePermanently`) and `src/desktop/main/files/files-failure.ts` from `src/vs/workbench/contrib/files/browser/fileActions.ts` (`deleteFiles`)
+  - `src/desktop/main/terminal/profiles.ts` from `src/vs/base/node/powershell.ts` (where PowerShell 7 is looked for, in order) and `src/vs/platform/terminal/node/terminalProfiles.ts` (WSL distros, Docker Desktop's skipped)
+  - `src/desktop/shell/terminal/terminal-link-parsing.ts` and its tests from `src/vs/workbench/contrib/terminalContrib/links/browser/terminalLinkParsing.ts` and `test/browser/terminalLinkParsing.test.ts`; `src/desktop/shell/terminal/terminal-links.ts` from `terminalLocalLinkDetector.ts` and `terminalLinkHelpers.ts`; `src/desktop/main/terminal/terminal-links.ts` from `terminalLinkResolver.ts`
+  - `src/desktop/main/terminal/terminal-paste.ts` from `src/vs/workbench/contrib/terminalContrib/clipboard/browser/terminalClipboard.ts`, with xterm.js's paste preparation (`src/browser/Clipboard.ts`)
+  - `resources/shell-integration/` (`shellIntegration-bash.sh`, `shellIntegration-{env,profile,rc,login}.zsh`, `shellIntegration.fish`, `shellIntegration.ps1`) from `src/vs/workbench/contrib/terminal/common/scripts/`, each keeping VS Code's MIT header
+  - `src/desktop/main/terminal/shell-integration-injection.ts` from `getShellIntegrationInjection` in `src/vs/platform/terminal/node/terminalEnvironment.ts`; `src/desktop/main/terminal/shell-integration.ts` (OSC 633 parsing and value escapes) from `src/vs/platform/terminal/common/xterm/shellIntegrationAddon.ts`; the kill confirmation wording from `src/vs/workbench/contrib/terminal/browser/terminalService.ts`
+  - `src/desktop/shell/terminal/terminal-commands.ts`, `terminal-marks.ts` and the command items of `terminal-menu.ts` from `src/vs/workbench/contrib/terminal/browser/xterm/markNavigationAddon.ts`, `decorationAddon.ts` and `src/vs/platform/terminal/common/capabilities/` (command and partial command detection)
+  - `src/desktop/pty-host/sessions.ts` and the terminal channels' flow control from `src/vs/platform/terminal/node/terminalProcess.ts` and `src/vs/platform/terminal/common/terminal.ts` (the exit flush window, the conpty spawn and kill throttle, the ignored resize-after-exit errors, and the 100,000 / 5,000 / 5,000 watermarks)
+
+```
+MIT License
+
+Copyright (c) 2015 - present Microsoft Corporation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
 ## MCP TypeScript SDK
 
 `@earendil-works/pi-mcp` adapts OAuth code from the MCP TypeScript SDK and ships the SDK's license as `LICENSES/modelcontextprotocol-typescript-sdk.txt`, which the VSIX and the desktop app keep. Damocles also ports the SDK's stdio environment allowlist (`DEFAULT_INHERITED_ENV_VARS` and `getDefaultEnvironment()`, from `@modelcontextprotocol/sdk` 1.29.0 `dist/esm/client/stdio.js`) into `src/core/pi-session/mcp/stdio-env.ts`, which esbuild bundles into `dist/extension.js` and `dist/desktop/main.js`. The SDK package itself is a development dependency and does not ship.
@@ -838,7 +904,7 @@ These npm packages ship inside the VSIX, the desktop app or both. esbuild bundle
 - **electron-updater** (v6.8.9) — MIT, Copyright (c) 2015 Loopline Systems — https://github.com/electron-userland/electron-builder
   — the desktop app's update client; shipped as `node_modules/electron-updater` with its dependencies and their license files.
 - **@parcel/watcher** (v2.6.0) — MIT, Copyright (c) 2017-present Devon Govett — https://github.com/parcel-bundler/watcher
-  — the desktop app's native file watcher; shipped as `node_modules/@parcel/watcher` with its platform prebuild.
+  — the desktop app's native file watcher on macOS; shipped as `node_modules/@parcel/watcher` with its platform prebuild on macOS and Linux, and without a prebuild in the Windows package, where nothing loads it.
 
 The desktop app also ships Electron (MIT, Copyright (c) Electron contributors, Copyright (c) 2013-2020 GitHub Inc.), whose license and Chromium's third-party licenses (`LICENSE.electron.txt`, `LICENSES.chromium.html`) electron-builder packages with the app.
 
@@ -886,6 +952,50 @@ ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
 WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
 ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+```
+
+---
+
+## Desktop terminal: xterm.js and node-pty — MIT
+
+The desktop app's integrated terminal. Vite bundles xterm.js and its addons into the shell renderer (`dist/desktop-shell/`); electron-builder ships node-pty as `node_modules/node-pty` with its license file and only the target platform's prebuild.
+
+- **@xterm/xterm** (v6.0.0) — MIT, Copyright (c) 2017-2019, The xterm.js authors (https://github.com/xtermjs/xterm.js); Copyright (c) 2014-2016, SourceLair Private Company (https://www.sourcelair.com); Copyright (c) 2012-2013, Christopher Jeffrey (https://github.com/chjj/) — https://github.com/xtermjs/xterm.js
+  — the terminal emulator.
+- **@xterm/addon-fit** (v0.11.0) — MIT, Copyright (c) 2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
+  — fitting the terminal to its pane.
+- The URL pattern in `src/desktop/shell/terminal/terminal-links.ts` is adapted from **@xterm/addon-web-links** (v0.12.0) — MIT, Copyright (c) 2017, The xterm.js authors (https://github.com/xtermjs/xterm.js).
+- **@xterm/addon-search** (v0.16.0) — MIT, Copyright (c) 2017, The xterm.js authors (https://github.com/xtermjs/xterm.js)
+  — find in the terminal.
+- **@xterm/addon-unicode11** (v0.9.0) — MIT, Copyright (c) 2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
+  — Unicode 11 character widths.
+- **node-pty** (v1.2.0-beta.15) — MIT, Copyright (c) 2012-2015, Christopher Jeffrey (https://github.com/chjj/); Copyright (c) 2016, Daniel Imms (http://www.growingwiththeweb.com); Copyright (c) 2018 - present Microsoft Corporation — https://github.com/microsoft/node-pty
+  — the pseudoterminal the pty host runs shells in. Its Windows prebuild includes `conpty.dll` and `OpenConsole.exe` from Microsoft's Windows Terminal (MIT, Copyright (c) Microsoft Corporation, https://github.com/microsoft/terminal).
+
+These components are distributed under the MIT License, with the copyright lines given for each above:
+
+```
+MIT License
+
+Copyright (c) <year> <copyright holders>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
 
 ---

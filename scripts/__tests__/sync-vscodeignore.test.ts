@@ -71,12 +71,12 @@ describe('the generated .vscodeignore allowlist', () => {
   // The desktop app's runtime and its editor, fonts, test and packaging tooling never ship in the VSIX.
   it('carries no desktop-only package', () => {
     expect(DESKTOP_ONLY_PACKAGES).toEqual(expect.arrayContaining([
-      'electron', '@parcel/watcher', 'electron-updater', 'undici', 'monaco-editor', '@playwright/test', 'electron-builder', '@electron/fuses',
+      'electron', '@parcel/watcher', 'electron-updater', 'node-pty', 'undici', 'monaco-editor', '@playwright/test', 'electron-builder', '@electron/fuses',
       '@fontsource-variable/geist', '@fontsource-variable/geist-mono', '@fontsource-variable/inter',
     ]));
     const shipped = block.map((line) => line.slice('!node_modules/'.length).replace(/\/\*\*$/, ''));
     expect(desktopOnlyIn(shipped)).toEqual([]);
-    expect(desktopOnlyIn(['zod', 'electron', 'undici'])).toEqual(['electron', 'undici']);
+    expect(desktopOnlyIn(['zod', 'electron', 'undici', 'node-pty', '@xterm/xterm', '@xterm/addon-fit'])).toEqual(['@xterm/addon-fit', '@xterm/xterm', 'electron', 'node-pty', 'undici']);
   });
 });
 
@@ -90,7 +90,7 @@ describe('vsixExclusionProblems', () => {
 
   it('names every desktop-only category', () => {
     expect(DESKTOP_EXCLUDE_RULES).toEqual(expect.arrayContaining([
-      'dist/webview/assets/monaco-*', 'dist/desktop/**', 'dist/desktop-shell/**', 'dist-desktop/**', 'dist/e2e*/**',
+      'dist/webview/assets/monaco-*', 'dist/desktop/**', 'dist/desktop-shell/**', 'dist/formatter-host.js', 'dist/pty-host.js', 'dist/quick-open-worker.js', 'dist-desktop/**', 'dist/e2e*/**',
       'e2e/**', 'playwright.desktop.config.ts', 'electron-builder.yml', 'build/**', '**/*.log',
     ]));
   });
@@ -119,6 +119,9 @@ describe('forbiddenVsixEntries', () => {
       'extension/python/damocles_voice_sidecar/run.log',
       'extension/dist/desktop/main.js',
       'extension/dist/desktop-shell/index.html',
+      'extension/dist/formatter-host.js',
+      'extension/dist/pty-host.js',
+      'extension/dist/quick-open-worker.js',
       'extension/dist/e2e/second-process.cjs',
       'extension/dist/e2e-results/.last-run.json',
       'extension/dist-desktop/win-unpacked/Damocles.exe',
@@ -132,6 +135,8 @@ describe('forbiddenVsixEntries', () => {
       ...DESKTOP_ONLY_PACKAGES.map((name: string) => `extension/node_modules/${name}/package.json`),
       'extension/node_modules/@parcel/watcher-win32-x64/watcher.node',
       'extension/node_modules/@electron/asar/package.json',
+      'extension/node_modules/node-pty/prebuilds/win32-x64/conpty.node',
+      'extension/node_modules/@xterm/xterm/lib/xterm.js',
     ];
     expect(forbiddenVsixEntries(forbidden)).toEqual(forbidden);
   });

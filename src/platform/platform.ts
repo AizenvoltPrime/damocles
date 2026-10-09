@@ -4,6 +4,7 @@ import type { AppPaths } from './app-paths';
 import type { ClipboardService } from './clipboard-service';
 import type { DialogService } from './dialog-service';
 import type { EditorService } from './editor-service';
+import type { FileConfinement } from './file-confinement';
 import type { FileWatcherFactory } from './file-watcher';
 import type { HostLifecycle } from './host-lifecycle';
 import type { KeyValueState } from './key-value-state';
@@ -26,6 +27,7 @@ export interface Platform {
   readonly trust: TrustService;
   readonly workspaceFolders: WorkspaceFolders;
   readonly fileWatchers: FileWatcherFactory;
+  readonly confinement: FileConfinement;
   readonly notifications: NotificationService;
   readonly paths: AppPaths;
   readonly appInfo: AppInfo;

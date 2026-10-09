@@ -12,6 +12,7 @@ export const BROWSER_WEBVIEW_SCRIPT: string = `
     const canvas = document.getElementById('screen');
     const placeholder = document.getElementById('placeholder');
     const urlInput = document.getElementById('url-input');
+    const notSecure = document.getElementById('not-secure');
     const btnBack = document.getElementById('btn-back');
     const btnForward = document.getElementById('btn-forward');
     const btnReload = document.getElementById('btn-reload');
@@ -181,15 +182,10 @@ export const BROWSER_WEBVIEW_SCRIPT: string = `
       urlInput.addEventListener('keydown', (e) => {
         e.stopPropagation();
         if (e.key === 'Enter') {
-          let url = urlInput.value.trim();
+          const url = urlInput.value.trim();
           if (!url) return;
-          // A bare host gets https://; anything already carrying a scheme is left alone so the host can
-          // judge it. The host re-checks the scheme and is the authority — this only avoids posting a
-          // navigation that will certainly be refused.
-          if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(url)) url = 'https://' + url;
-          if (!/^https?:/i.test(url) && url !== 'about:blank') return;
+          // Sent as typed: the host reads it as Chrome reads a typed address, and refuses what it cannot open.
           vscode.postMessage({ type: 'navigate', url });
-          vscode.setState({ url });
           canvas.focus();
         }
       });
@@ -204,6 +200,11 @@ export const BROWSER_WEBVIEW_SCRIPT: string = `
         viewportH = d.height;
       } else if (d.type === 'urlChanged') {
         if (urlInput) urlInput.value = d.url;
+        if (notSecure) {
+          notSecure.hidden = d.notSecure !== true;
+          if (notSecure.hidden) urlInput.removeAttribute('aria-describedby');
+          else urlInput.setAttribute('aria-describedby', 'not-secure');
+        }
         vscode.setState({ url: d.url });
       } else if (d.type === 'pickingStateChanged') {
         isPicking = d.picking;

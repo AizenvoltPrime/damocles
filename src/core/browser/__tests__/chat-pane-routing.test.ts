@@ -20,6 +20,7 @@ interface FakePage {
 
 function fakePage(opener: FakePage | null = null): FakePage {
   const handlers = new Map<string, Handler[]>();
+  const frame = {};
   const page: FakePage = {
     on: (event, handler) => handlers.set(event, [...(handlers.get(event) ?? []), handler]),
     emit: (event, ...args) => {
@@ -30,7 +31,7 @@ function fakePage(opener: FakePage | null = null): FakePage {
       page.emit('close');
     }),
     opener: async () => opener,
-    mainFrame: () => ({}),
+    mainFrame: () => frame,
   };
   return page;
 }
@@ -104,7 +105,7 @@ describe('VS Code: one primary scope shared by every chat', () => {
     const [a, b] = [chatHost(), chatHost()];
     expect(svc.chatScope(a).id).toBe(BrowserService.PRIMARY_SCOPE_ID);
     expect(svc.chatScope(b).id).toBe(BrowserService.PRIMARY_SCOPE_ID);
-    await svc.openForChat(a, 'https://a.example/');
+    await svc.chatScope(a).open('https://a.example/');
     const [entry] = entries(svc);
     expect(entry?.ownerScopeId).toBe(BrowserService.PRIMARY_SCOPE_ID);
     expect(hostOf(entry!).options.owner).toBeUndefined();
@@ -112,11 +113,22 @@ describe('VS Code: one primary scope shared by every chat', () => {
     expect(svc.chatScope(b).listTabs()).toHaveLength(1);
   });
 
+  it('shows the watched page at its address on the header open, instead of navigating it to a blank page', async () => {
+    const svc = service();
+    const a = chatHost();
+    await svc.chatScope(a).open('https://a.example/');
+    const host = hostOf(entries(svc)[0]!);
+    const reveals = host.reveals.length;
+    await svc.showForChat(a);
+    expect(svc.chatScope(a).listTabs().map((tab) => tab.url)).toEqual(['https://a.example/']);
+    expect(host.reveals.length).toBe(reveals + 1);
+  });
+
   it('leaves the pages open when a chat closes', async () => {
     const svc = service();
     const a = chatHost();
     svc.chatScope(a);
-    await svc.openForChat(a, 'https://a.example/');
+    await svc.chatScope(a).open('https://a.example/');
     a.close();
     expect(created[0]?.close).not.toHaveBeenCalled();
   });
@@ -158,7 +170,7 @@ describe('desktop: a browser scope per chat, pages beside their chat', () => {
     expect(svc.chatScope(a).id).toBe(scopeA.id);
 
     await scopeA.open('https://a.example/');
-    await svc.openForChat(b, 'https://b.example/');
+    await svc.chatScope(b).open('https://b.example/');
     const [pageA, pageB] = entries(svc);
     expect(hostOf(pageA!).options.owner).toBe(a);
     expect(hostOf(pageB!).options.owner).toBe(b);
@@ -242,6 +254,38 @@ describe('desktop: a browser scope per chat, pages beside their chat', () => {
     await expect(svc.chatScope(a).open('https://again.example/')).rejects.toThrow('disposed');
   });
 
+  it.each([
+    ['its chat closes', (svc: BrowserService, chat: FakePanelHost) => { void svc; chat.close(); }],
+    ['the browser tears down', (svc: BrowserService) => { void svc.close(); }],
+    ['its tab closes', (svc: BrowserService) => { hostOf(entries(svc)[0]!).close(); }],
+  ] as const)('reads no page history for a page whose close is under way when %s, as a quit closes them', async (_label, closeAll) => {
+    const svc = service();
+    const sends: string[] = [];
+    (priv(svc).context as { newCDPSession: unknown }).newCDPSession = async () => ({
+      on: () => {},
+      send: vi.fn(async (method: string) => {
+        sends.push(method);
+        return { currentIndex: 0, entries: [{}] };
+      }),
+      detach: vi.fn(async () => {}),
+    });
+    const chat = chatHost();
+    await svc.chatScope(chat).open('https://a.example/');
+    const [page] = created;
+    page!.emit('load');
+    await settle();
+    expect(sends).toContain('Page.getNavigationHistory');
+    page!.close.mockImplementation(async () => undefined);
+    sends.length = 0;
+
+    closeAll(svc, chat);
+    page!.emit('requestfailed', { url: () => 'https://a.example/', failure: () => ({ errorText: 'net::ERR_ABORTED' }), isNavigationRequest: () => true, frame: () => page!.mainFrame() });
+    page!.emit('load');
+    await settle();
+
+    expect(sends).not.toContain('Page.getNavigationHistory');
+  });
+
   it('keeps each open chat\'s scope across a browser teardown, so its agent opens again', async () => {
     const svc = service();
     const a = chatHost();
@@ -281,6 +325,24 @@ describe('desktop: a browser scope per chat, pages beside their chat', () => {
     await svc.restoreChatPages(a, ['https://one.example/'], 0);
     await svc.openNewPageForChat(a);
     expect(created).toEqual([]);
+  });
+
+  it('shows the chat\'s own page on the header open, and opens a blank one only in a chat without a page', async () => {
+    const svc = service();
+    const [a, b] = [chatHost(), chatHost()];
+    await svc.chatScope(a).open('https://a.example/');
+    svc.chatScope(b);
+    const hostA = hostOf(entries(svc)[0]!);
+    const reveals = hostA.reveals.length;
+
+    await svc.showForChat(a);
+    expect(svc.chatScope(a).listTabs().map((tab) => tab.url)).toEqual(['https://a.example/']);
+    expect(hostA.reveals.length).toBe(reveals + 1);
+
+    await svc.showForChat(b);
+    expect(svc.chatScope(a).listTabs().map((tab) => tab.url)).toEqual(['https://a.example/']);
+    expect(svc.chatScope(b).listTabs().map((tab) => tab.url)).toEqual(['about:blank']);
+    expect(hostA.reveals.length).toBe(reveals + 1);
   });
 
   it('opens a new blank page in the chat\'s own scope', async () => {

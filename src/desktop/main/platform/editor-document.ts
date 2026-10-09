@@ -102,43 +102,131 @@ function isMissing(err: unknown): boolean {
   return (err as NodeJS.ErrnoException).code === 'ENOENT';
 }
 
-// A file over the limit is refused from its size before any content is read.
-async function readBody(filePath: string, languageId: string): Promise<EditorDocumentBody | 'missing'> {
+function unreadable(err: unknown): FileBytes {
+  const code = (err as NodeJS.ErrnoException).code;
+  return { kind: 'unreadable', error: errorText(err), ...(typeof code === 'string' ? { code } : {}) };
+}
+
+function notAFile(filePath: string, stat: { isDirectory(): boolean }): FileBytes {
+  return { kind: 'unreadable', error: `${filePath} is not a file`, ...(stat.isDirectory() ? { code: 'EISDIR' } : {}) };
+}
+
+export type FileBytes =
+  | { readonly kind: 'bytes'; readonly bytes: Buffer; readonly mtimeMs: number; readonly dev: number; readonly ino: number }
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'tooLarge'; readonly bytes: number }
+  | { readonly kind: 'unreadable'; readonly error: string; readonly code?: string };
+
+/** A regular file's bytes up to the document limit; a file over it is refused from its size before any content is read. */
+export async function readFileBytes(filePath: string, limitBytes: number = EDITOR_MAX_DOCUMENT_BYTES): Promise<FileBytes> {
   try {
     // Stat before open: opening a FIFO blocks a libuv thread until a writer appears.
     const stat = await fs.stat(filePath);
-    if (!stat.isFile()) return { kind: 'unreadable', error: `${filePath} is not a file` };
-    if (stat.size > EDITOR_MAX_DOCUMENT_BYTES) return tooLarge(stat.size);
+    if (!stat.isFile()) return notAFile(filePath, stat);
+    if (stat.size > limitBytes) return { kind: 'tooLarge', bytes: stat.size };
   } catch (err) {
-    return isMissing(err) ? 'missing' : { kind: 'unreadable', error: errorText(err) };
+    return isMissing(err) ? { kind: 'missing' } : unreadable(err);
   }
   let handle: fs.FileHandle;
   try {
     handle = await fs.open(filePath, 'r');
   } catch (err) {
-    return isMissing(err) ? 'missing' : { kind: 'unreadable', error: errorText(err) };
+    return isMissing(err) ? { kind: 'missing' } : unreadable(err);
   }
   try {
     // The path may have been replaced or grown since the stat; the read stops one byte past the limit.
     const stat = await handle.stat();
-    if (!stat.isFile()) return { kind: 'unreadable', error: `${filePath} is not a file` };
-    if (stat.size > EDITOR_MAX_DOCUMENT_BYTES) return tooLarge(stat.size);
+    if (!stat.isFile()) return notAFile(filePath, stat);
+    if (stat.size > limitBytes) return { kind: 'tooLarge', bytes: stat.size };
     const chunks: Buffer[] = [];
     let total = 0;
     for (;;) {
-      const chunk = Buffer.alloc(Math.min(EDITOR_MAX_DOCUMENT_BYTES + 1 - total, Math.max(stat.size + 1 - total, READ_CHUNK_BYTES)));
+      const chunk = Buffer.alloc(Math.min(limitBytes + 1 - total, Math.max(stat.size + 1 - total, READ_CHUNK_BYTES)));
       const { bytesRead } = await handle.read(chunk, 0, chunk.length, total);
       if (bytesRead === 0) break;
       chunks.push(chunk.subarray(0, bytesRead));
       total += bytesRead;
-      if (total > EDITOR_MAX_DOCUMENT_BYTES) return tooLarge((await handle.stat()).size);
+      if (total > limitBytes) return { kind: 'tooLarge', bytes: (await handle.stat()).size };
     }
-    return bytesBody(Buffer.concat(chunks, total), languageId);
+    return { kind: 'bytes', bytes: Buffer.concat(chunks, total), mtimeMs: stat.mtimeMs, dev: stat.dev, ino: stat.ino };
   } catch (err) {
-    return { kind: 'unreadable', error: errorText(err) };
+    return unreadable(err);
   } finally {
     await handle.close();
   }
+}
+
+async function readBody(filePath: string, languageId: string): Promise<EditorDocumentBody | 'missing'> {
+  const read = await readFileBytes(filePath);
+  if (read.kind === 'missing') return 'missing';
+  if (read.kind === 'tooLarge') return tooLarge(read.bytes);
+  if (read.kind === 'unreadable') return { kind: 'unreadable', error: read.error };
+  return bytesBody(read.bytes, languageId);
+}
+
+export type TextEncoding = 'utf8' | 'utf16le' | 'utf16be';
+
+export interface DecodedText {
+  readonly text: string;
+  readonly encoding: TextEncoding;
+  readonly bom: boolean;
+  // false: not valid UTF-8 and no byte order mark; the text holds replacement characters and must not be written back
+  readonly valid: boolean;
+}
+
+const strictUtf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
+/** decodeText with the encoding and byte order mark recorded, as VS Code's text file model does; undefined for binary. */
+export function decodeDocument(bytes: Buffer): DecodedText | undefined {
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+    return { text: bytes.subarray(3).toString('utf8'), encoding: 'utf8', bom: true, valid: true };
+  }
+  const utf16 = bytes.subarray(2, 2 + ((bytes.length - 2) & ~1));
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return { text: utf16.toString('utf16le'), encoding: 'utf16le', bom: true, valid: true };
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return { text: Buffer.from(utf16).swap16().toString('utf16le'), encoding: 'utf16be', bom: true, valid: true };
+  if (bytes.subarray(0, BINARY_SNIFF_BYTES).includes(0)) return undefined;
+  try {
+    return { text: strictUtf8.decode(bytes), encoding: 'utf8', bom: false, valid: true };
+  } catch (err) {
+    if (!(err instanceof TypeError)) throw err;
+    return { text: bytes.toString('utf8'), encoding: 'utf8', bom: false, valid: false };
+  }
+}
+
+const BYTE_ORDER_MARK: Readonly<Record<TextEncoding, readonly number[]>> = {
+  utf8: [0xef, 0xbb, 0xbf],
+  utf16le: [0xff, 0xfe],
+  utf16be: [0xfe, 0xff],
+};
+
+/** The bytes of text in an encoding, with its byte order mark when bom is set. */
+export function encodeDocument(text: string, encoding: TextEncoding, bom: boolean): Buffer {
+  const little = encoding === 'utf8' ? Buffer.from(text, 'utf8') : Buffer.from(text, 'utf16le');
+  const body = encoding === 'utf16be' ? little.swap16() : little;
+  return bom ? Buffer.concat([Buffer.from(BYTE_ORDER_MARK[encoding]), body]) : body;
+}
+
+/** The length of encodeDocument's bytes, byte order mark included, without encoding them. */
+export function encodedLength(text: string, encoding: TextEncoding, bom: boolean): number {
+  const body = encoding === 'utf8' ? Buffer.byteLength(text, 'utf8') : text.length * 2;
+  return (bom ? BYTE_ORDER_MARK[encoding].length : 0) + body;
+}
+
+/** The line ending most lines use, as VS Code picks a model's EOL; a text with none takes the platform's. */
+export function majorityEol(text: string, platform: NodeJS.Platform = process.platform): '\n' | '\r\n' {
+  let crlf = 0;
+  let lf = 0;
+  for (let index = text.indexOf('\n'); index !== -1; index = text.indexOf('\n', index + 1)) {
+    if (index > 0 && text.charCodeAt(index - 1) === 13) crlf++;
+    else lf++;
+  }
+  if (crlf === 0 && lf === 0) return platform === 'win32' ? '\r\n' : '\n';
+  return crlf > lf ? '\r\n' : '\n';
+}
+
+/** Every line ending of text as eol. */
+export function withEol(text: string, eol: '\n' | '\r\n'): string {
+  return text.replace(/\r\n|\r|\n/g, eol);
 }
 
 /** Reads a file for display: a missing file is empty text. */

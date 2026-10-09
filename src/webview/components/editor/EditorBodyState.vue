@@ -5,7 +5,7 @@ import type { EditorDocumentBody } from '@shared/types/messages';
 
 const props = defineProps<{
   body: Exclude<EditorDocumentBody, { kind: 'text' }>;
-  side: 'original' | 'modified' | 'document';
+  side: 'original' | 'modified';
 }>();
 
 const { t } = useI18n();

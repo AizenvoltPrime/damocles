@@ -62,7 +62,9 @@ function setup() {
   };
   const platform = createFakePlatform();
   const deps = {
-    postMessage: vi.fn(),
+    postMessage: vi.fn((_host: unknown, message: { type: string }) => {
+      H.events.push(`post:${message.type}`);
+    }),
     settingsManager,
     platform,
   } as unknown as HandlerDependencies;
@@ -102,6 +104,19 @@ describe("approvePlan — clear context", () => {
     expect(swapIdx).toBeGreaterThanOrEqual(0);
     expect(writeIdx).toBeGreaterThan(swapIdx);
     expect(writeIdx).toBeLessThan(sendStartIdx);
+  });
+
+  it("clears the session before the webview drops the conversation, so the queue the clear returns reaches the composer", async () => {
+    const { deps, ctx } = setup();
+    const handlers = createPermissionHandlers(deps);
+    await handlers.approvePlan!(
+      { type: "approvePlan", toolUseId: "t1", approved: true, clearContext: true } as never,
+      ctx,
+    );
+
+    // A queueCancelled that lands after sessionCleared finds no chip or echo left to return.
+    expect(H.events.indexOf("clear")).toBeGreaterThanOrEqual(0);
+    expect(H.events.indexOf("clear")).toBeLessThan(H.events.indexOf("post:sessionCleared"));
   });
 
   it("sources the continuation plan from getPlanContent (the on-disk file), not the webview", async () => {

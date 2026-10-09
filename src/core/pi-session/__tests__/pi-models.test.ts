@@ -12,6 +12,7 @@ import {
   isDollarBilled,
   effortToThinkingLevel,
   effortToPiThinking,
+  modelValueOfPiModel,
   type ModelLookup,
 } from '../pi-models';
 import { DEFAULT_MODELS, MODEL_SUBSTITUTES } from '../../../shared/types/constants';
@@ -154,6 +155,28 @@ describe('resolvePiModel — GPT two-namespace routing (US-P1-7)', () => {
   it('resolves an anthropic value by model id', () => {
     const reg = registry([['anthropic', 'claude-opus-5-5', 'anthropic-messages']]);
     expect(resolvePiModel('claude-opus-5-5', reg, { apiKey: false, chatgpt: false, codex: false }).model?.id).toBe('claude-opus-5-5');
+  });
+});
+
+describe('modelValueOfPiModel, the model value a recorded pi model names', () => {
+  it('inverts resolvePiModel for every catalog model and both OpenAI providers', () => {
+    expect(modelValueOfPiModel('anthropic', 'claude-sonnet-5-5')).toBe('claude-sonnet-5-5');
+    expect(modelValueOfPiModel('openai', 'gpt-6.1-sol')).toBe('gpt-6.1-sol');
+    expect(modelValueOfPiModel('openai-codex', 'gpt-6-luna')).toBe('gpt-6-luna');
+    expect(modelValueOfPiModel('deepseek', 'deepseek-v4-pro')).toBe('deepseek-v4-pro');
+    expect(modelValueOfPiModel('stepfun', 'step-3.7-flash')).toBe('step-3.7-flash');
+    const openai = { codex: true, chatgpt: true, apiKey: true } as never;
+    const all = registry(DEFAULT_MODELS.flatMap((info): Array<[string, string]> => (info.backend === 'openai' ? [['openai', info.openaiModelId ?? info.value]] : [[info.piProvider ?? 'anthropic', info.value]])));
+    for (const info of DEFAULT_MODELS) {
+      const resolved = resolvePiModel(info.value, all, openai).model!;
+      expect(modelValueOfPiModel(resolved.provider, resolved.id)).toBe(info.value);
+    }
+  });
+
+  it('names no value for a model outside the catalog, or one served by a provider the catalog does not route it through', () => {
+    expect(modelValueOfPiModel('openrouter', 'claude-sonnet-5-5')).toBeUndefined();
+    expect(modelValueOfPiModel('anthropic', 'claude-sonnet-4-9')).toBeUndefined();
+    expect(modelValueOfPiModel('anthropic', 'deepseek-v4-pro')).toBeUndefined();
   });
 });
 

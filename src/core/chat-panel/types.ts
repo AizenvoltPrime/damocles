@@ -4,6 +4,7 @@ import type { ChatSession } from "../chat-session";
 import type { CompassService } from "../compass";
 import type { PermissionHandler } from "../permission-handler";
 import type { IdeContextManager } from "./ide-context-manager";
+import type { TerminalAttachmentManager } from "./terminal-attachment-manager";
 import type { McpServerConfig } from "../../shared/types/mcp";
 import type { HistoryMessage } from "../../shared/types/content";
 import type { ForkContext, RewindHistoryItem, StoredSession } from "../../shared/types/session";
@@ -36,6 +37,7 @@ export interface HostInstance {
   panelToken: string | null;
   permissionHandler: PermissionHandler;
   ideContextManager: IdeContextManager;
+  terminalAttachments: TerminalAttachmentManager;
   disposables: Disposable[];
   forkContext?: ForkContext;
   /** Resolves once the webview posts its first `ready` message; the fork replay awaits this so its

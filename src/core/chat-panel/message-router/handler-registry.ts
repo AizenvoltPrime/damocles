@@ -25,7 +25,12 @@ export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistr
   const voiceStream = createVoiceStreamHandlers(deps);
   const chatDeps: HandlerDependencies = { ...deps, markUserTypedDuringTurn: voiceStream.markUserTypedDuringTurn };
   const settingsFiles = createSettingsFileHandlers(deps);
-  const settingsDeps: HandlerDependencies = { ...deps, postSettingsFileAvailability: settingsFiles.postAvailability };
+  const claudeAuth = createClaudeAuthHandlers(deps);
+  const settingsDeps: HandlerDependencies = {
+    ...deps,
+    postSettingsFileAvailability: settingsFiles.postAvailability,
+    postClaudeAuthState: claudeAuth.postState,
+  };
   return {
     log: (msg) => {
       if (msg.type === "log") log("[Webview]", msg.message);
@@ -48,7 +53,7 @@ export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistr
     ...createTeamHandlers(deps),
     ...createCompassHandlers(deps),
     ...createOpenAIHandlers(deps),
-    ...createClaudeAuthHandlers(deps),
+    ...claudeAuth.handlers,
     ...createUsageHandlers(deps),
     ...createUsageStatsHandlers(deps),
     ...createWorkspaceFolderHandlers(deps),

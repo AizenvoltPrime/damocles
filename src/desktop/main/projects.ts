@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Disposable } from '../../platform/disposable';
 import type { OpenFolder } from '../../platform/workspace-folders';
-import { writeJsonConfig } from '../../core/config/json-config-write';
+import { jsonConfigWritesSettled, writeJsonConfig } from '../../core/config/json-config-write';
 import { folderKey } from '../../core/workspace-folders/folder-key';
 
 const SCHEMA_VERSION = 1;
@@ -66,6 +66,11 @@ export class ProjectList {
       const next = projects.filter((project) => folderKey(project) !== key);
       return next.length === projects.length ? projects : next;
     });
+  }
+
+  /** Settles once every write to the file, one queued meanwhile included, has landed or failed; a quit awaits it. */
+  flush(): Promise<void> {
+    return jsonConfigWritesSettled(this.filePath);
   }
 
   onDidChange(listener: () => void): Disposable {

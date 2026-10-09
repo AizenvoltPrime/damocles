@@ -1,5 +1,5 @@
 import * as esbuild from 'esbuild';
-import { existsSync } from 'node:fs';
+import { copyFileSync, existsSync } from 'node:fs';
 import { EXTENSION_EXTERNALS } from './scripts/extension-externals.mjs';
 import { DESKTOP_EXTERNALS } from './scripts/desktop-externals.mjs';
 
@@ -132,31 +132,60 @@ const desktopShellPreloadOptions = {
 };
 
 /** @type {esbuild.BuildOptions} */
-const desktopPanePreloadOptions = {
-  ...desktopPreloadOptions,
-  entryPoints: ['src/desktop/preload/pane.ts'],
-  outfile: 'dist/desktop/preload-pane.js',
-};
-
-/** @type {esbuild.BuildOptions} */
 const desktopOverlayPreloadOptions = {
   ...desktopPreloadOptions,
   entryPoints: ['src/desktop/preload/overlay.ts'],
   outfile: 'dist/desktop/preload-overlay.js',
 };
 
+/** @type {esbuild.BuildOptions} */
+const formatterHostOptions = {
+  entryPoints: ['src/desktop/formatter-host/index.ts'],
+  bundle: true,
+  outfile: 'dist/formatter-host.js',
+  // No externals: the host runs as an Electron utility process from app.asar.unpacked and loads only the project's Prettier,
+  // which is never bundled.
+  format: 'cjs',
+  platform: 'node',
+  target: 'node24',
+  sourcemap: false,
+  minify: false,
+  logLevel: 'info',
+  plugins: [assertOutfileWritten],
+};
+
+/** @type {esbuild.BuildOptions} */
+const ptyHostOptions = {
+  ...formatterHostOptions,
+  entryPoints: ['src/desktop/pty-host/index.ts'],
+  outfile: 'dist/pty-host.js',
+  // node-pty finds its native prebuild relative to its own lib directory, so it is never bundled.
+  external: ['node-pty'],
+};
+
+/** @type {esbuild.BuildOptions} */
+const quickOpenWorkerOptions = {
+  ...formatterHostOptions,
+  entryPoints: ['src/desktop/quick-open-worker/index.ts'],
+  outfile: 'dist/quick-open-worker.js',
+};
+
 async function buildDesktop() {
   await Promise.all([
+    esbuild.build(formatterHostOptions),
+    esbuild.build(ptyHostOptions),
+    esbuild.build(quickOpenWorkerOptions),
     esbuild.build(desktopMainOptions),
     esbuild.build(desktopPreloadOptions),
     esbuild.build(desktopShellPreloadOptions),
-    esbuild.build(desktopPanePreloadOptions),
     esbuild.build(desktopOverlayPreloadOptions),
     esbuild.build(workerOptions),
     esbuild.build(usageStatsWorkerOptions),
     esbuild.build(sentinelOptions),
   ]);
-  console.log('Desktop main + preload + workers + sentinel build complete');
+  // Settings › About's What's new reads it next to main.js (src/desktop/main/release-notes.ts).
+  copyFileSync('CHANGELOG.md', 'dist/desktop/CHANGELOG.md');
+  console.log('Desktop main + preload + formatter host + pty host + workers + sentinel build complete');
 }
 
 async function build() {

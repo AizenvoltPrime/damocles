@@ -2,16 +2,15 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication, Locator, Page } from '@playwright/test';
 import { activeChat, expect, nextChat, test } from './support/fixtures';
-import { seedStubModel, writeUserSettings, type HermeticHome } from './support/hermetic';
+import { seedStubModel, type HermeticHome } from './support/hermetic';
 import { chatRequests, startOpenAIStub, type OpenAIStub } from './support/openai-stub';
-import { shellState } from './support/shell';
-import { addProject, chatInput, clickMenu, postFromWebview, sendAndAwaitEcho } from './support/ui';
-import { editSettingsFile } from './support/settings';
+import { shellPage, viewFocused } from './support/shell';
+import { addProject, chatInput, postFromWebview, sendAndAwaitEcho } from './support/ui';
+import { activeTab, codeEditor, diffEditor, editorShows, editorState } from './support/editor';
 
 const TARGET_OLD = "export const target = 'old';";
 const TARGET_NEW = "export const target = 'new';";
 const TARGET_REJECTED = "export const target = 'rejected';";
-const SELECT_ALL = process.platform === 'darwin' ? 'Meta+A' : 'Control+A';
 
 // Over 1 MB, which the acceptance requires to render; the edited line sits near the top so it is in view.
 function bigSource(): string {
@@ -46,17 +45,6 @@ async function tokenClassesOnLine(editor: Locator, text: string): Promise<string
   return line.evaluate((el) => [...new Set([...el.querySelectorAll('span[class*="mtk"]')].flatMap((s) => [...s.classList].filter((c) => /^mtk\d+$/.test(c))))]);
 }
 
-/** Selects all and pastes `text`, as a user does; pasted text skips Monaco's auto-closing and auto-indent, which would alter typed JSON. */
-async function replaceText(editor: Locator, text: string): Promise<void> {
-  await editor.locator('.view-lines').click();
-  await editor.page().keyboard.press(SELECT_ALL);
-  await editor.locator('.native-edit-context, textarea.inputarea').first().evaluate((input, pasted) => {
-    const data = new DataTransfer();
-    data.setData('text/plain', pasted);
-    input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
-  }, text);
-}
-
 async function openProject(app: ElectronApplication, h: HermeticHome): Promise<Page> {
   const home = await activeChat(app);
   await expect(chatInput(home)).toBeVisible();
@@ -72,7 +60,7 @@ async function send(tab: Page, text: string): Promise<void> {
   await chatInput(tab).press('Enter');
 }
 
-// The session title request follows the first turn; queuing the next tool call before it lands would hand it the title call.
+// The title request goes out once the first turn has ended, so the next scripted reply goes to the next turn.
 async function awaitTitleRequest(stub: OpenAIStub): Promise<void> {
   await expect.poll(() => chatRequests(stub).some((r) => JSON.stringify(r.body).includes('descriptive title'))).toBe(true);
 }
@@ -98,7 +86,6 @@ test('permission diff: Monaco shows original and proposed for a file over 1 MB; 
     await expect(tab.getByRole('textbox', { name: 'Message Damocles' })).toBeFocused();
     await permissionPrompt(tab).getByRole('button', { name: 'Open diff' }).click();
     await expect(overlay(tab)).toBeVisible();
-    await expect(overlay(tab)).toHaveAttribute('data-view-kind', 'diff');
     await expect(overlay(tab)).toHaveAttribute('data-purpose', 'proposal');
     await expect(diffView(tab)).toHaveAttribute('data-monaco-ready', 'true');
     const originalEditor = diffView(tab).locator('.editor.original');
@@ -151,7 +138,7 @@ test('permission diff: Monaco shows original and proposed for a file over 1 MB; 
   }
 });
 
-test('rewind: the confirm modal opens the checkpoint diff in Monaco, and rolling back restores the file', async ({ home, launch }) => {
+test('rewind: the checkpoint diff opens as a diff tab in the editor pane, and rolling back restores the file', async ({ home, launch }) => {
   const stub = await startOpenAIStub();
   try {
     seedStubModel(home, stub.baseUrl);
@@ -160,6 +147,7 @@ test('rewind: the confirm modal opens the checkpoint diff in Monaco, and rolling
     fs.writeFileSync(file, original);
     const { app } = await launch();
     const tab = await openProject(app, home);
+    const shell = await shellPage(app);
 
     // A checkpoint is the state after its prompt's turn, so the edit comes in the turn after the one rewound to.
     await sendAndAwaitEcho(tab, 'before the edit');
@@ -169,7 +157,6 @@ test('rewind: the confirm modal opens the checkpoint diff in Monaco, and rolling
     await expect(permissionPrompt(tab)).toBeVisible();
     await permissionPrompt(tab).getByRole('option', { name: 'Yes', exact: true }).click();
     await expect.poll(() => fs.readFileSync(file, 'utf8')).toBe(original.replace(TARGET_OLD, TARGET_NEW));
-    await expect(overlay(tab)).toBeHidden();
 
     await tab.getByRole('button', { name: 'Rewind conversation to this message' }).first().click();
     const modal = tab.getByRole('alertdialog');
@@ -177,16 +164,12 @@ test('rewind: the confirm modal opens the checkpoint diff in Monaco, and rolling
     await modal.getByRole('button', { name: 'Show affected files' }).click();
     await modal.getByTitle(`View checkpoint diff for ${file}`).click();
 
-    // The rewind modal steps aside while the diff is open and comes back unchanged when it closes.
-    await expect(overlay(tab)).toHaveAttribute('data-purpose', 'checkpoint');
-    await expect(modal).toBeHidden();
-    await expect(diffView(tab)).toHaveAttribute('data-monaco-ready', 'true');
-    await expect(diffView(tab).locator('.editor.original .view-line', { hasText: "target = 'old'" })).toBeVisible();
-    await expect(diffView(tab).locator('.editor.modified .view-line', { hasText: "target = 'new'" })).toBeVisible();
-    await tab.keyboard.press('Escape');
+    // D15: only approval diffs stay in the chat; a checkpoint diff is a pane tab.
+    await expect.poll(async () => (await activeTab(app))?.kind).toBe('diff');
     await expect(overlay(tab)).toBeHidden();
-    await expect(modal.getByText('Restore Options')).toBeVisible();
-    await expect(modal.getByTitle(`View checkpoint diff for ${file}`)).toBeVisible();
+    await expect(diffEditor(shell)).toHaveAttribute('data-monaco-ready', 'true');
+    await expect(diffEditor(shell).locator('.editor.original .view-line', { hasText: "target = 'old'" })).toBeVisible();
+    await expect(diffEditor(shell).locator('.editor.modified .view-line', { hasText: "target = 'new'" })).toBeVisible();
 
     await modal.getByRole('option', { name: /Rewind code to here/ }).click();
     await modal.getByRole('button', { name: 'Roll back files' }).click();
@@ -196,93 +179,52 @@ test('rewind: the confirm modal opens the checkpoint diff in Monaco, and rolling
   }
 });
 
-test('open file: a read-only view at the requested line in the requesting chat; untitled element context opens read-only too', async ({ home, launch }) => {
-  const file = path.join(home.project, 'lines.py');
-  fs.writeFileSync(file, Array.from({ length: 400 }, (_, i) => `value_${i + 1} = ${i + 1}`).join('\n'));
-  const stub = await startOpenAIStub();
-  try {
-    seedStubModel(home, stub.baseUrl);
-    const { app } = await launch();
-    const project = await openProject(app, home);
-    // A chat with a conversation stays loaded when another chat is selected.
-    await sendAndAwaitEcho(project, 'keep this chat');
-    const projectChatId = (await shellState(app)).selected.chatId;
-    const opened = nextChat(app, [project]);
-    await clickMenu(app, 'damocles.newChat');
-    const homeTab = await opened;
-    await expect(chatInput(homeTab)).toBeVisible();
+test("open file: a chat's openFile opens a pane tab at the requested line and focuses it, with the shell's Monaco workers", async ({ foreground: _foreground, home, launch }) => {
+  const file = path.join(home.project, 'lines.ts');
+  fs.writeFileSync(file, Array.from({ length: 400 }, (_, i) => `export const value_${i + 1} = ${i + 1};`).join('\n'));
+  const { app } = await launch();
+  const project = await openProject(app, home);
+  const shell = await shellPage(app);
+  const failures: string[] = [];
+  shell.on('console', (message) => {
+    if (message.text().includes('Content Security Policy') || message.text().includes('Could not create web worker')) failures.push(message.text());
+  });
 
-    // The request comes from the project chat while another chat is selected: the view opens there and that chat is revealed.
-    await postFromWebview(project, { type: 'openFile', filePath: file, line: 250 });
-    await expect.poll(async () => (await shellState(app)).selected.chatId).toBe(projectChatId);
-    const view = project.getByTestId('editor-file-view');
-    await expect(view).toHaveAttribute('data-monaco-ready', 'true');
-    await expect(view).toHaveAttribute('data-revealed-line', '250');
-    await expect(view.locator('.view-line', { hasText: 'value_250 = 250' })).toBeVisible();
-    await expect(view.locator('.damocles-editor-highlight-line')).toBeVisible();
-    // The other chat was a new, empty one, so leaving it dropped it rather than showing it the view.
-    await expect.poll(() => homeTab.isClosed()).toBe(true);
-
-    await view.locator('.view-lines').click();
-    await project.keyboard.type('typed');
-    await expect(view.locator('.view-line', { hasText: 'typed' })).toHaveCount(0);
-    await project.getByTestId('editor-overlay-close').click();
-    await expect(overlay(project)).toBeHidden();
-
-    await postFromWebview(project, { type: 'openElementContext', content: '<div class="picked">element</div>' });
-    const untitled = project.getByTestId('editor-file-view');
-    await expect(untitled).toHaveAttribute('data-untitled', 'true');
-    await expect(untitled.locator('.view-line', { hasText: 'picked' })).toBeVisible();
-    expect(fs.readFileSync(file, 'utf8')).not.toContain('typed');
-  } finally {
-    await stub.close();
-  }
+  await postFromWebview(project, { type: 'openFile', filePath: file, line: 250 });
+  await expect.poll(async () => (await activeTab(app))?.title).toBe('lines.ts');
+  await editorShows(shell, 'value_250 = 250');
+  await expect.poll(() => viewFocused(app, shell)).toBe(true);
+  // Syntax highlighting and the TypeScript service run in module workers served from the shell's assets.
+  expect((await tokenClassesOnLine(codeEditor(shell), 'value_250 = 250')).length).toBeGreaterThan(1);
+  await expect.poll(() => ['editor', 'ts'].every((name) => shell.workers().some((worker) => worker.url().endsWith(`/desktop-shell/assets/worker-${name}.worker.js`)))).toBe(true);
+  expect(failures).toEqual([]);
+  expect((await editorState(app)).tabs).toHaveLength(1);
+  // The chat page loads no Monaco for a file open any more.
+  expect(project.workers().some((worker) => /monaco-/.test(worker.url()))).toBe(false);
 });
 
-test('settings editor: schema validation flags unknown and user-only keys, save writes the file, invalid JSON is refused', async ({ home, launch }) => {
-  const userFile = path.join(home.damoclesDir, 'settings.json');
-  const projectFile = path.join(home.project, '.damocles', 'settings.json');
-  writeUserSettings(home, { 'damocles.maxTurns': 40, 'damocles.notARealSetting': true });
-  fs.mkdirSync(path.dirname(projectFile), { recursive: true });
-  // damocles.permissionMode is restricted, so user-only: a project file may not set it.
-  fs.writeFileSync(projectFile, JSON.stringify({ 'damocles.maxTurns': 7, 'damocles.permissionMode': 'plan' }, null, 2));
+test("JSON diagnostics follow VS Code's languages: a comment is an error in package.json, while tsconfig.json is JSON with Comments", async ({ home, launch }) => {
+  fs.writeFileSync(path.join(home.project, 'package.json'), '{\n  // not JSON\n  "name": "a"\n}\n');
+  fs.writeFileSync(path.join(home.project, 'tsconfig.json'), '{\n  // allowed here\n  "compilerOptions": { "strict": true, },\n  "include": [tru]\n}\n');
   const { app } = await launch();
-  const tab = await openProject(app, home);
-  const workerFailures = watchWorkerFailures(tab);
+  const project = await openProject(app, home);
+  const shell = await shellPage(app);
+  // The text of each line an error squiggle sits on.
+  const errorLines = (): Promise<string[]> => codeEditor(shell).evaluate((editor) => {
+    const lines = [...editor.querySelectorAll<HTMLElement>('.view-line')];
+    return [...new Set([...editor.querySelectorAll<HTMLElement>('.squiggly-error')].map((squiggle) => {
+      const top = squiggle.getBoundingClientRect().top;
+      const line = lines.find((candidate) => Math.abs(candidate.getBoundingClientRect().top - top) < 2);
+      return (line?.textContent ?? '').replace(/\u00a0/g, ' ').trim();
+    }))];
+  });
 
-  await editSettingsFile(app, 'user');
-  const editor = tab.getByTestId('settings-json-editor');
-  const monaco = tab.getByTestId('settings-json-editor-monaco');
-  await expect(editor).toHaveAttribute('data-scope', 'user');
-  await expect(monaco).toHaveAttribute('data-monaco-ready', 'true');
-  await expect(monaco.locator('.view-line', { hasText: 'damocles.maxTurns' })).toBeVisible();
-  await expect(monaco).toHaveAttribute('data-marker-count', '1');
-  await expect(tab.getByTestId('settings-json-diagnostics')).toContainText('damocles.notARealSetting');
+  await postFromWebview(project, { type: 'openFile', filePath: path.join(home.project, 'package.json') });
+  await editorShows(shell, '"name"');
+  await expect.poll(errorLines).toEqual(['// not JSON']);
 
-  // A valid edit saves verbatim through the host.
-  const saved = '{\n  "damocles.maxTurns": 12\n}\n';
-  await replaceText(monaco, saved);
-  await expect(monaco).toHaveAttribute('data-marker-count', '0');
-  await tab.getByTestId('settings-json-save').click();
-  await expect.poll(() => fs.readFileSync(userFile, 'utf8')).toBe(saved);
-  await expect(editor).toHaveAttribute('data-dirty', 'false');
-
-  // Text that does not parse is refused with a message, and the file keeps the last save.
-  await replaceText(monaco, '{\n  "damocles.maxTurns": \n');
-  await tab.getByTestId('settings-json-save').click();
-  await expect(tab.getByTestId('settings-json-error')).toBeVisible();
-  await expect(tab.getByTestId('settings-json-error')).not.toBeEmpty();
-  expect(fs.readFileSync(userFile, 'utf8')).toBe(saved);
-
-  // The project file uses the project schema, which flags the user-only key.
-  await tab.getByTestId('settings-json-close').click();
-  await editor.getByRole('button', { name: 'Discard', exact: true }).click();
-  await expect(editor).toBeHidden();
-  await editSettingsFile(app, 'project');
-  await expect(editor).toHaveAttribute('data-scope', 'project');
-  await expect(monaco).toHaveAttribute('data-monaco-ready', 'true');
-  await expect(monaco).toHaveAttribute('data-marker-count', '1');
-  await expect(tab.getByTestId('settings-json-diagnostics')).toContainText('damocles.permissionMode');
-  expect(tab.workers().some((w) => /\/webview\/assets\/monaco-[^/]+\.js$/.test(w.url()))).toBe(true);
-  expect(workerFailures).toEqual([]);
+  // The broken value proves the file was validated; its comment and trailing comma pass.
+  await postFromWebview(project, { type: 'openFile', filePath: path.join(home.project, 'tsconfig.json') });
+  await editorShows(shell, 'compilerOptions');
+  await expect.poll(errorLines).toEqual(['"include": [tru]']);
 });

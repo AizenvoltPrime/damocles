@@ -27,6 +27,8 @@ export interface SessionManagerConfig {
     effort: EffortLevel | null;
     maxThinkingTokens: number | null;
   };
+  /** A resumed conversation's recorded model value and pi thinking level, which become the panel's. */
+  restoreRecordedSelection: (host: PanelHost, panelId: string, folder: FolderTarget, model: string, thinkingLevel: string | undefined) => void;
   postMessage: (host: PanelHost, message: ExtensionToWebviewMessage) => void;
   setupSessionWatcher: (folderKey: string) => Promise<void>;
   addOrUpdateSession: (sessionId: string, folderKey: string) => Promise<void>;
@@ -47,6 +49,7 @@ export class SessionManager {
   private readonly getDefaultModel: SessionManagerConfig["getDefaultModel"];
   private readonly getPreferOpenAIApiKey: SessionManagerConfig["getPreferOpenAIApiKey"];
   private readonly resolveThinkingForPanel: SessionManagerConfig["resolveThinkingForPanel"];
+  private readonly restoreRecordedSelection: SessionManagerConfig["restoreRecordedSelection"];
   private readonly postMessage: SessionManagerConfig["postMessage"];
   private readonly setupSessionWatcher: SessionManagerConfig["setupSessionWatcher"];
   private readonly addOrUpdateSession: SessionManagerConfig["addOrUpdateSession"];
@@ -64,6 +67,7 @@ export class SessionManager {
     this.getDefaultModel = config.getDefaultModel;
     this.getPreferOpenAIApiKey = config.getPreferOpenAIApiKey;
     this.resolveThinkingForPanel = config.resolveThinkingForPanel;
+    this.restoreRecordedSelection = config.restoreRecordedSelection;
     this.postMessage = config.postMessage;
     this.setupSessionWatcher = config.setupSessionWatcher;
     this.addOrUpdateSession = config.addOrUpdateSession;
@@ -139,6 +143,7 @@ export class SessionManager {
       // idempotently; an empty union would close servers another panel connected.
       mcpScope: this.getEnabledMcpServers(folder.key),
       resolveThinking: (model) => this.resolveThinkingForPanel(panelId, model, settingsFolderOf(folder)),
+      onRecordedSelection: (model, thinkingLevel) => this.restoreRecordedSelection(host, panelId, folder, model, thinkingLevel),
       getPreferOpenAIApiKey: this.getPreferOpenAIApiKey,
       secrets: this.platform.secrets,
       platform: this.platform,

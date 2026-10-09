@@ -1,16 +1,17 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { ElectronApplication, Locator, Page } from '@playwright/test';
-import { activeChat, expect, nextChat, test } from './support/fixtures';
-import { writeUserSettings, type HermeticHome } from './support/hermetic';
-import { addProject, chatInput } from './support/ui';
-import { editSettingsFile as editFromModal } from './support/settings';
+import type { Locator } from '@playwright/test';
+import { expect, test } from './support/fixtures';
+import { writeUserSettings } from './support/hermetic';
+import { overlayPage, shellPage, shellState } from './support/shell';
+import { chooseSegment, editSettingsFile, openSettingsModal, settingsRow } from './support/settings';
+import { openProjectChat } from './support/screenshots';
+import { activeTab, codeEditor, conflictBar, diffEditor, editorTab, saveWithKeyboard } from './support/editor';
 
 const SELECT_ALL = process.platform === 'darwin' ? 'Meta+A' : 'Control+A';
 
 /** Selects all and pastes `text`; pasted text skips Monaco's auto-closing and auto-indent, which would alter typed JSON. */
 async function replaceText(editor: Locator, text: string): Promise<void> {
-  // Below 900px the diff editor goes inline and draws deleted lines in a view zone with its own `.view-lines`.
   await editor.locator('.lines-content > .view-lines').click();
   await editor.page().keyboard.press(SELECT_ALL);
   await editor.locator('.native-edit-context, textarea.inputarea').first().evaluate((input, pasted) => {
@@ -20,129 +21,104 @@ async function replaceText(editor: Locator, text: string): Promise<void> {
   }, text);
 }
 
-async function openProject(app: ElectronApplication, h: HermeticHome): Promise<Page> {
-  const home = await activeChat(app);
-  await expect(chatInput(home)).toBeVisible();
-  const opened = nextChat(app, [home]);
-  await addProject(app, h.project, true);
-  const tab = await opened;
-  await expect(chatInput(tab)).toBeVisible();
-  return tab;
-}
-
-async function openUserEditor(app: ElectronApplication, tab: Page): Promise<Locator> {
-  await editFromModal(app, 'user');
-  const monaco = tab.getByTestId('settings-json-editor-monaco');
-  await expect(monaco).toHaveAttribute('data-monaco-ready', 'true');
-  return monaco;
-}
-
 const ORIGINAL = '{\n  "damocles.maxTurns": 40\n}\n';
 const MINE = '{\n  "damocles.maxTurns": 12\n}\n';
 const THEIRS = '{\n  "damocles.maxTurns": 40,\n  "damocles.taskBudget": 5000\n}\n';
-const MERGED = '{\n  "damocles.maxTurns": 12,\n  "damocles.taskBudget": 5000\n}\n';
 
-/** Edits the user file in the editor, then lets another writer change it on disk, so the next save conflicts. */
-async function conflictingSave(app: ElectronApplication, tab: Page, userFile: string): Promise<Locator> {
-  const monaco = await openUserEditor(app, tab);
-  await expect(monaco.locator('.view-line', { hasText: 'damocles.maxTurns' })).toBeVisible();
-  await replaceText(monaco, MINE);
-  await expect(tab.getByTestId('settings-json-editor')).toHaveAttribute('data-dirty', 'true');
-  fs.writeFileSync(userFile, THEIRS);
-  await expect(tab.getByTestId('settings-json-reload-prompt')).toBeVisible();
-  await tab.getByTestId('settings-json-save').click();
-  const conflict = tab.getByTestId('settings-json-conflict');
-  await expect(conflict).toBeVisible();
-  return conflict;
-}
-
-test('settings editor conflict: Compare merges in an editable diff and saves over the newer file', async ({ home, launch }) => {
+test('Edit settings.json opens a pane tab: the schema flags unknown keys, a valid save writes the text verbatim, text that does not parse is refused', async ({ home, launch }) => {
   const userFile = path.join(home.damoclesDir, 'settings.json');
-  writeUserSettings(home, { 'damocles.maxTurns': 40 });
-  fs.writeFileSync(userFile, ORIGINAL);
+  writeUserSettings(home, { 'damocles.maxTurns': 40, 'damocles.notARealSetting': true });
   const { app } = await launch();
-  const tab = await activeChat(app);
-  await expect(chatInput(tab)).toBeVisible();
+  await openProjectChat(app, home.project);
+  const shell = await shellPage(app);
 
-  const conflict = await conflictingSave(app, tab, userFile);
-  expect(fs.readFileSync(userFile, 'utf8')).toBe(THEIRS);
-  await conflict.getByTestId('settings-json-compare').click();
+  await editSettingsFile(app, 'user');
+  await expect.poll(async () => (await activeTab(app))?.kind).toBe('settings');
+  expect((await activeTab(app))?.settingsScope).toBe('user');
+  await expect(editorTab(shell, 'settings.json')).toHaveAttribute('aria-selected', 'true');
+  const editor = codeEditor(shell);
+  await expect(editor).toHaveAttribute('data-monaco-ready', 'true');
+  await expect(editor.locator('.view-line', { hasText: 'damocles.notARealSetting' })).toBeVisible();
+  await expect(editor.locator('.squiggly-error, .squiggly-warning').first()).toBeAttached();
 
-  const editor = tab.getByTestId('settings-json-editor');
-  const compareView = tab.getByTestId('settings-json-compare-view');
-  await expect(editor).toHaveAttribute('data-comparing', 'true');
-  await expect(tab.getByTestId('settings-json-compare-banner')).toBeVisible();
-  await expect(compareView.locator('.editor.original .view-line', { hasText: 'damocles.taskBudget' })).toBeVisible();
-  const modified = compareView.locator('.editor.modified');
-  await expect(modified.locator('.view-line', { hasText: '"damocles.maxTurns": 12' })).toBeVisible();
-
-  await replaceText(modified, MERGED);
-  await tab.getByTestId('settings-json-save').click();
-  await expect.poll(() => fs.readFileSync(userFile, 'utf8')).toBe(MERGED);
-  await expect(editor).toHaveAttribute('data-comparing', 'false');
-  await expect(editor).toHaveAttribute('data-dirty', 'false');
-  await expect(tab.getByTestId('settings-json-conflict')).toBeHidden();
-});
-
-test('settings editor conflict: Overwrite asks first, and only then saves the user text over the newer file', async ({ home, launch }) => {
-  const userFile = path.join(home.damoclesDir, 'settings.json');
-  writeUserSettings(home, { 'damocles.maxTurns': 40 });
-  fs.writeFileSync(userFile, ORIGINAL);
-  const { app } = await launch();
-  const tab = await activeChat(app);
-  await expect(chatInput(tab)).toBeVisible();
-
-  const conflict = await conflictingSave(app, tab, userFile);
-  await conflict.getByTestId('settings-json-overwrite').click();
-  const confirm = tab.getByTestId('settings-json-overwrite-confirm');
-  await expect(confirm).toBeVisible();
-  await expect(confirm.getByTestId('settings-json-overwrite-path')).toHaveText(userFile);
-  await confirm.getByTestId('settings-json-overwrite-cancel').click();
-  await expect(confirm).toBeHidden();
-  expect(fs.readFileSync(userFile, 'utf8')).toBe(THEIRS);
-  await expect(tab.getByTestId('settings-json-editor')).toHaveAttribute('data-dirty', 'true');
-
-  await conflict.getByTestId('settings-json-overwrite').click();
-  await confirm.getByTestId('settings-json-overwrite-confirm-button').click();
+  await replaceText(editor, MINE);
+  await saveWithKeyboard(app);
   await expect.poll(() => fs.readFileSync(userFile, 'utf8')).toBe(MINE);
-  await expect(tab.getByTestId('settings-json-editor')).toHaveAttribute('data-dirty', 'false');
-  await expect(confirm).toBeHidden();
+  await expect.poll(async () => (await activeTab(app))?.dirty).toBe(false);
+
+  await replaceText(editor, '{\n  "damocles.maxTurns": \n');
+  await saveWithKeyboard(app);
+  await expect(shell.getByTestId('editor-save-error')).toBeVisible();
+  expect(fs.readFileSync(userFile, 'utf8')).toBe(MINE);
+  expect((await activeTab(app))?.dirty).toBe(true);
 });
 
-test('settings editor: opening a settings file while the editor holds unsaved edits never loses them', async ({ home, launch }) => {
+test('a settings file changed on disk under unsaved edits shows the conflict bar; Overwrite asks first, Compare opens a diff tab', async ({ home, launch }) => {
   const userFile = path.join(home.damoclesDir, 'settings.json');
-  writeUserSettings(home, { 'damocles.maxTurns': 40 });
+  fs.mkdirSync(path.dirname(userFile), { recursive: true });
   fs.writeFileSync(userFile, ORIGINAL);
   const { app } = await launch();
-  const tab = await openProject(app, home);
-  const editor = tab.getByTestId('settings-json-editor');
+  await openProjectChat(app, home.project);
+  const shell = await shellPage(app);
+  const overlay = await overlayPage(app);
 
-  const monaco = await openUserEditor(app, tab);
-  await expect(monaco.locator('.view-line', { hasText: 'damocles.maxTurns' })).toBeVisible();
-  await replaceText(monaco, MINE);
-  await expect(editor).toHaveAttribute('data-dirty', 'true');
-  await expect.poll(() => tab.evaluate(() => document.querySelector('[data-testid="settings-json-editor"]')?.contains(document.activeElement) === true)).toBe(true);
+  await editSettingsFile(app, 'user');
+  const editor = codeEditor(shell);
+  await expect(editor.locator('.view-line', { hasText: 'damocles.maxTurns' })).toBeVisible();
+  await replaceText(editor, MINE);
+  await expect.poll(async () => (await activeTab(app))?.dirty).toBe(true);
+  fs.writeFileSync(userFile, THEIRS);
+  await expect(conflictBar(shell)).toBeVisible();
 
-  // Settings opens over the editor; the same file brings the editor back as it was.
-  await editFromModal(app, 'user');
-  await expect(editor).toHaveAttribute('data-scope', 'user');
-  await expect(editor).toHaveAttribute('data-dirty', 'true');
-  await expect(tab.getByText('Loading settings file...')).toBeHidden();
-  await expect(monaco.locator('.view-line', { hasText: '"damocles.maxTurns": 12' })).toBeVisible();
-  await expect(tab.getByTestId('settings-json-save')).toBeEnabled();
+  await conflictBar(shell).getByTestId('conflict-overwrite').click();
+  const dialog = overlay.getByRole('alertdialog');
+  await expect(dialog).toBeVisible();
+  expect(fs.readFileSync(userFile, 'utf8')).toBe(THEIRS);
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(conflictBar(shell)).toBeVisible();
+  expect(fs.readFileSync(userFile, 'utf8')).toBe(THEIRS);
 
-  // Another file asks before discarding the edits, and keeping them keeps the editor.
-  await editFromModal(app, 'project');
-  const prompt = tab.getByTestId('settings-json-discard-prompt');
-  await expect(prompt).toContainText('Open Project settings and discard your unsaved changes?');
-  await tab.getByTestId('settings-json-keep-editing').click();
-  await expect(prompt).toBeHidden();
-  await expect(editor).toHaveAttribute('data-scope', 'user');
-  await expect(monaco.locator('.view-line', { hasText: '"damocles.maxTurns": 12' })).toBeVisible();
+  await conflictBar(shell).getByTestId('conflict-compare').click();
+  await expect.poll(async () => (await activeTab(app))?.kind).toBe('diff');
+  await expect(diffEditor(shell).locator('.editor.original .view-line', { hasText: 'damocles.taskBudget' })).toBeVisible();
+  await expect(diffEditor(shell).locator('.editor.modified .view-line', { hasText: '"damocles.maxTurns": 12' })).toBeVisible();
+});
 
-  await editFromModal(app, 'project');
-  await tab.getByTestId('settings-json-discard').click();
-  await expect(editor).toHaveAttribute('data-scope', 'project');
-  await expect(monaco).toHaveAttribute('data-monaco-ready', 'true');
-  expect(fs.readFileSync(userFile, 'utf8')).toBe(ORIGINAL);
+test('a project settings tab validates against the project schema, which flags a user-only key, and the Files and search row opens settings.json', async ({ home, launch }) => {
+  const projectFile = path.join(home.project, '.damocles', 'settings.json');
+  fs.mkdirSync(path.dirname(projectFile), { recursive: true });
+  fs.writeFileSync(projectFile, JSON.stringify({ 'damocles.maxTurns': 7, 'damocles.permissionMode': 'plan' }, null, 2));
+  const { app } = await launch();
+  await openProjectChat(app, home.project);
+  const shell = await shellPage(app);
+
+  await editSettingsFile(app, 'project');
+  await expect.poll(async () => (await activeTab(app))?.settingsScope).toBe('project');
+  await expect(codeEditor(shell).locator('.view-line', { hasText: 'damocles.permissionMode' })).toBeVisible();
+  await expect(codeEditor(shell).locator('.squiggly-error, .squiggly-warning').first()).toBeAttached();
+
+  const settings = await openSettingsModal(app, 'files');
+  await expect(settingsRow(settings, 'damocles.desktop.files.exclude').getByTestId('files-exclude-patterns')).toContainText('**/.git');
+  await settings.getByTestId('files-exclude-edit').click();
+  await expect.poll(async () => (await activeTab(app))?.settingsScope).toBe('user');
+});
+
+test('the Editor settings section applies a font size and word wrap to an open editor at once', async ({ home, launch }) => {
+  fs.writeFileSync(path.join(home.project, 'wide.ts'), `export const wide = '${'x'.repeat(400)}';\n`);
+  const { app } = await launch();
+  await openProjectChat(app, home.project);
+  const shell = await shellPage(app);
+  const projectKey = (await shellState(app)).selected.projectKey!;
+  await shell.evaluate((key) => window.damoclesShell!.openEditor({ projectKey: key, relativePath: 'wide.ts' }), projectKey);
+  await expect(codeEditor(shell)).toHaveAttribute('data-monaco-ready', 'true');
+  const lineHeight = (): Promise<number> => codeEditor(shell).locator('.view-line').first().evaluate((line) => line.getBoundingClientRect().height);
+  const before = await lineHeight();
+
+  const settings = await openSettingsModal(app, 'editor');
+  const size = settingsRow(settings, 'damocles.desktop.editor.fontSize').getByRole('textbox');
+  await size.fill('20');
+  await size.press('Enter');
+  await chooseSegment(settingsRow(settings, 'damocles.desktop.editor.wordWrap'), 'On');
+  await expect.poll(lineHeight).toBeGreaterThan(before);
+  await expect.poll(() => codeEditor(shell).locator('.view-line').count()).toBeGreaterThan(1);
 });

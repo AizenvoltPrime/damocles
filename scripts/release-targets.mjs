@@ -33,7 +33,8 @@ export const RELEASE_TARGETS = {
 export const WSL_TARGETS = Object.keys(RELEASE_TARGETS).filter((t) => RELEASE_TARGETS[t].libc);
 
 /**
- * The desktop installer legs (the workflow's `package-desktop` matrix), keyed by the matrix `target`.
+ * The desktop installer legs (the workflow's `package-desktop` matrix), keyed by the matrix `target`. The
+ * `e2e-desktop` job runs the dev end-to-end suite on the same targets, runners and platforms.
  * `os` is Node's `process.platform`, `builder` the electron-builder platform flag, `channel` the
  * Windows update channel passed as `-c.publish.channel` (the other platforms use electron-updater's
  * default feed names). `artifacts` are the files electron-builder writes to `dist-desktop/`, with

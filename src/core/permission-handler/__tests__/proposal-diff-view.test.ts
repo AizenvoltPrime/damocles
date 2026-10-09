@@ -101,7 +101,8 @@ describe('proposal diff content and title', () => {
     const platform = createFakePlatform();
     vi.spyOn(hostPlatform().localization, 't').mockImplementation((message: string, ...args) => `[el] ${message.replace('{0}', String(args[0]))}`);
     await new DiffManager(platform.editor, 'host-1').showDiffView('t1', '/tmp/a.ts', 'a', 'b');
-    expect(platform.editor.diffs[0]?.request.title).toBe('[el] a.ts (Current ↔ Proposed)');
+    expect(platform.editor.diffs[0]?.request.title('a.ts')).toBe('[el] a.ts (Current ↔ Proposed)');
+    expect(platform.editor.diffs[0]?.request.filePath).toBe('/tmp/a.ts');
     vi.restoreAllMocks();
   });
 });

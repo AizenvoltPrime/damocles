@@ -64,7 +64,7 @@ describe('SETTINGS_VIEW lists', () => {
       'ready', 'log', 'sendMessage', 'queueMessage', 'resumeSession', 'clearSession', 'interrupt', 'cancelSession', 'rewindToMessage',
       'approveEdit', 'answerQuestion', 'answerForm', 'approvePlan', 'approveSkill', 'answerElicitation',
       'openFile', 'openRewindDiff', 'openSessionLog', 'openAgentLog', 'bindPlanToSession', 'requestPlanFileCandidates', 'compassNavigateToNode', 'openBrowser',
-      'settingsFileLoad', 'settingsFileSave', 'revealSettingsFile', 'setLanguagePreference', 'setProjectTrusted', 'deleteSession',
+      'mentionDropped', 'setLanguagePreference', 'setProjectTrusted', 'deleteSession',
       'stopSubagent', 'cancelTeam',
     ]) expect(requests).not.toContain(forbidden);
     expect(new Set(copied).size).toBe(copied.length);

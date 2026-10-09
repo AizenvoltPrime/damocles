@@ -22,7 +22,8 @@ import type { PanelHost, PanelOptions, WindowService } from '../platform/window-
 import type { OpenFolder, WorkspaceFolders } from '../platform/workspace-folders';
 import { installPlatform } from '../core/platform-host';
 import { mergeSettingValues } from '../core/config/settings-file';
-import { VSCODE_HOST_CAPABILITIES, type HostCapabilities } from '../shared/types/messages';
+import { VSCODE_HOST_CAPABILITIES, type HostCapabilities, type SettingsFileScope } from '../shared/types/messages';
+import { createVsCodeFileConfinement } from '../vscode/platform/file-confinement';
 
 type SettingsLayer = Readonly<Record<string, unknown>>;
 
@@ -185,6 +186,7 @@ export interface FakeEditorService extends EditorService {
   readonly diffs: readonly FakeDiffView[];
   readonly markdownPreviews: readonly FakeMarkdownPreview[];
   readonly settingsQueries: readonly (string | undefined)[];
+  readonly settingsFiles: ReadonlyArray<{ readonly scope: SettingsFileScope; readonly key?: string }>;
   readonly extensionSearches: readonly string[];
   /** Host extensions start inactive. */
   setHostExtensionActive(id: string, active: boolean): void;
@@ -233,6 +235,8 @@ export interface FakeWindowService extends WindowService {
   readonly panels: FakePanelHost[];
   /** The section of every openAppSettings call, oldest first. */
   readonly appSettingsOpened: (string | undefined)[];
+  /** How many times toggleTerminal ran. */
+  readonly terminalToggles: () => number;
 }
 
 export interface FakePlatform extends Platform {
@@ -659,6 +663,7 @@ function createEditor(): FakeEditorService {
   const diffs: FakeDiffView[] = [];
   const markdownPreviews: FakeMarkdownPreview[] = [];
   const settingsQueries: (string | undefined)[] = [];
+  const settingsFiles: Array<{ scope: SettingsFileScope; key?: string }> = [];
   const extensionSearches: string[] = [];
   const activeExtensions = new Set<string>();
   const untitled: FakeUntitledDocument[] = [];
@@ -670,6 +675,7 @@ function createEditor(): FakeEditorService {
     diffs,
     markdownPreviews,
     settingsQueries,
+    settingsFiles,
     extensionSearches,
     openFile: (p, opts) => {
       openedFiles.push({ path: p, options: opts });
@@ -698,6 +704,10 @@ function createEditor(): FakeEditorService {
     },
     openHostSettings: (query) => {
       settingsQueries.push(query);
+      return Promise.resolve();
+    },
+    openSettingsFile: (scope, opts) => {
+      settingsFiles.push({ scope, ...(opts?.key !== undefined ? { key: opts.key } : {}) });
       return Promise.resolve();
     },
     isHostExtensionActive: (id) => activeExtensions.has(id),
@@ -750,7 +760,7 @@ function createLogSinks(): FakeLogSinkFactory {
   };
 }
 
-function createFakePanelHost(options: PanelOptions, ownColumn: boolean): FakePanelHost {
+function createFakePanelHost(options: PanelOptions, ownColumn: boolean, retainsContextWhenHidden: boolean): FakePanelHost {
   const messages = listenerSet<[unknown]>();
   const disposes = listenerSet<[]>();
   const viewStates = listenerSet<[]>();
@@ -769,6 +779,7 @@ function createFakePanelHost(options: PanelOptions, ownColumn: boolean): FakePan
     ownColumn,
     posted,
     reveals,
+    retainsContextWhenHidden,
     cspSource: '',
     themeCssSource: () => '',
     get title() {
@@ -842,16 +853,22 @@ function createWindow(chatBrowserPane: boolean): FakeWindowService {
   const panels: FakePanelHost[] = [];
   const kindColumns = new Map<PanelOptions['kind'], number>();
   const appSettingsOpened: (string | undefined)[] = [];
+  let terminalToggles = 0;
   const add = (panel: FakePanelHost): FakePanelHost => {
     panels.push(panel);
     return panel;
   };
+  // As the real hosts: only VS Code's browser panel discards its page when hidden.
+  const retains = (kind: PanelOptions['kind']): boolean => chatBrowserPane || kind !== 'browser';
   return {
     panels,
     appSettingsOpened,
     chatBrowserPane,
     openAppSettings: (section) => { appSettingsOpened.push(section); },
-    createPanel: (opts) => add(createFakePanelHost(opts, false)),
+    terminalToggles: () => terminalToggles,
+    toggleTerminal: () => { terminalToggles++; },
+    terminalToggle: () => ({ shown: terminalToggles % 2 === 1, shortcut: 'Ctrl+`' }),
+    createPanel: (opts) => add(createFakePanelHost(opts, false, retains(opts.kind))),
     // Each kind keeps one column, allocated past every column a live panel occupies.
     createPanelInOwnColumn: (opts) => {
       let column = kindColumns.get(opts.kind);
@@ -860,7 +877,7 @@ function createWindow(chatBrowserPane: boolean): FakeWindowService {
         column = Math.max(0, ...used, ...kindColumns.values()) + 1;
         kindColumns.set(opts.kind, column);
       }
-      return Promise.resolve(add(createFakePanelHost({ ...opts, column }, true)));
+      return Promise.resolve(add(createFakePanelHost({ ...opts, column }, true, retains(opts.kind))));
     },
   };
 }
@@ -894,6 +911,7 @@ export function createFakePlatform(init: FakePlatformInit = {}): FakePlatform {
     trust: createTrustService(init.trusted ?? true, workspaceFolders),
     workspaceFolders,
     fileWatchers: createFileWatcherFactory(workspaceFolders),
+    confinement: createVsCodeFileConfinement(),
     notifications: createNotificationService(),
     paths: createAppPaths(init.appRoot ?? path.resolve(__dirname, '..', '..')),
     appInfo: { version: init.version ?? '0.0.0-test', host: init.host ?? 'vscode' },

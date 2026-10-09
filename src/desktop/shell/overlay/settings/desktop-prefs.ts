@@ -1,12 +1,15 @@
 import { inject, onScopeDispose, provide, shallowRef, type InjectionKey, type ShallowRef } from 'vue';
 import { useSettingWritesStore } from '@/components/settings/settings-writes';
 import type { DamoclesOverlayApi, OverlayPrefs } from '../../../preload/overlay-channels';
+import type { ShellPlatform } from '../../../preload/shell-channels';
 
 /** The desktop-only damocles.desktop.* settings, which main reads and writes at user scope (C6 prefs:get / prefs:set). */
 export interface DesktopPrefs {
   readonly values: ShallowRef<Readonly<Record<string, unknown>>>;
   /** undefined until main's first read answers. */
   readonly languageAtLaunch: ShallowRef<OverlayPrefs['languageAtLaunch'] | undefined>;
+  /** undefined until main's overlay state answers; platform-only rows (macOS Option Is Meta) wait for it. */
+  readonly platform: ShallowRef<ShellPlatform | undefined>;
   /** Shows the value at once and reverts it if main refuses the write, like every other row (M7). */
   set(key: string, value: unknown): void;
   readonly api: DamoclesOverlayApi;
@@ -17,6 +20,7 @@ const PREFS: InjectionKey<DesktopPrefs> = Symbol('desktopPrefs');
 export function provideDesktopPrefs(api: DamoclesOverlayApi): DesktopPrefs {
   const values = shallowRef<Readonly<Record<string, unknown>>>({});
   const languageAtLaunch = shallowRef<OverlayPrefs['languageAtLaunch'] | undefined>(undefined);
+  const platform = shallowRef<ShellPlatform | undefined>(undefined);
   const writes = useSettingWritesStore();
   // A read never overwrites a value set since it was asked for: the first read skips each key set before it answered,
   // and a change main pushes skips each key whose write main has not answered yet.
@@ -38,6 +42,7 @@ export function provideDesktopPrefs(api: DamoclesOverlayApi): DesktopPrefs {
   const prefs: DesktopPrefs = {
     values,
     languageAtLaunch,
+    platform,
     api,
     set(key, value) {
       if (!loaded) setBeforeLoad.add(key);
@@ -59,6 +64,9 @@ export function provideDesktopPrefs(api: DamoclesOverlayApi): DesktopPrefs {
       );
     },
   };
+  void api.getState().then((state) => {
+    platform.value = state.platform;
+  });
   void api.getPrefs().then((result) => {
     loaded = true;
     merge(result, (key) => setBeforeLoad.has(key));

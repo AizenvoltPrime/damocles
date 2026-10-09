@@ -27,7 +27,7 @@ export interface OpenAIStub {
   readonly baseUrl: string;
   readonly port: number;
   readonly requests: RecordedRequest[];
-  /** Replies consumed in order by streamed chat requests; when empty, the stub echoes the last user text. */
+  /** Replies consumed in order by the agent's turns; a sub-call, or a turn with none left, gets the echo of its last user text. */
   readonly replies: StubReply[];
   close(): Promise<void>;
 }
@@ -111,13 +111,15 @@ export async function startOpenAIStub(options: { tls?: { cert: string; key: stri
         res.end(JSON.stringify({ error: { message: `stub has no route ${req.method} ${req.url}` } }));
         return;
       }
-      const params = body as { stream?: boolean; stream_options?: { include_usage?: boolean }; messages?: ChatMessage[] };
-      const reply = replies.shift() ?? { chunks: ['Echo: ', lastUserText(params.messages ?? [])] };
+      const params = body as { stream?: boolean; stream_options?: { include_usage?: boolean }; messages?: ChatMessage[]; tools?: unknown[] };
       if (!params.stream) {
         res.writeHead(400, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'stub serves streamed completions only' } }));
         return;
       }
+      // A sub-call (runStructuredCompletion: the title, memory extraction) offers only its output tool and fires on its own timers.
+      const subCall = params.tools?.length === 1;
+      const reply = (subCall ? undefined : replies.shift()) ?? { chunks: ['Echo: ', lastUserText(params.messages ?? [])] };
       streamReply(res, reply, params.stream_options?.include_usage === true).catch((err: unknown) => {
         res.destroy(err instanceof Error ? err : new Error(String(err)));
       });

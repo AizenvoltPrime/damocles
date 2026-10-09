@@ -34,7 +34,8 @@ export function unpackedExecutable(file: string, paths: Pick<AppPaths, "resource
   return path.join(paths.unpackedRoot, relative);
 }
 
-function getRipgrepSearchOptions(settings: SettingsStore): string[] {
+/** The ignore-file switches the search.useIgnoreFiles settings ask for, as VS Code's search passes them. */
+export function getRipgrepSearchOptions(settings: SettingsStore): string[] {
   const extraArgs: string[] = [];
 
   if (settings.get("search.useIgnoreFiles") === false) {

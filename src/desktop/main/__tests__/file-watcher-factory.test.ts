@@ -57,8 +57,8 @@ beforeEach(() => {
   H.openWatches.clear();
 });
 
-afterEach(() => {
-  factory.dispose();
+afterEach(async () => {
+  await factory.close();
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -384,6 +384,6 @@ describe('DesktopFileWatcherFactory', { timeout: 20_000 }, () => {
 
     watcher.dispose();
     expect(listeners.size).toBe(0);
-    workspaceFactory.dispose();
+    await workspaceFactory.close();
   });
 });

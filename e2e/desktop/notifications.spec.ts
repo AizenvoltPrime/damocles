@@ -106,7 +106,7 @@ async function entryKinds(app: ElectronApplication): Promise<string[]> {
   return (await recordedPopupToasts(app)).flatMap((toast) => (toast.body.kind !== 'notice' ? [toast.body.kind] : []));
 }
 
-test('core notices pop up only in the desktop popup window, focused or not, and resolve or time out in main', async ({ home, launch }) => {
+test('core notices pop up only in the desktop popup window, focused or not, and resolve or time out in main', async ({ foreground: _foreground, home, launch }) => {
   const stub = await startOpenAIStub();
   try {
     seedStubModel(home, stub.baseUrl);
@@ -163,7 +163,7 @@ test('core notices pop up only in the desktop popup window, focused or not, and 
   }
 });
 
-test('a finished turn the user is not looking at raises done; the bell counts it, its center lists it and Do not disturb silences pop-ups', async ({ home, launch }) => {
+test('a finished turn the user is not looking at raises done; the bell counts it, its center lists it and Do not disturb silences pop-ups', async ({ foreground: _foreground, home, launch }) => {
   test.setTimeout(120_000);
   const stub = await startOpenAIStub();
   try {
@@ -248,7 +248,7 @@ test('a finished turn the user is not looking at raises done; the bell counts it
   }
 });
 
-test('an approval in a chat that is not selected raises a toast; Review selects that chat, focuses it and asks it to focus the permission card', async ({ home, launch }) => {
+test('an approval in a chat that is not selected raises a toast and leaves the selection and focus alone; Review selects that chat, focuses it and asks it to focus the permission card', async ({ foreground: _foreground, home, launch }) => {
   test.setTimeout(120_000);
   const stub = await startOpenAIStub();
   try {
@@ -273,9 +273,14 @@ test('an approval in a chat that is not selected raises a toast; Review selects 
     const shell = await shellPage(app);
     await shell.evaluate(() => window.damoclesShell!.newChat());
     await expect.poll(async () => (await shellState(app)).selected.chatId).not.toBe(alphaId);
+    const looking = (await shellState(app)).selected.chatId;
     release();
 
     await expect.poll(() => entryKinds(app), { timeout: 30_000 }).toContain('approval');
+    // The agent's approval diff waits in its own chat for the card's Open diff; only the user's Review moves there.
+    await expect.poll(async () => (await hostMessages(alpha, 'editorShowDiff')).length).toBe(1);
+    expect((await shellState(app)).selected.chatId).toBe(looking);
+    expect(await viewFocused(app, alpha)).toBe(false);
     const popup = await popupPage(app);
     const toast = popup.locator('[data-testid="overlay-toast"][data-kind="approval"]');
     const toastId = await holdToast(app, toast);
@@ -372,7 +377,7 @@ async function focusWindow(app: ElectronApplication): Promise<void> {
   }, SHELL_URL);
 }
 
-test('D52: an approval in an unfocused window pops up on the desktop, counts on the taskbar and flashes; Review reviews it and an answer in the app takes it down', async ({ home, launch }) => {
+test('D52: an approval in an unfocused window pops up on the desktop, counts on the taskbar and flashes; Review reviews it and an answer in the app takes it down', async ({ foreground: _foreground, home, launch }) => {
   test.setTimeout(180_000);
   const stub = await startOpenAIStub();
   try {
@@ -470,7 +475,7 @@ test('D52: an approval in an unfocused window pops up on the desktop, counts on 
   }
 });
 
-test('the user\'s case: a chat finishing behind another selected chat while the window is away pops up outside, and focusing the window leaves that same popup up with no toast in the overlay', async ({ home, launch }) => {
+test('the user\'s case: a chat finishing behind another selected chat while the window is away pops up outside, and focusing the window leaves that same popup up with no toast in the overlay', async ({ foreground: _foreground, home, launch }) => {
   test.setTimeout(120_000);
   const stub = await startOpenAIStub();
   try {
@@ -515,7 +520,7 @@ test('the user\'s case: a chat finishing behind another selected chat while the 
   }
 });
 
-test('D52: the window gaining focus on the chat reads its entries; the sound setting mutes the popup; Do not disturb silences the popup and the flash but still counts', async ({ home, launch }) => {
+test('D52: the window gaining focus on the chat reads its entries; the sound setting mutes the popup; Do not disturb silences the popup and the flash but still counts', async ({ foreground: _foreground, home, launch }) => {
   test.setTimeout(120_000);
   const stub = await startOpenAIStub();
   try {
@@ -566,6 +571,8 @@ test('D52: the window gaining focus on the chat reads its entries; the sound set
     // Main sends no toast for the entry raised under Do not disturb; the entry still counts.
     const overlay = await openCenter(app);
     await overlay.getByTestId('notification-dnd').click();
+    // Main applies Do not disturb once its state file is written, then pushes the subtitle.
+    await expect(overlay.getByTestId('notification-dnd-subtitle')).toHaveText('No pop-ups. They still collect here');
     await overlay.keyboard.press('Escape');
     await setWindowFocused(app, false);
     await sendAndAwaitEcho(tab, 'more work while I look away');

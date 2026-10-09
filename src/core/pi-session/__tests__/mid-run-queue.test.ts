@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import type { Agent } from '@earendil-works/pi-agent-core';
 import type { AgentSession, ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import { fauxAssistantMessage } from '@earendil-works/pi-ai';
+import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { BUDGET_STOP_HOOK, installTurnDecider } from '../finish-turn';
 import { registerConfiguredHooks } from '../hooks';
@@ -16,6 +16,9 @@ import { bindPanel, blockingShell, callPowerShell, panelSession, realPiSessions,
 const PROMPT = 'Run Start-Sleep -Seconds 60; echo done in PowerShell.';
 const NOTE = 'skip it';
 const QUEUED = 'also check the logs';
+const LOOK = 'what is in this screenshot?';
+const PNG_DATA = 'iVBORw0KGgo=';
+const SCREENSHOT = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: PNG_DATA } };
 
 interface Internals {
   processingFlag: boolean;
@@ -28,6 +31,19 @@ interface Internals {
 }
 
 const internals = (panel: PiSession): Internals => panel as unknown as Internals;
+
+/** Lets the panel send a prompt without `start()`, a title sub-call or a budget. */
+function readyToSend(panel: PiSession): void {
+  const inner = internals(panel);
+  inner.startPromise = Promise.resolve();
+  inner.titleGenerationAttempted = true;
+  inner.budgetLimitForEnforcement = () => null;
+}
+
+/** The content of the user entry whose text is `text`. */
+const userContent = (session: AgentSession, text: string): unknown =>
+  session.sessionManager.getBranch().flatMap((e) => (e.type === 'message' && e.message.role === 'user' ? [e.message.content] : []))
+    .find((content) => Array.isArray(content) && content.some((p) => p.type === 'text' && p.text === text));
 
 const notices = (emitted: readonly ExtensionToWebviewMessage[]): string[] =>
   emitted.flatMap((m) => (m.type === 'notification' ? [m.message] : []));
@@ -376,6 +392,383 @@ describe('the mid-run queue against pi', () => {
     expect(userTexts(session)).toEqual([PROMPT]);
     expect(emitted.filter((m) => m.type === 'userMessage')).toEqual([]);
     expect(notices(emitted).some((text) => text.includes('cancel note was not sent'))).toBe(true);
+  });
+
+  it("re-queues a prompt pi queued with an image with that image when a queued message re-steers pi's queue", async () => {
+    const shell = blockingShell();
+    const panel = panelSession([]);
+    const { tool, store } = wire(shell, () => undefined, panel);
+    const { session } = await boot(tool, [callPowerShell, fauxAssistantMessage('Noted.'), fauxAssistantMessage('Looked.')]);
+    bindPanel(panel, session);
+    readyToSend(panel);
+
+    const run = session.prompt(PROMPT);
+    await shell.started;
+    expect(await panel.sendMessage([{ type: 'text', text: LOOK }, SCREENSHOT], undefined, 'c1', { content: LOOK })).toBe('sent');
+    expect(panel.queueInput(QUEUED, 'q1')).toBe('queued');
+    await vi.waitFor(() => expect([...session.getSteeringMessages()]).toEqual([QUEUED]));
+    await vi.waitFor(() => expect([...session.getFollowUpMessages()]).toEqual([LOOK]));
+    store.cancel('call-1');
+    shell.release();
+    await run;
+
+    expect(userTexts(session)).toEqual([PROMPT, QUEUED, LOOK]);
+    expect(userContent(session, LOOK)).toEqual([{ type: 'text', text: LOOK }, { type: 'image', data: PNG_DATA, mimeType: 'image/png' }]);
+  });
+
+  it('ESC returns a prompt pi queued into the running run to the input, so it reaches neither this run nor the next', async () => {
+    const shell = blockingShell();
+    const emitted: ExtensionToWebviewMessage[] = [];
+    const panel = panelSession(emitted);
+    const { tool } = wire(shell, () => undefined, panel);
+    const { session, contexts } = await boot(tool, [callPowerShell, fauxAssistantMessage('Again.')]);
+    bindPanel(panel, session);
+    readyToSend(panel);
+    const withdrawn = vi.fn();
+
+    const run = session.prompt(PROMPT).catch(() => undefined);
+    await shell.started;
+    expect(await panel.sendMessage([{ type: 'text', text: LOOK }, SCREENSHOT], undefined, 'c1', { content: LOOK }, withdrawn)).toBe('sent');
+    expect([...session.getFollowUpMessages()]).toEqual([LOOK]);
+    const stopped = panel.interrupt();
+    shell.release();
+    await stopped;
+    await run;
+    await session.prompt('Start over.');
+
+    expect(withdrawn).toHaveBeenCalledOnce();
+    expect(emitted).toContainEqual({ type: 'queueCancelled', messageId: 'c1', returnToInput: true });
+    expect(userTexts(session)).toEqual([PROMPT, 'Start over.']);
+    expect(contexts.flat()).not.toContain(`user: ${LOOK}`);
+  });
+
+  it('keeps a queued prompt the budget stop returned out of the stopped run when its re-queue lands after the stop', async () => {
+    const shell = blockingShell();
+    const emitted: ExtensionToWebviewMessage[] = [];
+    const panel = panelSession(emitted);
+    const hooks = new Map<string, () => void>();
+    // Another loaded pi extension, which holds every re-queue and re-steer while the stop lands.
+    const slowInputHook = (pi: ExtensionAPI): void => {
+      pi.on('input', async (event) => {
+        if (event.source === 'extension') await new Promise<void>((resolve) => hooks.set(event.text, resolve));
+        return undefined;
+      });
+    };
+    const { tool, store } = wire(shell, () => undefined, panel);
+    const { session, contexts } = await boot(tool, [callPowerShell, fauxAssistantMessage('Skipped.'), fauxAssistantMessage('Looked.')], slowInputHook);
+    bindPanel(panel, session);
+    readyToSend(panel);
+    installTurnDecider(session.agent as unknown as Agent, BUDGET_STOP_HOOK, () =>
+      internals(panel)._budgetStopRequested ? { action: 'end' } : undefined);
+    const withdrawn = vi.fn();
+
+    const run = session.prompt(PROMPT);
+    await shell.started;
+    expect(await panel.sendMessage([{ type: 'text', text: LOOK }, SCREENSHOT], undefined, 'c1', { content: LOOK }, withdrawn)).toBe('sent');
+    expect(panel.queueInput(QUEUED, 'q1')).toBe('queued');
+    await vi.waitFor(() => expect([...hooks.keys()].sort()).toEqual([LOOK, QUEUED].sort()));
+    internals(panel).processingFlag = true;
+    internals(panel).stopForBudget();
+    // The withdrawn re-steer stays held until the run has settled, so only the re-queue can keep its prompt out.
+    hooks.get(LOOK)!();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    store.cancel('call-1');
+    shell.release();
+    await run;
+    hooks.get(QUEUED)!();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(withdrawn).toHaveBeenCalledOnce();
+    expect(contexts).toHaveLength(1);
+    expect(userTexts(session)).toEqual([PROMPT]);
+  });
+
+  it('keeps a queued prompt ESC returned from opening a run of its own when its re-queue lands after the run ended', async () => {
+    const shell = blockingShell();
+    const panel = panelSession([]);
+    const hooks = new Map<string, () => void>();
+    // The last handlers pi runs before it decides whether a prompt opens a run.
+    const reachedStart: string[] = [];
+    const slowInputHook = (pi: ExtensionAPI): void => {
+      pi.on('input', async (event) => {
+        if (event.source === 'extension') await new Promise<void>((resolve) => hooks.set(event.text, resolve));
+        return undefined;
+      });
+      pi.on('before_agent_start', (event) => {
+        reachedStart.push(event.prompt);
+        return undefined;
+      });
+    };
+    const { tool } = wire(shell, () => undefined, panel);
+    const { session, contexts } = await boot(tool, [callPowerShell, fauxAssistantMessage('Looked.')], slowInputHook);
+    bindPanel(panel, session);
+    readyToSend(panel);
+    const withdrawn = vi.fn();
+
+    const run = session.prompt(PROMPT).catch(() => undefined);
+    await shell.started;
+    expect(await panel.sendMessage([{ type: 'text', text: LOOK }, SCREENSHOT], undefined, 'c1', { content: LOOK }, withdrawn)).toBe('sent');
+    expect(panel.queueInput(QUEUED, 'q1')).toBe('queued');
+    await vi.waitFor(() => expect([...hooks.keys()].sort()).toEqual([LOOK, QUEUED].sort()));
+    const stopped = panel.interrupt();
+    shell.release();
+    await stopped;
+    await run;
+    for (const release of hooks.values()) release();
+    await vi.waitFor(() => expect(reachedStart).toEqual(expect.arrayContaining([LOOK, QUEUED])));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await session.waitForIdle();
+
+    expect(withdrawn).toHaveBeenCalledOnce();
+    expect(contexts).toHaveLength(1);
+    expect(userTexts(session)).toEqual([PROMPT]);
+  });
+
+  it("drops all pi holds for a budget-stopped run when a withdrawn re-queue lands in it, another extension's follow-up included", async () => {
+    const shell = blockingShell();
+    const panel = panelSession([]);
+    const EXTRA = 'from another extension';
+    const hooks = new Map<string, () => void>();
+    const holdLook = (pi: ExtensionAPI): void => {
+      pi.on('input', async (event) => {
+        if (event.source === 'extension' && event.text === LOOK) await new Promise<void>((resolve) => hooks.set(LOOK, resolve));
+        return undefined;
+      });
+    };
+    const { tool, store } = wire(shell, () => undefined, panel);
+    const { session, contexts } = await boot(tool, [callPowerShell, fauxAssistantMessage('Skipped.'), fauxAssistantMessage('Extra.')], holdLook);
+    bindPanel(panel, session);
+    readyToSend(panel);
+    installTurnDecider(session.agent as unknown as Agent, BUDGET_STOP_HOOK, () =>
+      internals(panel)._budgetStopRequested ? { action: 'end' } : undefined);
+
+    const run = session.prompt(PROMPT);
+    await shell.started;
+    expect(await panel.sendMessage([{ type: 'text', text: LOOK }, SCREENSHOT], undefined, 'c1', { content: LOOK })).toBe('sent');
+    expect(panel.queueInput(QUEUED, 'q1')).toBe('queued');
+    await vi.waitFor(() => expect([...hooks.keys()]).toEqual([LOOK]));
+    internals(panel).processingFlag = true;
+    internals(panel).stopForBudget();
+    await session.sendUserMessage(EXTRA, { deliverAs: 'followUp' });
+    expect([...session.getFollowUpMessages()]).toEqual([EXTRA]);
+    hooks.get(LOOK)!();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // pi continues a run on any queued message whatever the decider answers, which would bill past the limit.
+    expect(session.pendingMessageCount).toBe(0);
+    store.cancel('call-1');
+    shell.release();
+    await run;
+    expect(contexts).toHaveLength(1);
+    expect(userTexts(session)).toEqual([PROMPT]);
+  });
+
+  describe('a message a Stop withdrew that pi queues into a newer run once the Stop has wound down', () => {
+    const NEXT = 'Next task.';
+    const OTHER = 'and this one';
+    const callAgain = fauxAssistantMessage(
+      fauxToolCall('PowerShell', { command: 'Start-Sleep -Seconds 60; echo again' }, { id: 'call-2' }),
+      { stopReason: 'toolUse' },
+    );
+
+    /** Holds the first extension-source input of each text in `held` until the test releases it. */
+    function holding(held: readonly string[]): { hooks: Map<string, () => void>; extend: (pi: ExtensionAPI) => void } {
+      const hooks = new Map<string, () => void>();
+      const extend = (pi: ExtensionAPI): void => {
+        pi.on('input', async (event) => {
+          if (event.source === 'extension' && held.includes(event.text) && !hooks.has(event.text)) {
+            await new Promise<void>((resolve) => hooks.set(event.text, resolve));
+          }
+          return undefined;
+        });
+      };
+      return { hooks, extend };
+    }
+
+    it("takes only that follow-up out of the newer run, which keeps its own cancel note, queued prompt and image", async () => {
+      const first = blockingShell();
+      const second = blockingShell();
+      let calls = 0;
+      const shell = {
+        ...first,
+        definition: { ...first.definition, execute: (...args: unknown[]) => ((calls++ === 0 ? first : second).definition.execute as (...a: unknown[]) => unknown)(...args) },
+      } as ReturnType<typeof blockingShell>;
+      const emitted: ExtensionToWebviewMessage[] = [];
+      const panel = panelSession(emitted);
+      const bound: { session?: AgentSession } = {};
+      const { hooks, extend } = holding([LOOK]);
+      const { tool, store } = wire(shell, () => bound.session, panel);
+      const replies = [callPowerShell, callAgain, fauxAssistantMessage('Done.'), fauxAssistantMessage('Answered.'), fauxAssistantMessage('Extra.')];
+      const { session, contexts } = await boot(tool, replies, extend);
+      bound.session = session;
+      bindPanel(panel, session);
+      readyToSend(panel);
+      const withdrawn = vi.fn();
+      const kept = vi.fn();
+
+      const run = session.prompt(PROMPT).catch(() => undefined);
+      await first.started;
+      expect(await panel.sendMessage([{ type: 'text', text: LOOK }, SCREENSHOT], undefined, 'c1', { content: LOOK }, withdrawn)).toBe('sent');
+      // The chip re-steers pi's queue, which re-queues the follow-up through the held input handler.
+      expect(panel.queueInput(QUEUED, 'q1')).toBe('queued');
+      await vi.waitFor(() => expect([...hooks.keys()]).toEqual([LOOK]));
+      const stopped = panel.interrupt();
+      first.release();
+      await stopped;
+      await run;
+      expect(withdrawn).toHaveBeenCalledOnce();
+
+      const next = session.prompt(NEXT);
+      await second.started;
+      expect(await panel.sendMessage([{ type: 'text', text: OTHER }, SCREENSHOT], undefined, 'c2', { content: OTHER }, kept)).toBe('sent');
+      expect(store.cancel('call-2', NOTE)).toBe(true);
+      await vi.waitFor(() => expect([...session.getSteeringMessages()]).toEqual([NOTE]));
+      hooks.get(LOOK)!();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await vi.waitFor(() => expect([...session.getFollowUpMessages()]).toEqual([OTHER]));
+      await vi.waitFor(() => expect([...session.getSteeringMessages()]).toEqual([NOTE]));
+      second.release();
+      await next;
+
+      expect(userTexts(session)).toEqual([PROMPT, NEXT, NOTE, OTHER]);
+      expect(contexts[2]?.slice(-2)).toEqual(['toolResult: call-2', `user: ${NOTE}`]);
+      expect(contexts.flat()).not.toContain(`user: ${LOOK}`);
+      expect(userContent(session, OTHER)).toEqual([{ type: 'text', text: OTHER }, { type: 'image', data: PNG_DATA, mimeType: 'image/png' }]);
+      expect(kept).not.toHaveBeenCalled();
+      expect(withdrawn).toHaveBeenCalledOnce();
+    });
+
+    it('takes a prompt sent before the Stop out of the newer run, which keeps its own prompt of the same text, and returns it once', async () => {
+      const first = blockingShell();
+      const second = blockingShell();
+      let calls = 0;
+      const shell = {
+        ...first,
+        definition: { ...first.definition, execute: (...args: unknown[]) => ((calls++ === 0 ? first : second).definition.execute as (...a: unknown[]) => unknown)(...args) },
+      } as ReturnType<typeof blockingShell>;
+      const emitted: ExtensionToWebviewMessage[] = [];
+      const panel = panelSession(emitted);
+      const hooks = new Map<string, () => void>();
+      // Another loaded pi extension, which holds the typed prompt while the Stop lands and winds down.
+      const holdTyped = (pi: ExtensionAPI): void => {
+        pi.on('input', async (event) => {
+          if (event.source === 'interactive' && event.text === LOOK && !hooks.has(LOOK)) await new Promise<void>((resolve) => hooks.set(LOOK, resolve));
+          return undefined;
+        });
+      };
+      const { tool, store } = wire(shell, () => undefined, panel);
+      const replies = [callPowerShell, callAgain, fauxAssistantMessage('Done.'), fauxAssistantMessage('Looked.')];
+      const { session, contexts } = await boot(tool, replies, holdTyped);
+      bindPanel(panel, session);
+      readyToSend(panel);
+      const withdrawn = vi.fn();
+      const kept = vi.fn();
+
+      const run = session.prompt(PROMPT).catch(() => undefined);
+      await first.started;
+      const sending = panel.sendMessage([{ type: 'text', text: LOOK }, SCREENSHOT], undefined, 'c1', { content: LOOK }, withdrawn);
+      await vi.waitFor(() => expect([...hooks.keys()]).toEqual([LOOK]));
+      const stopped = panel.interrupt();
+      first.release();
+      await stopped;
+      await run;
+
+      const next = session.prompt(NEXT);
+      await second.started;
+      expect(await panel.sendMessage([{ type: 'text', text: LOOK }, SCREENSHOT], undefined, 'c2', { content: LOOK }, kept)).toBe('sent');
+      hooks.get(LOOK)!();
+      expect(await sending).toBe('withdrawn');
+      await vi.waitFor(() => expect([...session.getFollowUpMessages()]).toEqual([LOOK]));
+      store.cancel('call-2');
+      second.release();
+      await next;
+
+      expect(userTexts(session)).toEqual([PROMPT, NEXT, LOOK]);
+      expect(contexts.at(-1)?.filter((line) => line === `user: ${LOOK}`)).toHaveLength(1);
+      expect(userContent(session, LOOK)).toEqual([{ type: 'text', text: LOOK }, { type: 'image', data: PNG_DATA, mimeType: 'image/png' }]);
+      expect(withdrawn).toHaveBeenCalledOnce();
+      expect(kept).not.toHaveBeenCalled();
+      expect(emitted.filter((m) => m.type === 'queueCancelled')).toEqual([{ type: 'queueCancelled', messageId: 'c1', returnToInput: true }]);
+    });
+
+    it('takes only that batch out of the newer run, which keeps its own queued prompt', async () => {
+      const shell = blockingShell();
+      const emitted: ExtensionToWebviewMessage[] = [];
+      const panel = panelSession(emitted);
+      const { hooks, extend } = holding([QUEUED]);
+      const { tool, store } = wire(shell, () => undefined, panel);
+      const replies = [callPowerShell, callAgain, fauxAssistantMessage('Done.'), fauxAssistantMessage('Answered.'), fauxAssistantMessage('Extra.')];
+      const { session, contexts } = await boot(tool, replies, extend);
+      bindPanel(panel, session);
+      readyToSend(panel);
+
+      const run = session.prompt(PROMPT).catch(() => undefined);
+      await shell.started;
+      expect(panel.queueInput(QUEUED, 'q1')).toBe('queued');
+      await vi.waitFor(() => expect([...hooks.keys()]).toEqual([QUEUED]));
+      const stopped = panel.interrupt();
+      shell.release();
+      await stopped;
+      await run;
+
+      const next = session.prompt(NEXT);
+      await vi.waitFor(() => expect(contexts).toHaveLength(2));
+      expect(await panel.sendMessage(OTHER, undefined, 'c2', { content: OTHER })).toBe('sent');
+      hooks.get(QUEUED)!();
+      await vi.waitFor(() => expect((panel as unknown as { resteerRunning: boolean }).resteerRunning).toBe(false));
+      await vi.waitFor(() => expect([...session.getFollowUpMessages()]).toEqual([OTHER]));
+      expect([...session.getSteeringMessages()]).toEqual([]);
+      store.cancel('call-2');
+      await next;
+
+      expect(userTexts(session)).toEqual([PROMPT, NEXT, OTHER]);
+      expect(contexts.flat()).not.toContain(`user: ${QUEUED}`);
+      expect(emitted).toContainEqual({ type: 'queueCancelled', messageId: 'q1', returnToInput: true });
+    });
+  });
+
+  it.each([
+    ['opens no run of its own', false],
+    ['never reaches the running run', true],
+  ])("a folder switch returns a typed prompt pi's input handlers hold to the input once, with its text, image and chips, and it %s", async (_what, running) => {
+    const shell = blockingShell();
+    const emitted: ExtensionToWebviewMessage[] = [];
+    const panel = panelSession(emitted);
+    const hooks = new Map<string, () => void>();
+    // Another loaded pi extension, which holds the typed prompt while the session is disposed.
+    const holdTyped = (pi: ExtensionAPI): void => {
+      pi.on('input', async (event) => {
+        if (event.source === 'interactive' && event.text === LOOK) await new Promise<void>((resolve) => hooks.set(LOOK, resolve));
+        return undefined;
+      });
+    };
+    const { tool } = wire(shell, () => undefined, panel);
+    const { session, contexts } = await boot(tool, [callPowerShell, fauxAssistantMessage('Looked.')], holdTyped);
+    bindPanel(panel, session);
+    readyToSend(panel);
+    const withdrawn = vi.fn();
+    const typed = [{ type: 'text' as const, text: LOOK }, SCREENSHOT];
+    const returned = () => emitted.filter((m) => m.type === 'interruptRecovery' || m.type === 'queueCancelled');
+
+    const run = running ? session.prompt(PROMPT).catch(() => undefined) : undefined;
+    if (running) await shell.started;
+    const sending = panel.sendMessage(typed, undefined, 'c1', { content: LOOK, contentBlocks: typed }, withdrawn);
+    await vi.waitFor(() => expect([...hooks.keys()]).toEqual([LOOK]));
+    const disposed = panel.dispose();
+
+    expect(returned()).toEqual([{ type: 'interruptRecovery', correlationId: 'c1', promptContent: LOOK, contentBlocks: typed }]);
+    expect(withdrawn).toHaveBeenCalledOnce();
+    hooks.get(LOOK)!();
+    shell.release();
+    expect(await sending).toBe('withdrawn');
+    await disposed;
+    await run;
+
+    expect(withdrawn).toHaveBeenCalledOnce();
+    expect(returned()).toHaveLength(1);
+    expect(session.pendingMessageCount).toBe(0);
+    expect(contexts.flat()).not.toContain(`user: ${LOOK}`);
+    expect(userTexts(session)).toEqual(running ? [PROMPT] : []);
   });
 
   it('names each prompt by its own user entry, not the one before it', async () => {

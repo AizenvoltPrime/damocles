@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createSessionHandlers } from '../session-handlers';
 import { createFakePlatform } from '../../../../../__mocks__/fake-platform';
+import { TerminalAttachmentManager } from '../../../terminal-attachment-manager';
 vi.mock('../../../../pi-session/session-store', () => ({ renamePiSession: vi.fn(), deletePiSession: vi.fn(), tagPiSession: vi.fn() }));
 vi.mock('../../../../pi-session/pi-runtime', () => ({ PiRuntime: { liveSessionMutator: () => undefined } }));
 vi.mock('../../../../logger', () => ({ log: vi.fn() }));
@@ -49,7 +50,7 @@ describe('ready handler — releases dialogs the restarted webview can no longer
       webviewPrompts: { repost: () => undefined },
     } as unknown as Parameters<typeof createSessionHandlers>[0];
 
-    const ctx = { session, host: {}, panelId: 'p1', permissionHandler: {}, folder: { key: '/ws', fsPath: '/ws' } } as never;
+    const ctx = { session, host: {}, panelId: 'p1', permissionHandler: {}, terminalAttachments: new TerminalAttachmentManager(() => {}), folder: { key: '/ws', fsPath: '/ws' } } as never;
     return { calls, deps, ctx, session };
   }
 
@@ -83,6 +84,28 @@ describe('ready handler — releases dialogs the restarted webview can no longer
     expect(reposted).toEqual(['p1']);
     expect(sent[0]).toStrictEqual({ type: 'hostCapabilities', capabilities: platform.capabilities });
     expect(platform.capabilities).toMatchObject({ voice: false, settingsSources: true, hostSettingsEditor: true });
+    expect(sent.some((message) => message.type === 'terminalShown')).toBe(false);
+  });
+
+  it('tells a host with a window layout\'s chat whether the terminal pane shows, right after the capabilities', async () => {
+    const { deps, ctx } = harness();
+    const sent: Array<{ type: string }> = [];
+    const platform = createFakePlatform({ capabilities: { windowLayout: true } });
+    platform.window.toggleTerminal();
+    const recording = { ...deps, platform, postMessage: (_host: unknown, m: { type: string }) => sent.push(m) } as unknown as Parameters<typeof createSessionHandlers>[0];
+    await createSessionHandlers(recording).ready!({ type: 'ready' } as never, ctx);
+    expect(sent[1]).toStrictEqual({ type: 'terminalShown', shown: true, shortcut: 'Ctrl+`' });
+  });
+
+  it('gives a restarted webview the composer\'s pending terminal attachments, and posts none when there are none', async () => {
+    const { deps, ctx } = harness();
+    const sent: Array<{ type: string; attachments?: unknown[] }> = [];
+    const recording = { ...deps, postMessage: (_host: unknown, m: { type: string }) => sent.push(m) } as unknown as Parameters<typeof createSessionHandlers>[0];
+    await createSessionHandlers(recording).ready!({ type: 'ready' } as never, ctx);
+    expect(sent.some((message) => message.type === 'terminalAttachmentsUpdate')).toBe(false);
+    (ctx as { terminalAttachments: TerminalAttachmentManager }).terminalAttachments.add({ source: 'selection', commandLine: null, exitCode: null, terminalTitle: 'bash', text: 'ok', omittedLines: 0 });
+    await createSessionHandlers(recording).ready!({ type: 'ready' } as never, ctx);
+    expect(sent.filter((message) => message.type === 'terminalAttachmentsUpdate').map((message) => message.attachments?.length)).toEqual([1]);
   });
 });
 
@@ -153,7 +176,7 @@ describe('ready handler: restores the panel into the right folder', () => {
       getLanguagePreference: () => 'en',
       webviewPrompts: { repost: () => undefined },
     } as unknown as Parameters<typeof createSessionHandlers>[0];
-    const ctx = { session, host, panelId: 'p1', permissionHandler: {}, folder: A } as never;
+    const ctx = { session, host, panelId: 'p1', permissionHandler: {}, terminalAttachments: new TerminalAttachmentManager(() => {}), folder: A } as never;
     const compassPosts = () => posted.filter((m) => m.type === 'compassStatusUpdate');
     return { deps, ctx, session, instance, switchPanelFolder, loadSessionHistory, postWorkspaceFolderState, order, compassPosts };
   }
@@ -281,7 +304,7 @@ describe('ready handler: paints the conversation before the session-wide lists',
       getLanguagePreference: () => 'en',
       webviewPrompts: { repost: () => undefined },
     } as unknown as Parameters<typeof createSessionHandlers>[0];
-    const ctx = { session, host, panelId: 'p1', permissionHandler: {}, folder } as never;
+    const ctx = { session, host, panelId: 'p1', permissionHandler: {}, terminalAttachments: new TerminalAttachmentManager(() => {}), folder } as never;
     return { deps, ctx, order, panel };
   }
 
@@ -368,7 +391,7 @@ describe('ready handler: a conversation pi has not written yet', () => {
       getLanguagePreference: () => 'en',
       webviewPrompts: { repost: () => undefined },
     } as unknown as Parameters<typeof createSessionHandlers>[0];
-    const ctx = { session: panelSession, host, panelId: 'p1', permissionHandler: {}, folder } as never;
+    const ctx = { session: panelSession, host, panelId: 'p1', permissionHandler: {}, terminalAttachments: new TerminalAttachmentManager(() => {}), folder } as never;
     const started = () => posted.filter((m) => m.type === 'sessionStarted');
     return { deps, ctx, posted, started, loadSessionHistory, panelSession };
   }

@@ -2,6 +2,7 @@ import { ref, shallowRef } from 'vue';
 import { defineStore } from 'pinia';
 import type { ChatMessage, RewindHistoryItem, IdeContextDisplayInfo, RestorePoint, SkippedFile, SkippedFilesTarget } from '@shared/types/session';
 import type { MemoryKind } from '@shared/types/memory';
+import type { TerminalAttachmentInfo } from '@shared/types/terminal-attachment';
 import type { SettingsTarget } from '@shared/settings-sections';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 
@@ -52,10 +53,15 @@ export const useUIStore = defineStore('ui', () => {
   const ideContextDefaultEnabled = ref(true);
   // True once the user toggled the chip in this conversation — then the default no longer applies.
   const ideContextUserOverride = ref(false);
+  // The composer's pending terminal attachments as core holds them; core owns the list, a conversation reset keeps it.
+  const terminalAttachments = shallowRef<readonly TerminalAttachmentInfo[]>([]);
   const isCompacting = ref(false);
   const activeHooks = ref<Map<string, { hookName: string; hookEvent: string }>>(new Map());
   const lastCheckpointTime = ref<number | null>(null);
   const authFailureMessage = ref<string | null>(null);
+  // The desktop window's terminal pane, for the chat header's Terminal toggle (terminalShown); its shortcut's display label.
+  const terminalShown = ref(false);
+  const toggleTerminalShortcut = ref('');
 
   function setProcessing(value: boolean) {
     isProcessing.value = value;
@@ -222,6 +228,10 @@ export const useUIStore = defineStore('ui', () => {
     ideContext.value = context;
   }
 
+  function setTerminalAttachments(attachments: readonly TerminalAttachmentInfo[]) {
+    terminalAttachments.value = attachments;
+  }
+
   function toggleIdeContext() {
     ideContextEnabled.value = !ideContextEnabled.value;
     ideContextUserOverride.value = true;
@@ -294,6 +304,8 @@ export const useUIStore = defineStore('ui', () => {
 
   return {
     isProcessing,
+    terminalShown,
+    toggleTerminalShortcut,
     showSettingsModal,
     settingsTarget,
     showMcpPanel,
@@ -344,6 +356,8 @@ export const useUIStore = defineStore('ui', () => {
     setIdeContext,
     toggleIdeContext,
     setIdeContextDefault,
+    terminalAttachments,
+    setTerminalAttachments,
     isCompacting,
     activeHooks,
     lastCheckpointTime,

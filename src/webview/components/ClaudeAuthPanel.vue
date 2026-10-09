@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, nextTick } from "vue";
 import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import { useSettingsStore } from "@/stores/useSettingsStore";
@@ -11,12 +11,15 @@ type Mode = "none" | "apikey" | "allowance" | "extra";
 
 const { t } = useI18n();
 const settingsStore = useSettingsStore();
-const { claudeAuthMode, claudeAuthBusy, claudeAuthError } = storeToRefs(settingsStore);
+const { claudeAuthMode, claudeAuthBusy, claudeAuthError, claudeSignInWaiting } = storeToRefs(settingsStore);
 const { postMessage } = usePlatformBridge();
 
-// The radio reflects the active mode but lets the user pre-select 'apikey' to reveal the key field.
+// The radio reflects the active mode and lets the user pick the one to set up; only a button starts a sign-in.
 const selected = ref<Exclude<Mode, "none">>("allowance");
 const apiKeyInput = ref("");
+const pasting = ref(false);
+const pasteInput = ref("");
+const pasteField = ref<HTMLInputElement | null>(null);
 
 watch(
   claudeAuthMode,
@@ -26,20 +29,43 @@ watch(
   { immediate: true },
 );
 
+watch(claudeSignInWaiting, (waiting) => {
+  if (waiting) return;
+  pasting.value = false;
+  pasteInput.value = "";
+});
+
 const signedInSubscription = computed(() => claudeAuthMode.value === "allowance" || claudeAuthMode.value === "extra");
 const busy = computed(() => claudeAuthBusy.value);
-
-function chooseSubscription(useAllowance: boolean) {
-  if (busy.value) return;
-  // Already signed in with an OAuth token → just flip the billing bucket (no re-login).
-  if (signedInSubscription.value) postMessage({ type: "claudeSetBilling", useAllowance });
-  else postMessage({ type: "claudeSignIn", useAllowance });
-}
+const needsSignIn = computed(() => selected.value !== "apikey" && !signedInSubscription.value);
 
 function onSelect(mode: Exclude<Mode, "none">) {
   selected.value = mode;
-  if (mode === "allowance") chooseSubscription(true);
-  else if (mode === "extra") chooseSubscription(false);
+  // The stored OAuth token serves both buckets, so switching between them needs no sign-in.
+  if (busy.value || !signedInSubscription.value || mode === "apikey" || mode === claudeAuthMode.value) return;
+  postMessage({ type: "claudeSetBilling", useAllowance: mode === "allowance" });
+}
+
+function signIn() {
+  if (busy.value || !needsSignIn.value) return;
+  postMessage({ type: "claudeSignIn", useAllowance: selected.value === "allowance" });
+}
+
+async function showPaste() {
+  pasting.value = true;
+  await nextTick();
+  pasteField.value?.focus();
+}
+
+function submitPaste() {
+  const input = pasteInput.value.trim();
+  if (!input) return;
+  postMessage({ type: "claudeSignInPaste", input });
+  pasteInput.value = "";
+}
+
+function cancelSignIn() {
+  postMessage({ type: "claudeSignInCancel" });
 }
 
 function saveApiKey() {
@@ -128,7 +154,74 @@ function signOut() {
       </SettingButton>
     </div>
 
-    <div class="sm-field-row mt-1">
+    <div
+      v-if="claudeSignInWaiting"
+      class="sm-field mt-1"
+      data-testid="claude-sign-in-waiting"
+    >
+      <p
+        class="sm-hint"
+        role="status"
+      >
+        {{ t('claudeAuth.waiting') }}
+      </p>
+      <div class="sm-field-row">
+        <template v-if="pasting">
+          <div class="sm-input sm-input-wide">
+            <input
+              ref="pasteField"
+              v-model="pasteInput"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              :placeholder="t('claudeAuth.pastePlaceholder')"
+              :aria-label="t('claudeAuth.pasteLabel')"
+              @keydown.enter.prevent="submitPaste"
+            >
+          </div>
+          <SettingButton
+            variant="primary"
+            :disabled="!pasteInput.trim()"
+            @click="submitPaste"
+          >
+            {{ t('claudeAuth.pasteSubmit') }}
+          </SettingButton>
+        </template>
+        <SettingButton
+          v-else
+          @click="showPaste"
+        >
+          {{ t('claudeAuth.pasteInstead') }}
+        </SettingButton>
+        <SettingButton @click="cancelSignIn">
+          {{ t('common.cancel') }}
+        </SettingButton>
+      </div>
+    </div>
+
+    <div
+      v-else-if="needsSignIn"
+      class="sm-field mt-1"
+    >
+      <div class="sm-field-row">
+        <SettingButton
+          variant="primary"
+          :disabled="busy"
+          data-testid="claude-sign-in"
+          @click="signIn"
+        >
+          {{ t('claudeAuth.signIn') }}
+        </SettingButton>
+      </div>
+      <p class="sm-hint">
+        {{ t('claudeAuth.signInHint') }}
+      </p>
+    </div>
+
+    <div
+      v-if="!claudeSignInWaiting"
+      class="sm-field-row mt-1"
+    >
       <SettingButton
         v-if="claudeAuthMode !== 'none'"
         variant="danger"

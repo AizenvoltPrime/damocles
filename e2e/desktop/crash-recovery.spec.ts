@@ -1,3 +1,4 @@
+import { logBeforeQuit } from './support/app';
 import { activeChat, expect, panelIdOf, test } from './support/fixtures';
 import { seedStubModel } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
@@ -40,7 +41,8 @@ test('a killed chat renderer is recreated with its state', async ({ launch, home
         return w ? (w.executeJavaScript('document.body.innerText') as Promise<string>) : Promise.resolve('');
       }, panelId);
     await expect.poll(renderedText).toContain('Echo: remember this conversation');
-    expect(desktop.output()).not.toMatch(/\[views\] rejected/);
+    await desktop.close();
+    expect(logBeforeQuit(home)).not.toMatch(/\[views\] rejected/);
   } finally {
     await stub.close();
   }

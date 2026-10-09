@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PROJECTS_FILE, ProjectList } from '../projects';
+import { flushAcrossHeldRename } from '../../../__mocks__/held-rename';
 
 let userData: string;
 
@@ -61,5 +62,18 @@ describe('ProjectList', () => {
     expect(await Promise.all([list.add(a), list.add(a)])).toEqual([true, false]);
     expect(list.folders().map((f) => f.fsPath)).toEqual([a]);
     expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('flush waits for a write in flight and for one queued while it waits', async () => {
+    const a = path.join(userData, 'a');
+    const b = path.join(userData, 'b');
+    const projects = new ProjectList(userData, () => undefined);
+    const onDisk = await flushAcrossHeldRename(path.join(userData, PROJECTS_FILE), {
+      first: () => projects.add(a),
+      flush: () => projects.flush(),
+      second: () => projects.add(b),
+      onDisk: () => new ProjectList(userData, () => undefined).folders().map((folder) => folder.fsPath),
+    });
+    expect(onDisk).toEqual([a, b]);
   });
 });

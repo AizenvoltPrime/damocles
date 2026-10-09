@@ -408,6 +408,18 @@ describe('desktop popup window (D52)', () => {
     expect(H.windows).toHaveLength(2);
   });
 
+  it('answers the state to the page of a window quitting closed while it loads, and drops that page\'s late reports', async () => {
+    host.sink();
+    const contents = win().webContents;
+    const closing = own();
+    win().emit('closed');
+    await expect(Promise.resolve(contents.ipc.handlers.get(OVERLAY_CHANNELS.getState)!(closing))).resolves.toEqual({ locale: 'en', platform: 'win32' });
+    contents.ipc.emit(OVERLAY_CHANNELS.toastHold, closing, 't1', true);
+    contents.ipc.emit(OVERLAY_CHANNELS.toastArea, closing, AREA);
+    expect(holds).toEqual([]);
+    expect(lines.filter((line) => line.startsWith('[notifier] rejected'))).toEqual([]);
+  });
+
   it('closes its window on dispose, and opens a new one for the next popup', () => {
     host.sink();
     const first = win();

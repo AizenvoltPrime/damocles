@@ -9,10 +9,12 @@ export function desktopHostCapabilities(platform: NodeJS.Platform): HostCapabili
     diffReview: true,
     settingsSources: true,
     monaco: true,
-    ideContext: false,
+    ideContext: true,
     damoclesTheme: true,
     settingsInPanel: false,
     historyInPanel: false,
     folderPickerInPanel: false,
+    fileMentionDrop: true,
+    windowLayout: true,
   };
 }

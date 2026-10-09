@@ -37,7 +37,7 @@ function resets(): { today: number; later: number } {
   return { today: Math.min(Date.now() + 2 * 3_600_000, endOfToday), later };
 }
 
-test('D55 rate-limit pauses naming their window in the popups in Dark and Light, and a hovered center row in Light', async ({ launch }, testInfo) => {
+test('D55 rate-limit pauses naming their window in the popups in Dark and Light, and a hovered center row in Light', async ({ foreground: _foreground, launch }, testInfo) => {
   test.setTimeout(120_000);
   const { app } = await launch();
   const tab = await activeChat(app);

@@ -8,7 +8,7 @@ import { useSettingsStore } from '@/stores/useSettingsStore';
 const emit = defineEmits<{ pick: [prompt: string] }>();
 
 const { t } = useI18n();
-const { workspaceFolders, panelWorkspaceFolderKey } = storeToRefs(useSettingsStore());
+const { workspaceFolders, panelWorkspaceFolderKey, hostCapabilities } = storeToRefs(useSettingsStore());
 
 const logoUri = ref('');
 onMounted(() => {
@@ -39,7 +39,7 @@ const suggestions = computed(() => [
       {{ project ? t('emptyState.title', { project }) : t('emptyState.titleNoProject') }}
     </h2>
     <p class="max-w-105 animate-[d-up_.4s_var(--ease-out)_110ms_both] text-pretty text-(--d-muted)">
-      {{ t('emptyState.subtitle') }}
+      {{ hostCapabilities.fileMentionDrop ? t('emptyState.subtitleDrag') : t('emptyState.subtitle') }}
     </p>
     <div class="mt-1 flex flex-wrap justify-center gap-2">
       <button

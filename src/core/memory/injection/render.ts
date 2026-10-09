@@ -31,14 +31,17 @@ export const EMITTED_TAG_NAMES = [
   'dynamic',
 ] as const;
 
-// Fixed-string alternation anchored on `<`: linear time.
-const EMITTED_TAG_PATTERN = new RegExp(`<(/?)(${EMITTED_TAG_NAMES.join('|')})`, 'gi');
 const ZERO_WIDTH_JOINER = '\u200D';
 
-/** Break any opening or closing form of an emitted tag name inside stored text. */
-export function neutralizeTags(text: string): string {
-  return text.replace(EMITTED_TAG_PATTERN, `<${ZERO_WIDTH_JOINER}$1$2`);
+/** A function that breaks any opening or closing form of the given tag names (letters, digits and `_` only) inside text. */
+export function tagNeutralizer(names: readonly string[]): (text: string) => string {
+  // Fixed-string alternation anchored on `<`: linear time.
+  const pattern = new RegExp(`<(/?)(${names.join('|')})`, 'gi');
+  return (text) => text.replace(pattern, `<${ZERO_WIDTH_JOINER}$1$2`);
 }
+
+/** Break any opening or closing form of an emitted tag name inside stored text. */
+export const neutralizeTags: (text: string) => string = tagNeutralizer(EMITTED_TAG_NAMES);
 
 export function escapeAttribute(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/[\r\n]+/g, ' ');

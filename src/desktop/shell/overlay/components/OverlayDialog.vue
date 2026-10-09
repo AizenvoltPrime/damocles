@@ -88,7 +88,7 @@ const emit = defineEmits<{ choose: [index: number] }>();
 const { t } = useI18n();
 
 const opener = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : lastFocused;
-const { zIndex, root, titleId } = useOverlayDialog(() => emit('choose', props.cancelIndex), { modal: true });
+const { zIndex, root, titleId } = useOverlayDialog(() => emit('choose', props.cancelIndex), { modal: true, opener });
 const messageId = `${titleId}-message`;
 const severityId = `${titleId}-severity`;
 // After useOverlayDialog's own return, which cannot reach a control that was disabled when the dialog opened.
@@ -106,6 +106,7 @@ const FILL: Readonly<Record<MessageSeverity, string>> = {
 };
 </script>
 
+<!-- AlertDialog would own the open state, but main does: the panel plays its exit before the answer reaches main. -->
 <template>
   <div
     class="overlay-dialog fixed inset-0 flex items-center justify-center bg-(--d-scrim) p-5"
@@ -122,11 +123,11 @@ const FILL: Readonly<Record<MessageSeverity, string>> = {
       :data-severity="severity"
       :aria-labelledby="`${severityId} ${titleId}`"
       :aria-describedby="message || $slots.default ? messageId : undefined"
-      class="overlay-dialog-panel flex w-[min(440px,100%)] flex-col gap-3.5 rounded-[14px] border border-(--d-border2) bg-(--d-card) px-[18px] pt-[18px] pb-4 text-(--d-text) shadow-(--d-shadow) outline-none"
+      class="overlay-dialog-panel flex w-[min(27.5rem,100%)] flex-col gap-3.5 rounded-[0.875rem] border border-(--d-border2) bg-(--d-card) px-4.5 pt-4.5 pb-4 text-(--d-text) shadow-(--d-shadow) outline-none"
     >
       <div class="flex items-start gap-3">
         <span
-          class="flex size-[30px] shrink-0 items-center justify-center rounded-[9px]"
+          class="flex size-7.5 shrink-0 items-center justify-center rounded-9"
           :class="BADGE[severity].classes"
         >
           <component
@@ -142,7 +143,7 @@ const FILL: Readonly<Record<MessageSeverity, string>> = {
         <div class="flex min-w-0 flex-1 flex-col gap-1.5 pt-1">
           <h2
             :id="titleId"
-            class="text-[14.5px] leading-snug font-semibold break-words"
+            class="text-[0.90625rem] leading-snug font-semibold wrap-break-word"
           >
             {{ title }}
           </h2>
@@ -153,7 +154,7 @@ const FILL: Readonly<Record<MessageSeverity, string>> = {
           >
             <p
               v-if="message"
-              class="text-[12.5px] leading-relaxed text-pretty break-words whitespace-pre-wrap text-(--d-muted)"
+              class="text-12.5/relaxed text-pretty wrap-break-word whitespace-pre-wrap text-(--d-muted)"
             >
               {{ message }}
             </p>
@@ -168,7 +169,7 @@ const FILL: Readonly<Record<MessageSeverity, string>> = {
           type="button"
           :data-testid="button.testId"
           :data-overlay-initial-focus="index === initialFocus ? '' : undefined"
-          class="d-press flex h-8 items-center gap-1.5 rounded-[9px] px-3.5 text-[12.5px]"
+          class="d-press flex h-8 items-center gap-1.5 rounded-9 px-3.5 text-12.5"
           :class="button.variant === 'fill' ? [FILL[severity], 'font-semibold hover:brightness-110'] : 'hover:bg-(--d-hover)'"
           @click="emit('choose', index)"
         >
@@ -176,7 +177,7 @@ const FILL: Readonly<Record<MessageSeverity, string>> = {
             :is="button.icon"
             v-if="button.icon"
             aria-hidden="true"
-            class="size-[13px]"
+            class="size-3.25"
           />
           {{ button.label }}
         </button>

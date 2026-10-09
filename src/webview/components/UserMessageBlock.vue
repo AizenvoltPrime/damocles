@@ -6,6 +6,7 @@ import type { ChatMessage } from "@shared/types/session";
 import { isImageBlock, type ImageBlock } from "@shared/types/content";
 import MarkdownRenderer from "./MarkdownRenderer.vue";
 import UserMessageImageChip from "./UserMessageImageChip.vue";
+import TerminalAttachmentChip from "./TerminalAttachmentChip.vue";
 import { ArrowUp, Check, ChevronDown, ChevronRight, ChevronUp, Copy, Database, Pin, RotateCcw, X } from "lucide-vue-next";
 import { formatClock } from "@/utils/clock";
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard";
@@ -293,6 +294,17 @@ onUnmounted(() => {
           class="overflow-x-hidden overflow-y-auto overscroll-contain"
           :style="scrollAreaStyle"
         >
+          <div
+            v-if="message.terminalAttachments?.length"
+            class="mb-2 flex flex-wrap gap-1.5"
+            data-testid="user-message-terminal-attachments"
+          >
+            <TerminalAttachmentChip
+              v-for="attachment in message.terminalAttachments"
+              :key="attachment.id"
+              :attachment="attachment"
+            />
+          </div>
           <div
             v-if="imageBlocks.length > 0"
             class="mb-2 flex flex-wrap gap-1.5"

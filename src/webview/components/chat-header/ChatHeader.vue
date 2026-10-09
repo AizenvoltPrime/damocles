@@ -2,7 +2,8 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
-import { Brain, GitBranch, Globe, MessageCircleQuestion, Settings } from 'lucide-vue-next';
+import { Brain, GitBranch, Globe, MessageCircleQuestion, Settings, SquareTerminal } from 'lucide-vue-next';
+import { Toggle } from '@/components/ui/toggle';
 import WorkspaceFolderChip from '@/components/WorkspaceFolderChip.vue';
 import PromptNavigatorChip from '@/components/PromptNavigatorChip.vue';
 import ConsolidationIndicator from '@/components/ConsolidationIndicator.vue';
@@ -22,11 +23,11 @@ const { t } = useI18n();
 const settingsStore = useSettingsStore();
 const { workspaceFolders, panelWorkspaceFolderKey, mcpServers, toolsSnapshot, hostCapabilities } = storeToRefs(settingsStore);
 const { selectedSessionDisplayName, isAwaitingUserAction } = storeToRefs(useSessionStore());
-const { isProcessing } = storeToRefs(useUIStore());
+const { isProcessing, terminalShown, toggleTerminalShortcut } = storeToRefs(useUIStore());
 const btwStore = useBtwStore();
 
 // Chat Panel.dc.html folds the header by the panel's width: Memory consolidation below 45rem (720px at the default
-// font), the plan, memory, browser, MCP and tools controls below 35rem (560px), all into the More menu.
+// font), the plan, memory, browser, MCP and tools controls and the desktop terminal toggle below 35rem (560px), all into the More menu.
 const WIDE_REM = 45;
 const ROOMY_REM = 35;
 const rootRef = ref<HTMLElement | null>(null);
@@ -58,6 +59,7 @@ const mcpConnected = computed(() => mcpServers.value.filter((s) => s.status === 
 const toolsEnabled = computed(() => toolsSnapshot.value.tools.filter((tool) => tool.toggleable && tool.enabled).length);
 
 const run = (action: HeaderAction) => emit('action', action);
+const terminalTitle = computed(() => (toggleTerminalShortcut.value ? t('chatHeader.toggleTerminalShortcut', { shortcut: toggleTerminalShortcut.value }) : t('chatHeader.toggleTerminal')));
 </script>
 
 <template>
@@ -178,6 +180,20 @@ const run = (action: HeaderAction) => emit('action', action);
         />
       </template>
       <slot name="history" />
+      <!-- Pressed while the desktop window shows its terminal pane; the host toggles the pane and reports the new state. -->
+      <Toggle
+        v-if="hostCapabilities.windowLayout && roomy"
+        :model-value="terminalShown"
+        size="sm"
+        data-testid="chat-header-terminal"
+        class="d-press ms-1 h-7 min-w-7 gap-1.5 rounded-7 border border-(--d-border2) px-2 text-xs font-medium text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 data-[state=on]:border-(--d-accent) data-[state=on]:bg-(--d-accent-soft) data-[state=on]:text-(--d-accent-text) data-[state=on]:hover:bg-(--d-accent-soft) [&_svg]:size-3.5"
+        :title="terminalTitle"
+        :aria-label="t('chatHeader.terminal')"
+        @update:model-value="run('terminal')"
+      >
+        <SquareTerminal aria-hidden="true" />
+        <span v-if="wide">{{ t('chatHeader.terminal') }}</span>
+      </Toggle>
       <HeaderMoreMenu
         :wide="wide"
         :roomy="roomy"
@@ -185,6 +201,8 @@ const run = (action: HeaderAction) => emit('action', action);
         :tools-enabled="toolsEnabled"
         :panels-disabled="isProcessing"
         :has-aside="btwStore.hasAside"
+        :terminal="hostCapabilities.windowLayout"
+        :terminal-shortcut="toggleTerminalShortcut"
         @action="run"
       />
       <button

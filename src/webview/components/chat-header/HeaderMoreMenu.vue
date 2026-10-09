@@ -14,6 +14,7 @@ import {
   Plug,
   RotateCcw,
   Sparkles,
+  SquareTerminal,
   Wrench,
 } from 'lucide-vue-next';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
@@ -24,13 +25,16 @@ import { remPx } from '@/composables/useRemPx';
 const props = defineProps<{
   /** The header is 720px or wider, so it shows Memory consolidation itself. */
   wide: boolean;
-  /** The header is 560px or wider, so it shows the plan, memory, browser, MCP and tools controls itself. */
+  /** The header is 560px or wider, so it shows the plan, memory, browser, MCP and tools controls and the terminal toggle itself. */
   roomy: boolean;
   mcpConnected: number;
   toolsEnabled: number;
   /** MCP and Tools open only while no turn runs, as their header buttons do. */
   panelsDisabled: boolean;
   hasAside: boolean;
+  /** The host lays out a terminal pane, whose header toggle folds in below 560px. */
+  terminal: boolean;
+  terminalShortcut?: string | undefined;
 }>();
 
 const emit = defineEmits<{ action: [action: HeaderAction] }>();
@@ -55,6 +59,7 @@ const folded = computed<MoreItem[]>(() => [
         { action: 'browser' as const, icon: Globe, label: t('chatHeader.openBrowser') },
         { action: 'mcp' as const, icon: Plug, label: t('chatHeader.mcpCount', { n: props.mcpConnected }), disabled: props.panelsDisabled },
         { action: 'tools' as const, icon: Wrench, label: t('chatHeader.toolsCount', { n: props.toolsEnabled }), disabled: props.panelsDisabled },
+        ...(props.terminal ? [{ action: 'terminal' as const, icon: SquareTerminal, label: t('chatHeader.toggleTerminal'), ...(props.terminalShortcut ? { hint: props.terminalShortcut } : {}) }] : []),
       ]),
 ]);
 

@@ -2,7 +2,8 @@ import type { SessionEntry, SessionHeader, SessionManager } from '@earendil-work
 import type { StoredSession } from '@shared/types/session';
 import { DAMOCLES_USER_RENAMED_ENTRY, DAMOCLES_TAG_ENTRY } from './constants';
 import { extractOriginalInputs } from './original-input';
-import { stripIdeContext } from './ide-context';
+import { storedTypedText } from './prompt-context';
+import { extractTerminalAttachmentCounts } from './terminal-attachments';
 
 /** Fields computed from a single opened pi session, including the in-tree rename marker and tag. */
 export interface PiSessionFields {
@@ -54,18 +55,19 @@ function extractMessageText(content: unknown): string {
  * plan acknowledgement, etc.) — the same value `computePiSessionFields` records as `StoredSession.preview`.
  * The deterministic plan-file slug derives from this, so a path computed from a live `PiSession` matches
  * the path resolved from on-disk metadata. Resolution per entry: the `damocles-original-input` sidecar's
- * original typed text when a slash command was expanded, else the stored content with its merged IDE-context
- * prefix stripped (so a plain message sent with a file open isn't mistaken for a synthetic `<…>` prompt and
+ * original typed text when a slash command was expanded, else the stored content with its terminal attachment and
+ * IDE-context prefix stripped (so a plain message sent with a file open isn't mistaken for a synthetic `<…>` prompt and
  * skipped). The live `PiSession._firstUserMessage` captures the same original typed text, so the two agree.
  * Returns '' when none qualifies.
  */
 export function extractFirstUserMessage(branch: readonly SessionEntry[]): string {
   const originalInputs = extractOriginalInputs(branch);
+  const attachmentCounts = extractTerminalAttachmentCounts(branch);
   for (const entry of branch) {
     if (entry.type !== 'message') continue;
     const message = (entry as { message?: PiMessageLike }).message;
     if (message?.role !== 'user') continue;
-    const text = originalInputs.get(entry.id) ?? stripIdeContext(extractMessageText(message.content));
+    const text = originalInputs.get(entry.id) ?? storedTypedText(extractMessageText(message.content), attachmentCounts.get(entry.id) ?? 0);
     if (text && !text.trimStart().startsWith('<')) return text;
   }
   return '';
@@ -150,12 +152,13 @@ export function newestUniquePrompts(branch: readonly SessionEntry[]): string[] {
   // A user message whose typed slash command was expanded is recorded here as what the user typed
   // (`/example what is the day`), not the stored expansion (`Hello day is Tuesday`).
   const originalInputs = extractOriginalInputs(branch);
+  const attachmentCounts = extractTerminalAttachmentCounts(branch);
   const prompts: string[] = [];
   for (const entry of branch) {
     if (entry.type !== 'message') continue;
     const message = (entry as { message?: PiMessageLike }).message;
     if (message?.role !== 'user') continue;
-    const text = (originalInputs.get(entry.id) ?? stripIdeContext(extractMessageText(message.content))).trim();
+    const text = (originalInputs.get(entry.id) ?? storedTypedText(extractMessageText(message.content), attachmentCounts.get(entry.id) ?? 0)).trim();
     if (text && !text.startsWith('<')) prompts.push(text);
   }
   const seen = new Set<string>();

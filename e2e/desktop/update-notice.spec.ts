@@ -3,6 +3,9 @@ import { activeChat, expect, test } from './support/fixtures';
 import { chatInput, postFromWebview } from './support/ui';
 import { NOTIFIER_URL, noticeAction, RELEASE_PAGE_ACTION, RESTART_ACTION, SHELL_URL } from './update/update-notice.mjs';
 
+// String from src/core/chat-panel/message-router/handlers/workspace-handlers.ts.
+const SESSION_LOG_NOTICE = 'No active session to view';
+
 // drive-update.mjs answers the update notice only in the release workflow, against a packaged install. The updater is
 // off in a dev app, so a real notice opens the popup window, main sends its page the notice the updater's toast would
 // carry, and the driver's lookup runs on it.
@@ -15,6 +18,9 @@ test('the update driver finds the update notice actions on the pages the app ren
   await postFromWebview(chat, { type: 'openSessionLog' });
   await expect.poll(() => pageAt(NOTIFIER_URL)?.evaluate(() => window.damoclesOverlay !== undefined)).toBe(true);
   const popup = pageAt(NOTIFIER_URL)!;
+  // The preload's bridge exists before the page's toast stack subscribes, and a toast sent before that is dropped; main's
+  // own notice renders only through that subscription.
+  await expect(popup.getByTestId('overlay-toast').filter({ hasText: SESSION_LOG_NOTICE })).toBeVisible();
 
   const notice: OverlayToast = {
     id: 'update-notice',

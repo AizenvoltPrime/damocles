@@ -18,7 +18,6 @@ import { isSwitchableToolGroup, TOOL_GROUP_SETTINGS } from "../../../../shared/t
 import { IMAGE_ENABLED_SETTING, IMAGE_MODEL_SETTING } from "../../../pi-session/tools/image-tool-specs";
 import { writeSetting } from "../setting-write";
 import { t } from "../../../l10n";
-import { claudeAuthStatusMessage } from "./claude-auth-handlers";
 import { openaiAuthStatusMessage } from "./openai-handlers";
 import { postVoiceFilesSize } from "./voice-stream-handlers";
 
@@ -179,7 +178,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       // The view mounts after main attached it, so host prompts redirected to it before then are posted again.
       if (ctx.view) deps.webviewPrompts.repost(ctx.panelId, ctx.view);
       deps.postSettingsFileAvailability?.(ctx);
-      postMessage(ctx.host, claudeAuthStatusMessage());
+      deps.postClaudeAuthState?.(ctx.host);
       postMessage(ctx.host, await openaiAuthStatusMessage(platform));
       await settingsManager.sendStepfunAuthStatus(ctx.host);
       await settingsManager.sendDeepseekAuthStatus(ctx.host);

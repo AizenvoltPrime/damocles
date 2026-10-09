@@ -339,11 +339,12 @@ export class NotifierHost implements ToastSink {
 
   // Only the popup page's main frame on its exact URL; webContents.ipc already receives only this window's messages.
   private accepts(event: IpcMainEvent | IpcMainInvokeEvent, contents: WebContents, channel: string): boolean {
-    const accepted = this.popup?.contents === contents && isPanelSender(event, contents, NOTIFIER_PAGE_URL);
+    const accepted = isPanelSender(event, contents, NOTIFIER_PAGE_URL);
     if (!accepted) this.deps.log(`[notifier] rejected ${channel} from ${event.senderFrame ? loggableUrl(event.senderFrame.url) : 'a destroyed frame'} (webContents ${event.sender.id})`);
     return accepted;
   }
 
+  // The page of a window that quitting closed can still ask while it loads; it gets its answer, as refusing throws in main.
   private handle(contents: WebContents, channel: string, handler: () => unknown): void {
     contents.ipc.handle(channel, (event) => {
       if (!this.accepts(event, contents, channel)) throw new Error('Rejected');
@@ -351,9 +352,10 @@ export class NotifierHost implements ToastSink {
     });
   }
 
+  // Only the current window's page reports; a closing window's page would leave its state to the next window.
   private on(contents: WebContents, channel: string, handler: (...args: unknown[]) => void): void {
     contents.ipc.on(channel, (event, ...args: unknown[]) => {
-      if (this.accepts(event, contents, channel)) handler(...args);
+      if (this.accepts(event, contents, channel) && this.popup?.contents === contents) handler(...args);
     });
   }
 }

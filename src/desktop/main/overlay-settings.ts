@@ -3,11 +3,13 @@ import type { Disposable } from '../../platform/disposable';
 import type { SettingsStore } from '../../platform/settings-store';
 import type { PanelManager } from '../../core/chat-panel/panel-manager';
 import type { WebviewToExtensionMessage } from '../../shared/types/messages';
-import { isSettingsAccountId, isSettingsSectionId, type SettingsAccountId, type SettingsSectionId, type SettingsTarget } from '../../shared/settings-sections';
+import { isSettingsAccountId, isSettingsSectionId, type SettingsTarget } from '../../shared/settings-sections';
 import { SETTINGS_VIEW_REQUEST_TYPES } from '../../shared/settings-view-messages';
 import { MAX_SETTINGS_MESSAGE_CHARS, OVERLAY_CHANNELS, type OverlayPrefs, type OverlayPrefWrite } from '../preload/overlay-channels';
-import { DESKTOP_CONFIGURATION, isDesktopSettingValue, type DesktopLanguageSetting } from './desktop-configuration';
+import type { TerminalProfileReport } from '../preload/terminal-channels';
+import { DESKTOP_CONFIGURATION, isDesktopSettingValue, TERMINAL_PROFILES_SETTING, type DesktopLanguageSetting } from './desktop-configuration';
 import type { OverlayHost } from './overlay';
+import { isVersion } from './release-notes';
 import { asJsonValue, isWebviewMessage } from './views';
 
 export interface OverlaySettingsDeps {
@@ -21,8 +23,16 @@ export interface OverlaySettingsDeps {
   readonly focused: () => WebContents | undefined;
   readonly relaunch: () => void;
   readonly resetLayout: () => void;
+  // Settings › Terminal's profiles: the listed ones (its default profile), the hidden detected ones and the refused entries
+  readonly terminalProfiles: () => TerminalProfileReport;
   readonly log: (line: string) => void;
   readonly languageAtLaunch: DesktopLanguageSetting;
+}
+
+/** The one write path for a damocles.desktop.* value: checked against its declaration, written to user settings (D37). */
+export async function writeDesktopSetting(settings: SettingsStore, key: string, value: unknown): Promise<void> {
+  if (!isDesktopSettingValue(key, value)) throw new Error('Not a desktop setting value');
+  await settings.update(key, value, 'user');
 }
 
 interface Attachment {
@@ -65,16 +75,27 @@ export class OverlaySettings {
       if (!this.open) throw new Error('Restore default layout is offered only by the open settings');
       deps.resetLayout();
     });
+    overlay.handle(OVERLAY_CHANNELS.terminalProfiles, (raw) => {
+      if (!this.open) throw new Error('Terminal profiles are listed only for the open settings');
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw) || Object.keys(raw).length > 0) throw new Error('Malformed terminal profiles request');
+      return deps.terminalProfiles();
+    });
   }
 
   /**
-   * Opens the modal on `section`, with `account` expanded there, attached to the selected chat; resolves once it has
-   * closed. While it shows, the modal goes to the section instead.
+   * Opens the modal on the target's section, with its account or release expanded there, attached to the selected chat;
+   * resolves once it has closed. While it shows, the modal goes to the target instead.
    */
-  async show(section: SettingsSectionId | undefined, account?: SettingsAccountId): Promise<void> {
+  async show(request: SettingsTarget): Promise<void> {
+    const { section, account, release } = request;
     if (section !== undefined && !isSettingsSectionId(section)) throw new Error('Unknown settings section');
     if (account !== undefined && !isSettingsAccountId(account)) throw new Error('Unknown settings account');
-    const target: SettingsTarget = { ...(section !== undefined ? { section } : {}), ...(account !== undefined ? { account } : {}) };
+    if (release !== undefined && !isVersion(release)) throw new Error('Unknown release');
+    const target: SettingsTarget = {
+      ...(section !== undefined ? { section } : {}),
+      ...(account !== undefined ? { account } : {}),
+      ...(release !== undefined ? { release } : {}),
+    };
     if (this.open) {
       this.deps.overlay.send(OVERLAY_CHANNELS.settingsTarget, target);
       return;
@@ -83,6 +104,8 @@ export class OverlaySettings {
     const returnFocus = this.deps.focused();
     try {
       await this.reattach();
+      // The window closed while the modal was opening.
+      if (!this.open) return;
       const attachment = this.attachment;
       if (attachment === undefined) throw new Error('No chat could be opened for the settings');
       await this.deps.overlay.request({ kind: 'settings', ...target, generation: attachment.generation }, returnFocus);
@@ -97,6 +120,13 @@ export class OverlaySettings {
 
   dispose(): void {
     this.prefsWatch.dispose();
+  }
+
+  /** The window is closing: the modal goes with it and follows none of the chats the close unloads. */
+  close(): void {
+    if (!this.open) return;
+    this.open = false;
+    this.deps.overlay.dismiss('settings');
   }
 
   /** The selected chat may have changed; an open modal follows it. */
@@ -160,20 +190,24 @@ export class OverlaySettings {
       .catch((err: unknown) => this.deps.log(`[settings] ${message.type} failed: ${err instanceof Error ? err.message : String(err)}`));
   }
 
+  /** The profiles were validated again: the open modal gets the new report. */
+  terminalProfilesChanged(): void {
+    if (this.open) this.deps.overlay.send(OVERLAY_CHANNELS.terminalProfilesChanged, this.deps.terminalProfiles());
+  }
+
   private prefs(): OverlayPrefs {
     return {
-      values: Object.fromEntries(Object.keys(DESKTOP_CONFIGURATION).map((key) => [key, this.deps.settings.get(key)])),
+      // Settings › Terminal reads the validated profile report, never the raw profile entries
+      values: Object.fromEntries(Object.keys(DESKTOP_CONFIGURATION).filter((key) => key !== TERMINAL_PROFILES_SETTING).map((key) => [key, this.deps.settings.get(key)])),
       languageAtLaunch: this.deps.languageAtLaunch,
     };
   }
 
   private async setPref(raw: unknown): Promise<OverlayPrefWrite> {
     const request = raw as { key?: unknown; value?: unknown } | null;
-    if (typeof request !== 'object' || request === null || typeof request.key !== 'string' || !isDesktopSettingValue(request.key, request.value)) {
-      return { ok: false, error: 'Not a desktop setting value' };
-    }
+    if (typeof request !== 'object' || request === null || typeof request.key !== 'string') return { ok: false, error: 'Not a desktop setting value' };
     try {
-      await this.deps.settings.update(request.key, request.value, 'user');
+      await writeDesktopSetting(this.deps.settings, request.key, request.value);
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }

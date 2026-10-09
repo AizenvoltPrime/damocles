@@ -76,7 +76,7 @@ test('permission prompts approve and deny a write from the model, with the propo
     await expect(tab.getByTestId('editor-overlay')).toBeHidden();
     // The write may land after the file appears, so the content is what is polled.
     await expect.poll(() => (fs.existsSync(approved) ? fs.readFileSync(approved, 'utf8') : null)).toBe('approved by the user');
-    // The session title request follows the first turn; queuing the next tool call before it lands would hand it the title call.
+    // The title request goes out once the first turn has ended, so the next scripted reply goes to the next turn.
     await expect.poll(() => chatRequests(stub).some((r) => JSON.stringify(r.body).includes('descriptive title'))).toBe(true);
 
     stub.replies.push({ chunks: [], toolCalls: [{ name: 'write', arguments: { path: denied, content: 'never written' } }] });

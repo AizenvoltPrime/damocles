@@ -202,6 +202,14 @@ export function resolvePiModel(
   return { model, authed: registry.hasConfiguredAuth(model.provider) };
 }
 
+/** The catalog value a pi model recorded in a session file names, the inverse of resolvePiModel; undefined outside the catalog. */
+export function modelValueOfPiModel(provider: string, modelId: string): string | undefined {
+  return DEFAULT_MODELS.find((info) => {
+    if (info.backend === 'openai') return (provider === OPENAI_API_PROVIDER || provider === OPENAI_CODEX_PROVIDER) && (info.openaiModelId ?? info.value) === modelId;
+    return provider === (info.piProvider ?? ANTHROPIC_PROVIDER) && info.value === modelId;
+  })?.value;
+}
+
 /** The human-readable provider name for an unauthed sign-in toast. */
 export function providerDisplayName(info?: ModelInfo): string {
   if (info?.backend === 'openai') return 'OpenAI';

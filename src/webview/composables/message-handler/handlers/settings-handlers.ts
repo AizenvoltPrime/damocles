@@ -115,6 +115,9 @@ export const settingsViewHandlers: SettingsViewHandlers = {
     ctx.stores.settingsStore.setClaudeAuthError(msg.error);
     toast.error(t("claudeAuth.toast.error", { error: msg.error }));
   },
+  claudeSignInWaiting: (msg, ctx) => {
+    ctx.stores.settingsStore.setClaudeSignInWaiting(msg.waiting);
+  },
   stepfunAuthStatusChanged: (msg, ctx) => {
     ctx.stores.settingsStore.setStepfunConfigured(msg.configured);
   },

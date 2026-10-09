@@ -34,6 +34,17 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
       ctx.stores.uiStore.setIdeContext(msg.context);
     },
 
+    terminalAttachmentsUpdate: (msg, ctx) => {
+      ctx.stores.uiStore.setTerminalAttachments(msg.attachments);
+      // Add to Chat is the user's action, and the host has already focused this chat's page.
+      if (msg.focusComposer) void nextTick(() => ctx.refs.chatInputRef.value?.focus());
+    },
+
+    terminalShown: (msg, ctx) => {
+      ctx.stores.uiStore.terminalShown = msg.shown;
+      ctx.stores.uiStore.toggleTerminalShortcut = msg.shortcut;
+    },
+
     languageChange: (msg) => {
       applyLocale(msg.locale);
     },
@@ -67,14 +78,12 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
     },
 
     interruptRecovery: (msg, ctx) => {
-      const { streamingStore } = ctx.stores;
-      const { refs } = ctx;
-      const removedContent = streamingStore.removeMessageByCorrelationId(msg.correlationId);
-      const contentToRecover = removedContent ?? msg.promptContent;
-      if (contentToRecover) {
-        refs.chatInputRef.value?.setInput(contentToRecover);
-        toast.info(i18n.global.t("toast.interrupted"));
-      }
+      ctx.stores.streamingStore.removeMessageByCorrelationId(msg.correlationId);
+      // A prompt stopped before its echo has no message to recover from, so the content comes from the host.
+      const blocks = msg.contentBlocks ?? (msg.promptContent ? [{ type: "text" as const, text: msg.promptContent }] : []);
+      if (blocks.length === 0) return;
+      ctx.refs.chatInputRef.value?.restoreQueued(blocks);
+      toast.info(i18n.global.t("toast.interrupted"));
     },
 
     sessionStart: () => {},

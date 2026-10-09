@@ -32,13 +32,16 @@ export async function shellState(app: ElectronApplication): Promise<ShellState> 
 
 /**
  * Makes the main window report its focus as the test says, since the OS decides focus and a test runner's window may
- * never hold it; undefined restores the real answer.
+ * never hold it; undefined restores the real answer. Losing focus emits 'blur' as the OS does, which a later 'focus'
+ * needs to count as a new activation.
  */
 export async function setWindowFocused(app: ElectronApplication, focused: boolean | undefined): Promise<void> {
   await app.evaluate(({ BrowserWindow }, [url, value]) => {
-    const win = BrowserWindow.getAllWindows().find((candidate) => candidate.webContents.getURL() === url) as unknown as { isFocused?: () => boolean };
-    if (value === null) delete win.isFocused;
-    else win.isFocused = () => value;
+    const win = BrowserWindow.getAllWindows().find((candidate) => candidate.webContents.getURL() === url)!;
+    const faked = win as unknown as { isFocused?: () => boolean };
+    if (value === null) delete faked.isFocused;
+    else faked.isFocused = () => value;
+    if (value === false) win.emit('blur');
   }, [SHELL_URL, focused ?? null] as const);
 }
 

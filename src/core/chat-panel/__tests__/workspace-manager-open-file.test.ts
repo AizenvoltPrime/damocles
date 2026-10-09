@@ -76,8 +76,9 @@ describe('WorkspaceManager.openFile', () => {
 
     const [view] = platform.editor.diffs;
     expect(platform.editor.diffs).toHaveLength(1);
+    expect(view?.request.title('b.ts')).toBe('b.ts (At checkpoint ↔ Current)');
     expect(view?.request).toMatchObject({
-      title: 'a.ts (At checkpoint ↔ Current)',
+      filePath: path.join(ws, 'a.ts'),
       left: { content: 'before' },
       right: { path: path.join(ws, 'a.ts') },
       purpose: 'checkpoint',

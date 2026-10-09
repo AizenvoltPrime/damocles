@@ -1,80 +1,14 @@
-import { EventEmitter } from 'node:events';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const H = vi.hoisted(() => ({ views: [] as unknown[], webContentsOptions: [] as unknown[] }));
+const H = vi.hoisted(() => ({ webContentsOptions: [] as unknown[] }));
 
-vi.mock('electron', async () => {
-  const { EventEmitter: Emitter } = await import('node:events');
-  let nextId = 1;
-  class FakeIpc extends Emitter {
-    readonly handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
-    handle(channel: string, handler: (event: unknown, ...args: unknown[]) => unknown): void {
-      this.handlers.set(channel, handler);
-    }
-    removeHandler(channel: string): void {
-      this.handlers.delete(channel);
-    }
-  }
-  class FakeWebContents extends Emitter {
-    readonly id = nextId++;
-    readonly ipc = new FakeIpc();
-    readonly mainFrame = { url: '', parent: null };
-    focused = false;
-    readonly focus = vi.fn(() => {
-      this.focused = true;
-    });
-    readonly send = vi.fn();
-    readonly close = vi.fn();
-    readonly setZoomFactor = vi.fn();
-    readonly loadURL = vi.fn(async (url: string) => {
-      this.mainFrame.url = url;
-    });
-    isDestroyed(): boolean {
-      return false;
-    }
-    isCrashed(): boolean {
-      return false;
-    }
-    isFocused(): boolean {
-      return this.focused;
-    }
-  }
-  class WebContentsView {
-    readonly webContents = new FakeWebContents();
-    private visible = true;
-    bounds = { x: 0, y: 0, width: 0, height: 0 };
-    readonly setBackgroundColor = vi.fn();
-    readonly setBounds = vi.fn((bounds: { x: number; y: number; width: number; height: number }) => {
-      this.bounds = bounds;
-    });
-    readonly setVisible = vi.fn((visible: boolean) => {
-      this.visible = visible;
-    });
-    constructor(options: { webPreferences: unknown }) {
-      H.webContentsOptions.push(options.webPreferences);
-      H.views.push(this);
-    }
-    getVisible(): boolean {
-      return this.visible;
-    }
-    getBounds(): { x: number; y: number; width: number; height: number } {
-      return this.bounds;
-    }
-  }
-  return {
-    WebContentsView,
-    nativeTheme: { shouldUseDarkColors: true, on: vi.fn(), off: vi.fn() },
-    protocol: {},
-  };
-});
+vi.mock('electron', async () => (await import('./fake-views-electron')).fakeViewsElectron(H.webContentsOptions));
 
 import type { PanelOptions } from '../../../platform/window-service';
 import { PANEL_CHANNELS } from '../../preload/panel-channels';
-import { PANE_CHANNELS, PANE_CHROME_HEIGHT, PANE_DIVIDER_WIDTH, type PaneState } from '../../preload/pane-channels';
-import { CHAT_MIN_WIDTH, PANE_MIN_WIDTH } from '../pane-layout';
-import { EMPTY_PANE, type PanelStateStore, type PersistedChat, type PersistedPane } from '../panel-state-store';
-import { PANE_PAGE_URL } from '../protocol';
-import { PanelViews, type DesktopPanel, type PaneContext } from '../views';
+import type { PanelStateStore } from '../panel-state-store';
+import { PanelViews, type DesktopPanel, type PagesHost } from '../views';
+import { contentsOf, fakeStates, fakeWindow, viewOf } from './fake-views-electron';
 
 const CHAT: PanelOptions = { kind: 'chat', title: 'Damocles', localResourceRoots: [] };
 
@@ -82,80 +16,24 @@ function pageOptions(owner: unknown): PanelOptions {
   return { kind: 'browser', title: 'page', localResourceRoots: [], owner: owner as DesktopPanel };
 }
 
-// PanelStateStore's in-memory behaviour, without its file.
-function fakeStates(initial: readonly PersistedChat[] = []): PanelStateStore & { savedWidth: number | undefined } {
-  const chats = new Map<string, PersistedChat>(initial.map((chat) => [chat.panelId, chat]));
-  const store = {
-    savedWidth: undefined as number | undefined,
-    list: () => [...chats.values()],
-    get: (id: string) => chats.get(id),
-    selected: () => undefined,
-    paneWidth: () => store.savedWidth,
-    set: (chat: { panelId: string; state: unknown }) => {
-      chats.set(chat.panelId, { panelId: chat.panelId, state: chat.state, pane: chats.get(chat.panelId)?.pane ?? EMPTY_PANE });
-    },
-    setPane: (id: string, pane: PersistedPane) => {
-      const chat = chats.get(id);
-      if (chat) chats.set(id, { ...chat, pane });
-    },
-    setPaneWidth: (width: number) => {
-      store.savedWidth = width;
-    },
-    delete: (id: string) => {
-      chats.delete(id);
-    },
-    select: () => undefined,
-  };
-  return store as unknown as PanelStateStore & { savedWidth: number | undefined };
-}
-
-type FakeView = { webContents: FakeContents; setBounds: ReturnType<typeof vi.fn>; setVisible: ReturnType<typeof vi.fn>; getVisible(): boolean; bounds: { x: number; y: number; width: number; height: number } };
-
-function fakeWindow(width = 1200) {
-  const children: unknown[] = [];
-  return Object.assign(new EventEmitter(), {
-    children,
-    contentView: {
-      addChildView: vi.fn((view: unknown) => {
-        const at = children.indexOf(view);
-        if (at >= 0) children.splice(at, 1);
-        children.push(view);
-      }),
-      removeChildView: vi.fn((view: unknown) => {
-        const at = children.indexOf(view);
-        if (at >= 0) children.splice(at, 1);
-      }),
-    },
-    isDestroyed: () => false,
-    isFocused: () => true,
-    getContentBounds: () => ({ x: 0, y: 0, width, height: 800 }),
-    setBackgroundColor: vi.fn(),
-  });
-}
-
-let states: PanelStateStore & { savedWidth: number | undefined };
+let states: PanelStateStore;
 let gaveUp: DesktopPanel[];
 let lines: string[];
 let window: ReturnType<typeof fakeWindow>;
-let browserEnabled: boolean;
-let opened: string[];
-let newPages: DesktopPanel[];
 let restacks: number;
 let revealed: DesktopPanel[];
 let savedSessionChanges: DesktopPanel[];
+let pageEvents: string[];
+let popupOpen: boolean;
 
-const context: PaneContext = {
-  locale: 'en',
-  platform: 'win32',
-  toggleShortcutLabel: 'Ctrl+Shift+B',
-  browserEnabled: () => browserEnabled,
-  newPage: async (chat) => {
-    newPages.push(chat);
-  },
-  openExternal: async (url) => {
-    opened.push(url);
-    return true;
-  },
+// What PanelViews tells the browser tabs, in order; browser-tabs.test.ts covers what they do with it.
+const pages: PagesHost = {
+  pageAdded: (page) => pageEvents.push(`added:${page.panelId}`),
+  pageRemoved: (page) => pageEvents.push(`removed:${page.panelId}`),
+  pageChanged: (page) => pageEvents.push(`changed:${page.panelId}`),
+  pageRevealed: (page) => pageEvents.push(`revealed:${page.panelId}`),
+  chatSelected: (chat) => pageEvents.push(`selected:${chat?.panelId ?? 'none'}`),
+  chatClosed: (chat) => pageEvents.push(`closed:${chat.panelId}`),
 };
 
 function views(width = 1200): PanelViews {
@@ -163,8 +41,8 @@ function views(width = 1200): PanelViews {
   return new PanelViews({
     window: window as never,
     preloadPath: 'preload-panel.js',
-    panePreloadPath: 'preload-pane.js',
     states,
+    pages,
     log: (line) => lines.push(line),
     onChange: () => undefined,
     onRestack: () => {
@@ -173,18 +51,9 @@ function views(width = 1200): PanelViews {
     onReveal: (chat) => revealed.push(chat),
     onRendererGaveUp: (panel) => gaveUp.push(panel),
     onSavedSessionChange: (chat) => savedSessionChanges.push(chat),
-    onPaneGaveUp: () => undefined,
-    paneContext: () => context,
+    popupOpen: () => popupOpen,
   }, (p) => p);
 }
-
-type FakeContents = DesktopPanel['webContents'] & {
-  ipc: EventEmitter & { handlers: Map<string, (event: unknown, ...args: unknown[]) => unknown> };
-  focus: ReturnType<typeof vi.fn>;
-  focused: boolean;
-  loadURL: ReturnType<typeof vi.fn>;
-  mainFrame: { url: string; parent: null };
-};
 
 // A chat as the owner opens one: created hidden, then selected and focused.
 function open(tabs: PanelViews, restore?: { panelId: string; state: unknown }): DesktopPanel {
@@ -193,41 +62,15 @@ function open(tabs: PanelViews, restore?: { panelId: string; state: unknown }): 
   return chat;
 }
 
-function contentsOf(panel: DesktopPanel): FakeContents {
-  return panel.webContents as FakeContents;
-}
-
-function viewOf(panel: DesktopPanel): FakeView {
-  return panel.view as unknown as FakeView;
-}
-
-function paneView(tabs: PanelViews): FakeView {
-  return tabs.pane.view as unknown as FakeView;
-}
-
-// Calls a pane channel as the pane page's own main frame does.
-async function invoke(tabs: PanelViews, channel: string, ...args: unknown[]): Promise<unknown> {
-  const contents = paneView(tabs).webContents;
-  const handler = contents.ipc.handlers.get(channel);
-  if (!handler) throw new Error(`no handler for ${channel}`);
-  return handler({ sender: contents, senderFrame: { url: PANE_PAGE_URL, parent: null } }, ...args);
-}
-
-function paneState(tabs: PanelViews): Promise<PaneState> {
-  return invoke(tabs, PANE_CHANNELS.getState) as Promise<PaneState>;
-}
-
 beforeEach(() => {
   states = fakeStates();
   gaveUp = [];
   lines = [];
-  opened = [];
-  newPages = [];
   restacks = 0;
   revealed = [];
   savedSessionChanges = [];
-  browserEnabled = true;
-  H.views.length = 0;
+  pageEvents = [];
+  popupOpen = false;
   H.webContentsOptions.length = 0;
 });
 
@@ -254,6 +97,21 @@ describe('PanelViews teardown', () => {
     expect(tabs.selected()).toBeUndefined();
     expect(fork!.visible).toBe(false);
     expect(states.get('beta')).toBeUndefined();
+    expect(pageEvents.at(-1)).toBe('closed:beta');
+  });
+
+  it('opens no chat and no page while the chats close with their states kept', () => {
+    const tabs = views();
+    const chat = open(tabs);
+    tabs.retainStatesOnClose(true);
+    const before = states.list().map((saved) => saved.panelId);
+
+    expect(() => tabs.create({ options: CHAT })).toThrow('closing');
+    expect(() => tabs.create({ options: pageOptions(chat) })).toThrow('closing');
+
+    expect(tabs.chats()).toEqual([chat]);
+    expect(states.list().map((saved) => saved.panelId)).toEqual(before);
+    expect(pageEvents.filter((event) => event.startsWith('added:'))).toEqual([]);
   });
 
   it('refuses to open a panel id that is already open', () => {
@@ -268,6 +126,7 @@ describe('PanelViews chats', () => {
     const tabs = views();
     const first = open(tabs);
     const created = tabs.create({ options: CHAT, restore: { panelId: 'saved', state: { sessionId: 's' } } });
+    created.setHtml('<html></html>');
     expect(tabs.selected()).toBe(first);
     expect(created.visible).toBe(false);
     expect(contentsOf(created).focus).not.toHaveBeenCalled();
@@ -277,23 +136,141 @@ describe('PanelViews chats', () => {
     expect(created.visible).toBe(true);
     expect(first.visible).toBe(false);
     expect(contentsOf(created).focus).toHaveBeenCalled();
+    expect(pageEvents).toEqual([`selected:${first.panelId}`, 'selected:saved']);
   });
 
-  it('places the selected chat on the chat slot the shell reports', () => {
+  // A renderer drops focus it is given before its page commits, and a chat never takes focus when it navigates.
+  it('focuses a chat shown before its page committed once it commits, unless focus went elsewhere first', () => {
+    const tabs = views();
+    const first = open(tabs);
+    first.setHtml('<html></html>');
+    const created = tabs.create({ options: CHAT });
+    tabs.show(created.panelId, { focus: true });
+    expect(contentsOf(created).focus).not.toHaveBeenCalled();
+    created.setHtml('<html></html>');
+    expect(contentsOf(created).focus).toHaveBeenCalledTimes(1);
+
+    const unfocused = tabs.create({ options: CHAT });
+    tabs.show(unfocused.panelId, { focus: true });
+    tabs.focused(contentsOf(first));
+    unfocused.setHtml('<html></html>');
+    expect(contentsOf(unfocused).focus).not.toHaveBeenCalled();
+
+    const replaced = tabs.create({ options: CHAT });
+    tabs.show(replaced.panelId, { focus: true });
+    tabs.show(first.panelId, { focus: true });
+    replaced.setHtml('<html></html>');
+    expect(contentsOf(replaced).focus).not.toHaveBeenCalled();
+    expect(tabs.selected()).toBe(first);
+  });
+
+  // The window's activation focuses the window's own page, so only the user's input or main's own focus drops a launch's.
+  it('focuses a chat a launch shows once, when its page is ready in a focused window, whatever focus did meanwhile', () => {
+    const tabs = views();
+    const other = open(tabs);
+    const chat = tabs.create({ options: CHAT });
+    tabs.show(chat.panelId, { focus: 'whenReady' });
+    tabs.focused(contentsOf(other));
+    expect(contentsOf(chat).focus).not.toHaveBeenCalled();
+    chat.setHtml('<html></html>');
+    expect(contentsOf(chat).focus).toHaveBeenCalledTimes(1);
+
+    window.emit('focus');
+    contentsOf(chat).emit('dom-ready');
+    expect(contentsOf(chat).focus).toHaveBeenCalledTimes(1);
+  });
+
+  it("holds a launch's focus until the window is focused", () => {
+    const tabs = views();
+    window.isFocused = () => false;
+    const chat = tabs.create({ options: CHAT });
+    tabs.show(chat.panelId, { focus: 'whenReady' });
+    chat.setHtml('<html></html>');
+    expect(contentsOf(chat).focus).not.toHaveBeenCalled();
+
+    window.isFocused = () => true;
+    window.emit('focus');
+    expect(contentsOf(chat).focus).toHaveBeenCalledTimes(1);
+  });
+
+  // webContents.focus() activates, and so restores, its window on Linux.
+  it("holds a launch's focus while the window is minimized, until it is restored and focused", () => {
+    const tabs = views();
+    window.isMinimized = () => true;
+    const chat = tabs.create({ options: CHAT });
+    tabs.show(chat.panelId, { focus: 'whenReady' });
+    chat.setHtml('<html></html>');
+    window.emit('focus');
+    expect(contentsOf(chat).focus).not.toHaveBeenCalled();
+
+    window.isMinimized = () => false;
+    window.emit('restore');
+    expect(contentsOf(chat).focus).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops a launch's focus on the user's first key or click, before the page is ready or the window focused", () => {
+    const tabs = views();
+    const chat = tabs.create({ options: CHAT });
+    tabs.show(chat.panelId, { focus: 'whenReady' });
+    tabs.userInput();
+    chat.setHtml('<html></html>');
+    expect(contentsOf(chat).focus).not.toHaveBeenCalled();
+
+    window.isFocused = () => false;
+    const reopened = tabs.create({ options: CHAT });
+    tabs.show(reopened.panelId, { focus: 'whenReady' });
+    reopened.setHtml('<html></html>');
+    tabs.userInput();
+    window.isFocused = () => true;
+    window.emit('focus');
+    expect(contentsOf(reopened).focus).not.toHaveBeenCalled();
+  });
+
+  it("drops a launch's focus for another selection, a popup holding focus, or a focus main gives, which takes focus once", () => {
+    const tabs = views();
+    const chat = tabs.create({ options: CHAT });
+    tabs.show(chat.panelId, { focus: 'whenReady' });
+    const other = tabs.create({ options: CHAT });
+    tabs.show(other.panelId, { focus: false });
+    tabs.show(chat.panelId, { focus: false });
+    chat.setHtml('<html></html>');
+    expect(contentsOf(chat).focus).not.toHaveBeenCalled();
+
+    popupOpen = true;
+    tabs.show(other.panelId, { focus: 'whenReady' });
+    other.setHtml('<html></html>');
+    popupOpen = false;
+    window.emit('focus');
+    expect(contentsOf(other).focus).not.toHaveBeenCalled();
+
+    const asked = tabs.create({ options: CHAT });
+    tabs.show(asked.panelId, { focus: 'whenReady' });
+    tabs.focusChat();
+    asked.setHtml('<html></html>');
+    window.emit('focus');
+    expect(contentsOf(asked).focus).toHaveBeenCalledTimes(1);
+  });
+
+  it('places the selected chat on the chat slot the shell reports, and hides it under the focus overlay or in an empty slot', () => {
     const tabs = views(1200);
     const chat = open(tabs);
     tabs.setContentBounds({ x: 264, y: 40, width: 936, height: 760 });
     expect(viewOf(chat).bounds).toEqual({ x: 264, y: 40, width: 936, height: 760 });
+    tabs.setFocusOverlay(true);
+    expect(chat.visible).toBe(false);
+    tabs.setFocusOverlay(false);
+    expect(chat.visible).toBe(true);
+    tabs.setContentBounds({ x: 264, y: 40, width: 0, height: 760 });
+    expect(chat.visible).toBe(false);
   });
 
-  it('asks the owner to restack the overlay after every view it adds or moves up', () => {
+  it('asks the owner to restack the overlay after every view it adds', () => {
     const tabs = views();
     const chat = tabs.create({ options: CHAT, restore: { panelId: 'chat', state: null } });
     expect(restacks).toBe(1);
     tabs.show(chat.panelId, { focus: false });
-    expect(restacks).toBe(2);
     tabs.create({ options: pageOptions(chat) });
-    expect(restacks).toBeGreaterThanOrEqual(3);
+    expect(restacks).toBe(2);
   });
 
   it('hands a chat core reveals to the owner, which selects it', () => {
@@ -380,326 +357,79 @@ describe('renderer crashes', () => {
   });
 });
 
-describe('browser pages in a chat pane', () => {
-  it('opens a page only beside a loaded chat', () => {
+describe('browser pages of a chat', () => {
+  it('opens a page only in a loaded chat', () => {
     const tabs = views();
     const chat = open(tabs);
-    expect(() => tabs.create({ options: pageOptions(undefined) })).toThrow('beside a loaded chat');
-    expect(() => tabs.create({ options: pageOptions({ panelId: chat.panelId }) })).toThrow('beside a loaded chat');
+    expect(() => tabs.create({ options: pageOptions(undefined) })).toThrow('in a loaded chat');
+    expect(() => tabs.create({ options: pageOptions({ panelId: chat.panelId }) })).toThrow('in a loaded chat');
     const page = tabs.create({ options: pageOptions(chat) });
-    expect(() => tabs.create({ options: pageOptions(page) })).toThrow('beside a loaded chat');
+    expect(() => tabs.create({ options: pageOptions(page) })).toThrow('in a loaded chat');
     chat.close();
-    expect(() => tabs.create({ options: pageOptions(chat) })).toThrow('beside a loaded chat');
+    expect(() => tabs.create({ options: pageOptions(chat) })).toThrow('in a loaded chat');
   });
 
-  it('adds the page to its chat pane, opens the pane, and never moves focus or the selected chat', () => {
+  it('creates a page hidden, as a view that never takes focus when it navigates, as no chat does, and never moves focus or the selected chat', () => {
     const tabs = views();
     const chat = open(tabs);
     const focusBefore = contentsOf(chat).focus.mock.calls.length;
     const page = tabs.create({ options: pageOptions(chat) });
 
+    expect(page.visible).toBe(false);
     expect(contentsOf(page).focus).not.toHaveBeenCalled();
     expect(contentsOf(chat).focus.mock.calls.length).toBe(focusBefore);
     expect(tabs.selected()).toBe(chat);
     expect(tabs.chats()).toEqual([chat]);
-    expect(chat.pane).toMatchObject({ open: true, activePageId: page.panelId, pages: [page] });
-    expect(page.visible).toBe(true);
-    expect(tabs.activePage()).toBe(page);
-    expect(states.get(chat.panelId)?.pane.open).toBe(true);
-  });
-
-  it('creates page and pane views that never take focus when they navigate', () => {
-    const tabs = views();
-    const chat = open(tabs);
-    tabs.create({ options: pageOptions(chat) });
-    const [pane, chatPreferences, pagePreferences] = H.webContentsOptions as Array<Record<string, unknown>>;
-    expect(pane).toMatchObject({ preload: 'preload-pane.js', focusOnNavigation: false });
+    expect(page.chat).toBe(chat);
+    const [chatPreferences, pagePreferences] = H.webContentsOptions as Array<Record<string, unknown>>;
     expect(pagePreferences).toMatchObject({ preload: 'preload-panel.js', focusOnNavigation: false, sandbox: true, contextIsolation: true, nodeIntegration: false });
-    expect(chatPreferences).not.toHaveProperty('focusOnNavigation');
+    expect(chatPreferences).toMatchObject({ focusOnNavigation: false });
   });
 
-  it('pushes the pane state when a resize changes its layout numbers', async () => {
-    const tabs = views(1200);
-    const chat = open(tabs);
-    tabs.create({ options: pageOptions(chat) });
-    const contents = paneView(tabs).webContents as unknown as FakeContents & { emit(event: string): boolean; send: ReturnType<typeof vi.fn> };
-    contents.emit('did-finish-load');
-    contents.send.mockClear();
-    tabs.setContentBounds({ x: 0, y: 0, width: 600, height: 800 });
-    await new Promise((resolve) => setImmediate(resolve));
-    const pushed = contents.send.mock.calls.filter(([channel]) => channel === PANE_CHANNELS.state).map(([, state]) => state as PaneState);
-    expect(pushed.at(-1)).toMatchObject({ mode: 'overlay', maxWidth: 600 - 48 });
-  });
-
-  it('lays chat, pane and page out side by side and stacks chat < pane < page', () => {
-    const tabs = views(1200);
-    const chat = open(tabs);
-    const page = tabs.create({ options: pageOptions(chat) });
-    const width = 480;
-    expect(viewOf(chat).bounds).toEqual({ x: 0, y: 0, width: 1200 - width, height: 800 });
-    expect(paneView(tabs).bounds).toEqual({ x: 1200 - width, y: 0, width, height: 800 });
-    expect(viewOf(page).bounds).toEqual({ x: 1200 - width + PANE_DIVIDER_WIDTH, y: PANE_CHROME_HEIGHT, width: width - PANE_DIVIDER_WIDTH, height: 800 - PANE_CHROME_HEIGHT });
-    const order = (): number[] => [chat.view, tabs.pane.view, page.view].map((view) => window.children.indexOf(view));
-    expect(order()).toEqual([...order()].sort((a, b) => a - b));
-
-    // A chat created later is restacked below the pane and page when it is selected back.
-    const second = open(tabs);
-    tabs.show(chat.panelId, { focus: false });
-    const stack = [second.view, tabs.pane.view, page.view].map((view) => window.children.indexOf(view));
-    expect(stack).toEqual([...stack].sort((a, b) => a - b));
-  });
-
-  it('keeps a page in a background chat hidden until that chat is selected', () => {
-    const tabs = views();
-    const first = open(tabs);
-    const second = open(tabs);
-    const page = tabs.create({ options: pageOptions(first) });
-    expect(tabs.selected()).toBe(second);
-    expect(page.visible).toBe(false);
-    expect(paneView(tabs).getVisible()).toBe(false);
-    tabs.show(first.panelId, { focus: true });
-    expect(page.visible).toBe(true);
-    expect(paneView(tabs).getVisible()).toBe(true);
-    tabs.show(second.panelId, { focus: true });
-    expect(page.visible).toBe(false);
-  });
-
-  it('reveals a page in its pane without focus and without switching chats', () => {
+  it('tells the browser tabs about each page: added, changed by core, revealed, removed', () => {
     const tabs = views();
     const chat = open(tabs);
-    const first = tabs.create({ options: pageOptions(chat) });
-    const second = tabs.create({ options: pageOptions(chat) });
-    const other = open(tabs);
-    first.reveal();
-    expect(tabs.selected()).toBe(other);
-    expect(chat.pane?.activePageId).toBe(first.panelId);
-    tabs.show(chat.panelId, { focus: false });
-    expect(first.visible).toBe(true);
-    expect(second.visible).toBe(false);
-    expect(contentsOf(first).focus).not.toHaveBeenCalled();
-  });
-
-  it('selects the neighbour when the active page closes and collapses the pane with the last page', () => {
-    const tabs = views();
-    const chat = open(tabs);
-    const [a, b, c] = [0, 1, 2].map(() => tabs.create({ options: pageOptions(chat) }));
-    b!.reveal();
-    b!.close();
-    expect(chat.pane?.activePageId).toBe(c!.panelId);
-    c!.close();
-    expect(chat.pane?.activePageId).toBe(a!.panelId);
-    contentsOf(a!).focused = true;
-    a!.close();
-    expect(chat.pane).toMatchObject({ open: false, pages: [], activePageId: undefined });
-    expect(paneView(tabs).getVisible()).toBe(false);
-    expect(contentsOf(chat).focus).toHaveBeenCalled();
-  });
-
-  it('moves focus from a closed focused page to the pane while other pages remain', () => {
-    const tabs = views();
-    const chat = open(tabs);
-    tabs.create({ options: pageOptions(chat) });
-    const focused = tabs.create({ options: pageOptions(chat) });
-    contentsOf(focused).focused = true;
-    focused.close();
-    expect(paneView(tabs).webContents.focus).toHaveBeenCalledTimes(1);
-  });
-
-  it('closes every page of a chat that closes, and forgets them', () => {
-    const tabs = views();
-    const chat = open(tabs);
-    const pages = [0, 1].map(() => tabs.create({ options: pageOptions(chat) }));
-    const disposed = vi.fn();
-    for (const page of pages) page.onDispose(disposed);
-    chat.close();
-    expect(disposed).toHaveBeenCalledTimes(2);
-    expect(pages.every((page) => page.isDisposed)).toBe(true);
-    expect(states.get(chat.panelId)).toBeUndefined();
-    expect(tabs.panel(pages[0]!.panelId)).toBeUndefined();
-  });
-
-  it('keeps the saved pane while a host teardown closes the pages', () => {
-    const tabs = views();
-    const chat = open(tabs);
-    const page = tabs.create({ options: pageOptions(chat) });
-    void page.postMessage({ type: 'urlChanged', url: 'https://kept.example/' });
-    tabs.retainStatesOnClose(true);
-    chat.close();
-    expect(states.get(chat.panelId)?.pane).toEqual({ open: true, maximized: false, pages: ['https://kept.example/'], activePage: 0 });
-  });
-
-  it('persists each page address from core\'s urlChanged and never from the page renderer', () => {
-    const tabs = views();
-    const chat = open(tabs);
+    pageEvents.length = 0;
     const page = tabs.create({ options: pageOptions(chat) });
     void page.postMessage({ type: 'urlChanged', url: 'https://a.example/' });
+    void page.postMessage({ type: 'urlChanged', url: 'https://a.example/' });
+    page.setTitle('A page');
+    page.reveal();
+    page.close();
+    const id = page.panelId;
+    expect(pageEvents).toEqual([`added:${id}`, `changed:${id}`, `changed:${id}`, `revealed:${id}`, `removed:${id}`]);
+    expect(page.page?.url).toBe('https://a.example/');
+    expect(revealed).toEqual([]);
+  });
+
+  it('closes every page of a chat that closes, after telling the browser tabs, and forgets them', () => {
+    const tabs = views();
+    const chat = open(tabs);
+    const created = [0, 1].map(() => tabs.create({ options: pageOptions(chat) }));
+    pageEvents.length = 0;
+    // The browser tabs close a closing chat's pages (browser-tabs.ts chatClosed).
+    const closing: PagesHost['chatClosed'] = () => {
+      for (const page of created) page.close();
+    };
+    pages.chatClosed = closing;
+    try {
+      chat.close();
+    } finally {
+      pages.chatClosed = (closed) => pageEvents.push(`closed:${closed.panelId}`);
+    }
+    expect(created.every((page) => page.isDisposed)).toBe(true);
+    expect(states.get(chat.panelId)).toBeUndefined();
+    expect(tabs.panel(created[0]!.panelId)).toBeUndefined();
+    expect(pageEvents).toEqual(created.map((page) => `removed:${page.panelId}`));
+  });
+
+  it('persists nothing from the page renderer', () => {
+    const tabs = views();
+    const chat = open(tabs);
+    const page = tabs.create({ options: pageOptions(chat) });
     const contents = contentsOf(page);
     contents.ipc.emit(PANEL_CHANNELS.setState, { sender: contents, senderFrame: { url: page.pageUrl, parent: null } }, { url: 'file:///etc/passwd' });
-    expect(states.get(chat.panelId)?.pane.pages).toEqual(['https://a.example/']);
     expect(states.get(page.panelId)).toBeUndefined();
-  });
-
-  it('restores the pane as saved while its pages arrive, then leaves reveal alone', () => {
-    states = fakeStates([{ panelId: 'saved', state: null, pane: { open: false, maximized: false, pages: ['https://a.example/'] } }]);
-    const tabs = views();
-    const chat = tabs.create({ options: CHAT, restore: { panelId: 'saved', state: null } });
-    tabs.setRestoring(chat, true);
-    const page = tabs.create({ options: pageOptions(chat) });
-    page.reveal();
-    expect(chat.pane?.open).toBe(false);
-    tabs.setRestoring(chat, false);
-    tabs.create({ options: pageOptions(chat) });
-    expect(chat.pane?.open).toBe(true);
-  });
-
-  it('restores a maximized pane with focus in the pane rather than the hidden composer', () => {
-    states = fakeStates([{ panelId: 'saved', state: null, pane: { open: true, maximized: true, pages: [] } }]);
-    const tabs = views();
-    const chat = open(tabs, { panelId: 'saved', state: null });
-    expect(paneView(tabs).webContents.focus).toHaveBeenCalled();
-    expect(contentsOf(chat).focus).not.toHaveBeenCalled();
-  });
-
-  it('hides the pane while the browser is turned off and ignores the toggle', () => {
-    const tabs = views();
-    const chat = open(tabs);
-    const page = tabs.create({ options: pageOptions(chat) });
-    browserEnabled = false;
-    tabs.browserEnabledChanged();
-    expect(page.visible).toBe(false);
-    expect(paneView(tabs).getVisible()).toBe(false);
-    tabs.togglePane(chat.panelId);
-    expect(chat.pane?.open).toBe(true);
-  });
-
-  it('toggles the pane and moves focus back to the chat when the focused pane collapses', () => {
-    const tabs = views();
-    const chat = open(tabs);
-    tabs.togglePane(chat.panelId);
-    expect(chat.pane?.open).toBe(true);
-    expect(paneView(tabs).getVisible()).toBe(true);
-    contentsOf(chat).focus.mockClear();
-    paneView(tabs).webContents.focused = true;
-    tabs.togglePane(chat.panelId);
-    expect(chat.pane?.open).toBe(false);
-    expect(contentsOf(chat).focus).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('pane actions', () => {
-  function setup() {
-    const tabs = views();
-    const chat = open(tabs);
-    const page = tabs.create({ options: pageOptions(chat) });
-    const delivered: unknown[] = [];
-    page.onMessage((message) => delivered.push(message));
-    return { tabs, chat, page, delivered };
-  }
-
-  it('reports the selected chat pane with main\'s layout numbers', async () => {
-    const { tabs, chat, page } = setup();
-    void page.postMessage({ type: 'urlChanged', url: 'https://a.example/' });
-    void page.postMessage({ type: 'navigationState', loading: true, canGoBack: true, canGoForward: false });
-    void page.postMessage({ type: 'pickingStateChanged', picking: true });
-    page.setTitle('A page');
-    expect(await paneState(tabs)).toEqual({
-      locale: 'en',
-      platform: 'win32',
-      browserEnabled: true,
-      toggleShortcutLabel: 'Ctrl+Shift+B',
-      chatTabId: chat.panelId,
-      mode: 'split',
-      width: 480,
-      minWidth: PANE_MIN_WIDTH,
-      maxWidth: 1200 - CHAT_MIN_WIDTH,
-      pages: [{ id: page.panelId, title: 'A page', url: 'https://a.example/', loading: true, canGoBack: true, canGoForward: false, picking: true }],
-      activePageId: page.panelId,
-    });
-  });
-
-  it('delivers navigation as the page\'s own webview messages, and refuses a non-web address', async () => {
-    const { tabs, page, delivered } = setup();
-    expect(await invoke(tabs, PANE_CHANNELS.navigate, page.panelId, 'example.com/x')).toBe(true);
-    expect(await invoke(tabs, PANE_CHANNELS.navigate, page.panelId, 'file:///c:/Windows/win.ini')).toBe(false);
-    expect(await invoke(tabs, PANE_CHANNELS.navigate, page.panelId, 'javascript:alert(1)')).toBe(false);
-    for (const channel of [PANE_CHANNELS.goBack, PANE_CHANNELS.goForward, PANE_CHANNELS.reload, PANE_CHANNELS.pickElement, PANE_CHANNELS.openDevTools]) {
-      await invoke(tabs, channel, page.panelId);
-    }
-    expect(delivered).toEqual([
-      { type: 'navigate', url: 'https://example.com/x' },
-      { type: 'goBack' },
-      { type: 'goForward' },
-      { type: 'reload' },
-      { type: 'pickElement' },
-      { type: 'openDevTools' },
-    ]);
-  });
-
-  it('resolves page ids only against the selected chat', async () => {
-    const { tabs, page, delivered } = setup();
-    open(tabs);
-    await expect(invoke(tabs, PANE_CHANNELS.reload, page.panelId)).rejects.toThrow('Unknown page');
-    await expect(invoke(tabs, PANE_CHANNELS.closePage, page.panelId)).rejects.toThrow('Unknown page');
-    await expect(invoke(tabs, PANE_CHANNELS.selectPage, 'no-such-page')).rejects.toThrow('Unknown page');
-    expect(delivered).toEqual([]);
-    expect(page.isDisposed).toBe(false);
-  });
-
-  it('opens only an http or https page in the system browser, with the URL main observed', async () => {
-    const { tabs, page } = setup();
-    void page.postMessage({ type: 'urlChanged', url: 'about:blank' });
-    await expect(invoke(tabs, PANE_CHANNELS.openExternal, page.panelId)).rejects.toThrow('Only http and https');
-    void page.postMessage({ type: 'urlChanged', url: 'https://a.example/' });
-    await invoke(tabs, PANE_CHANNELS.openExternal, page.panelId);
-    expect(opened).toEqual(['https://a.example/']);
-  });
-
-  it('opens a new page beside the selected chat only while the browser is on', async () => {
-    const { tabs, chat } = setup();
-    await invoke(tabs, PANE_CHANNELS.newPage);
-    expect(newPages).toEqual([chat]);
-    browserEnabled = false;
-    await expect(invoke(tabs, PANE_CHANNELS.newPage)).rejects.toThrow('turned off');
-    expect(newPages).toEqual([chat]);
-  });
-
-  it('selects, closes, maximizes and collapses', async () => {
-    const { tabs, chat, page } = setup();
-    const second = tabs.create({ options: pageOptions(chat) });
-    await invoke(tabs, PANE_CHANNELS.selectPage, page.panelId);
-    expect(page.visible).toBe(true);
-    expect(second.visible).toBe(false);
-    await invoke(tabs, PANE_CHANNELS.setMaximized, true);
-    expect((await paneState(tabs)).mode).toBe('maximized');
-    expect(viewOf(page).bounds).toEqual({ x: 0, y: PANE_CHROME_HEIGHT, width: 1200, height: 800 - PANE_CHROME_HEIGHT });
-    expect(chat.visible).toBe(false);
-    await invoke(tabs, PANE_CHANNELS.setMaximized, false);
-    expect((await paneState(tabs)).mode).toBe('split');
-    expect(chat.visible).toBe(true);
-    await invoke(tabs, PANE_CHANNELS.closePage, second.panelId);
-    expect(second.isDisposed).toBe(true);
-    await invoke(tabs, PANE_CHANNELS.setCollapsed, true);
-    expect((await paneState(tabs)).mode).toBe('collapsed');
-    expect(page.visible).toBe(false);
-    await expect(invoke(tabs, PANE_CHANNELS.setCollapsed, 'yes')).rejects.toThrow('Malformed flag');
-  });
-
-  it('clamps a requested width, lays out in the same call and persists only a committed one', async () => {
-    const { tabs, chat, page } = setup();
-    const contents = paneView(tabs).webContents;
-    const request = (width: unknown, commit: unknown): void => {
-      contents.ipc.emit(PANE_CHANNELS.requestWidth, { sender: contents, senderFrame: { url: PANE_PAGE_URL, parent: null } }, width, commit);
-    };
-    request(600, false);
-    expect(viewOf(chat).bounds.width).toBe(600);
-    expect(viewOf(page).bounds.x).toBe(600 + PANE_DIVIDER_WIDTH);
-    expect(states.savedWidth).toBeUndefined();
-    request(5000, true);
-    expect(states.savedWidth).toBe(1200 - CHAT_MIN_WIDTH);
-    request(Number.NaN, true);
-    request(-5, true);
-    request(700, 'yes');
-    expect(states.savedWidth).toBe(1200 - CHAT_MIN_WIDTH);
-    expect(lines.filter((line) => line === '[pane] ignoring a malformed width request')).toHaveLength(3);
+    expect(states.get(chat.panelId)?.browser).toEqual({ pages: [] });
   });
 });

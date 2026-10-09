@@ -8,6 +8,24 @@ import type { MemoryInjectionDisplay } from '../shared/types/context-injection';
 import type { SteerTargetInfo } from '../shared/types/subagents';
 import type { TeamService } from './team';
 import type { ActivitySource } from './chat-panel/activity';
+import type { TerminalAttachmentInfo } from '../shared/types/terminal-attachment';
+
+/** What the transcript shows for a sent message: the typed text, its images and the terminal attachments sent with it. */
+export interface UserBroadcast {
+  content: string;
+  contentBlocks?: UserContentBlock[];
+  // the prompt starts with one formatted block per attachment, in this order
+  terminalAttachments?: TerminalAttachmentInfo[];
+}
+
+/**
+ * `unsent`: the prompt was refused or stopped before pi committed or queued it, so nothing it carried reached the conversation.
+ * `withdrawn`: the session itself returned the prompt to the composer, its chips through `onWithdrawn`, before it reached the conversation.
+ */
+export type SendOutcome = 'sent' | 'unsent' | 'withdrawn';
+
+/** What pi's `prompt()` makes of a text sent alone: an extension command it runs, the skill or template body it expands to, or text. */
+export type SlashInvocation = { kind: 'command' } | { kind: 'expanded'; text: string } | { kind: 'text' };
 
 /**
  * The session seam consumed by the rest of the extension (panels, message-router
@@ -61,13 +79,18 @@ export interface ChatSession extends ActivitySource {
    *  side is still awaiting. Called from the `ready` handler. */
   onWebviewReady(): void;
 
+  /** `onWithdrawn` runs at most once: when pi queued the prompt into a running run and a stop, the budget, a new chat or a resume switch dropped it before it committed, or when the session's disposal returned it before pi queued it or opened a run with it. */
   sendMessage(
     prompt: ContentInput,
     _agentId?: string,
     correlationId?: string,
-    userBroadcast?: { content: string; contentBlocks?: UserContentBlock[] },
-  ): Promise<void>;
-  queueInput(content: ContentInput, messageId?: string): 'queued' | 'flushed' | false;
+    userBroadcast?: UserBroadcast,
+    onWithdrawn?: () => void,
+  ): Promise<SendOutcome>;
+  /** Resolves `text` as pi would when it starts the prompt, for a caller that puts blocks ahead of it. */
+  resolveSlashInvocation(text: string): Promise<SlashInvocation>;
+  /** `typed` is what the user typed, which a UserPromptSubmit hook gets when `content` is a rewrite of it. */
+  queueInput(content: ContentInput, messageId?: string, typed?: string): 'queued' | 'flushed' | false;
   interrupt(): Promise<void>;
   cancel(): void;
   /** Stops one running shell call; the turn continues, unlike interrupt/cancel which tear it down. */

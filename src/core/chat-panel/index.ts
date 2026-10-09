@@ -36,6 +36,15 @@ import { t } from "../l10n";
 import { log } from "../logger";
 import { perfSpan } from "../perf";
 import { checkpointMaxFileSizeBytes } from "../pi-session/checkpoint-service";
+import { allJsonConfigWritesSettled } from "../config/json-config-write";
+
+/**
+ * Settles once every config file write core started (MCP, settings and permission files), one queued meanwhile included,
+ * has landed or failed; never rejects. A host's teardown awaits it after `ChatPanelProvider.dispose`, which can still write.
+ */
+export function flushCoreWrites(): Promise<void> {
+  return allJsonConfigWritesSettled();
+}
 
 /** What the host supplies beyond the platform. */
 export interface ChatPanelHostDeps {
@@ -188,6 +197,8 @@ export class ChatPanelProvider {
           maxThinkingTokens: this.settingsManager.resolveMaxThinkingTokens(panelId, model, settings, folder),
         };
       },
+      restoreRecordedSelection: (host, panelId, folder, model, thinkingLevel) =>
+        this.settingsManager.restoreRecordedSelection(host, panelId, folder, model, thinkingLevel),
       postMessage,
       setupSessionWatcher: (folderKey) => this.storageManager.setupSessionWatcher(folderKey),
       addOrUpdateSession: (sessionId, folderKey) => this.storageManager.addOrUpdateSession(sessionId, folderKey),

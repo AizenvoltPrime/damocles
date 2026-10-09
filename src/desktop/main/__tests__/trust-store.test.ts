@@ -14,6 +14,7 @@ import { createMessageAsker, type MessageOverlay } from '../message-dialog';
 import { OverlayHost } from '../overlay';
 import { OVERLAY_PAGE_URL } from '../protocol';
 import { TRUST_FILE, TrustStore } from '../trust-store';
+import { flushAcrossHeldRename } from '../../../__mocks__/held-rename';
 import { fakeOverlayWindow, type FakeOverlayView } from './fake-overlay-electron';
 
 // Button indexes of the OS fallback box: Trust Folder, then Don't Trust (Cancel).
@@ -37,7 +38,7 @@ afterEach(() => {
   fs.rmSync(userData, { recursive: true, force: true });
 });
 
-const ask = createMessageAsker({ overlay: () => overlay, window: () => undefined, focused: () => undefined, log: () => undefined });
+const ask = createMessageAsker({ overlay: () => overlay, window: () => undefined, focused: () => undefined, closing: () => false, log: () => undefined });
 const store = (): TrustStore => new TrustStore(userData, ask, (message, ...args) => args.reduce((text, arg, index) => text.replace(`{${index}}`, arg), message), () => undefined);
 
 function loadedOverlay(): { host: OverlayHost; view: FakeOverlayView } {
@@ -47,6 +48,7 @@ function loadedOverlay(): { host: OverlayHost; view: FakeOverlayView } {
     state: () => ({ locale: 'en', platform: 'win32' }),
     focusOutside: () => undefined,
     awaitActivation: () => undefined,
+    popupsClosed: () => undefined,
     canRasterize: () => undefined,
     log: () => undefined,
   });
@@ -172,5 +174,17 @@ describe('TrustStore', () => {
     expect(trust.isTrusted(project)).toBe(true);
     expect(listener).toHaveBeenCalledWith([project]);
     expect(store().isTrusted(project)).toBe(true);
+  });
+
+  it('flush waits for a write in flight and for one queued while it waits', async () => {
+    const trust = store();
+    const child = path.join(project, 'packages', 'child');
+    const onDisk = await flushAcrossHeldRename(path.join(userData, TRUST_FILE), {
+      first: () => trust.grant(project),
+      flush: () => trust.flush(),
+      second: () => trust.grant(child),
+      onDisk: () => [store().isTrusted(project), store().isTrusted(child)],
+    });
+    expect(onDisk).toEqual([true, true]);
   });
 });

@@ -1,9 +1,10 @@
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, posix, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FuseState, FuseV1Options, getCurrentFuseWire } from '@electron/fuses';
-import { ASAR_UNPACK } from '../src/desktop/main/platform/unpacked-assets.ts';
+import { asarUnpackFor } from '../src/desktop/main/platform/unpacked-assets.ts';
 import { asarFiles, readAsarFile, readAsarHeader } from './asar-archive.mjs';
 import { isEntryPoint } from './entry-point.mjs';
 
@@ -28,10 +29,13 @@ export const EXPECTED_FUSES = {
 export const REPORTED_FUSES = ['LoadBrowserProcessSpecificV8Snapshot', 'WasmTrapHandlers'];
 
 const PUBLISH = { provider: 'github', owner: 'AizenvoltPrime', repo: 'damocles' };
-const WORKERS = ['compass-worker.js', 'usage-stats-worker.js', 'sentinel.js'];
+// The scripts main runs in another process or thread: the worker threads, the shell sentinel, the formatter host and the pty host.
+const WORKERS = ['compass-worker.js', 'usage-stats-worker.js', 'quick-open-worker.js', 'sentinel.js', 'formatter-host.js', 'pty-host.js'];
 // The license notices electron-builder.yml ships inside app.asar (files) and beside it (extraResources).
 const PACKED_NOTICES = ['LICENSE', 'THIRD-PARTY-NOTICES.md'];
 const RESOURCE_NOTICES = ['monaco-editor-ThirdPartyNotices.txt'];
+// Settings › About's What's new reads it (src/desktop/main/release-notes.ts); the desktop build copies it from the repo root.
+const PACKED_CHANGELOG = 'dist/desktop/CHANGELOG.md';
 const LINUX_INSTALL_BINARY = '/opt/Damocles/damocles';
 // Packages and paths that must never ship inside app.asar: sources, tests, build tooling and desktop-irrelevant bundles.
 const FORBIDDEN_ASAR_PREFIXES = [
@@ -97,7 +101,7 @@ export function checkFuses(wire) {
   return results;
 }
 
-/** Every file under app.asar.unpacked matches an ASAR_UNPACK glob, and every glob matches a file. */
+/** Every file under app.asar.unpacked matches one of `patterns` (the platform's ASAR_UNPACK globs, asarUnpackFor), and every pattern matches a file. */
 export function checkUnpackedSet(files, patterns) {
   const outside = files.filter((file) => !patterns.some((pattern) => posix.matchesGlob(file, pattern)));
   const unused = patterns.filter((pattern) => !files.some((file) => posix.matchesGlob(file, pattern)));
@@ -129,6 +133,55 @@ export function checkAppUpdate(text, platform, arch) {
   const channel = platform === 'win32' ? `latest-${arch}` : undefined;
   if (config.channel !== channel) problems.push(`channel is ${config.channel ?? 'absent'}, expected ${channel ?? 'absent (the default feed)'}`);
   return [problems.length === 0 ? pass('app-update.yml', Object.entries(config).map(([k, v]) => `${k}=${v}`).join(' ')) : fail('app-update.yml', problems.join('; '))];
+}
+
+/** The packed CHANGELOG.md is the repo's, and has a section for the packaged version. */
+export function checkChangelog(packed, repo, version) {
+  if (packed === undefined) return [fail('changelog', `${PACKED_CHANGELOG} is not in app.asar`)];
+  const problems = [
+    ...(packed === repo ? [] : ["differs from the repo's CHANGELOG.md"]),
+    ...(packed.split(/\r?\n/).some((line) => line.startsWith(`## [${version}] - `)) ? [] : [`has no ## [${version}] section`]),
+  ];
+  return [problems.length === 0 ? pass('changelog', `${PACKED_CHANGELOG} has the ${version} section`) : fail('changelog', problems.join('; '))];
+}
+
+const NODE_PTY = 'node_modules/node-pty';
+// The native files node-pty 1.2 loads from prebuilds/<platform>-<arch>; electron-builder.yml keeps only the target's directory.
+const NODE_PTY_BINARIES = {
+  win32: ['conpty.node', 'conpty_console_list.node'],
+  darwin: ['pty.node', 'spawn-helper'],
+  linux: ['pty.node'],
+};
+
+/**
+ * node-pty ships exactly the target's prebuild, unpacked, with no debug symbols or native sources, and its JS inside
+ * app.asar, where its rewrite of the spawn-helper path to app.asar.unpacked holds. `paths` is every asar header entry.
+ */
+export function checkNodePtyLayout(platform, arch, paths, unpackedFiles) {
+  const target = `${platform}-${arch}`;
+  const prebuildDirs = [...new Set(paths.filter((path) => path.startsWith(`${NODE_PTY}/prebuilds/`)).map((path) => path.split('/')[3]))].sort();
+  const missing = NODE_PTY_BINARIES[platform].filter((file) => !unpackedFiles.includes(`${NODE_PTY}/prebuilds/${target}/${file}`));
+  const dropped = paths.filter((path) => path.startsWith(`${NODE_PTY}/`) && (path.endsWith('.pdb') || ['build', 'deps', 'src', 'third_party', 'scripts'].includes(path.split('/')[2])));
+  const packedJs = ['package.json', 'lib/index.js'].map((file) => `${NODE_PTY}/${file}`).filter((path) => !paths.includes(path) || unpackedFiles.includes(path));
+  return [
+    prebuildDirs.length === 1 && prebuildDirs[0] === target ? pass('node-pty prebuild', `only prebuilds/${target}`) : fail('node-pty prebuild', `prebuild directories [${prebuildDirs.join(', ')}], expected only ${target}`),
+    missing.length === 0 ? pass('node-pty binaries', NODE_PTY_BINARIES[platform].join(', ')) : fail('node-pty binaries', `missing from app.asar.unpacked: ${missing.join(', ')}`),
+    dropped.length === 0 ? pass('node-pty trimmed', 'no .pdb, build, deps, src, third_party or scripts') : fail('node-pty trimmed', `must not ship: ${dropped.slice(0, 10).join(', ')}`),
+    packedJs.length === 0 ? pass('node-pty loader', 'package.json and lib in app.asar') : fail('node-pty loader', `not packed in app.asar: ${packedJs.join(', ')}`),
+  ];
+}
+
+/** node-pty 1.1.0 shipped spawn-helper without the execute bit; the macOS pty cannot start a shell without it. */
+export function checkSpawnHelperMode(mode) {
+  const permissions = mode & 0o777;
+  return permissions === 0o755 ? pass('node-pty spawn-helper mode', '0755') : fail('node-pty spawn-helper mode', `0${permissions.toString(8)}, expected 0755`);
+}
+
+/** `codesign -v` on one file; the ad hoc signed app's native binaries must each carry a valid signature. */
+function codesignVerify(file) {
+  const run = spawnSync('codesign', ['-v', file], { encoding: 'utf8' });
+  if (run.error) throw run.error;
+  return { ok: run.status === 0, output: `${run.stdout}${run.stderr}`.trim() };
 }
 
 /** Paths inside app.asar that must not ship. */
@@ -171,12 +224,34 @@ function checkFile(check, file, { needsExecBit = false } = {}) {
   return pass(check, `${file} (${stat.size} bytes)`);
 }
 
+// The shell-integration scripts (src/desktop/main/terminal/shell-integration-injection.ts); bash, zsh and fish read a CR as
+// part of a line, so theirs must be LF.
+export const SHELL_INTEGRATION_FILES = [
+  'shellIntegration.ps1',
+  'shellIntegration-bash.sh',
+  'shellIntegration.fish',
+  'shellIntegration-env.zsh',
+  'shellIntegration-profile.zsh',
+  'shellIntegration-rc.zsh',
+  'shellIntegration-login.zsh',
+];
+
+/** Each script exists and is not empty, and none but the PowerShell one holds a CR; `read` answers undefined for a missing file. */
+export function checkShellIntegrationScripts(read) {
+  const missing = SHELL_INTEGRATION_FILES.filter((file) => (read(file)?.length ?? 0) === 0);
+  const crlf = SHELL_INTEGRATION_FILES.filter((file) => !file.endsWith('.ps1') && read(file)?.includes(0x0d));
+  return [
+    missing.length === 0 ? pass('shell integration scripts', SHELL_INTEGRATION_FILES.join(', ')) : fail('shell integration scripts', `missing or empty: ${missing.join(', ')}`),
+    crlf.length === 0 ? pass('shell integration line endings', 'bash, zsh and fish scripts are LF') : fail('shell integration line endings', `CR in ${crlf.join(', ')}`),
+  ];
+}
+
 function watcherPackage(platform, arch) {
   return `@parcel/watcher-${platform}-${arch}${platform === 'linux' ? '-glibc' : ''}`;
 }
 
 /** Runs every check on one packaged app; `readFuseWire` defaults to @electron/fuses reading the binary. */
-export async function verifyPackage({ platform, arch, app, repoRoot, readFuseWire = getCurrentFuseWire }) {
+export async function verifyPackage({ platform, arch, app, repoRoot, readFuseWire = getCurrentFuseWire, codesign = codesignVerify }) {
   const { binary, fuseTarget, resources } = layoutFor(platform, app);
   const asarPath = join(resources, 'app.asar');
   const unpacked = join(resources, 'app.asar.unpacked');
@@ -189,11 +264,11 @@ export async function verifyPackage({ platform, arch, app, repoRoot, readFuseWir
   const packedPaths = entries.filter(({ entry }) => !entry.unpacked).map(({ path }) => path);
   results.push(...checkAsarEntries(packedPaths));
   const manifestEntry = entries.find(({ path }) => path === 'package.json');
+  const repoVersion = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')).version;
   if (manifestEntry === undefined) {
     results.push(fail('package.json', 'not in app.asar'));
   } else {
     const manifest = JSON.parse(readAsarFile(asarPath, dataOffset, manifestEntry.entry));
-    const repoVersion = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')).version;
     const problems = [
       ...(manifest.main === 'dist/desktop/main.js' ? [] : [`main is ${manifest.main}, expected dist/desktop/main.js`]),
       ...(manifest.version === repoVersion ? [] : [`version ${manifest.version} differs from the repo's ${repoVersion}`]),
@@ -206,9 +281,12 @@ export async function verifyPackage({ platform, arch, app, repoRoot, readFuseWir
     results.push(packedPaths.includes(notice) ? pass(`notice ${notice}`, 'in app.asar') : fail(`notice ${notice}`, 'not in app.asar'));
   }
   for (const notice of RESOURCE_NOTICES) results.push(checkFile(`notice ${notice}`, join(resources, notice)));
+  const changelogEntry = entries.find(({ path, entry }) => path === PACKED_CHANGELOG && !entry.unpacked);
+  const packedChangelog = changelogEntry === undefined ? undefined : readAsarFile(asarPath, dataOffset, changelogEntry.entry);
+  results.push(...checkChangelog(packedChangelog, readFileSync(join(repoRoot, 'CHANGELOG.md'), 'utf8'), repoVersion));
 
   const unpackedFiles = listFiles(unpacked);
-  results.push(...checkUnpackedSet(unpackedFiles, ASAR_UNPACK));
+  results.push(...checkUnpackedSet(unpackedFiles, asarUnpackFor(platform)));
   const unpackedScripts = unpackedFiles.filter((file) => /\.(c|m)?js$/.test(file));
   results.push(pass('unpacked scripts (outside asar integrity)', unpackedScripts.join(', ')));
 
@@ -217,6 +295,8 @@ export async function verifyPackage({ platform, arch, app, repoRoot, readFuseWir
   for (const worker of WORKERS) results.push(checkFile(`worker ${worker}`, join(unpacked, 'dist', worker)));
   results.push(checkFile('web-tree-sitter (compass worker external)', join(unpacked, 'node_modules', 'web-tree-sitter', 'tree-sitter.wasm')));
   results.push(checkSameFiles('grammars', join(repoRoot, 'resources', 'grammars'), join(unpacked, 'resources', 'grammars'), (file) => file.endsWith('.wasm')));
+  const shellIntegration = join(unpacked, 'resources', 'shell-integration');
+  results.push(...checkShellIntegrationScripts((file) => (existsSync(join(shellIntegration, file)) ? readFileSync(join(shellIntegration, file)) : undefined)));
 
   const sidecar = join(unpacked, 'python', 'damocles_voice_sidecar', 'damocles_voice_sidecar');
   results.push(checkFile('python sidecar entry', join(sidecar, '__main__.py')));
@@ -230,7 +310,26 @@ export async function verifyPackage({ platform, arch, app, repoRoot, readFuseWir
     results.push(checkFile('koffi native', join(unpacked, 'node_modules', '@koromix', `koffi-win32-${arch}`, triplet, 'koffi.node')));
     results.push(packedPaths.includes('node_modules/koffi/package.json') ? pass('koffi loader', 'node_modules/koffi in app.asar') : fail('koffi loader', 'node_modules/koffi/package.json is not in app.asar'));
   }
-  results.push(checkFile('@parcel/watcher native', join(unpacked, 'node_modules', watcherPackage(platform, arch), 'watcher.node')));
+  if (platform === 'win32') {
+    // Windows watches with fs.watch and never loads @parcel/watcher; electron-builder.yml files leaves out its prebuild.
+    const prebuild = [...entries.map(({ path }) => path), ...unpackedFiles].filter((file) => file.startsWith('node_modules/@parcel/watcher-'));
+    results.push(prebuild.length === 0 ? pass('@parcel/watcher prebuild left out', 'nothing on Windows loads it') : fail('@parcel/watcher prebuild left out', `ships ${[...new Set(prebuild)].slice(0, 10).join(', ')}`));
+  } else {
+    results.push(checkFile('@parcel/watcher native', join(unpacked, 'node_modules', watcherPackage(platform, arch), 'watcher.node')));
+  }
+  results.push(...checkNodePtyLayout(platform, arch, [...new Set([...entries.map(({ path }) => path), ...unpackedFiles])], unpackedFiles));
+  if (platform === 'darwin') {
+    const prebuild = join(unpacked, ...NODE_PTY.split('/'), 'prebuilds', `${platform}-${arch}`);
+    const spawnHelper = join(prebuild, 'spawn-helper');
+    // A Windows host reads no exec bits; macOS packages are built and verified on macOS.
+    if (existsSync(spawnHelper) && process.platform !== 'win32') results.push(checkSpawnHelperMode(statSync(spawnHelper).mode));
+    for (const binary of NODE_PTY_BINARIES.darwin) {
+      const file = join(prebuild, binary);
+      if (!existsSync(file)) continue;
+      const { ok, output } = codesign(file);
+      results.push(ok ? pass(`node-pty codesign ${binary}`, 'codesign -v passes') : fail(`node-pty codesign ${binary}`, output));
+    }
+  }
 
   const appUpdate = join(resources, 'app-update.yml');
   results.push(...checkAppUpdate(existsSync(appUpdate) ? readFileSync(appUpdate, 'utf8') : undefined, platform, arch));

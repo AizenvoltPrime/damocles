@@ -198,11 +198,12 @@ function assertNoDevOnlyPackages(topLevel, requirers) {
 
 /**
  * Packages only the desktop app uses: its externals that the extension lacks (Electron, the native
- * watcher, the updater), undici, which the desktop bundle inlines while pi ships its own nested copy,
- * and the desktop editor, fonts, test and packaging tooling.
+ * watcher, the updater), node-pty, which only the pty host loads, undici, which the desktop bundle inlines while pi ships its own nested copy,
+ * and the desktop editor, terminal, fonts, test and packaging tooling.
  */
 export const DESKTOP_ONLY_PACKAGES = [
   ...DESKTOP_EXTERNALS.filter((name) => !EXTENSION_EXTERNALS.includes(name)),
+  'node-pty',
   'undici',
   'monaco-editor',
   '@fontsource-variable/geist',
@@ -218,8 +219,8 @@ export const DESKTOP_ONLY_PACKAGES = [
   '@electron/fuses',
 ];
 
-/** Package name prefixes that are desktop-only as a family: every `@electron/*` tool and the watcher's native prebuilds. */
-export const DESKTOP_ONLY_PACKAGE_PREFIXES = ['@electron/', '@parcel/watcher-'];
+/** Package name prefixes that are desktop-only as a family: every `@electron/*` tool, the watcher's native prebuilds and xterm with its addons. */
+export const DESKTOP_ONLY_PACKAGE_PREFIXES = ['@electron/', '@parcel/watcher-', '@xterm/'];
 
 function isDesktopOnly(name) {
   return DESKTOP_ONLY_PACKAGES.includes(name) || DESKTOP_ONLY_PACKAGE_PREFIXES.some((prefix) => name.startsWith(prefix));
@@ -660,7 +661,8 @@ function applyBlock(original, block) {
 /**
  * `.vscodeignore` rules that keep desktop-only files out of the VSIX: the Monaco editor
  * (vite.config.ts emits all of it under `dist/webview/assets/monaco-`), the desktop build output and
- * packaging config, the end-to-end suite and its output, typecheck-only stubs, the Windows icon file, and logs.
+ * packaging config, the end-to-end suite and its output, typecheck-only stubs, the Windows icon file, the terminal's
+ * shell-integration scripts, and logs.
  * Each must appear verbatim as a line of `.vscodeignore`; the syntax is limited to `*` and `**`.
  */
 export const DESKTOP_EXCLUDE_RULES = [
@@ -668,6 +670,9 @@ export const DESKTOP_EXCLUDE_RULES = [
   '**/*.log',
   'dist/desktop/**',
   'dist/desktop-shell/**',
+  'dist/formatter-host.js',
+  'dist/pty-host.js',
+  'dist/quick-open-worker.js',
   'dist/e2e*/**',
   'dist-desktop/**',
   'e2e/**',
@@ -677,6 +682,7 @@ export const DESKTOP_EXCLUDE_RULES = [
   'playwright.desktop.config.ts',
   'vite.shell.config.ts',
   'resources/icon.ico',
+  'resources/shell-integration/**',
 ];
 
 /** Why .vscodeignore could let a desktop-only file into the VSIX; empty when every exclusion holds. */

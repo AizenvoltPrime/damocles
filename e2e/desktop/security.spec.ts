@@ -3,7 +3,7 @@ import type { ElectronApplication, Page } from '@playwright/test';
 import { MAIN_SCRIPT } from './support/app';
 import { activeChat, expect, panelIdOf, test } from './support/fixtures';
 import { hermeticEnv } from './support/hermetic';
-import { NOTIFIER_URL, OVERLAY_URL, overlayPage, popupPage, SHELL_URL } from './support/shell';
+import { NOTIFIER_URL, OVERLAY_URL, overlayPage, popupPage, SHELL_URL, shellPage } from './support/shell';
 import { chatInput, postFromWebview } from './support/ui';
 
 // Records shell.openExternal in main instead of launching the OS browser.
@@ -33,7 +33,7 @@ async function documentSurvived(tab: Page): Promise<boolean> {
 }
 
 test.describe('renderer security at runtime', () => {
-  test('webPreferences, permission handlers, window.open, navigation lock and app:// containment', async ({ launch }) => {
+  test('webPreferences, permission handlers, window.open, navigation lock and app:// containment', async ({ clipboard, launch }) => {
     // Without a capture device Chromium fails getUserMedia with NotFoundError before it asks the permission handler.
     const desktop = await launch({ args: ['--use-fake-device-for-media-stream'] });
     const { app } = desktop;
@@ -53,8 +53,8 @@ test.describe('renderer security at runtime', () => {
         const p = (w as unknown as { getLastWebPreferences(): Prefs | null }).getLastWebPreferences();
         return { url: w.getURL(), contextIsolation: p?.contextIsolation, nodeIntegration: p?.nodeIntegration, sandbox: p?.sandbox, webviewTag: p?.webviewTag };
       });
-    }, ['app://damocles/pane/index.html', OVERLAY_URL, NOTIFIER_URL]);
-    expect(prefs.length).toBeGreaterThanOrEqual(4);
+    }, [OVERLAY_URL, NOTIFIER_URL]);
+    expect(prefs.length).toBeGreaterThanOrEqual(3);
     expect(prefs.map((p) => p.url)).toContain(NOTIFIER_URL);
     for (const p of prefs) expect(p, p.url).toMatchObject({ contextIsolation: true, nodeIntegration: false, sandbox: true });
     for (const p of prefs) expect(p.webviewTag, p.url).not.toBe(true);
@@ -90,20 +90,10 @@ test.describe('renderer security at runtime', () => {
       BrowserWindow.getAllWindows()[0]!.focus();
       webContents.getAllWebContents().find((w) => w.getURL().includes(`/panel/${id}/`))!.focus();
     }, panelId);
-    const clipboard = await tab.evaluate(async () => {
-      const write = await navigator.clipboard.writeText('copied by e2e').then(
-        () => 'resolved',
-        (e: unknown) => `${(e as Error).name}: ${(e as Error).message}`,
-      );
-      const read = await navigator.clipboard.readText().then(
-        () => 'resolved',
-        (e: unknown) => (e as Error).name,
-      );
-      return { write, read };
-    });
-    expect(clipboard.write).toBe('resolved');
-    expect(clipboard.read).toBe('NotAllowedError');
-    expect(await app.evaluate(({ clipboard: c }) => c.readText())).toBe('copied by e2e');
+    const probe = await clipboard.probeFromPage(tab, 'copied by e2e');
+    expect(probe.write).toBe('resolved');
+    expect(probe.read).toBe('NotAllowedError');
+    expect(await clipboard.readText(app)).toBe('copied by e2e');
 
     await recordOpenExternal(app);
     const windowsBefore = app.windows().length;
@@ -181,7 +171,7 @@ test.describe('renderer security at runtime', () => {
     const chat = await activeChat(app);
     await expect(chatInput(chat)).toBeVisible();
     const overlay = await overlayPage(app);
-    expect(await overlay.evaluate(() => ({ shell: typeof window.damoclesShell, pane: typeof window.damoclesPane, panel: typeof window.damoclesBridge, overlay: typeof window.damoclesOverlay }))).toEqual({ shell: 'undefined', pane: 'undefined', panel: 'undefined', overlay: 'object' });
+    expect(await overlay.evaluate(() => ({ shell: typeof window.damoclesShell, panel: typeof window.damoclesBridge, overlay: typeof window.damoclesOverlay }))).toEqual({ shell: 'undefined', panel: 'undefined', overlay: 'object' });
     expect(await chat.evaluate(() => typeof (window as { damoclesOverlay?: unknown }).damoclesOverlay)).toBe('undefined');
     const csp = await overlay.evaluate(() => document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.getAttribute('content') ?? '');
     expect(csp).toMatch(/^default-src 'none'; style-src app:\/\/damocles 'unsafe-inline'; script-src 'nonce-[^']+'; font-src app:\/\/damocles; img-src app:\/\/damocles data:; base-uri 'none'; form-action 'none';$/);
@@ -198,6 +188,31 @@ test.describe('renderer security at runtime', () => {
     await expect.poll(() => desktop.output()).toContain(`[overlay] rejected damocles:overlay:answer from "app://damocles/panel/${panelIdOf(chat)}/index.html"`);
   });
 
+  test('the window page opens the application menu only for a click main saw', async ({ launch }) => {
+    const desktop = await launch();
+    const { app } = desktop;
+    await expect(chatInput(await activeChat(app))).toBeVisible();
+    // Records each popup instead of opening the native menu, whose modal loop would hold the test.
+    await app.evaluate(({ Menu }) => {
+      const g = globalThis as unknown as { __e2eMenuPopups: number };
+      g.__e2eMenuPopups = 0;
+      Menu.prototype.popup = function popup(this: unknown) {
+        g.__e2eMenuPopups++;
+      };
+    });
+    const popups = (): Promise<number> => app.evaluate(() => (globalThis as unknown as { __e2eMenuPopups: number }).__e2eMenuPopups);
+    const shell = await shellPage(app);
+
+    await shell.evaluate(() => window.damoclesShell!.openAppMenu({ x: 0, y: 0 }));
+    expect(await popups()).toBe(0);
+    await expect.poll(() => desktop.output()).toContain('[shell] not opening the application menu: no click or key of the user asked for it');
+
+    await shell.getByTestId('app-menu').click();
+    await expect.poll(popups).toBe(1);
+    await shell.evaluate(() => window.damoclesShell!.openAppMenu({ x: 0, y: 0 }));
+    expect(await popups()).toBe(1);
+  });
+
   test('the unpackaged app has its own name, neither "Electron" nor the installed app\'s', async ({ launch }) => {
     const { app } = await launch();
     expect(await app.evaluate(({ app: electronApp }) => electronApp.getName())).toBe('damocles-dev');
@@ -208,13 +223,16 @@ test.describe('renderer security at runtime', () => {
     await expect(chatInput(await activeChat(app))).toBeVisible();
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.minimize());
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.isMinimized())).toBe(true);
-    const secondInstance = app.evaluate(({ app: electronApp }) => new Promise<void>((resolve) => electronApp.once('second-instance', () => resolve())));
+    // Read ahead of main's own handler, which restores the window: it must still be minimized when the second launch arrives.
+    const minimizedOnArrival = app.evaluate(({ app: electronApp, BrowserWindow }) => new Promise<boolean>((resolve) => {
+      electronApp.prependOnceListener('second-instance', () => resolve(BrowserWindow.getAllWindows()[0]!.isMinimized()));
+    }));
 
     const electronBinary = (await import('electron')).default as unknown as string;
     const child = spawn(electronBinary, [MAIN_SCRIPT, '--user-data-dir', home.userData], { env: hermeticEnv(home), stdio: 'ignore' });
     const exitCode = await new Promise<number | null>((resolve) => child.once('exit', (code) => resolve(code)));
     expect(exitCode).toBe(0);
-    await secondInstance;
+    expect(await minimizedOnArrival).toBe(true);
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.isMinimized())).toBe(false);
     expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1);
   });

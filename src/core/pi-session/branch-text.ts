@@ -3,6 +3,7 @@ import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import type { ImageContent } from '@earendil-works/pi-ai';
 import type { ContentInput } from '../session-types';
 import { isImageBlock, type ImageBlock, type UserContentBlock } from '../../shared/types/content';
+import { withoutTerminalAttachments } from '../terminal-attachment';
 
 /**
  * Generic, plan-mode-agnostic helpers that read pi message/branch content. `piMessageText` is the
@@ -73,7 +74,7 @@ export function turnExchangeFrom(
     if (!entry || entry.type !== 'message') continue;
     const message = (entry as { message?: { role?: string; content?: unknown } }).message;
     if (message?.role === 'user') {
-      const t = piMessageText(message.content);
+      const t = withoutTerminalAttachments(piMessageText(message.content));
       if (t) userParts.push(t);
     } else if (message?.role === 'assistant') {
       const t = piMessageText(message.content);
@@ -111,7 +112,7 @@ export function firstExchangeForTitle(session: AgentSession): string | null {
   for (const entry of branch) {
     if (entry.type !== 'message') continue;
     const message = (entry as { message?: { role?: string; content?: unknown } }).message;
-    if (!userText && message?.role === 'user') userText = piMessageText(message.content);
+    if (!userText && message?.role === 'user') userText = withoutTerminalAttachments(piMessageText(message.content));
     else if (!assistantText && message?.role === 'assistant') assistantText = piMessageText(message.content);
     if (userText && assistantText) break;
   }

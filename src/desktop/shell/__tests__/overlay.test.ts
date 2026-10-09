@@ -131,6 +131,18 @@ describe('overlay requests', () => {
     await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('r1', { kind: 'menu', itemId: 'delete' }));
   });
 
+  it('keeps the first item focused when the menu opens under a resting pointer, and focuses an item once the pointer moves', async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'r1', MENU);
+    const rename = wrapper.get('[data-item-id="rename"]').element;
+    rename.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, screenX: 400, screenY: 300 }));
+    rename.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, screenX: 400, screenY: 300 }));
+    expect(document.activeElement?.getAttribute('data-item-id')).toBe('open');
+    rename.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, screenX: 401, screenY: 300 }));
+    expect(document.activeElement?.getAttribute('data-item-id')).toBe('rename');
+  });
+
   it('dismisses on Escape and on a click or right-click outside, and drops a cancelled request without answering', async () => {
     const wrapper = mountOverlay();
     await flushPromises();
@@ -510,5 +522,140 @@ describe('toasts', () => {
     api.dismissToast('t2');
     await flushPromises();
     expect(vi.mocked(api.holdToast).mock.calls.slice(2)).toEqual([['t2', true]]);
+  });
+});
+
+describe('command palette', () => {
+  const COMMANDS = [
+    { id: 'damocles.toggleSidebar', label: 'View: Toggle Sidebar', englishLabel: 'View: Toggle Sidebar', category: 'View', accelerator: 'Ctrl+B', enabled: true, recent: true },
+    { id: 'damocles.chat.contextUsage', label: 'Chat: Context usage', englishLabel: 'Chat: Context usage', category: 'Chat', accelerator: null, enabled: true, recent: false },
+    { id: 'damocles.chat.tools', label: 'Chat: Tools', englishLabel: 'Chat: Tools', category: 'Chat', accelerator: null, enabled: false, recent: false },
+  ];
+
+  async function type(wrapper: VueWrapper, value: string): Promise<void> {
+    await wrapper.get('[data-testid="quick-pick-input"]').setValue(value);
+    await flushPromises();
+  }
+
+  it('opens with ">" typed, lists categories and keycaps, and answers the command Enter picks', async () => {
+    api.commands.list = COMMANDS;
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'p1', { kind: 'quickOpen', mode: 'commands' });
+    const input = wrapper.get('[data-testid="quick-pick-input"]');
+    expect((input.element as HTMLInputElement).value).toBe('>');
+    expect(input.attributes('aria-label')).toBe('Command Palette');
+    expect(wrapper.text()).toContain('recently used');
+    const sidebar = wrapper.get('[data-item-id="damocles.toggleSidebar"]');
+    expect(sidebar.attributes('aria-keyshortcuts')).toBe('Control+B');
+    expect(sidebar.findAll('kbd').map((cap) => cap.text())).toEqual(['Ctrl', 'B']);
+    expect(input.attributes('aria-activedescendant')).toBe(sidebar.attributes('id'));
+
+    await type(wrapper, '>context');
+    press('Enter');
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('p1', { kind: 'quickOpen', command: 'damocles.chat.contextUsage' }));
+    expect(api.listCommands).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the first command active under a resting pointer, so Enter runs it, and activates a row once the pointer moves', async () => {
+    api.commands.list = COMMANDS;
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'p1', { kind: 'quickOpen', mode: 'commands' });
+    const input = wrapper.get('[data-testid="quick-pick-input"]');
+    const first = wrapper.get('[data-item-id="damocles.toggleSidebar"]');
+    const context = wrapper.get('[data-item-id="damocles.chat.contextUsage"]');
+    const move = (x: number): void => { context.element.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, screenX: x, screenY: 200 })); };
+    move(300);
+    move(300);
+    await flushPromises();
+    expect(input.attributes('aria-activedescendant')).toBe(first.attributes('id'));
+    move(301);
+    await flushPromises();
+    expect(input.attributes('aria-activedescendant')).toBe(context.attributes('id'));
+  });
+
+  it('dims a disabled command, which neither Enter nor a click runs', async () => {
+    api.commands.list = COMMANDS;
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'p1', { kind: 'quickOpen', mode: 'commands' });
+    await type(wrapper, '>tools');
+    const tools = wrapper.get('[data-item-id="damocles.chat.tools"]');
+    expect(tools.attributes('aria-disabled')).toBe('true');
+    expect(tools.classes()).toContain('opacity-50');
+    press('Enter');
+    await tools.trigger('click');
+    await flushPromises();
+    expect(api.answer).not.toHaveBeenCalled();
+  });
+
+  it('switches Quick Open to the palette on a leading ">" and back when it is deleted', async () => {
+    api.commands.list = COMMANDS;
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'q1', { kind: 'quickOpen', mode: 'files' });
+    const input = wrapper.get('[data-testid="quick-pick-input"]');
+    expect(input.attributes('aria-label')).toBe('Quick Open');
+    await type(wrapper, '>');
+    expect(input.attributes('aria-label')).toBe('Command Palette');
+    expect(wrapper.find('[data-item-id="damocles.chat.contextUsage"]').exists()).toBe(true);
+    await type(wrapper, '');
+    expect(input.attributes('aria-label')).toBe('Quick Open');
+    expect(wrapper.find('[data-item-id="damocles.chat.contextUsage"]').exists()).toBe(false);
+  });
+
+  it('shows a folder scope as a chip before the query, lists its files without groups and answers the pick', async () => {
+    const result = (relativePath: string) => ({
+      projectKey: 'api-key', projectName: 'api', relativePath, label: relativePath.split('/').at(-1)!, description: 'src/routes', labelMatches: [], descriptionMatches: [], recent: false,
+    });
+    api.quickOpen.answer = (query) => ({ generation: query.generation, currentProjectKey: 'web-key', mention: false, results: [result('src/routes/admin.ts'), result('src/routes/users.ts')] });
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'q1', { kind: 'quickOpen', mode: 'files', scope: { projectKey: 'api-key', projectName: 'api', folder: 'src/routes/' } });
+    const input = wrapper.get('[data-testid="quick-pick-input"]');
+    expect(wrapper.get('[data-testid="quick-pick-scope"]').attributes('title')).toBe('api / src/routes/');
+    expect(wrapper.get('[data-testid="quick-pick-scope"]').text()).toContain('api / src/routes/');
+    expect(input.attributes('aria-label')).toBe('Go to a file in api / src/routes/');
+    expect(input.attributes('placeholder')).toBe('Search files in this folder (append : to go to line, @ to mention in chat)');
+    expect(wrapper.findAll('[role="presentation"]')).toHaveLength(0);
+    expect(wrapper.findAll('[data-testid="quick-pick-item"]').map((item) => item.text())).toEqual([expect.stringContaining('admin.ts'), expect.stringContaining('users.ts')]);
+    await wrapper.findAll('[data-testid="quick-pick-item"]')[1]!.trigger('click');
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('q1', { kind: 'quickOpen', pick: { projectKey: 'api-key', relativePath: 'src/routes/users.ts', mention: false } }));
+
+    // Greek labels the scope too, and the next request without one is plain Quick Open again.
+    shellI18n.global.locale.value = 'el';
+    await open(wrapper, 'q2', { kind: 'quickOpen', mode: 'files', scope: { projectKey: 'api-key', projectName: 'api', folder: '' } });
+    expect(wrapper.get('[data-testid="quick-pick-input"]').attributes('aria-label')).toBe('Μετάβαση σε αρχείο στο api');
+    shellI18n.global.locale.value = 'en';
+  });
+
+  it('picks from the answer to the newest query when an older answer lands last', async () => {
+    const result = { projectKey: 'web-key', projectName: 'web', relativePath: 'src/foo.ts', label: 'foo.ts', description: 'src', labelMatches: [], descriptionMatches: [], recent: false };
+    const late: Array<() => void> = [];
+    vi.mocked(api.queryQuickOpen).mockImplementation((query) => new Promise((resolve) => {
+      const answer = { generation: query.generation, mention: false, results: [result], ...(query.query === 'foo:12' ? { line: 12 } : {}) };
+      if (query.query === 'foo:12') late.push(() => resolve(answer));
+      else resolve(answer);
+    }));
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'q1', { kind: 'quickOpen', mode: 'files' });
+    await type(wrapper, 'foo:12');
+    await type(wrapper, 'foo');
+    for (const settle of late) settle();
+    await flushPromises();
+    press('Enter');
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('q1', { kind: 'quickOpen', pick: { projectKey: 'web-key', relativePath: 'src/foo.ts', mention: false } }));
+  });
+
+  it('in Greek finds a command by its English title', async () => {
+    vi.mocked(api.getState).mockResolvedValue({ locale: 'el', platform: 'win32' });
+    api.commands.list = [{ ...COMMANDS[1]!, label: 'Συνομιλία: Χρήση περιβάλλοντος', category: 'Συνομιλία' }];
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'p1', { kind: 'quickOpen', mode: 'commands' });
+    await type(wrapper, '>context usage');
+    expect(wrapper.get('[data-item-id="damocles.chat.contextUsage"]').text()).toContain('Chat: Context usage');
   });
 });

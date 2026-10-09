@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import { promises as fs } from 'node:fs';
 import * as lockfile from 'proper-lockfile';
+import { settlePending } from '../../shared/settle-pending';
 import { log } from '../logger';
 import { folderKey } from '../workspace-folders/folder-key';
 
@@ -67,6 +68,20 @@ export function writeJsonConfig(
       if (writeQueue.get(key) === next) writeQueue.delete(key);
     });
   return next;
+}
+
+/**
+ * Settles once no write to the files is queued or running in this process, one queued meanwhile included; never rejects.
+ * A function is asked again after each round, so a file it starts listing meanwhile is waited for too.
+ */
+export function jsonConfigWritesSettled(files: string | (() => Iterable<string>)): Promise<void> {
+  const list = typeof files === 'string' ? (): Iterable<string> => [files] : files;
+  return settlePending(() => [...list()].flatMap((file) => writeQueue.get(path.resolve(file)) ?? []));
+}
+
+/** Settles once no write to any file is queued or running in this process, one queued meanwhile included; never rejects. */
+export function allJsonConfigWritesSettled(): Promise<void> {
+  return settlePending(() => writeQueue.values());
 }
 
 async function lockedWrite(filePath: string, mutate: JsonConfigMutation, options: JsonConfigWriteOptions): Promise<void> {
@@ -223,8 +238,8 @@ async function replaceFile(
   }
 }
 
-// Windows refuses a rename while another process (an editor, an indexer, antivirus) has the target open.
-async function renameWithRetry(from: string, to: string): Promise<void> {
+/** A rename retried for a bounded time while Windows refuses it because another process (an editor, an indexer, antivirus) has the target open. */
+export async function renameWithRetry(from: string, to: string): Promise<void> {
   const deadline = Date.now() + RENAME_RETRY_BUDGET_MS;
   let delay = 10;
   for (;;) {

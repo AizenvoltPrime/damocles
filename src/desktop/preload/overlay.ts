@@ -11,10 +11,15 @@ import {
   type OverlaySettingsAttached,
   type OverlayState,
   type OverlayToast,
+  type PaletteCommand,
+  type QuickOpenResponse,
 } from './overlay-channels';
+import type { DropZonesPointer } from './shell-channels';
 import type { ChimeTone, NotificationCenterState } from './notifications';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { SettingsTarget } from '../../shared/settings-sections';
+import type { ReleaseIndex, ReleaseNotes, UpdateSnapshot, VersionInfo } from './updates';
+import type { TerminalProfileReport } from './terminal-channels';
 
 function subscribe<T>(channel: string, listener: (value: T) => void): () => void {
   const handler = (_event: IpcRendererEvent, value: T): void => listener(value);
@@ -83,6 +88,21 @@ const api: DamoclesOverlayApi = {
   setPref: (key, value) => ipcRenderer.invoke(OVERLAY_CHANNELS.prefsSet, { key, value }) as Promise<OverlayPrefWrite>,
   relaunch: () => ipcRenderer.invoke(OVERLAY_CHANNELS.relaunch) as Promise<void>,
   resetLayout: () => ipcRenderer.invoke(OVERLAY_CHANNELS.layoutReset) as Promise<void>,
+  getUpdate: () => ipcRenderer.invoke(OVERLAY_CHANNELS.updateGet) as Promise<UpdateSnapshot>,
+  onUpdate: (listener) => subscribe<UpdateSnapshot>(OVERLAY_CHANNELS.updateState, listener),
+  checkForUpdates: () => ipcRenderer.invoke(OVERLAY_CHANNELS.updateCheck) as Promise<void>,
+  restartToUpdate: () => ipcRenderer.invoke(OVERLAY_CHANNELS.updateRestart) as Promise<void>,
+  showUpdateLog: () => ipcRenderer.invoke(OVERLAY_CHANNELS.updateShowLog) as Promise<void>,
+  copyVersionInfo: () => ipcRenderer.invoke(OVERLAY_CHANNELS.updateCopyInfo) as Promise<void>,
+  getVersionInfo: () => ipcRenderer.invoke(OVERLAY_CHANNELS.updateVersionInfo) as Promise<VersionInfo>,
+  openReleasePage: () => ipcRenderer.invoke(OVERLAY_CHANNELS.updateOpenReleasePage) as Promise<void>,
+  getReleaseIndex: () => ipcRenderer.invoke(OVERLAY_CHANNELS.releaseNotesIndex) as Promise<ReleaseIndex>,
+  getReleaseNotes: (version) => ipcRenderer.invoke(OVERLAY_CHANNELS.releaseNotesGet, version) as Promise<ReleaseNotes>,
+  queryQuickOpen: (query) => ipcRenderer.invoke(OVERLAY_CHANNELS.quickOpenQuery, { query: query.query, generation: query.generation }) as Promise<QuickOpenResponse>,
+  listCommands: () => ipcRenderer.invoke(OVERLAY_CHANNELS.commandsList, {}) as Promise<PaletteCommand[]>,
+  getTerminalProfiles: () => ipcRenderer.invoke(OVERLAY_CHANNELS.terminalProfiles, {}) as Promise<TerminalProfileReport>,
+  onTerminalProfiles: (listener) => subscribe<TerminalProfileReport>(OVERLAY_CHANNELS.terminalProfilesChanged, listener),
+  onDropZonesPointer: (listener) => subscribe<DropZonesPointer>(OVERLAY_CHANNELS.dropZonesPointer, listener),
 };
 
 contextBridge.exposeInMainWorld('damoclesOverlay', api);

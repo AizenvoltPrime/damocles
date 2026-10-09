@@ -12,12 +12,13 @@ function asIconPathSettable(panel: vscode.WebviewPanel): { iconPath: vscode.Uri 
 
 function wrapWebviewPanel(
   panel: vscode.WebviewPanel,
-  behavior: Pick<PanelHost, 'reveal' | 'setFolderLabel'>,
+  behavior: Pick<PanelHost, 'reveal' | 'setFolderLabel' | 'retainsContextWhenHidden'>,
 ): PanelHost {
   const webview = panel.webview;
   return {
     get visible() { return panel.visible; },
     get active() { return panel.active; },
+    retainsContextWhenHidden: behavior.retainsContextWhenHidden,
     get column() { return panel.viewColumn; },
     get cspSource() { return webview.cspSource; },
     // VS Code injects its --vscode-* variables into every webview itself, and tokens.css maps them to --d-*.
@@ -37,8 +38,10 @@ function wrapWebviewPanel(
   };
 }
 
+// retainsContextWhenHidden must equal the retainContextWhenHidden panel-factory.ts creates each kind with.
 export function wrapChatPanel(panel: vscode.WebviewPanel): PanelHost {
   return wrapWebviewPanel(panel, {
+    retainsContextWhenHidden: true,
     reveal: (column) => { if (column === undefined) panel.reveal(); else panel.reveal(column); },
     setFolderLabel: (label) => { panel.title = label === undefined ? 'Damocles' : `Damocles · ${label}`; },
   });
@@ -46,6 +49,7 @@ export function wrapChatPanel(panel: vscode.WebviewPanel): PanelHost {
 
 export function wrapBrowserPanel(panel: vscode.WebviewPanel): PanelHost {
   return wrapWebviewPanel(panel, {
+    retainsContextWhenHidden: false,
     reveal: (column) => panel.reveal(column ?? panel.viewColumn ?? vscode.ViewColumn.Active, true),
     setFolderLabel: () => {},
   });
@@ -56,6 +60,8 @@ export function wrapSidebarView(view: vscode.WebviewView): PanelHost {
   return {
     get visible() { return view.visible; },
     get active() { return false; },
+    // extension.ts registers the view with retainContextWhenHidden.
+    retainsContextWhenHidden: true,
     get column() { return undefined; },
     get cspSource() { return webview.cspSource; },
     themeCssSource: () => '',

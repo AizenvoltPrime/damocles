@@ -1,13 +1,13 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication, Page } from '@playwright/test';
-import { mainLog } from './support/app';
+import { logBeforeQuit, mainLog } from './support/app';
 import { activeChat, expect, test } from './support/fixtures';
 import { seedStubModel, type HermeticHome } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { shellState } from './support/shell';
 import { listChats, readyShell } from './support/shell-ui';
-import { addProject, chatInput, sendAndAwaitEcho } from './support/ui';
+import { addProject, answerDialogs, answerOpenDialog, chatInput, clickMenu, hostMessages, postFromWebview, recordHostMessages, sendAndAwaitEcho, TRUST_PROMPT } from './support/ui';
 
 // AD8 keeps the selected chat and three idle ones, so four stored chats are all still loaded at quit.
 const SAVED_CHATS = 4;
@@ -89,12 +89,110 @@ test('AD8: a relaunch keeps every saved idle chat loaded and saved, and lists ea
     }, { timeout: 90_000 }).toBe(true);
     await sample();
 
-    expect.soft(mainLog(home).slice(logBefore), 'no saved chat is unloaded at launch').not.toContain('[chats] unloading chat');
     expect.soft((await listChats(app, projectKey)).chats.filter((chat) => chat.loaded).map((chat) => chat.id).sort(), 'every saved chat is still loaded').toEqual(sorted);
     expect.soft(savedSessionIds(home), 'panels.json still holds every saved chat').toEqual(sorted);
     expect.soft([...phantoms], 'no restoring chat shows as a new chat').toEqual([]);
     expect((await shellState(app)).selected).toEqual({ projectKey, chatId: ids.at(-1) });
+    await desktop.close();
+    expect.soft(logBeforeQuit(home).slice(logBefore), 'no saved chat is unloaded at launch').not.toContain('[chats] unloading chat');
   } finally {
     await stub.close();
   }
+});
+
+// A rename that Windows holds up (an indexer or antivirus has the file open) is what writeJsonConfig retries for; here every
+// panels.json, trusted-folders.json or mcp.json write lands a second late, longer than a quit takes.
+const SLOW_RENAME_MS = 1_000;
+
+test('a quit right after a reply waits for the chat\'s saved state, so the next launch reopens the conversation', async ({ home, launch }) => {
+  test.setTimeout(120_000);
+  const stub = await startOpenAIStub();
+  try {
+    seedStubModel(home, stub.baseUrl);
+    let desktop = await launch();
+    const chat = await activeChat(desktop.app);
+    await expect(chatInput(chat)).toBeVisible();
+    await desktop.app.evaluate((_electron, delay) => {
+      const fs = process.getBuiltinModule('node:fs').promises;
+      const rename = fs.rename.bind(fs);
+      fs.rename = async (from, to) => {
+        if (String(to).endsWith('panels.json')) await new Promise((resolve) => setTimeout(resolve, delay));
+        return rename(from, to);
+      };
+    }, SLOW_RENAME_MS);
+    await recordHostMessages(chat);
+    await chatInput(chat).fill('keep me');
+    await chatInput(chat).press('Enter');
+    await chat.waitForFunction(() => ((window as unknown as { __e2eHost?: Array<{ type?: string }> }).__e2eHost ?? []).some((m) => m.type === 'done'));
+    await desktop.close();
+
+    desktop = await launch();
+    await expect((await activeChat(desktop.app)).getByText('Echo: keep me', { exact: true })).toBeVisible();
+  } finally {
+    await stub.close();
+  }
+});
+
+test('a quit during a slowed trust write waits for it, so the next launch still trusts the folder', async ({ home, launch }) => {
+  test.setTimeout(120_000);
+  let desktop = await launch();
+  await expect(chatInput(await activeChat(desktop.app))).toBeVisible();
+  await desktop.app.evaluate((_electron, delay) => {
+    const fs = process.getBuiltinModule('node:fs').promises;
+    const rename = fs.rename.bind(fs);
+    const held = globalThis as { __e2eSlowedRenames?: number };
+    fs.rename = async (from, to) => {
+      if (String(to).endsWith('trusted-folders.json')) {
+        held.__e2eSlowedRenames = (held.__e2eSlowedRenames ?? 0) + 1;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+      return rename(from, to);
+    };
+  }, SLOW_RENAME_MS);
+  await answerOpenDialog(desktop.app, home.project);
+  await answerDialogs(desktop.app, { [TRUST_PROMPT]: 'Trust Folder' });
+  await clickMenu(desktop.app, 'damocles.addProject');
+  // The grant's write is in flight, and memory trusts the folder only once it lands.
+  await expect.poll(() => desktop.app.evaluate(() => (globalThis as { __e2eSlowedRenames?: number }).__e2eSlowedRenames ?? 0)).toBe(1);
+  await desktop.close();
+
+  desktop = await launch();
+  const project = (await shellState(desktop.app)).projects.find((candidate) => candidate.fsPath === home.project);
+  expect(project?.trusted).toBe(true);
+});
+
+test('a quit during a slowed mcp.json write waits for it, so the next launch still has the server', async ({ home, launch }) => {
+  test.setTimeout(120_000);
+  let desktop = await launch();
+  const chat = await activeChat(desktop.app);
+  await expect(chatInput(chat)).toBeVisible();
+  await desktop.app.evaluate((_electron, delay) => {
+    const fs = process.getBuiltinModule('node:fs').promises;
+    const path = process.getBuiltinModule('node:path');
+    const rename = fs.rename.bind(fs);
+    const held = globalThis as { __e2eSlowedRenames?: number };
+    fs.rename = async (from, to) => {
+      if (path.basename(String(to)) === 'mcp.json') {
+        held.__e2eSlowedRenames = (held.__e2eSlowedRenames ?? 0) + 1;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+      return rename(from, to);
+    };
+  }, SLOW_RENAME_MS);
+  await postFromWebview(chat, { type: 'mcpAddServer', requestId: 'e2e-quit', serverName: 'e2e-quit', config: { command: 'e2e-quit-server' } });
+  await expect.poll(() => desktop.app.evaluate(() => (globalThis as { __e2eSlowedRenames?: number }).__e2eSlowedRenames ?? 0)).toBe(1);
+  await desktop.close();
+  const mcpFile = path.join(home.damoclesDir, 'mcp.json');
+  expect(fs.existsSync(mcpFile), 'the quit left mcp.json written').toBe(true);
+
+  desktop = await launch();
+  const relaunched = await activeChat(desktop.app);
+  await expect(chatInput(relaunched)).toBeVisible();
+  await recordHostMessages(relaunched);
+  await postFromWebview(relaunched, { type: 'requestMcpStatus' });
+  await expect.poll(async () => {
+    const latest = (await hostMessages(relaunched, 'mcpServerStatus')).at(-1) as { servers?: { name: string }[] } | undefined;
+    return (latest?.servers ?? []).map((server) => server.name);
+  }).toContain('e2e-quit');
+  expect(JSON.parse(fs.readFileSync(mcpFile, 'utf8'))).toEqual({ mcpServers: { 'e2e-quit': { command: 'e2e-quit-server' } } });
 });

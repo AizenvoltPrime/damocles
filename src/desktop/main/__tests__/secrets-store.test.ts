@@ -14,6 +14,7 @@ vi.mock('electron', () => ({ safeStorage }));
 import type { NotificationService } from '../../../platform/notification-service';
 import { formatMessage } from '../platform/localization-service';
 import { SECRETS_FILE, createDesktopSecretsStore } from '../platform/secrets-store';
+import { flushAcrossHeldRename } from '../../../__mocks__/held-rename';
 
 let userData: string;
 const originalPlatform = process.platform;
@@ -124,5 +125,16 @@ describe('desktop secrets store', () => {
     await expect(secrets.store('explore.key', 'new')).rejects.toThrow();
     await expect(secrets.delete('explore.key')).rejects.toThrow();
     expect(await secrets.get('explore.key')).toBe('old');
+  });
+
+  it('flush waits for a write in flight and for one queued while it waits', async () => {
+    const secrets = createDesktopSecretsStore(userData, notifications, t, () => undefined);
+    const onDisk = await flushAcrossHeldRename(path.join(userData, SECRETS_FILE), {
+      first: () => secrets.store('token', 'one'),
+      flush: () => secrets.flush(),
+      second: () => secrets.store('token', 'two'),
+      onDisk: () => createDesktopSecretsStore(userData, notifications, t, () => undefined).get('token'),
+    });
+    expect(await onDisk).toBe('two');
   });
 });

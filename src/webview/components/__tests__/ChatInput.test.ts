@@ -112,7 +112,7 @@ describe('the composer during an IME composition', () => {
     keydown(textarea, { key: 'Enter' });
     await wrapper.vm.$nextTick();
 
-    expect(wrapper.emitted('send')).toEqual([['γεια', expect.any(Boolean)]]);
+    expect(wrapper.emitted('send')).toEqual([['γεια', expect.any(Boolean), []]]);
   });
 
   it('leaves the typed text in the box when the composition commit is ignored', async () => {
@@ -473,7 +473,7 @@ describe('the composer sending a prompt that is not its draft', () => {
     sendPrompt(wrapper, 'Write tests');
     await wrapper.vm.$nextTick();
 
-    expect(wrapper.emitted('send')).toEqual([['Write tests', expect.any(Boolean)]]);
+    expect(wrapper.emitted('send')).toEqual([['Write tests', expect.any(Boolean), []]]);
     expect(textarea.value).toBe('half a thought');
     expect(imageStrip(wrapper)).toHaveLength(1);
     wrapper.unmount();

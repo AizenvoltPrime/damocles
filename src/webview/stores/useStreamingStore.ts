@@ -2,6 +2,7 @@ import { ref, computed } from "vue";
 import { defineStore } from "pinia";
 import type { ChatMessage, ToolCall, QueuedMessage } from "@shared/types/session";
 import type { ContentBlock, ImageBlock, UserContentBlock } from "@shared/types/content";
+import type { TerminalAttachmentInfo } from "@shared/types/terminal-attachment";
 import { replacesToolStatus, resolveCancelledStatus, TERMINAL_TOOL_STATUSES } from "./tool-cancelled-status";
 
 export interface ToolStatusEntry {
@@ -42,6 +43,8 @@ export function buildUserMessage(
   promptIndex?: number,
   isMidStream?: boolean,
   isCommandEcho?: boolean,
+  terminalAttachments?: readonly TerminalAttachmentInfo[],
+  timestamp: number = Date.now(),
 ): ChatMessage {
   const blocks = contentBlocksFromUserContent(content);
   return {
@@ -51,7 +54,8 @@ export function buildUserMessage(
     role: "user",
     content: extractDisplayContent(content),
     ...(blocks !== undefined && { contentBlocks: blocks }),
-    timestamp: Date.now(),
+    ...(terminalAttachments?.length ? { terminalAttachments: [...terminalAttachments] } : {}),
+    timestamp,
     isReplay,
     ...(isInjected !== undefined && { isInjected }),
     ...(isCommandEcho === true && { isCommandEcho }),
@@ -63,13 +67,13 @@ export function buildUserMessage(
 export function buildSteerChip(
   message: string,
   steerTarget: ChatMessage['steerTarget'],
-  { promptIndex, isReplay = false, images }: { promptIndex?: number | undefined; isReplay?: boolean; images?: ImageBlock[] | undefined } = {},
+  { promptIndex, isReplay = false, images, timestamp = Date.now() }: { promptIndex?: number | undefined; isReplay?: boolean; images?: ImageBlock[] | undefined; timestamp?: number | undefined } = {},
 ): ChatMessage {
   return {
     id: generateId(),
     role: "user",
     content: message,
-    timestamp: Date.now(),
+    timestamp,
     isReplay,
     isInjected: true,
     ...(images?.length ? { contentBlocks: images } : {}),
@@ -424,9 +428,10 @@ export const useStreamingStore = defineStore("streaming", () => {
     promptIndex?: number,
     isMidStream?: boolean,
     isCommandEcho?: boolean,
+    terminalAttachments?: readonly TerminalAttachmentInfo[],
   ): ChatMessage {
     flushReplayQueue();
-    const msg = buildUserMessage(content, isReplay, sdkMessageId, isInjected, correlationId, promptIndex, isMidStream, isCommandEcho);
+    const msg = buildUserMessage(content, isReplay, sdkMessageId, isInjected, correlationId, promptIndex, isMidStream, isCommandEcho, terminalAttachments);
     messages.value = [...messages.value, msg];
     return msg;
   }
@@ -592,10 +597,11 @@ export const useStreamingStore = defineStore("streaming", () => {
     }
   }
 
+  /** `messageId` names a queued chip, or by its correlation id the echo of a prompt pi queued into the running run. */
   function removeQueuedMessage(messageId: string): ChatMessage | undefined {
     flushReplayQueue();
-    const removed = messages.value.find((m) => m.id === messageId);
-    messages.value = messages.value.filter((m) => m.id !== messageId);
+    const removed = messages.value.find((m) => m.id === messageId || m.correlationId === messageId);
+    messages.value = messages.value.filter((m) => m !== removed);
     return removed;
   }
 

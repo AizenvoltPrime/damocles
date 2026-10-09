@@ -28,31 +28,31 @@ const buttons = computed((): DialogButton[] => [
   >
     <div
       v-if="request.detail || request.warning"
-      class="rounded-[9px] bg-(--d-hover) px-3 py-2.5"
+      class="rounded-9 bg-(--d-hover) px-3 py-2.5"
     >
       <template v-if="request.detail">
-        <div class="mb-[3px] text-[11px] text-(--d-faint-text)">
+        <div class="mb-0.75 text-11 text-(--d-faint-text)">
           {{ request.detail.label }}
         </div>
-        <div class="max-h-40 overflow-y-auto text-[13px] break-words whitespace-pre-wrap">
+        <div class="max-h-40 overflow-y-auto text-13 wrap-break-word whitespace-pre-wrap">
           {{ request.detail.text }}
         </div>
       </template>
       <p
         v-if="request.warning"
         data-testid="overlay-confirm-warning"
-        class="flex items-center gap-1.5 text-[11.5px] text-(--d-warning-text)"
+        class="flex items-center gap-1.5 text-11.5 text-(--d-warning-text)"
         :class="request.detail ? 'mt-1.5' : ''"
       >
         <LoaderCircle
           v-if="request.warning.running"
           aria-hidden="true"
-          class="size-[11px] shrink-0 d-spinning"
+          class="size-2.75 shrink-0 d-spinning"
         />
         <CircleAlert
           v-else
           aria-hidden="true"
-          class="size-[11px] shrink-0"
+          class="size-2.75 shrink-0"
         />
         {{ request.warning.text }}
       </p>

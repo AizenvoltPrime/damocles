@@ -44,9 +44,10 @@ export interface PiStreamAdapterDeps {
   onBudgetStop: () => void;
   /** pi delivered a user message (a steer, a follow-up or a run's opening prompt) — flush the queued-input buffer.
    *  The delivered text is passed because the host injects user messages of its own and must be able to
-   *  tell one of those apart from a queued batch. Returns true when the delivery was a real queued batch
-   *  or a cancel note (so its mid-stream marker is owed), false for a plain follow-up or an empty buffer. */
-  onUserMessageDelivered: (deliveredText: string) => boolean;
+   *  tell one of those apart from a queued batch, and the message so the host can find the entry pi commits
+   *  for it. Returns true when the delivery was a real queued batch or a cancel note (so its mid-stream
+   *  marker is owed), false for a plain follow-up or an empty buffer. */
+  onUserMessageDelivered: (deliveredText: string, message: unknown) => boolean;
   /** A delivered batch's or cancel note's pi user entry id is now committed to the tree (resolved at the
    *  next assistant message_start). Persist the mid-stream marker keyed to it. */
   onMidStreamEntryCommitted: (userEntryId: string) => void;
@@ -521,7 +522,7 @@ export class PiStreamAdapter {
           // pi emits this for a run's opening prompt too, which the session reports as its own only
           // when a cancel note opened the run. Collapse the queued chips now, and if a real batch or a
           // cancel note was delivered, owe it a mid-stream marker at the next assistant message_start.
-          if (this.deps.onUserMessageDelivered(userMessageText(event.message.content))) this._midStreamPending.push(event.message);
+          if (this.deps.onUserMessageDelivered(userMessageText(event.message.content), event.message)) this._midStreamPending.push(event.message);
         }
         break;
       case 'tool_execution_start': {

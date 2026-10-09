@@ -739,6 +739,445 @@
         "default": true,
         "description": "Play a short sound with each desktop pop-up."
       },
+      "damocles.desktop.editor.fontSize": {
+        "type": "integer",
+        "default": 13,
+        "minimum": 6,
+        "maximum": 100,
+        "description": "Font size of the desktop editor, in pixels."
+      },
+      "damocles.desktop.editor.tabSize": {
+        "type": "integer",
+        "default": 4,
+        "minimum": 1,
+        "maximum": 16,
+        "description": "The number of spaces a tab is equal to in the desktop editor. Detect indentation overrides it per file."
+      },
+      "damocles.desktop.editor.detectIndentation": {
+        "type": "boolean",
+        "default": true,
+        "description": "Detect the tab size and whether a file indents with tabs or spaces from its content."
+      },
+      "damocles.desktop.editor.wordWrap": {
+        "type": "string",
+        "enum": [
+          "off",
+          "on"
+        ],
+        "enumDescriptions": [
+          "Lines never wrap.",
+          "Lines wrap at the editor width."
+        ],
+        "default": "off",
+        "description": "How the desktop editor wraps long lines."
+      },
+      "damocles.desktop.editor.minimap": {
+        "type": "boolean",
+        "default": true,
+        "description": "Show the minimap beside the desktop editor."
+      },
+      "damocles.desktop.editor.renderWhitespace": {
+        "type": "string",
+        "enum": [
+          "none",
+          "boundary",
+          "selection",
+          "trailing",
+          "all"
+        ],
+        "enumDescriptions": [
+          "Never show whitespace characters.",
+          "Show whitespace except single spaces between words.",
+          "Show whitespace in selected text only.",
+          "Show trailing whitespace only.",
+          "Show every whitespace character."
+        ],
+        "default": "selection",
+        "description": "How the desktop editor shows whitespace characters."
+      },
+      "damocles.desktop.editor.autoSave": {
+        "type": "string",
+        "enum": [
+          "off",
+          "afterDelay",
+          "onFocusChange"
+        ],
+        "enumDescriptions": [
+          "Files save only when you save them.",
+          "A changed file saves one second after the last edit.",
+          "A changed file saves when the editor loses focus."
+        ],
+        "default": "off",
+        "description": "When the desktop editor saves changed files by itself."
+      },
+      "damocles.desktop.editor.formatOnSave": {
+        "type": "boolean",
+        "default": false,
+        "description": "Format a file when you save it, and when auto save runs on focus change. A trusted project's own Prettier 2 or 3 formats it; without Prettier, TypeScript, JavaScript and JSON use the built-in formatter. Nothing formats in an untrusted folder."
+      },
+      "damocles.desktop.terminal.defaultProfile": {
+        "type": "string",
+        "default": "",
+        "description": "The id of the shell a new terminal starts when none is chosen, such as pwsh, cmd, git-bash, wsl:Ubuntu, zsh or bash. Empty, or a shell that is not installed, starts the first one detected."
+      },
+      "damocles.desktop.terminal.fontSize": {
+        "type": "integer",
+        "default": 13,
+        "minimum": 6,
+        "maximum": 32,
+        "description": "Font size of the desktop terminal, in pixels."
+      },
+      "damocles.desktop.terminal.scrollback": {
+        "type": "integer",
+        "default": 1000,
+        "minimum": 0,
+        "maximum": 100000,
+        "description": "The number of lines the desktop terminal keeps above the screen."
+      },
+      "damocles.desktop.terminal.cursorStyle": {
+        "type": "string",
+        "enum": [
+          "block",
+          "underline",
+          "bar"
+        ],
+        "enumDescriptions": [
+          "A block cursor.",
+          "An underline cursor.",
+          "A vertical bar cursor."
+        ],
+        "default": "block",
+        "description": "The shape of the desktop terminal cursor."
+      },
+      "damocles.desktop.terminal.fontFamily": {
+        "type": "string",
+        "default": "",
+        "description": "The font family of the desktop terminal, as a CSS font-family list. Empty uses the app's monospace font."
+      },
+      "damocles.desktop.terminal.lineHeight": {
+        "type": "number",
+        "default": 1.2,
+        "minimum": 1,
+        "maximum": 2,
+        "description": "The line height of the desktop terminal, multiplied by its font size."
+      },
+      "damocles.desktop.terminal.cursorBlinking": {
+        "type": "boolean",
+        "default": false,
+        "description": "Whether the desktop terminal cursor blinks."
+      },
+      "damocles.desktop.terminal.macOptionIsMeta": {
+        "type": "boolean",
+        "default": false,
+        "description": "On macOS, treat the Option key as the Meta key in the desktop terminal."
+      },
+      "damocles.desktop.terminal.multiLinePasteWarning": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "always",
+          "never"
+        ],
+        "enumDescriptions": [
+          "Ask before pasting more than one line, except when the shell has bracketed paste mode on or the only line break is a final one, which is dropped.",
+          "Always ask before pasting text that contains a line break.",
+          "Never ask."
+        ],
+        "default": "auto",
+        "description": "Whether to ask before pasting several lines into the desktop terminal."
+      },
+      "damocles.desktop.terminal.shellIntegration.enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Start PowerShell, bash, Git Bash, zsh and fish with Damocles' shell integration script, which reports each command, its exit code and the working directory. Applies to terminals started afterwards."
+      },
+      "damocles.desktop.terminal.shellIntegration.decorationsEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Show a mark beside each command in the desktop terminal with its exit code, when shell integration is active."
+      },
+      "damocles.desktop.terminal.confirmOnKill": {
+        "type": "string",
+        "enum": [
+          "running",
+          "always",
+          "never"
+        ],
+        "enumDescriptions": [
+          "Ask before killing a terminal that runs a command.",
+          "Ask before killing any terminal whose shell is still running.",
+          "Never ask."
+        ],
+        "default": "running",
+        "description": "Whether to ask before killing desktop terminals: Kill, Kill All, closing the window, removing a project and quitting."
+      },
+      "damocles.desktop.terminal.profiles": {
+        "type": "object",
+        "additionalProperties": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ],
+                  "description": "The executable of the shell: an absolute path, or a file name found on PATH. With a list, the first one that exists is used."
+                },
+                "args": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Arguments passed to the shell, one per entry."
+                },
+                "icon": {
+                  "type": "string",
+                  "enum": [
+                    "terminal",
+                    "square-terminal",
+                    "code",
+                    "bug",
+                    "rocket",
+                    "server",
+                    "database",
+                    "cloud",
+                    "container",
+                    "package",
+                    "git-branch",
+                    "globe",
+                    "cpu",
+                    "monitor",
+                    "flask-conical",
+                    "activity",
+                    "gauge",
+                    "zap",
+                    "flame",
+                    "sparkles",
+                    "star",
+                    "heart",
+                    "wrench",
+                    "bot"
+                  ],
+                  "description": "The icon terminals of this profile show."
+                },
+                "color": {
+                  "type": "string",
+                  "enum": [
+                    "black",
+                    "red",
+                    "green",
+                    "yellow",
+                    "blue",
+                    "magenta",
+                    "cyan",
+                    "white"
+                  ],
+                  "description": "The color of the icon terminals of this profile show."
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null",
+              "description": "Hides the detected profile of this name."
+            }
+          ]
+        },
+        "default": {},
+        "description": "Terminal profiles by name, read from the user settings file only. An entry adds a profile or replaces the detected one of the same name; null hides a detected profile. Settings › Terminal lists every entry Damocles refused and why."
+      },
+      "damocles.desktop.files.exclude": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "boolean"
+        },
+        "default": {
+          "**/.git": true,
+          "**/.svn": true,
+          "**/.hg": true,
+          "**/.jj": true,
+          "**/.DS_Store": true,
+          "**/Thumbs.db": true
+        },
+        "description": "Glob patterns of files and folders the Files section hides; Quick Open and Search skip them too. A pattern set to false is shown."
+      },
+      "damocles.desktop.search.exclude": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "boolean"
+        },
+        "default": {
+          "**/node_modules": true,
+          "**/bower_components": true,
+          "**/*.code-search": true
+        },
+        "description": "Glob patterns of files and folders Search and Quick Open skip, on top of the Files exclude patterns. The Search toggle \"Use Exclude Settings and Ignore Files\" turns them off for one search. A pattern set to false is searched."
+      },
+      "damocles.desktop.search.mode": {
+        "type": "string",
+        "enum": [
+          "view",
+          "reuseEditor",
+          "newEditor"
+        ],
+        "enumDescriptions": [
+          "Search in the Search view.",
+          "Search in an existing search editor if present, otherwise in a new search editor.",
+          "Search in a new search editor."
+        ],
+        "default": "view",
+        "description": "Controls where new Find in Files and Find in Folder operations occur: either in the Search view, or in a search editor."
+      },
+      "damocles.desktop.search.smartCase": {
+        "type": "boolean",
+        "default": false,
+        "description": "Search case-insensitively if the pattern is all lowercase, otherwise, search case-sensitively."
+      },
+      "damocles.desktop.search.searchOnType": {
+        "type": "boolean",
+        "default": true,
+        "description": "Search all files as you type."
+      },
+      "damocles.desktop.search.searchOnTypeDebouncePeriod": {
+        "type": "integer",
+        "default": 300,
+        "minimum": 0,
+        "maximum": 10000,
+        "description": "When search on type is on, the time in milliseconds between a character being typed and the search starting."
+      },
+      "damocles.desktop.search.sortOrder": {
+        "type": "string",
+        "enum": [
+          "default",
+          "fileNames",
+          "type",
+          "modified",
+          "countDescending",
+          "countAscending"
+        ],
+        "enumDescriptions": [
+          "Results are sorted by folder and file names, in alphabetical order.",
+          "Results are sorted by file names ignoring folder order, in alphabetical order.",
+          "Results are sorted by file extensions, in alphabetical order.",
+          "Results are sorted by file last modified date, in descending order.",
+          "Results are sorted by count per file, in descending order.",
+          "Results are sorted by count per file, in ascending order."
+        ],
+        "default": "default",
+        "description": "Controls sorting order of search results."
+      },
+      "damocles.desktop.search.collapseResults": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "alwaysCollapse",
+          "alwaysExpand"
+        ],
+        "enumDescriptions": [
+          "Files with less than 10 results are expanded. Others are collapsed.",
+          "Every file is collapsed.",
+          "Every file is expanded."
+        ],
+        "default": "alwaysExpand",
+        "description": "Controls whether the search results will be collapsed or expanded."
+      },
+      "damocles.desktop.search.showLineNumbers": {
+        "type": "boolean",
+        "default": false,
+        "description": "Controls whether to show line numbers for search results."
+      },
+      "damocles.desktop.search.seedOnFocus": {
+        "type": "boolean",
+        "default": false,
+        "description": "Update the search query to the editor's selected text when focusing the Search view."
+      },
+      "damocles.desktop.search.seedWithNearestWord": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable seeding search from the word nearest the cursor when the active editor has no selection."
+      },
+      "damocles.desktop.search.useReplacePreview": {
+        "type": "boolean",
+        "default": true,
+        "description": "Controls whether to open Replace Preview when selecting or replacing a match."
+      },
+      "damocles.desktop.search.defaultViewMode": {
+        "type": "string",
+        "enum": [
+          "tree",
+          "list"
+        ],
+        "enumDescriptions": [
+          "Shows search results as a tree.",
+          "Shows search results as a list."
+        ],
+        "default": "list",
+        "description": "Controls the default search result view mode."
+      },
+      "damocles.desktop.search.actionsPosition": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "right"
+        ],
+        "enumDescriptions": [
+          "Position the actions to the right when the Search view is narrow, and immediately after the content when the Search view is wide.",
+          "Always position the actions to the right."
+        ],
+        "default": "right",
+        "description": "Controls the positioning of the actions on rows in the Search view."
+      },
+      "damocles.desktop.search.maxResults": {
+        "type": "integer",
+        "default": 20000,
+        "minimum": 1,
+        "maximum": 20000,
+        "description": "Controls the maximum number of search results, at most 20000."
+      },
+      "damocles.desktop.searchEditor.doubleClickBehaviour": {
+        "type": "string",
+        "enum": [
+          "selectWord",
+          "goToLocation",
+          "openLocationToSide"
+        ],
+        "enumDescriptions": [
+          "Double-clicking selects the word under the cursor.",
+          "Double-clicking opens the result in the editor.",
+          "Double-clicking opens the result in the editor pane, showing the pane if it is hidden."
+        ],
+        "default": "goToLocation",
+        "description": "Configure effect of double-clicking a result in a search editor."
+      },
+      "damocles.desktop.searchEditor.reusePriorSearchConfiguration": {
+        "type": "boolean",
+        "default": false,
+        "description": "When enabled, new Search Editors will reuse the includes, excludes, and flags of the previously opened Search Editor."
+      },
+      "damocles.desktop.searchEditor.defaultNumberOfContextLines": {
+        "type": "integer",
+        "default": 1,
+        "minimum": 0,
+        "maximum": 100,
+        "description": "The default number of surrounding context lines to use when creating new Search Editors."
+      },
+      "damocles.desktop.searchEditor.focusResultsOnSearch": {
+        "type": "boolean",
+        "default": false,
+        "description": "When a search is triggered, focus the Search Editor results instead of the Search Editor input."
+      },
       "permissions": {
         "type": "object",
         "description": "Permission rules for Damocles tools. More specific files win: local over project over user.",
@@ -1491,6 +1930,246 @@
         "errorMessage": "damocles.desktop.notifications.sound applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
         "doNotSuggest": true,
         "description": "damocles.desktop.notifications.sound applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nPlay a short sound with each desktop pop-up."
+      },
+      "damocles.desktop.editor.fontSize": {
+        "not": {},
+        "errorMessage": "damocles.desktop.editor.fontSize applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.editor.fontSize applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nFont size of the desktop editor, in pixels."
+      },
+      "damocles.desktop.editor.tabSize": {
+        "not": {},
+        "errorMessage": "damocles.desktop.editor.tabSize applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.editor.tabSize applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nThe number of spaces a tab is equal to in the desktop editor. Detect indentation overrides it per file."
+      },
+      "damocles.desktop.editor.detectIndentation": {
+        "not": {},
+        "errorMessage": "damocles.desktop.editor.detectIndentation applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.editor.detectIndentation applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nDetect the tab size and whether a file indents with tabs or spaces from its content."
+      },
+      "damocles.desktop.editor.wordWrap": {
+        "not": {},
+        "errorMessage": "damocles.desktop.editor.wordWrap applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.editor.wordWrap applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nHow the desktop editor wraps long lines."
+      },
+      "damocles.desktop.editor.minimap": {
+        "not": {},
+        "errorMessage": "damocles.desktop.editor.minimap applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.editor.minimap applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nShow the minimap beside the desktop editor."
+      },
+      "damocles.desktop.editor.renderWhitespace": {
+        "not": {},
+        "errorMessage": "damocles.desktop.editor.renderWhitespace applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.editor.renderWhitespace applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nHow the desktop editor shows whitespace characters."
+      },
+      "damocles.desktop.editor.autoSave": {
+        "not": {},
+        "errorMessage": "damocles.desktop.editor.autoSave applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.editor.autoSave applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nWhen the desktop editor saves changed files by itself."
+      },
+      "damocles.desktop.editor.formatOnSave": {
+        "not": {},
+        "errorMessage": "damocles.desktop.editor.formatOnSave applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.editor.formatOnSave applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nFormat a file when you save it, and when auto save runs on focus change. A trusted project's own Prettier 2 or 3 formats it; without Prettier, TypeScript, JavaScript and JSON use the built-in formatter. Nothing formats in an untrusted folder."
+      },
+      "damocles.desktop.terminal.defaultProfile": {
+        "not": {},
+        "errorMessage": "damocles.desktop.terminal.defaultProfile applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.terminal.defaultProfile applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nThe id of the shell a new terminal starts when none is chosen, such as pwsh, cmd, git-bash, wsl:Ubuntu, zsh or bash. Empty, or a shell that is not installed, starts the first one detected."
+      },
+      "damocles.desktop.terminal.fontSize": {
+        "not": {},
+        "errorMessage": "damocles.desktop.terminal.fontSize applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.terminal.fontSize applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nFont size of the desktop terminal, in pixels."
+      },
+      "damocles.desktop.terminal.scrollback": {
+        "not": {},
+        "errorMessage": "damocles.desktop.terminal.scrollback applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.terminal.scrollback applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nThe number of lines the desktop terminal keeps above the screen."
+      },
+      "damocles.desktop.terminal.cursorStyle": {
+        "not": {},
+        "errorMessage": "damocles.desktop.terminal.cursorStyle applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.terminal.cursorStyle applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nThe shape of the desktop terminal cursor."
+      },
+      "damocles.desktop.terminal.fontFamily": {
+        "not": {},
+        "errorMessage": "damocles.desktop.terminal.fontFamily applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.terminal.fontFamily applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nThe font family of the desktop terminal, as a CSS font-family list. Empty uses the app's monospace font."
+      },
+      "damocles.desktop.terminal.lineHeight": {
+        "not": {},
+        "errorMessage": "damocles.desktop.terminal.lineHeight applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.terminal.lineHeight applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nThe line height of the desktop terminal, multiplied by its font size."
+      },
+      "damocles.desktop.terminal.cursorBlinking": {
+        "not": {},
+        "errorMessage": "damocles.desktop.terminal.cursorBlinking applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.terminal.cursorBlinking applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nWhether the desktop terminal cursor blinks."
+      },
+      "damocles.desktop.terminal.macOptionIsMeta": {
+        "not": {},
+        "errorMessage": "damocles.desktop.terminal.macOptionIsMeta applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.terminal.macOptionIsMeta applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nOn macOS, treat the Option key as the Meta key in the desktop terminal."
+      },
+      "damocles.desktop.terminal.multiLinePasteWarning": {
+        "not": {},
+        "errorMessage": "damocles.desktop.terminal.multiLinePasteWarning applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.terminal.multiLinePasteWarning applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nWhether to ask before pasting several lines into the desktop terminal."
+      },
+      "damocles.desktop.terminal.shellIntegration.enabled": {
+        "not": {},
+        "errorMessage": "damocles.desktop.terminal.shellIntegration.enabled applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.terminal.shellIntegration.enabled applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nStart PowerShell, bash, Git Bash, zsh and fish with Damocles' shell integration script, which reports each command, its exit code and the working directory. Applies to terminals started afterwards."
+      },
+      "damocles.desktop.terminal.shellIntegration.decorationsEnabled": {
+        "not": {},
+        "errorMessage": "damocles.desktop.terminal.shellIntegration.decorationsEnabled applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.terminal.shellIntegration.decorationsEnabled applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nShow a mark beside each command in the desktop terminal with its exit code, when shell integration is active."
+      },
+      "damocles.desktop.terminal.confirmOnKill": {
+        "not": {},
+        "errorMessage": "damocles.desktop.terminal.confirmOnKill applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.terminal.confirmOnKill applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nWhether to ask before killing desktop terminals: Kill, Kill All, closing the window, removing a project and quitting."
+      },
+      "damocles.desktop.terminal.profiles": {
+        "not": {},
+        "errorMessage": "damocles.desktop.terminal.profiles applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.terminal.profiles applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nTerminal profiles by name, read from the user settings file only. An entry adds a profile or replaces the detected one of the same name; null hides a detected profile. Settings › Terminal lists every entry Damocles refused and why."
+      },
+      "damocles.desktop.files.exclude": {
+        "not": {},
+        "errorMessage": "damocles.desktop.files.exclude applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.files.exclude applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nGlob patterns of files and folders the Files section hides; Quick Open and Search skip them too. A pattern set to false is shown."
+      },
+      "damocles.desktop.search.exclude": {
+        "not": {},
+        "errorMessage": "damocles.desktop.search.exclude applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.search.exclude applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nGlob patterns of files and folders Search and Quick Open skip, on top of the Files exclude patterns. The Search toggle \"Use Exclude Settings and Ignore Files\" turns them off for one search. A pattern set to false is searched."
+      },
+      "damocles.desktop.search.mode": {
+        "not": {},
+        "errorMessage": "damocles.desktop.search.mode applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.search.mode applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls where new Find in Files and Find in Folder operations occur: either in the Search view, or in a search editor."
+      },
+      "damocles.desktop.search.smartCase": {
+        "not": {},
+        "errorMessage": "damocles.desktop.search.smartCase applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.search.smartCase applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nSearch case-insensitively if the pattern is all lowercase, otherwise, search case-sensitively."
+      },
+      "damocles.desktop.search.searchOnType": {
+        "not": {},
+        "errorMessage": "damocles.desktop.search.searchOnType applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.search.searchOnType applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nSearch all files as you type."
+      },
+      "damocles.desktop.search.searchOnTypeDebouncePeriod": {
+        "not": {},
+        "errorMessage": "damocles.desktop.search.searchOnTypeDebouncePeriod applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.search.searchOnTypeDebouncePeriod applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nWhen search on type is on, the time in milliseconds between a character being typed and the search starting."
+      },
+      "damocles.desktop.search.sortOrder": {
+        "not": {},
+        "errorMessage": "damocles.desktop.search.sortOrder applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.search.sortOrder applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls sorting order of search results."
+      },
+      "damocles.desktop.search.collapseResults": {
+        "not": {},
+        "errorMessage": "damocles.desktop.search.collapseResults applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.search.collapseResults applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls whether the search results will be collapsed or expanded."
+      },
+      "damocles.desktop.search.showLineNumbers": {
+        "not": {},
+        "errorMessage": "damocles.desktop.search.showLineNumbers applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.search.showLineNumbers applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls whether to show line numbers for search results."
+      },
+      "damocles.desktop.search.seedOnFocus": {
+        "not": {},
+        "errorMessage": "damocles.desktop.search.seedOnFocus applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.search.seedOnFocus applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nUpdate the search query to the editor's selected text when focusing the Search view."
+      },
+      "damocles.desktop.search.seedWithNearestWord": {
+        "not": {},
+        "errorMessage": "damocles.desktop.search.seedWithNearestWord applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.search.seedWithNearestWord applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nEnable seeding search from the word nearest the cursor when the active editor has no selection."
+      },
+      "damocles.desktop.search.useReplacePreview": {
+        "not": {},
+        "errorMessage": "damocles.desktop.search.useReplacePreview applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.search.useReplacePreview applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls whether to open Replace Preview when selecting or replacing a match."
+      },
+      "damocles.desktop.search.defaultViewMode": {
+        "not": {},
+        "errorMessage": "damocles.desktop.search.defaultViewMode applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.search.defaultViewMode applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls the default search result view mode."
+      },
+      "damocles.desktop.search.actionsPosition": {
+        "not": {},
+        "errorMessage": "damocles.desktop.search.actionsPosition applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.search.actionsPosition applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls the positioning of the actions on rows in the Search view."
+      },
+      "damocles.desktop.search.maxResults": {
+        "not": {},
+        "errorMessage": "damocles.desktop.search.maxResults applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.search.maxResults applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls the maximum number of search results, at most 20000."
+      },
+      "damocles.desktop.searchEditor.doubleClickBehaviour": {
+        "not": {},
+        "errorMessage": "damocles.desktop.searchEditor.doubleClickBehaviour applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.searchEditor.doubleClickBehaviour applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nConfigure effect of double-clicking a result in a search editor."
+      },
+      "damocles.desktop.searchEditor.reusePriorSearchConfiguration": {
+        "not": {},
+        "errorMessage": "damocles.desktop.searchEditor.reusePriorSearchConfiguration applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.searchEditor.reusePriorSearchConfiguration applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nWhen enabled, new Search Editors will reuse the includes, excludes, and flags of the previously opened Search Editor."
+      },
+      "damocles.desktop.searchEditor.defaultNumberOfContextLines": {
+        "not": {},
+        "errorMessage": "damocles.desktop.searchEditor.defaultNumberOfContextLines applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.searchEditor.defaultNumberOfContextLines applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nThe default number of surrounding context lines to use when creating new Search Editors."
+      },
+      "damocles.desktop.searchEditor.focusResultsOnSearch": {
+        "not": {},
+        "errorMessage": "damocles.desktop.searchEditor.focusResultsOnSearch applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.searchEditor.focusResultsOnSearch applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nWhen a search is triggered, focus the Search Editor results instead of the Search Editor input."
       },
       "permissions": {
         "type": "object",

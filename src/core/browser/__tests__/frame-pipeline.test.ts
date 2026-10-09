@@ -671,7 +671,7 @@ describe('C10 — watchdog backoff series is 5s→10s→20s→40s→60s', () => 
   });
 
   it('recovers a panel whose `ready` never arrives, which the watchdog used to be blind to', async () => {
-    // `ready` is the SOLE trigger for screencast.start(), so a webview that never posts it means the
+    // screencast.start() waits for a listening webview, so one that never posts `ready` means the
     // CDP call is never made. With the stall clock armed by that call, `startedAt` stayed null,
     // shouldRestart returned false on every tick forever, and the panel sat on "Waiting for browser
     // frames…" with the watchdog reporting healthy. Visibility alone must arm the clock.

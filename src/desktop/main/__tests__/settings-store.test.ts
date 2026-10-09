@@ -9,7 +9,8 @@ import type { SettingsFolder } from '../../../platform/settings-store';
 import { parseContributedConfiguration, readContributedConfiguration } from '../../../core/config/contributed-configuration';
 import { updateConfigAtEffectiveScope } from '../../../core/chat-panel/settings-manager/utils';
 import { DesktopSettingsStore, EMPTY_SETTINGS_RETRY_MS } from '../platform/settings-store';
-import { DESKTOP_CONFIGURATION, RESTORE_LAYOUT_SETTING, THEME_SETTING } from '../desktop-configuration';
+import { DESKTOP_CONFIGURATION, RESTORE_LAYOUT_SETTING, TERMINAL_PROFILES_SETTING, THEME_SETTING } from '../desktop-configuration';
+import { flushAcrossHeldRename } from '../../../__mocks__/held-rename';
 
 const PROJECT_GLOB = '.damocles/{settings.json,settings.local.json}';
 
@@ -154,7 +155,7 @@ describe('DesktopSettingsStore user scope', () => {
     expect(store.get(RESTORE_LAYOUT_SETTING)).toBe(true);
     for (const [key, property] of Object.entries(DESKTOP_CONFIGURATION)) {
       expect(contributed.keys).not.toContain(key);
-      expect(store.get(key)).toBe(property.default);
+      expect(store.get(key)).toStrictEqual(property.default);
       expect(store.inspect(key)).toStrictEqual({ defaultValue: property.default });
     }
   });
@@ -262,6 +263,22 @@ describe('DesktopSettingsStore project and local scopes', () => {
       const { store } = harness({ trusted });
       expect(store.inspect(key)).toStrictEqual({ defaultValue: DESKTOP_CONFIGURATION[key]!.default, userValue });
       expect(store.get(key)).toBe(userValue);
+    }
+  });
+
+  it('reads terminal profiles from the user file only: a project or local file, trusted or not, cannot add, change or unhide one', async () => {
+    const user = { 'VS Dev': { path: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', args: ['-NoExit'] }, 'Command Prompt': null };
+    const planted = { Evil: { path: 'C:\\evil.exe' }, 'VS Dev': { path: 'C:\\evil.exe' }, 'Command Prompt': { path: 'C:\\Windows\\System32\\cmd.exe' } };
+    writeJson(userFile, { [TERMINAL_PROFILES_SETTING]: user });
+    writeJson(projectFile(projectA), { [TERMINAL_PROFILES_SETTING]: planted, 'damocles.desktop.terminal': { profiles: planted } });
+    writeJson(localFile(projectA), { [TERMINAL_PROFILES_SETTING]: planted, 'damocles.desktop': { terminal: { profiles: planted } } });
+    for (const trusted of [[], [projectA]]) {
+      const { store } = harness({ trusted });
+      expect(store.inspect(TERMINAL_PROFILES_SETTING)).toStrictEqual({ defaultValue: {}, userValue: user });
+      expect(store.get(TERMINAL_PROFILES_SETTING)).toStrictEqual(user);
+      expect(store.get(TERMINAL_PROFILES_SETTING, undefined, { path: projectA })).toStrictEqual(user);
+      await expect(store.update(TERMINAL_PROFILES_SETTING, planted, 'project')).rejects.toThrow('user settings only');
+      await expect(store.update(TERMINAL_PROFILES_SETTING, planted, 'local')).rejects.toThrow('user settings only');
     }
   });
 
@@ -590,5 +607,17 @@ describe('readContributedConfiguration', () => {
     expect(read.userOnlyKeys).toContain('damocles.voice.runtimePath');
     expect(read.defaults.get('damocles.browser.devToolsPort')).toBe(false);
     expect(read.keys.length).toBeGreaterThan(20);
+  });
+
+  it('flush waits for a write in flight and for one queued while it waits, across the user and project files', async () => {
+    const { store } = harness({ trusted: [projectA] });
+    const onDisk = await flushAcrossHeldRename(projectFile(projectA), {
+      first: () => store.update('damocles.model', 'p', 'project'),
+      flush: () => store.flush(),
+      second: () => store.update('damocles.model', 'u', 'user'),
+      onDisk: () => [readJson(projectFile(projectA)), readJson(userFile)],
+    });
+    expect(onDisk).toEqual([{ 'damocles.model': 'p' }, { 'damocles.model': 'u' }]);
+    store.dispose();
   });
 });

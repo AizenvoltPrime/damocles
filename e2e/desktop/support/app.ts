@@ -49,11 +49,12 @@ async function killTree(proc: ChildProcess): Promise<void> {
   while (pids.some(isAlive) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, KILLED_EXIT_POLL_MS));
 }
 
-async function closeWithin(app: ElectronApplication, proc: ChildProcess): Promise<void> {
+async function closeWithin(app: ElectronApplication, proc: ChildProcess, exit: Promise<void>): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
   const timedOut = new Promise<'timeout'>((resolve) => (timer = setTimeout(() => resolve('timeout'), QUIT_TIMEOUT_MS)));
   try {
-    if ((await Promise.race([app.close().then(() => 'closed' as const), timedOut])) === 'closed') return;
+    // app.close() returns at once when the app's browser connection already closed, before the process exits.
+    if ((await Promise.race([app.close().then(() => exit).then(() => 'closed' as const), timedOut])) === 'closed') return;
   } finally {
     clearTimeout(timer);
   }
@@ -68,13 +69,18 @@ export interface DesktopApp {
   startTracing(): Promise<void>;
   /** Stops tracing if it is running, saving the trace when `path` is given. */
   stopTracing(path?: string): Promise<void>;
-  /** Quits the app; one that does not quit in time is killed and the call rejects. */
+  /**
+   * Quits the app unless it already exited. Rejects when it does not quit in time (it is killed) and, once, when its main
+   * process ended other than with exit code 0, which is a crash on the way out whose report is in output().
+   */
   close(): Promise<void>;
 }
 
 export interface LaunchOptions {
   env?: Record<string, string>;
   args?: string[];
+  /** A module the main process requires before the app's main script; a dev launch only. */
+  require?: string;
 }
 
 /**
@@ -85,13 +91,18 @@ export async function launchDesktop(h: HermeticHome, options: LaunchOptions = {}
   const args = ['--user-data-dir', h.userData, ...(options.args ?? [])];
   const env = hermeticEnv(h, options.env);
   const packaged = packagedAppPath();
+  if (packaged !== undefined && options.require !== undefined) throw new Error('a packaged app runs no module ahead of its main script');
   const app = packaged !== undefined
     ? await launchPackaged(packaged, args, env, h.root)
     // chromiumSandbox: without it Playwright prepends --no-sandbox on Linux.
-    : await electron.launch({ args: [MAIN_SCRIPT, ...args], env, cwd: h.root, chromiumSandbox: true });
+    : await electron.launch({ args: [...(options.require !== undefined ? ['-r', options.require] : []), MAIN_SCRIPT, ...args], env, cwd: h.root, chromiumSandbox: true });
   let output = '';
   let tracing = false;
+  let exitReported = false;
   const proc = app.process();
+  // A main process killed by a signal (a native abort) keeps exitCode null.
+  const exited = (): boolean => proc.exitCode !== null || proc.signalCode !== null;
+  const exit = new Promise<void>((resolve) => proc.once('exit', () => resolve()));
   proc.stdout?.on('data', (d: Buffer) => (output += d.toString()));
   proc.stderr?.on('data', (d: Buffer) => (output += d.toString()));
   return {
@@ -102,25 +113,44 @@ export async function launchDesktop(h: HermeticHome, options: LaunchOptions = {}
       tracing = true;
     },
     stopTracing: async (tracePath) => {
-      if (!tracing || proc.exitCode !== null) return;
+      // Playwright discards the trace of an app that exited.
+      if (!tracing || exited()) return;
       tracing = false;
       await app.context().tracing.stop(tracePath ? { path: tracePath } : {});
     },
     close: async () => {
-      if (proc.exitCode !== null || proc.signalCode !== null) return;
       // A packaged app's close bounds its own quit and kills it (packaged-app.ts).
-      await (packaged !== undefined ? app.close() : closeWithin(app, proc));
+      if (!exited()) await (packaged !== undefined ? app.close() : closeWithin(app, proc, exit));
+      if (exitReported) return;
+      exitReported = true;
+      if (proc.exitCode !== 0) throw new Error(`the main process ${proc.signalCode !== null ? `died of ${proc.signalCode}` : `exited with code ${proc.exitCode}`} instead of 0; see its main output`);
     },
   };
 }
 
 /**
  * The main process log, which holds every line from the first one on; captured stdout starts only once Playwright attaches.
- * The sink flushes on the next turn of the event loop, so poll it.
+ * While the app runs, the sink writes a line on a later turn of main's event loop, so wait for a line with
+ * `expect.poll(() => mainLog(h))`, and read the absence of one only from `quitLog` or `logBeforeQuit`.
  */
 export function mainLog(h: HermeticHome): string {
   const file = path.join(h.userData, 'logs', 'Damocles.log');
   return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+}
+
+const WILL_QUIT = '[shutdown] will-quit';
+
+/** The main log once the last launch on `h` has quit: the sink writes every pending line as it closes at will-quit. */
+export function quitLog(h: HermeticHome): string {
+  const log = mainLog(h);
+  if (!log.trimEnd().endsWith(WILL_QUIT)) throw new Error(`the main log does not end with ${WILL_QUIT}, so the app has not quit and may still write lines`);
+  return log;
+}
+
+/** quitLog up to the last quit, for a check about what the app logged before its teardown. */
+export function logBeforeQuit(h: HermeticHome): string {
+  const log = quitLog(h);
+  return log.slice(0, log.lastIndexOf('[shutdown] quitting'));
 }
 
 /** Attaches the main-process output and every log file under userData, so a failure is debuggable offline. */

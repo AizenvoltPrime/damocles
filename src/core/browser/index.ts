@@ -20,6 +20,8 @@ import {
 } from './page-scripts';
 import { resolveFavicon } from './favicon';
 import { isNavigableUrl } from './net-guard';
+import { httpFallbackUrl } from './https-fallback';
+import { typedAddress } from '../../shared/typed-address';
 import { DownloadManager } from './downloads';
 import { InterceptManager } from './intercept';
 import { ScreencastController, MAX_DEVICE_SCALE } from './screencast';
@@ -87,6 +89,8 @@ interface PageEntry {
   readonly chat: PanelHost | undefined;
   /** Back/forward availability and whether the main frame is loading, for a host that draws the chrome. */
   navigation: NavigationState;
+  /** Damocles closed the page or released it; Chromium may still report its requests failing while it closes. */
+  closing: boolean;
   consoleCollector: ConsoleCollector;
   networkCollector: NetworkCollector;
   /** Dialogs auto-answered on this tab, bounded at {@link DIALOGS_MAX} (oldest dropped). */
@@ -191,13 +195,13 @@ const BRIDGE_CONSOLE_LEVEL_MAX_CHARS = 16;
  * their text. The init scripts run in every current and future page/frame under Patchright (which
  * injects at the HTML-request level, no Runtime.enable).
  *
- * Each binding gets a fresh random name per launch, and the names exist ONLY as locals here: nothing
+ * Each binding gets a fresh random name per launch, and the names exist only as locals here: nothing
  * stores, logs or persists them, so no page can find a Damocles-attributable global. `exposeBinding`
  * must precede its `addInitScript` so `globalThis[name]` already exists when our script relocates it.
  *
- * EVERYTHING ARRIVING HERE IS PAGE-CONTROLLED. The main-world half of the bridge runs in the page's
+ * Everything arriving here is page-controlled. The main-world half of the bridge runs in the page's
  * own realm, so its caps and its `kind` tags are the page's to edit — a page that recovers the channel
- * dispatches straight at the isolated listener. Validation and bounding therefore live HERE, on the
+ * dispatches straight at the isolated listener. Validation and bounding therefore live here, on the
  * host, where the page has no reach. The in-page caps stay as a first line that keeps the common case
  * cheap; this is the one that holds.
  */
@@ -431,6 +435,7 @@ export class BrowserService {
     for (const [id, state] of this.scopes) if (state.chat === chat) this.scopes.delete(id);
     for (const entry of this.pages.values()) {
       if (entry.chat !== chat) continue;
+      entry.closing = true;
       entry.page.close().catch((err) =>
         log(`[Browser] Closing a closed chat's page failed — ${err instanceof Error ? err.message : String(err)}`),
       );
@@ -737,9 +742,16 @@ export class BrowserService {
     }
   }
 
-  /** The human's "open browser" in a chat: opens or navigates the chat's human scope tab, the one its main agent drives. */
-  openForChat(chat: PanelHost, url: string, signal?: AbortSignal): Promise<void> {
-    return this.openForScope(this.humanScopeId(chat), url, signal);
+  /** The human's "open browser" in a chat: reveals the page they watch there at its current address, or opens a
+   *  blank page in the chat's human scope, the one its main agent drives, when there is none. */
+  async showForChat(chat: PanelHost): Promise<void> {
+    const watched = this.watchedEntry(chat);
+    if (watched) {
+      watched.panel.reveal();
+      this.setActivePage(watched.page);
+      return;
+    }
+    await this.openForScope(this.humanScopeId(chat), 'about:blank');
   }
 
   /** The human's "new page" beside a chat: a blank tab in the chat's human scope, launching the browser when needed. */
@@ -883,17 +895,18 @@ export class BrowserService {
     await this.teardown(true);
   }
 
-  /** Pick on the page the human is watching. With a chat browser pane and a requesting chat, only that
-   *  chat's own page qualifies: the watched page when it is the chat's, else the chat's current tab. */
+  /** Pick on the page the human is watching ({@link BrowserService.watchedEntry}). */
   async pickElement(chat?: PanelHost): Promise<ElementAttachment> {
-    const active = this.pickTarget(chat);
+    const active = this.watchedEntry(chat);
     if (!active) {
       throw new Error('Browser is not connected — element picking requires an active page');
     }
     return active.picker.startPicking();
   }
 
-  private pickTarget(chat: PanelHost | undefined): PageEntry | null {
+  /** The page the human is watching. With a chat browser pane and a requesting chat, only that chat's own
+   *  page qualifies: the watched page when it is the chat's, else the chat's current tab. */
+  private watchedEntry(chat: PanelHost | undefined): PageEntry | null {
     const active = this.getActiveEntry();
     if (!chat || !this.platform.window.chatBrowserPane || active?.chat === chat) return active;
     const current = this.scopes.get(this.humanScopeId(chat))?.currentPage;
@@ -1041,8 +1054,8 @@ export class BrowserService {
   /**
    * Resolve the owner for a page registered WITHOUT an explicit scope (a spontaneous popup via
    * context.on('page') / page.on('popup')): the popup belongs to the chat whose page spawned it, and to the
-   * opener's scope while that scope lives. Undefined when a chat browser pane has no chat to show the page
-   * beside (opener unknown, or its chat closed), so the caller closes the page instead of re-attributing it.
+   * opener's scope while that scope lives. Undefined when, with chat-owned pages, there is no chat to show the page
+   * in (opener unknown, or its chat closed), so the caller closes the page instead of re-attributing it.
    */
   private async resolveOwner(page: Page, openerHint: PageEntry | undefined): Promise<PageOwner | undefined> {
     const opener = openerHint ?? await this.openerEntry(page);
@@ -1096,7 +1109,7 @@ export class BrowserService {
       await session.detach().catch(() => {});
       return null;
     }
-    // A chat browser pane shows every page beside its chat, so a page with no open chat is never shown.
+    // With chat-owned pages (chatBrowserPane) a page shows only among its chat's, so a page with no open chat is never shown.
     if (!owner || (this.platform.window.chatBrowserPane && (!owner.chat || this.releasedChats.has(owner.chat)))) {
       log('[Browser] Closing a page that no open chat owns');
       await session.detach().catch(() => {});
@@ -1133,6 +1146,7 @@ export class BrowserService {
       ownerScopeId: owner.scopeId,
       chat: owner.chat,
       navigation: { loading: false, canGoBack: false, canGoForward: false },
+      closing: false,
       consoleCollector,
       networkCollector,
       dialogs: [],
@@ -1305,6 +1319,7 @@ export class BrowserService {
   }
 
   private publishNavigation(entry: PageEntry, loading: boolean): void {
+    if (entry.closing) return;
     entry.navigation = { ...entry.navigation, loading };
     entry.panel.updateNavigationState(entry.navigation);
     entry.controller.navigationHistory().then(({ currentIndex, entries }) => {
@@ -1434,6 +1449,7 @@ export class BrowserService {
     // Closing THIS editor tab closes THIS page. handlePageClosed disposes the panel and, when it was
     // the last tab, ends the whole session.
     panel.onClose(() => {
+      entry.closing = true;
       entry.page.close().catch((err) =>
         log(`[Browser] Tab close failed — ${err instanceof Error ? err.message : String(err)}`),
       );
@@ -1550,13 +1566,21 @@ export class BrowserService {
     });
     // Enforced HOST-side, not in the webview's input handler: the webview is the untrusted end of this
     // channel, so a check that lives only there is a check an attacker-controlled message skips.
-    panel.onNavigate((navUrl) => {
-      if (!isNavigableUrl(navUrl)) {
-        log(`[Browser] Refused address-bar navigation to a non-web scheme — ${navUrl.slice(0, 120)}`);
+    panel.onNavigate((typed) => {
+      const address = typedAddress(typed);
+      if (!address || !isNavigableUrl(address.url)) {
+        log(`[Browser] Refused address-bar navigation to a non-web address: ${typed.slice(0, 120)}`);
         panel.updateUrl(entry.lastUrl ?? this.currentUrl ?? '');
         return;
       }
-      controller.navigate(navUrl).catch((err) =>
+      const navUrl = address.url;
+      void (async () => {
+        const { errorText } = await controller.navigate(navUrl);
+        const fallback = address.upgraded ? httpFallbackUrl(navUrl, errorText) : undefined;
+        if (fallback === undefined) return;
+        log(`[Browser] ${new URL(navUrl).host} did not load over https (${errorText}); loading it over http`);
+        await controller.navigate(fallback);
+      })().catch((err) =>
         log(`[Browser] Navigate failed — ${err instanceof Error ? err.message : String(err)}`),
       );
     });
@@ -1609,16 +1633,16 @@ export class BrowserService {
         log(`[Browser] New tab failed — ${err instanceof Error ? err.message : String(err)}`),
       );
     });
-    // Visibility only records INTENT. Nothing is posted here and no stream is started: at this point
-    // the webview is still being (re)built and its message listener is not attached, so every post
-    // would be silently dropped and a frame arriving in that window would be lost. `ready` below is
-    // the ordering authority.
+    // Visibility records intent. A webview that is not listening (being built, or rebuilt after a host
+    // discarded it on hide) would drop every post, so `ready` below is the ordering authority for it.
+    // A host that keeps the hidden page (panel.listening stays set) posts no `ready` on show, so the
+    // hidden-to-shown edge starts the stream itself.
     panel.onVisibilityChange((visible) => {
       if (!visible) {
         entry.wantsStream = false;
         entry.health.noteStopped();
         // The webview is being torn down asynchronously and the frame we posted may never paint, so
-        // settle the outstanding ack HERE rather than waiting on a frameRendered that will never come.
+        // settle the outstanding ack here rather than waiting on a frameRendered that will never come.
         this.screencast.releasePendingAck(entry, 'ack');
         controller.stopScreencast().catch((err) =>
           log(`[Browser] Stop screencast on hide failed: ${err instanceof Error ? err.message : String(err)}`),
@@ -1626,24 +1650,28 @@ export class BrowserService {
         this.screencast.syncWatchdog();
         return;
       }
+      // Fires on focus changes too, while the stream already runs; only the hidden-to-shown edge starts it.
+      const shown = !entry.wantsStream;
       entry.wantsStream = true;
-      // Arms the stall clock HERE, where the intent is formed, not in `start()` below. `ready` is the
-      // only thing that calls `start()`, so a webview that never posts it would otherwise leave the
-      // watchdog with nothing to measure and the panel waiting on frames forever.
+      // Arms the stall clock here, where the intent is formed, not in `start()`. A webview that never
+      // posts `ready` would otherwise leave the watchdog with nothing to measure and the panel waiting
+      // on frames forever.
       entry.health.noteWanted();
       this.setActivePage(entry.page);
       this.screencast.syncWatchdog();
+      if (shown && panel.listening) this.streamToPanel(entry, 'show');
     });
-    // The webview's listener is now attached, so this is the first moment a post can actually land.
-    // Replaying state before starting the stream is what makes "the viewport is known before the first
-    // frame" true rather than hoped for.
-    panel.onReady(() => {
-      this.resyncPanel(entry);
-      if (!entry.wantsStream) return;
-      this.screencast.start(entry).catch((err) =>
-        log(`[Browser] Restart screencast on ready failed: ${err instanceof Error ? err.message : String(err)}`),
-      );
-    });
+    panel.onReady(() => this.streamToPanel(entry, 'ready'));
+  }
+
+  // The webview is listening, so this is the first moment a post can land. Replaying state before starting
+  // the stream is what makes "the viewport is known before the first frame" true rather than hoped for.
+  private streamToPanel(entry: PageEntry, trigger: 'ready' | 'show'): void {
+    this.resyncPanel(entry);
+    if (!entry.wantsStream) return;
+    this.screencast.start(entry).catch((err) =>
+      log(`[Browser] Start screencast on ${trigger} failed: ${err instanceof Error ? err.message : String(err)}`),
+    );
   }
 
   /** Replay every piece of panel state the host owns into a freshly-listening webview. Idempotent:
@@ -1813,6 +1841,7 @@ export class BrowserService {
    * — and duplicating them is how one path quietly ends up missing one.
    */
   private disposeEntry(entry: PageEntry): void {
+    entry.closing = true;
     this.screencast.releasePendingAck(entry, 'drop');
     if (entry.ackRestartTimer) clearTimeout(entry.ackRestartTimer);
     entry.picker.stopPicking().catch(() => {});

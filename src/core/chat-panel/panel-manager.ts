@@ -4,7 +4,10 @@ import type { Platform } from "../../platform/platform";
 import type { PanelHost } from "../../platform/window-service";
 import { PermissionHandler } from "../permission-handler";
 import { IdeContextManager } from "./ide-context-manager";
+import { MAX_PENDING_TERMINAL_ATTACHMENT_CHARS, TerminalAttachmentManager } from "./terminal-attachment-manager";
+import type { TerminalAttachmentInput } from "../../shared/types/terminal-attachment";
 import { log } from "../logger";
+import { mentionInChat, type MentionTarget } from "./mention-resolver";
 import { t } from "../l10n";
 import { perfSpan, type PerfSpan } from "../perf";
 import type { ChatSession } from "../chat-session";
@@ -33,6 +36,11 @@ export function restoredWorkspaceFolderKey(state: unknown): string | undefined {
 
 /** Open from the moment a webview's HTML is built until its next `ready`. */
 const htmlToReadySpans = new WeakMap<PanelHost, PerfSpan>();
+
+interface HostSetUp {
+  readonly settled: Promise<void>;
+  readonly start: (setUp: Promise<unknown>) => void;
+}
 
 /** Calls `listener` when `read` answers differently after one of the host's view-state events. */
 function onViewStateChange(host: PanelHost, read: () => boolean, listener: () => void): Disposable {
@@ -64,6 +72,8 @@ async function settledOrAborted(work: Promise<unknown>, signal: AbortSignal | un
 /** Webview messages that arrive while the panel has no usable session wait here, in order; `view` marks one from an attached view. */
 interface MessageGate {
   open: boolean;
+  // A `ready` is being handled; it restores the conversation every later message addresses, so they wait for it.
+  readying: boolean;
   queue: Array<{ message: WebviewToExtensionMessage; view?: AttachedView }>;
 }
 
@@ -128,6 +138,8 @@ export class PanelManager {
   private readonly closingSessions = new Set<Promise<void>>();
   /** One entry per panel being opened or set up, removed as it settles; a host prompt waits for these before opening a panel. */
   private readonly opening = new Set<Promise<void>>();
+  /** Each host's setup, made by whenSetUp or initializeHost, whichever asks first, so a host asked about while core creates it waits too. */
+  private readonly setUps = new WeakMap<PanelHost, HostSetUp>();
   private readonly activity = new PanelActivity();
   /** At most one settings view per panel. */
   private readonly attachments = new Map<string, AttachedView>();
@@ -158,6 +170,27 @@ export class PanelManager {
 
   getPanels(): Map<string, HostInstance> {
     return this.panels;
+  }
+
+  /** Mentions a file in a loaded chat's composer under the one mention rule (mention-resolver.ts); false when refused. */
+  async mentionFile(panelId: string, target: MentionTarget): Promise<boolean> {
+    const instance = this.panels.get(panelId);
+    if (!instance) throw new Error('The chat is not loaded');
+    return mentionInChat(
+      { folders: this.folderRegistry, confinement: this.platform.confinement, notifications: this.platform.notifications, post: (message) => this.postMessage(instance.host, message) },
+      target,
+      instance.folder.fsPath,
+    );
+  }
+
+  /** Adds terminal output to a loaded chat's composer as a pending attachment; the host has already capped and cleaned it. False when refused. */
+  addTerminalAttachment(panelId: string, attachment: TerminalAttachmentInput): boolean {
+    const instance = this.panels.get(panelId);
+    if (!instance) throw new Error('The chat is not loaded');
+    if (instance.terminalAttachments.add(attachment)) return true;
+    const limit = MAX_PENDING_TERMINAL_ATTACHMENT_CHARS.toLocaleString(this.platform.localization.language);
+    void this.platform.notifications.warn(t('Not added to the chat: its attached terminal output would pass {0} characters. Send or remove an attachment first.', limit));
+    return false;
   }
 
   /** Fires once each time a panel's session is bound, then on every change of its activity or stored session id. */
@@ -315,7 +348,27 @@ export class PanelManager {
     host: PanelHost,
     options?: { forkContext?: ForkContext; sourcePanelId?: string; initialFolderKey?: string },
   ): Promise<string> {
-    return this.trackOpening(this.setUpHost(host, options));
+    const setUp = this.trackOpening(this.setUpHost(host, options));
+    this.setUpOf(host).start(setUp);
+    return setUp;
+  }
+
+  /** Settles, never rejecting, once core finished setting the host up, registered or not; ask only for a host core sets up. */
+  whenSetUp(host: PanelHost): Promise<void> {
+    return this.setUpOf(host).settled;
+  }
+
+  private setUpOf(host: PanelHost): HostSetUp {
+    let entry = this.setUps.get(host);
+    if (!entry) {
+      let start!: (setUp: Promise<unknown>) => void;
+      const settled = new Promise<void>((resolve) => {
+        start = (setUp) => resolve(setUp.then(() => undefined, () => undefined));
+      });
+      entry = { settled, start };
+      this.setUps.set(host, entry);
+    }
+    return entry;
   }
 
   private async setUpHost(
@@ -325,7 +378,7 @@ export class PanelManager {
     const panelId = `host-${++this.hostCounter}`;
     const disposables: Disposable[] = [];
 
-    const gate: MessageGate = { open: false, queue: [] };
+    const gate: MessageGate = { open: false, readying: false, queue: [] };
     this.messageGates.set(panelId, gate);
 
     // Resolves when the webview posts its first `ready` message (mounted + listener live). VS Code drops
@@ -345,11 +398,8 @@ export class PanelManager {
           htmlToReadySpans.get(host)?.end();
           htmlToReadySpans.delete(host);
         }
-        if (gate.open) {
-          this.handleWebviewMessage(message, panelId);
-        } else {
-          gate.queue.push({ message });
-        }
+        gate.queue.push({ message });
+        this.drainGate(panelId, gate);
       }),
     );
 
@@ -399,6 +449,9 @@ export class PanelManager {
     const ideContextManager = new IdeContextManager(this.platform.editor, (context) => {
       this.postMessage(host, { type: "ideContextUpdate", context });
     });
+    const terminalAttachments = new TerminalAttachmentManager((attachments, added) => {
+      this.postMessage(host, { type: "terminalAttachmentsUpdate", attachments, ...(added ? { focusComposer: true as const } : {}) });
+    });
 
     this.initPanelModel(panelId);
 
@@ -419,6 +472,7 @@ export class PanelManager {
       panelToken: null,
       permissionHandler,
       ideContextManager,
+      terminalAttachments,
       disposables,
       webviewReady,
       ...(options?.forkContext ? { forkContext: options.forkContext } : {}),
@@ -524,9 +578,24 @@ export class PanelManager {
     const gate = this.messageGates.get(panelId);
     if (!gate) return;
     gate.open = true;
-    for (const { message, view } of gate.queue.splice(0)) {
+    this.drainGate(panelId, gate);
+  }
+
+  private drainGate(panelId: string, gate: MessageGate): void {
+    while (gate.open && !gate.readying) {
+      const next = gate.queue.shift();
+      if (!next) return;
+      const { message, view } = next;
       if (view !== undefined && this.attachments.get(panelId) !== view) continue;
-      this.handleWebviewMessage(message, panelId, view);
+      if (message.type !== "ready") {
+        this.handleWebviewMessage(message, panelId, view);
+        continue;
+      }
+      gate.readying = true;
+      void this.handleWebviewMessage(message, panelId).finally(() => {
+        gate.readying = false;
+        this.drainGate(panelId, gate);
+      });
     }
   }
 
@@ -792,7 +861,8 @@ export class PanelManager {
       const from = instance.folder;
       const to = this.folderRegistry.defaultTarget();
       const moved = await this.replaceSession(panelId, instance, to, "folderRemoved");
-      if (moved) {
+      // The home target leaves the registry when the first folder opens, which the user did not remove.
+      if (moved && from.projectScope) {
         void this.platform.notifications.warn(t(
           "The workspace folder {0} was removed, so a Damocles panel moved to {1} and started a new conversation. The previous one stays in history.",
           from.label,
@@ -853,7 +923,7 @@ export class PanelManager {
       log("[PanelManager] refusing a settings view message of type %s", JSON.stringify(String(message.type).slice(0, 64)));
       return;
     }
-    if (!gate.open) {
+    if (!gate.open || gate.readying) {
       gate.queue.push({ message, view });
       return;
     }

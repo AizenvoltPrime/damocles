@@ -15,6 +15,8 @@ export const badgeVariants = cva(
         destructive:
           "border-transparent bg-destructive text-destructive-foreground hover:bg-destructive/80",
         outline: "text-foreground",
+        // Colour from a .d-tone-* class (style.css), which a text utility here would override.
+        tone: "",
       },
     },
     defaultVariants: {

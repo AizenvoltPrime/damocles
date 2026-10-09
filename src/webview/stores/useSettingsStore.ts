@@ -147,6 +147,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const claudeAuthMode = ref<"none" | "apikey" | "allowance" | "extra">("none");
   const claudeAuthBusy = ref(false);
   const claudeAuthError = ref<string | null>(null);
+  const claudeSignInWaiting = ref(false);
   const stepfunConfigured = ref(false);
   const deepseekConfigured = ref(false);
   const typesafeConfigured = ref(false);
@@ -428,6 +429,10 @@ export const useSettingsStore = defineStore('settings', () => {
     claudeAuthError.value = error;
   }
 
+  function setClaudeSignInWaiting(value: boolean) {
+    claudeSignInWaiting.value = value;
+  }
+
   function setStepfunConfigured(configured: boolean) {
     stepfunConfigured.value = configured;
   }
@@ -504,6 +509,7 @@ export const useSettingsStore = defineStore('settings', () => {
     claudeAuthMode.value = "none";
     claudeAuthBusy.value = false;
     claudeAuthError.value = null;
+    claudeSignInWaiting.value = false;
     stepfunConfigured.value = false;
     deepseekConfigured.value = false;
     typesafeConfigured.value = false;
@@ -601,6 +607,7 @@ export const useSettingsStore = defineStore('settings', () => {
     claudeAuthMode,
     claudeAuthBusy,
     claudeAuthError,
+    claudeSignInWaiting,
     stepfunConfigured,
     deepseekConfigured,
     setStepfunConfigured,
@@ -619,6 +626,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setClaudeAuthMode,
     setClaudeAuthBusy,
     setClaudeAuthError,
+    setClaudeSignInWaiting,
     setPendingOpenAIModel,
     workspaceFolders,
     panelWorkspaceFolderKey,

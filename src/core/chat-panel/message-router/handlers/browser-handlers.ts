@@ -43,8 +43,7 @@ export function createBrowserHandlers(deps: HandlerDependencies): Partial<Handle
       }
     },
 
-    openBrowser: async (msg, ctx) => {
-      if (msg.type !== "openBrowser") return;
+    openBrowser: async (_msg, ctx) => {
       const browserService = getBrowserService();
       if (!browserService) {
         postMessage(ctx.host, {
@@ -56,9 +55,7 @@ export function createBrowserHandlers(deps: HandlerDependencies): Partial<Handle
       }
 
       try {
-        // The human's toolbar open targets the chat's human scope, the same tab the main agent drives, so
-        // "I open a page, then the agent continues on it" keeps working.
-        await browserService.openForChat(ctx.host, msg.url);
+        await browserService.showForChat(ctx.host);
       } catch (err) {
         log("[BrowserHandlers] Open browser failed:", err);
         postMessage(ctx.host, {

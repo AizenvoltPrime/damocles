@@ -98,7 +98,8 @@ export class DiffManager {
     const fileName = path.basename(filePath);
 
     const view = await this.editor.showDiff({
-      title: t('{0} (Current ↔ Proposed)', fileName),
+      title: (name) => t('{0} (Current ↔ Proposed)', name),
+      filePath,
       left: { name: `${diffId}-original-${fileName}`, content: originalContent },
       right: { name: `${diffId}-proposed-${fileName}`, content: proposedContent },
       purpose: 'proposal',

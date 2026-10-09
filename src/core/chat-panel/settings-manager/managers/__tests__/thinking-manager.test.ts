@@ -32,6 +32,32 @@ describe("ThinkingManager", () => {
     manager = new ThinkingManager(postMessage);
   });
 
+  describe("restoreRecordedLevel", () => {
+    it("takes the effort a resumed conversation's recorded pi level maps to, for that model only", () => {
+      const config = makeConfig({ effortByModel: { [SONNET]: "low" } });
+      manager.restoreRecordedLevel("panel-A", SONNET, "xhigh");
+      expect(manager.resolveEffort("panel-A", SONNET, config as never, undefined)).toBe("xhigh");
+      expect(manager.resolveEffort("panel-A", OPUS, config as never, undefined)).toBe("high");
+      expect(manager.resolveEffort("panel-B", SONNET, config as never, undefined)).toBe("low");
+      // pi's max is both max and ultracode, which run identically; max is the level the model lists first.
+      manager.restoreRecordedLevel("panel-A", SONNET, "max");
+      expect(manager.resolveEffort("panel-A", SONNET, config as never, undefined)).toBe("max");
+    });
+
+    it("turns thinking off or on where the model offers the switch, and keeps the panel's effort for a level the model lists no effort for", () => {
+      const config = makeConfig({ thinkingDisabled: false, effortByModel: { [TOGGLE]: "high" } });
+      manager.restoreRecordedLevel("panel-A", TOGGLE, "off");
+      expect(manager.resolveDisabled("panel-A", TOGGLE, config as never, undefined)).toBe(true);
+      expect(manager.resolveEffort("panel-A", TOGGLE, config as never, undefined)).toBe("high");
+      const disabledByDefault = makeConfig({ thinkingDisabled: true });
+      manager.restoreRecordedLevel("panel-B", TOGGLE, "medium");
+      expect(manager.resolveDisabled("panel-B", TOGGLE, disabledByDefault as never, undefined)).toBe(false);
+      expect(manager.resolveEffort("panel-B", TOGGLE, disabledByDefault as never, undefined)).toBe("medium");
+      manager.restoreRecordedLevel("panel-C", GPT, "off");
+      expect(manager.resolveDisabled("panel-C", GPT, disabledByDefault as never, undefined)).toBe(false);
+    });
+  });
+
   describe("resolveDisabled", () => {
     it("returns workspace default when no per-panel override", () => {
       const config = makeConfig({ thinkingDisabled: true });

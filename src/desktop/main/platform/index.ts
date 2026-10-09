@@ -18,6 +18,8 @@ import { desktopHostCapabilities } from './capabilities';
 import { createDesktopClipboardService } from './clipboard-service';
 import { createDesktopDialogService } from './dialog-service';
 import { createDesktopEditorService, type ChatTabMessenger } from './editor-service';
+import type { EditorPane } from '../editor-pane';
+import { createDesktopFileConfinement } from './file-confinement';
 import { DesktopFileWatcherFactory } from './file-watcher-factory';
 import { createDesktopHostLifecycle } from './host-lifecycle';
 import type { DesktopKeyValueState } from './key-value-state';
@@ -44,10 +46,15 @@ export interface DesktopPlatformDeps {
   readonly openChat: (options: PanelOptions) => PanelHost;
   // shows the settings modal in the overlay, attached to the selected chat
   readonly openAppSettings: WindowService['openAppSettings'];
+  // the Toggle Terminal command, for the chat header's Terminal toggle
+  readonly toggleTerminal: WindowService['toggleTerminal'];
+  readonly terminalToggle: WindowService['terminalToggle'];
   // undefined while the core services are being (re)built
   readonly prompts: () => WebviewPrompts | undefined;
   // posts to a chat, opening one in the selected project when none is loaded
   readonly chatTabs: ChatTabMessenger;
+  // the window-wide editor pane; it exists from the platform's creation on
+  readonly editorPane: () => EditorPane;
   readonly chatFolders: ChatFolders;
   readonly reload: () => Promise<void>;
   // lines logged before the core log sink is installed
@@ -59,6 +66,8 @@ export interface DesktopPlatform extends Platform {
   readonly state: DesktopKeyValueState;
   readonly fileWatchers: DesktopFileWatcherFactory;
   readonly localization: DesktopLocalizationService;
+  // Settles once the settings and secrets stores' writes, one queued meanwhile included, have landed or failed; a quit awaits it.
+  flush(): Promise<void>;
 }
 
 // Built once per app run; a host reload rebuilds the core services on top of the same platform.
@@ -69,31 +78,34 @@ export function createDesktopPlatform(deps: DesktopPlatformDeps): DesktopPlatfor
   const trust = createDesktopTrustService(deps.trust);
   const paths = createDesktopAppPaths(deps.layout);
   const { state, notifications } = deps;
+  const secrets = createDesktopSecretsStore(deps.userDataDir, notifications, deps.localization.t, deps.log);
+  const settings = new DesktopSettingsStore({
+    userFile: path.join(DAMOCLES_HOME_DIR, 'settings.json'),
+    contributed: readContributedConfiguration(paths.resourceRoot),
+    fileWatchers,
+    projects: workspaceFolders,
+    trust,
+    defaultProject: {
+      folder: () => defaultProjectPath(workspaceFolders, state.workspace),
+      onDidChange: (cb) => state.onDidChange('workspace', DEFAULT_WORKSPACE_FOLDER_STATE_KEY, cb),
+    },
+    chatFolders: deps.chatFolders,
+    notifications,
+    localization: deps.localization,
+    log: deps.log,
+  });
   return {
     // Read on every handshake, so a test can stand in for macOS by redefining process.platform in main.
     get capabilities() {
       return desktopHostCapabilities(process.platform);
     },
-    settings: new DesktopSettingsStore({
-      userFile: path.join(DAMOCLES_HOME_DIR, 'settings.json'),
-      contributed: readContributedConfiguration(paths.resourceRoot),
-      fileWatchers,
-      projects: workspaceFolders,
-      trust,
-      defaultProject: {
-        folder: () => defaultProjectPath(workspaceFolders, state.workspace),
-        onDidChange: (cb) => state.onDidChange('workspace', DEFAULT_WORKSPACE_FOLDER_STATE_KEY, cb),
-      },
-      chatFolders: deps.chatFolders,
-      notifications,
-      localization: deps.localization,
-      log: deps.log,
-    }),
-    secrets: withVolatileSecretsNotice(createDesktopSecretsStore(deps.userDataDir, notifications, deps.localization.t, deps.log), notifications, shell),
+    settings,
+    secrets: withVolatileSecretsNotice(secrets, notifications, shell),
     state,
     trust,
     workspaceFolders,
     fileWatchers,
+    confinement: createDesktopFileConfinement(),
     notifications,
     paths,
     appInfo: createDesktopAppInfo(deps.layout),
@@ -101,9 +113,12 @@ export function createDesktopPlatform(deps: DesktopPlatformDeps): DesktopPlatfor
     clipboard: createDesktopClipboardService(),
     shell,
     dialogs: createDesktopDialogService(deps.window, deps.prompts),
-    editor: createDesktopEditorService(deps.chatTabs, deps.openAppSettings),
-    window: createDesktopWindowService(deps.views, deps.openChat, deps.openAppSettings),
+    editor: createDesktopEditorService(deps.chatTabs, deps.editorPane, deps.openAppSettings),
+    window: createDesktopWindowService(deps.views, deps.openChat, deps.openAppSettings, deps.toggleTerminal, deps.terminalToggle),
     lifecycle: createDesktopHostLifecycle(deps.reload),
     logSinks: deps.logSinks,
+    flush: async () => {
+      await Promise.all([settings.flush(), secrets.flush()]);
+    },
   };
 }

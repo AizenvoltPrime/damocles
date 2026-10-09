@@ -27,7 +27,7 @@ let handlers: ReturnType<typeof createWorkspaceFolderHandlers>;
 
 function ctx(): HandlerContext {
   const instance = h.instance(panelId);
-  return { host: instance.host, session: instance.session, permissionHandler: instance.permissionHandler, ideContextManager: instance.ideContextManager, panelId, folder: instance.folder };
+  return { host: instance.host, session: instance.session, permissionHandler: instance.permissionHandler, ideContextManager: instance.ideContextManager, terminalAttachments: instance.terminalAttachments, panelId, folder: instance.folder };
 }
 
 beforeEach(async () => {

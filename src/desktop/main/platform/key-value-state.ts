@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Disposable } from '../../../platform/disposable';
 import type { KeyValueState, Memento } from '../../../platform/key-value-state';
-import { writeJsonConfig } from '../../../core/config/json-config-write';
+import { jsonConfigWritesSettled, writeJsonConfig } from '../../../core/config/json-config-write';
 import { Emitter } from './emitter';
 
 function readValues(filePath: string, log: (line: string) => void): Map<string, unknown> {
@@ -57,6 +57,10 @@ class JsonFileMemento implements Memento {
     this.listeners.get(key)?.fire();
   }
 
+  flush(): Promise<void> {
+    return jsonConfigWritesSettled(this.filePath);
+  }
+
   onDidChange(key: string, listener: () => void): Disposable {
     let emitter = this.listeners.get(key);
     if (!emitter) {
@@ -72,6 +76,8 @@ export type StateScope = 'global' | 'workspace';
 export interface DesktopKeyValueState extends KeyValueState {
   // Fires after an update of key in this process has been written; the files are private to this app.
   onDidChange(scope: StateScope, key: string, listener: () => void): Disposable;
+  // Settles once every write to both files, one queued meanwhile included, has landed or failed; a quit awaits it.
+  flush(): Promise<void>;
 }
 
 // On desktop the app window is the workspace, so both mementos live under userData/state.
@@ -84,5 +90,8 @@ export function createDesktopKeyValueState(userDataDir: string, log: (line: stri
   return {
     ...mementos,
     onDidChange: (scope, key, listener) => mementos[scope].onDidChange(key, listener),
+    flush: async () => {
+      await Promise.all([mementos.global.flush(), mementos.workspace.flush()]);
+    },
   };
 }

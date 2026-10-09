@@ -7,13 +7,10 @@ import ConfirmDialogLayout from './ConfirmDialogLayout.vue';
 import RewindCheckpointNotes from '@/components/RewindCheckpointNotes.vue';
 import type { RewindOption, RewindHistoryItem, SkippedFilesTarget } from '@shared/types/session';
 import { useSettingsStore } from '@/stores/useSettingsStore';
-import { useEditorStore } from '@/stores/useEditorStore';
+import { restoreFocus } from '@/composables/useOverlayDialog';
 
 const { t } = useI18n();
 const settingsStore = useSettingsStore();
-const editorStore = useEditorStore();
-// A modal dialog traps focus and pointer events, so it steps aside (keeping its state) while an editor overlay is open over it.
-const suspended = computed(() => editorStore.hasOpenOverlay);
 
 const props = defineProps<{
   visible: boolean;
@@ -35,6 +32,9 @@ const emit = defineEmits<{
   cancel: [];
   openRewindDiff: [path: string];
 }>();
+
+// The control that opened the modal; reka returns focus only to a DialogTrigger, which this modal has none of.
+let opener: HTMLElement | null = null;
 
 type ModalView = 'options' | 'confirm-rewind';
 
@@ -96,6 +96,7 @@ function isDisabled(option: Option): boolean {
 
 watch(() => props.visible, (visible) => {
   if (visible) {
+    opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     selectedIndex.value = -1;
     filesExpanded.value = false;
     view.value = 'options';
@@ -114,7 +115,7 @@ function handleDialogOpenUpdate(open: boolean) {
 }
 
 function handleKeyDown(event: KeyboardEvent) {
-  if (!props.visible || suspended.value) return;
+  if (!props.visible) return;
 
   const target = event.target as HTMLElement;
   if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT' || target.isContentEditable) return;
@@ -213,6 +214,12 @@ function backToOptions() {
   view.value = 'options';
 }
 
+function onCloseAutoFocus(event: Event) {
+  event.preventDefault();
+  restoreFocus(opener);
+  opener = null;
+}
+
 onMounted(() => {
   document.addEventListener('keydown', handleKeyDown);
 });
@@ -224,10 +231,13 @@ onUnmounted(() => {
 
 <template>
   <AlertDialog
-    :open="visible && !suspended"
+    :open="visible"
     @update:open="handleDialogOpenUpdate"
   >
-    <AlertDialogContent class="max-h-[90vh] max-w-lg gap-0 overflow-hidden p-0">
+    <AlertDialogContent
+      class="max-h-[90vh] max-w-lg gap-0 overflow-hidden p-0"
+      @close-auto-focus="onCloseAutoFocus"
+    >
       <ConfirmDialogLayout
         v-if="view === 'options'"
         :icon="RotateCcw"

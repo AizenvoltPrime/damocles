@@ -8,18 +8,29 @@
     "themeToDark": "Switch to dark theme",
     "settingsName": "Settings",
     "settings": "Settings ({shortcut})",
+    "minimize": "Minimize",
+    "maximize": "Maximize",
+    "restore": "Restore",
+    "close": "Close",
     "notifications": "Notifications",
     "notificationsDnd": "Notifications · Do not disturb is on",
     "notificationsOff": "Notifications · Pop-ups are turned off in Settings",
     "notificationsUnseen": "Notifications, {count} new | Notifications, {count} new",
     "notificationsUnseenDnd": "Notifications, {count} new · Do not disturb is on | Notifications, {count} new · Do not disturb is on",
-    "notificationsUnseenOff": "Notifications, {count} new · Pop-ups are turned off in Settings | Notifications, {count} new · Pop-ups are turned off in Settings"
+    "notificationsUnseenOff": "Notifications, {count} new · Pop-ups are turned off in Settings | Notifications, {count} new · Pop-ups are turned off in Settings",
+    "toggleTerminalName": "Toggle terminal",
+    "toggleTerminal": "Toggle terminal ({shortcut})",
+    "toggleEditor": "Toggle editor & browser pane",
+    "quickOpen": "Search files in all projects",
+    "quickOpenTitle": "Go to File ({shortcut})"
   },
   "sidebar": {
     "label": "Sidebar",
     "resize": "Resize sidebar",
-    "resizeSections": "Resize the Projects and Chats sections",
-    "sizeValue": "{size} pixels"
+    "resizeSections": "Resize the Projects section",
+    "sizeValue": "{size} pixels",
+    "resizeFiles": "Resize the Chats and Files sections",
+    "resizeSearch": "Resize the Search section"
   },
   "projects": {
     "heading": "Projects",
@@ -175,44 +186,33 @@
     "warning": "Warning",
     "danger": "Caution"
   },
-  "pane": {
-    "label": "Browser pane",
-    "divider": "Resize browser pane",
-    "dividerValue": "{width} pixels wide",
-    "dividerHelp": "Drag to resize. With the keyboard: Left and Right arrows, Home and End.",
-    "pagesLabel": "Pages",
-    "pagesKeyboardHelp": "Arrow keys move between pages, Enter shows the page, Delete closes it.",
-    "newPage": "New page",
-    "pageLoading": "{title}, loading",
-    "closePage": "Close {title}",
-    "back": "Back",
-    "forward": "Forward",
-    "reload": "Reload",
-    "address": "Address",
-    "addressPlaceholder": "Enter an address",
-    "addressRefused": "This address cannot be opened here. Only http and https pages are allowed.",
-    "openExternal": "Open in system browser",
-    "openExternalUnavailable": "Only http and https pages open in the system browser",
-    "pickElement": "Pick an element for the chat",
-    "devTools": "Developer tools",
-    "maximize": "Maximize pane",
-    "restore": "Restore side-by-side view",
-    "collapseName": "Hide browser pane",
-    "collapse": "Hide browser pane ({shortcut})",
-    "empty": "Pages the agent opens in this conversation appear here.",
-    "toggleName": "Browser pane",
-    "show": "Show browser pane ({shortcut})",
-    "hide": "Hide browser pane ({shortcut})"
-  },
   "settingsHost": {
     "sections": {
       "appearance": {
         "label": "Appearance",
         "subtitle": "How Damocles looks."
+      },
+      "about": {
+        "label": "About",
+        "subtitle": "Version, updates and release notes."
+      },
+      "editor": {
+        "label": "Editor",
+        "subtitle": "The desktop editor. Changes apply to open files at once."
+      },
+      "files": {
+        "label": "Files and search",
+        "subtitle": "What Files, Quick Open and Search leave out, and how Search and the Search Editor behave."
+      },
+      "terminal": {
+        "label": "Terminal",
+        "subtitle": "The integrated terminal. Changes apply to open terminals at once."
       }
     },
     "groups": {
-      "layout": "Layout"
+      "layout": "Layout",
+      "search": "Search",
+      "searchEditor": "Search Editor"
     },
     "theme": {
       "dark": "Dark",
@@ -250,12 +250,774 @@
       "notifySound": {
         "label": "Play a sound with desktop pop-ups",
         "description": "A short chime when a pop-up appears: rising when a chat waits on you, a single note when one finishes, falling when one stops."
+      },
+      "aboutVersion": {
+        "label": "About Damocles",
+        "description": "Version, platform and updates."
+      },
+      "whatsNew": {
+        "label": "What's new",
+        "description": "Release notes for every version, newest first."
+      },
+      "editorFontSize": {
+        "label": "Font size",
+        "description": "Text size in the editor, in pixels."
+      },
+      "editorTabSize": {
+        "label": "Tab size",
+        "description": "Spaces per indentation step when a file does not say."
+      },
+      "editorDetectIndentation": {
+        "label": "Detect indentation",
+        "description": "Takes the tab size and tabs or spaces from each file's content."
+      },
+      "editorWordWrap": {
+        "label": "Word wrap",
+        "description": "Wrap long lines at the editor's width."
+      },
+      "editorMinimap": {
+        "label": "Minimap",
+        "description": "A small overview of the file beside the text."
+      },
+      "editorRenderWhitespace": {
+        "label": "Render whitespace",
+        "description": "When spaces and tabs show as dots and arrows."
+      },
+      "editorAutoSave": {
+        "label": "Auto save",
+        "description": "After delay saves one second after your last edit. On focus change saves when the editor loses focus."
+      },
+      "editorFormatOnSave": {
+        "label": "Format on save",
+        "description": "Formats on save and on auto save at focus change, with the trusted project's own Prettier 2 or 3, else the built-in formatter for TypeScript, JavaScript and JSON. Never in an untrusted folder or on auto save after delay."
+      },
+      "filesExclude": {
+        "label": "Files exclude",
+        "description": "Glob patterns of files and folders the Files section hides. Quick Open skips them too."
+      },
+      "terminalDefaultProfile": {
+        "label": "Default profile",
+        "description": "The shell a new terminal starts when you do not pick one."
+      },
+      "terminalProfiles": {
+        "label": "Profiles",
+        "description": "Shells you add in your user settings file, each with a path, arguments, an icon and a color. Set a detected shell to null to hide it. Project and local settings files cannot add or change a profile."
+      },
+      "terminalFontSize": {
+        "label": "Font size",
+        "description": "Text size in the terminal, in pixels."
+      },
+      "terminalScrollback": {
+        "label": "Scrollback",
+        "description": "Lines each terminal keeps above the screen."
+      },
+      "terminalCursorStyle": {
+        "label": "Cursor style",
+        "description": "How the terminal draws its cursor."
+      },
+      "search": {
+        "exclude": {
+          "label": "Search exclude",
+          "description": "Glob patterns of files and folders Search and Quick Open skip, on top of the Files exclude patterns. The Search toggle Use Exclude Settings and Ignore Files turns them off for one search."
+        },
+        "mode": {
+          "label": "Search mode",
+          "description": "Controls where new Find in Files and Find in Folder operations occur: either in the Search view, or in a search editor."
+        },
+        "sortOrder": {
+          "label": "Sort order",
+          "description": "Controls sorting order of search results."
+        },
+        "collapseResults": {
+          "label": "Collapse results",
+          "description": "Controls whether the search results will be collapsed or expanded."
+        },
+        "defaultViewMode": {
+          "label": "Default view mode",
+          "description": "Controls the default search result view mode."
+        },
+        "actionsPosition": {
+          "label": "Actions position",
+          "description": "Controls the positioning of the actionbar on rows in the Search view."
+        },
+        "smartCase": {
+          "label": "Smart case",
+          "description": "Search case-insensitively if the pattern is all lowercase, otherwise, search case-sensitively."
+        },
+        "searchOnType": {
+          "label": "Search on type",
+          "description": "Search all files as you type."
+        },
+        "showLineNumbers": {
+          "label": "Show line numbers",
+          "description": "Controls whether to show line numbers for search results."
+        },
+        "seedOnFocus": {
+          "label": "Seed on focus",
+          "description": "Update the search query to the editor's selected text when focusing the Search view."
+        },
+        "seedWithNearestWord": {
+          "label": "Seed with nearest word",
+          "description": "Enable seeding search from the word nearest the cursor when the active editor has no selection."
+        },
+        "useReplacePreview": {
+          "label": "Use replace preview",
+          "description": "Controls whether to open Replace Preview when selecting or replacing a match."
+        },
+        "searchOnTypeDebouncePeriod": {
+          "label": "Search on type debounce period",
+          "description": "When Search on type is on, the time in milliseconds between a character being typed and the search starting."
+        },
+        "maxResults": {
+          "label": "Max results",
+          "description": "Controls the maximum number of search results, at most 20,000."
+        }
+      },
+      "searchEditor": {
+        "doubleClickBehaviour": {
+          "label": "Double-click behaviour",
+          "description": "Configure effect of double-clicking a result in a search editor."
+        },
+        "defaultNumberOfContextLines": {
+          "label": "Default number of context lines",
+          "description": "The default number of surrounding context lines to use when creating new Search Editors."
+        },
+        "reusePriorSearchConfiguration": {
+          "label": "Reuse prior search configuration",
+          "description": "When enabled, new Search Editors will reuse the includes, excludes, and flags of the previously opened Search Editor."
+        },
+        "focusResultsOnSearch": {
+          "label": "Focus results on search",
+          "description": "When a search is triggered, focus the Search Editor results instead of the Search Editor input."
+        }
+      },
+      "terminalFontFamily": {
+        "label": "Font family",
+        "description": "A CSS font-family list for the terminal. Empty uses the app's monospace font."
+      },
+      "terminalLineHeight": {
+        "label": "Line height",
+        "description": "The height of each terminal line, as a multiple of the font size."
+      },
+      "terminalCursorBlinking": {
+        "label": "Cursor blinking",
+        "description": "Whether the terminal cursor blinks while the terminal has focus."
+      },
+      "terminalMultiLinePasteWarning": {
+        "label": "Multi-line paste warning",
+        "description": "When to ask before pasting several lines. Auto asks unless the shell turned on bracketed paste mode or the only line break is the last character."
+      },
+      "terminalShellIntegrationEnabled": {
+        "label": "Shell integration",
+        "description": "Start PowerShell, bash, Git Bash, zsh and fish with a script that reports each command, its exit code and the working directory. Command marks, command titles, links relative to the working directory and the kill confirmation use it. Applies to new terminals."
+      },
+      "terminalShellIntegrationDecorationsEnabled": {
+        "label": "Command marks",
+        "description": "Show a mark beside each command with its exit code while shell integration is active."
+      },
+      "terminalConfirmOnKill": {
+        "label": "Confirm before kill",
+        "description": "When to ask before killing terminals, closing the window, removing a project or quitting. Running asks when a command runs in a terminal."
+      },
+      "terminalMacOptionIsMeta": {
+        "label": "Option is Meta",
+        "description": "The Option key sends Meta (Esc) sequences, as terminal programs such as Emacs expect, instead of typing special characters."
       }
     },
     "restoreDefaults": "Restore defaults",
     "layoutRestored": "The default layout is back.",
     "restartBanner": "Restart Damocles to switch the language. Your layout, chats and unsaved editors come back.",
     "restartNow": "Restart now",
-    "later": "Later"
+    "later": "Later",
+    "about": {
+      "title": "{app} {version}",
+      "platformLine": "{os} · {arch}",
+      "runtimes": "Runtime versions",
+      "copy": "Copy version info",
+      "copied": "Copied",
+      "check": "Check for updates",
+      "lastChecked": "Last checked {time}",
+      "neverChecked": "Not checked yet",
+      "status": {
+        "disabled": "Updates off",
+        "idle": "Automatic updates",
+        "checking": "Checking",
+        "upToDate": "Up to date",
+        "available": "Update available",
+        "downloading": "Downloading {percent}%",
+        "ready": "Restart to update",
+        "restarting": "Restarting",
+        "error": "Update failed"
+      },
+      "detail": {
+        "disabled": "Updates are off in development builds.",
+        "idle": "Damocles checks for updates every 4 hours.",
+        "checking": "Looking for a newer version.",
+        "upToDate": "You have the latest version.",
+        "available": "Damocles {version} is available. Download it from the release page to update.",
+        "downloading": "Downloading Damocles {version}.",
+        "ready": "Damocles {version} is ready. Restart now to install it, or it installs when you quit.",
+        "readyLinux": "Damocles {version} is ready. Restart now to install it, or it installs when you quit. Installing asks for an administrator password.",
+        "restarting": "Damocles is restarting to install {version}.",
+        "error": "Damocles could not check for or install an update: {reason}"
+      },
+      "restart": "Restart to update",
+      "restarting": "Restarting",
+      "openReleasePage": "Open release page",
+      "showLog": "Show log"
+    },
+    "whatsNew": {
+      "listLabel": "Releases",
+      "current": "Current",
+      "update": "Update",
+      "loading": "Loading the notes for {version}",
+      "failed": "These notes could not load.",
+      "listFailed": "The release notes could not load.",
+      "empty": "This version has no notes."
+    },
+    "editor": {
+      "on": "On",
+      "off": "Off",
+      "integerRange": "Enter a whole number from {min} to {max}.",
+      "whitespace": {
+        "none": "None",
+        "boundary": "Boundary",
+        "selection": "Selection",
+        "trailing": "Trailing",
+        "all": "All"
+      },
+      "autoSave": {
+        "off": "Off",
+        "afterDelay": "After delay",
+        "onFocusChange": "On focus change"
+      }
+    },
+    "filesExclude": {
+      "off": "Set to false, so these files show",
+      "none": "No patterns"
+    },
+    "editInSettingsJson": "Edit in settings.json",
+    "terminal": {
+      "firstDetected": "First detected shell",
+      "firstDetectedNamed": "First detected ({name})",
+      "missingProfile": "{id} (not found)",
+      "cursor": {
+        "block": "Block",
+        "underline": "Underline",
+        "bar": "Bar"
+      },
+      "fontFamilyPlaceholder": "App monospace font",
+      "pasteWarning": {
+        "auto": "Auto",
+        "always": "Always",
+        "never": "Never"
+      },
+      "fontFamilyInvalid": "Enter a CSS font-family list, such as \"Cascadia Code\", monospace.",
+      "confirmOnKill": {
+        "running": "Running",
+        "always": "Always",
+        "never": "Never"
+      },
+      "profiles": {
+        "user": "Your profiles",
+        "detected": "Detected shells",
+        "problems": "Entries not loaded",
+        "none": "No profiles of your own yet. Add one in settings.json.",
+        "noProblems": "Every profile entry is valid.",
+        "hidden": "Hidden",
+        "hiddenHint": "Set to null in settings.json, so it is not offered",
+        "default": "Default",
+        "args": "Arguments"
+      },
+      "problem": {
+        "settingNotAnObject": "The setting must be an object that maps each profile name to an entry or to null.",
+        "tooManyProfiles": "More than {max} profiles are defined; this one is past the limit.",
+        "invalidName": "The name is empty, too long, padded with spaces, or holds control characters.",
+        "notAnObject": "The entry must be an object with a path, or null to hide a detected shell.",
+        "unknownField": "Profiles take only path, args, icon and color; this field is not one of them.",
+        "missingPath": "The entry has no path.",
+        "invalidPath": "The path must be a string or a list of strings.",
+        "pathNotAllowed": "Network, device and relative folder paths are not allowed. Use an absolute path or a program name on PATH.",
+        "pathNotFound": "No file exists at this path or on PATH.",
+        "pathNotAFile": "The path exists but is not a file.",
+        "pathUnreadable": "The path exists but could not be read, such as when access is denied.",
+        "invalidArgs": "Arguments must be a list of strings.",
+        "tooManyArgs": "The profile has too many arguments.",
+        "argsTooLong": "An argument or the whole command line is too long.",
+        "invalidIcon": "The icon is not one of the terminal icons.",
+        "invalidColor": "The color is not one of the eight terminal colors."
+      }
+    },
+    "search": {
+      "mode": {
+        "view": "Search view",
+        "reuseEditor": "Reuse search editor",
+        "newEditor": "New search editor"
+      },
+      "sortOrder": {
+        "default": "Folder and file names",
+        "fileNames": "File names",
+        "type": "File type",
+        "modified": "Last modified",
+        "countDescending": "Most matches first",
+        "countAscending": "Fewest matches first"
+      },
+      "collapseResults": {
+        "auto": "Auto",
+        "alwaysCollapse": "Always collapse",
+        "alwaysExpand": "Always expand"
+      },
+      "viewMode": {
+        "tree": "Tree",
+        "list": "List"
+      },
+      "actionsPosition": {
+        "auto": "Auto",
+        "right": "Right"
+      },
+      "doubleClick": {
+        "selectWord": "Select word",
+        "goToLocation": "Go to location",
+        "openLocationToSide": "Open to the side"
+      }
+    }
+  },
+  "update": {
+    "menuLabel": "Update",
+    "downloading": "Downloading {percent}%",
+    "downloadingTitle": "Downloading Damocles {version}",
+    "ready": "Restart to update",
+    "readyTitle": "Damocles {version} is ready. Restart to install it.",
+    "restarting": "Restarting",
+    "restartingTitle": "Damocles is restarting to install {version}.",
+    "available": "Update available",
+    "availableTitle": "Damocles {version} is available. Open the release page to download it.",
+    "restart": "Restart to update",
+    "releaseNotes": "Release notes",
+    "showLog": "Show log"
+  },
+  "grid": {
+    "move": {
+      "chat": "Move the chat pane",
+      "editor": "Move the editor pane",
+      "terminal": "Move the terminal"
+    },
+    "drag": {
+      "chat": "Drag to move the chat pane, or click for Move to",
+      "editor": "Drag to move the editor pane, or click for Move to",
+      "terminal": "Drag to move the terminal, or click for Move to"
+    },
+    "moveMenu": "Move {pane} to",
+    "moved": "Moved {pane} to {zone}",
+    "pane": {
+      "chat": "chat",
+      "editor": "editor",
+      "terminal": "terminal"
+    },
+    "paneName": {
+      "chat": "Chat",
+      "editor": "Editor",
+      "terminal": "Terminal"
+    },
+    "zone": {
+      "main": "Main area",
+      "side": "Right side",
+      "bottom": "Bottom",
+      "current": "Current position"
+    },
+    "dropOn": "Drop on {zone}",
+    "resizeSide": "Resize the side pane",
+    "resizeBottom": "Resize the bottom pane",
+    "terminal": {
+      "title": "Terminal",
+      "maximize": "Maximize panel",
+      "restore": "Restore panel size",
+      "hideName": "Hide terminal",
+      "hide": "Hide terminal ({shortcut})",
+      "emptyTitle": "No terminal is running"
+    }
+  },
+  "editor": {
+    "label": "Editor",
+    "tabsLabel": "Open editors",
+    "mention": "Mention this file in chat",
+    "closePane": "Close pane",
+    "empty": "Click a file in the sidebar to open it here.",
+    "emptyHint": "Or press {shortcut} to search files in every project.",
+    "breadcrumbs": "File path",
+    "diffStats": "{added} lines added, {removed} removed",
+    "saveFailed": "Failed to save '{name}': Damocles could not finish the save. Try again.",
+    "formatting": "Formatting…",
+    "tab": {
+      "preview": "preview",
+      "readOnly": "read-only",
+      "diff": "diff",
+      "unsaved": "unsaved changes",
+      "deleted": "Deleted",
+      "conflict": "Changed on disk",
+      "closeTitle": "Close ({shortcut})"
+    },
+    "menu": {
+      "label": "Actions for {title}",
+      "close": "Close",
+      "closeOthers": "Close others",
+      "closeRight": "Close to the right",
+      "closeAll": "Close all",
+      "showPreview": "Show preview",
+      "showSource": "Show source",
+      "openFile": "Open file",
+      "focusOverlay": "Open in focus overlay",
+      "mention": "Mention in chat",
+      "copyPath": "Copy path",
+      "revealInFiles": "Reveal in Files",
+      "revealInExplorer": "Reveal in File Explorer"
+    },
+    "contextMenu": {
+      "label": "Editor context menu",
+      "goToDefinition": "Go to Definition",
+      "goToReferences": "Go to References",
+      "renameSymbol": "Rename Symbol",
+      "changeAllOccurrences": "Change All Occurrences",
+      "formatDocument": "Format Document",
+      "cut": "Cut",
+      "copy": "Copy",
+      "paste": "Paste",
+      "commandPalette": "Command Palette..."
+    },
+    "readOnly": {
+      "encoding": "Read-only: this file is not valid UTF-8, so saving could change its bytes.",
+      "log": "Read-only: a log shows what its writer recorded.",
+      "outsideProject": "Read-only: this file is outside every open project.",
+      "tooLarge": "Read-only: this file is too large to edit here."
+    },
+    "image": {
+      "meta": "{width} × {height} · {size}"
+    },
+    "conflict": {
+      "title": "{name} changed on disk.",
+      "detail": "Your unsaved edits are kept until you choose.",
+      "compare": "Compare",
+      "revert": "Revert",
+      "overwrite": "Overwrite"
+    },
+    "focus": {
+      "label": "Focus overlay",
+      "open": "Open in focus overlay",
+      "back": "Back to pane",
+      "hint": "The chat is behind the editor. Press Escape to return.",
+      "status": {
+        "running": "Running",
+        "waiting": "Needs you",
+        "idle": "Idle"
+      }
+    },
+    "notDisplayed": {
+      "title": "This file is not displayed",
+      "binary": "It is a binary file.",
+      "tooLarge": "It is too large to open in the editor.",
+      "unreadable": "Damocles could not read it."
+    },
+    "browser": {
+      "label": "Browser",
+      "navigation": "Page navigation",
+      "newPage": "New page",
+      "loading": "loading",
+      "back": "Back",
+      "forward": "Forward",
+      "reload": "Reload",
+      "address": "Address",
+      "addressPlaceholder": "Enter an address",
+      "addressRefused": "This address cannot be opened here. Only http and https pages are allowed.",
+      "notSecure": "Not secure",
+      "notSecureDetail": "The connection to this site is not encrypted, so others on the network can read and change what it sends.",
+      "openExternal": "Open in system browser",
+      "openExternalUnavailable": "Only http and https pages open in the system browser",
+      "pickElement": "Pick an element for the chat",
+      "devTools": "Developer tools",
+      "menu": {
+        "reload": "Reload page",
+        "devTools": "Open DevTools",
+        "copyUrl": "Copy URL"
+      }
+    }
+  },
+  "files": {
+    "heading": "Files",
+    "newFile": "New file",
+    "newFolder": "New folder",
+    "collapseAll": "Collapse all",
+    "noProject": "Open a project to see its files.",
+    "loadFailed": "Damocles could not list the files.",
+    "empty": "{project} has no files to show.",
+    "treeLabel": "Files of {project}",
+    "keyboardHelp": "Arrow keys move and open folders, Enter opens, F2 renames, Delete deletes, Shift+F10 opens the menu. Drag a file into the chat to mention it.",
+    "inputLabel": {
+      "newFile": "New file name",
+      "newFolder": "New folder name",
+      "rename": "New name"
+    },
+    "error": {
+      "empty": "A file or folder name must be provided.",
+      "invalidName": "{name} is not a valid name.",
+      "exists": "A file or folder named {name} already exists here.",
+      "outside": "That location is outside the project.",
+      "missing": "The folder no longer exists.",
+      "failed": "Damocles could not do that."
+    },
+    "menu": {
+      "label": "Actions for {name}",
+      "open": "Open",
+      "openPreview": "Open preview",
+      "openSource": "Open source",
+      "click": "Click",
+      "focusOverlay": "Open in focus overlay",
+      "mention": "Mention in chat",
+      "drag": "Drag",
+      "rename": "Rename",
+      "delete": "Delete",
+      "copyPath": "Copy path",
+      "copyRelativePath": "Copy relative path",
+      "reveal": "Reveal in File Explorer",
+      "findInFolder": "Find in Folder..."
+    }
+  },
+  "quickOpen": {
+    "label": "Quick Open",
+    "placeholder": "Search files in all projects (append : to go to line, {'@'} to mention in chat, > to run a command)",
+    "recent": "recently opened",
+    "current": "{project} · current",
+    "goToLine": "Enter opens the file at line {line}",
+    "mention": "Enter mentions the file in the chat",
+    "scopedLabel": "Go to a file in {scope}",
+    "scopedPlaceholder": "Search files in this folder (append : to go to line, {'@'} to mention in chat)"
+  },
+  "search": {
+    "heading": "Search",
+    "refresh": "Refresh",
+    "cancel": "Cancel Search",
+    "clear": "Clear Search Results",
+    "viewAsTree": "View as Tree",
+    "viewAsList": "View as List",
+    "openNewEditor": "Open New Search Editor",
+    "collapseAll": "Collapse All",
+    "expandAll": "Expand All",
+    "query": "Search",
+    "queryPlaceholderHistory": "Search (⇅ for history)",
+    "queryAria": "Search: Type Search Term and press Enter to search",
+    "replace": "Replace",
+    "replaceAria": "Replace: Type replace term and press Enter to preview",
+    "include": "files to include",
+    "includePlaceholder": "e.g. *.ts, src/**/include",
+    "exclude": "files to exclude",
+    "excludePlaceholder": "e.g. *.ts, src/**/exclude",
+    "matchCase": "Match Case",
+    "wholeWord": "Match Whole Word",
+    "regex": "Use Regular Expression",
+    "preserveCase": "Preserve Case",
+    "onlyOpenEditors": "Search only in Open Editors",
+    "useExclude": "Use Exclude Settings and Ignore Files",
+    "toggleReplace": "Toggle Replace",
+    "toggleDetails": "Toggle Search Details",
+    "replaceAll": "Replace All",
+    "replaceAllDisabled": "Replace All (Submit Search to Enable)",
+    "replaceOne": "Replace",
+    "dismiss": "Dismiss",
+    "withShortcut": "{label} ({shortcut})",
+    "clearedInput": "Cleared Input",
+    "results": "{count} result | {count} results",
+    "files": "{count} file | {count} files",
+    "summary": "{results} in {files}",
+    "ariaDone": "Search returned {results} results in {files} files",
+    "limitHit": "The result set only contains a subset of all matches. Be more specific in your search to narrow down the results.",
+    "canceled": "Search was canceled before any results could be found",
+    "noResults": {
+      "files": {
+        "none": "No results found. Review your configured exclusions and check your gitignore files",
+        "includes": "No results found in '{include}'",
+        "excludes": "No results found excluding '{exclude}'",
+        "includesExcludes": "No results found in '{include}' excluding '{exclude}'"
+      },
+      "openEditors": {
+        "none": "No results found in open editors. Review your configured exclusions and check your gitignore files",
+        "includes": "No results found in open editors matching '{include}'",
+        "excludes": "No results found in open editors excluding '{exclude}'",
+        "includesExcludes": "No results found in open editors matching '{include}' excluding '{exclude}'"
+      }
+    },
+    "link": {
+      "searchAgain": "Search again",
+      "searchAgainInAll": "Search again in all files",
+      "openSettings": "Open Settings",
+      "enable": "enable",
+      "disable": "disable"
+    },
+    "excludesDisabled": "exclude settings and ignore files are disabled",
+    "searchingOpenFiles": "searching only in open files",
+    "searchWorkspace": "Search in entire workspace",
+    "openInEditor": "Open in editor",
+    "openInEditorTooltip": "Copy current search results to an editor",
+    "bufferWarning": {
+      "unsupportedRegex": "Open editors were not searched: this regular expression cannot run in the editor.",
+      "timedOut": "Open editors were not fully searched: the regular expression took too long."
+    },
+    "searching": "Searching",
+    "noProject": "Open a project to search its files.",
+    "invalidGlob": "{glob} points outside the project. Use a pattern relative to the project folder.",
+    "error": "Search failed: {message}",
+    "treeLabel": "{summary}, search for {pattern}",
+    "emptySearch": "Empty Search",
+    "keyboardHelp": "Arrow keys move and expand rows, Enter opens a match, Ctrl+Enter opens it to the side, Delete dismisses it, Shift+F10 opens the menu.",
+    "folderAria": "{count} matches in folder root {name}, Search result",
+    "fileAria": "{count} matches in file {name} of folder {folder}, Search result",
+    "matchAria": "'{line}' at column {column} found {match}",
+    "replacePreviewAria": "'{line}' at column {column} replace {match} with {replacement}",
+    "matchesFound": "{count} match found | {count} matches found",
+    "filesFound": "{count} file found | {count} files found",
+    "fromLine": "From line {line}",
+    "moreLines": "{count} more lines",
+    "menu": {
+      "open": "Open",
+      "openToSide": "Open to the Side",
+      "restrict": "Restrict Search to Folder",
+      "excludeFolder": "Exclude Folder from Search",
+      "expandRecursively": "Expand Recursively",
+      "excludeType": "Exclude File Type from Search",
+      "includeType": "Include File Type in Search",
+      "copy": "Copy",
+      "copyPath": "Copy Path",
+      "copyRelativePath": "Copy Relative Path",
+      "copyAll": "Copy All",
+      "revealInFiles": "Reveal in Files"
+    },
+    "skipped": {
+      "changed": "{name} was not replaced: its text changed since the search.",
+      "unsupportedRegex": "{name} was not replaced: this regular expression cannot run in the editor.",
+      "readOnly": "{name} was not replaced: its editor is read-only."
+    },
+    "previewSkipped": {
+      "changed": "{name} cannot be previewed: its text changed since the search.",
+      "readOnly": "{name} cannot be previewed: it is not UTF-8 text or is too large to edit.",
+      "openInEditor": "{name} cannot be previewed while it is open in an editor.",
+      "conflict": "{name} cannot be previewed: it changed while it was read.",
+      "timedOut": "{name} cannot be previewed: the regular expression took too long on it.",
+      "unsupportedRegex": "{name} cannot be previewed: this regular expression cannot run in the editor."
+    }
+  },
+  "palette": {
+    "label": "Command Palette",
+    "placeholder": "Type the name of a command to run",
+    "recent": "recently used",
+    "other": "other commands",
+    "empty": "No matching commands"
+  },
+  "terminal": {
+    "listLabel": "Terminals",
+    "new": "New Terminal",
+    "newTitle": "New Terminal ({shortcut}). Shift+click starts one in the current project.",
+    "emptyText": "Start a shell in the current project, or press {shortcut}.",
+    "noProject": "Open a project to start a terminal",
+    "noShell": "No shell was found on this computer",
+    "count": "{count} terminal | {count} terminals",
+    "kill": "Kill {title}",
+    "killTitle": "Kill terminal (Delete)",
+    "resizeList": "Resize the terminal list",
+    "resizeListHint": "Drag to resize, double-click to reset",
+    "exited": "Process exited with code {code}",
+    "hostStopped": "The terminal host stopped",
+    "restart": "Restart",
+    "scrollToEnd": "Scroll to the end",
+    "split": {
+      "split": "Split Terminal",
+      "splitTitle": "Split {title}",
+      "splitHint": "Split Terminal ({shortcut})",
+      "position": "split {index} of {count}",
+      "resize": "Resize between {left} and {right}",
+      "sizes": "{left} {leftPercent}%, {right} {rightPercent}%"
+    },
+    "status": {
+      "starting": "Starting",
+      "running": "Running"
+    },
+    "find": {
+      "label": "Find in terminal",
+      "placeholder": "Find",
+      "matchCase": "Match case",
+      "wholeWord": "Match whole word",
+      "regex": "Use regular expression",
+      "previous": "Previous match (Shift+Enter)",
+      "next": "Next match (Enter)",
+      "close": "Close (Escape)",
+      "none": "No results",
+      "count": "{count} result | {count} results",
+      "position": "{index} of {count}",
+      "invalid": "Invalid regular expression"
+    },
+    "pick": {
+      "profileLabel": "New terminal shell",
+      "projectLabel": "New terminal project",
+      "profilePlaceholder": "Select a shell for the new terminal",
+      "projectPlaceholder": "Select the project the terminal starts in",
+      "default": "Default",
+      "current": "Current",
+      "shiftHint": "Shift+Enter starts it in {project}"
+    },
+    "renameLabel": "Rename {title}",
+    "renamePlaceholder": "Terminal name",
+    "menu": {
+      "label": "Actions for {title}",
+      "copy": "Copy",
+      "paste": "Paste",
+      "selectAll": "Select All",
+      "clear": "Clear",
+      "rename": "Rename...",
+      "split": "Split Terminal",
+      "unsplit": "Unsplit Terminal",
+      "changeIcon": "Change Icon...",
+      "changeColor": "Change Color...",
+      "kill": "Kill Terminal",
+      "copyLastCommand": "Copy Last Command",
+      "copyLastCommandOutput": "Copy Last Command Output",
+      "addToChat": "Add to Chat",
+      "rerunCommand": "Rerun Command",
+      "copyCommand": "Copy Command",
+      "copyOutput": "Copy Output",
+      "addOutputToChat": "Add Output to Chat"
+    },
+    "link": {
+      "file": "click to open",
+      "folder": "click to show in Files",
+      "web": "click to follow link"
+    },
+    "newMenu": {
+      "button": "Launch Profile...",
+      "label": "New terminal with a shell",
+      "selectDefault": "Select Default Profile..."
+    },
+    "mark": {
+      "unnamed": "Command",
+      "running": "{command}, running",
+      "success": "{command}, succeeded",
+      "failure": "{command}, failed with exit code {code}",
+      "menuLabel": "Actions for {command}",
+      "milliseconds": "{milliseconds} ms",
+      "seconds": "{seconds} s",
+      "minutes": "{minutes} min {seconds} s",
+      "runningFor": "Running for {duration}",
+      "succeededIn": "Succeeded in {duration}",
+      "failedAfter": "Failed with exit code {code} after {duration}",
+      "startedAt": "Started at {time}"
+    }
+  },
+  "searchEditor": {
+    "toggleContextLines": "Toggle Context Lines",
+    "contextLines": "Context lines",
+    "includeAria": "Search Include Patterns",
+    "excludeAria": "Search Exclude Patterns",
+    "runSearch": "Run Search",
+    "headerError": "The saved search could not be read fully: {message}",
+    "matched": "Matched {match} at {line} in file {file}",
+    "goToResult": "Go to Result",
+    "goToResultToSide": "Open Result to the Side",
+    "focusInput": "Focus Search Editor Input"
   }
 }

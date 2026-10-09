@@ -3,7 +3,8 @@ import { promises as fsp } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { JsonConfigWriteError, writeJsonConfig } from '../json-config-write';
+import { JsonConfigWriteError, jsonConfigWritesSettled, writeJsonConfig } from '../json-config-write';
+import { flushAcrossHeldRename } from '../../../__mocks__/held-rename';
 
 const POSIX = process.platform !== 'win32';
 
@@ -212,5 +213,27 @@ describe('writeJsonConfig symlinks', () => {
         .rejects.toMatchObject({ stage: 'write' });
       expect(fs.existsSync(path.join(path.dirname(claudeFile), 'settings.local.json'))).toBe(false);
     });
+  });
+});
+
+describe('jsonConfigWritesSettled', () => {
+  it('resolves with nothing queued', async () => {
+    await expect(jsonConfigWritesSettled(path.join(dir, 'none.json'))).resolves.toBeUndefined();
+  });
+
+  it('waits for the write in flight and for one queued while it waits, and never rejects', async () => {
+    const file = path.join(dir, 'state.json');
+    const writes: Array<Promise<unknown>> = [];
+    const onDisk = await flushAcrossHeldRename(file, {
+      first: () => writes.push(writeJsonConfig(file, () => '1')),
+      flush: () => jsonConfigWritesSettled(file),
+      second: () => writes.push(
+        expect(writeJsonConfig(file, () => { throw new Error('mutation failed'); })).rejects.toThrow('mutation failed'),
+        writeJsonConfig(file, () => '2'),
+      ),
+      onDisk: () => fs.readFileSync(file, 'utf8'),
+    });
+    expect(onDisk).toBe('2');
+    await Promise.all(writes);
   });
 });

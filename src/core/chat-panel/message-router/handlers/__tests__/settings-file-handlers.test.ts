@@ -1,49 +1,39 @@
 import { describe, it, expect, vi } from 'vitest';
-import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { createFakePlatform } from '../../../../../__mocks__/fake-platform';
 import { createSettingsFileHandlers } from '../settings-file-handlers';
 import type { Disposable } from '../../../../../platform/disposable';
 import type { HandlerContext, HandlerDependencies } from '../../types';
+import type { SettingsFileScope } from '../../../../../shared/types/messages';
 
 vi.mock('../../../../logger', () => ({ log: vi.fn() }));
 
+function handlersFor(settingsSources: boolean) {
+  const platform = createFakePlatform({ capabilities: { settingsSources }, settings: { scopeFiles: { user: path.join(os.tmpdir(), 'unused.json') } } });
+  const { handlers } = createSettingsFileHandlers({ platform, subscriptions: [], postMessage: () => undefined, getPanels: () => new Map() } as unknown as HandlerDependencies);
+  return { platform, open: handlers.openSettingsFileInChat! };
+}
+
 describe('settings file handlers', () => {
-  it('release the panel watchers with the panel and with the router', async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'settings-file-handlers-'));
-    try {
-      const userFile = path.join(home, 'settings.json');
-      const platform = createFakePlatform({ capabilities: { settingsSources: true }, settings: { scopeFiles: { user: userFile } } });
-      const panelDisposables: Disposable[] = [];
-      const subscriptions: Disposable[] = [];
-      const posted: unknown[] = [];
-      const { handlers } = createSettingsFileHandlers({
-        platform,
-        subscriptions,
-        postMessage: (_host: unknown, message: unknown) => { posted.push(message); },
-        getPanels: () => new Map([['p1', { disposables: panelDisposables }]]),
-      } as unknown as HandlerDependencies);
-      const ctx = { host: {}, panelId: 'p1' } as unknown as HandlerContext;
+  const ctx = { host: {}, panelId: 'p1' } as unknown as HandlerContext;
 
-      await handlers.settingsFileLoad!({ type: 'settingsFileLoad', scope: 'user' }, ctx);
-      await handlers.settingsFileLoad!({ type: 'settingsFileLoad', scope: 'user' }, ctx);
-
-      expect(posted).toHaveLength(2);
-      expect(panelDisposables).toHaveLength(1);
-      expect(subscriptions).toHaveLength(1);
-      const watcher = platform.fileWatchers.watchers[0];
-      expect(platform.fileWatchers.watchers).toHaveLength(1);
-
-      panelDisposables[0]!.dispose();
-
-      expect(watcher?.disposed).toBe(true);
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
+  it('open Edit settings.json in the host editor, at a setting key when the modal names one', async () => {
+    const { platform, open } = handlersFor(true);
+    await open({ type: 'openSettingsFileInChat', scope: 'user' }, ctx);
+    await open({ type: 'openSettingsFileInChat', scope: 'project', key: 'damocles.desktop.files.exclude' }, ctx);
+    expect(platform.editor.settingsFiles).toEqual([{ scope: 'user' }, { scope: 'project', key: 'damocles.desktop.files.exclude' }]);
   });
 
-  it('hold a panel that asked only for availability until it closes', () => {
+  it('refuse an unknown scope, a key that is not a setting key and a host without settings files', async () => {
+    const { platform, open } = handlersFor(true);
+    await expect(open({ type: 'openSettingsFileInChat', scope: '../x' as SettingsFileScope }, ctx)).rejects.toThrow('unknown settings file scope');
+    await expect(open({ type: 'openSettingsFileInChat', scope: 'user', key: '../../etc/passwd' }, ctx)).rejects.toThrow('malformed setting key');
+    expect(platform.editor.settingsFiles).toEqual([]);
+    await expect(handlersFor(false).open({ type: 'openSettingsFileInChat', scope: 'user' }, ctx)).rejects.toThrow('this host keeps no Damocles settings files');
+  });
+
+  it('hold a panel that asked for availability until it closes', () => {
     const platform = createFakePlatform({ capabilities: { settingsSources: true }, trusted: false, settings: { scopeFiles: { user: path.join(os.tmpdir(), 'unused.json') } } });
     const panelDisposables: Disposable[] = [];
     const posted: unknown[] = [];
@@ -53,7 +43,6 @@ describe('settings file handlers', () => {
       postMessage: (_host: unknown, message: unknown) => { posted.push(message); },
       getPanels: () => new Map([['p1', { disposables: panelDisposables }]]),
     } as unknown as HandlerDependencies);
-    const ctx = { host: {}, panelId: 'p1' } as unknown as HandlerContext;
 
     postAvailability(ctx);
     postAvailability(ctx);

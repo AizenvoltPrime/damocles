@@ -53,6 +53,7 @@ export function makeFakeHost(): FakeHost {
     folderLabel: undefined,
     visible: true,
     active: true,
+    retainsContextWhenHidden: true,
     column: 1,
     cspSource: '',
     themeCssSource: () => '',
@@ -102,6 +103,8 @@ export interface Harness {
   folderStatePushes: HostInstance[];
   /** Resolves the next session creation; creation waits while set. */
   holdCreation: { gate: Promise<void> | null };
+  /** The router's handling of a `ready` stays pending while set, as a restore that is still replaying does. */
+  holdReady: { gate: Promise<void> | null };
   /** Each session creation takes the next error from the front and rejects with it, while any remain. */
   failCreation: { errors: Error[] };
   /** Awaited inside `sendFolderState`, so a test can act while the switch is re-pushing folder state. */
@@ -127,6 +130,7 @@ export function createHarness(initial: ReturnType<typeof folderEntry>[]): Harnes
   const releaseErrors = new Map<string, Error>();
   const folderStatePushes: HostInstance[] = [];
   const holdCreation: Harness['holdCreation'] = { gate: null };
+  const holdReady: Harness['holdReady'] = { gate: null };
   const failCreation: Harness['failCreation'] = { errors: [] };
   const holdFolderState: Harness['holdFolderState'] = { gate: null };
   const initialMessageFolders: string[] = [];
@@ -166,6 +170,7 @@ export function createHarness(initial: ReturnType<typeof folderEntry>[]): Harnes
     },
     handleWebviewMessage: async (message, panelId, view) => {
       routed.push({ message, panelId, session: manager.getPanels().get(panelId)?.session, ...(view ? { view } : {}) });
+      if (message.type === 'ready' && holdReady.gate) await holdReady.gate;
     },
     sendCurrentSettings: async () => undefined,
     getStoredSessions: async () => ({ sessions: [], hasMore: false, nextOffset: 0 }),
@@ -199,6 +204,7 @@ export function createHarness(initial: ReturnType<typeof folderEntry>[]): Harnes
     releaseErrors,
     folderStatePushes,
     holdCreation,
+    holdReady,
     failCreation,
     holdFolderState,
     initialMessageFolders,

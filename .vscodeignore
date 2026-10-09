@@ -162,6 +162,7 @@ docs/**
 .gitignore
 .eslintrc*
 eslint.config.mjs
+stylelint.config.mjs
 tsconfig*.json
 vite.config.ts
 vitest.config.ts
@@ -178,9 +179,12 @@ bun.lockb
 package-lock.json
 **/*.log
 
-# Desktop app: build output, packaging config, end-to-end suite and Windows icon (DESKTOP_EXCLUDE_RULES in scripts/sync-vscodeignore.mjs)
+# Desktop app: build output, packaging config, end-to-end suite, Windows icon and terminal shell-integration scripts (DESKTOP_EXCLUDE_RULES in scripts/sync-vscodeignore.mjs)
 dist/desktop/**
 dist/desktop-shell/**
+dist/formatter-host.js
+dist/pty-host.js
+dist/quick-open-worker.js
 dist/e2e*/**
 dist-desktop/**
 e2e/**
@@ -190,6 +194,7 @@ electron-builder.yml
 playwright.desktop.config.ts
 vite.shell.config.ts
 resources/icon.ico
+resources/shell-integration/**
 
 # Python sidecar dev artefacts (the runtime ships in dist/, not from source tree)
 python/**/.venv/**

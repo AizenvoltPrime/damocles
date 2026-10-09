@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication, Page } from '@playwright/test';
 import { OVERLAY_ACK_TIMEOUT_MS, OVERLAY_CHANNELS } from '../../src/desktop/preload/overlay-channels';
+import { logBeforeQuit } from './support/app';
 import { activeChat, expect, nextChat, test } from './support/fixtures';
 import { seedStubModel } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
@@ -148,7 +149,7 @@ test('with the overlay crashed, the question falls back to the OS message box an
     expect.objectContaining({ parented: true, buttons: ['Trust Folder', 'Don\'t Trust'] }),
   ]);
   await expect.poll(async () => (await shellState(app)).projects.find((p) => p.fsPath === home.project)?.trusted).toBe(true);
-  expect(desktop.output()).toMatch(/\[dialog\] the overlay could not ask \(The overlay page stopped\); asking with the OS message box/);
+  await expect.poll(() => desktop.output()).toMatch(/\[dialog\] the overlay could not ask \(The overlay page stopped\); asking with the OS message box/);
   // Main reloads the crashed page; the test ends only once it has read its state, so closing never races that call.
   await expect.poll(() => app.evaluate(async ({ webContents }, url) => {
     const overlay = webContents.getAllWebContents().find((contents) => contents.getURL() === url);
@@ -162,8 +163,6 @@ test('when main is busy past the acknowledgement deadline right after asking, th
   const desktop = await launch();
   const { app } = desktop;
   await expect(chatInput(await activeChat(app))).toBeVisible();
-  // Records any OS box and answers it Don't Trust, so a re-asked question shows as an untrusted project.
-  await answerMessageBoxes(app);
   // Blocks main once, right after it sends the first overlay request, as building the folder runtime did on a slow runner.
   await app.evaluate(({ webContents }, { url, channel, stallMs }) => {
     const overlay = webContents.getAllWebContents().find((contents) => contents.getURL() === url)!;
@@ -182,9 +181,10 @@ test('when main is busy past the acknowledgement deadline right after asking, th
 
   await addProject(app, home.project, true);
   await expect.poll(async () => (await shellState(app)).projects.find((p) => p.fsPath === home.project)?.trusted).toBe(true);
-  expect(await askedDialogs(app)).toEqual([expect.objectContaining({ message: expect.stringContaining(TRUST_PROMPT), answered: 'Trust Folder' })]);
+  expect(await askedDialogs(app)).toEqual([expect.objectContaining({ surface: 'overlay', message: expect.stringContaining(TRUST_PROMPT), answered: 'Trust Folder' })]);
   expect(await messageBoxes(app)).toEqual([]);
-  expect(desktop.output()).not.toMatch(/did not acknowledge|ignoring an answer to a request that is not open/);
+  await desktop.close();
+  expect(logBeforeQuit(home)).not.toMatch(/did not acknowledge|ignoring an answer to a request that is not open/);
 });
 
 test('in Greek, the dialog\'s text and buttons are Greek', async ({ home, launch }) => {

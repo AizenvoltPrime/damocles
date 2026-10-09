@@ -12,6 +12,8 @@ import { ensurePiSessionDir } from "../../../pi-session/session-store/session-di
 import { log } from "../../../logger";
 import { t } from "../../../l10n";
 import { openMarkdownPreview } from "../../markdown-preview";
+import { mentionInChat } from "../../mention-resolver";
+import { parseFileDragTarget } from "../../../../shared/file-drag";
 import { isSettingsAccountId, isSettingsSectionId } from "../../../../shared/settings-sections";
 
 function hasPathTraversal(slug: string): boolean {
@@ -96,6 +98,10 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       } else {
         platform.window.openAppSettings(msg.section, msg.account);
       }
+    },
+
+    toggleTerminal: () => {
+      platform.window.toggleTerminal();
     },
 
     openSessionLog: async (_msg, ctx) => {
@@ -241,6 +247,19 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       if (!Number.isInteger(msg.promptIndex) || msg.promptIndex < 0) return;
       const memoryData = await ctx.session.getMemoryInjection(msg.promptIndex) ?? null;
       postMessage(ctx.host, { type: "contextInjectionLoaded", promptIndex: msg.promptIndex, memoryData });
+    },
+
+    // A file dropped on the composer names a project and a relative path; core confines it (mention-resolver.ts).
+    mentionDropped: async (msg, ctx) => {
+      if (msg.type !== "mentionDropped") return;
+      const target = parseFileDragTarget(msg.projectKey, msg.relativePath);
+      if (!target) throw new Error("Malformed file drop");
+      const instance = deps.getPanels().get(ctx.panelId);
+      await mentionInChat(
+        { folders: deps.folderRegistry, confinement: platform.confinement, notifications: platform.notifications, post: (message) => postMessage(ctx.host, message) },
+        target,
+        (instance?.folder ?? ctx.folder).fsPath,
+      );
     },
 
     requestWorkspaceFiles: async (_msg, ctx) => {

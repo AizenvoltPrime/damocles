@@ -33,13 +33,13 @@ describe('App when the editor chunk fails to load', () => {
     const errors: unknown[] = [];
     mounted.push(mount(App, { global: { plugins: [i18n], config: { errorHandler: (err) => { errors.push(err); } } } }) as VueWrapper);
 
-    editorStore.openSettingsEditor('user');
-    editorStore.openFile({ type: 'editorOpenFile', viewId: 'f1', title: 'a.ts', document: { name: 'a.ts', path: '/w/a.ts', body: { kind: 'text', content: 'x', languageId: 'typescript' } } });
+    const doc = { name: 'a.ts', path: '/w/a.ts', body: { kind: 'text' as const, content: 'x', languageId: 'typescript' } };
+    editorStore.showDiff({ type: 'editorShowDiff', viewId: 'v1', title: 'a.ts', purpose: 'proposal', approvalId: 'tool-1', original: doc, modified: doc });
+    editorStore.openProposal('tool-1');
 
     await vi.waitFor(() => {
       expect(editorStore.hasOpenOverlay).toBe(false);
     });
-    expect(editorStore.settingsEditorScope).toBeNull();
     expect(editorStore.view).toBeNull();
     expect(errors).toHaveLength(1);
   });

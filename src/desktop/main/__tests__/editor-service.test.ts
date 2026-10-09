@@ -9,6 +9,7 @@ import { EDITOR_MAX_DOCUMENT_BYTES, type ExtensionToWebviewMessage } from '../..
 import { resolveChatTab, type ChatTabSources } from '../chat-tab-target';
 import { fileBody, fileDocument, languageIdForName, memoryDocument, textBody } from '../platform/editor-document';
 import { createDesktopEditorService, type ChatTabMessenger } from '../platform/editor-service';
+import type { EditorPane } from '../editor-pane';
 
 let dir: string;
 
@@ -104,7 +105,7 @@ describe('editor documents', () => {
     const handle = fs.openSync(huge, 'w');
     fs.ftruncateSync(handle, EDITOR_MAX_DOCUMENT_BYTES + 1);
     fs.closeSync(handle);
-    const service = createDesktopEditorService({} as ChatTabMessenger, () => undefined);
+    const service = createDesktopEditorService({} as ChatTabMessenger, () => ({}) as EditorPane, () => undefined);
 
     await expect(service.readText(write('read.ts', Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('const a = 1;\n')])))).resolves.toBe('const a = 1;\n');
     await expect(service.readText(huge)).rejects.toThrow('over the');
@@ -166,49 +167,90 @@ describe('resolveChatTab', () => {
   });
 });
 
-describe('desktop editor service', () => {
+describe('desktop editor service (D15 routing)', () => {
   function service(): {
     editor: ReturnType<typeof createDesktopEditorService>;
-    shown: Array<[string | undefined, ExtensionToWebviewMessage]>;
+    delivered: Array<[string | undefined, ExtensionToWebviewMessage]>;
     posted: Array<[string, ExtensionToWebviewMessage]>;
+    pane: string[];
     settingsOpened: Array<SettingsSectionId | undefined>;
   } {
-    const shown: Array<[string | undefined, ExtensionToWebviewMessage]> = [];
+    const delivered: Array<[string | undefined, ExtensionToWebviewMessage]> = [];
     const posted: Array<[string, ExtensionToWebviewMessage]> = [];
+    const pane: string[] = [];
     const settingsOpened: Array<SettingsSectionId | undefined> = [];
     const tabs: ChatTabMessenger = {
-      show: async (panelId, message) => {
-        shown.push([panelId, message]);
+      deliver: async (panelId, message) => {
+        delivered.push([panelId, message]);
         return 'host-3';
       },
       post: (panelId, message) => { posted.push([panelId, message]); },
     };
-    return { editor: createDesktopEditorService(tabs, (section) => { settingsOpened.push(section); }), shown, posted, settingsOpened };
+    const fakePane = {
+      openPath: async (filePath: string, opts: { line?: number; focus: boolean; preview?: boolean }) => {
+        pane.push(`openPath:${path.basename(filePath)}:${JSON.stringify(opts)}`);
+      },
+      openUntitled: (content: string, name: string, languageId: string, opts: { focus: boolean }) => {
+        pane.push(`untitled:${name}:${languageId}:${content}:${String(opts.focus)}`);
+      },
+      showDiff: async (titleOf: (name: string) => string, filePath: string, _left: unknown, _right: unknown, opts: { focus: boolean }) => {
+        const title = titleOf(path.basename(filePath));
+        pane.push(`diff:${title}:${String(opts.focus)}`);
+        return { close: () => { pane.push(`closeDiff:${title}`); } };
+      },
+      openSettingsFile: async (scope: string, key?: string) => {
+        pane.push(`settings:${scope}:${key ?? ''}`);
+      },
+    } as unknown as EditorPane;
+    return { editor: createDesktopEditorService(tabs, () => fakePane, (section) => { settingsOpened.push(section); }), delivered, posted, pane, settingsOpened };
   }
 
-  it('opens a markdown preview read-only in the chat that asked, through the in-app editor', async () => {
-    const { editor, shown } = service();
-    const file = write('damocles-system-prompt.md', '# System prompt\n');
-
-    await editor.showMarkdownPreview(file, { panelId: 'host-4' });
-
-    const [[panelId, message]] = shown as [[string | undefined, Extract<ExtensionToWebviewMessage, { type: 'editorOpenFile' }>]];
-    expect(panelId).toBe('host-4');
-    expect(message).toMatchObject({ type: 'editorOpenFile', title: 'damocles-system-prompt.md', document: { name: 'damocles-system-prompt.md', path: file } });
+  it('opens files in the editor pane, focused only when the caller did not set preserveFocus, at a valid line only', async () => {
+    const { editor, delivered, pane } = service();
+    await editor.openFile('/w/lines.py', { line: 2, panelId: 'host-1' });
+    await editor.openFile('/w/lines.py', { line: 0, preserveFocus: true });
+    expect(pane).toEqual(['openPath:lines.py:{"focus":true,"line":2}', 'openPath:lines.py:{"focus":false}']);
+    expect(delivered).toEqual([]);
   });
 
-  it('posts a proposal diff to the requesting tab and closes it in the tab it went to, once', async () => {
-    const { editor, shown, posted } = service();
+  it('opens a markdown preview, an untitled buffer with a bundled language only, and settings files in the pane', async () => {
+    const { editor, delivered, pane } = service();
+    await editor.showMarkdownPreview('/tmp/damocles-system-prompt.md', { panelId: 'host-4' });
+    await editor.openUntitled('<p>hi</p>', 'html', { panelId: 'host-4' });
+    await editor.openUntitled('x', 'brainfuck');
+    await editor.openSettingsFile('project', { key: 'damocles.desktop.files.exclude' });
+    expect(pane).toEqual([
+      'openPath:damocles-system-prompt.md:{"focus":true,"preview":true}',
+      'untitled:untitled.html:html:<p>hi</p>:true',
+      'untitled:untitled.brainfuck:plaintext:x:true',
+      'settings:project:damocles.desktop.files.exclude',
+    ]);
+    expect(delivered).toEqual([]);
+  });
+
+  it('shows a diff without an approval id in the pane, never in a chat', async () => {
+    const { editor, delivered, pane } = service();
+    const view = await editor.showDiff({ title: (name) => `${name} (At checkpoint ↔ Current)`, filePath: '/w/a.ts', left: { name: 'x-a.ts', content: 'a' }, right: { path: '/w/a.ts' }, purpose: 'checkpoint', panelId: 'host-2' });
+    const agent = await editor.showDiff({ title: (name) => name, filePath: '/w/b.ts', left: { name: 'b.ts', content: 'a' }, right: { name: 'b2.ts', content: 'b' }, purpose: 'checkpoint', preserveFocus: true });
+    await view.close();
+    await agent.close();
+    expect(pane).toEqual(['diff:a.ts (At checkpoint ↔ Current):true', 'diff:b.ts:false', 'closeDiff:a.ts (At checkpoint ↔ Current)', 'closeDiff:b.ts']);
+    expect(delivered).toEqual([]);
+  });
+
+  it('posts an approval diff to the requesting chat, never to the pane, and closes it in the chat it went to, once', async () => {
+    const { editor, delivered, posted, pane } = service();
     const file = write('edit.md', '# old\n');
     const view = await editor.showDiff({
-      title: 'edit.md (Current ↔ Proposed)',
+      title: (name) => `${name} (Current ↔ Proposed)`,
+      filePath: file,
       left: { path: file },
       right: { name: 'tool-1-proposed-edit.md', content: '# new\n' },
       purpose: 'proposal',
       panelId: 'host-2',
       approvalId: 'tool-1',
     });
-    const [[panelId, message]] = shown as [[string | undefined, Extract<ExtensionToWebviewMessage, { type: 'editorShowDiff' }>]];
+    const [[panelId, message]] = delivered as [[string | undefined, Extract<ExtensionToWebviewMessage, { type: 'editorShowDiff' }>]];
     expect(panelId).toBe('host-2');
     expect(message).toMatchObject({
       type: 'editorShowDiff',
@@ -218,37 +260,23 @@ describe('desktop editor service', () => {
       original: { name: 'edit.md', path: file, body: { kind: 'text', content: '# old\n', languageId: 'markdown' } },
       modified: { name: 'tool-1-proposed-edit.md', body: { kind: 'text', content: '# new\n', languageId: 'markdown' } },
     });
+    expect(pane).toEqual([]);
     expect(posted).toEqual([]);
     await view.close();
     await view.close();
     expect(posted).toEqual([['host-3', { type: 'editorCloseView', viewId: message.viewId }]]);
   });
 
-  it('gives every view its own id and opens a file at a valid line only', async () => {
-    const { editor, shown } = service();
-    const file = write('lines.py', 'a\nb\n');
-    await editor.openFile(file, { line: 2, panelId: 'host-1' });
-    await editor.openFile(file, { line: 0 });
-    const [first, second] = shown.map(([, m]) => m as Extract<ExtensionToWebviewMessage, { type: 'editorOpenFile' }>);
-    expect(shown.map(([id]) => id)).toEqual(['host-1', undefined]);
-    expect(first).toMatchObject({ type: 'editorOpenFile', title: 'lines.py', line: 2, document: { path: file, body: { kind: 'text', languageId: 'python' } } });
-    expect(second).not.toHaveProperty('line');
-    expect(first!.viewId).not.toBe(second!.viewId);
-  });
-
-  it('opens an untitled buffer with a bundled language only', async () => {
-    const { editor, shown } = service();
-    await editor.openUntitled('<p>hi</p>', 'html', { panelId: 'host-4' });
-    await editor.openUntitled('x', 'brainfuck');
-    expect(shown[0]).toEqual(['host-4', expect.objectContaining({ untitled: true, title: 'untitled.html', document: { name: 'untitled.html', body: { kind: 'text', content: '<p>hi</p>', languageId: 'html' } } })]);
-    expect(shown[1]?.[1]).toMatchObject({ document: { body: { languageId: 'plaintext' } } });
+  it('reads the disk text, never an unsaved buffer', async () => {
+    const { editor } = service();
+    await expect(editor.readText(write('disk.ts', 'on disk\n'))).resolves.toBe('on disk\n');
   });
 
   it('opens host settings in the app settings at the section asked for, without a round trip through a chat', async () => {
-    const { editor, shown, settingsOpened } = service();
+    const { editor, delivered, settingsOpened } = service();
     await editor.openHostSettings('damocles.browser.devToolsPort', 'integrations');
     await editor.openHostSettings('damocles');
     expect(settingsOpened).toEqual(['integrations', undefined]);
-    expect(shown).toEqual([]);
+    expect(delivered).toEqual([]);
   });
 });

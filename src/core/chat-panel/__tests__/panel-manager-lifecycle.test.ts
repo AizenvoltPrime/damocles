@@ -65,4 +65,82 @@ describe('PanelManager panel lifecycle', () => {
 
     await expect(h.manager.dispose()).resolves.toBeUndefined();
   });
+
+  // The desktop host records a chat core opens itself as it creates its view, before core starts setting it up.
+  it('whenSetUp, asked for as the host is created, settles only once core finished setting that chat up, registered or not', async () => {
+    h = createHarness([folderEntry(A)]);
+    const window = h.platform.window;
+    const create = window.createPanelInOwnColumn.bind(window);
+    const setUps: Array<Promise<void>> = [];
+    window.createPanelInOwnColumn = async (options) => {
+      const host = await create(options);
+      setUps.push(h.manager.whenSetUp(host));
+      return host;
+    };
+    let release!: () => void;
+    h.holdCreation.gate = new Promise<void>((resolve) => { release = resolve; });
+    const opening = h.manager.show();
+    await tick();
+    let settled = false;
+    void setUps[0]!.then(() => { settled = true; });
+    await tick();
+    expect(settled).toBe(false);
+
+    h.holdCreation.gate = null;
+    release();
+    const panelId = await opening;
+    await setUps[0];
+    expect(h.manager.getPanels().has(panelId)).toBe(true);
+
+    h.failCreation.errors.push(new Error('no session'));
+    await expect(h.manager.show()).rejects.toThrow('no session');
+    await expect(setUps[1]).resolves.toBeUndefined();
+  });
+});
+
+// A message routed beside a restoring `ready` starts a fresh conversation, or lands in the restored one before its replay clears the transcript.
+describe('PanelManager routes nothing a webview sent after its ready until the ready is handled', () => {
+  const PANEL_TOKEN = '00000000-0000-4000-8000-000000000000';
+  const routedTypes = (): string[] => h.routed.map((r) => r.message.type);
+
+  it('holds a message the webview sent while the session was created until the queued ready settles', async () => {
+    h = createHarness([folderEntry(A)]);
+    let created!: () => void;
+    h.holdCreation.gate = new Promise<void>((resolve) => { created = resolve; });
+    let readied!: () => void;
+    h.holdReady.gate = new Promise<void>((resolve) => { readied = resolve; });
+    const host = makeFakeHost();
+    const opening = h.manager.initializeHost(host);
+    await tick();
+    host.send({ type: 'ready', panelToken: PANEL_TOKEN, savedSessionId: 'saved' });
+    host.send({ type: 'sendMessage', content: 'typed during the restore' });
+
+    h.holdCreation.gate = null;
+    created();
+    await opening;
+    await tick();
+    expect(routedTypes()).toEqual(['ready']);
+
+    readied();
+    await tick();
+    expect(routedTypes()).toEqual(['ready', 'sendMessage']);
+  });
+
+  it('holds a message that arrives while a ready on an open gate is handled, and every message after it in order', async () => {
+    h = createHarness([folderEntry(A)]);
+    const host = makeFakeHost();
+    await h.manager.initializeHost(host);
+    let readied!: () => void;
+    h.holdReady.gate = new Promise<void>((resolve) => { readied = resolve; });
+
+    host.send({ type: 'ready', panelToken: PANEL_TOKEN });
+    host.send({ type: 'sendMessage', content: 'first' });
+    host.send({ type: 'cancelSession' });
+    await tick();
+    expect(routedTypes()).toEqual(['ready']);
+
+    readied();
+    await tick();
+    expect(routedTypes()).toEqual(['ready', 'sendMessage', 'cancelSession']);
+  });
 });

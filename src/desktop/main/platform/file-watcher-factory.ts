@@ -1,16 +1,19 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { AsyncSubscription, BackendType } from '@parcel/watcher';
+import type { BackendType, Options, SubscribeCallback } from '@parcel/watcher';
 import picomatch from 'picomatch';
 import type { Disposable } from '../../../platform/disposable';
 import type { FileRename, FileWatcher, FileWatcherFactory } from '../../../platform/file-watcher';
 import type { WorkspaceFolders } from '../../../platform/workspace-folders';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
+import { settlePending } from '../../../shared/settle-pending';
 import { Emitter } from './emitter';
 
 type RawEventType = 'create' | 'change' | 'delete';
 type RawListener = (type: RawEventType, fsPath: string) => void;
 type Log = (line: string) => void;
+// Records watcher work still running (a @parcel/watcher subscribe or unsubscribe, a Windows tree scan) and hands the same promise back.
+type TrackWork = <T>(work: Promise<T>) => Promise<T>;
 
 // VS Code's files.watcherExclude defaults: churn no Damocles watcher cares about.
 const RECURSIVE_IGNORE = ['**/node_modules/**', '**/.git/objects/**', '**/.git/subtree-cache/**', '**/.hg/store/**'];
@@ -18,6 +21,11 @@ const RECURSIVE_IGNORE = ['**/node_modules/**', '**/.git/objects/**', '**/.git/s
 const REPLAY_LIMIT = 10_000;
 // A burst of raw fs.watch events on one directory (a checkout, an atomic rewrite) is reported once per file; VS Code's non-recursive watcher waits 75 ms too.
 export const SHALLOW_COALESCE_MS = 75;
+// A Windows recursive watch whose handle died is opened again after this delay, doubled per failure since its last event.
+export const REOPEN_FIRST_MS = 1000;
+const REOPEN_MAX_MS = 60_000;
+// A Windows tree notes its rescans in the log at most once per this interval.
+const RESCAN_NOTE_MS = 60_000;
 
 // A glob with no separator and no globstar matches direct children only, so a non-recursive watch covers it; this keeps a
 // watch like (home, '.claude.json') from subscribing to the whole home tree.
@@ -36,9 +44,12 @@ export function watchRoot(base: string, glob: string): { readonly root: string; 
 // Linux watches recursively with startInotifyTree; @parcel/watcher's inotify backend never lists a directory created or moved in
 // after the watch started, so it misses what is inside and never watches its subdirectories (parcel-bundler/watcher#97).
 const USE_INOTIFY_TREE = process.platform === 'linux';
+// Windows watches recursively with startFsWatchTree and never loads @parcel/watcher: its Windows backend frees a subscription
+// while its ReadDirectoryChangesW read is still pending (parcel-bundler/watcher#262), which crashed the process on quit and unwatch.
+const USE_FS_WATCH_TREE = process.platform === 'win32';
 
-// @parcel/watcher otherwise probes for a watchman binary on every subscribe.
-const PARCEL_BACKEND: BackendType | undefined = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'fs-events' : undefined;
+// @parcel/watcher runs on macOS only, and otherwise probes for a watchman binary on every subscribe.
+const PARCEL_BACKEND: BackendType = 'fs-events';
 
 const isRecursiveIgnored = picomatch(RECURSIVE_IGNORE, { dot: true });
 
@@ -203,16 +214,16 @@ function startShallow(dir: string, emit: RawListener, lost: () => void, log: Log
 }
 
 // The OS watch covers the whole tree, but a directory moved in arrives as one create with nothing for what it holds, so it is listed.
-function startParcel(dir: string, emit: RawListener, lost: () => void, log: Log): Disposable {
+// Every subscribe and unsubscribe goes through track, so the factory's close() can wait for it.
+function startParcel(dir: string, emit: RawListener, lost: () => void, log: Log, track: TrackWork): Disposable {
   // FSEvents reports real paths, so a root under a symlink (/var is /private/var on macOS) is watched at its real path and events map back to dir.
   const real = fs.realpathSync.native(dir);
   const toCaller = (eventPath: string): string => (real === dir ? eventPath : path.join(dir, path.relative(real, eventPath)));
   let disposed = false;
-  let subscription: AsyncSubscription | undefined;
   const checkRoot = (): void => {
     if (!disposed && !fs.existsSync(dir)) lost();
   };
-  import('@parcel/watcher').then((parcel) => parcel.subscribe(real, (err, events) => {
+  const onEvents: SubscribeCallback = (err, events) => {
     if (disposed) return;
     if (err) log(`[watcher] ${dir}: ${err.message}`);
     const reported = new Set(events.map((event) => event.path));
@@ -226,17 +237,20 @@ function startParcel(dir: string, emit: RawListener, lost: () => void, log: Log)
       }, log, (fsPath) => ignoredUnder(real, fsPath));
     }
     checkRoot();
-  }, { ignore: RECURSIVE_IGNORE, ...(PARCEL_BACKEND ? { backend: PARCEL_BACKEND } : {}) })).then((started) => {
-    subscription = started;
-    if (disposed) void started.unsubscribe().catch(() => undefined);
-  }, (err: unknown) => {
+  };
+  const options: Options = { ignore: RECURSIVE_IGNORE, backend: PARCEL_BACKEND };
+  // undefined when the subscribe failed, or was never made because the watch was disposed while the module loaded
+  const subscribed = track(import('@parcel/watcher').then((parcel) => (disposed ? undefined : parcel.subscribe(real, onEvents, options)))).catch((err: unknown) => {
     log(`[watcher] could not watch ${dir}: ${errorText(err)}`);
     checkRoot();
+    return undefined;
   });
   return {
     dispose: () => {
+      if (disposed) return;
       disposed = true;
-      subscription?.unsubscribe().catch((err: unknown) => log(`[watcher] could not stop watching ${dir}: ${errorText(err)}`));
+      // A subscribe still running is unsubscribed once it lands.
+      track(subscribed.then((subscription) => subscription?.unsubscribe())).catch((err: unknown) => log(`[watcher] could not stop watching ${dir}: ${errorText(err)}`));
     },
   };
 }
@@ -431,6 +445,279 @@ function startInotifyTree(root: string, emit: RawListener, lost: () => void, log
   };
 }
 
+// A Windows tree's record of one entry, keyed in its parent by the name Windows reports, which is the name's case on disk.
+interface FsEntry {
+  readonly ino: bigint;
+  readonly size: bigint;
+  readonly ctimeNs: bigint;
+  // A directory's entries; undefined for anything else, a link included.
+  readonly children: Map<string, FsEntry> | undefined;
+}
+
+interface FsScan {
+  readonly rel: string;
+  readonly children: Map<string, FsEntry>;
+  readonly report: boolean;
+}
+
+function fsEntry(stat: fs.BigIntStats): FsEntry {
+  return { ino: stat.ino, size: stat.size, ctimeNs: stat.ctimeNs, children: stat.isDirectory() ? new Map() : undefined };
+}
+
+// Windows reports a last-access update as a change, and it moves none of these; a write moves ctime, a replacement the file id.
+function sameFile(entry: FsEntry, stat: fs.BigIntStats): boolean {
+  return entry.ino === stat.ino && entry.size === stat.size && entry.ctimeNs === stat.ctimeNs;
+}
+
+// One fs.watch(real, { recursive: true }) per root; docs/invariants.md "The Windows tree settles every event against a snapshot".
+function startFsWatchTree(dir: string, report: boolean, emit: RawListener, lost: () => void, log: Log, track: TrackWork): Disposable {
+  // Events are relative to the real path (long names, links resolved) and reported under dir, the caller's form.
+  const real = fs.realpathSync.native(dir);
+  const root = new Map<string, FsEntry>();
+  const pending = new Set<string>();
+  const scans: FsScan[] = [];
+  let scanning = false;
+  let watcher: fs.FSWatcher | undefined;
+  let timer: NodeJS.Timeout | undefined;
+  let reopenTimer: NodeJS.Timeout | undefined;
+  let failures = 0;
+  let overflows = 0;
+  let notedAt = -Infinity;
+  let stopped = false;
+
+  const callerPath = (rel: string): string => path.join(dir, rel);
+
+  // undefined while the snapshot has no such directory; the listing queued for an ancestor reports what it holds.
+  const childrenOf = (rel: string): Map<string, FsEntry> | undefined => {
+    let children: Map<string, FsEntry> | undefined = root;
+    if (rel !== '') for (const part of rel.split(path.sep)) children = children?.get(part)?.children;
+    return children;
+  };
+
+  const reportDeleted = (entry: FsEntry, rel: string): void => {
+    for (const [name, child] of entry.children ?? []) reportDeleted(child, path.join(rel, name));
+    emit('delete', callerPath(rel));
+  };
+
+  // Brings the entry for name in line with stat (undefined: nothing there) and reports the difference; returns the entry it added.
+  const settle = (children: Map<string, FsEntry>, parentRel: string, name: string, stat: fs.BigIntStats | undefined, reportIt: boolean): FsEntry | undefined => {
+    const known = children.get(name);
+    const rel = path.join(parentRel, name);
+    if (known && stat && (known.children !== undefined) === stat.isDirectory()) {
+      // A file replaced under its name (an atomic write) is a change; a directory replaced is a delete and a create.
+      if (!known.children) {
+        if (!sameFile(known, stat)) {
+          children.set(name, fsEntry(stat));
+          if (reportIt) emit('change', callerPath(rel));
+        }
+        return undefined;
+      }
+      if (known.ino === stat.ino) return undefined;
+    }
+    if (known) {
+      children.delete(name);
+      if (reportIt) reportDeleted(known, rel);
+    }
+    if (!stat) return undefined;
+    const added = fsEntry(stat);
+    children.set(name, added);
+    if (reportIt) emit('create', callerPath(rel));
+    return added;
+  };
+
+  // Diffs one directory against its entries, then each directory under it.
+  const scanDir = async (rel: string, children: Map<string, FsEntry>, reportIt: boolean): Promise<void> => {
+    let names: string[];
+    try {
+      names = await fs.promises.readdir(path.join(real, rel));
+    } catch (err) {
+      // A directory gone since it was queued is removed by its own events, or by the next full scan.
+      if (!isGoneError(err)) log(`[watcher] could not list ${callerPath(rel)}: ${errorText(err)}`);
+      return;
+    }
+    if (stopped) return;
+    const listed = names.filter((name) => !isRecursiveIgnored(toGlobPath(path.join(rel, name))));
+    const stats = await Promise.all(listed.map((name) => lstatLater(path.join(real, rel, name), log)));
+    if (stopped) return;
+    const present = new Set<string>();
+    listed.forEach((name, index) => {
+      const stat = stats[index];
+      if (!stat) return;
+      present.add(name);
+      settle(children, rel, name, stat, reportIt);
+    });
+    for (const name of [...children.keys()]) if (!present.has(name)) settle(children, rel, name, undefined, reportIt);
+    for (const [name, entry] of [...children]) {
+      if (stopped) return;
+      if (entry.children) await scanDir(path.join(rel, name), entry.children, reportIt);
+    }
+  };
+
+  const runScans = async (): Promise<void> => {
+    try {
+      for (let scan = scans.shift(); scan && !stopped; scan = scans.shift()) {
+        // A directory removed since it was queued is no longer the snapshot's.
+        if (childrenOf(scan.rel) === scan.children) await scanDir(scan.rel, scan.children, scan.report);
+      }
+    } finally {
+      scanning = false;
+    }
+    flush();
+  };
+
+  // Scans run one at a time and never while a flush settles events, so each diffs a snapshot nothing else is changing.
+  const startScans = (): void => {
+    if (scanning || stopped || scans.length === 0) return;
+    scanning = true;
+    track(runScans()).catch((err: unknown) => log(`[watcher] scanning ${dir} failed: ${errorText(err)}`));
+  };
+
+  // A full scan already running gets one successor, since it may have listed a directory before the changes it missed.
+  const rescan = (): void => {
+    if (!scans.some((scan) => scan.children === root)) scans.push({ rel: '', children: root, report: true });
+    startScans();
+  };
+
+  const overflowed = (): void => {
+    overflows++;
+    const now = Date.now();
+    if (now - notedAt >= RESCAN_NOTE_MS) {
+      log(`[watcher] ${dir}: more changes than one Windows change notification holds (${overflows} since the last note); rescanning`);
+      notedAt = now;
+      overflows = 0;
+    }
+    rescan();
+  };
+
+  const namesOnDisk = (rel: string): ReadonlySet<string> | undefined => {
+    try {
+      return new Set(fs.readdirSync(path.join(real, path.dirname(rel))));
+    } catch {
+      return undefined;
+    }
+  };
+
+  // onDisk: the names the parent lists, when the batch names one entry in two cases; lstat would find it under either.
+  const reconcile = (rel: string, onDisk: ReadonlySet<string> | undefined): void => {
+    const cut = rel.lastIndexOf(path.sep);
+    const parentRel = cut < 0 ? '' : rel.slice(0, cut);
+    const name = rel.slice(cut + 1);
+    const children = childrenOf(parentRel);
+    if (!children) return;
+    const stat = onDisk && !onDisk.has(name) ? undefined : lstatNow(path.join(real, rel), log);
+    const added = settle(children, parentRel, name, stat, true);
+    // A directory created in place reports its contents through events, one moved in only through this listing.
+    if (added?.children) scans.push({ rel, children: added.children, report: true });
+  };
+
+  const flush = (): void => {
+    clearTimeout(timer);
+    timer = undefined;
+    if (scanning || stopped) return;
+    // A case-only rename reports both names, which fold to one.
+    const byFold = new Map<string, string[]>();
+    for (const rel of pending) {
+      const fold = rel.toLowerCase();
+      const same = byFold.get(fold);
+      if (same) same.push(rel);
+      else byFold.set(fold, [rel]);
+    }
+    pending.clear();
+    for (const rels of byFold.values()) {
+      const onDisk = rels.length > 1 ? namesOnDisk(rels[0]!) : undefined;
+      for (const rel of rels) reconcile(rel, onDisk);
+      if (stopped) return;
+    }
+    // A root renamed away keeps its handle, which goes on reporting from the new place.
+    if (!fs.existsSync(dir)) {
+      gone();
+      return;
+    }
+    startScans();
+  };
+
+  const stop = (): void => {
+    stopped = true;
+    clearTimeout(timer);
+    clearTimeout(reopenTimer);
+    timer = undefined;
+    reopenTimer = undefined;
+    pending.clear();
+    scans.length = 0;
+    watcher?.close();
+    watcher = undefined;
+  };
+
+  const gone = (): void => {
+    if (stopped) return;
+    stop();
+    for (const [name, entry] of root) reportDeleted(entry, name);
+    root.clear();
+    lost();
+  };
+
+  // The handle is dead or must close; a root still there is watched again after a delay that grows while that keeps failing.
+  const reopenLater = (): void => {
+    watcher?.close();
+    watcher = undefined;
+    if (!fs.existsSync(dir)) {
+      gone();
+      return;
+    }
+    const delay = Math.min(REOPEN_MAX_MS, REOPEN_FIRST_MS * 2 ** failures++);
+    log(`[watcher] watching ${dir} again in ${delay} ms`);
+    clearTimeout(reopenTimer);
+    reopenTimer = setTimeout(() => {
+      reopenTimer = undefined;
+      if (stopped) return;
+      try {
+        open();
+      } catch (err) {
+        log(`[watcher] could not watch ${dir} again: ${errorText(err)}`);
+        reopenLater();
+        return;
+      }
+      // What changed while no handle was open is found by the diff.
+      scans.push({ rel: '', children: root, report: true });
+      startScans();
+    }, delay);
+  };
+
+  const onEvent = (_eventType: string, filename: string | null): void => {
+    if (stopped) return;
+    if (filename === null) {
+      overflowed();
+      return;
+    }
+    // libuv names the watched directory itself, by absolute path, once it is deleted, and again on every read until the handle closes.
+    if (path.isAbsolute(filename)) {
+      reopenLater();
+      return;
+    }
+    failures = 0;
+    // Before any syscall, so a busy node_modules costs nothing beyond the event.
+    if (isRecursiveIgnored(toGlobPath(filename))) return;
+    pending.add(filename);
+    timer ??= setTimeout(flush, SHALLOW_COALESCE_MS);
+  };
+
+  const open = (): void => {
+    const handle = fs.watch(real, { recursive: true }, onEvent);
+    // Node has closed the handle by the time it reports the error.
+    handle.on('error', (err) => {
+      if (handle !== watcher) return;
+      log(`[watcher] ${dir}: ${err.message}`);
+      reopenLater();
+    });
+    watcher = handle;
+  };
+
+  open();
+  scans.push({ rel: '', children: root, report });
+  startScans();
+  return { dispose: stop };
+}
+
 interface RootEntry {
   readonly listeners: Set<RawListener>;
   readonly source: Disposable;
@@ -475,11 +762,25 @@ class EventFan implements FileWatcher {
   }
 }
 
-/** @parcel/watcher subscriptions shared per root (non-recursive fs.watch for direct-children globs), filtered by picomatch. */
+/**
+ * One watch shared per root, filtered by picomatch: recursive on startFsWatchTree (Windows), startInotifyTree (Linux) or
+ * @parcel/watcher (macOS), non-recursive fs.watch for direct-children globs.
+ */
 export class DesktopFileWatcherFactory implements FileWatcherFactory {
   private readonly roots = new Map<string, RootEntry>();
   private readonly folders: WorkspaceFolders;
   private readonly log: Log;
+  // @parcel/watcher subscribes and unsubscribes, and Windows tree scans, still running.
+  private readonly work = new Set<Promise<unknown>>();
+  private closed = false;
+  private readonly track: TrackWork = (work) => {
+    this.work.add(work);
+    const settled = (): void => {
+      this.work.delete(work);
+    };
+    work.then(settled, settled);
+    return work;
+  };
 
   constructor(folders: WorkspaceFolders, log: Log) {
     this.folders = folders;
@@ -535,17 +836,24 @@ export class DesktopFileWatcherFactory implements FileWatcherFactory {
     return fan;
   }
 
-  // The desktop app performs no renames of its own; files renamed on disk reach watchers as delete + create.
+  // No rename is reported, the Files section's own included: a rename reaches watchers as delete + create.
   onDidRenameFiles(_cb: (renames: readonly FileRename[]) => void): Disposable {
     return { dispose: () => undefined };
   }
 
-  dispose(): void {
+  /**
+   * Stops every watch and settles once no @parcel/watcher subscribe or unsubscribe and no Windows tree scan is running; a watch
+   * made after it began fires nothing. The quit awaits it: a parcel completion while Node frees its environment aborts the process.
+   */
+  async close(): Promise<void> {
+    this.closed = true;
     for (const entry of this.roots.values()) entry.source.dispose();
     this.roots.clear();
+    await settlePending(() => this.work);
   }
 
   private subscribe(root: string, recursive: boolean, listener: RawListener): () => void {
+    if (this.closed) return () => undefined;
     const key = `${recursive ? 'r' : 's'}:${folderKey(root)}`;
     let entry = this.roots.get(key);
     if (!entry) {
@@ -553,10 +861,13 @@ export class DesktopFileWatcherFactory implements FileWatcherFactory {
       const emit: RawListener = (type, fsPath) => {
         for (const each of [...listeners]) each(type, fsPath);
       };
-      const log = this.log;
+      const { log, track } = this;
       const source = watchWhileExists(root, (appeared, lost) => {
-        const startRecursive = USE_INOTIFY_TREE ? startInotifyTree : startParcel;
-        const started = recursive ? startRecursive(root, emit, lost, log) : startShallow(root, emit, lost, log);
+        // Its first scan reports what a root that appeared holds, and the events after it are diffed against that scan.
+        if (recursive && USE_FS_WATCH_TREE) return startFsWatchTree(root, appeared, emit, lost, log, track);
+        let started: Disposable;
+        if (!recursive) started = startShallow(root, emit, lost, log);
+        else started = USE_INOTIFY_TREE ? startInotifyTree(root, emit, lost, log) : startParcel(root, emit, lost, log, track);
         let live = true;
         // Deferred, so a watcher whose directory appears while watch() runs has its listeners before the replay.
         if (appeared) queueMicrotask(() => {

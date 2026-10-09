@@ -4,3 +4,7 @@
 .vscodeignore text eol=lf
 # Linux package scripts and the AppArmor profile run on Linux; CRLF breaks the shebang and apparmor_parser.
 build/linux/** text eol=lf
+# Shell-integration scripts run inside bash, zsh and fish (Git Bash and WSL included), which read CR as part of a line.
+resources/shell-integration/*.sh text eol=lf
+resources/shell-integration/*.fish text eol=lf
+resources/shell-integration/*.zsh text eol=lf

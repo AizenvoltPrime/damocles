@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication } from '@playwright/test';
-import { mainLog } from './support/app';
+import { logBeforeQuit, mainLog } from './support/app';
 import { activeChat, expect, test } from './support/fixtures';
 import { OS_KEYRING_ENV, writeUserSettings, type HermeticHome } from './support/hermetic';
 import { closeSettingsModal, openSettingsModal, settingsRow } from './support/settings';
@@ -41,10 +41,10 @@ test('with no keyring on Linux, secrets stay in memory and the user is warned on
   await saveExploreKey(desktop.app, 'e2e-secret-value');
   await saveExploreKey(desktop.app, 'e2e-secret-value-2');
   await expect.poll(() => desktop.output()).toContain(`[notification:warning] ${KEYRING_WARNING}`);
-  expect(desktop.output().split(`[notification:warning] ${KEYRING_WARNING}`).length - 1).toBe(1);
   expect(fs.existsSync(path.join(home.userData, 'secrets.json'))).toBe(false);
 
   await desktop.close();
+  expect(logBeforeQuit(home).split(`[notification:warning] ${KEYRING_WARNING}`).length - 1).toBe(1);
   const relaunched = await launch({ args: ['--password-store=basic'] });
   const again = await activeChat(relaunched.app);
   await expect(chatInput(again)).toBeVisible();
@@ -67,9 +67,9 @@ test('secrets are encrypted at rest and survive a restart', async ({ home, launc
   const atRest = fs.readFileSync(file);
   expect(atRest.includes(secret)).toBe(false);
   expect(atRest.includes(Buffer.from(secret).toString('base64'))).toBe(false);
-  expect(desktop.output()).not.toContain(secret);
 
   await desktop.close();
+  expect(desktop.output()).not.toContain(secret);
   const relaunched = await launch();
   const again = await activeChat(relaunched.app);
   await expect(chatInput(again)).toBeVisible();

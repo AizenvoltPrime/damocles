@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { defineComponent, h } from 'vue';
+import { defineComponent, h, nextTick, ref } from 'vue';
 import { mount, type VueWrapper } from '@vue/test-utils';
 import { hasOpenOverlay, useOverlayEscape, MODAL_Z_INDEX, type OverlayOptions } from '../useOverlayEscape';
 
@@ -148,11 +148,11 @@ describe('the stack entry a torn-down overlay leaves behind', () => {
 });
 
 /** Renders the layer it was handed, so a test can read `zIndex` and `isTop` off the DOM. */
-function openLayer(): VueWrapper {
+function openLayer(options?: OverlayOptions): VueWrapper {
   const wrapper = mount(
     {
       setup() {
-        const { zIndex, isTop } = useOverlayEscape(() => {});
+        const { zIndex, isTop } = useOverlayEscape(() => {}, options);
         return () => h('div', { 'data-z': String(zIndex.value), 'data-top': String(isTop.value) });
       },
     },
@@ -177,6 +177,19 @@ describe('the derived paint order', () => {
     const layers = Array.from({ length: 25 }, () => openLayer());
 
     for (const layer of layers) expect(zIndexOf(layer)).toBeLessThan(MODAL_Z_INDEX);
+  });
+
+  it('keeps the layer a dialog painted on while it plays its exit, so it never drops behind the overlay it was opened over', async () => {
+    const beneath = openLayer();
+    const open = ref(true);
+    const dialog = openLayer({ active: () => open.value });
+    await nextTick();
+    expect(zIndexOf(dialog)).toBe(zIndexOf(beneath) + 1);
+
+    open.value = false;
+    await nextTick();
+
+    expect(zIndexOf(dialog)).toBe(zIndexOf(beneath) + 1);
   });
 
   it('marks only the overlay opened last as the top layer', async () => {

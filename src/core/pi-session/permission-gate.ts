@@ -73,6 +73,8 @@ export interface PanelGateContext {
   isTeamEnabled?: () => boolean;
   /** Emit a webview message from a shared-extension hook (injection chips, etc.). */
   postMessage: (message: ExtensionToWebviewMessage) => void;
+  /** What the user typed for the prompt pi's input handlers get as `text`, when this panel sent it. */
+  typedPromptOf?: (text: string) => string | undefined;
   /** True once the hard budget limit stopped the turn; a cache-warming refresh bills against that cap. */
   budgetStopRequested: () => boolean;
   /** Called from the `agent_before_settle` boundary: coordinates the background keep-alive (wait for

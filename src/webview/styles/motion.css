@@ -17,7 +17,6 @@
 @keyframes d-blink{0%,49%{opacity:1}50%,100%{opacity:0}}
 @keyframes d-slide{from{opacity:0;transform:translateX(-6px)}to{opacity:1;transform:none}}
 @keyframes nt-in{from{opacity:0;transform:translateX(28px) scale(.98)}to{opacity:1;transform:none}}
-@keyframes d-from-end{from{opacity:0;transform:translateX(32px)}to{opacity:1;transform:none}}
 
 /* Chat Panel.dc.html keyframes. d-ring and the glint pair replace the reference's box-shadow ring and background-position shimmer with transform and opacity. */
 @keyframes o-zoom{from{opacity:0;transform:scale(.975) translateY(10px)}to{opacity:1;transform:none}}
@@ -54,6 +53,18 @@
 @keyframes d-wiggle{0%,100%{transform:rotate(0)}15%{transform:rotate(14deg)}30%{transform:rotate(-12deg)}45%{transform:rotate(9deg)}60%{transform:rotate(-6deg)}75%{transform:rotate(3deg)}}
 @keyframes d-badge-pop{0%{opacity:0;transform:scale(.4)}60%{opacity:1;transform:scale(1.18)}100%{opacity:1;transform:scale(1)}}
 
+/* Desktop updates: the title-bar pill pops in and shrinks out, and a status icon settles into place with a turn. */
+@keyframes d-scale-in{from{opacity:0;transform:scale(.8)}to{opacity:1;transform:none}}
+@keyframes d-scale-out{from{opacity:1;transform:none}to{opacity:0;transform:scale(.85)}}
+@keyframes d-icon-in{from{opacity:0;transform:scale(.4) rotate(-40deg)}to{opacity:1;transform:none}}
+
+/* Terminal: a command reached by Ctrl+Up or Ctrl+Down lights up, holds, and fades. */
+@keyframes d-flash{0%{opacity:0}15%,55%{opacity:1}100%{opacity:0}}
+
+/* Terminal split panes: a new pane slides in from its right edge; a closed or unsplit one fades where it stood. */
+@keyframes d-pane-in{from{opacity:0;transform:translateX(.75rem)}to{opacity:1;transform:none}}
+@keyframes d-pane-out{from{opacity:1;transform:none}to{opacity:0;transform:scale(.985)}}
+
 /* Vue <Transition name="t-…"> classes. Leave animations hold their last frame so nothing flashes before removal. */
 .t-fade-enter-active{animation:o-fade .2s var(--ease-out)}
 .t-fade-leave-active{animation:o-fade-out .14s ease-in both}
@@ -65,6 +76,10 @@
 .t-up-leave-active{animation:o-up-out .16s ease-in both}
 .t-swap-enter-active{display:inline-block;animation:d-swap-in .2s var(--ease-out)}
 .t-swap-leave-active{display:inline-block;animation:d-swap-out .12s ease-in both}
+/* A chip in a TransitionGroup: it pops in, shrinks out, and the chips after it slide into its place. */
+.t-chip-enter-active{animation:d-scale-in .22s var(--ease-spring) both}
+.t-chip-leave-active{animation:d-scale-out .14s ease-in both}
+.t-chip-move{transition:transform .2s var(--ease-out)}
 /* An overlay root (scrim) carries the longest animation so Vue waits for its .o-panel child too. */
 .t-overlay-enter-active{animation:o-fade .26s var(--ease-out)}
 .t-overlay-leave-active{animation:o-fade-out .18s ease-in both}
@@ -103,6 +118,9 @@
 /* Indeterminate progress: a band that sweeps a track with overflow hidden. */
 .d-sweep-bar{position:relative;overflow:hidden}
 .d-sweep-bar::after{content:"";position:absolute;inset-block:0;inset-inline-start:0;width:40%;border-radius:inherit;background:currentColor;transform:translateX(-100%);animation:o-sweep 1.1s ease-in-out infinite}
+/* Reduced motion stops the sweep, so the band rests across the whole track at half strength rather than off it. */
+@media (prefers-reduced-motion:reduce){.d-sweep-bar::after{width:100%;transform:none;opacity:.5}}
+[data-reduced-motion] .d-sweep-bar::after{width:100%;transform:none;opacity:.5}
 
 /*
  * Shimmer text by transform: <span class="d-glint">phrase<span class="d-glint-window" aria-hidden="true"><span>phrase</span></span></span>.
@@ -116,9 +134,8 @@
 .d-spinning{animation:d-spin .9s linear infinite}
 .d-pulsing{animation:d-pulse 1s ease-in-out infinite}
 
-/* One-shot entrances on mount: a fade, and a panel arriving from the window's end edge. */
+/* A one-shot fade on mount. */
 .d-fade-in{animation:o-fade .2s var(--ease-out) both}
-.d-enter-from-end{animation:d-from-end .2s var(--ease-out) both}
 
 /* Meters fill from their start edge on mount. */
 .d-bar{transform-origin:left;animation:o-bar .6s var(--ease-out) both}

@@ -71,7 +71,7 @@ function fakeCtx(sessionId = 's1', messages: unknown[] = []): unknown {
 
 function mkDeps(
   entriesByKey: Record<string, HookEntry[]>,
-  opts: { noPanel?: boolean; preToolUseContextStash?: PreToolUseContextStash } = {},
+  opts: { noPanel?: boolean; preToolUseContextStash?: PreToolUseContextStash; typedPrompts?: ReadonlyMap<string, string> } = {},
 ): { deps: ConfiguredHooksDeps; postMessage: ReturnType<typeof vi.fn>; renameSession: ReturnType<typeof vi.fn> } {
   const config = {
     getEntries: (k: string) => entriesByKey[k] ?? [],
@@ -79,7 +79,7 @@ function mkDeps(
   } as unknown as HooksConfigService;
   const postMessage = vi.fn();
   const renameSession = vi.fn(async () => {});
-  const registry = { get: () => (opts.noPanel ? undefined : { postMessage }) };
+  const registry = { get: () => (opts.noPanel ? undefined : { postMessage, typedPromptOf: (text: string) => opts.typedPrompts?.get(text) }) };
   return {
     deps: {
       dispatch: { config, workspaceRoot: process.cwd(), userHome: os.homedir() },
@@ -168,6 +168,23 @@ describe('registerConfiguredHooks — UserPromptSubmit', () => {
     const { deps } = mkDeps({ input: [nodeEntry('process.exit(2)')] });
     registerConfiguredHooks(pi as never, deps);
     expect(await dispatch('input', { source: 'rpc', text: 'hi' }, fakeCtx())).toBeUndefined();
+  });
+
+  it('hands the hook the text the user typed, whether pi got it alone or behind blocks and expanded', async () => {
+    const { pi, dispatch } = fakePi();
+    const blocksAndBody = '<terminal_output>FAIL</terminal_output>\nreview prompt body src';
+    const echoPrompt = 'let s="";process.stdin.on("data",(d)=>{s+=d}).on("end",()=>process.stdout.write(JSON.stringify({decision:"block",reason:JSON.parse(s).prompt})))';
+    const { deps, postMessage } = mkDeps(
+      { input: [nodeEntry(echoPrompt)] },
+      { typedPrompts: new Map([['/review src', '/review src'], [blocksAndBody, '/review src']]) },
+    );
+    registerConfiguredHooks(pi as never, deps);
+
+    await dispatch('input', { source: 'interactive', text: '/review src' }, fakeCtx());
+    await dispatch('input', { source: 'interactive', text: blocksAndBody }, fakeCtx());
+    await dispatch('input', { source: 'interactive', text: 'not one the panel sent' }, fakeCtx());
+
+    expect(postMessage.mock.calls.map(([message]) => (message as { message: string }).message)).toEqual(['/review src', '/review src', 'not one the panel sent']);
   });
 });
 

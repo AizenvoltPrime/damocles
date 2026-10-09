@@ -8,8 +8,8 @@
  * THE CLOCK IS ANCHORED ON INTENT, NOT ON THE CDP CALL. `noteWanted` is what arms the stall
  * detector, and it fires the moment a panel decides it should be streaming — before, and
  * independently of, anything being sent to Chromium. Anchoring on the CDP call instead leaves
- * the watchdog structurally blind to every failure BEFORE it: the panel's `ready` message is
- * the sole trigger for `start()`, so a `ready` that never arrives means `start()` never runs,
+ * the watchdog structurally blind to every failure BEFORE it: `start()` waits for the panel's
+ * webview to be listening, so a `ready` that never arrives means `start()` never runs,
  * `startedAt` stays null, `shouldRestart` returns false forever, and the watchdog reports
  * healthy on every tick while the panel sits on "Waiting for browser frames…" with no
  * recovery. A detector that can only see failures downstream of a call it assumes was made is

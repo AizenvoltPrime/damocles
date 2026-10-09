@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { expect, type ElectronApplication, type Locator, type Page, type TestInfo } from '@playwright/test';
 import { activeChat, nextChat } from './fixtures';
+import { captureWindow, pageFramesShown } from './browser';
 import { REPO_ROOT } from './hermetic';
 import { shellState } from './shell';
 import { addProject, chatInput, setThemeSource } from './ui';
@@ -17,15 +18,26 @@ const CAPTURE_HEIGHT = 820;
 // Untracked; the proto-* captures need it, and the network for the React and icons it loads.
 const REFERENCE_DIR = path.join(REPO_ROOT, 'Damocles desktop UI revamp', 'export', 'damocles-revamp');
 
-/**
- * Saves a PNG for visual review and attaches it to the report. The directory comes from DAMOCLES_SCREENSHOT_DIR, which
- * Playwright never wipes, and defaults to the test's own output folder.
- */
-export async function saveScreenshot(page: Page, testInfo: TestInfo, name: string, element?: Locator): Promise<string> {
+// DAMOCLES_SCREENSHOT_DIR, which Playwright never wipes, else the test's own output folder.
+function screenshotFile(testInfo: TestInfo, name: string): string {
   const dir = process.env.DAMOCLES_SCREENSHOT_DIR;
   const file = dir ? path.join(dir, `${name}.png`) : testInfo.outputPath(`${name}.png`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
+  return file;
+}
+
+/** Saves a PNG of the page or an element for visual review and attaches it to the report. */
+export async function saveScreenshot(page: Page, testInfo: TestInfo, name: string, element?: Locator): Promise<string> {
+  const file = screenshotFile(testInfo, name);
   await (element ?? page).screenshot({ path: file });
+  await testInfo.attach(name, { path: file, contentType: 'image/png' });
+  return file;
+}
+
+/** Saves a PNG of the whole window with its native views (captureWindow) and attaches it to the report. */
+export async function saveWindowScreenshot(app: ElectronApplication, testInfo: TestInfo, name: string): Promise<string> {
+  const file = screenshotFile(testInfo, name);
+  await captureWindow(app, file);
   await testInfo.attach(name, { path: file, contentType: 'image/png' });
   return file;
 }
@@ -52,6 +64,28 @@ export async function showTheme(app: ElectronApplication, page: Page, theme: The
   await setThemeSource(app, theme);
   await expect(page.locator('body')).toHaveAttribute('data-vscode-theme-kind', `vscode-${theme}`);
   await settled(page);
+}
+
+/**
+ * Resolves once every visible Damocles page (shell, overlay, chat views) shows `theme` when given and has settled, and
+ * every visible browser page view shows a screencast frame. A hidden page is skipped: it paints no frames to wait for.
+ */
+export async function windowSettled(app: ElectronApplication, theme?: Theme): Promise<void> {
+  for (const page of app.windows()) {
+    if (!page.url().startsWith('app://') || await page.evaluate(() => document.visibilityState) !== 'visible') continue;
+    if (theme) await expect(page.locator('body')).toHaveAttribute('data-vscode-theme-kind', `vscode-${theme}`);
+    await settled(page);
+  }
+  await pageFramesShown(app);
+}
+
+/** Captures the whole window to `<dir>/<name>-<theme>.png` in each theme, once every visible page has settled in it. */
+export async function captureThemes(app: ElectronApplication, dir: string, name: string): Promise<void> {
+  for (const theme of THEMES) {
+    await setThemeSource(app, theme);
+    await windowSettled(app, theme);
+    await captureWindow(app, path.join(dir, `${name}-${theme}.png`));
+  }
 }
 
 /** Emulates a `width`×`height` CSS px viewport on `page` and waits until it has laid out at that size. */

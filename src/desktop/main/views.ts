@@ -5,12 +5,10 @@ import { WebContentsView, type BrowserWindow, type IpcMainEvent, type Rectangle,
 import type { Disposable } from '../../platform/disposable';
 import type { PanelHost, PanelOptions } from '../../platform/window-service';
 import { PANEL_CHANNELS, type PanelInit, type PanelTheme } from '../preload/panel-channels';
-import { MAX_PANE_URL_LENGTH, type PaneLocale, type PanePage, type PanePlatform, type PaneState } from '../preload/pane-channels';
-import { DEFAULT_PANE_WIDTH, paneLayout, type PaneLayout } from './pane-layout';
-import { PaneHost, type PaneActions } from './pane';
-import type { PanelStateStore, PersistedPane } from './panel-state-store';
+import { onWindowActivated } from './activation-focus';
+import type { PanelStateStore } from './panel-state-store';
 import { APP_ORIGIN, panelPageUrl } from './protocol';
-import { isHttpUrl, loadAppPage, loggableUrl, registerPanelContents } from './security';
+import { loadAppPage, loggableUrl, registerPanelContents } from './security';
 import { currentTheme, currentThemeKind, THEME_BACKGROUND } from './theme';
 
 export interface SenderEvent {
@@ -61,7 +59,7 @@ const CRASH_WINDOW_MS = 60_000;
 // CSP worker-src of a chat: the directory the app:// handler serves the built webview assets from (protocol.ts SERVED_ROOTS).
 export const CHAT_WORKER_SRC: string = `${APP_ORIGIN}/webview/assets/`;
 
-// A favicon larger than this is not inlined into the pane state that is resent on every change.
+// A favicon larger than this is not inlined into the editor state that is resent on every change.
 export const MAX_ICON_BYTES: number = 32 * 1024;
 
 const ICON_MIME_TYPES: Readonly<Record<string, string>> = {
@@ -100,7 +98,7 @@ class Listeners<A extends unknown[]> {
   }
 }
 
-// The page state the pane shows, read from the host messages core posts to the page (urlChanged, navigationState,
+// The page state its editor tab shows, read from the host messages core posts to the page (urlChanged, navigationState,
 // pickingStateChanged); the page renderer is never asked.
 export interface ObservedPage {
   url: string;
@@ -134,38 +132,25 @@ export function observePageMessage(page: ObservedPage, message: unknown): boolea
   return false;
 }
 
-// One chat's browser pane.
-export interface ChatPane {
-  // pane order
-  pages: DesktopPanel[];
-  activePageId: string | undefined;
-  open: boolean;
-  maximized: boolean;
-  // Pages restored after a restart arrive while this is set and do not open the pane themselves.
-  restoring: boolean;
-}
-
-// What the pane shows beyond the views: host facts main's entry point owns.
-export interface PaneContext {
-  readonly locale: PaneLocale;
-  readonly platform: PanePlatform;
-  readonly toggleShortcutLabel: string;
-  browserEnabled(): boolean;
-  // opens a blank page beside the chat (core refuses it while the browser is disabled)
-  newPage(chat: DesktopPanel): Promise<void>;
-  // ShellService.openExternal, which opens only canonical http and https
-  openExternal(url: string): Promise<boolean>;
+// Where a chat's browser pages show: the editor's browser tabs (browser-tabs.ts), which own every page view's placement.
+export interface PagesHost {
+  pageAdded(page: DesktopPanel): void;
+  pageRemoved(page: DesktopPanel): void;
+  pageChanged(page: DesktopPanel): void;
+  pageRevealed(page: DesktopPanel): void;
+  chatSelected(chat: DesktopPanel | undefined): void;
+  chatClosed(chat: DesktopPanel): void;
 }
 
 interface PanelViewsDeps {
   readonly window: BrowserWindow;
   readonly preloadPath: string;
-  readonly panePreloadPath: string;
   readonly states: PanelStateStore;
+  readonly pages: PagesHost;
   readonly log: (line: string) => void;
-  // A chat was added, removed or selected, its project may have changed, or its pane changed.
+  // A chat was added, removed or selected, its project may have changed, or a page was added or removed.
   readonly onChange: () => void;
-  // A view was added or moved to the top; the overlay restacks above it.
+  // A view was added; the overlay restacks above it.
   readonly onRestack: () => void;
   // core revealed a chat (a host dialog, a file shown to it); the owner selects it
   readonly onReveal: (chat: DesktopPanel) => void;
@@ -173,10 +158,13 @@ interface PanelViewsDeps {
   readonly onRendererGaveUp: (panel: DesktopPanel) => void;
   // The stored session a chat's saved state names changed.
   readonly onSavedSessionChange: (chat: DesktopPanel) => void;
-  // The pane page crashed the same way.
-  readonly onPaneGaveUp: () => void;
-  readonly paneContext: () => PaneContext;
+  // An overlay popup is open, and so holds keyboard focus.
+  readonly popupOpen: () => boolean;
 }
+
+// true moves keyboard focus into the chat's page now (once it commits); 'whenReady' once, when its page is ready in the focused
+// window, unless the user's input comes first; false leaves focus where it is.
+export type ShowFocus = boolean | 'whenReady';
 
 export interface CreatePanelRequest {
   readonly options: PanelOptions;
@@ -193,9 +181,7 @@ export class DesktopPanel implements PanelHost {
   readonly view: WebContentsView;
   html: string | undefined;
   title: string;
-  // chats only
-  readonly pane: ChatPane | undefined;
-  // browser pages only: the chat whose pane shows the page, and what the pane shows about it
+  // browser pages only: the chat that owns the page, and what its editor tab shows about it
   readonly chat: DesktopPanel | undefined;
   readonly page: ObservedPage | undefined;
   iconDataUrl: string | undefined;
@@ -210,16 +196,13 @@ export class DesktopPanel implements PanelHost {
   private readonly owner: PanelViews;
   private readonly deps: PanelViewsDeps;
 
-  constructor(owner: PanelViews, deps: PanelViewsDeps, request: CreatePanelRequest, chat: DesktopPanel | undefined, pane: PersistedPane | undefined) {
+  constructor(owner: PanelViews, deps: PanelViewsDeps, request: CreatePanelRequest, chat: DesktopPanel | undefined) {
     this.owner = owner;
     this.deps = deps;
     this.panelId = request.restore?.panelId ?? randomUUID();
     this.kind = request.options.kind;
     this.title = request.options.title;
     this.state = request.restore?.state ?? null;
-    this.pane = this.kind === 'chat'
-      ? { pages: [], activePageId: undefined, open: pane?.open ?? false, maximized: pane?.maximized ?? false, restoring: false }
-      : undefined;
     this.chat = chat;
     this.page = this.kind === 'browser' ? { url: '', loading: false, canGoBack: false, canGoForward: false, picking: false } : undefined;
     this.pageUrl = panelPageUrl(this.panelId);
@@ -232,8 +215,8 @@ export class DesktopPanel implements PanelHost {
         sandbox: true,
         webSecurity: true,
         spellcheck: false,
-        // Electron focuses a WebContents when it navigates; a page loading in the pane must leave focus in the composer.
-        ...(this.kind === 'browser' ? { focusOnNavigation: false } : {}),
+        // Electron focuses a WebContents when it navigates; a chat or page loading must leave focus where it is.
+        focusOnNavigation: false,
       },
     });
     registerPanelContents(this.view.webContents);
@@ -268,6 +251,8 @@ export class DesktopPanel implements PanelHost {
     });
 
     const contents = this.view.webContents;
+    contents.on('did-navigate', () => owner.committed(this));
+    contents.on('dom-ready', () => owner.domReady(this));
     contents.on('render-process-gone', (_event, details) => {
       deps.log(`[views] panel ${this.panelId} renderer gone (${details.reason})`);
       if (this.disposed || details.reason === 'clean-exit') return;
@@ -293,6 +278,11 @@ export class DesktopPanel implements PanelHost {
 
   get active(): boolean {
     return this.visible && this.deps.window.isFocused();
+  }
+
+  // A hidden view keeps its page running.
+  get retainsContextWhenHidden(): boolean {
+    return true;
   }
 
   get column(): number | undefined {
@@ -334,7 +324,7 @@ export class DesktopPanel implements PanelHost {
     return Promise.resolve(true);
   }
 
-  // A pane action on this page, delivered to core as the webview message its own toolbar would post.
+  // A browser tab action on this page, delivered to core as the webview message its own toolbar would post.
   deliver(message: { readonly type: string; readonly url?: string }): void {
     if (!this.disposed) this.messages.fire(message);
   }
@@ -364,7 +354,7 @@ export class DesktopPanel implements PanelHost {
     return this.owner.resourceUri(absolutePath);
   }
 
-  // Only a browser page shows an icon (its favicon, in the pane's page tab).
+  // Only a browser page shows an icon (its favicon, on its editor tab).
   setIcon(iconPath: string | undefined): void {
     if (this.kind !== 'browser') return;
     const request = ++this.iconRequest;
@@ -393,7 +383,7 @@ export class DesktopPanel implements PanelHost {
   // The shell shows every chat under its project, so the folder label adds nothing here.
   setFolderLabel(): void {}
 
-  // A chat is selected and focused; a browser page is selected in its chat's pane, which opens, and takes no focus.
+  // A chat is selected and focused; a browser page becomes its chat's active tab and takes no focus.
   reveal(): void {
     if (this.disposed) return;
     if (this.chat) this.owner.revealPage(this);
@@ -445,79 +435,48 @@ export class DesktopPanel implements PanelHost {
   }
 }
 
-/** The pane state of one chat, bounded for the pane view. */
-export function paneSnapshot(chat: DesktopPanel | undefined, layout: PaneLayout, context: PaneContext): PaneState {
-  const pages = chat?.pane?.pages.map((page): PanePage => ({
-    id: page.panelId,
-    title: page.title,
-    url: page.page?.url.slice(0, MAX_PANE_URL_LENGTH) ?? '',
-    ...(page.iconDataUrl !== undefined ? { iconDataUrl: page.iconDataUrl } : {}),
-    loading: page.page?.loading ?? false,
-    canGoBack: page.page?.canGoBack ?? false,
-    canGoForward: page.page?.canGoForward ?? false,
-    picking: page.page?.picking ?? false,
-  })) ?? [];
-  const activePageId = chat?.pane?.activePageId;
-  return {
-    locale: context.locale,
-    platform: context.platform,
-    browserEnabled: context.browserEnabled(),
-    toggleShortcutLabel: context.toggleShortcutLabel,
-    ...(chat ? { chatTabId: chat.panelId } : {}),
-    mode: layout.mode,
-    width: layout.width,
-    minWidth: layout.minWidth,
-    maxWidth: layout.maxWidth,
-    pages,
-    ...(activePageId !== undefined ? { activePageId } : {}),
-  };
-}
-
 /**
  * One WebContentsView per loaded chat, placed on the chat slot rectangle the shell reports; only the selected chat is
- * visible. Each chat has a browser pane: its pages are views owned by the chat, drawn in the one pane view's page
- * rectangle, stacked chat < pane < active page < overlay. A page view never takes keyboard focus from main.
+ * visible. A chat's browser pages are views it owns, which its editor tabs place (PagesHost). A page view never takes
+ * keyboard focus from main.
  */
 export class PanelViews {
   private readonly panels = new Map<string, DesktopPanel>();
-  // loaded chats in load order; browser pages are in their chat's pane
+  // loaded chats in load order; browser pages belong to their chat
   private order: string[] = [];
   private selectedId: string | undefined;
+  // A chat asked to take keyboard focus before its page committed, whose renderer would drop it: it takes focus on commit,
+  // unless focus went anywhere else first.
+  private focusOnCommit: DesktopPanel | undefined;
+  // The chat a launch shows, which takes keyboard focus once. Only the user's input, another selection or focus main gives
+  // drops it, never a focus change: the window's activation focuses the window's own page.
+  private launchFocus: { readonly panel: DesktopPanel; ready: boolean } | undefined;
   private retainStates = false;
   // DIP rectangle of the chat slot; undefined until the shell first reports it
   private contentBounds: Rectangle | undefined;
-  // Every chat's pane width, divider included; the layout clamps it to the window without rewriting it.
-  private paneWidth: number;
-  // The layout numbers the pane view last got, so a layout that changes them (a resize into overlay) pushes a state.
-  private shownLayout = '';
-  private readonly paneHost: PaneHost;
+  // The editor's focus overlay covers the window, so the chat view hides under the shell's scrim.
+  private focusOverlay = false;
   private readonly deps: PanelViewsDeps;
   private readonly resourceUriFor: (absolutePath: string) => string;
 
   constructor(deps: PanelViewsDeps, resourceUri: (absolutePath: string) => string) {
     this.deps = deps;
     this.resourceUriFor = resourceUri;
-    this.paneWidth = deps.states.paneWidth() ?? DEFAULT_PANE_WIDTH;
-    this.paneHost = new PaneHost(deps.panePreloadPath, this.paneActions(), deps.log, deps.onPaneGaveUp);
     const window = deps.window;
-    window.contentView.addChildView(this.paneHost.view);
     window.on('resize', () => this.layout());
+    onWindowActivated(window, () => this.takeLaunchFocus());
     window.on('focus', () => this.selected()?.fireViewState());
     window.on('blur', () => this.selected()?.fireViewState());
-    this.paneHost.load();
-  }
-
-  get pane(): PaneHost {
-    return this.paneHost;
   }
 
   // A browser page must name its loaded chat as owner. A chat is created hidden; the caller selects it. A restored
   // chat lays out when first shown: Chromium sends a view's size to its page only once the view has been visible.
   create(request: CreatePanelRequest): DesktopPanel {
+    // A closing window, a quit or a core reload closes every chat with its state kept; nothing may open in between.
+    if (this.retainStates) throw new Error('The chats are closing');
     if (request.restore && this.panels.has(request.restore.panelId)) throw new Error(`Panel ${request.restore.panelId} is already open`);
     if (request.options.kind === 'browser') return this.createPage(request);
-    const persisted = request.restore ? this.deps.states.get(request.restore.panelId)?.pane : undefined;
-    const panel = new DesktopPanel(this, this.deps, request, undefined, persisted);
+    const panel = new DesktopPanel(this, this.deps, request, undefined);
     this.panels.set(panel.panelId, panel);
     this.order.push(panel.panelId);
     this.deps.window.contentView.addChildView(panel.view);
@@ -548,18 +507,10 @@ export class PanelViews {
     return this.selectedId === undefined ? undefined : this.panels.get(this.selectedId);
   }
 
-  // The selected chat's active page while its pane is open.
-  activePage(): DesktopPanel | undefined {
-    const pane = this.selected()?.pane;
-    if (!pane?.open || pane.activePageId === undefined) return undefined;
-    return this.panels.get(pane.activePageId);
-  }
-
-  // focus moves keyboard focus into the chat's page, or into its pane when the pane is maximized over the chat;
-  // without it focus stays where it is, as after a selection from the sidebar.
-  show(panelId: string, options: { readonly focus: boolean }): void {
+  show(panelId: string, options: { readonly focus: ShowFocus }): void {
     const next = this.panels.get(panelId);
-    if (!next?.pane) return;
+    if (!next || next.chat) return;
+    this.launchFocus = undefined;
     const previous = this.selected();
     this.selectedId = panelId;
     if (previous && previous !== next) {
@@ -568,13 +519,10 @@ export class PanelViews {
     }
     next.view.setVisible(true);
     this.layout();
-    this.restack();
-    if (options.focus) {
-      if (next.pane.open && next.pane.maximized) this.paneHost.focus();
-      else next.webContents.focus();
-    }
+    this.deps.pages.chatSelected(next);
+    if (options.focus === true) this.focus(next);
+    else if (options.focus === 'whenReady') this.launchFocus = { panel: next, ready: false };
     next.fireViewState();
-    this.paneHost.stateChanged();
     this.deps.onChange();
   }
 
@@ -588,10 +536,15 @@ export class PanelViews {
     this.layout();
   }
 
+  setFocusOverlay(open: boolean): void {
+    if (this.focusOverlay === open) return;
+    this.focusOverlay = open;
+    this.layout();
+  }
+
   broadcastTheme(theme: PanelTheme): void {
     this.deps.window.setBackgroundColor(THEME_BACKGROUND[theme.kind]);
     for (const panel of this.panels.values()) panel.sendTheme(theme);
-    this.paneHost.sendTheme(theme);
   }
 
   // Chats closed while the host tears down keep their persisted state, so the next start restores them.
@@ -611,156 +564,86 @@ export class PanelViews {
     this.deps.onChange();
   }
 
-  // The browser feature was turned on or off: the pane hides with it.
-  browserEnabledChanged(): void {
-    this.layout();
-    this.paneHost.stateChanged();
-    this.deps.onChange();
-  }
-
-  // Opens or collapses a chat's pane (the title bar button and the menu shortcut); focus stays where it is unless it
-  // sat in the pane that closed.
-  togglePane(chatId: string): void {
-    const chat = this.panels.get(chatId);
-    if (!chat?.pane || !this.deps.paneContext().browserEnabled()) return;
-    this.setPaneOpen(chat, !chat.pane.open);
-  }
-
-  // While set, the chat's restored pages keep the pane as it was saved.
-  setRestoring(chat: DesktopPanel, restoring: boolean): void {
-    if (chat.pane) chat.pane.restoring = restoring;
-  }
-
-  // Keyboard focus sits in the selected chat's pane chrome or its active page.
-  paneFocused(): boolean {
-    return this.paneHost.focused || (this.activePage()?.webContents.isFocused() ?? false);
-  }
-
   chatFocused(): boolean {
     return this.selected()?.webContents.isFocused() ?? false;
   }
 
-  // The pane view is shown for the selected chat.
-  paneVisible(): boolean {
-    const layout = this.currentLayout();
-    return layout !== undefined && layout.mode !== 'collapsed';
-  }
-
   focusChat(): void {
-    this.selected()?.webContents.focus();
+    const selected = this.selected();
+    if (selected) this.focus(selected);
   }
 
-  focusPane(): void {
-    if (this.paneVisible()) this.paneHost.focus();
+  focused(contents: WebContents): void {
+    if (this.focusOnCommit && this.focusOnCommit.webContents !== contents) this.focusOnCommit = undefined;
+  }
+
+  // A key pressed or a button pressed in any of the app's pages, as main observed it.
+  userInput(): void {
+    this.launchFocus = undefined;
+  }
+
+  domReady(panel: DesktopPanel): void {
+    if (this.launchFocus?.panel !== panel) return;
+    this.launchFocus.ready = true;
+    this.takeLaunchFocus();
+  }
+
+  committed(panel: DesktopPanel): void {
+    if (this.focusOnCommit !== panel) return;
+    this.focusOnCommit = undefined;
+    if (this.selected() === panel) panel.webContents.focus();
+  }
+
+  // A popup open meanwhile keeps focus, and returns it where it was when it closes.
+  private takeLaunchFocus(): void {
+    const launch = this.launchFocus;
+    if (!launch?.ready || !this.deps.window.isFocused() || this.deps.window.isMinimized()) return;
+    this.launchFocus = undefined;
+    if (this.selected() === launch.panel && !this.deps.popupOpen()) launch.panel.webContents.focus();
+  }
+
+  private focus(panel: DesktopPanel): void {
+    this.launchFocus = undefined;
+    this.focusOnCommit = undefined;
+    if (panel.webContents.getURL() === '') this.focusOnCommit = panel;
+    else panel.webContents.focus();
   }
 
   revealPage(page: DesktopPanel): void {
-    const chat = page.chat;
-    if (!chat?.pane || !this.panels.has(chat.panelId)) return;
-    chat.pane.activePageId = page.panelId;
-    if (!chat.pane.restoring) chat.pane.open = true;
-    this.paneChanged(chat);
+    this.deps.pages.pageRevealed(page);
   }
 
   pageChanged(page: DesktopPanel): void {
-    const chat = page.chat;
-    if (!chat || !this.panels.has(chat.panelId)) return;
-    if (chat === this.selected()) this.paneHost.stateChanged();
-    this.persistPane(chat);
-    this.deps.onChange();
+    this.deps.pages.pageChanged(page);
   }
 
   removed(panel: DesktopPanel): void {
     this.panels.delete(panel.panelId);
     if (!this.deps.window.isDestroyed()) this.deps.window.contentView.removeChildView(panel.view);
     if (panel.chat) {
-      this.pageRemoved(panel, panel.chat);
+      this.deps.pages.pageRemoved(panel);
+      this.deps.onChange();
       return;
     }
     const index = this.order.indexOf(panel.panelId);
     if (index >= 0) this.order.splice(index, 1);
     if (!this.retainStates) this.deps.states.delete(panel.panelId);
-    // A page never outlives the chat it is shown beside.
-    for (const page of [...(panel.pane?.pages ?? [])]) page.close();
-    if (this.selectedId === panel.panelId) {
-      this.selectedId = undefined;
-      this.layout();
-    }
-    this.paneHost.stateChanged();
+    if (this.selectedId === panel.panelId) this.selectedId = undefined;
+    this.deps.pages.chatClosed(panel);
     this.deps.onChange();
-  }
-
-  // The pane view closes with the window.
-  dispose(): void {
-    this.paneHost.dispose();
   }
 
   private createPage(request: CreatePanelRequest): DesktopPanel {
     const owner = request.options.owner;
-    const chat = [...this.panels.values()].find((panel) => panel === owner);
-    if (!chat?.pane) throw new Error('A browser page opens only beside a loaded chat');
-    const page = new DesktopPanel(this, this.deps, request, chat, undefined);
+    const chat = [...this.panels.values()].find((panel) => panel === owner && panel.kind === 'chat');
+    if (!chat) throw new Error('A browser page opens only in a loaded chat');
+    const page = new DesktopPanel(this, this.deps, request, chat);
     this.panels.set(page.panelId, page);
     this.deps.window.contentView.addChildView(page.view);
     this.deps.onRestack();
-    chat.pane.pages.push(page);
-    chat.pane.activePageId = page.panelId;
-    if (!chat.pane.restoring) chat.pane.open = true;
-    this.paneChanged(chat);
-    return page;
-  }
-
-  private pageRemoved(page: DesktopPanel, chat: DesktopPanel): void {
-    const pane = chat.pane;
-    // The chat itself is closing, or the page was never added.
-    if (!pane || !this.panels.has(chat.panelId)) return;
-    const index = pane.pages.indexOf(page);
-    if (index < 0) return;
-    const hadFocus = this.paneFocused() || page.webContents.isFocused();
-    pane.pages.splice(index, 1);
-    if (pane.activePageId === page.panelId) pane.activePageId = pane.pages[Math.min(index, pane.pages.length - 1)]?.panelId;
-    // A host teardown closes every page and must leave the pane as it was saved.
-    if (pane.pages.length === 0 && !this.retainStates) {
-      pane.open = false;
-      pane.maximized = false;
-    }
-    this.paneChanged(chat);
-    // Focus never stays in a closed page's destroyed WebContents.
-    if (!hadFocus || chat !== this.selected()) return;
-    if (pane.open) this.paneHost.focus();
-    else this.focusChat();
-  }
-
-  private setPaneOpen(chat: DesktopPanel, open: boolean): void {
-    const pane = chat.pane;
-    if (!pane || pane.open === open) return;
-    const hadFocus = !open && chat === this.selected() && this.paneFocused();
-    pane.open = open;
-    if (!open) pane.maximized = false;
-    this.paneChanged(chat);
-    if (hadFocus) this.focusChat();
-  }
-
-  private paneChanged(chat: DesktopPanel): void {
-    this.persistPane(chat);
-    if (chat === this.selected()) {
-      this.layout();
-      this.restack();
-      this.paneHost.stateChanged();
-    }
+    this.deps.pages.pageAdded(page);
     this.deps.onChange();
-  }
-
-  private persistPane(chat: DesktopPanel): void {
-    const pane = chat.pane;
-    if (!pane || this.retainStates || !this.panels.has(chat.panelId)) return;
-    const active = pane.pages.findIndex((page) => page.panelId === pane.activePageId);
-    this.deps.states.setPane(chat.panelId, {
-      open: pane.open,
-      maximized: pane.maximized,
-      pages: pane.pages.map((page) => page.page?.url ?? ''),
-      ...(active >= 0 ? { activePage: active } : {}),
-    });
+    return page;
   }
 
   private area(): Rectangle | undefined {
@@ -773,112 +656,16 @@ export class PanelViews {
     return { x, y, width: Math.min(reported.width, width - x), height: Math.min(reported.height, height - y) };
   }
 
-  private currentLayout(): PaneLayout | undefined {
-    const chat = this.selected();
-    const area = this.area();
-    if (!chat?.pane || !area) return undefined;
-    return paneLayout({ area, open: chat.pane.open && this.deps.paneContext().browserEnabled(), maximized: chat.pane.maximized, width: this.paneWidth });
-  }
-
-  // Sets every view's bounds and visibility in one synchronous pass, so the chat, pane and page never disagree for a frame.
+  // An empty chat slot (a maximized editor fills the grid) or the focus overlay hides the chat view, so neither the eye nor
+  // a screen reader finds it under them.
   private layout(): void {
     const chat = this.selected();
-    const result = this.currentLayout();
-    const active = this.activePage();
-    const numbers = result ? `${result.mode}:${result.width}:${result.minWidth}:${result.maxWidth}` : '';
-    if (numbers !== this.shownLayout) {
-      this.shownLayout = numbers;
-      this.paneHost.stateChanged();
-    }
-    // A maximized pane hides the chat view, so neither the eye nor a screen reader finds it under the pane.
-    if (chat && result) {
-      if (result.chat) chat.view.setBounds(result.chat);
-      const shown = result.chat !== undefined;
-      if (chat.view.getVisible() !== shown) {
-        chat.view.setVisible(shown);
-        chat.fireViewState();
-      }
-    }
-    this.paneHost.view.setVisible(result?.pane !== undefined);
-    if (result?.pane) this.paneHost.view.setBounds(result.pane);
-    for (const panel of this.panels.values()) {
-      if (!panel.chat) continue;
-      const shown = panel === active && result?.page !== undefined;
-      if (shown && result?.page) panel.view.setBounds(result.page);
-      if (panel.view.getVisible() === shown) continue;
-      panel.view.setVisible(shown);
-      panel.fireViewState();
-    }
-  }
-
-  // addChildView of a view already added moves it to the top.
-  private restack(): void {
-    if (this.deps.window.isDestroyed()) return;
-    this.deps.window.contentView.addChildView(this.paneHost.view);
-    const active = this.activePage();
-    if (active) this.deps.window.contentView.addChildView(active.view);
-    this.deps.onRestack();
-  }
-
-  private pageOf(id: string): DesktopPanel {
-    const page = this.panels.get(id);
-    if (!page?.chat || page.chat !== this.selected()) throw new Error('Unknown page');
-    return page;
-  }
-
-  private selectedChat(): DesktopPanel {
-    const chat = this.selected();
-    if (!chat) throw new Error('No chat is selected');
-    return chat;
-  }
-
-  private paneActions(): PaneActions {
-    return {
-      state: () => {
-        const area = this.area() ?? { x: 0, y: 0, width: 0, height: 0 };
-        const layout = this.currentLayout() ?? paneLayout({ area, open: false, maximized: false, width: this.paneWidth });
-        return paneSnapshot(this.selected(), layout, this.deps.paneContext());
-      },
-      requestWidth: (width, commit) => {
-        const area = this.area();
-        const chat = this.selected();
-        if (!area || !chat?.pane) return;
-        this.paneWidth = paneLayout({ area, open: true, maximized: false, width }).width;
-        if (commit) this.deps.states.setPaneWidth(this.paneWidth);
-        this.layout();
-        this.paneHost.sendStateNow();
-      },
-      selectPage: (id) => {
-        const page = this.pageOf(id);
-        const chat = this.selectedChat();
-        if (!chat.pane || chat.pane.activePageId === page.panelId) return;
-        chat.pane.activePageId = page.panelId;
-        this.paneChanged(chat);
-      },
-      closePage: (id) => this.pageOf(id).close(),
-      newPage: async () => {
-        const context = this.deps.paneContext();
-        if (!context.browserEnabled()) throw new Error('The browser is turned off');
-        await context.newPage(this.selectedChat());
-      },
-      navigate: (id, url) => this.pageOf(id).deliver({ type: 'navigate', url }),
-      goBack: (id) => this.pageOf(id).deliver({ type: 'goBack' }),
-      goForward: (id) => this.pageOf(id).deliver({ type: 'goForward' }),
-      reload: (id) => this.pageOf(id).deliver({ type: 'reload' }),
-      openExternal: async (id) => {
-        const url = this.pageOf(id).page?.url ?? '';
-        if (!isHttpUrl(url)) throw new Error('Only http and https pages open in the system browser');
-        if (!(await this.deps.paneContext().openExternal(url))) throw new Error('The system browser did not open the page');
-      },
-      pickElement: (id) => this.pageOf(id).deliver({ type: 'pickElement' }),
-      openDevTools: (id) => this.pageOf(id).deliver({ type: 'openDevTools' }),
-      setMaximized: (maximized) => {
-        const chat = this.selectedChat();
-        if (!chat.pane?.open || chat.pane.maximized === maximized) return;
-        chat.pane.maximized = maximized;
-        this.paneChanged(chat);
-      },
-      setCollapsed: (collapsed) => this.setPaneOpen(this.selectedChat(), !collapsed),
-    };
+    if (!chat) return;
+    const area = this.area();
+    const shown = !this.focusOverlay && area !== undefined && area.width > 0 && area.height > 0;
+    if (shown) chat.view.setBounds(area);
+    if (chat.view.getVisible() === shown) return;
+    chat.view.setVisible(shown);
+    chat.fireViewState();
   }
 }

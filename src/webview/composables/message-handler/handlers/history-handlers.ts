@@ -21,6 +21,7 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
           promptIndex: msg.promptIndex,
           isReplay: true,
           images: msg.contentBlocks?.filter(isImageBlock),
+          timestamp: msg.timestamp,
         }));
         return;
       }
@@ -32,6 +33,9 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
         undefined,
         msg.promptIndex,
         msg.isMidStream,
+        undefined,
+        msg.terminalAttachments,
+        msg.timestamp,
       ));
     },
 

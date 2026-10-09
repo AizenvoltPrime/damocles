@@ -18,12 +18,13 @@ describe('proposal diffs', () => {
     expect(store.hasOpenOverlay).toBe(false);
   });
 
-  it('leaves an open view in place when a proposal arrives', () => {
+  it('leaves an open proposal in place when another arrives', () => {
     const store = useEditorStore();
-    store.openFile({ type: 'editorOpenFile', viewId: 'f1', title: 'b.ts', document: doc('c') });
     store.showDiff(proposal);
+    store.openProposal('p-1');
+    store.showDiff({ ...proposal, viewId: 'v2', approvalId: 'p-2' });
 
-    expect(store.view).toMatchObject({ kind: 'file', viewId: 'f1' });
+    expect(store.view).toMatchObject({ viewId: 'v1' });
   });
 
   it('opens the proposal for its approval, and again after the user closed it', () => {
@@ -63,15 +64,6 @@ describe('proposal diffs', () => {
     store.closeView('v1');
 
     expect(store.view).toBeNull();
-    expect(store.openProposal('p-1')).toBe(false);
-  });
-
-  it('opens a checkpoint diff at once and holds nothing for it', () => {
-    const store = useEditorStore();
-    store.showDiff({ ...proposal, purpose: 'checkpoint' });
-
-    expect(store.view).toMatchObject({ viewId: 'v1', purpose: 'checkpoint' });
-    store.dismissView();
     expect(store.openProposal('p-1')).toBe(false);
   });
 });

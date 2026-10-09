@@ -8,7 +8,7 @@ import type { SettingInspection, SettingsChange, SettingsFolder, SettingsScope, 
 import type { TrustService } from '../../../platform/trust-service';
 import type { WorkspaceFolders } from '../../../platform/workspace-folders';
 import type { ContributedConfiguration } from '../../../core/config/contributed-configuration';
-import { writeJsonConfig } from '../../../core/config/json-config-write';
+import { jsonConfigWritesSettled, writeJsonConfig } from '../../../core/config/json-config-write';
 import { mergeSettingValues, parseSettingsText, type SettingsObject } from '../../../core/config/settings-file';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { DESKTOP_CONFIGURATION } from '../desktop-configuration';
@@ -134,6 +134,8 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
   // files the user has been told do not parse, until they parse again
   private readonly reportedBroken = new Set<string>();
   private readonly folders = new Map<string, FolderEntry>();
+  // every file update wrote, kept after its folder's entry is released so a quit still waits for it
+  private readonly written = new Set<string>();
   private emptyRetry: NodeJS.Timeout | undefined;
   private user: SettingsObject;
   private disposed = false;
@@ -191,6 +193,7 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
 
   async update(key: string, value: unknown, scope: SettingsScope, folder?: SettingsFolder): Promise<void> {
     const filePath = scope === 'user' ? this.deps.userFile : this.writableProjectFile(key, scope, folder);
+    this.written.add(filePath);
     await writeJsonConfig(filePath, (current) => {
       // A file that does not parse is the user's to fix; overwriting it would lose every other setting in it.
       const settings = current === undefined ? {} : parseSettingsText(current, filePath);
@@ -199,6 +202,15 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
       return `${JSON.stringify(settings, null, 2)}\n`;
     }, scope === 'user' ? {} : { confineTo: path.dirname(filePath) });
     this.reloadAll(false);
+  }
+
+  /** Settles once every write to the files the store serves or wrote, one queued meanwhile included, has landed or failed; a quit awaits it. */
+  flush(): Promise<void> {
+    return jsonConfigWritesSettled(() => [
+      this.deps.userFile,
+      ...this.written,
+      ...[...this.folders.values()].flatMap((entry) => [projectFile(entry, 'project'), projectFile(entry, 'local')]),
+    ]);
   }
 
   onDidChange(section: string, cb: (change: SettingsChange) => void): Disposable {

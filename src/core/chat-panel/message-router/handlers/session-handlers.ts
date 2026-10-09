@@ -61,6 +61,10 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       }
       // Before any state, so the webview hides a host's missing affordances before it renders any of them.
       postMessage(ctx.host, { type: "hostCapabilities", capabilities: deps.platform.capabilities });
+      if (deps.platform.capabilities.windowLayout) postMessage(ctx.host, { type: "terminalShown", ...deps.platform.window.terminalToggle() });
+      // A restarted webview starts with no chips while core still holds the composer's pending attachments.
+      const pendingAttachments = ctx.terminalAttachments.displayInfo();
+      if (pendingAttachments.length > 0) postMessage(ctx.host, { type: "terminalAttachmentsUpdate", attachments: pendingAttachments });
       const total = perfSpan("ready.total");
 
       // The webview renders the conversation with these, so they precede any replay.

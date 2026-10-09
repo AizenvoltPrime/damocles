@@ -32,7 +32,8 @@ afterEach(() => {
 async function submit(event: 'send' | 'queue', content: string): Promise<string[]> {
   app = mount(App, { global: { plugins: [i18n] } });
   posted = [];
-  app.findComponent(ChatInput).vm.$emit(event, content, false);
+  if (event === 'send') app.findComponent(ChatInput).vm.$emit('send', content, false, []);
+  else app.findComponent(ChatInput).vm.$emit('queue', content);
   await nextTick();
   return posted.map((m) => m.type);
 }

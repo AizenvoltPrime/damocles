@@ -9,6 +9,10 @@ export const SETTINGS_SECTION_IDS = [
   'integrations',
   'voice',
   'appearance',
+  'editor',
+  'terminal',
+  'files',
+  'about',
 ] as const;
 
 export type SettingsSectionId = (typeof SETTINGS_SECTION_IDS)[number];
@@ -26,8 +30,10 @@ export function isSettingsAccountId(value: unknown): value is SettingsAccountId 
   return typeof value === 'string' && (SETTINGS_ACCOUNT_IDS as readonly string[]).includes(value);
 }
 
-/** Where a request opens the settings: a section, and the Accounts row to expand there. */
+/** Where a request opens the settings: a section, and the Accounts row or the What's new release to expand there. */
 export interface SettingsTarget {
   readonly section?: SettingsSectionId;
   readonly account?: SettingsAccountId;
+  // a version of the desktop release index; only main sets it
+  readonly release?: string;
 }

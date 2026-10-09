@@ -6,7 +6,7 @@ import * as os from "os";
 import type { AgentSession, AgentSessionRuntime, BuildSystemPromptOptions, CreateAgentSessionRuntimeFactory, ToolDefinition, AgentBeforeSettleEvent, CustomMessageEntryDraft, SessionEntry, InputEventResult } from "@earendil-works/pi-coding-agent";
 import type { Model, Api, ImageContent } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ChatSession } from "../chat-session";
+import type { ChatSession, SendOutcome, SlashInvocation, UserBroadcast } from "../chat-session";
 import type { SessionOptions, ContentInput, McpScope, RewindOption } from "../session-types";
 import type { Disposable } from "../../platform/disposable";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
@@ -21,7 +21,6 @@ import {
   MAX_IMAGE_BASE64_LENGTH,
   MAX_IMAGES_PER_MESSAGE,
   type ImageBlock,
-  type UserContentBlock,
 } from "../../shared/types/content";
 import { DEFAULT_CONTEXT_WINDOW, MODEL_SUBSTITUTES, migrateLegacyModelValue, migrateLegacyEffortValue, parseEffortLevel } from "../../shared/types/constants";
 import { PLAN_MODE_TOOLS } from "../../shared/tool-names";
@@ -45,6 +44,7 @@ import type { SubscriptionProvider, UsageMonitor } from "./usage-thresholds";
 import {
   piSupportedModels,
   resolvePiModel,
+  modelValueOfPiModel,
   providerDisplayName,
   piModelToModelInfo,
   effortToThinkingLevel,
@@ -109,9 +109,11 @@ import {
   DAMOCLES_AGENT_INVOCATION_ENTRY,
   DAMOCLES_TURN_STOPPED_ENTRY,
   turnStoppedRecord,
-  stripIdeContext,
+  storedTypedText,
+  DAMOCLES_TERMINAL_ATTACHMENTS_ENTRY,
   nextPromptIndex,
 } from "./session-store";
+import { recordedSelection } from "./session-store/recorded-selection";
 import { acquireSessionLease, refreshSessionLeaseOwners, releaseSessionLease, sessionLeasesOf, type SessionLeaseHolder } from "./session-store/session-lease";
 import { computePlanFilePath, findSessionPlanFiles } from "../paths";
 import { CheckpointService, RESTORE_WAIT_MS, checkpointBaselineWaitMs, checkpointMaxFileSizeBytes, type ServiceRestoreResult } from "./checkpoint-service";
@@ -146,7 +148,8 @@ import {
   turnExchangeFrom,
   firstExchangeForTitle,
 } from "./branch-text";
-import { watchPromptEntry, type PromptDisposition, type PromptEntry, type PromptEntryWatch } from "./prompt-entry";
+import { queuedPromptEntries, watchPromptEntry, type PromptDisposition, type PromptEntry, type PromptEntryWatch, type QueuedPromptEntries, type RequeuedFollowUp } from "./prompt-entry";
+import { isExtensionCommand, resolveSlashInvocation } from "./slash-invocation";
 import {
   PLAN_MODE_NUDGE_CUSTOM_TYPE,
   selectPlanModeNudgeText,
@@ -190,6 +193,9 @@ const ABORTED_AGENTS_SETTLE_TIMEOUT_MS = 10_000;
 /** How long a switch or close waits for queued checkpoint work, so a finalize that is nearly done still
  *  records the last turn; a first baseline of a large folder can take longer and is dropped. */
 const CHECKPOINT_DRAIN_MS = 2_000;
+
+// The webview's contextInjection.viewContext button label; view-context-label.test.ts keeps every language's two equal.
+export const VIEW_CONTEXT_BUTTON = "View injected context";
 
 /** Rebuilds each image from its validated fields so no extra property is persisted or forwarded; null when any image is invalid. */
 function parseSteerImages(images: unknown): ImageBlock[] | null {
@@ -236,20 +242,13 @@ function restoreErrorMessage(result: Exclude<ServiceRestoreResult, { ok: true }>
   }
 }
 
-/** Whether `prompt(text)` runs a registered extension command, which commits no user entry. Mirrors the
- *  parse in pi's `_tryExecuteExtensionCommand`, which `prompt()` reaches with template expansion on. */
-function isExtensionCommand(session: AgentSession, text: string): boolean {
-  if (!text.startsWith("/")) return false;
-  const space = text.indexOf(" ");
-  return session.extensionRunner.getCommand(text.slice(1, space === -1 ? undefined : space)) !== undefined;
-}
-
 /** A message the user queued mid-run, carrying its webview chip id. */
 interface QueuedInput {
   id: string;
   text: string;
   images: ImageContent[];
   content: ContentInput;
+  typed?: string;
 }
 
 /** Refuses the run pi was about to open for a queued batch a stop withdrew. */
@@ -257,6 +256,14 @@ class WithdrawnSteerError extends Error {}
 
 /** Refuses the run pi was about to open for a prompt that a stop or a session replacement overtook. */
 class StoppedBeforeRunError extends Error {}
+
+/** A `sendMessage` prompt on its way to pi. */
+interface OutgoingPrompt {
+  /** Returns it to the composer, `returnText` and then its chips, unless it already went back. */
+  withdraw: (returnText: () => void) => void;
+  /** pi has queued it or opened a run with it, so the session's disposal no longer returns it. */
+  accepted: () => void;
+}
 
 /** A cancel note handed to pi; `echoed` once pi accepted it and the transcript says the agent was told. */
 interface ListedNote {
@@ -348,7 +355,7 @@ export class PiSession implements ChatSession {
   /** Set while interrupt()/cancel() tears down the in-flight turn, so the prompt() rejection it
    * triggers doesn't surface an error card on top of the sessionCancelled already emitted. */
   private _aborting = false;
-  /** Bumped by every ESC, reset and resume switch, so a send still waiting to start its turn can tell it was cancelled. */
+  /** Bumped by every ESC, reset, resume switch and disposal, so a send still waiting to start its turn can tell it was cancelled. */
   private abortEpoch = 0;
   /** Set when the hard budget limit is crossed mid-turn, so the turn finishes gracefully at the next
    * model round-trip boundary (the `finishTurn` decider) instead of being torn mid-stream by an abort. */
@@ -393,10 +400,18 @@ export class PiSession implements ChatSession {
   /** Set while `resteerQueuedInputs` runs; a request meanwhile sets `resteerRequested` for one more pass. */
   private resteerRunning = false;
   private resteerRequested = false;
+  /** Steers `takeBackQueued` took out of pi's queue, oldest first, which the next re-steer pass puts back ahead of its own. */
+  private takenSteers: { session: AgentSession; steering: string[] } | null = null;
   /** Cancel notes handed to pi and not yet delivered. Their delivery event is not a queued batch. */
   private injectedNotes: ListedNote[] = [];
   /** The watch on the entry the running `sendMessage` prompt commits. */
   private promptEntry: PromptEntryWatch | null = null;
+  /** `sendMessage` prompts pi queued into a running run, until pi delivers or drops them. */
+  private readonly queuedPrompts: QueuedPromptEntries = queuedPromptEntries();
+  /** Returns one `sendMessage` prompt pi has neither queued nor opened a run with to the composer, for each, oldest first. */
+  private readonly unacceptedSends = new Set<() => void>();
+  /** The typed text of each prompt pi's input handlers are screening, keyed by the text pi screens. */
+  private readonly typedPrompts = new Map<string, string>();
   /** The native subagent engine (Phase 5): the shared workspace registry + a per-PiSession manager. */
   private agentRegistry: AgentRegistry | null = null;
   private subagentManager: AgentManager | null = null;
@@ -457,7 +472,7 @@ export class PiSession implements ChatSession {
         options.platform.settings.get<boolean>('damocles.showThinkingDroppedNotices', true, options.settingsFolder),
       sessionCost: () => this.ownSessionCost(),
       onBudgetStop: () => this.stopForBudget(),
-      onUserMessageDelivered: (deliveredText) => this.onQueuedInputsDelivered(deliveredText),
+      onUserMessageDelivered: (deliveredText, message) => this.onUserMessageDelivered(deliveredText, message),
       onMidStreamEntryCommitted: (userEntryId) => this.recordMidStreamMarker(userEntryId),
       promptEntryId: () => this.promptEntry?.entry()?.id ?? null,
       onTurnStateChanged: (...change) => this.setTurnState(...change),
@@ -541,6 +556,7 @@ export class PiSession implements ChatSession {
       // the note delivery reads it through a thunk; binding it here and not to `this.runtime` is what
       // keeps a leftover shell call's note in the conversation that ran the command.
       const bound: { session?: AgentSession } = {};
+      this.adoptRecordedSelection(opts.sessionManager.getBranch());
       // Built per session so per-session tool state (the task list) resets on reset/newSession.
       const customTools = buildCustomTools({
         pi,
@@ -696,6 +712,7 @@ export class PiSession implements ChatSession {
       getPlanFilePath: () => this.getPlanFilePath(),
       isTeamEnabled: () => !!this.options.teamService && this.isTeamEnabled(),
       postMessage: (message) => this.emit(message),
+      typedPromptOf: (text) => this.typedPrompts.get(text),
       budgetStopRequested: () => this._budgetStopRequested,
       onBeforeSettle: (event) => this.onBeforeSettle(event),
       isMcpReadOnly: (name) => this.mcpClientManager()?.isMcpReadOnly(name) ?? false,
@@ -916,6 +933,24 @@ export class PiSession implements ChatSession {
   }
 
   /**
+   * pi resumes a session on the model and thinking level its file recorded (sdk.js createAgentSession), which Damocles
+   * otherwise overrides by passing the panel's: a recorded model still curated and signed in becomes this panel's again,
+   * with its level. Anything else keeps the panel's model. Permission mode and YOLO are never restored.
+   */
+  private adoptRecordedSelection(branch: readonly SessionEntry[]): void {
+    const recorded = recordedSelection(branch);
+    const value = recorded?.model ? modelValueOfPiModel(recorded.model.provider, recorded.model.modelId) : undefined;
+    const piRuntime = PiRuntime.get();
+    const registry = piRuntime.modelRuntime;
+    if (value === undefined || !registry) return;
+    const resolution = resolvePiModel(value, registry, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey());
+    if (!resolution.model || !resolution.authed) return;
+    this.modelValue = value;
+    this.desiredModel = resolution.model;
+    this.options.onRecordedSelection?.(value, recorded?.thinkingLevel);
+  }
+
+  /**
    * Surface the model downgrade a timed-out provider sync causes: with the saved default not live,
    * `resolveInitialModel` falls back to a curated Claude/GPT model — a different provider with different
    * cost and capabilities than the user picked, which must not happen quietly. Fire-and-forget, so the
@@ -966,18 +1001,45 @@ export class PiSession implements ChatSession {
     prompt: ContentInput,
     _agentId?: string,
     correlationId?: string,
-    userBroadcast?: { content: string; contentBlocks?: UserContentBlock[] },
-  ): Promise<void> {
+    userBroadcast?: UserBroadcast,
+    onWithdrawn?: () => void,
+  ): Promise<SendOutcome> {
     if (this.processingFlag || this.compacting) {
       this.adapter.emitAlreadyInProgress();
-      return;
+      return "unsent";
     }
+    let withdrawn = false;
+    const withdraw = (returnText: () => void): void => {
+      if (withdrawn) return;
+      withdrawn = true;
+      returnText();
+      onWithdrawn?.();
+    };
+    const returnUnsent = (): void => withdraw(() => this.returnUnsentMessage(correlationId, userBroadcast));
+    this.unacceptedSends.add(returnUnsent);
+    try {
+      const outcome = await this.promptPi(prompt, correlationId, userBroadcast, {
+        withdraw,
+        accepted: () => this.unacceptedSends.delete(returnUnsent),
+      });
+      return withdrawn ? "withdrawn" : outcome;
+    } finally {
+      this.unacceptedSends.delete(returnUnsent);
+    }
+  }
+
+  private async promptPi(
+    prompt: ContentInput,
+    correlationId: string | undefined,
+    userBroadcast: UserBroadcast | undefined,
+    outgoing: OutgoingPrompt,
+  ): Promise<SendOutcome> {
     const abortEpoch = this.abortEpoch;
     try {
       await this.ensureStarted();
     } catch (err) {
-      this.emit({ type: "error", message: `pi failed to start: ${err instanceof Error ? err.message : String(err)}` });
-      return;
+      this.emit({ type: "error", message: t("pi failed to start: {0}", err instanceof Error ? err.message : String(err)) });
+      return "unsent";
     }
     // Wait for any in-flight session replacement so we prompt the FRESH session, not the old one that
     // is still tearing down (else pi throws "Agent is already processing"). Drives the plan
@@ -1001,8 +1063,8 @@ export class PiSession implements ChatSession {
     }
     const session = this.runtime?.session;
     if (!session) {
-      this.emit({ type: "error", message: "Failed to initialize pi session" });
-      return;
+      this.emit({ type: "error", message: t("Failed to initialize pi session") });
+      return "unsent";
     }
     // Pre-prompt budget block (US-008): if the session already crossed the hard limit, refuse the next
     // turn rather than starting one that would immediately abort.
@@ -1010,7 +1072,7 @@ export class PiSession implements ChatSession {
     if (budgetLimit !== null && this.cumulativeCostUsd() >= budgetLimit) {
       this.emit({ type: "budgetExceeded", finalSpend: this.cumulativeCostUsd(), limit: budgetLimit });
       this.emit({ type: "processing", isProcessing: false });
-      return;
+      return "unsent";
     }
 
     const text = extractText(prompt);
@@ -1027,7 +1089,7 @@ export class PiSession implements ChatSession {
     // one would be lost, and the message would run anyway.
     if (this.abortEpoch !== abortEpoch || this.runtime?.session !== session) {
       this.returnUnsentMessage(correlationId, userBroadcast);
-      return;
+      return "unsent";
     }
     // Capture the session's first real user message for the deterministic plan path. The
     // branch doesn't yet hold this prompt when `before_agent_start` builds the plan-mode system prompt on
@@ -1053,6 +1115,7 @@ export class PiSession implements ChatSession {
         type: "userMessage",
         content: userBroadcast.content,
         ...(userBroadcast.contentBlocks ? { contentBlocks: userBroadcast.contentBlocks } : {}),
+        ...(userBroadcast.terminalAttachments ? { terminalAttachments: userBroadcast.terminalAttachments } : {}),
         correlationId,
         promptIndex: this.currentPromptIndex,
         ...(isPrompt ? {} : { isInjected: true, isCommandEcho: true }),
@@ -1071,8 +1134,11 @@ export class PiSession implements ChatSession {
     const images = extractImages(prompt);
     // Reaches the turn lifecycle only when no pi event already settled the turn.
     let outcome: TurnOutcome = { kind: "completed" };
+    // How pi dispatched the prompt, once it accepted it.
+    let accepted: PromptDisposition | null = null;
     // The prompt's own entry is the earliest point its turn's checkpoint baseline can start.
     const committed = watchPromptEntry(session, (entry) => {
+      if (userBroadcast) this.recordPromptSidecars(session, entry, userBroadcast);
       const service = this.checkpointService;
       if (service?.sessionId === session.sessionId) service.startTurn(session.sessionManager, entry.id, entry.text);
       // With no file checkpoints the conversation can still be forked from any prompt.
@@ -1080,6 +1146,7 @@ export class PiSession implements ChatSession {
       if (this.runtime?.session === session) this.announceIfNewlyStored();
     });
     this.promptEntry = committed;
+    if (userBroadcast) this.typedPrompts.set(text, userBroadcast.content);
     try {
       // Defense in depth: under 0.80.5 `isStreaming` stays true for the whole agent run, including
       // retry/auto-compaction windows. A prompt landing in one of those windows now queues as a
@@ -1094,7 +1161,27 @@ export class PiSession implements ChatSession {
           if (disposition === "started" && (this.abortEpoch !== abortEpoch || this.runtime?.session !== session)) {
             throw new StoppedBeforeRunError();
           }
+          accepted = disposition;
+          outgoing.accepted();
           committed.preflightResult(disposition);
+          if (disposition === "queued") {
+            const queued = this.queuedPrompts.add(session, images, {
+              onCommitted: (entry) => {
+                if (userBroadcast) this.recordPromptSidecars(session, entry, userBroadcast);
+              },
+              onWithdrawn: () => outgoing.withdraw(() => {
+                if (correlationId && userBroadcast) this.emit({ type: "queueCancelled", messageId: correlationId, returnToInput: true });
+              }),
+            });
+            // A stop or a replacement can land while pi runs the input handlers, and that run delivers nothing more.
+            if (this.runStopped() || this.runtime?.session !== session) {
+              this.dropQueue(session);
+            } else if (this.abortEpoch !== abortEpoch && queued) {
+              // The stop has wound down and pi queued the prompt into a newer run, which keeps everything else.
+              this.queuedPrompts.withdrawOne(queued);
+              this.takeBackQueued(session, queued.text);
+            }
+          }
         },
       });
       // An extension slash command (e.g. `/todos`) is handled synchronously inside prompt() and starts
@@ -1105,12 +1192,7 @@ export class PiSession implements ChatSession {
       if (!this._aborting && !session.isStreaming && !this.adapter.observedAgentRun()) {
         this.adapter.endTurnWithoutAgentRun();
       }
-      // A slash command was expanded to its body before persisting — pi expands prompt templates inside
-      // prompt(), chat-handlers rewrites skills/`/init` before sendMessage — so the on-disk user message
-      // no longer matches what the user typed. Record the original typed text as an inert sidecar keyed
-      // to the pi user entry so reload/up-arrow/preview can restore it.
       const entry = committed.entry();
-      if (userBroadcast && entry) this.recordOriginalInputIfDiverged(session, userBroadcast.content, entry);
       // The turn completed (prompt resolves once the run has settled). After the first real turn, auto-title the
       // session (US-012). Fire-and-forget so it never blocks the next interaction.
       void this.maybeGenerateTitle();
@@ -1136,6 +1218,7 @@ export class PiSession implements ChatSession {
     } finally {
       committed.dispose();
       if (this.promptEntry === committed) this.promptEntry = null;
+      if (userBroadcast && this.typedPrompts.get(text) === userBroadcast.content) this.typedPrompts.delete(text);
       this.processingFlag = false;
       this.inFlightPromptIndex = null;
       // The turn is over however it ended. A rejection that never reached an agent run emits no pi
@@ -1144,14 +1227,29 @@ export class PiSession implements ChatSession {
       this._aborting = false;
       this._budgetStopRequested = false;
     }
+    return accepted === "queued" || committed.entry() !== null ? "sent" : "unsent";
+  }
+
+  async resolveSlashInvocation(text: string): Promise<SlashInvocation> {
+    await this.ensureStarted().catch(() => undefined);
+    const session = this.runtime?.session;
+    const pi = getPiCodingAgent();
+    return session && pi ? resolveSlashInvocation(session, text, pi.stripFrontmatter) : { kind: "text" };
   }
 
   /** A message cancelled or orphaned before its turn started never reached the model, so it goes back
    *  to the composer. */
-  private returnUnsentMessage(correlationId: string | undefined, userBroadcast: { content: string } | undefined): void {
+  private returnUnsentMessage(correlationId: string | undefined, userBroadcast: UserBroadcast | undefined): void {
     log("[PiSession] message not sent: cancelled or session replaced before its turn started");
     this.emit({ type: "processing", isProcessing: false });
-    if (correlationId && userBroadcast) this.emit({ type: "interruptRecovery", correlationId, promptContent: userBroadcast.content });
+    if (correlationId && userBroadcast) {
+      this.emit({
+        type: "interruptRecovery",
+        correlationId,
+        promptContent: userBroadcast.content,
+        ...(userBroadcast.contentBlocks ? { contentBlocks: userBroadcast.contentBlocks } : {}),
+      });
+    }
   }
 
   /**
@@ -1245,7 +1343,7 @@ export class PiSession implements ChatSession {
    * boundary, redirecting the agent mid-task. Returns 'queued' so the webview shows a pending chip per
    * message; the chips collapse into the combined message once the adapter sees pi deliver it.
    */
-  queueInput(content: ContentInput, messageId?: string): "queued" | "flushed" | false {
+  queueInput(content: ContentInput, messageId?: string, typed?: string): "queued" | "flushed" | false {
     const session = this.runtime?.session;
     // Gate on pi's own streaming state, not `processingFlag`: the two can momentarily disagree. Under
     // 0.80.5 `isStreaming` also stays true across retry/compaction windows, so input is now accepted
@@ -1260,6 +1358,7 @@ export class PiSession implements ChatSession {
       text: extractText(content),
       images: extractImages(content),
       content,
+      ...(typed !== undefined ? { typed } : {}),
     });
     this.screenQueuedInputs();
     return "queued";
@@ -1282,10 +1381,13 @@ export class PiSession implements ChatSession {
           const runner = this.runtime?.session.extensionRunner;
           let verdict: InputEventResult = { action: "continue" };
           if (runner?.hasHandlers("input")) {
+            if (input.typed !== undefined) this.typedPrompts.set(input.text, input.typed);
             try {
               verdict = await runner.emitInput(input.text, input.images.length > 0 ? input.images : undefined, "interactive", "steer");
             } catch (err) {
               log("[PiSession] input handlers failed on a queued message: %O", err);
+            } finally {
+              if (input.typed !== undefined && this.typedPrompts.get(input.text) === input.typed) this.typedPrompts.delete(input.text);
             }
           }
           // A stop or a session replacement took it back while the handlers ran.
@@ -1344,27 +1446,26 @@ export class PiSession implements ChatSession {
    * next boundary (`withQueuePolicy`), so that request carries the annotated result, the note, then the batch.
    */
   private async resteerOnce(session: AgentSession): Promise<void> {
-    if (this.queuedInputs.length === 0) return;
+    const taken = this.takenSteers?.session === session ? this.takenSteers.steering : [];
+    this.takenSteers = null;
+    if (this.queuedInputs.length === 0 && this.heldNotes(taken).length === 0) return;
     const { steering, followUp } = session.clearQueue();
     this.steeredCount = null;
-    const notes = this.heldNotes(steering);
+    const notes = this.heldNotes([...taken, ...steering]);
     const batch = [...this.queuedInputs];
     const text = batch.map((q) => q.text).join("\n\n");
     const images = batch.flatMap((q) => q.images);
     // Re-queued the way they were queued, not through `followUp()` or `steer()`: those run the
     // extension-command check and the skill and template expansion, which would execute or rewrite
     // literal text.
-    for (const queued of followUp) {
-      void session
-        .sendUserMessage(queued, { deliverAs: "followUp", expandPromptTemplates: false })
-        .catch((err) => log("[PiSession] re-queueing a preserved follow-up failed: %O", err));
-    }
+    for (const queued of this.queuedPrompts.requeue(session, followUp)) this.requeueFollowUp(session, queued);
     for (const note of notes) {
       if (this.batchWithdrawn(session, batch)) return;
       await session
         .sendUserMessage(note, { deliverAs: "steer", expandPromptTemplates: false })
         .catch((err) => log("[PiSession] re-queueing a cancel note failed: %O", err));
     }
+    if (batch.length === 0) return;
     // A prompt made while pi settles the ended run is deferred into that settle, where a veto would throw.
     if (!session.isStreaming) await session.waitForIdle();
     if (this.batchWithdrawn(session, batch)) return;
@@ -1375,6 +1476,25 @@ export class PiSession implements ChatSession {
       ...(images.length > 0 ? { images } : {}),
       preflightResult: (disposition) => this.admitSteer(session, batch, disposition),
     });
+  }
+
+  /** Puts one follow-up back with the content it was queued with, unless a stop withdrew it while pi ran the input handlers. */
+  private requeueFollowUp(session: AgentSession, queued: RequeuedFollowUp): void {
+    void session
+      .prompt(queued.text, {
+        expandPromptTemplates: false,
+        streamingBehavior: "followUp",
+        source: "extension",
+        ...(queued.images.length > 0 ? { images: [...queued.images] } : {}),
+        preflightResult: (disposition) => {
+          if (!queued.withdrawn()) return;
+          if (disposition === "started") throw new WithdrawnSteerError();
+          if (disposition === "queued") this.takeBackQueued(session, queued.text);
+        },
+      })
+      .catch((err) => {
+        if (!(err instanceof WithdrawnSteerError)) log("[PiSession] re-queueing a preserved follow-up failed: %O", err);
+      });
   }
 
   /**
@@ -1389,8 +1509,11 @@ export class PiSession implements ChatSession {
   private admitSteer(session: AgentSession, batch: readonly QueuedInput[], disposition: PromptDisposition): void {
     const opensRun = disposition === "started";
     if (this.batchWithdrawn(session, batch)) {
-      if (opensRun || (disposition === "queued" && this.runStopped())) session.clearQueue();
-      if (opensRun) throw new WithdrawnSteerError();
+      if (opensRun) {
+        session.clearQueue();
+        throw new WithdrawnSteerError();
+      }
+      if (disposition === "queued") this.takeBackQueued(session);
       return;
     }
     if (disposition === "handled") {
@@ -1426,6 +1549,13 @@ export class PiSession implements ChatSession {
    * further queueing starts a fresh combination. Returns whether the delivery was Damocles's own, a
    * batch or a cancel note, and so is owed a mid-stream marker.
    */
+  private onUserMessageDelivered(deliveredText: string, message: unknown): boolean {
+    const session = this.runtime?.session;
+    // A prompt pi queued as a follow-up is the user's own, owed its sidecars and no mid-stream marker.
+    if (session && this.queuedPrompts.claim(session, deliveredText, message)) return false;
+    return this.onQueuedInputsDelivered(deliveredText);
+  }
+
   onQueuedInputsDelivered(deliveredText: string): boolean {
     // A cancel note is queued straight onto the pi session, so its delivery raises the same event a
     // steered batch does, and so does the opening prompt of a run a note started. Matching on the text
@@ -1477,13 +1607,48 @@ export class PiSession implements ChatSession {
    * every chip goes back to the composer, and each note pi held is dropped with its echo corrected.
    */
   private withdrawQueue(session: AgentSession | undefined, noteDropped: string): void {
+    this.returnQueue(session);
+    this.dropEchoedNotes(noteDropped);
+  }
+
+  /** Every chip, and every prompt pi queued, goes back to the composer, and pi's queue is dropped. */
+  private returnQueue(session: AgentSession | undefined): void {
     this.steeredCount = null;
     const withdrawn = [...this.queuedInputs, ...this.screeningInputs];
     this.queuedInputs = [];
     this.screeningInputs = [];
     for (const { id } of withdrawn) this.emit({ type: "queueCancelled", messageId: id, returnToInput: true });
-    session?.clearQueue();
-    this.dropEchoedNotes(noteDropped);
+    if (session) this.dropQueue(session);
+  }
+
+  /** Drops pi's queue for a run that delivers nothing more; each prompt pi held goes back to the composer. */
+  private dropQueue(session: AgentSession): void {
+    session.clearQueue();
+    this.queuedPrompts.withdraw(session);
+  }
+
+  /**
+   * Takes a message pi has just queued after it was withdrawn back out of pi's queue: the follow-up
+   * `withdrawnFollowUp`, or a batch when it is undefined. pi has no single-message removal, so a live run
+   * gets everything else back as a re-steer puts it back: the follow-ups at once, the notes and the batch
+   * by the next pass, notes first.
+   */
+  private takeBackQueued(session: AgentSession, withdrawnFollowUp?: string): void {
+    if (this.runStopped() || this.runtime?.session !== session) {
+      this.dropQueue(session);
+      return;
+    }
+    const { steering, followUp } = session.clearQueue();
+    // A withdrawn batch needs no removal: the next pass puts back only the notes among the steers.
+    if (withdrawnFollowUp !== undefined) {
+      const index = followUp.lastIndexOf(withdrawnFollowUp);
+      if (index !== -1) followUp.splice(index, 1);
+    }
+    this.steeredCount = null;
+    for (const queued of this.queuedPrompts.requeue(session, followUp)) this.requeueFollowUp(session, queued);
+    const taken = this.takenSteers?.session === session ? this.takenSteers.steering : [];
+    this.takenSteers = { session, steering: [...taken, ...steering] };
+    this.resteerQueuedInputs();
   }
 
   /** Correct the echo of every accepted cancel note the agent never received, once the queue that held it is dropped. */
@@ -1667,7 +1832,7 @@ export class PiSession implements ChatSession {
    */
   async compact(instructions?: string): Promise<void> {
     if (this.processingFlag || this.compacting) {
-      this.emit({ type: "notification", message: "Finish or stop the current turn before compacting.", notificationType: "warning" });
+      this.emit({ type: "notification", message: t("Finish or stop the current turn before compacting."), notificationType: "warning" });
       return;
     }
     // Hold `compacting` across the whole operation so a sendMessage arriving mid-compaction is rejected
@@ -1678,14 +1843,14 @@ export class PiSession implements ChatSession {
       try {
         await this.ensureStarted();
       } catch (err) {
-        this.emit({ type: "error", message: `pi failed to start: ${err instanceof Error ? err.message : String(err)}` });
+        this.emit({ type: "error", message: t("pi failed to start: {0}", err instanceof Error ? err.message : String(err)) });
         return;
       }
       if (this.resetPromise) await this.resetPromise;
       if (this.abortPromise) await this.abortPromise;
       const session = this.runtime?.session;
       if (!session) {
-        this.emit({ type: "error", message: "Failed to initialize pi session" });
+        this.emit({ type: "error", message: t("Failed to initialize pi session") });
         return;
       }
       const trimmed = instructions?.trim();
@@ -1699,7 +1864,7 @@ export class PiSession implements ChatSession {
           log("[PiSession] compact outcome already reported by the adapter: %s", message);
         } else if (isNothingToCompact(message)) {
           log("[PiSession] compact skipped: nothing to compact (session too small)");
-          this.emit({ type: "notification", message: "Nothing to compact yet — the conversation is too small.", notificationType: "info" });
+          this.emit({ type: "notification", message: t("The conversation is too short to compact yet."), notificationType: "info" });
         } else {
           log("[PiSession] compact failed: %O", err);
           this.emit({ type: "error", message });
@@ -1780,9 +1945,9 @@ export class PiSession implements ChatSession {
     // The replacement session disposes the old one, which aborts whatever turn it was running.
     this.setTurnState("idle", { kind: "cancelled" });
     this._budgetStopRequested = false;
-    this.queuedInputs = [];
-    this.screeningInputs = [];
-    this.steeredCount = null;
+    // The old run streams until the replacement aborts it, so its queue is dropped here and every message goes back.
+    this.returnQueue(this.runtime?.session);
+    this.queuedPrompts.withdraw();
     // The replaced session takes its undelivered notes with it, so nothing here can shadow a later batch.
     this.injectedNotes = [];
     // Kill any in-flight subagents and drop their completed records so a fresh session starts clean.
@@ -1862,8 +2027,12 @@ export class PiSession implements ChatSession {
   }
 
   private async runDispose(): Promise<void> {
+    // Before `_disposed`, which silences `emit`: nothing queued or still on its way to pi was sent, so it goes back to the composer.
+    this.returnQueue(this.runtime?.session);
+    for (const returnUnsent of this.unacceptedSends) returnUnsent();
     this._disposed = true;
-    this.mcpStartupWaitAbort?.abort();
+    // A prompt pi's input handlers still hold is refused when they release it, whether or not the runtime is still installed.
+    this.stopPromptBeforeRun();
     // Closing the handle is what kills whatever this panel's shells left running: the job object's
     // kill-on-close on Windows, the EOF the sentinel is waiting for on POSIX.
     this.shellJob?.dispose();
@@ -2061,15 +2230,15 @@ export class PiSession implements ChatSession {
     if (!resolution.model) {
       const info = this.getModelInfo(model);
       if (info?.piProvider) {  // catalog-known custom provider, just not keyed (StepFun pre-key)
-        this.emit({ type: "notification", message: `Sign in to ${providerDisplayName(info)} to use ${model}`, notificationType: "warning" });
+        this.emit({ type: "notification", message: t("Sign in to {0} to use {1}", providerDisplayName(info), model), notificationType: "warning" });
         return;
       }
-      this.emit({ type: "notification", message: `Model ${model} is unavailable on the pi harness`, notificationType: "error" });
+      this.emit({ type: "notification", message: t("Model {0} is unavailable on the pi harness", model), notificationType: "error" });
       return;
     }
     if (resolution.authed === false) {
       const info = this.getModelInfo(model);
-      this.emit({ type: "notification", message: `Sign in to ${providerDisplayName(info)} to use ${model}`, notificationType: "warning" });
+      this.emit({ type: "notification", message: t("Sign in to {0} to use {1}", providerDisplayName(info), model), notificationType: "warning" });
       return;
     }
     // Only commit the active model after the switch is known to succeed — every early return above
@@ -2243,6 +2412,9 @@ export class PiSession implements ChatSession {
     if (sessionId && this.runtime && this.currentSessionId !== sessionId) {
       // Synchronous, so a send made after this call is not taken for the prompt the switch replaces.
       this.stopPromptBeforeRun();
+      // Nothing queued in this conversation may reach the next one, and the transcript its echoes stood in is replaced.
+      this.returnQueue(this.runtime.session);
+      this.injectedNotes = [];
       this.resetPromise = (this.resetPromise ?? Promise.resolve())
         .then(() => this.switchToResumeTarget(sessionId))
         .then(() => undefined)
@@ -2269,6 +2441,8 @@ export class PiSession implements ChatSession {
     // The rebind callback re-subscribed the adapter + re-registered the panel; seed the meter from
     // the now-current resumed session.
     if (!cancelled) {
+      // The factory may have moved the panel onto the switched-in session's recorded model.
+      this.publishAccountInfo();
       this.seedResumedUsage();
       // The switched-in session reads the current tool set on build, so a deferred reload is moot.
       this.mcpReloadPendingAfterTurn = false;
@@ -2433,29 +2607,22 @@ export class PiSession implements ChatSession {
   }
 
   /**
-   * Persist the user's ORIGINAL typed input when a slash-command expansion made the stored user message
-   * diverge from it — pi expands prompt templates inside `prompt()`, chat-handlers rewrites skills/`/init`
-   * before `sendMessage` — so a reloaded transcript, the up-arrow history, and the session-list preview
-   * show what the user typed rather than the expanded body. Keyed to the pi user entry this `prompt()`
-   * committed. The IDE-context prefix pi merges into the message is stripped before comparing so a plain
-   * (un-expanded) message with attached context records nothing. Fail-soft: a write error never breaks
-   * the turn.
+   * Both sidecars of the entry a prompt committed, written at its commit whether it opened a run or joined one: the
+   * count of attachment blocks leading it, and the typed text when the stored text differs. Blocks stay in that
+   * comparison, so a prompt sent with them records its typed text for the rewind list.
    */
-  private recordOriginalInputIfDiverged(session: AgentSession, original: string, entry: PromptEntry): void {
-    // Same captured-across-an-await shape as `maybeGenerateTitle`: the session was captured before
-    // `prompt()` and this runs after it resolved, so a delete in that window can have removed the file
-    // while this manager still appends to it. Today pi's teardown awaits `abort()` before installing
-    // the replacement, which happens to order the continuation first — an implementation detail of the
-    // dependency, not a guarantee, so the liveness check is stated rather than relied upon.
+  private recordPromptSidecars(session: AgentSession, entry: PromptEntry, broadcast: UserBroadcast): void {
+    // A queued prompt commits long after `sendMessage` returned, and a delete or replacement may have come first.
     if (this._disposed || this.runtime?.session !== session) return;
-    const typed = original.trim();
-    if (!typed) return;
-    const stored = stripIdeContext(entry.text).trim();
-    if (stored === typed) return;
+    const count = broadcast.terminalAttachments?.length ?? 0;
+    const typed = broadcast.content.trim();
     try {
-      session.sessionManager.appendCustomEntry(DAMOCLES_ORIGINAL_INPUT_ENTRY, { userEntryId: entry.id, original: typed });
+      if (count > 0) session.sessionManager.appendCustomEntry(DAMOCLES_TERMINAL_ATTACHMENTS_ENTRY, { userEntryId: entry.id, count });
+      if (typed && storedTypedText(entry.text, 0).trim() !== typed) {
+        session.sessionManager.appendCustomEntry(DAMOCLES_ORIGINAL_INPUT_ENTRY, { userEntryId: entry.id, original: typed });
+      }
     } catch (err) {
-      log("[PiSession] recordOriginalInput failed: %O", err);
+      log("[PiSession] recording the prompt's sidecars failed: %O", err);
     }
   }
 
@@ -2463,7 +2630,6 @@ export class PiSession implements ChatSession {
    * Record this completed turn, from the prompt entry `userEntryId` on, as a memory extraction
    * candidate (fail-soft). No-op when no memory service is wired or the turn ran no agent. Service-side
    * gates (memory disabled / auto-extract off / disposed) live in enqueueTurnCandidate.
-   * Symmetric with recordOriginalInputIfDiverged.
    */
   private enqueueMemoryCandidate(session: AgentSession, userEntryId: string): void {
     const memory = this.options.memoryService;
@@ -3468,7 +3634,7 @@ export class PiSession implements ChatSession {
     for (const failure of failures) log("[PiSession] copying agent data to the fork failed: %O", failure);
     this.emit({
       type: "notification",
-      message: "Some subagent or team history could not be copied into the fork; those cards may be incomplete and cannot be resumed there.",
+      message: t("Some subagent or team history could not be copied into the fork; those cards may be incomplete and cannot be resumed there."),
       notificationType: "warning",
     });
   }
@@ -3510,7 +3676,7 @@ export class PiSession implements ChatSession {
   private async spawnPiFork(session: AgentSession, userEntryId: string, promptContent?: string): Promise<void> {
     const onSpawnFork = this.options.onSpawnFork;
     if (!onSpawnFork) {
-      this.emit({ type: "rewindError", message: "Fork is unavailable" });
+      this.emit({ type: "rewindError", message: t("Fork is unavailable") });
       return;
     }
     const liveSm = session.sessionManager;
@@ -3569,7 +3735,7 @@ export class PiSession implements ChatSession {
             log("[PiSession] copying injection records to the fork failed: %O", err);
             this.emit({
               type: "notification",
-              message: "The injected context of the prompts the fork inherited could not be copied; View Context may be empty for them there.",
+              message: t("The injected context of the prompts the fork inherited could not be copied, so \"{0}\" may show nothing for those prompts in the fork.", t(VIEW_CONTEXT_BUTTON)),
               notificationType: "warning",
             });
           }
@@ -3750,19 +3916,19 @@ export class PiSession implements ChatSession {
     try {
       await this.ensureStarted();
     } catch (err) {
-      this.emit({ type: "btwError", btwId, message: `pi failed to start: ${err instanceof Error ? err.message : String(err)}` });
+      this.emit({ type: "btwError", btwId, message: t("pi failed to start: {0}", err instanceof Error ? err.message : String(err)) });
       return;
     }
     const piRuntime = PiRuntime.get();
     const modelRuntime = piRuntime.modelRuntime;
     const folder = this.folder;
     if (!modelRuntime || !folder || !this.runtime) {
-      this.emit({ type: "btwError", btwId, message: "Start a conversation first" });
+      this.emit({ type: "btwError", btwId, message: t("Start a conversation first") });
       return;
     }
     const resolution = resolvePiModel(this.modelValue, modelRuntime, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey());
     if (!resolution.model || resolution.authed === false) {
-      this.emit({ type: "btwError", btwId, message: `Model ${this.modelValue} is unavailable for btw` });
+      this.emit({ type: "btwError", btwId, message: t("Model {0} is unavailable for btw", this.modelValue) });
       return;
     }
 
@@ -3806,7 +3972,7 @@ export class PiSession implements ChatSession {
       if (!ac.signal.aborted) {
         const finalText = (streamed.trim() || session.getLastAssistantText() || "").trim();
         if (finalText) this.emit({ type: "btwComplete", btwId, text: finalText });
-        else this.emit({ type: "btwError", btwId, message: "No response received" });
+        else this.emit({ type: "btwError", btwId, message: t("No response received") });
       }
     } catch (err) {
       if (!ac.signal.aborted) this.emit({ type: "btwError", btwId, message: err instanceof Error ? err.message : String(err) });

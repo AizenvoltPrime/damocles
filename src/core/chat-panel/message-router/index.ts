@@ -94,6 +94,7 @@ export class MessageRouter {
       session: instance.session,
       permissionHandler: instance.permissionHandler,
       ideContextManager: instance.ideContextManager,
+      terminalAttachments: instance.terminalAttachments,
       panelId,
       folder: instance.folder,
       ...(view ? { view } : {}),

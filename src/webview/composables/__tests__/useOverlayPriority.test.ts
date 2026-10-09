@@ -5,6 +5,7 @@ import { mount, type VueWrapper } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 import BindPlanOverlay from '@/components/BindPlanOverlay.vue';
 import OverlayShell from '@/components/OverlayShell.vue';
+import RewindConfirmModal from '@/components/RewindConfirmModal.vue';
 import { useBindPlanStore } from '@/stores/useBindPlanStore';
 import { usePromptNavigatorStore } from '@/stores/usePromptNavigatorStore';
 import { usePermissionStore } from '@/stores';
@@ -46,6 +47,17 @@ describe('the prompt navigator toggle and the foreground overlays', () => {
 
     expect(isForegroundOverlayOpen()).toBe(true);
     expect(usePromptNavigatorStore().isOpen).toBe(false);
+  });
+
+  it('does not open the navigator over the rewind confirmation, which holds a place in the stack while it shows', async () => {
+    const modal = mount(RewindConfirmModal, { props: { visible: true, canFork: true }, global: { plugins: [i18n] }, attachTo: document.body });
+    mounted.push(modal);
+
+    toggleNavigator();
+    expect(usePromptNavigatorStore().isOpen).toBe(false);
+
+    await modal.setProps({ visible: false });
+    expect(isForegroundOverlayOpen()).toBe(false);
   });
 
   it('opens with nothing in the foreground, and closes again from its own toggle', () => {

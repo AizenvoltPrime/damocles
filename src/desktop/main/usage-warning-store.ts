@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { writeJsonConfig } from '../../core/config/json-config-write';
+import { jsonConfigWritesSettled, writeJsonConfig } from '../../core/config/json-config-write';
 import { sameReset, type SubscriptionProvider, type UsageThresholdCrossing } from '../../core/pi-session/usage-thresholds';
 
 const SCHEMA_VERSION = 1;
@@ -108,6 +108,11 @@ export class UsageWarningStore {
     }
     // Memory changes only once the write has landed (docs/invariants.md, "Desktop stores").
     this.warnings = next;
+  }
+
+  /** Settles once every write to the file, one queued meanwhile included, has landed or failed; a quit awaits it. */
+  flush(): Promise<void> {
+    return jsonConfigWritesSettled(this.filePath);
   }
 
   private unexpired(warnings: readonly ShownWarning[]): ShownWarning[] {

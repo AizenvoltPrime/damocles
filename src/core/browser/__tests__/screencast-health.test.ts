@@ -78,7 +78,7 @@ describe('ScreencastHealth', () => {
   });
 
   /**
-   * THE WATCHDOG'S BLIND SPOT. The panel's `ready` message is the sole trigger for `screencast.start()`,
+   * THE WATCHDOG'S BLIND SPOT. `screencast.start()` waits for the panel's webview to be listening,
    * so a `ready` that never arrives means the CDP call is never made. With the clock armed by that call,
    * `startedAt` stayed null, `shouldRestart` returned false on every tick forever, and the panel sat on
    * "Waiting for browser frames…" with no recovery — while the watchdog reported healthy. Anchoring on

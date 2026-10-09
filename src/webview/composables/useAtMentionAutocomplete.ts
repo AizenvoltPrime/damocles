@@ -11,6 +11,11 @@ const MAX_VISIBLE_ITEMS = 10;
 const builtinAgentItems = AVAILABLE_AGENTS
   .map(a => ({ type: 'builtin-agent' as const, data: a }));
 
+/** The composer text of a file mention, for an autocomplete pick and a mention core resolved (a drop, Mention in chat) alike. */
+export function fileMentionText(relativePath: string): string {
+  return `@${relativePath} `;
+}
+
 function getItemSearchString(item: AtMentionItem): string {
   switch (item.type) {
     case 'file':
@@ -87,6 +92,8 @@ export function useAtMentionAutocomplete(
       customAgents.value = message.agents;
       customAgentsLoaded.value = true;
       updateLoadingState();
+    } else if (message.type === 'insertMention') {
+      insertResolvedMention(message.display);
     }
   }
 
@@ -217,17 +224,40 @@ export function useAtMentionAutocomplete(
     }
   }
 
+  // The one insertion path: replaces [start, end) of the composer text and puts the caret after the mention.
+  function insertAt(mention: string, start: number, end: number) {
+    const textarea = textareaRef.value;
+    if (!textarea) return;
+
+    const before = inputText.value.slice(0, start);
+    const after = inputText.value.slice(end);
+    inputText.value = before + mention + after;
+
+    nextTick(() => {
+      const newPosition = before.length + mention.length;
+      textarea.setSelectionRange(newPosition, newPosition);
+      textarea.focus();
+    });
+  }
+
+  /** A file mention core resolved (insertMention): inserted at the caret exactly as an autocomplete pick of that file. */
+  function insertResolvedMention(display: string) {
+    const textarea = textareaRef.value;
+    if (!textarea) return;
+    // A mention typed or picked mid-word would fuse with the word before it.
+    const caret = textarea.selectionStart;
+    const spacer = caret > 0 && !/\s/.test(inputText.value[caret - 1] ?? '') ? ' ' : '';
+    insertAt(spacer + fileMentionText(display), caret, textarea.selectionEnd);
+  }
+
   function insertMention(item: AtMentionItem) {
     const textarea = textareaRef.value;
     if (!textarea) return;
 
-    const before = inputText.value.slice(0, atStartIndex.value);
-    const after = inputText.value.slice(textarea.selectionStart);
-
     let mention: string;
     switch (item.type) {
       case 'file':
-        mention = `@${item.data.relativePath} `;
+        mention = fileMentionText(item.data.relativePath);
         break;
       case 'builtin-agent':
         mention = `@agent-${item.data.id} `;
@@ -237,14 +267,7 @@ export function useAtMentionAutocomplete(
         break;
     }
 
-    inputText.value = before + mention + after;
-
-    nextTick(() => {
-      const newPosition = before.length + mention.length;
-      textarea.setSelectionRange(newPosition, newPosition);
-      textarea.focus();
-    });
-
+    insertAt(mention, atStartIndex.value, textarea.selectionStart);
     close();
   }
 

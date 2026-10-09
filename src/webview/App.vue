@@ -71,7 +71,6 @@ const EditorOverlayHost = defineAsyncComponent({
     toast.error(t("editor.loadFailed", { error: error.message }));
     fail();
     editorStore.dismissView();
-    editorStore.closeSettingsEditor();
   },
 });
 import PromptNavigator from "./components/PromptNavigator.vue";
@@ -405,7 +404,7 @@ function tryInterceptStats(content: string | UserContentBlock[]): boolean {
   return true;
 }
 
-function handleSendMessage(content: string | UserContentBlock[], includeIdeContext: boolean) {
+function handleSendMessage(content: string | UserContentBlock[], includeIdeContext: boolean, terminalAttachmentIds: string[]) {
   if (typeof content === "string") {
     const trimmed = content.trim();
     if (trimmed === "/rewind" || trimmed.startsWith("/rewind ")) {
@@ -426,7 +425,7 @@ function handleSendMessage(content: string | UserContentBlock[], includeIdeConte
   if (tryInterceptStats(content)) return;
   if (tryDispatchBtw(content)) return;
 
-  postMessage({ type: "sendMessage", content, includeIdeContext });
+  postMessage({ type: "sendMessage", content, includeIdeContext, ...(terminalAttachmentIds.length > 0 ? { terminalAttachmentIds } : {}) });
   followTranscript();
   uiStore.setProcessing(true);
 }
@@ -563,7 +562,7 @@ function handleViewContext(promptIndex: number) {
 }
 
 function handleOpenBrowser() {
-  postMessage({ type: "openBrowser", url: "about:blank" });
+  postMessage({ type: "openBrowser" });
 }
 
 function handleBindPlan() {
@@ -922,6 +921,7 @@ const HEADER_ACTIONS: Record<HeaderAction, () => void> = {
   usage: handleOpenSubscriptionUsage,
   stats: () => usageStatsStore.openOverlay(),
   settings: () => handleOpenSettings(),
+  terminal: () => postMessage({ type: "toggleTerminal" }),
 };
 
 const isEmptyConversation = computed(() => messageListRef.value?.isEmpty === true);

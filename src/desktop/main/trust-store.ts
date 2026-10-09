@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Disposable } from '../../platform/disposable';
-import { writeJsonConfig } from '../../core/config/json-config-write';
+import { jsonConfigWritesSettled, writeJsonConfig } from '../../core/config/json-config-write';
 import { folderKey } from '../../core/workspace-folders/folder-key';
 import type { AskMessage } from './message-dialog';
 
@@ -70,6 +70,11 @@ export class TrustStore {
     this.trusted.set(key, folderPath);
     this.log(`[trust] granted ${folderPath}`);
     for (const listener of [...this.grantListeners]) listener([folderPath]);
+  }
+
+  /** Settles once every write to the file, one queued meanwhile included, has landed or failed; a quit awaits it. */
+  flush(): Promise<void> {
+    return jsonConfigWritesSettled(this.filePath);
   }
 
   /** Asks once per pending request; resolves whether the folder is trusted afterwards. */

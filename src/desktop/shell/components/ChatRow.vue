@@ -3,6 +3,8 @@ import { computed, nextTick, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { Check, CircleAlert, LoaderCircle, MessageSquare, Pencil, Tag, Trash2, X } from 'lucide-vue-next';
 import { providerLogoSvg } from '@/components/icons/provider-logos';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { formatClock } from '@/utils/clock';
 import { MAX_CHAT_NAME_LENGTH, type ShellChat } from '../../preload/shell-channels';
 import { chatGroupOf, hasSavedConversation, modelLabel } from '../chat-list';
@@ -26,6 +28,8 @@ const emit = defineEmits<{
   cancelRename: [];
 }>();
 const { t, locale } = useI18n();
+
+const ROW_ACTION = 'size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-accent) [&_svg]:size-3';
 
 const title = computed(() => props.chat.title || t('chats.newChat'));
 const saved = computed(() => hasSavedConversation(props.chat));
@@ -82,9 +86,10 @@ function onRenameKeydown(event: KeyboardEvent): void {
       class="h-6 min-w-0 flex-1 rounded-md border border-(--d-accent) bg-(--d-input) px-2 text-xs text-(--d-text) outline-none"
       @keydown="onRenameKeydown"
     >
-    <button
+    <Button
       type="button"
-      class="flex size-[22px] shrink-0 items-center justify-center rounded-md bg-(--d-accent) text-(--d-on-accent)"
+      size="icon-sm"
+      class="size-5.5 rounded-md hover:bg-primary [&_svg]:size-3"
       :aria-label="t('chats.save')"
       :title="t('chats.save')"
       @click="emit('commitRename', draft)"
@@ -93,10 +98,12 @@ function onRenameKeydown(event: KeyboardEvent): void {
         aria-hidden="true"
         class="size-3"
       />
-    </button>
-    <button
+    </Button>
+    <Button
       type="button"
-      class="flex size-[22px] shrink-0 items-center justify-center rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text)"
+      variant="ghost"
+      size="icon-sm"
+      class="size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3"
       :aria-label="t('chats.cancel')"
       :title="t('chats.cancel')"
       @click="emit('cancelRename')"
@@ -105,7 +112,7 @@ function onRenameKeydown(event: KeyboardEvent): void {
         aria-hidden="true"
         class="size-3"
       />
-    </button>
+    </Button>
   </div>
   <div
     v-else
@@ -127,17 +134,17 @@ function onRenameKeydown(event: KeyboardEvent): void {
       <LoaderCircle
         v-if="chat.status === 'running'"
         aria-hidden="true"
-        class="size-[13px] d-spinning text-(--d-accent)"
+        class="size-3.25 d-spinning text-(--d-accent)"
       />
       <CircleAlert
         v-else-if="chat.status === 'waiting'"
         aria-hidden="true"
-        class="size-[13px] animate-[d-pulse_1.4s_infinite] text-(--d-warning)"
+        class="size-3.25 animate-[d-pulse_1.4s_infinite] text-(--d-warning)"
       />
       <MessageSquare
         v-else
         aria-hidden="true"
-        class="size-[13px]"
+        class="size-3.25"
         :class="selected ? 'text-(--d-accent)' : 'text-(--d-faint)'"
       />
       <span
@@ -151,7 +158,7 @@ function onRenameKeydown(event: KeyboardEvent): void {
         data-testid="chat-title"
       >{{ title }}</span>
       <span
-        class="flex min-w-0 items-center gap-[5px] overflow-hidden text-[11px] font-normal whitespace-nowrap"
+        class="flex min-w-0 items-center gap-1.25 overflow-hidden text-11 font-normal whitespace-nowrap"
         :class="selected ? 'text-(--d-faint-text)' : 'text-(--d-faint) group-hover/row:text-(--d-faint-text)'"
       >
         <span class="shrink-0">{{ when }}</span>
@@ -164,25 +171,27 @@ function onRenameKeydown(event: KeyboardEvent): void {
           <span
             v-if="logo"
             aria-hidden="true"
-            class="provider-logo size-[11px] shrink-0"
+            class="provider-logo size-2.75 shrink-0"
             v-html="logo"
           />
           <!-- eslint-enable vue/no-v-html -->
           <span class="min-w-6 shrink truncate">{{ model }}</span>
         </template>
-        <span
+        <Badge
           v-if="chat.tag"
+          as="span"
+          variant="tone"
           data-testid="chat-tag"
-          class="ml-0.5 flex max-w-[110px] min-w-11 shrink items-center gap-[3px] overflow-hidden rounded-full border border-(--d-border2) px-1.5 text-[10px] leading-[15px] text-(--d-muted) hover:border-(--d-accent) hover:text-(--d-accent-text)"
+          class="ml-0.5 flex max-w-27.5 min-w-11 shrink gap-0.75 overflow-hidden border-(--d-border2) px-1.5 py-0 text-10/3.75 font-normal text-(--d-muted) transition-none hover:border-(--d-accent) hover:text-(--d-accent-text)"
           :title="t('chats.showTagged', { tag: chat.tag })"
           @click.stop="emit('filterTag', chat.tag ?? '')"
         >
           <Tag
             aria-hidden="true"
-            class="size-[9px] shrink-0"
+            class="size-2.25 shrink-0"
           />
           <span class="min-w-0 truncate">{{ chat.tag }}</span>
-        </span>
+        </Badge>
       </span>
     </span>
     <!-- Mouse shortcuts; keyboard users reach the same actions through the context menu, F2 and Delete. -->
@@ -190,38 +199,44 @@ function onRenameKeydown(event: KeyboardEvent): void {
       aria-hidden="true"
       class="hidden shrink-0 animate-[d-fade_.12s] items-center gap-px group-hover/row:flex"
     >
-      <button
+      <Button
         v-if="saved"
         type="button"
+        variant="ghost"
+        size="icon-sm"
         tabindex="-1"
         data-testid="chat-action-rename"
-        class="flex size-[22px] items-center justify-center rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-accent)"
+        :class="ROW_ACTION"
         :title="t('chats.rename')"
         @click.stop="emit('rename')"
       >
         <Pencil class="size-3" />
-      </button>
-      <button
+      </Button>
+      <Button
         v-if="saved"
         type="button"
+        variant="ghost"
+        size="icon-sm"
         tabindex="-1"
         data-testid="chat-action-tag"
-        class="flex size-[22px] items-center justify-center rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-accent)"
+        :class="ROW_ACTION"
         :title="chat.tag ? t('chats.changeTag') : t('chats.tag')"
         @click.stop="emit('tag')"
       >
         <Tag class="size-3" />
-      </button>
-      <button
+      </Button>
+      <Button
         type="button"
+        variant="ghost"
+        size="icon-sm"
         tabindex="-1"
         data-testid="chat-action-delete"
-        class="flex size-[22px] items-center justify-center rounded-md text-(--d-danger) opacity-80 hover:bg-(--d-danger)/15 hover:opacity-100"
+        class="size-5.5 rounded-md text-(--d-danger) opacity-80 hover:bg-(--d-danger)/15 hover:text-(--d-danger) hover:opacity-100 [&_svg]:size-3"
         :title="t('chats.delete')"
         @click.stop="emit('delete')"
       >
         <Trash2 class="size-3" />
-      </button>
+      </Button>
     </span>
   </div>
 </template>

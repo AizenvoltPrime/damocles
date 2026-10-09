@@ -218,6 +218,8 @@ describe('slash-command invocation via queueMessage', () => {
     expect(h.preApproveSkill).toHaveBeenCalledWith('foo');
     expect(h.queueInput).toHaveBeenCalledTimes(1);
     expect(h.queueInput.mock.calls[0]?.[0]).toBe('Execute skill foo');
+    // A UserPromptSubmit hook gets what the user typed, as it does for a sent message.
+    expect(h.queueInput.mock.calls[0]?.[2]).toBe('/foo');
   });
 });
 

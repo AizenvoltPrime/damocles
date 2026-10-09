@@ -32,6 +32,13 @@ export const DAMOCLES_TAG_ENTRY = 'damocles-tag';
 export const DAMOCLES_ORIGINAL_INPUT_ENTRY = 'damocles-original-input';
 
 /**
+ * Inert custom entry recorded when a prompt's user entry commits with terminal attachments, keyed by
+ * `{ userEntryId, count }`: the stored text starts with `count` attachment blocks (`src/core/terminal-attachment.ts`).
+ * Readers strip blocks only for an entry it names. Inert in LLM context; the history loader skips it.
+ */
+export const DAMOCLES_TERMINAL_ATTACHMENTS_ENTRY = 'damocles-terminal-attachments';
+
+/**
  * pi custom-entry marking that the keyed user entry was delivered mid-run rather than typed as a prompt:
  * either a queued batch (the user queued one or more messages while the agent was streaming and pi
  * committed them as one combined steer entry) or a shell cancel note. Payload `{ userEntryId: string }`.

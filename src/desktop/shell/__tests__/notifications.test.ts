@@ -263,6 +263,22 @@ describe('message dialog', () => {
     await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('m2', { kind: 'message', action: null }));
   });
 
+  it('shows only its actions when it has no cancel label, and Escape still cancels it', async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'm3', { kind: 'message', severity: 'warning', message: 'Save the changes to a.ts?', actions: ['Save', "Don't Save"], defaultAction: 0 });
+
+    expect(wrapper.find('[data-testid="overlay-message-cancel"]').exists()).toBe(false);
+    expect(wrapper.findAll('[role="alertdialog"] button').map((button) => button.text())).toEqual(['Save', "Don't Save"]);
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="overlay-message-action-0"]').element);
+    await wrapper.get('[data-testid="overlay-message-action-1"]').trigger('click');
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('m3', { kind: 'message', action: 1 }));
+
+    await open(wrapper, 'm4', { kind: 'message', severity: 'warning', message: 'Save?', actions: ['Save', "Don't Save"], defaultAction: 0 });
+    press('Escape');
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('m4', { kind: 'message', action: null }));
+  });
+
   // The control that asked disables itself while the question is up and focus falls to the body. Each step awaits the
   // answer or the mutation itself, and the tests fake setTimeout, so the 5 s give-up runs only when a test advances it.
   async function askAndAnswer(wrapper: VueWrapper, id: string, control: HTMLButtonElement): Promise<void> {

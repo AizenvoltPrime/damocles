@@ -109,6 +109,8 @@ describe('host capabilities parity', () => {
       settingsInPanel: true,
       historyInPanel: true,
       folderPickerInPanel: true,
+      fileMentionDrop: false,
+      windowLayout: false,
     });
   });
 });

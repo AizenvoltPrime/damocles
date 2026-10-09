@@ -5,13 +5,15 @@ import * as path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { asarFiles, readAsarHeader } from '../../scripts/asar-archive.mjs';
 import { DESKTOP_FONT_FILES, DESKTOP_FONT_LICENSES } from '../../src/desktop/main/desktop-fonts';
-import { mainLog } from './support/app';
+import { logBeforeQuit, mainLog } from './support/app';
+import { quickPick } from './support/editor';
 import { activeChat, expect, test } from './support/fixtures';
 import { REPO_ROOT, seedStubModel, writeUserSettings, type HermeticHome } from './support/hermetic';
 import { chatRequests, startOpenAIStub } from './support/openai-stub';
 import { readyOverlay } from './support/overlay';
 import { packagedAppPath } from './support/packaged-app';
 import { popupPage, popupToasts, shellPage } from './support/shell';
+import { activeTerminal, echoCommand, runInTerminal, terminalText, useTestProfile } from './support/terminal';
 import { chatInput, hostMessages, postFromWebview, recordHostMessages } from './support/ui';
 
 // One file per bundled tree-sitter grammar whose extraction has no fallback, each defining a symbol named probe_<language>.
@@ -121,7 +123,8 @@ test('bundled assets resolve: first window, overlay, fonts, pi chat, shell, ripg
     writeUserSettings(home, { 'damocles.compass.enabled': true, 'damocles.dangerouslySkipPermissions': true });
     for (const [name, source] of Object.entries(GRAMMAR_SAMPLES)) fs.writeFileSync(path.join(home.project, name), source);
 
-    const { app } = await launch();
+    const desktop = await launch();
+    const { app } = desktop;
     const tab = await activeChat(app);
     await expect(chatInput(tab)).toBeVisible();
     await recordHostMessages(tab);
@@ -155,8 +158,7 @@ test('bundled assets resolve: first window, overlay, fonts, pi chat, shell, ripg
     const toolResults = JSON.stringify((chatRequests(stub)[1]?.body as { messages?: unknown } | undefined)?.messages ?? []);
     expect(toolResults).toContain('packaged-shell-ok');
     expect(fs.readFileSync(path.join(home.project, 'written-by-agent.txt'), 'utf8')).toBe('from the agent');
-    expect(mainLog(home)).toMatch(/\[git\] git version /);
-    expect(mainLog(home)).not.toContain('[ShellSentinel] ERROR');
+    await expect.poll(() => mainLog(home)).toMatch(/\[git\] git version /);
     // The POSIX sentinel is the app binary running dist/sentinel.js as Node, which needs the runAsNode fuse.
     if (process.platform !== 'win32') expect(sentinelsOf(home).length, 'a shell sentinel running on this home').toBeGreaterThan(0);
     await expect.poll(() => checkpointRepos(home).length, { timeout: 30_000 }).toBeGreaterThan(0);
@@ -207,7 +209,84 @@ test('bundled assets resolve: first window, overlay, fonts, pi chat, shell, ripg
     const stateEntries = fs.existsSync(stateDir) ? fs.readdirSync(stateDir) : [];
     expect(stateEntries.filter((name) => !USER_DATA_STATE.has(name))).toEqual([]);
     expect(fs.existsSync(path.join(home.userData, 'logs', 'Damocles.log'))).toBe(true);
+    await desktop.close();
+    expect(logBeforeQuit(home)).not.toContain('[ShellSentinel] ERROR');
   } finally {
     await stub.close();
   }
+});
+
+test('the formatter host loads from the build and formats a file with the project\'s Prettier', async ({ home, launch }) => {
+  seedTrustedProject(home);
+  const packageDir = path.join(home.project, 'node_modules', 'prettier');
+  fs.mkdirSync(packageDir, { recursive: true });
+  fs.copyFileSync(path.join(__dirname, 'fixtures', 'prettier-stub', 'index.js'), path.join(packageDir, 'index.js'));
+  fs.writeFileSync(path.join(packageDir, 'package.json'), JSON.stringify({ name: 'prettier', version: '3.3.3', main: 'index.js' }));
+  fs.writeFileSync(path.join(home.project, 'a.ts'), 'const a=1\n');
+  const { app } = await launch();
+  const shell = await shellPage(app);
+  // Through the shell's own bridge, as Format Document does: main resolves the Prettier and runs it in the utility process.
+  await expect.poll(() => shell.evaluate(async (project) => {
+    const api = window.damoclesShell!;
+    const key = (await api.getState()).projects.find((candidate) => candidate.fsPath === project)?.key;
+    if (key === undefined) return undefined;
+    await api.openEditor({ projectKey: key, relativePath: 'a.ts' });
+    const tab = (await api.getEditorState()).tabs.find((candidate) => candidate.title === 'a.ts');
+    if (tab?.documentId === undefined) return undefined;
+    return api.formatDocument({ documentId: tab.documentId, text: 'const a=1\n', options: { tabSize: 2, insertSpaces: true }, reason: 'command' });
+  }, home.project), { timeout: 60_000 }).toEqual({ kind: 'formatted', text: 'const a = 1;\n' });
+});
+
+test('Quick Open lists and scores the project\'s files in the build\'s worker thread', async ({ home, launch }) => {
+  seedTrustedProject(home);
+  fs.mkdirSync(path.join(home.project, 'src', 'routes'), { recursive: true });
+  fs.writeFileSync(path.join(home.project, 'src', 'routes', 'packaged-probe.ts'), 'export {};\n');
+  const desktop = await launch();
+  const { app } = desktop;
+  const shell = await shellPage(app);
+  const overlay = await readyOverlay(app);
+  // The title bar's search box, through the shell bridge, since a packaged app exposes no main process.
+  await shell.evaluate(() => {
+    void window.damoclesShell!.openQuickOpen();
+  });
+  await expect(quickPick(overlay)).toBeVisible();
+  await overlay.getByTestId('quick-pick-input').fill('packaged-probe');
+  await expect(quickPick(overlay).getByTestId('quick-pick-item').first()).toContainText('packaged-probe.ts', { timeout: 30_000 });
+  await overlay.getByTestId('quick-pick-input').press('Escape');
+  await expect(quickPick(overlay)).toHaveCount(0);
+  await desktop.close();
+  expect(logBeforeQuit(home)).not.toContain('[quick-open]');
+});
+
+test('the pty host loads node-pty from the build and a shell echoes into the terminal', async ({ home, launch }) => {
+  seedTrustedProject(home);
+  useTestProfile(home);
+  const { app } = await launch();
+  const shell = await shellPage(app);
+  // Toggle Terminal through the shell bridge, since a packaged app exposes no main process: with no terminal, main starts one in the
+  // current project, once the shells are detected (wsl.exe -l alone can take seconds).
+  await expect.poll(async () => (await shell.evaluate(() => window.damoclesShell!.terminal.getState())).canCreate, { timeout: 60_000 }).toBe(true);
+  await shell.evaluate(() => window.damoclesShell!.toggleTerminal());
+  await expect(activeTerminal(shell)).toHaveAttribute('data-status', 'running', { timeout: 60_000 });
+  await runInTerminal(shell, echoCommand('packaged-pty-marker'));
+  await expect.poll(() => terminalText(shell)).toContain('packaged-pty-marker');
+});
+
+test('a shell starts with the build\'s own integration script and reports a running command to main', async ({ home, launch }) => {
+  seedTrustedProject(home);
+  writeUserSettings(home, { 'damocles.desktop.terminal.defaultProfile': process.platform === 'win32' ? 'windows-powershell' : 'bash' });
+  // Windows PowerShell finds its PSReadLine under Program Files, which the hermetic environment leaves out; the inbox 2.0.0 it
+  // falls back to fails without the user's environment, and only PSReadLine sends the command line.
+  const programFiles = process.env['ProgramFiles'];
+  const { app } = await launch(process.platform === 'win32' && programFiles !== undefined ? { env: { ProgramFiles: programFiles } } : {});
+  const shell = await shellPage(app);
+  await expect.poll(async () => (await shell.evaluate(() => window.damoclesShell!.terminal.getState())).canCreate, { timeout: 60_000 }).toBe(true);
+  await shell.evaluate(() => window.damoclesShell!.toggleTerminal());
+  await expect(activeTerminal(shell)).toHaveAttribute('data-status', 'running', { timeout: 60_000 });
+  const info = async () => (await shell.evaluate(() => window.damoclesShell!.terminal.getState())).terminals[0]!;
+  await expect.poll(async () => (await info()).integrated, { timeout: 60_000 }).toBe(true);
+  const command = process.platform === 'win32' ? 'Start-Sleep -Seconds 3' : 'sleep 3';
+  await runInTerminal(shell, command);
+  await expect.poll(async () => (await info()).running).toBe(command);
+  await expect.poll(async () => (await info()).running, { timeout: 15_000 }).toBeNull();
 });

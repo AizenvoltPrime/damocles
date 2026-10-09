@@ -5,16 +5,15 @@ import { openOverlayCount } from "@/composables/useOverlayEscape";
 
 /** Whether a foreground surface other than the prompt navigator is up, which the navigator's toggle must leave alone. */
 export function isForegroundOverlayOpen(): boolean {
-  // Every full overlay registers in the overlay stack, the navigator's own entry included.
+  // Every full overlay registers in the overlay stack, the navigator's own entry and the rewind confirmation included.
   const navigatorEntries = usePromptNavigatorStore().isOpen ? 1 : 0;
   if (openOverlayCount() > navigatorEntries) return true;
 
-  // Foreground surfaces outside this page's stack: the rewind confirmation is a reka alert dialog, the prompts sit in the
-  // composer dock, and desktop renders the settings modal in its own overlay page.
+  // Foreground surfaces outside this page's stack: the prompts sit in the composer dock, and desktop renders the settings
+  // modal in its own overlay page.
   const uiStore = useUIStore();
   const permissionStore = usePermissionStore();
-  return uiStore.showRewindTypeModal
-    || uiStore.showSettingsModal
+  return uiStore.showSettingsModal
     || Boolean(permissionStore.currentPermission)
     || Boolean(permissionStore.pendingSkillApproval)
     || Boolean(useQuestionStore().pendingQuestion)

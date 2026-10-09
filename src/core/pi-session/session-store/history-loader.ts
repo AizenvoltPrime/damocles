@@ -29,7 +29,10 @@ import { extractMidStreamEntryIds } from './mid-stream';
 import { stoppedOnBranch } from './turn-stopped';
 import { isSteerData } from './steer';
 import { DAMOCLES_STEER_ENTRY } from './constants';
-import { stripIdeContext } from './ide-context';
+import { storedTypedText } from './prompt-context';
+import { extractTerminalAttachmentCounts } from './terminal-attachments';
+import { splitTerminalAttachments, terminalAttachmentInfo } from '../../terminal-attachment';
+import type { TerminalAttachmentInfo } from '../../../shared/types/terminal-attachment';
 import { toImageBlocks } from '../branch-text';
 import { resultImageCount } from '../tool-result-text';
 import { sessionUsageMessage, type SessionUsageMessage } from '../session-usage';
@@ -51,9 +54,11 @@ interface ReplayUser {
   entryId: string;
   content: string;
   contentBlocks?: ContentBlock[];
+  terminalAttachments?: TerminalAttachmentInfo[];
   isMidStream?: boolean;
   /** Present on a prompt only; a user entry delivered mid-run consumes no index. */
   promptIndex?: number;
+  sentAt?: number;
 }
 interface ReplayAssistant {
   kind: 'assistant';
@@ -81,8 +86,17 @@ interface ReplaySteer {
   description?: string;
   message: string;
   images?: ImageBlock[];
+  sentAt?: number;
 }
 type ReplayMessage = ReplayUser | ReplayAssistant | ReplayError | ReplayCompaction | ReplaySteer;
+
+// When the entry was written: pi's message time (epoch ms), else the entry's ISO time; undefined when neither parses.
+function sentAtOf(entry: SessionEntry): number | undefined {
+  const messageTime = (entry as { message?: { timestamp?: unknown } }).message?.timestamp;
+  if (typeof messageTime === 'number' && Number.isFinite(messageTime)) return messageTime;
+  const entryTime = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
+  return Number.isFinite(entryTime) ? entryTime : undefined;
+}
 
 function textOf(content: unknown): string {
   if (typeof content === 'string') return content;
@@ -93,22 +107,17 @@ function textOf(content: unknown): string {
     .join('');
 }
 
-function userVisibleText(content: unknown): string {
-  if (typeof content === 'string') return stripIdeContext(content);
-  if (!Array.isArray(content)) return '';
-  return content
-    .filter((b): b is { type: 'text'; text: string } => !!b && (b as { type?: string }).type === 'text')
-    .map((b) => stripIdeContext(b.text))
-    .join('');
+function userVisibleText(content: unknown, attachmentCount: number): string {
+  return storedTypedText(textOf(content), attachmentCount);
 }
 
 /** Reverse-map pi image blocks to the webview `{ source: { base64 } }` shape, with the user text.
  *  `overrideText` substitutes the displayed text (the original typed input when a slash command was expanded). */
-function userContentBlocks(content: unknown, overrideText?: string): ContentBlock[] | undefined {
+function userContentBlocks(content: unknown, attachmentCount: number, overrideText?: string): ContentBlock[] | undefined {
   if (!Array.isArray(content)) return undefined;
   const images = toImageBlocks(content);
   if (images.length === 0) return undefined;
-  const text = overrideText ?? userVisibleText(content);
+  const text = overrideText ?? userVisibleText(content, attachmentCount);
   return [...images, ...(text ? [{ type: 'text' as const, text }] : [])];
 }
 
@@ -116,9 +125,10 @@ function userContentBlocks(content: unknown, overrideText?: string): ContentBloc
  * Reconstruct the displayable replay messages from a pi session's active branch (root→leaf order),
  * pairing assistant `toolCall` blocks with their `toolResult` message entries and skipping inert
  * custom entries (`damocles-checkpoint` / `damocles-user-renamed` / `damocles-original-input` /
- * `damocles-mid-stream`) and non-message entry types. A user message whose typed slash command was
+ * `damocles-mid-stream` / `damocles-terminal-attachments`) and non-message entry types. A user message whose typed slash command was
  * expanded is shown as the original text from its `damocles-original-input` sidecar, not the stored
- * expansion; a user message flagged by `damocles-mid-stream` carries `isMidStream` for replay styling.
+ * expansion; a user message flagged by `damocles-mid-stream` carries `isMidStream` for replay styling;
+ * a user message named by `damocles-terminal-attachments` shows that many leading attachment blocks as chips, not text.
  * Every prompt carries its index (`promptTest`, counted over the whole branch, so the prompts a
  * compaction hid still count). The `damocles-steer` custom entry is NOT skipped — it is mapped in
  * position to a replayed amber injected "You steered" chip.
@@ -128,6 +138,7 @@ export function reconstructMessages(
   modelReasons: ModelReasonsLookup = () => undefined,
 ): { messages: ReplayMessage[]; usage: ContextSnapshot } {
   const originalInputs = extractOriginalInputs(branch);
+  const attachmentCounts = extractTerminalAttachmentCounts(branch);
   const midStreamIds = extractMidStreamEntryIds(branch);
   const stopped = stoppedOnBranch(branch);
   const isPrompt = promptTest(branch);
@@ -169,6 +180,7 @@ export function reconstructMessages(
     }
     if (entry.type === 'custom' && entry.customType === DAMOCLES_STEER_ENTRY) {
       const data = (entry as { data?: unknown }).data;
+      const sentAt = sentAtOf(entry);
       if (isSteerData(data))
         messages.push({
           kind: 'steer',
@@ -177,6 +189,7 @@ export function reconstructMessages(
           ...(data.description ? { description: data.description } : {}),
           message: data.message,
           ...(data.images ? { images: data.images } : {}),
+          ...(sentAt !== undefined ? { sentAt } : {}),
         });
       continue;
     }
@@ -198,16 +211,21 @@ export function reconstructMessages(
     if (role === 'user') {
       const promptIndex = isPrompt(entry) ? promptCount++ : undefined;
       const original = originalInputs.get(entry.id);
-      const content = original ?? userVisibleText(message?.content);
+      const attachmentCount = attachmentCounts.get(entry.id) ?? 0;
+      const content = original ?? userVisibleText(message?.content, attachmentCount);
       if (!content && !Array.isArray(message?.content)) continue;
-      const blocks = userContentBlocks(message?.content, original);
+      const blocks = userContentBlocks(message?.content, attachmentCount, original);
+      const sentAt = sentAtOf(entry);
+      const attachments = splitTerminalAttachments(textOf(message?.content), attachmentCount).attachments.map((attachment, index) => terminalAttachmentInfo(`${entry.id}:${index}`, attachment));
       messages.push({
         kind: 'user',
         entryId: entry.id,
         content,
         ...(blocks ? { contentBlocks: blocks } : {}),
+        ...(attachments.length > 0 ? { terminalAttachments: attachments } : {}),
         ...(midStreamIds.has(entry.id) ? { isMidStream: true } : {}),
         ...(promptIndex !== undefined ? { promptIndex } : {}),
+        ...(sentAt !== undefined ? { sentAt } : {}),
       });
       continue;
     }
@@ -463,10 +481,12 @@ export async function loadPiSessionHistory(
         type: 'userReplay',
         content: msg.content,
         ...(msg.contentBlocks ? { contentBlocks: msg.contentBlocks } : {}),
+        ...(msg.terminalAttachments ? { terminalAttachments: msg.terminalAttachments } : {}),
         isSynthetic: false,
         sdkMessageId: msg.entryId,
         ...(msg.isMidStream ? { isMidStream: true } : {}),
         ...(msg.promptIndex !== undefined ? { promptIndex: msg.promptIndex } : {}),
+        ...(msg.sentAt !== undefined ? { timestamp: msg.sentAt } : {}),
       });
     } else if (msg.kind === 'steer') {
       post({
@@ -480,6 +500,7 @@ export async function loadPiSessionHistory(
           ...(msg.agentType ? { agentType: msg.agentType } : {}),
           ...(msg.description ? { description: msg.description } : {}),
         },
+        ...(msg.sentAt !== undefined ? { timestamp: msg.sentAt } : {}),
       });
     } else if (msg.kind === 'error') {
       post({ type: 'errorReplay', content: msg.content });

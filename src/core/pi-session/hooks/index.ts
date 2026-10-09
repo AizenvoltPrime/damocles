@@ -79,9 +79,9 @@ const TIER2_EVENTS: readonly string[] = [
   'resources_discover',
 ];
 
-/** The slice of the panel registry the configured hooks need: scope-guard + a webview emitter. */
+/** The slice of the panel registry the configured hooks need: scope-guard, a webview emitter, and the typed prompt. */
 export interface HookPanelReader {
-  get(sessionId: string): { postMessage: (message: ExtensionToWebviewMessage) => void } | undefined;
+  get(sessionId: string): { postMessage: (message: ExtensionToWebviewMessage) => void; typedPromptOf?: (text: string) => string | undefined } | undefined;
 }
 
 /** Everything `registerConfiguredHooks` needs: dispatch deps, the panel registry, and a session rename. */
@@ -194,7 +194,9 @@ export function registerConfiguredHooks(pi: ExtensionAPI, deps: ConfiguredHooksD
     const panel = deps.registry.get(sessionId);
     if (!panel || !config.hasEntries('input')) return undefined;
     try {
-      const result = await dispatchInput(deps.dispatch, { common: buildHookCommon(ctx), prompt: event.text });
+      // `prompt` is the text the user submitted, as in Claude Code, never a block or an expansion Damocles or pi added.
+      const prompt = panel.typedPromptOf?.(event.text) ?? event.text;
+      const result = await dispatchInput(deps.dispatch, { common: buildHookCommon(ctx), prompt });
       if (!result) return undefined;
       if (result.systemMessages.length) postHookSystemMessages((m) => panel.postMessage(m), result.systemMessages);
       if (result.block) {

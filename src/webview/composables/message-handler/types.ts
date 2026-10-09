@@ -54,6 +54,7 @@ export interface StoreContext {
 export interface ChatInputExposed {
   focus: () => void;
   setInput: (value: string) => void;
+  prependInput: (prefix: string) => void;
   submit: () => void;
   appendTranscription: (text: string) => void;
   voiceSetRecording: () => void;

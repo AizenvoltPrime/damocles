@@ -45,16 +45,25 @@ import { HOST_THEME_STYLE_ID } from '@shared/host-theme';
 export type Monaco = typeof monaco;
 export { jsonDefaults };
 
-// Only the editor and json workers are bundled; no registered language asks for another label.
+// MonacoEnvironment.getWorker takes precedence over a language service's own worker, so every label a page's language
+// services start must be listed; the chat page registers only JSON's.
+const languageWorkers = new Map<string, () => Worker>([['json', () => new JsonWorker()]]);
 self.MonacoEnvironment = {
-  getWorker: (_workerId: string, label: string) => (label === 'json' ? new JsonWorker() : new EditorWorker()),
+  getWorker: (_workerId: string, label: string) => languageWorkers.get(label)?.() ?? new EditorWorker(),
 };
+
+/** Starts `create`'s worker for a language service's labels; a page registering that service calls it before any editor opens. */
+export function addLanguageWorker(labels: readonly string[], create: () => Worker): void {
+  for (const label of labels) languageWorkers.set(label, create);
+}
 
 const THEME_NAME = 'damocles';
 
 // Monaco color id -> the design token the desktop host injects (palettes in src/desktop/main/theme.ts).
 const THEME_COLORS: Readonly<Record<string, `--d-${string}`>> = {
   'editor.background': '--d-bg',
+  // An explicit minimap background, so the minimap paints over the text its column overlaps.
+  'minimap.background': '--d-bg',
   'editor.foreground': '--d-text',
   'editorLineNumber.foreground': '--d-faint',
   'editorLineNumber.activeForeground': '--d-muted',

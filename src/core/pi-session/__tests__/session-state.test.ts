@@ -130,7 +130,7 @@ const H = vi.hoisted(() => {
         dispose: async () => undefined,
       };
     }),
-    SessionManager: { create: vi.fn(() => ({ kind: 'persistent' })), inMemory: vi.fn(() => ({ kind: 'memory' })) },
+    SessionManager: { create: vi.fn(() => ({ kind: 'persistent', getBranch: () => [] })), inMemory: vi.fn(() => ({ kind: 'memory' })) },
     SettingsManager: { inMemory: vi.fn(() => ({ kind: 'settings' })), create: vi.fn(() => ({ kind: 'settings' })) },
     ModelRuntime: { create: vi.fn(async () => services.modelRuntime) },
     DefaultPackageManager: class { getInstalledPath(): string | undefined { return undefined; } },

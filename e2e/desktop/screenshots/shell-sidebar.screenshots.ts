@@ -46,7 +46,7 @@ async function captureOverlay(app: ElectronApplication, overlay: Page, testInfo:
   await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.webContents.isFocused())).toBe(true);
 }
 
-test('the sidebar in Dark and Light, its row actions, chat menus and delete warnings', async ({ home, launch }, testInfo) => {
+test('the sidebar in Dark and Light, its row actions, chat menus and delete warnings', async ({ foreground: _foreground, home, launch }, testInfo) => {
   test.setTimeout(300_000);
   const routes = path.join(home.project, 'routes.ts');
   fs.writeFileSync(routes, "export const login = '/login';\n");

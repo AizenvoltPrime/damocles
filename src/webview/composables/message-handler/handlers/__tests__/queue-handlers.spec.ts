@@ -6,6 +6,8 @@ import type { HandlerContext, StoreContext } from '../../types';
 import { useStreamingStore } from '@/stores/useStreamingStore';
 import { defined } from '@/__tests__/helpers';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
+import en from '@/i18n/locales/en.json';
+import el from '@/i18n/locales/el.json';
 
 const toastMock = vi.hoisted(() => ({ info: vi.fn() }));
 vi.mock('vue-sonner', () => ({ toast: toastMock }));
@@ -57,5 +59,14 @@ describe('queueCancelled', () => {
     ]);
     // A fixed id, so the chips of one stop share one toast.
     expect(toastMock.info.mock.calls.map((call) => call[1])).toEqual([{ id: 'queue-returned' }, { id: 'queue-returned' }]);
+  });
+
+  it.each([['en', en], ['el', el]] as const)('says in %s only that the returned messages were not sent, which is true for every cause', (_locale, bundle) => {
+    const text = bundle.toast.queueReturned;
+
+    // A spaced hyphen, en dash or em dash used as punctuation.
+    expect(text).not.toMatch(/\s[-\u2013\u2014]\s|\u2014/);
+    // A new chat or a resume switch returns them too, so the toast cannot name a Stop.
+    expect(text).not.toMatch(/stop|διακ/i);
   });
 });

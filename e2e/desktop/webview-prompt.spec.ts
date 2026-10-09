@@ -9,7 +9,8 @@ const SECRET = 'sk-or-e2e-7f3a91';
 const CHATGPT_PASTE_PROMPT = 'Complete login in your browser, or paste the final redirect URL here:';
 
 test('host input box renders in the chat webview, accepts a masked value, and an abort closes it', async ({ home, launch }) => {
-  const { app } = await launch();
+  const desktop = await launch();
+  const { app } = desktop;
   const tab = await activeChat(app);
   await expect(chatInput(tab)).toBeVisible();
 
@@ -36,6 +37,8 @@ test('host input box renders in the chat webview, accepts a masked value, and an
   await postFromWebview(tab, { type: 'signOutChatGPT' });
   await expect(codePrompt).toBeHidden();
 
+  // A sink writes a line on a later turn of main's event loop, so the logs are read once the app has quit.
+  await desktop.close();
   const logs = path.join(home.userData, 'logs');
   for (const file of fs.readdirSync(logs)) {
     expect(fs.readFileSync(path.join(logs, file), 'utf8')).not.toContain(SECRET);
@@ -63,6 +66,8 @@ test('with the settings modal open, a host prompt renders in it, takes a masked 
   await expect(settingsModal(overlay)).toBeVisible();
   await expect(popupToasts(await popupPage(app)).filter({ hasText: 'Damocles: OpenRouter API key saved' })).toBeVisible();
 
+  // A sink writes a line on a later turn of main's event loop, so the logs are read once the app has quit.
+  await desktop.close();
   const logs = path.join(home.userData, 'logs');
   for (const file of fs.readdirSync(logs)) {
     expect(fs.readFileSync(path.join(logs, file), 'utf8'), file).not.toContain(SECRET);

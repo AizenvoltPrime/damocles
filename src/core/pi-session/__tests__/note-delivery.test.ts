@@ -423,7 +423,7 @@ describe('a note that pi accepted is not silently discarded later', () => {
 
     h.session.queueInput('rerun the failing spec', 'q1');
 
-    expect(h.piSession.sendUserMessage).toHaveBeenCalledWith('/compact and use seq 1 5', { deliverAs: 'followUp', expandPromptTemplates: false });
+    expect(h.piSession.prompt).toHaveBeenCalledWith('/compact and use seq 1 5', expect.objectContaining({ streamingBehavior: 'followUp', expandPromptTemplates: false, source: 'extension' }));
     expect(h.piSession.followUps).toEqual(['/compact and use seq 1 5']);
     // `followUp()` runs the extension-command check and the template expansion.
     expect(h.piSession.followUp).not.toHaveBeenCalled();

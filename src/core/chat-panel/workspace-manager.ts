@@ -168,10 +168,10 @@ export class WorkspaceManager {
 
   async showRewindDiff(filePath: string, beforeContent: string, panelId: string): Promise<void> {
     const fileName = path.basename(filePath);
-    const title = t("{0} (At checkpoint ↔ Current)", fileName);
     const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     await this.platform.editor.showDiff({
-      title,
+      title: (name) => t("{0} (At checkpoint ↔ Current)", name),
+      filePath,
       left: { name: `${id}-${fileName}`, content: beforeContent },
       right: { path: filePath },
       purpose: "checkpoint",

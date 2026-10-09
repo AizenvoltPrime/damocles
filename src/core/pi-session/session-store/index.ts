@@ -21,10 +21,11 @@ export {
 } from './reading';
 export { setSessionMetaCacheVersion, flushSessionMetaCache } from './session-meta-cache';
 export { loadPiSessionHistory } from './history-loader';
-export { stripIdeContext } from './ide-context';
+export { storedTypedText } from './prompt-context';
+export { extractTerminalAttachmentCounts } from './terminal-attachments';
 export { renamePiSession, deletePiSession, tagPiSession } from './mutations';
 export { getPiRewindHistory, getPiFileCheckpointContent, getPiSkippedFiles } from './rewind';
-export { DAMOCLES_CHECKPOINT_ENTRY, DAMOCLES_USER_RENAMED_ENTRY, DAMOCLES_TAG_ENTRY, DAMOCLES_ORIGINAL_INPUT_ENTRY, DAMOCLES_MID_STREAM_ENTRY, DAMOCLES_STEER_ENTRY, DAMOCLES_AGENT_INVOCATION_ENTRY, DAMOCLES_TURN_STOPPED_ENTRY } from './constants';
+export { DAMOCLES_CHECKPOINT_ENTRY, DAMOCLES_USER_RENAMED_ENTRY, DAMOCLES_TAG_ENTRY, DAMOCLES_ORIGINAL_INPUT_ENTRY, DAMOCLES_TERMINAL_ATTACHMENTS_ENTRY, DAMOCLES_MID_STREAM_ENTRY, DAMOCLES_STEER_ENTRY, DAMOCLES_AGENT_INVOCATION_ENTRY, DAMOCLES_TURN_STOPPED_ENTRY } from './constants';
 export { extractOriginalInputs, type OriginalInputData } from './original-input';
 export { extractMidStreamEntryIds, type MidStreamData } from './mid-stream';
 export { turnStoppedRecord } from './turn-stopped';

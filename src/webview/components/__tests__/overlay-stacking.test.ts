@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+/* eslint-disable vue/one-component-per-file -- tests mount ad-hoc host components beside the real overlays */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mount, type VueWrapper } from '@vue/test-utils';
 import { defineComponent, h, markRaw, nextTick, ref, type Ref, type VNode } from 'vue';
@@ -822,7 +823,7 @@ describe('a popup open inside the top overlay', () => {
 });
 
 describe('a confirmation opened from inside an overlay', () => {
-  it('paints one above an overlay opened at depth 1, and keeps the fixed layer outside any overlay', async () => {
+  it("paints one above an overlay opened at depth 1, and on the stack's base layer outside any overlay", async () => {
     const beneath = openShell('beneath');
     const confirm = (): VNode => h(AlertDialog, { open: true }, { default: () => h(AlertDialogContent, { 'data-test-confirm': '' }, { default: () => 'Stop?' }) });
     const shell = track(mount(OverlayShell, { props: { title: 'top', icon: StubIcon }, slots: { default: confirm }, global: { plugins: [i18n] }, attachTo: document.body }));
@@ -835,11 +836,39 @@ describe('a confirmation opened from inside an overlay', () => {
     expect(content.className).not.toContain('z-50');
 
     unmountTracked(shell);
+    unmountTracked(beneath);
     track(mount(AlertDialog, { props: { open: true }, slots: { default: () => h(AlertDialogContent, { 'data-test-confirm': '' }, { default: () => 'Stop?' }) }, attachTo: document.body }));
     await settle();
     const outside = document.body.querySelector<HTMLElement>('[data-test-confirm]')!;
-    expect(outside.className).toContain('z-50');
-    expect(outside.style.zIndex).toBe('');
+    expect(outside.className).not.toContain('z-50');
+    expect(Number(outside.style.zIndex)).toBe(BASE_Z);
+  });
+});
+
+// WAI-ARIA APG stacked dialogs: what opens over a dialog paints above it and takes Escape from it.
+describe('a stack overlay opened over a dialog an overlay presented', () => {
+  it.each(['alert dialog', 'dialog'] as const)('paints above the %s and takes Escape, leaving the dialog open', async (kind) => {
+    const open = ref(true);
+    const onUpdate = { 'onUpdate:open': (value: boolean) => { open.value = value; } };
+    const presented = (): VNode => (kind === 'alert dialog'
+      ? h(AlertDialog, { ...onUpdate, open: open.value }, { default: () => h(AlertDialogContent, null, { default: () => 'Stop?' }) })
+      : h(Dialog, { ...onUpdate, open: open.value }, { default: () => h(DialogContent, null, { default: () => h(DialogTitle, null, { default: () => 'History' }) }) }));
+    openShell('beneath');
+    const shell = track(mount(OverlayShell, { props: { title: 'with dialog', icon: StubIcon }, slots: { default: presented }, global: { plugins: [i18n] }, attachTo: document.body }));
+    await settle();
+    const dialog = document.body.querySelector<HTMLElement>(kind === 'alert dialog' ? '[role="alertdialog"]' : '[role="dialog"].d-dialog')!;
+    expect(Number(dialog.style.zIndex)).toBe(zIndexOf(shell) + 1);
+    expect(Number(document.body.querySelector<HTMLElement>('.d-scrim')!.style.zIndex)).toBe(Number(dialog.style.zIndex));
+
+    const above = openShell('above');
+    await settle();
+
+    expect(zIndexOf(above)).toBeGreaterThan(Number(dialog.style.zIndex));
+    pressEscape();
+    await settle();
+    expect(above.emitted('close')).toHaveLength(1);
+    expect(open.value).toBe(true);
+    expect(shell.emitted('close')).toBeUndefined();
   });
 });
 
@@ -849,7 +878,7 @@ describe('a dialog opened from inside an overlay', () => {
   const content = (): HTMLElement => document.body.querySelector<HTMLElement>('[role="dialog"].d-dialog')!;
   const scrim = (): HTMLElement => document.body.querySelector<HTMLElement>('.d-scrim')!;
 
-  it('paints its scrim and content one above an overlay opened at depth 1, and keeps the fixed layer outside any overlay', async () => {
+  it("paints its scrim and content one above an overlay opened at depth 1, and on the stack's base layer outside any overlay", async () => {
     const beneath = openShell('beneath');
     const shell = track(mount(OverlayShell, { props: { title: 'top', icon: StubIcon }, slots: { default: dialog }, global: { plugins: [i18n] }, attachTo: document.body }));
     await settle();
@@ -862,11 +891,12 @@ describe('a dialog opened from inside an overlay', () => {
     }
 
     unmountTracked(shell);
+    unmountTracked(beneath);
     track(mount(Dialog, { props: { open: true }, slots: { default: body }, global: { plugins: [i18n] }, attachTo: document.body }));
     await settle();
     for (const layer of [content(), scrim()]) {
-      expect(layer.className).toContain('z-50');
-      expect(layer.style.zIndex).toBe('');
+      expect(layer.className).not.toContain('z-50');
+      expect(Number(layer.style.zIndex)).toBe(BASE_Z);
     }
   });
 

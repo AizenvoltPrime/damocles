@@ -126,7 +126,8 @@ export class PageController {
     }
   }
 
-  async navigate(url: string): Promise<{ frameId: string; loaderId: string }> {
+  // errorText is Chromium's net error (net::ERR_*) when the load failed.
+  async navigate(url: string): Promise<{ frameId: string; loaderId: string; errorText?: string }> {
     return this.send('Page.navigate', { url });
   }
 

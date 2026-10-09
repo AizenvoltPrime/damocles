@@ -1,6 +1,5 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { shell } from 'electron';
 import type { LogSink, LogSinkFactory } from '../../../platform/log-sink';
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -25,9 +24,13 @@ export function logFileName(name: string): string {
   return `${name.replace(/[^A-Za-z0-9._-]/g, '_')}.log`;
 }
 
+// Shows a sink's file in the app (D36: a read-only log tab), focused unless preserveFocus.
+export type OpenLogFile = (filePath: string, preserveFocus: boolean) => void;
+
 class RotatingFileSink implements LogSink {
   private readonly filePath: string;
   private readonly echo: boolean;
+  private readonly open: OpenLogFile;
   private bytes: number;
   private pending: string[] = [];
   private flushScheduled = false;
@@ -35,9 +38,10 @@ class RotatingFileSink implements LogSink {
   // steps that keep failing, so a full disk reports once rather than on every flush
   private readonly failing = new Set<'rotate' | 'append'>();
 
-  constructor(filePath: string, echo: boolean) {
+  constructor(filePath: string, echo: boolean, open: OpenLogFile) {
     this.filePath = filePath;
     this.echo = echo;
+    this.open = open;
     this.bytes = fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
   }
 
@@ -84,9 +88,9 @@ class RotatingFileSink implements LogSink {
     process.stderr.write(`[log] ${message}\n`);
   }
 
-  show(): void {
+  show(preserveFocus?: boolean): void {
     this.flush();
-    void shell.openPath(this.filePath);
+    this.open(this.filePath, preserveFocus === true);
   }
 
   dispose(): void {
@@ -96,9 +100,9 @@ class RotatingFileSink implements LogSink {
 }
 
 // One rotating file per sink name under <userData>/logs; echo mirrors lines to stdout for an unpackaged run.
-export function createDesktopLogSinkFactory(logsDir: string, echo: boolean): LogSinkFactory {
+export function createDesktopLogSinkFactory(logsDir: string, echo: boolean, open: OpenLogFile): LogSinkFactory {
   fs.mkdirSync(logsDir, { recursive: true });
   return {
-    create: (name) => new RotatingFileSink(path.join(logsDir, logFileName(name)), echo),
+    create: (name) => new RotatingFileSink(path.join(logsDir, logFileName(name)), echo, open),
   };
 }

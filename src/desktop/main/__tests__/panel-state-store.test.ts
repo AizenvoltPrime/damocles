@@ -2,8 +2,9 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { MAX_PANE_URL_LENGTH } from '../../preload/pane-channels';
-import { EMPTY_PANE, PANEL_STATE_FILE, PanelStateStore } from '../panel-state-store';
+import { MAX_BROWSER_URL_LENGTH } from '../../../shared/typed-address';
+import { NO_PAGES, PANEL_STATE_FILE, PanelStateStore } from '../panel-state-store';
+import { flushAcrossHeldRename } from '../../../__mocks__/held-rename';
 
 let dir: string;
 let lines: string[];
@@ -45,44 +46,77 @@ describe('PanelStateStore v2', () => {
 
     const next = await reopened();
     expect(next.list().map((chat) => chat.panelId)).toEqual(['a', 'b']);
-    expect(next.get('b')).toEqual({ panelId: 'b', state: { sessionId: 's2' }, pane: EMPTY_PANE });
+    expect(next.get('b')).toEqual({ panelId: 'b', state: { sessionId: 's2' }, browser: NO_PAGES });
     expect(next.selected()).toEqual({ projectKey: 'k1', panelId: 'a', sessionId: 's1' });
+  });
+
+  it('flush settles once every write started so far has landed, failed ones included', async () => {
+    const store = new PanelStateStore(dir, log);
+    store.set({ panelId: 'a', state: { sessionId: 's1' } });
+    store.set({ panelId: 'a', state: { sessionId: 's2' } });
+    await store.flush();
+    expect(new PanelStateStore(dir, log).get('a')?.state).toEqual({ sessionId: 's2' });
+
+    // A file where the folder was makes the next write fail.
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.writeFileSync(dir, '');
+    store.set({ panelId: 'a', state: { sessionId: 's3' } });
+    await expect(store.flush()).resolves.toBeUndefined();
+    expect(lines.some((line) => line.startsWith('[panels] failed to write'))).toBe(true);
+    fs.rmSync(dir, { force: true });
+    fs.mkdirSync(dir);
+  });
+
+  it('flush waits for a write in flight and for one queued while it waits', async () => {
+    const store = new PanelStateStore(dir, log);
+    const onDisk = await flushAcrossHeldRename(path.join(dir, PANEL_STATE_FILE), {
+      first: () => store.set({ panelId: 'a', state: { sessionId: 's1' } }),
+      flush: () => store.flush(),
+      second: () => store.set({ panelId: 'a', state: { sessionId: 's2' } }),
+      onDisk: () => new PanelStateStore(dir, log).get('a')?.state,
+    });
+    expect(onDisk).toEqual({ sessionId: 's2' });
   });
 
   it('writes version 2 with the selection and each chat flat', async () => {
     const store = new PanelStateStore(dir, log);
     store.set({ panelId: 'a', state: { sessionId: 's' } });
-    store.setPane('a', { open: true, maximized: false, pages: ['https://a.example/'], activePage: 0 });
+    store.setPages('a', { pages: ['https://a.example/'], activePage: 0 });
     store.select({ projectKey: 'k1', sessionId: 's', panelId: 'a' });
     await settled();
     expect(JSON.parse(fs.readFileSync(path.join(dir, PANEL_STATE_FILE), 'utf8'))).toEqual({
       version: 2,
       selected: { projectKey: 'k1', sessionId: 's', panelId: 'a' },
-      chats: [{ panelId: 'a', state: { sessionId: 's' }, pages: ['https://a.example/'], activePage: 0, paneOpen: true, paneMaximized: false }],
+      chats: [{ panelId: 'a', state: { sessionId: 's' }, pages: ['https://a.example/'], activePage: 0 }],
     });
   });
 
-  it('round-trips each chat pane and the shared width, and a state update keeps the pane', async () => {
+  it('round-trips each chat\'s pages, and a state update keeps them', async () => {
     const store = new PanelStateStore(dir, log);
     store.set({ panelId: 'a', state: null });
     store.set({ panelId: 'b', state: null });
-    store.setPane('a', { open: true, maximized: true, pages: ['https://a.example/', 'about:blank'], activePage: 1 });
+    store.setPages('a', { pages: ['https://a.example/', 'about:blank'], activePage: 1 });
     store.set({ panelId: 'a', state: { sessionId: 's' } });
-    store.setPaneWidth(612);
-    store.setPane('missing', { open: true, maximized: false, pages: ['https://x.example/'] });
+    store.setPages('missing', { pages: ['https://x.example/'] });
 
     const next = await reopened();
-    expect(next.get('a')?.pane).toEqual({ open: true, maximized: true, pages: ['https://a.example/', 'about:blank'], activePage: 1 });
+    expect(next.get('a')?.browser).toEqual({ pages: ['https://a.example/', 'about:blank'], activePage: 1 });
     expect(next.get('a')?.state).toEqual({ sessionId: 's' });
-    expect(next.get('b')?.pane).toEqual(EMPTY_PANE);
+    expect(next.get('b')?.browser).toEqual(NO_PAGES);
     expect(next.get('missing')).toBeUndefined();
-    expect(next.paneWidth()).toBe(612);
   });
 
-  it('refuses a width that is not a finite in-range number', () => {
+  it('reads a file that still carries the retired pane fields and writes it without them', async () => {
+    writeFile({ version: 2, chats: [{ panelId: 'a', state: null, pages: ['https://a.example/'], activePage: 0, paneOpen: true, paneMaximized: true }], paneWidth: 612 });
     const store = new PanelStateStore(dir, log);
-    for (const width of [Number.NaN, Number.POSITIVE_INFINITY, -1, 100_001]) store.setPaneWidth(width);
-    expect(store.paneWidth()).toBeUndefined();
+    expect(store.get('a')).toEqual({ panelId: 'a', state: null, browser: { pages: ['https://a.example/'], activePage: 0 } });
+    expect(lines).toEqual([]);
+    store.set({ panelId: 'a', state: { sessionId: 's' } });
+    await settled();
+    expect(JSON.parse(fs.readFileSync(path.join(dir, PANEL_STATE_FILE), 'utf8'))).toEqual({
+      version: 2,
+      chats: [{ panelId: 'a', state: { sessionId: 's' }, pages: ['https://a.example/'], activePage: 0 }],
+    });
   });
 
   it('keeps the selected project and session when the selected chat unloads', async () => {
@@ -101,20 +135,18 @@ describe('PanelStateStore v2', () => {
       version: 2,
       selected: { projectKey: 'k1', panelId: 'zz', sessionId: 7 },
       chats: [
-        { panelId: 'a', state: null, pages: ['https://ok.example/', 42, '', 'x'.repeat(MAX_PANE_URL_LENGTH + 1), 'https://two.example/'], activePage: 4, paneOpen: true },
+        { panelId: 'a', state: null, pages: ['https://ok.example/', 42, '', 'x'.repeat(MAX_BROWSER_URL_LENGTH + 1), 'https://two.example/'], activePage: 4, paneOpen: true },
         { panelId: '../evil', state: null },
         { panelId: 'b', state: 'not an object', pages: 'nonsense' },
         { panelId: 'a', state: null },
         'junk',
       ],
-      paneWidth: 'wide',
     });
     const store = new PanelStateStore(dir, log);
     expect(store.list().map((chat) => chat.panelId)).toEqual(['a', 'b']);
-    expect(store.get('a')?.pane).toEqual({ open: true, maximized: false, pages: ['https://ok.example/', 'https://two.example/'], activePage: 1 });
-    expect(store.get('b')).toEqual({ panelId: 'b', state: null, pane: EMPTY_PANE });
+    expect(store.get('a')?.browser).toEqual({ pages: ['https://ok.example/', 'https://two.example/'], activePage: 1 });
+    expect(store.get('b')).toEqual({ panelId: 'b', state: null, browser: NO_PAGES });
     expect(store.selected()).toEqual({ projectKey: 'k1' });
-    expect(store.paneWidth()).toBeUndefined();
     expect(lines).toEqual([
       '[panels] chat a: dropping a browser page with a malformed address',
       '[panels] chat a: dropping a browser page with a malformed address',
@@ -125,7 +157,6 @@ describe('PanelStateStore v2', () => {
       '[panels] dropping a malformed chat',
       '[panels] ignoring a malformed selected session id',
       '[panels] ignoring a selected chat that is not saved',
-      '[panels] ignoring a malformed browser pane width',
     ]);
   });
 
@@ -138,8 +169,33 @@ describe('PanelStateStore v2', () => {
   });
 
   it('reads a __proto__ key as data, never as the prototype', () => {
-    fs.writeFileSync(path.join(dir, PANEL_STATE_FILE), '{"version":2,"chats":[{"panelId":"a","state":null,"__proto__":{"paneOpen":true}}]}');
-    expect(new PanelStateStore(dir, log).get('a')?.pane.open).toBe(false);
+    fs.writeFileSync(path.join(dir, PANEL_STATE_FILE), '{"version":2,"chats":[{"panelId":"a","state":null,"__proto__":{"pages":["https://evil.example/"]}}]}');
+    expect(new PanelStateStore(dir, log).get('a')?.browser).toEqual(NO_PAGES);
+  });
+});
+
+describe('PanelStateStore across a quit or a window close', () => {
+  it('keeps the chats and the selection from before the teardown while sealed, and writes again once unsealed', async () => {
+    const store = new PanelStateStore(dir, log);
+    store.set({ panelId: 'a', state: { sessionId: 's1' } });
+    store.select({ projectKey: 'k1', panelId: 'a', sessionId: 's1' });
+    await store.flush();
+    const before = fs.readFileSync(path.join(dir, PANEL_STATE_FILE), 'utf8');
+
+    store.seal();
+    store.set({ panelId: 'new', state: null });
+    store.setPages('a', { pages: ['https://a.example/'], activePage: 0 });
+    store.select({ projectKey: 'k2', panelId: 'new' });
+    store.delete('a');
+    await store.flush();
+    expect(store.list().map((chat) => chat.panelId)).toEqual(['a']);
+    expect(store.get('a')?.browser).toEqual(NO_PAGES);
+    expect(store.selected()).toEqual({ projectKey: 'k1', panelId: 'a', sessionId: 's1' });
+    expect(fs.readFileSync(path.join(dir, PANEL_STATE_FILE), 'utf8')).toBe(before);
+
+    store.unseal();
+    store.select({ projectKey: 'k2', panelId: 'a' });
+    expect((await reopened()).selected()).toEqual({ projectKey: 'k2', panelId: 'a' });
   });
 });
 
@@ -156,11 +212,10 @@ describe('PanelStateStore v1 migration', () => {
     });
     const store = new PanelStateStore(dir, log);
     expect(store.list()).toEqual([
-      { panelId: 'a', state: { workspaceFolderKey: 'k1' }, pane: { open: true, maximized: true, pages: ['https://a.example/'], activePage: 0 } },
-      { panelId: 'b', state: { workspaceFolderKey: 'k2', sessionId: 's2' }, pane: EMPTY_PANE },
+      { panelId: 'a', state: { workspaceFolderKey: 'k1' }, browser: { pages: ['https://a.example/'], activePage: 0 } },
+      { panelId: 'b', state: { workspaceFolderKey: 'k2', sessionId: 's2' }, browser: NO_PAGES },
     ]);
     expect(store.selected()).toEqual({ projectKey: 'k2', panelId: 'b', sessionId: 's2' });
-    expect(store.paneWidth()).toBe(500);
     expect(lines).toEqual([`[panels] migrated ${PANEL_STATE_FILE} from version 1 (2 chats)`]);
 
     store.set({ panelId: 'a', state: { workspaceFolderKey: 'k1' } });
@@ -178,7 +233,7 @@ describe('PanelStateStore v1 migration', () => {
       selectedPanelId: 'a',
     });
     const store = new PanelStateStore(dir, log);
-    expect(store.list()).toEqual([{ panelId: 'a', state: null, pane: EMPTY_PANE }]);
+    expect(store.list()).toEqual([{ panelId: 'a', state: null, browser: NO_PAGES }]);
     expect(store.selected()).toBeUndefined();
     expect(lines.slice(0, 2)).toEqual(['[panels] dropping tab old: not a chat tab', '[panels] chat a: dropping a malformed browser pane']);
   });

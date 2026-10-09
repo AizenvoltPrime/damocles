@@ -30,6 +30,7 @@ let window: ReturnType<typeof fakeWindow>;
 let lines: string[];
 let focusedOutside: number;
 let activations: number;
+let closings: number;
 let redraws: number;
 let host: OverlayHost;
 
@@ -69,6 +70,7 @@ beforeEach(() => {
   lines = [];
   focusedOutside = 0;
   activations = 0;
+  closings = 0;
   redraws = 0;
   returnFocus.focus.mockClear();
   H.webPreferences.length = 0;
@@ -81,6 +83,9 @@ beforeEach(() => {
     },
     awaitActivation: () => {
       activations++;
+    },
+    popupsClosed: () => {
+      closings++;
     },
     canRasterize: () => {
       redraws++;
@@ -244,6 +249,20 @@ describe('overlay requests', () => {
     expect(returnFocus.focus).toHaveBeenCalledTimes(1);
   });
 
+  it('dismisses the open request of a kind as its window closes, closing it in the page and leaving a message dialog open', async () => {
+    loaded();
+    const settings = host.request({ kind: 'settings', generation: 1 }, returnFocus as never);
+    const settingsId = lastRequestId();
+    const question = host.request({ kind: 'message', severity: 'warning', message: 'Quit?', actions: ['Quit'], cancelLabel: 'Cancel' }, undefined);
+    host.dismiss('settings');
+    await expect(settings).resolves.toEqual({ kind: 'dismissed' });
+    expect(view().webContents.send).toHaveBeenCalledWith(OVERLAY_CHANNELS.cancel, settingsId);
+    expect(host.isOpen('message')).toBe(true);
+    host.dismiss('menu');
+    expect(host.isOpen('message')).toBe(true);
+    void question;
+  });
+
   it('hides and rejects the open request when the overlay crashes, then reloads it', async () => {
     loaded();
     const answer = host.request(MENU, returnFocus as never);
@@ -310,6 +329,34 @@ describe('overlay focus', () => {
     host.focus();
     expect(view().webContents.focus).toHaveBeenCalledTimes(1);
   });
+
+  // The window may never activate while the popup is open; what awaited that activation must not outlive the popup.
+  it('reports the last popup closing, before it returns focus, whether it is answered or the overlay fails', async () => {
+    loaded();
+    window.focused = false;
+    let closedBeforeFocusReturned: number | undefined;
+    returnFocus.focus.mockImplementationOnce(() => {
+      closedBeforeFocusReturned = closings;
+    });
+    const menu = host.request(MENU, returnFocus as never);
+    const menuId = lastRequestId();
+    const question = host.request({ kind: 'message', severity: 'danger', message: 'The window stopped working.', actions: ['Reload Window'], cancelLabel: 'Close' }, undefined);
+    expect(activations).toBe(2);
+    emit(OVERLAY_CHANNELS.answer, own(), lastRequestId(), { kind: 'message', action: 0 });
+    await question;
+    expect(host.mode).toBe('full');
+    expect(closings).toBe(0);
+    emit(OVERLAY_CHANNELS.answer, own(), menuId, { kind: 'dismissed' });
+    await menu;
+    expect(host.mode).toBe('hidden');
+    expect(closings).toBe(1);
+    expect(closedBeforeFocusReturned).toBe(1);
+
+    const failed = host.request(MENU, undefined);
+    view().webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 1 });
+    await expect(failed).rejects.toThrow('The overlay page stopped');
+    expect(closings).toBe(2);
+  });
 });
 
 describe('overlay acknowledgement', () => {
@@ -331,6 +378,29 @@ describe('overlay acknowledgement', () => {
     await settled;
     emit(OVERLAY_CHANNELS.ack, own(), lastRequestId());
     expect(missed).not.toHaveBeenCalled();
+  });
+
+  it('logs how long the first request after each page load took to acknowledge, and no later one', async () => {
+    loaded();
+    const first = host.request(SETTINGS, undefined);
+    vi.advanceTimersByTime(750);
+    emit(OVERLAY_CHANNELS.ack, own(), lastRequestId());
+    emit(OVERLAY_CHANNELS.answer, own(), lastRequestId(), { kind: 'settings', closed: true });
+    await first;
+    const second = host.request(MENU, undefined);
+    emit(OVERLAY_CHANNELS.ack, own(), lastRequestId());
+    emit(OVERLAY_CHANNELS.answer, own(), lastRequestId(), { kind: 'dismissed' });
+    await second;
+    loaded();
+    const reloaded = host.request(MENU, undefined);
+    vi.advanceTimersByTime(40);
+    emit(OVERLAY_CHANNELS.ack, own(), lastRequestId());
+    emit(OVERLAY_CHANNELS.answer, own(), lastRequestId(), { kind: 'dismissed' });
+    await reloaded;
+    expect(lines.filter((line) => line.includes('acknowledged'))).toEqual([
+      `[overlay] the first request since the page loaded (settings) was acknowledged in 750 ms of ${OVERLAY_ACK_TIMEOUT_MS}`,
+      `[overlay] the first request since the page loaded (menu) was acknowledged in 40 ms of ${OVERLAY_ACK_TIMEOUT_MS}`,
+    ]);
   });
 
   it('honors an acknowledgement that arrived while main was blocked past the deadline', async () => {
@@ -383,6 +453,29 @@ describe('overlay dispose', () => {
     host.dispose();
     expect(view().webContents.close).toHaveBeenCalledTimes(1);
   });
+
+  it('settles once every request it was still answering when its page went has been answered, a failed one included', async () => {
+    let answer!: (value: string) => void;
+    host.handle('test:slow', () => new Promise<string>((resolve) => (answer = resolve)));
+    host.handle('test:failing', async () => {
+      throw new Error('failed');
+    });
+    const slow = view().webContents.ipc.handlers.get('test:slow')!(own()) as Promise<unknown>;
+    const failing = view().webContents.ipc.handlers.get('test:failing')!(own()) as Promise<unknown>;
+    host.dispose();
+    let settled = false;
+    const done = host.settled().then(() => {
+      settled = true;
+    });
+    await expect(failing).rejects.toThrow('failed');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+
+    answer('ok');
+    await expect(slow).resolves.toBe('ok');
+    await done;
+    expect(settled).toBe(true);
+  });
 });
 
 describe('overlay request validation', () => {
@@ -423,6 +516,19 @@ describe('overlay request validation', () => {
     expect(parseOverlayAnswer({ kind: 'tagPicker', tag: null }, picker)).toEqual({ kind: 'tagPicker', tag: null });
     expect(parseOverlayAnswer({ kind: 'tagPicker', tag: '   ' }, picker)).toBeUndefined();
     expect(parseOverlayAnswer({ kind: 'tagPicker', tag: 'x'.repeat(51) }, picker)).toBeUndefined();
+  });
+
+  it('takes a new-terminal pick only of a profile and a project the request offered, and opens that request only from main', () => {
+    const request: OverlayRequest = {
+      kind: 'newTerminal',
+      profiles: [{ id: 'pwsh', name: 'PowerShell', path: 'C:\\pwsh.exe', args: [], source: 'detected', icon: 'powershell', customIcon: null, color: null, isDefault: true }],
+      projects: [{ key: 'c:\\alpha', name: 'alpha', path: 'C:\\alpha', current: true }],
+    };
+    expect(parseOverlayAnswer({ kind: 'newTerminal', profileId: 'pwsh', projectKey: 'c:\\alpha' }, request)).toEqual({ kind: 'newTerminal', profileId: 'pwsh', projectKey: 'c:\\alpha' });
+    expect(parseOverlayAnswer({ kind: 'newTerminal', profileId: 'cmd', projectKey: 'c:\\alpha' }, request)).toBeUndefined();
+    expect(parseOverlayAnswer({ kind: 'newTerminal', profileId: 'pwsh', projectKey: 'C:\\Windows' }, request)).toBeUndefined();
+    expect(parseOverlayAnswer({ kind: 'dismissed' }, request)).toEqual({ kind: 'dismissed' });
+    expect(parseOverlayRequest(request)).toBeUndefined();
   });
 });
 

@@ -39,5 +39,5 @@ test('a version 1 panels.json migrates: its tabs come back as chats and the file
   expect(panelIdOf(chat)).toBe('legacy-tab');
   await expect(chatInput(chat)).toBeVisible();
   await expect.poll(() => (JSON.parse(fs.readFileSync(panelsFile, 'utf8')) as { version: number }).version).toBe(2);
-  expect(mainLog(home)).toContain('[panels] migrated panels.json from version 1 (1 chats)');
+  await expect.poll(() => mainLog(home)).toContain('[panels] migrated panels.json from version 1 (1 chats)');
 });

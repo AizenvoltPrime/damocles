@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { ChatPanelProvider } from "../core/chat-panel";
+import { ChatPanelProvider, flushCoreWrites } from "../core/chat-panel";
 import { SidebarViewProvider } from "./panels/sidebar-view-provider";
 import { restoredWorkspaceFolderKey } from "../core/chat-panel/panel-manager";
 import { installLogSink, log, showLog } from "../core/logger";
@@ -199,9 +199,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
  * the same place it was broken — asserted in a comment and dropped in the code.
  */
 export async function deactivate(): Promise<void> {
+  const deadline = Date.now() + DEACTIVATE_BUDGET_MS;
   if (PiRuntime.exists) {
     void PiRuntime.disposeInstance();
   }
-  await chatPanelProvider?.dispose();
+  try {
+    await chatPanelProvider?.dispose();
+  } finally {
+    await flushCoreWritesWithin(Math.max(0, deadline - Date.now()));
+  }
   log("Damocles extension deactivated");
+}
+
+// The 5 s VS Code gives an extension host's deactivate before it exits the process, counted from deactivate's start.
+const DEACTIVATE_BUDGET_MS = 5_000;
+
+async function flushCoreWritesWithin(ms: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const timedOut = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(true), ms);
+  });
+  const late = await Promise.race([flushCoreWrites().then(() => false), timedOut]);
+  clearTimeout(timer);
+  if (late) log(`[deactivate] config writes did not settle within the ${DEACTIVATE_BUDGET_MS} ms deactivate budget`);
 }

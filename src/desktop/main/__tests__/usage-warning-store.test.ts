@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { UsageThresholdCrossing } from '../../../core/pi-session/usage-thresholds';
 import { MAX_WINDOW_ID_LENGTH, USAGE_WARNINGS_FILE, UsageWarningStore } from '../usage-warning-store';
+import { flushAcrossHeldRename } from '../../../__mocks__/held-rename';
 
 const HOUR = 3_600_000;
 const NOW = 1_800_000_000_000;
@@ -113,5 +114,16 @@ describe('UsageWarningStore (D54)', () => {
     lines = [];
     store();
     expect(lines).toEqual([expect.stringContaining('unknown schema')]);
+  });
+
+  it('flush waits for a write in flight and for one queued while it waits', async () => {
+    const warnings = store();
+    const onDisk = await flushAcrossHeldRename(path.join(userData, USAGE_WARNINGS_FILE), {
+      first: () => warnings.record(crossing()),
+      flush: () => warnings.flush(),
+      second: () => warnings.record(crossing({ windowId: 'seven_day' })),
+      onDisk: () => store().shown(crossing({ windowId: 'seven_day' })),
+    });
+    expect(onDisk).toBe(true);
   });
 });

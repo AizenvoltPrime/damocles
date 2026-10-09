@@ -33,7 +33,7 @@ Apply to the SignPath Foundation open source program at https://signpath.org wit
 - the roles (below);
 - the browser feature disclosure (below).
 
-Ask in the application whether every PE file in the app may be signed, including third party ones that ship inside it (Electron's own DLLs, `rg.exe` from `@vscode/ripgrep`, the koffi and `@parcel/watcher` `.node` modules, electron-builder's `elevate.exe`). The job structure below assumes yes; if SignPath limits signing to files built from this repository, narrow the artifact configuration to those files and record the decision here.
+Ask in the application whether every PE file in the app may be signed, including third party ones that ship inside it (Electron's own DLLs, `rg.exe` from `@vscode/ripgrep`, the koffi `.node` module, electron-builder's `elevate.exe`). The job structure below assumes yes; if SignPath limits signing to files built from this repository, narrow the artifact configuration to those files and record the decision here.
 
 ### After approval
 

@@ -76,7 +76,7 @@ function toast(id: string, body: NotificationBody): OverlayToast {
   return { id, at: Date.now() - 60_000, lifeMs: 12_000, remainingMs: 9_000, body };
 }
 
-test('D52: popups over the focused app window, captured from the primary screen', async ({ launch }, testInfo) => {
+test('D52: popups over the focused app window, captured from the primary screen', async ({ foreground: _foreground, launch }, testInfo) => {
   const { app } = await launch();
   const tab = await activeChat(app);
   await expect(chatInput(tab)).toBeVisible();

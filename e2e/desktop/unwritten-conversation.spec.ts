@@ -1,30 +1,62 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { Page } from '@playwright/test';
+import type { ElectronApplication, Page } from '@playwright/test';
+import { PANEL_CHANNELS } from '../../src/desktop/preload/panel-channels';
+import type { DesktopApp, LaunchOptions } from './support/app';
 import { activeChat, expect, firstChatPage, test } from './support/fixtures';
 import { seedStubModel } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
-import { chatInput, hostMessages, recordHostMessages, sendAndAwaitEcho } from './support/ui';
+import { chatInput, sendAndAwaitEcho } from './support/ui';
 
 // pi writes a conversation's file when it commits the first prompt, so a new chat's conversation has an id and no file until then.
 
 const MISSING_FILE = /could not be found|δεν βρέθηκε/;
 const GREEK_PLACEHOLDER = 'Ρωτήστε τον Damocles οτιδήποτε…';
 
+type SessionStarts = typeof globalThis & {
+  __damoclesE2e?: { launchRestore?: { readonly reached: boolean; release(): void } };
+  __e2eSessionStarts?: Array<{ url: string; sessionId: string }>;
+};
+
 async function savedSessionId(tab: Page): Promise<string | undefined> {
   return tab.evaluate(() => (window.damoclesBridge!.getState() as { sessionId?: string } | undefined)?.sessionId);
 }
 
-/** The conversation the chat shows, from the host's last announcement or, failing that, the persisted id. */
-async function liveSessionId(tab: Page): Promise<string | undefined> {
-  const announced = (await hostMessages(tab, 'sessionStarted')).at(-1)?.['sessionId'];
-  return typeof announced === 'string' && announced !== '' ? announced : savedSessionId(tab);
+/**
+ * Launches with the first chat's core setup held until main records every sessionStarted it sends: main names an unwritten
+ * conversation only in that message, and a listener added in the page can come too late, since a busy main thread delays
+ * Playwright's calls into a page.
+ */
+async function launchRecordingSessionStarts(launch: (options?: LaunchOptions) => Promise<DesktopApp>): Promise<DesktopApp> {
+  const desktop = await launch({ env: { DAMOCLES_E2E_HOOKS: '1', DAMOCLES_E2E_HOLD_CHAT_RESTORE: '1' } });
+  const { app } = desktop;
+  await expect.poll(() => app.evaluate(() => (globalThis as SessionStarts).__damoclesE2e?.launchRestore?.reached ?? false)).toBe(true);
+  await app.evaluate(({ app: electronApp, webContents }, channel) => {
+    const g = globalThis as SessionStarts;
+    const starts: Array<{ url: string; sessionId: string }> = [];
+    g.__e2eSessionStarts = starts;
+    const wrap = (contents: Electron.WebContents): void => {
+      const send = contents.send.bind(contents);
+      contents.send = (sent: string, ...args: unknown[]): void => {
+        const message = args[0] as { type?: unknown; sessionId?: unknown } | undefined;
+        if (sent === channel && message?.type === 'sessionStarted' && typeof message.sessionId === 'string' && message.sessionId !== '') {
+          starts.push({ url: contents.getURL(), sessionId: message.sessionId });
+        }
+        send(sent, ...args);
+      };
+    };
+    for (const contents of webContents.getAllWebContents()) wrap(contents);
+    electronApp.on('web-contents-created', (_event, contents) => wrap(contents));
+    g.__damoclesE2e!.launchRestore!.release();
+  }, PANEL_CHANNELS.message);
+  return desktop;
 }
 
-/** Resolves once the chat's session has started, which is when the host names its conversation. */
-async function startedSessionId(tab: Page): Promise<string> {
-  await expect.poll(() => liveSessionId(tab), { timeout: 60_000 }).toBeTruthy();
-  return (await liveSessionId(tab))!;
+/** The conversation main last named to the chat page, once the chat's session has started. */
+async function startedSessionId(app: ElectronApplication, tab: Page): Promise<string> {
+  const named = (): Promise<string | undefined> => app.evaluate((_electron, url) => (globalThis as SessionStarts).__e2eSessionStarts?.filter((start) => start.url === url).at(-1)?.sessionId, tab.url());
+  await expect.poll(named, { timeout: 60_000 }).toBeTruthy();
+  return (await named())!;
 }
 
 function sessionFiles(root: string, sessionId: string): string[] {
@@ -38,10 +70,9 @@ test('reloading a chat that holds a new, empty conversation reopens that convers
   const stub = await startOpenAIStub();
   try {
     seedStubModel(home, stub.baseUrl);
-    const { app } = await launch();
+    const { app } = await launchRecordingSessionStarts(launch);
     const tab = await firstChatPage(app);
-    await recordHostMessages(tab);
-    const unwritten = await startedSessionId(tab);
+    const unwritten = await startedSessionId(app, tab);
     expect(sessionFiles(home.agentDir, unwritten)).toEqual([]);
 
     await tab.reload();
@@ -65,10 +96,9 @@ test('the first prompt writes the conversation and makes it the restore target b
   try {
     seedStubModel(home, stub.baseUrl);
     stub.replies.push({ chunks: ['Held reply', ' finished.'], holdAfterFirst: held });
-    const { app } = await launch();
+    const { app } = await launchRecordingSessionStarts(launch);
     const tab = await firstChatPage(app);
-    await recordHostMessages(tab);
-    const sessionId = await startedSessionId(tab);
+    const sessionId = await startedSessionId(app, tab);
     await chatInput(tab).fill('written before the reply');
     await chatInput(tab).press('Enter');
     await expect(tab.getByText('Held reply', { exact: false })).toBeVisible();
@@ -90,10 +120,9 @@ test('restarting with a chat whose conversation was never written opens a fresh 
   const stub = await startOpenAIStub();
   try {
     seedStubModel(home, stub.baseUrl);
-    let desktop = await launch();
+    let desktop = await launchRecordingSessionStarts(launch);
     let tab = await firstChatPage(desktop.app);
-    await recordHostMessages(tab);
-    const unwritten = await startedSessionId(tab);
+    const unwritten = await startedSessionId(desktop.app, tab);
     await desktop.close();
 
     desktop = await launch();

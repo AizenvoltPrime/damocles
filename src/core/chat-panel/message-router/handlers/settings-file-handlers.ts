@@ -1,5 +1,10 @@
 import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "../types";
-import { SettingsFileEditor } from "../../settings-file-editor";
+import { SETTINGS_FILE_SCOPES, SettingsFileAvailabilityFeed } from "../../settings-file-editor";
+
+// A setting key the editor searches for; it never names a file.
+function isSettingKey(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z][A-Za-z0-9_.-]{0,199}$/.test(value);
+}
 
 export interface SettingsFileHandlers {
   handlers: Partial<HandlerRegistry>;
@@ -8,39 +13,28 @@ export interface SettingsFileHandlers {
 }
 
 export function createSettingsFileHandlers(deps: HandlerDependencies): SettingsFileHandlers {
-  const editor = new SettingsFileEditor(deps.platform, deps.postMessage);
-  deps.subscriptions.push(editor);
+  const feed = new SettingsFileAvailabilityFeed(deps.platform, deps.postMessage);
+  deps.subscriptions.push(feed);
 
-  // A panel's first request ties the editor's hold on it to the panel's lifetime.
+  // A panel's first request ties the feed's hold on it to the panel's lifetime.
   const holdUntilPanelCloses = (ctx: HandlerContext): void => {
     const instance = deps.getPanels().get(ctx.panelId);
     // The panel closed while the request ran.
     if (!instance) {
-      editor.releasePanel(ctx.panelId);
+      feed.releasePanel(ctx.panelId);
       return;
     }
-    instance.disposables.push({ dispose: () => editor.releasePanel(ctx.panelId) });
+    instance.disposables.push({ dispose: () => feed.releasePanel(ctx.panelId) });
   };
 
   const handlers: Partial<HandlerRegistry> = {
-    settingsFileLoad: async (msg, ctx) => {
-      if (msg.type !== "settingsFileLoad") return;
-      if (await editor.load(ctx.panelId, ctx.host, msg.scope)) holdUntilPanelCloses(ctx);
-    },
-
-    settingsFileSave: async (msg, ctx) => {
-      if (msg.type !== "settingsFileSave") return;
-      await editor.save(ctx.panelId, ctx.host, msg.scope, msg.content, msg.baseVersion);
-    },
-
-    openSettingsFileInChat: (msg, ctx) => {
+    // The settings modal's Edit settings.json: the host's editor opens the file (desktop: a pane tab).
+    openSettingsFileInChat: async (msg) => {
       if (msg.type !== "openSettingsFileInChat") return;
-      editor.openInChat(ctx.host, msg.scope);
-    },
-
-    revealSettingsFile: async (msg) => {
-      if (msg.type !== "revealSettingsFile") return;
-      await editor.reveal(msg.scope);
+      if (!deps.platform.capabilities.settingsSources) throw new Error("this host keeps no Damocles settings files to edit");
+      if (!SETTINGS_FILE_SCOPES.includes(msg.scope)) throw new Error(`unknown settings file scope ${JSON.stringify(msg.scope)}`);
+      if (msg.key !== undefined && !isSettingKey(msg.key)) throw new Error("malformed setting key");
+      await deps.platform.editor.openSettingsFile(msg.scope, msg.key !== undefined ? { key: msg.key } : undefined);
     },
   };
 
@@ -48,7 +42,7 @@ export function createSettingsFileHandlers(deps: HandlerDependencies): SettingsF
     handlers,
     postAvailability: (ctx) => {
       if (!deps.platform.capabilities.settingsSources) return;
-      if (editor.availability(ctx.panelId, ctx.host)) holdUntilPanelCloses(ctx);
+      if (feed.availability(ctx.panelId, ctx.host)) holdUntilPanelCloses(ctx);
     },
   };
 }

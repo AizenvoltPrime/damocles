@@ -2,6 +2,7 @@ import { randomBytes } from 'crypto';
 import type { Disposable } from '../../platform/disposable';
 import type { PanelHost, WindowService } from '../../platform/window-service';
 import { HOST_THEME_STYLE_ID } from '../../shared/host-theme';
+import { isNotSecurePage } from '../../shared/typed-address';
 import { t } from '../l10n';
 import { BROWSER_WEBVIEW_SCRIPT } from './browser-webview-script';
 import type { ElementOverlayInfo } from './types';
@@ -11,6 +12,8 @@ export class BrowserPanel {
   private panel: PanelHost | null = null;
   private disposeListeners: Disposable[] = [];
   private disposing = false;
+  // The webview posted `ready` and has not been discarded since, so a post to it lands.
+  private listeningPage = false;
   private onMouseDownHandler: ((x: number, y: number, button: number, buttons: number, clickCount: number, modifiers: number) => void) | null = null;
   private onMouseUpHandler: ((x: number, y: number, button: number, buttons: number, clickCount: number, modifiers: number) => void) | null = null;
   private onKeyHandler: ((key: string, code: string, text: string, keyCode: number, modifiers: number, phase: KeyPhase) => void) | null = null;
@@ -19,7 +22,7 @@ export class BrowserPanel {
   private onCloseHandler: (() => void) | null = null;
   private onScrollHandler: ((x: number, y: number, deltaX: number, deltaY: number) => void) | null = null;
   private onResizeHandler: ((width: number, height: number, dpr: number) => void) | null = null;
-  private onNavigateHandler: ((url: string) => void) | null = null;
+  private onNavigateHandler: ((typed: string) => void) | null = null;
   private onGoBackHandler: (() => void) | null = null;
   private onGoForwardHandler: (() => void) | null = null;
   private onReloadHandler: (() => void) | null = null;
@@ -45,6 +48,12 @@ export class BrowserPanel {
     return this.panel?.column;
   }
 
+  /** Whether the webview's message listener is attached. A host that discards a hidden page clears it on hide; the
+   *  reloaded page's `ready` sets it again. A host that keeps the page keeps it set, and no `ready` follows a show. */
+  get listening(): boolean {
+    return this.listeningPage;
+  }
+
   onClose(handler: () => void): void { this.onCloseHandler = handler; }
   onMouseDown(handler: (x: number, y: number, button: number, buttons: number, clickCount: number, modifiers: number) => void): void { this.onMouseDownHandler = handler; }
   onMouseUp(handler: (x: number, y: number, button: number, buttons: number, clickCount: number, modifiers: number) => void): void { this.onMouseUpHandler = handler; }
@@ -56,7 +65,8 @@ export class BrowserPanel {
   onReady(handler: () => void): void { this.onReadyHandler = handler; }
   onScroll(handler: (x: number, y: number, deltaX: number, deltaY: number) => void): void { this.onScrollHandler = handler; }
   onResize(handler: (width: number, height: number, dpr: number) => void): void { this.onResizeHandler = handler; }
-  onNavigate(handler: (url: string) => void): void { this.onNavigateHandler = handler; }
+  // The address bar's text as the user typed it; the host reads it as a URL.
+  onNavigate(handler: (typed: string) => void): void { this.onNavigateHandler = handler; }
   onGoBack(handler: () => void): void { this.onGoBackHandler = handler; }
   onGoForward(handler: () => void): void { this.onGoForwardHandler = handler; }
   onReload(handler: () => void): void { this.onReloadHandler = handler; }
@@ -103,6 +113,8 @@ export class BrowserPanel {
       devTools: t('Open Developer Tools (F12)'),
       newTab: t('New Tab'),
       urlPlaceholder: t('Enter URL...'),
+      notSecure: t('Not secure'),
+      notSecureDetail: t('The connection to this site is not encrypted, so others on the network can read and change what it sends.'),
       waiting: t('Waiting for browser frames...'),
     };
     this.panel!.setHtml(buildHtml(nonce, strings, !this.window.chatBrowserPane, this.panel!.themeCssSource()));
@@ -113,11 +125,14 @@ export class BrowserPanel {
       else if (msg.type === 'mouseup') this.onMouseUpHandler?.(msg.x, msg.y, msg.button, msg.buttons, msg.clickCount, msg.modifiers);
       else if (msg.type === 'key') this.onKeyHandler?.(msg.key, msg.code, msg.text, msg.keyCode, msg.modifiers, msg.phase);
       else if (msg.type === 'insertText') this.onInsertTextHandler?.(msg.text);
-      else if (msg.type === 'ready') this.onReadyHandler?.();
+      else if (msg.type === 'ready') {
+        this.listeningPage = true;
+        this.onReadyHandler?.();
+      }
       else if (msg.type === 'scroll') this.onScrollHandler?.(msg.x, msg.y, msg.deltaX, msg.deltaY);
       else if (msg.type === 'resize') this.onResizeHandler?.(msg.width, msg.height, msg.dpr);
       else if (msg.type === 'mousemove') this.onMouseMoveHandler?.(msg.x, msg.y, msg.buttons);
-      else if (msg.type === 'navigate') this.onNavigateHandler?.(msg.url);
+      else if (msg.type === 'navigate' && typeof msg.url === 'string') this.onNavigateHandler?.(msg.url);
       else if (msg.type === 'goBack') this.onGoBackHandler?.();
       else if (msg.type === 'goForward') this.onGoForwardHandler?.();
       else if (msg.type === 'reload') this.onReloadHandler?.();
@@ -132,11 +147,15 @@ export class BrowserPanel {
     this.disposeListeners.push(msgDisposable);
 
     const panel = this.panel!;
-    const visDisposable = panel.onDidChangeViewState(() => this.onVisibilityChangeHandler?.(panel.visible));
+    const visDisposable = panel.onDidChangeViewState(() => {
+      if (!panel.visible && !panel.retainsContextWhenHidden) this.listeningPage = false;
+      this.onVisibilityChangeHandler?.(panel.visible);
+    });
     this.disposeListeners.push(visDisposable);
 
     const disposeDisposable = this.panel!.onDispose(() => {
       this.panel = null;
+      this.listeningPage = false;
       this.disposeListeners.forEach(d => d.dispose());
       this.disposeListeners = [];
       if (!this.disposing) this.onCloseHandler?.();
@@ -170,10 +189,10 @@ export class BrowserPanel {
   }
 
   updateUrl(url: string): void {
-    this.panel?.postMessage({ type: 'urlChanged', url });
+    this.panel?.postMessage({ type: 'urlChanged', url, notSecure: isNotSecurePage(url) });
   }
 
-  // For a host whose chat browser pane draws the navigation chrome; the page script ignores it.
+  // For a host that draws a page's navigation chrome itself (chatBrowserPane); the page script ignores it.
   updateNavigationState(state: NavigationState): void {
     this.panel?.postMessage({ type: 'navigationState', ...state });
   }
@@ -194,6 +213,7 @@ export class BrowserPanel {
     this.disposing = true;
     this.panel?.close();
     this.panel = null;
+    this.listeningPage = false;
     this.disposeListeners.forEach(d => d.dispose());
     this.disposeListeners = [];
     this.disposing = false;
@@ -241,6 +261,8 @@ export interface PanelStrings {
   devTools: string;
   newTab: string;
   urlPlaceholder: string;
+  notSecure: string;
+  notSecureDetail: string;
   waiting: string;
 }
 
@@ -277,6 +299,7 @@ function toolbarHtml(strings: PanelStrings): string {
     <button id="btn-reload" title="${escapeHtml(strings.reload)}">
       <svg viewBox="0 0 16 16"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><polyline points="13.5 2 13.5 5.5 10 5.5"/></svg>
     </button>
+    <span id="not-secure" title="${escapeHtml(strings.notSecureDetail)}" hidden>${escapeHtml(strings.notSecure)}</span>
     <input id="url-input" type="text" placeholder="${escapeHtml(strings.urlPlaceholder)}" spellcheck="false" />
     <button id="btn-pick" title="${escapeHtml(strings.pickElement)}">
       <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><line x1="8" y1="1" x2="8" y2="3"/><line x1="8" y1="13" x2="8" y2="15"/><line x1="1" y1="8" x2="3" y2="8"/><line x1="13" y1="8" x2="15" y2="8"/></svg>
@@ -367,6 +390,17 @@ function buildHtml(nonce: string, strings: PanelStrings, toolbar: boolean, theme
   }
   #url-input:focus {
     border-color: var(--vscode-focusBorder, #007fd4);
+  }
+  #not-secure {
+    flex: none;
+    margin-inline: 0.25rem;
+    color: var(--d-warning-text, var(--vscode-editorWarning-foreground, #cca700));
+    font-family: system-ui, -apple-system, sans-serif;
+    font-size: 0.75rem;
+    white-space: nowrap;
+  }
+  #not-secure[hidden] {
+    display: none;
   }
 
   #content-area {

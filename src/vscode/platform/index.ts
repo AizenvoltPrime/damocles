@@ -6,6 +6,7 @@ import { createVsCodeAppPaths } from './app-paths';
 import { createVsCodeClipboardService } from './clipboard-service';
 import { createVsCodeDialogService } from './dialog-service';
 import { createVsCodeEditorService } from './editor-service';
+import { createVsCodeFileConfinement } from './file-confinement';
 import { createVsCodeFileWatcherFactory } from './file-watcher';
 import { createVsCodeHostLifecycle } from './host-lifecycle';
 import { createVsCodeKeyValueState } from './key-value-state';
@@ -29,6 +30,7 @@ export function createVsCodePlatform(context: vscode.ExtensionContext): Platform
     trust: createVsCodeTrustService(),
     workspaceFolders: createVsCodeWorkspaceFolders(),
     fileWatchers: createVsCodeFileWatcherFactory(),
+    confinement: createVsCodeFileConfinement(),
     notifications: createVsCodeNotificationService(),
     paths: createVsCodeAppPaths(context.extensionUri.fsPath),
     appInfo: createVsCodeAppInfo(context),

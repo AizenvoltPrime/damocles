@@ -14,7 +14,7 @@ import { chatInput, sendAndAwaitEcho } from './support/ui';
 // tokens"), so the panel scales without overflowing or clipping, and its container breakpoints move with the font.
 
 const FONT_SIZES = [16, 20] as const;
-// The narrowest panel a host allows: VS Code's side bar and secondary side bar (170px); desktop's chat slot is 360px.
+// The narrowest panel a host allows: VS Code's side bar and secondary side bar (170px); desktop's narrowest grid column is 300px.
 const MIN_PANEL_WIDTH = 170;
 const WIDTHS = [900, 480, 360, MIN_PANEL_WIDTH] as const;
 const HEIGHT = 820;

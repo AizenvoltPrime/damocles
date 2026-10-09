@@ -3,77 +3,84 @@ import type * as Koffi from 'koffi';
 
 type Modifier = 'control' | 'shift' | 'alt' | 'meta';
 
-// Virtual key codes from Carbon's Events.h (kVK_*) and the characters AppKit reports for each key on a US layout.
-const KEYS: Record<string, { code: number; chars: string; shifted?: string; functionKey?: boolean }> = {
-  A: { code: 0x00, chars: 'a' },
-  B: { code: 0x0b, chars: 'b' },
-  C: { code: 0x08, chars: 'c' },
-  K: { code: 0x28, chars: 'k' },
-  N: { code: 0x2d, chars: 'n' },
-  T: { code: 0x11, chars: 't' },
-  U: { code: 0x20, chars: 'u' },
-  V: { code: 0x09, chars: 'v' },
-  W: { code: 0x0d, chars: 'w' },
-  ',': { code: 0x2b, chars: ',', shifted: '<' },
-  Tab: { code: 0x30, chars: '\t', shifted: '\x19' },
-  Escape: { code: 0x35, chars: '\x1b' },
-  F6: { code: 0x61, chars: '\uf709', functionKey: true },
-  F12: { code: 0x6f, chars: '\uf70f', functionKey: true },
-  PageUp: { code: 0x74, chars: '\uf72c', functionKey: true },
-  PageDown: { code: 0x79, chars: '\uf72d', functionKey: true },
+// Virtual key codes from Carbon's Events.h (kVK_*); the window server derives each event's characters from the layout.
+const KEYS: Record<string, { code: number; functionKey?: boolean }> = {
+  A: { code: 0x00 },
+  B: { code: 0x0b },
+  C: { code: 0x08 },
+  F: { code: 0x03 },
+  H: { code: 0x04 },
+  K: { code: 0x28 },
+  N: { code: 0x2d },
+  P: { code: 0x23 },
+  R: { code: 0x0f },
+  S: { code: 0x01 },
+  T: { code: 0x11 },
+  U: { code: 0x20 },
+  V: { code: 0x09 },
+  W: { code: 0x0d },
+  '5': { code: 0x17 },
+  ',': { code: 0x2b },
+  '\\': { code: 0x2a },
+  Left: { code: 0x7b, functionKey: true },
+  Right: { code: 0x7c, functionKey: true },
+  Tab: { code: 0x30 },
+  Escape: { code: 0x35 },
+  F4: { code: 0x76, functionKey: true },
+  F6: { code: 0x61, functionKey: true },
+  F10: { code: 0x6d, functionKey: true },
+  F12: { code: 0x6f, functionKey: true },
+  PageUp: { code: 0x74, functionKey: true },
+  PageDown: { code: 0x79, functionKey: true },
 };
 
-// Pressed in this order and released in reverse, as Chromium's ui_controls_mac.mm sequences them.
+// Pressed in this order and released in reverse, as Chromium's ui_controls_mac.mm sequences them. The flags are
+// CGEventFlags, whose modifier bits equal NSEventModifierFlags'.
 const MODIFIERS: ReadonlyArray<{ modifier: Modifier; flag: number; code: number }> = [
   { modifier: 'control', flag: 1 << 18, code: 0x3b },
   { modifier: 'shift', flag: 1 << 17, code: 0x38 },
   { modifier: 'alt', flag: 1 << 19, code: 0x3a },
   { modifier: 'meta', flag: 1 << 20, code: 0x37 },
 ];
+// kCGEventFlagMaskSecondaryFn, which a keyboard sets on the arrow, function and page keys.
 const FUNCTION_FLAG = 1 << 23;
-// NSEventType values.
-const KEY_DOWN = 10;
-const KEY_UP = 11;
-const FLAGS_CHANGED = 12;
 
 interface MacKeyEvent {
-  type: number;
   keyCode: number;
+  down: boolean;
   flags: number;
-  characters: string;
-  charactersIgnoringModifiers: string;
 }
 
-/** The NSEvents a keyboard produces for `key` with `modifiers` held; the character rules follow cocoa_test_event_utils.mm. */
+/**
+ * The key events a keyboard produces for `key` with `modifiers` held: each modifier's own press carries its flag, as
+ * Chromium reads the modifier state from those events.
+ */
 export function macKeySequence(key: string, modifiers: readonly Modifier[]): MacKeyEvent[] {
   const spec = KEYS[key];
   if (!spec) throw new Error(`no macOS key code for ${key}; add it to KEYS`);
-  if (modifiers.includes('alt') && !spec.functionKey) throw new Error('Option changes the characters by layout; not modeled');
   const held = MODIFIERS.filter((m) => modifiers.includes(m.modifier));
-  const flags = held.reduce((sum, m) => sum | m.flag, 0);
-  const ignoring = modifiers.includes('shift') ? (spec.shifted ?? spec.chars.toUpperCase()) : spec.chars;
-  const characters = modifiers.includes('control') ? '' : modifiers.includes('meta') ? spec.chars : ignoring;
-  const press = { keyCode: spec.code, flags: flags | (spec.functionKey ? FUNCTION_FLAG : 0), characters, charactersIgnoringModifiers: ignoring };
+  const flags = held.reduce((sum, m) => sum | m.flag, 0) | (spec.functionKey ? FUNCTION_FLAG : 0);
 
   const events: MacKeyEvent[] = [];
   let down = 0;
   for (const m of held) {
     down |= m.flag;
-    events.push({ type: FLAGS_CHANGED, keyCode: m.code, flags: down, characters: '', charactersIgnoringModifiers: '' });
+    events.push({ keyCode: m.code, down: true, flags: down });
   }
-  events.push({ type: KEY_DOWN, ...press }, { type: KEY_UP, ...press });
+  events.push({ keyCode: spec.code, down: true, flags }, { keyCode: spec.code, down: false, flags });
   for (const m of [...held].reverse()) {
     down &= ~m.flag;
-    events.push({ type: FLAGS_CHANGED, keyCode: m.code, flags: down, characters: '', charactersIgnoringModifiers: '' });
+    events.push({ keyCode: m.code, down: false, flags: down });
   }
   return events;
 }
 
 /**
- * Presses `key` in the page whose URL contains `urlPart` by posting the keyboard's NSEvents to AppKit's event queue, as
- * Chromium's own interactive UI tests do. `webContents.sendInputEvent` builds its events without an NSEvent, and
- * Electron's macOS path hands only an NSEvent to the application menu, so a key sent that way never reaches a menu
- * accelerator or an Edit menu role.
+ * Presses `key` in the page whose URL contains `urlPart` by posting the keyboard's events to the app's process through
+ * the window server (CGEventPostToPid), where they take the path a physical key takes. `webContents.sendInputEvent`
+ * builds its events without an NSEvent, which Electron's macOS path needs for the application menu, and an NSEvent
+ * posted with -[NSApplication postEvent:atStart:] skips the window server: with a non-editable element focused, a menu
+ * key equivalent with Shift held never fires from it.
  */
 export async function postMacKeyPress(app: ElectronApplication, urlPart: string, key: string, modifiers: readonly Modifier[]): Promise<void> {
   const events = macKeySequence(key, modifiers);
@@ -90,38 +97,27 @@ export async function postMacKeyPress(app: ElectronApplication, urlPart: string,
 
   await app.evaluate(({ app: electronApp }, sequence) => {
     type Ptr = unknown;
-    type AppKit = { post: (e: MacKeyEvent) => void };
-    const state = globalThis as { __e2eAppKit?: AppKit };
-    state.__e2eAppKit ??= ((): AppKit => {
+    type Keyboard = { post: (e: MacKeyEvent) => void };
+    const state = globalThis as { __e2eKeyboard?: Keyboard };
+    state.__e2eKeyboard ??= ((): Keyboard => {
       const { createRequire } = process.getBuiltinModule('node:module');
       const koffi = createRequire(`${electronApp.getAppPath()}/`)('koffi') as typeof Koffi;
-      const objc = koffi.load('/usr/lib/libobjc.A.dylib');
-      const getClass = objc.func('objc_getClass', 'void*', ['str']);
-      const sel = objc.func('sel_registerName', 'void*', ['str']);
-      // objc_msgSend is called through one exact prototype per selector shape, as the arm64 ABI requires.
-      const sendId = objc.func('objc_msgSend', 'void*', ['void*', 'void*']);
-      const sendInt = objc.func('objc_msgSend', 'int64', ['void*', 'void*']);
-      const sendDouble = objc.func('objc_msgSend', 'double', ['void*', 'void*']);
-      const sendStr = objc.func('objc_msgSend', 'void*', ['void*', 'void*', 'str']);
-      const sendPost = objc.func('objc_msgSend', 'void', ['void*', 'void*', 'void*', 'bool']);
-      const point = koffi.struct({ x: 'double', y: 'double' });
-      const sendKeyEvent = objc.func('objc_msgSend', 'void*', ['void*', 'void*', 'uint64', point, 'uint64', 'double', 'int64', 'void*', 'void*', 'void*', 'bool', 'uint16']);
-      const nsApp = sendId(getClass('NSApplication'), sel('sharedApplication')) as Ptr;
-      const nsString = (text: string): Ptr => sendStr(getClass('NSString'), sel('stringWithUTF8String:'), text) as Ptr;
-      const keyEventSel = sel('keyEventWithType:location:modifierFlags:timestamp:windowNumber:context:characters:charactersIgnoringModifiers:isARepeat:keyCode:');
+      const cg = koffi.load('/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics');
+      const cf = koffi.load('/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation');
+      const createKeyboardEvent = cg.func('CGEventCreateKeyboardEvent', 'void*', ['void*', 'uint16', 'bool']);
+      const setFlags = cg.func('CGEventSetFlags', 'void', ['void*', 'uint64']);
+      const postToPid = cg.func('CGEventPostToPid', 'void', ['int', 'void*']);
+      const release = cf.func('CFRelease', 'void', ['void*']);
       return {
         post: (e) => {
-          const keyWindow = sendId(nsApp, sel('keyWindow')) as Ptr;
-          if (!keyWindow) throw new Error('AppKit reports no key window');
-          const uptime = sendDouble(sendId(getClass('NSProcessInfo'), sel('processInfo')), sel('systemUptime')) as number;
-          const nsEvent = sendKeyEvent(
-            getClass('NSEvent'), keyEventSel, e.type, { x: 0, y: 0 }, e.flags, uptime, sendInt(keyWindow, sel('windowNumber')),
-            null, nsString(e.characters), nsString(e.charactersIgnoringModifiers), false, e.keyCode,
-          ) as Ptr;
-          sendPost(nsApp, sel('postEvent:atStart:'), nsEvent, false);
+          const event = createKeyboardEvent(null, e.keyCode, e.down) as Ptr;
+          if (!event) throw new Error('CGEventCreateKeyboardEvent returned no event');
+          setFlags(event, e.flags);
+          postToPid(process.pid, event);
+          release(event);
         },
       };
     })();
-    for (const e of sequence) state.__e2eAppKit.post(e);
+    for (const e of sequence) state.__e2eKeyboard.post(e);
   }, events);
 }

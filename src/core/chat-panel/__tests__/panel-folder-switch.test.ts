@@ -408,6 +408,33 @@ describe('a workspace folder is removed', () => {
     expect(hostB.title).toBe('Damocles');
   });
 
+  it('moves a panel off the home target silently when the first folder replaces it, since the user removed nothing', async () => {
+    h = createHarness([]);
+    const { host, panelId } = await openPanel();
+    const home = h.instance(panelId).folder;
+    expect(home.projectScope).toBe(false);
+
+    h.setFolders([folderEntry(A)]);
+
+    await vi.waitFor(() => expect(h.released).toEqual([home.key]));
+    expect(h.instance(panelId).folder.fsPath).toBe(A);
+    expect(sessionOf(panelId).cwd).toBe(A);
+    expect(lastFolderUpdate(host)).toMatchObject({ panelFolderKey: folderKey(A) });
+    expect(warnings()).toEqual([]);
+  });
+
+  it('warns when the last folder is removed and the panel falls back to the home target', async () => {
+    h = createHarness([folderEntry(A)]);
+    const { panelId } = await openPanel();
+
+    h.setFolders([]);
+
+    await vi.waitFor(() => expect(h.released).toEqual([folderKey(A)]));
+    expect(h.instance(panelId).folder.projectScope).toBe(false);
+    expect(warnings()).toHaveLength(1);
+    expect(String(warnings()[0]?.message)).toContain('alpha');
+  });
+
   it('waits for a switch in flight and moves the panel if it landed on the removed folder', async () => {
     h = createHarness([folderEntry(A), folderEntry(B)]);
     const { panelId } = await openPanel();

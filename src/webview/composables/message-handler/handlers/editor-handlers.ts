@@ -13,23 +13,8 @@ export function createEditorHandlers(): Partial<HandlerRegistry> {
     editorShowDiff: (msg, ctx) => {
       if (monacoEnabled(msg.type, ctx)) useEditorStore().showDiff(msg);
     },
-    editorOpenFile: (msg, ctx) => {
-      if (monacoEnabled(msg.type, ctx)) useEditorStore().openFile(msg);
-    },
     editorCloseView: (msg, ctx) => {
       if (monacoEnabled(msg.type, ctx)) useEditorStore().closeView(msg.viewId);
-    },
-    settingsFileContent: (msg, ctx) => {
-      if (monacoEnabled(msg.type, ctx)) useEditorStore().setSettingsFile(msg.file);
-    },
-    settingsFileSaveResult: (msg, ctx) => {
-      if (monacoEnabled(msg.type, ctx)) useEditorStore().setSaveResult(msg);
-    },
-    openSettingsFileEditor: (msg, ctx) => {
-      if (monacoEnabled(msg.type, ctx)) useEditorStore().openSettingsEditor(msg.scope);
-    },
-    settingsFileChanged: (msg, ctx) => {
-      if (monacoEnabled(msg.type, ctx)) useEditorStore().noteSettingsFileChanged(msg.scope, msg.version);
     },
   };
 }

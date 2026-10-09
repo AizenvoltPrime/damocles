@@ -126,7 +126,7 @@ describe('handleAppProtocol', () => {
   // Monaco's workers load by URL from dist/webview/assets, and a worker served with a non-script type fails under nosniff.
   async function fetchApp(url: string): Promise<Response> {
     vi.mocked(protocol.handle).mockClear();
-    handleAppProtocol(root, { panel: () => undefined, shell: () => '', pane: () => '', overlay: () => '', notifier: () => '' });
+    handleAppProtocol(root, { panel: () => undefined, shell: () => '', overlay: () => '', notifier: () => '' });
     const handler = vi.mocked(protocol.handle).mock.calls[0]?.[1];
     if (!handler) throw new Error('no app:// handler registered');
     return handler(new Request(url)) as Promise<Response>;

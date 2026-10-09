@@ -1,6 +1,7 @@
 import type { ContentBlock, UserContentBlock } from './content';
 import type { AgentUsageTotals } from '../usage-accounting';
 import type { EffortBadgeLevel } from '../effort-badge';
+import type { TerminalAttachmentInfo } from './terminal-attachment';
 
 export interface SystemInitData {
   model: string;
@@ -248,6 +249,8 @@ export interface ChatMessage {
   refusalExplanation?: string | null;
   refusalCategory?: 'cyber' | 'bio' | null;
   contentBlocks?: ContentBlock[];
+  /** A user message's terminal attachments, shown as chips with their bounded preview. */
+  terminalAttachments?: TerminalAttachmentInfo[];
   toolCalls?: ToolCall[];
   timestamp: number;
   isPartial?: boolean;

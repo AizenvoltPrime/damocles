@@ -7,9 +7,12 @@ export interface MessageQuestion {
   readonly message: string;
   readonly detail?: string;
   readonly actions: readonly string[];
-  readonly cancelLabel: string;
+  // undefined: no Cancel button; Escape, the scrim and the OS box's close still cancel. Then defaultAction is required.
+  readonly cancelLabel?: string;
   // the action focused first; undefined focuses Cancel
   readonly defaultAction?: number;
+  // lines shown verbatim in the mono font; the caller makes control characters visible
+  readonly preview?: readonly string[];
 }
 
 /** Asks the user; resolves the index of the chosen action, or undefined for Cancel. */
@@ -25,6 +28,8 @@ export interface MessageAskerDeps {
   readonly window: () => BrowserWindow | undefined;
   // where keyboard focus returns once the dialog closes
   readonly focused: () => WebContents | undefined;
+  // true once a quit nobody can cancel closes the window: a question then answers Cancel so the request asking it settles
+  readonly closing: () => boolean;
   readonly log: (line: string) => void;
 }
 
@@ -36,17 +41,19 @@ function errorText(err: unknown): string {
 
 /**
  * Every desktop question renders as the overlay's dialog (D41). The OS message box asks only when the overlay cannot:
- * no overlay page, a crashed one, a missed acknowledgement, or a question beyond the overlay's bounds.
+ * no overlay page, a crashed one, a missed acknowledgement, or a question beyond the overlay's bounds, except once a quit
+ * closes the window.
  */
 export function createMessageAsker(deps: MessageAskerDeps): AskMessage {
   const native = async (question: MessageQuestion): Promise<number | undefined> => {
+    const detail = [question.detail, ...(question.preview ?? [])].filter((part) => part !== undefined && part !== '').join('\n');
     const options: MessageBoxOptions = {
       type: NATIVE_TYPE[question.severity],
       title: 'Damocles',
       message: question.message,
-      ...(question.detail ? { detail: question.detail } : {}),
-      // Cancel is the last button and the one closing the box answers.
-      buttons: [...question.actions, question.cancelLabel],
+      ...(detail !== '' ? { detail } : {}),
+      // Cancel is the last button, when there is one; Escape and closing the box answer the index past the actions either way.
+      buttons: question.cancelLabel !== undefined ? [...question.actions, question.cancelLabel] : [...question.actions],
       cancelId: question.actions.length,
       defaultId: question.defaultAction ?? question.actions.length,
       noLink: true,
@@ -57,6 +64,10 @@ export function createMessageAsker(deps: MessageAskerDeps): AskMessage {
   };
 
   return async (question) => {
+    if (deps.closing()) {
+      deps.log('[dialog] the window is closing for a quit; the question is dismissed');
+      return undefined;
+    }
     const request = parseMessageRequest({ kind: 'message', ...question });
     const overlay = deps.overlay();
     if (!request || !overlay) {
@@ -67,6 +78,10 @@ export function createMessageAsker(deps: MessageAskerDeps): AskMessage {
     try {
       answer = await overlay.request(request, deps.focused());
     } catch (err) {
+      if (deps.closing()) {
+        deps.log('[dialog] the window closed for a quit; the question is dismissed');
+        return undefined;
+      }
       deps.log(`[dialog] the overlay could not ask (${errorText(err)}); asking with the OS message box`);
       return native(question);
     }

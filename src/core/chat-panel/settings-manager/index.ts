@@ -360,6 +360,14 @@ export class SettingsManager {
     this.thinkingManager.setPanelMaxTokens(panelId, model, tokens);
   }
 
+  /** A resumed conversation continues on the model and pi thinking level its session file recorded, which become the panel's. */
+  restoreRecordedSelection(host: PanelHost, panelId: string, folder: FolderTarget, model: string, thinkingLevel: string | undefined): void {
+    this.modelManager.setActiveModelForPanel(panelId, model);
+    if (thinkingLevel !== undefined) this.thinkingManager.restoreRecordedLevel(panelId, model, thinkingLevel);
+    this.sendModelForPanel(host, panelId);
+    this.sendThinkingForPanel(host, panelId, folder);
+  }
+
   sendThinkingForPanel(host: PanelHost, panelId: string, folder: FolderTarget): void {
     const activeModel = this.modelManager.getActiveModelForPanel(panelId);
     const defaultModel = this.modelManager.getDefaultModel();

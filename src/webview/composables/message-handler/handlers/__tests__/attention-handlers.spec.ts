@@ -2,7 +2,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
-import { defineAsyncComponent, defineComponent, h, nextTick } from 'vue';
+import { defineAsyncComponent, defineComponent, h, nextTick, ref } from 'vue';
 import SkillApprovalPrompt from '@/components/SkillApprovalPrompt.vue';
 import FormPrompt from '@/components/FormPrompt.vue';
 import { createAttentionHandlers } from '../attention-handlers';
@@ -12,6 +12,9 @@ import { useFormStore } from '@/stores/useFormStore';
 import { useElicitationStore } from '@/stores/useElicitationStore';
 import { useTeamStore } from '@/stores/useTeamStore';
 import { useSubscriptionUsageStore } from '@/stores/useSubscriptionUsageStore';
+import { useContextUsageStore } from '@/stores/useContextUsageStore';
+import { useUsageStatsStore } from '@/stores/useUsageStatsStore';
+import { useUIStore } from '@/stores/useUIStore';
 import type { HandlerContext } from '../../types';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@shared/types/messages';
 import { i18n } from '@/i18n';
@@ -22,6 +25,7 @@ vi.mock('@/composables/usePlatformBridge', () => ({
 }));
 
 const mounted: VueWrapper[] = [];
+const prependInput = vi.fn();
 
 function context(): HandlerContext {
   return {
@@ -32,7 +36,11 @@ function context(): HandlerContext {
       elicitationStore: useElicitationStore(),
       teamStore: useTeamStore(),
       subscriptionUsageStore: useSubscriptionUsageStore(),
+      contextUsageStore: useContextUsageStore(),
+      uiStore: useUIStore(),
     },
+    refs: { chatInputRef: ref({ prependInput }) },
+    bridge: { postMessage: (m: WebviewToExtensionMessage) => posted.push(m) },
   } as unknown as HandlerContext;
 }
 
@@ -63,6 +71,7 @@ const FORM = { toolUseId: 'f-1', form: { title: 'Log in', fields: [{ id: 'user',
 beforeEach(() => {
   setActivePinia(createPinia());
   posted.length = 0;
+  prependInput.mockClear();
 });
 
 afterEach(() => {
@@ -161,5 +170,50 @@ describe('runChatCommand', () => {
 
     expect(useSubscriptionUsageStore().isOverlayOpen).toBe(true);
     expect(posted).toEqual([{ type: 'requestSubscriptionUsage' }]);
+  });
+
+  it('opens Context usage and asks the host for it, as the header does', () => {
+    dispatch({ type: 'runChatCommand', command: 'contextUsage' });
+    expect(useContextUsageStore().isOverlayOpen).toBe(true);
+    expect(posted).toEqual([{ type: 'requestContextUsage' }]);
+  });
+
+  it('opens Usage statistics', () => {
+    dispatch({ type: 'runChatCommand', command: 'usageStatistics' });
+    expect(useUsageStatsStore().isOverlayOpen).toBe(true);
+  });
+
+  it('opens MCP servers and asks for their status', () => {
+    dispatch({ type: 'runChatCommand', command: 'mcpServers' });
+    expect(useUIStore().showMcpPanel).toBe(true);
+    expect(posted).toEqual([{ type: 'requestMcpStatus' }]);
+  });
+
+  it('opens Tools and asks for their status', () => {
+    dispatch({ type: 'runChatCommand', command: 'tools' });
+    expect(useUIStore().showToolsPanel).toBe(true);
+    expect(posted).toEqual([{ type: 'requestToolStatus' }]);
+  });
+
+  it('opens Memory', () => {
+    dispatch({ type: 'runChatCommand', command: 'memory' });
+    expect(useUIStore().showMemoryPanel).toBe(true);
+  });
+
+  it('opens the rewind browser and asks for the rewind history', () => {
+    dispatch({ type: 'runChatCommand', command: 'rewind' });
+    expect(useUIStore().showRewindBrowser).toBe(true);
+    expect(posted).toEqual([{ type: 'requestRewindHistory' }]);
+  });
+
+  it('starts a side question in the composer, as the header does', () => {
+    dispatch({ type: 'runChatCommand', command: 'sideQuestion' });
+    expect(prependInput).toHaveBeenCalledWith('/btw ');
+  });
+
+  it('opens the session log and the session plan through the host', () => {
+    dispatch({ type: 'runChatCommand', command: 'openSessionLog' });
+    dispatch({ type: 'runChatCommand', command: 'viewSessionPlan' });
+    expect(posted).toEqual([{ type: 'openSessionLog' }, { type: 'openSessionPlan' }]);
   });
 });

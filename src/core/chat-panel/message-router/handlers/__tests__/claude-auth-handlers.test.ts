@@ -48,6 +48,30 @@ import { createFakePlatform, type FakePlatform } from "../../../../../__mocks__/
 import type { HandlerDependencies, HandlerContext } from "../../types";
 import type { ExtensionToWebviewMessage } from "../../../../../shared/types/messages";
 
+/** A sign-in parked on pi's paste prompt, the way pi races it against the loopback callback for the whole browser wait. */
+function parkOnPastePrompt(withdraw?: AbortSignal): { pasted: Promise<string> } {
+  let pasted!: Promise<string>;
+  H.runtime.signInSubscription.mockImplementationOnce(async (_cwd, _useAllowance, interaction: AuthInteractionLike) => {
+    pasted = interaction.prompt({ type: "manual_code", message: "Paste the redirect URL", ...(withdraw ? { signal: withdraw } : {}) });
+    await pasted.catch((err: unknown) => {
+      if (!withdraw?.aborted) throw err;
+    });
+    return { mode: "allowance" };
+  });
+  return {
+    get pasted() {
+      return pasted;
+    },
+  };
+}
+
+const waitingFlags = (sent: ExtensionToWebviewMessage[]): boolean[] =>
+  sent.flatMap((m) => (m.type === "claudeSignInWaiting" ? [m.waiting] : []));
+
+async function untilWaiting(sent: ExtensionToWebviewMessage[]): Promise<void> {
+  await vi.waitFor(() => expect(waitingFlags(sent)).toContain(true));
+}
+
 function makeDeps(sent: ExtensionToWebviewMessage[], platform: FakePlatform): {
   deps: HandlerDependencies;
   ctx: HandlerContext;
@@ -66,7 +90,8 @@ function makeDeps(sent: ExtensionToWebviewMessage[], platform: FakePlatform): {
 
 describe("createClaudeAuthHandlers", () => {
   let sent: ExtensionToWebviewMessage[];
-  let handlers: ReturnType<typeof createClaudeAuthHandlers>;
+  let handlers: ReturnType<typeof createClaudeAuthHandlers>["handlers"];
+  let postState: ReturnType<typeof createClaudeAuthHandlers>["postState"];
   let ctx: HandlerContext;
   let publishAccountInfo: ReturnType<typeof vi.fn>;
   let platform: FakePlatform;
@@ -77,7 +102,7 @@ describe("createClaudeAuthHandlers", () => {
     sent = [];
     platform = createFakePlatform();
     const built = makeDeps(sent, platform);
-    handlers = createClaudeAuthHandlers(built.deps);
+    ({ handlers, postState } = createClaudeAuthHandlers(built.deps));
     ctx = built.ctx;
     publishAccountInfo = built.publishAccountInfo;
   });
@@ -95,18 +120,106 @@ describe("createClaudeAuthHandlers", () => {
     ]);
   });
 
-  it("claudeSignIn broadcasts a benign cancel when the interaction prompt is dismissed", async () => {
-    // pi drives the paste-the-redirect-URL fallback: it invokes interaction.prompt, which hits
-    // the input box → undefined (Escape) → the SIGN_IN_CANCELLED sentinel → claudeAuthCancelled.
-    H.runtime.signInSubscription.mockImplementationOnce(async (_cwd, _useAllowance, interaction: AuthInteractionLike) => {
-      await interaction.prompt({ type: "manual_code", message: "Paste the redirect URL" });
-      return { mode: "allowance" };
+  describe("the paste prompt is shown in the panel, never as a modal", () => {
+    it("a pasted redirect URL answers pi's prompt and closes the waiting state", async () => {
+      const parked = parkOnPastePrompt();
+      const signIn = handlers.claudeSignIn!({ type: "claudeSignIn", useAllowance: true }, ctx);
+      await untilWaiting(sent);
+
+      await handlers.claudeSignInPaste!({ type: "claudeSignInPaste", input: "http://localhost:1/callback?code=c&state=s" }, ctx);
+      await signIn;
+
+      await expect(parked.pasted).resolves.toBe("http://localhost:1/callback?code=c&state=s");
+      expect(waitingFlags(sent)).toEqual([true, false]);
+      expect(sent.some((m) => m.type === "claudeAuthStatusChanged")).toBe(true);
+      expect(platform.dialogs.inputBoxCalls).toEqual([]);
     });
 
-    await handlers.claudeSignIn!({ type: "claudeSignIn", useAllowance: true }, ctx);
+    it("pi withdrawing the prompt after the browser returned closes the waiting state with no error", async () => {
+      const withdraw = new AbortController();
+      parkOnPastePrompt(withdraw.signal);
+      const signIn = handlers.claudeSignIn!({ type: "claudeSignIn", useAllowance: true }, ctx);
+      await untilWaiting(sent);
 
-    expect(sent.some((m) => m.type === "claudeAuthCancelled")).toBe(true);
-    expect(sent.some((m) => m.type === "claudeAuthError")).toBe(false);
+      withdraw.abort(new Error("callback won"));
+      await signIn;
+
+      expect(waitingFlags(sent)).toEqual([true, false]);
+      expect(sent.some((m) => m.type === "claudeAuthError")).toBe(false);
+      expect(sent.some((m) => m.type === "claudeAuthStatusChanged")).toBe(true);
+    });
+
+    it("a paste with no prompt open is dropped", async () => {
+      await handlers.claudeSignInPaste!({ type: "claudeSignInPaste", input: "stray" }, ctx);
+
+      expect(sent).toEqual([]);
+    });
+
+    it("a paste that is not a string, or is longer than 8 KB, leaves the prompt open", async () => {
+      const parked = parkOnPastePrompt();
+      const signIn = handlers.claudeSignIn!({ type: "claudeSignIn", useAllowance: true }, ctx);
+      await untilWaiting(sent);
+
+      await handlers.claudeSignInPaste!({ type: "claudeSignInPaste", input: 7 as unknown as string }, ctx);
+      await handlers.claudeSignInPaste!({ type: "claudeSignInPaste", input: "x".repeat(8 * 1024 + 1) }, ctx);
+      expect(waitingFlags(sent)).toEqual([true]);
+
+      const longest = `http://localhost:1/callback?code=${"c".repeat(8 * 1024 - 33)}`;
+      await handlers.claudeSignInPaste!({ type: "claudeSignInPaste", input: longest }, ctx);
+      await signIn;
+      await expect(parked.pasted).resolves.toBe(longest);
+    });
+  });
+
+  describe("claudeSignInCancel", () => {
+    it("cancels a sign-in parked on the paste prompt as a benign cancel", async () => {
+      parkOnPastePrompt();
+      const signIn = handlers.claudeSignIn!({ type: "claudeSignIn", useAllowance: true }, ctx);
+      await untilWaiting(sent);
+
+      await handlers.claudeSignInCancel!({ type: "claudeSignInCancel" }, ctx);
+      await signIn;
+
+      expect(sent.some((m) => m.type === "claudeAuthCancelled")).toBe(true);
+      expect(sent.some((m) => m.type === "claudeAuthError")).toBe(false);
+      expect(waitingFlags(sent)).toEqual([true, false]);
+    });
+
+    it("reports a cancel when pi rethrows the abort as its own error", async () => {
+      // pi's callback server rejects a flow abort with "Login cancelled", not the bridge's sentinel.
+      H.runtime.signInSubscription.mockImplementationOnce(
+        (_cwd, _useAllowance, interaction: AuthInteractionLike) =>
+          new Promise((_resolve, reject) => {
+            interaction.signal!.addEventListener("abort", () => reject(new Error("Login cancelled")), { once: true });
+          }),
+      );
+      const signIn = handlers.claudeSignIn!({ type: "claudeSignIn", useAllowance: true }, ctx);
+      await Promise.resolve();
+
+      await handlers.claudeSignInCancel!({ type: "claudeSignInCancel" }, ctx);
+      await signIn;
+
+      expect(sent.some((m) => m.type === "claudeAuthCancelled")).toBe(true);
+      expect(sent.some((m) => m.type === "claudeAuthError")).toBe(false);
+    });
+  });
+
+  it("postState replays a sign-in in progress to a settings view that opened mid-way", async () => {
+    parkOnPastePrompt();
+    const signIn = handlers.claudeSignIn!({ type: "claudeSignIn", useAllowance: true }, ctx);
+    await untilWaiting(sent);
+
+    sent.length = 0;
+    postState(ctx.host);
+
+    expect(sent).toEqual([
+      { type: "claudeAuthStatusChanged", mode: "none" },
+      { type: "claudeAuthBusy", busy: true },
+      { type: "claudeSignInWaiting", waiting: true },
+    ]);
+
+    await handlers.claudeSignInCancel!({ type: "claudeSignInCancel" }, ctx);
+    await signIn;
   });
 
   it("claudeSignIn opens the browser on an auth_url notification", async () => {
@@ -157,24 +270,37 @@ describe("createClaudeAuthHandlers", () => {
     await first;
   });
 
+  it("a second sign-in while one runs is refused, and Cancel and Sign out still reach the first", async () => {
+    parkOnPastePrompt();
+    const first = handlers.claudeSignIn!({ type: "claudeSignIn", useAllowance: true }, ctx);
+    await untilWaiting(sent);
+
+    await handlers.claudeSignIn!({ type: "claudeSignIn", useAllowance: false }, ctx);
+    expect(H.runtime.signInSubscription).toHaveBeenCalledTimes(1);
+    expect(sent.filter((m) => m.type === "claudeAuthError")).toEqual([
+      { type: "claudeAuthError", error: "A Claude auth operation is already in progress." },
+    ]);
+
+    await handlers.claudeSignInCancel!({ type: "claudeSignInCancel" }, ctx);
+    await first;
+    expect(sent.some((m) => m.type === "claudeAuthCancelled")).toBe(true);
+
+    parkOnPastePrompt();
+    const again = handlers.claudeSignIn!({ type: "claudeSignIn", useAllowance: true }, ctx);
+    await vi.waitFor(() => expect(waitingFlags(sent).filter(Boolean)).toHaveLength(2));
+    await handlers.claudeSignIn!({ type: "claudeSignIn", useAllowance: true }, ctx);
+    await handlers.claudeSignOut!({ type: "claudeSignOut" }, ctx);
+    await again;
+    expect(H.runtime.signOutAnthropic).toHaveBeenCalledTimes(1);
+  });
+
   it("claudeSignOut during a stalled sign-in aborts the flow, then signs out", async () => {
-    // Stalled browser login: pi is parked awaiting the manual_code prompt. claudeSignOut fires the
-    // flow-level abort; the interaction bridge dismisses the input box, the sign-in settles as a
-    // benign cancel releasing the busy guard, and the sign-out proceeds instead of bouncing.
-    let promptOpened!: () => void;
-    const promptOpen = new Promise<void>((resolve) => { promptOpened = resolve; });
-    // Never answers: only the abort the sign-out fires can dismiss the box.
-    platform.dialogs.answerInputBox(() => {
-      promptOpened();
-      return new Promise<undefined>(() => {});
-    });
-    H.runtime.signInSubscription.mockImplementationOnce(async (_cwd, _useAllowance, interaction: AuthInteractionLike) => {
-      await interaction.prompt({ type: "manual_code", message: "Paste the redirect URL" });
-      return { mode: "allowance" };
-    });
+    // Stalled browser login: pi is parked on the paste prompt. claudeSignOut fires the flow-level abort, the sign-in
+    // settles as a benign cancel releasing the busy guard, and the sign-out proceeds instead of bouncing.
+    parkOnPastePrompt();
 
     const signInPromise = handlers.claudeSignIn!({ type: "claudeSignIn", useAllowance: true }, ctx);
-    await promptOpen; // sign-in has reached the parked prompt
+    await untilWaiting(sent);
     await handlers.claudeSignOut!({ type: "claudeSignOut" }, ctx);
     await signInPromise;
 

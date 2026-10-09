@@ -4,6 +4,9 @@ import type { SettingsAccountId, SettingsSectionId } from '../shared/settings-se
 export interface PanelHost {
   readonly visible: boolean;
   readonly active: boolean;
+  // False when hiding discards the page (a VS Code webview without retainContextWhenHidden), which reloads and posts its
+  // ready again when shown; true when a hidden page keeps running and posts nothing on show.
+  readonly retainsContextWhenHidden: boolean;
   // Host editor column the panel sits in; undefined when the host has none.
   readonly column: number | undefined;
   readonly cspSource: string;
@@ -35,13 +38,14 @@ export interface PanelOptions {
   readonly localResourceRoots: readonly string[];
   // undefined lets the host pick
   readonly column?: number;
-  // The chat panel a browser page belongs to; a host with a chat browser pane shows the page in that chat's pane.
+  // The chat panel a browser page belongs to; a host with chatBrowserPane shows the page only among that chat's pages.
   readonly owner?: PanelHost;
 }
 
 export interface WindowService {
-  // Each chat panel shows its own browser pages in a side pane that draws their navigation chrome, so every chat gets
-  // its own browser scope and a page omits its own toolbar. False: one browser scope shared by every chat.
+  // Each chat panel owns its browser pages, which the host shows with navigation chrome of its own (desktop: editor tabs of
+  // the chat), so every chat gets its own browser scope and a page omits its own toolbar. False: one browser scope shared by
+  // every chat.
   readonly chatBrowserPane: boolean;
   createPanel(opts: PanelOptions): PanelHost;
   // Opens in a column holding only panels of this kind, else in an unused column the host then reserves for them (VS Code: lockEditorGroup).
@@ -49,4 +53,10 @@ export interface WindowService {
   // Shows the settings modal outside the chat pages (desktop: the overlay). Only a host whose capabilities say
   // settingsInPanel false is asked; one that shows the modal inside the chat page has nowhere else to show it.
   openAppSettings(section: SettingsSectionId | undefined, account?: SettingsAccountId): void;
+  // Shows or hides the window's terminal pane as the Toggle Terminal command does; only a host whose capabilities say
+  // windowLayout true is asked.
+  toggleTerminal(): void;
+  // Whether the window shows its terminal pane, and Toggle Terminal's display shortcut, for the chat header's toggle; asked only
+  // when windowLayout is true.
+  terminalToggle(): { readonly shown: boolean; readonly shortcut: string };
 }

@@ -27,6 +27,7 @@ function newHost(): OverlayHost {
     state: () => ({ locale: 'en', platform: 'win32' }),
     focusOutside: () => undefined,
     awaitActivation: () => undefined,
+    popupsClosed: () => undefined,
     canRasterize: () => undefined,
     log: () => undefined,
   });
@@ -59,7 +60,7 @@ function service(): ReturnType<typeof createDesktopNotificationService> {
       notices.push([severity, message, actions]);
       return actions[0];
     },
-    ask: createMessageAsker({ overlay: () => host, window: () => parent as never, focused: () => undefined, log: (line) => lines.push(line) }),
+    ask: createMessageAsker({ overlay: () => host, window: () => parent as never, focused: () => undefined, closing: () => false, log: (line) => lines.push(line) }),
     t: (message) => message,
     log: () => undefined,
   });
@@ -107,7 +108,7 @@ describe('desktop notifications', () => {
     });
     const notifications = createDesktopNotificationService({
       notice: (severity, message, actions) => center.notice(severity, message, actions),
-      ask: createMessageAsker({ overlay: () => host, window: () => parent as never, focused: () => undefined, log: (line) => lines.push(line) }),
+      ask: createMessageAsker({ overlay: () => host, window: () => parent as never, focused: () => undefined, closing: () => false, log: (line) => lines.push(line) }),
       t: (message) => message,
       log: () => undefined,
     });

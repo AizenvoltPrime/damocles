@@ -13,14 +13,15 @@ import { RELEASE_TARGETS, MIN_VSIX_BYTES, DESKTOP_TARGETS, DESKTOP_ARTIFACT_PATT
  */
 
 type Step = { name?: string; uses?: string; run?: string; if?: string; with?: Record<string, string> };
-type Job = { needs?: string | string[]; permissions?: Record<string, string>; steps: Step[]; strategy?: { matrix: { include: Record<string, string | boolean>[] } } };
+type Matrix = { include: Record<string, string | number | boolean>[]; target?: string[]; shard?: number[]; exclude?: { target: string; shard: number }[] };
+type Job = { needs?: string | string[]; permissions?: Record<string, string>; steps: Step[]; strategy?: { matrix: Matrix } };
 type DesktopSpec = { runner: string; os: string; builder: string; arch: string; channel?: string; appDir: string; executable: string; artifacts: string[] };
 
 const workflowText = readFileSync(join(__dirname, '..', '..', '.github', 'workflows', 'release.yml'), 'utf8');
 const workflow = parse(workflowText) as { jobs: Record<string, Job> };
 const desktopTargets = DESKTOP_TARGETS as Record<string, DesktopSpec>;
 
-function include(job: string): Record<string, string | boolean>[] {
+function include(job: string): Record<string, string | number | boolean>[] {
   const legs = workflow.jobs[job]?.strategy?.matrix.include;
   if (!legs) throw new Error(`release.yml has no matrix for job ${job}`);
   return legs;
@@ -111,6 +112,35 @@ describe('release-targets.mjs mirrors the release workflow desktop matrix', () =
   });
 });
 
+describe('the dev end-to-end suite runs in shards on every desktop target', () => {
+  const job = workflow.jobs['e2e-desktop'];
+  const matrix = job?.strategy?.matrix;
+
+  it('covers exactly the desktop targets, each on its package-desktop runner and platform', () => {
+    expect(matrix?.target?.slice().sort()).toEqual(Object.keys(desktopTargets).sort());
+    for (const leg of matrix!.include) {
+      const spec = desktopTargets[leg.target as string]!;
+      expect({ target: leg.target, runner: leg.runner, os: leg.os }).toEqual({ target: leg.target, runner: spec.runner, os: spec.os });
+    }
+  });
+
+  it('runs shards 1 to N of each target, where N is the shard count it passes to Playwright', () => {
+    for (const leg of matrix!.include) {
+      const shards = matrix!.shard!.filter((shard) => !matrix!.exclude?.some((ex) => ex.target === leg.target && ex.shard === shard));
+      expect({ target: leg.target, shards }).toEqual({ target: leg.target, shards: Array.from({ length: leg.shards as number }, (_, i) => i + 1) });
+    }
+    const suite = job!.steps.find((step) => step.run?.includes('npm run test:desktop'));
+    expect(suite?.run).toContain('--shard="$SHARD"');
+    expect(JSON.stringify(suite)).toContain('${{ matrix.shard }}/${{ matrix.shards }}');
+  });
+
+  it('leaves package-desktop the packaged-app suite only', () => {
+    const runs = workflow.jobs['package-desktop']!.steps.map((step) => step.run ?? '');
+    expect(runs.filter((run) => /test:desktop(?!:packaged)/.test(run))).toEqual([]);
+    expect(runs.filter((run) => run.includes('test:desktop:packaged'))).toHaveLength(1);
+  });
+});
+
 describe('the release workflow runs electron-builder safely', () => {
   const invocations = workflowText.split(/\r?\n/).filter((line) => /npx electron-builder\b/.test(line));
 
@@ -183,9 +213,9 @@ describe('the release attaches every desktop artifact', () => {
     expect(attest!.with!['subject-path']!.trim().split(/\r?\n/).map((line) => line.trim())).toEqual(releaseAssetGlobs());
   });
 
-  it('waits for the desktop build, install and update checks', () => {
-    expect(workflow.jobs.release!.needs).toEqual(expect.arrayContaining(['package', 'package-desktop', 'verify-desktop-install', 'desktop-update-test', 'attest']));
-    expect(workflow.jobs.attest!.needs).toEqual(expect.arrayContaining(['package', 'package-desktop', 'verify-desktop-install', 'desktop-update-test']));
+  it('waits for the desktop build, end-to-end suite, install and update checks', () => {
+    expect(workflow.jobs.release!.needs).toEqual(expect.arrayContaining(['package', 'package-desktop', 'e2e-desktop', 'verify-desktop-install', 'desktop-update-test', 'attest']));
+    expect(workflow.jobs.attest!.needs).toEqual(expect.arrayContaining(['package', 'package-desktop', 'e2e-desktop', 'verify-desktop-install', 'desktop-update-test']));
   });
 
   it('builds an update feed for every leg the update test downloads', () => {

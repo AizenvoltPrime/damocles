@@ -1,5 +1,7 @@
 @import "../../webview/style.css";
 @source "../../webview/components/ui";
+/* A shared webview component the shell page renders itself; Tailwind emits only the utilities it finds in scanned files. */
+@source "../../webview/components/SlidingIndicator.vue";
 
 @theme {
   --font-mono: var(--d-mono);
@@ -8,15 +10,11 @@
 /* AD7 frameless window: the title bar drags the window; its controls opt out. */
 .title-bar {
   -webkit-app-region: drag;
-  /* Window Controls Overlay (Windows, Linux): keep clear of the native controls main draws on the right. */
-  padding-left: env(titlebar-area-x, 0px);
-  padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw));
 }
 
-/* macOS has no Window Controls Overlay; this inset clears the traffic lights at trafficLightPosition { x: 12, y: 13 }. */
+/* This inset clears the traffic lights at trafficLightPosition { x: 12, y: 13 }; desktop fixes the root font, so 5rem is 80px. */
 .title-bar.title-bar-darwin {
-  padding-left: 80px;
-  padding-right: 0;
+  padding-left: 5rem;
 }
 
 .title-bar-control {
@@ -41,7 +39,7 @@
 
 /* The bell rings from its top for a new entry that asks for the user, and its badge pops when the count rises. */
 .bell-ring {
-  transform-origin: 50% 1px;
+  transform-origin: 50% 0.0625rem;
   animation: d-wiggle 0.7s var(--ease-out);
 }
 
@@ -57,4 +55,705 @@
 /* Reference section collapse (secTrans); off while a row sash drags so the section follows the pointer. */
 .sidebar-sections-animated .sidebar-section {
   transition: flex 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/*
+ * The update pill pops in beside the bell and shrinks out. Its fill tracks the download by transform and stays full as the
+ * ready pill's tint; the switch to ready sweeps a shine across it and rings once.
+ */
+.update-pill {
+  position: relative;
+  isolation: isolate;
+}
+
+.update-pill-enter-active {
+  animation: d-scale-in 0.32s var(--ease-spring) both;
+}
+
+.update-pill-leave-active {
+  pointer-events: none;
+  animation: d-scale-out 0.16s ease-in both;
+}
+
+.update-pill-clip {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+/* A Progress whose accent indicator, at this opacity, is the pill's tint; it slides by transform. */
+.update-pill-fill {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: transparent;
+  opacity: 0.2;
+}
+
+.update-pill-fill > * {
+  transition: transform 0.45s var(--ease-out);
+}
+
+.update-pill-shine {
+  position: absolute;
+  inset: 0;
+}
+
+.update-pill-shine::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 45%;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--d-accent) 45%, transparent), transparent);
+  transform: translateX(-100%);
+  animation: o-sweep 0.9s var(--ease-out) 0.1s both;
+}
+
+.update-pill-ring {
+  --ring-scale: 1.18;
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: currentColor;
+  opacity: 0;
+  pointer-events: none;
+  animation: d-ring 0.9s var(--ease-out);
+}
+
+.update-swap-enter-active {
+  animation: d-swap-in 0.2s var(--ease-out) both;
+}
+
+.update-swap-leave-active {
+  animation: d-swap-out 0.12s ease-in both;
+}
+
+/* Layout grid sashes: a hairline whose hit area tints on hover and turns accent while dragged or focused; colour only, so the hit area never moves. */
+.grid-sash {
+  transition: background-color 0.15s;
+}
+
+.grid-sash-line {
+  background-color: var(--d-border);
+  transition: background-color 0.15s;
+}
+
+.grid-sash:hover,
+.grid-sash:focus-visible,
+.grid-sash[data-active] {
+  background-color: var(--d-accent-soft);
+}
+
+.grid-sash:focus-visible .grid-sash-line,
+.grid-sash[data-active] .grid-sash-line {
+  background-color: var(--d-accent);
+}
+
+/* A pane being dragged onto the drop zones dims in place, and brightens back when the drag ends. */
+.grid-pane {
+  transition: opacity 0.15s var(--ease-out);
+}
+
+.grid-pane-dragging {
+  opacity: 0.55;
+}
+
+/* Editor tabs pop in (the reference's d-pop) and shrink out while the tabs after them slide into the gap. */
+.editor-tab-enter-active {
+  animation: d-pop 0.18s var(--ease-out) both;
+}
+
+.editor-tab-leave-active {
+  position: absolute;
+  pointer-events: none;
+  animation: d-pop-out 0.14s ease-in both;
+}
+
+.editor-tab-move {
+  transition: transform 0.22s var(--ease-out);
+}
+
+.editor-tab {
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.editor-tab:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--d-accent);
+}
+
+/* The tab strip scrolls under VS Code's overlay slider (EditorTabs.vue), so its native scrollbar never takes room. */
+.editor-tab-strip {
+  scrollbar-width: none;
+}
+
+/*
+ * VS Code's scrollbar fade (base/browser/ui/scrollbar/media/scrollbars.css): in over 100 ms, out over 800 ms. The slider takes
+ * scrollbarSlider.background, hoverBackground and activeBackground at VS Code's alphas (40%, 70%, 40%) of --d-muted and --d-text.
+ */
+.editor-tab-scrollbar {
+  opacity: 0;
+  transition: opacity 0.8s linear;
+}
+
+.editor-tab-scrollbar-shown {
+  opacity: 1;
+  transition: opacity 0.1s linear;
+}
+
+.editor-tab-slider {
+  background-color: color-mix(in srgb, var(--d-muted) 40%, transparent);
+}
+
+/* A hidden slider takes no clicks: the tabs under the strip's bottom edge keep them. */
+.editor-tab-scrollbar:not(.editor-tab-scrollbar-shown) .editor-tab-slider {
+  pointer-events: none;
+}
+
+.editor-tab-slider:hover {
+  background-color: color-mix(in srgb, var(--d-muted) 70%, transparent);
+}
+
+.editor-tab-slider[data-active] {
+  background-color: color-mix(in srgb, var(--d-text) 40%, transparent);
+}
+
+.editor-tab-strip-fade-start {
+  mask-image: linear-gradient(90deg, transparent, #000 1.5rem);
+}
+
+.editor-tab-strip-fade-end {
+  mask-image: linear-gradient(90deg, #000 calc(100% - 1.5rem), transparent);
+}
+
+.editor-tab-strip-fade-start.editor-tab-strip-fade-end {
+  mask-image: linear-gradient(90deg, transparent, #000 1.5rem, #000 calc(100% - 1.5rem), transparent);
+}
+
+/* The close control: faint on idle tabs, clear on the active and hovered one; a dirty tab's dot turns into the X on hover or focus. */
+.editor-tab-close {
+  opacity: 0.4;
+  transition: opacity 0.15s, background-color 0.15s;
+}
+
+.editor-tab[aria-selected="true"] .editor-tab-close,
+.editor-tab:hover .editor-tab-close,
+.editor-tab:focus-visible .editor-tab-close {
+  opacity: 0.85;
+}
+
+.editor-tab-close:hover {
+  opacity: 1;
+}
+
+.editor-tab-dot,
+.editor-tab-x {
+  transition: opacity 0.15s var(--ease-out), transform 0.2s var(--ease-spring);
+}
+
+.editor-tab-dot {
+  opacity: 0;
+  transform: scale(0.4);
+}
+
+.editor-tab-close-dirty {
+  opacity: 0.85;
+}
+
+.editor-tab-close-dirty .editor-tab-dot {
+  opacity: 1;
+  transform: none;
+}
+
+.editor-tab-close-dirty .editor-tab-x {
+  opacity: 0;
+  transform: scale(0.4) rotate(-45deg);
+}
+
+.editor-tab:hover .editor-tab-close-dirty .editor-tab-dot,
+.editor-tab:focus-visible .editor-tab-close-dirty .editor-tab-dot {
+  opacity: 0;
+  transform: scale(0.4);
+}
+
+.editor-tab:hover .editor-tab-close-dirty .editor-tab-x,
+.editor-tab:focus-visible .editor-tab-close-dirty .editor-tab-x {
+  opacity: 1;
+  transform: none;
+}
+
+/*
+ * A browser tab's load line: it trickles toward the end while the page loads, runs out when the load ends and fades away.
+ * Transform and opacity only; under reduced motion the transitions are instant, so it shows while loading and hides after.
+ */
+.browser-progress {
+  opacity: 0;
+  transform: scaleX(0);
+  transform-origin: left;
+}
+
+.browser-progress[data-phase="start"] {
+  opacity: 1;
+  transform: scaleX(0.08);
+}
+
+.browser-progress[data-phase="loading"] {
+  opacity: 1;
+  transform: scaleX(0.85);
+  transition: transform 8s cubic-bezier(0.1, 0.7, 0.2, 1);
+}
+
+.browser-progress[data-phase="done"] {
+  opacity: 0;
+  transform: scaleX(1);
+  transition: transform 0.2s var(--ease-out), opacity 0.3s ease 0.2s;
+}
+
+/* AD1 focus overlay: the editor pane leaves its slot for the window's middle, zooming in, and zooms out before it goes back. */
+.editor-focus {
+  position: fixed;
+  inset: 3.5rem 4rem 2.5rem;
+  width: auto;
+  height: auto;
+  z-index: 50;
+  border: 1px solid var(--d-border2);
+  border-radius: 0.875rem;
+  box-shadow: var(--d-shadow);
+  animation: d-zoom 0.26s var(--ease-out) both;
+}
+
+.editor-focus-leave {
+  animation: d-zoom-out 0.18s ease-in both;
+}
+
+/* The scrim covers the title bar too, so a click on it lands here instead of dragging the window. */
+[data-testid="focus-overlay-scrim"] {
+  -webkit-app-region: no-drag;
+}
+
+/* The pane drag handle sits in the pane's header strip; it never moves on hover. */
+.pane-grip:focus-visible {
+  outline: 2px solid var(--d-accent);
+  outline-offset: -2px;
+}
+
+.files-row[aria-selected="true"] {
+  color: var(--d-text);
+}
+
+/* Image preview: a checkerboard behind the image shows its transparency. */
+.image-preview img {
+  background-color: var(--d-panel);
+  background-image: conic-gradient(var(--d-hover) 25%, transparent 0 50%, var(--d-hover) 0 75%, transparent 0);
+  background-size: 1rem 1rem;
+}
+
+/* Markdown preview (the reference's mdBlocks). It fills the pane as VS Code's does; a table wider than the pane scrolls it.
+   break-word, not anywhere: anywhere shrinks a table cell's minimum width to one character. */
+.md-preview {
+  padding: 1.75rem 2.25rem 3.75rem;
+  color: var(--d-text);
+  font-size: 0.875rem;
+  line-height: 1.7;
+  user-select: text;
+  overflow-wrap: break-word;
+}
+
+.md-preview h1 {
+  margin: 0 0 0.875rem;
+  padding-bottom: 0.625rem;
+  border-bottom: 1px solid var(--d-border);
+  font-size: 1.625rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+}
+
+.md-preview h2 {
+  margin: 1.375rem 0 0.5rem;
+  font-size: 1.125rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.md-preview :is(h3, h4, h5, h6) {
+  margin: 1.125rem 0 0.375rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.md-preview p {
+  margin: 0 0 0.625rem;
+  text-wrap: pretty;
+}
+
+.md-preview :is(ul, ol) {
+  margin: 0 0 0.625rem;
+  padding-left: 1.375rem;
+}
+
+.md-preview ul {
+  list-style: disc;
+}
+
+.md-preview ol {
+  list-style: decimal;
+}
+
+.md-preview ul > li::marker {
+  color: var(--d-accent);
+}
+
+.md-preview li {
+  margin: 0 0 0.25rem;
+}
+
+.md-preview code {
+  padding: 0.0625rem 0.375rem;
+  border-radius: 0.3125rem;
+  background: var(--d-hover);
+  font-family: var(--d-mono);
+  font-size: 0.78125rem;
+}
+
+.md-preview pre {
+  margin: 0.5rem 0 0.875rem;
+  padding: 0.75rem 1rem;
+  overflow-x: auto;
+  border: 1px solid var(--d-border);
+  border-radius: 0.625rem;
+  background: var(--d-code);
+  line-height: 1.7;
+}
+
+.md-preview pre code {
+  padding: 0;
+  background: none;
+}
+
+.md-preview a {
+  color: var(--d-accent-text);
+  text-decoration: underline;
+  text-underline-offset: 0.125rem;
+  cursor: pointer;
+}
+
+.md-preview blockquote {
+  margin: 0.5rem 0;
+  padding: 0.125rem 0.875rem;
+  border-left: 3px solid var(--d-border2);
+  color: var(--d-muted);
+}
+
+.md-preview hr {
+  margin: 1rem 0;
+  border: 0;
+  border-top: 1px solid var(--d-border);
+}
+
+.md-preview table {
+  margin: 0.5rem 0 0.875rem;
+  border-collapse: collapse;
+}
+
+.md-preview :is(th, td) {
+  padding: 0.3125rem 0.625rem;
+  border: 1px solid var(--d-border);
+  text-align: left;
+}
+
+.md-preview .md-preview-image {
+  padding: 0.0625rem 0.375rem;
+  border: 1px dashed var(--d-border2);
+  border-radius: 0.3125rem;
+  color: var(--d-muted);
+  font-size: 0.78125rem;
+}
+
+/* The minimap column is opaque like VS Code's: long lines end under it instead of showing through. */
+[data-testid="code-editor"] .monaco-editor .minimap {
+  background-color: var(--d-bg);
+}
+
+/* Search: the replace row and the include and exclude fields drop in under the query and lift out again. */
+.search-replace-enter-active {
+  transform-origin: top;
+  animation: d-pop 0.16s var(--ease-out) both;
+}
+
+.search-replace-leave-active {
+  transform-origin: top;
+  animation: d-pop-out 0.12s ease-in both;
+}
+
+/* Search Editor: main's match ranges in the results body (VS Code's searchEditorFindMatch), in the accent tint. */
+[data-testid="search-editor"] .search-editor-match {
+  border-radius: 0.125rem;
+  background-color: color-mix(in srgb, var(--d-accent) 30%, transparent);
+}
+
+/*
+ * Terminal. The xterm's padding sits on its own element, which the fit addon subtracts, so the columns it fits are the ones
+ * that show.
+ */
+.terminal-host .xterm {
+  height: 100%;
+  padding: 0.375rem 0 0.25rem 0.875rem;
+}
+
+/* While command marks show they sit in this wider left padding; MARK_GUTTER_REM in terminal-marks.ts must equal it. */
+.terminal-host.terminal-host-marks .xterm {
+  padding-left: 1.25rem;
+}
+
+/* xterm writes the decoration's display inline on every refresh, so the mark sizes itself to the cell. */
+.terminal-mark-decoration {
+  pointer-events: auto;
+}
+
+/* A command's gutter mark: the whole gutter cell is the hit area, the face inside it never moves on hover. */
+.terminal-mark {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.3125rem;
+  background: transparent;
+  color: var(--d-muted);
+}
+
+.terminal-mark:hover {
+  background-color: var(--d-hover);
+}
+
+.terminal-mark-face {
+  display: flex;
+  width: 0.75rem;
+  height: 0.75rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+}
+
+.terminal-mark[data-status="success"] .terminal-mark-face {
+  background-color: color-mix(in srgb, var(--d-success) 18%, transparent);
+  color: var(--d-success-text);
+}
+
+.terminal-mark[data-status="failure"] .terminal-mark-face {
+  background-color: color-mix(in srgb, var(--d-danger) 18%, transparent);
+  color: var(--d-danger-text);
+}
+
+/* Running: an accent dot whose halo breathes out slowly (d-ring), calmer than the composer's recording ring. */
+.terminal-mark-running {
+  width: 0.4375rem;
+  height: 0.4375rem;
+  border-radius: 50%;
+  background-color: var(--d-accent);
+  color: var(--d-accent);
+  --ring-scale: 2.6;
+}
+
+.terminal-mark-running::after {
+  animation-duration: 2.4s;
+}
+
+/* The dot gives way and the check or cross settles in with a small turn. */
+.terminal-mark-settle-enter-active {
+  animation: d-icon-in 0.28s var(--ease-spring) both;
+}
+
+.terminal-mark-settle-leave-active {
+  animation: d-scale-out 0.12s ease-in both;
+}
+
+/* The rows Ctrl+Up or Ctrl+Down reached: an accent tint with a bar in the gutter, flashed once. */
+.terminal-nav-highlight {
+  border-left: 2px solid var(--d-accent);
+  background-color: color-mix(in srgb, var(--d-accent) 12%, transparent);
+  pointer-events: none;
+  animation: d-flash 0.9s var(--ease-out) both;
+}
+
+/* Without motion the tint shows still until terminal-marks.ts removes it; the cut animation would end it invisible. */
+@media (prefers-reduced-motion: reduce) {
+  .terminal-nav-highlight {
+    animation: none;
+  }
+}
+
+[data-reduced-motion] .terminal-nav-highlight {
+  animation: none;
+}
+
+/*
+ * xterm.css paints its viewport black across that padding and gives it a native scrollbar, which xterm's own slider already
+ * replaces; the theme's background is the same token.
+ */
+.terminal-host .xterm .xterm-viewport {
+  background-color: var(--d-bg);
+  scrollbar-width: none;
+}
+
+/* List rows slide in from the left (the reference's d-slide) and fade out while the rows below close the gap. */
+.terminal-row-enter-active {
+  animation: d-slide 0.2s var(--ease-out) both;
+}
+
+.terminal-row-leave-active {
+  position: absolute;
+  inset-inline: 0.25rem;
+  pointer-events: none;
+  animation: o-fade-out 0.14s ease-in both;
+}
+
+.terminal-row-move {
+  transition: transform 0.22s var(--ease-out);
+}
+
+.terminal-row {
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.terminal-row:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--d-accent);
+}
+
+/* The status dot keeps a ring of the list's background, so it reads against the shell icon it sits on. */
+.terminal-status-dot {
+  box-shadow: 0 0 0 1.5px var(--d-panel);
+}
+
+/* Split and Kill are always in the row, so revealing them on hover or focus changes only their opacity and nothing moves. */
+.terminal-row-action {
+  opacity: 0;
+}
+
+.terminal-row:hover .terminal-row-action,
+.terminal-row:focus-visible .terminal-row-action,
+.terminal-row[aria-selected="true"] .terminal-row-action {
+  opacity: 1;
+}
+
+/* A split group's tree lines change colour when the group becomes or stops being the shown one. */
+.terminal-tree {
+  transition: color 0.15s;
+}
+
+/*
+ * Split panes: the active pane of a group holding two or more wears an inset ring above its xterm, faint until focus is in
+ * it; a ring never takes room, so no pane refits. A joining pane slides in from its right edge; a leaving one fades in place.
+ */
+.terminal-pane {
+  isolation: isolate;
+}
+
+.terminal-pane[data-active]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 1px var(--d-accent);
+  opacity: 0.4;
+  transition: opacity 0.15s;
+}
+
+.terminal-pane[data-active]:focus-within::after {
+  opacity: 1;
+}
+
+.terminal-pane-enter {
+  animation: d-pane-in 0.22s var(--ease-out) both;
+}
+
+.terminal-pane-ghost {
+  z-index: 1;
+  animation: d-pane-out 0.16s ease-in both;
+}
+
+.terminal-tab {
+  transition: color 0.15s;
+}
+
+.terminal-tab:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--d-accent);
+}
+
+.terminal-tab-kill {
+  opacity: 0.85;
+}
+
+/* The list arrives beside the terminal when a second one starts and leaves when one is left. */
+.terminal-list-enter-active {
+  animation: o-fade 0.2s var(--ease-out) both;
+}
+
+.terminal-list-leave-active {
+  animation: o-fade-out 0.14s ease-in both;
+}
+
+/*
+ * Change Color...'s tints, --terminal-tint-<i> for TERMINAL_COLORS[i]: the bright ANSI hue on dark and the normal one on
+ * light, the variants that keep 3:1 against the panels (the dark palette's normal black is near its background).
+ */
+:root {
+  --terminal-tint-0: var(--d-ansi-8);
+  --terminal-tint-1: var(--d-ansi-9);
+  --terminal-tint-2: var(--d-ansi-10);
+  --terminal-tint-3: var(--d-ansi-11);
+  --terminal-tint-4: var(--d-ansi-12);
+  --terminal-tint-5: var(--d-ansi-13);
+  --terminal-tint-6: var(--d-ansi-14);
+  --terminal-tint-7: var(--d-ansi-15);
+}
+
+.vscode-light {
+  --terminal-tint-0: var(--d-ansi-0);
+  --terminal-tint-1: var(--d-ansi-1);
+  --terminal-tint-2: var(--d-ansi-2);
+  --terminal-tint-3: var(--d-ansi-3);
+  --terminal-tint-4: var(--d-ansi-4);
+  --terminal-tint-5: var(--d-ansi-5);
+  --terminal-tint-6: var(--d-ansi-6);
+  --terminal-tint-7: var(--d-ansi-7);
+}
+
+/* A new icon or colour crossfades into the row and tab instead of snapping. */
+.terminal-glyph {
+  transition: color 0.2s var(--ease-out);
+}
+
+/* The rename field fades in over the title it replaces, at the title's height, so nothing in the row moves. */
+.terminal-rename {
+  animation: o-fade 0.14s var(--ease-out);
+}
+
+/* The link hint waits as VS Code's hover does, so passing over output does not flash it; reduced motion shows it at once. */
+.terminal-link-hint.t-pop-enter-active,
+.terminal-link-hint.t-pop-top-enter-active {
+  animation-delay: 0.35s;
+  animation-fill-mode: both;
+}
+
+.terminal-link-underline {
+  animation: o-fade 0.12s var(--ease-out);
+}
+
+/* The split button's halves share one hover; the divider between them shows while either is hovered or the menu is open. */
+.terminal-new-divider {
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.terminal-new-group:hover .terminal-new-divider,
+.terminal-new-group:focus-within .terminal-new-divider,
+.terminal-new-group:has([aria-expanded="true"]) .terminal-new-divider {
+  opacity: 1;
 }

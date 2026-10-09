@@ -105,6 +105,19 @@ describe('ChatHeader width folding', () => {
     expect(await openMore()).toEqual(['consolidation', ...ROOMY_FOLD, ...ALWAYS]);
   });
 
+  it('folds the desktop terminal toggle into More below 560px, so a narrow panel never scrolls sideways', async () => {
+    useSettingsStore().setHostCapabilities({ ...DESKTOP, windowLayout: true });
+    const wrapper = await mountHeader(820);
+    expect(byTestId('chat-header-terminal')).not.toBeNull();
+
+    await setWidth(480);
+    expect(byTestId('chat-header-terminal')).toBeNull();
+    expect(await openMore()).toEqual(['consolidation', ...ROOMY_FOLD, 'terminal', ...ALWAYS]);
+    document.body.querySelector<HTMLElement>('[data-action="terminal"]')!.click();
+    await flush();
+    expect(wrapper.emitted('action')).toEqual([['terminal' satisfies HeaderAction]]);
+  });
+
   it('follows the panel as it is resized', async () => {
     await mountHeader(480);
     expect(byTestId('chat-header-tools')).toBeNull();

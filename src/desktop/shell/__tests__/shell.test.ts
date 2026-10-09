@@ -1,18 +1,22 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
-import type { ContentBounds, DamoclesShellApi, ShellChat, ShellState } from '../../preload/shell-channels';
+import type { ContentBounds, DamoclesShellApi, ShellChat, ShellEditorTab, ShellState } from '../../preload/shell-channels';
 import App from '../App.vue';
 import ChatsSection from '../components/ChatsSection.vue';
 import ProjectsSection from '../components/ProjectsSection.vue';
-import RowSash from '../components/RowSash.vue';
 import Sidebar from '../components/Sidebar.vue';
+import Sash from '../layout/Sash.vue';
 import { shellI18n } from '../i18n';
-import { watchContentBounds } from '../content-bounds';
+import { LAYOUT_SETTLED_EVENT, watchContentBounds } from '../content-bounds';
 import { chatGroupOf, chatListRows, tagCounts } from '../chat-list';
 import { avatarHue, avatarInitial } from '../project-avatar';
 import { providerLogoSvg } from '@/components/icons/provider-logos';
-import { FakeResizeObserver, STATE, chat, fakeShellApi } from './fakes';
+import { createEditorStore, EDITOR_STORE } from '../editor/editor-store';
+import { EDITOR_STATE, FakeResizeObserver, STATE, chat, fakeShellApi } from './fakes';
+
+// The sidebar's Files and Search sections read the editor store App provides.
+const sidebarGlobal = (api: DamoclesShellApi) => ({ plugins: [shellI18n], provide: { [EDITOR_STORE]: createEditorStore(api) } });
 
 const mounted: Array<VueWrapper> = [];
 function track<T extends VueWrapper>(wrapper: T): T {
@@ -102,11 +106,66 @@ describe('content bounds', () => {
     stop();
     expect(observer.observed).toEqual([]);
   });
+
+  it('measures again when the layout settles, since a pane that glides moves without resizing', () => {
+    let rect = { left: 600, top: 40, right: 1000, bottom: 700 };
+    const content = document.createElement('div');
+    content.getBoundingClientRect = () => ({ ...rect, x: rect.left, y: rect.top, width: rect.right - rect.left, height: rect.bottom - rect.top, toJSON: () => rect });
+    const reports: ContentBounds[] = [];
+    const stop = watchContentBounds(content, [], (bounds) => reports.push(bounds));
+    rect = { left: 240, top: 400, right: 1000, bottom: 700 };
+    window.dispatchEvent(new Event(LAYOUT_SETTLED_EVENT));
+    expect(reports.at(-1)).toEqual({ x: 240, y: 400, width: 760, height: 300 });
+    stop();
+    rect = { left: 0, top: 0, right: 10, bottom: 10 };
+    window.dispatchEvent(new Event(LAYOUT_SETTLED_EVENT));
+    expect(reports).toHaveLength(2);
+  });
 });
 
 function mountApp(api: DamoclesShellApi) {
   return track(mount(App, { props: { api }, global: { plugins: [shellI18n] }, attachTo: document.body }));
 }
+
+// Reveal in Files opens what hides the Files tree first, as VS Code's reveal opens the side bar.
+describe('Reveal in Files', () => {
+  const TAB: ShellEditorTab = { id: 't1', kind: 'code', documentId: 'd1', title: 'a.ts', projectKey: 'p1', relativePath: 'a.ts', displayPath: '/w/alpha/a.ts', dirty: false, readOnly: false, conflict: false };
+  const HIDDEN: ShellState = { ...STATE, layout: { ...STATE.layout, sidebarVisible: false } };
+  const tree = (): Element | null => document.querySelector('[data-testid="files-tree"]');
+
+  function mountWithTab(state: ShellState) {
+    const api = fakeShellApi([], { getState: vi.fn(async () => state), getEditorState: vi.fn(async () => ({ ...EDITOR_STATE, tabs: [TAB], activeTabId: TAB.id })) });
+    const wrapper = track(mount(App, { props: { api }, global: { plugins: [shellI18n], stubs: { CodeEditor: true, Breadcrumbs: true } }, attachTo: document.body }));
+    return { api, wrapper };
+  }
+
+  it('asks main to show a hidden sidebar and reveals the folder of a terminal link once the state shows it', async () => {
+    const { api } = mountWithTab(HIDDEN);
+    await flushPromises();
+    api.terminal.revealInFiles({ projectKey: 'p1', relativePath: '' });
+    await flushPromises();
+    expect(api.showSidebar).toHaveBeenCalledOnce();
+    expect(api.toggleSidebar).not.toHaveBeenCalled();
+    expect(document.activeElement).not.toBe(tree());
+
+    api.push(STATE);
+    await flushPromises();
+    expect(document.activeElement).toBe(tree());
+  });
+
+  it('leaves the focus overlay before the editor tab menu reveals the file, with the sidebar already shown', async () => {
+    const { api, wrapper } = mountWithTab(STATE);
+    await flushPromises();
+    await wrapper.get('[data-testid="editor-focus-toggle"]').trigger('click');
+    expect(api.setFocusOverlay).toHaveBeenLastCalledWith(true);
+    api.answerNext({ kind: 'menu', itemId: 'revealInFiles' });
+    await wrapper.get('[data-editor-tab]').trigger('contextmenu');
+    await flushPromises();
+    expect(api.setFocusOverlay).toHaveBeenLastCalledWith(false);
+    expect(api.showSidebar).not.toHaveBeenCalled();
+    expect(wrapper.find('[data-testid="focus-overlay-scrim"]').exists()).toBe(false);
+  });
+});
 
 describe('App and title bar', () => {
   it('shows the project › chat breadcrumb and reports the chat slot rectangle', async () => {
@@ -128,7 +187,7 @@ describe('App and title bar', () => {
   });
 
   it('labels a chat with no title as a new chat', async () => {
-    const api = fakeShellApi([], { getState: vi.fn(async () => ({ ...STATE, selectedChat: { id: 'new:1', title: '' } })) });
+    const api = fakeShellApi([], { getState: vi.fn(async () => ({ ...STATE, selectedChat: { id: 'new:1', title: '', status: 'idle' as const } })) });
     const wrapper = mountApp(api);
     await flushPromises();
     expect(wrapper.get('[data-testid="breadcrumb-chat"]').text()).toBe('New chat');
@@ -139,7 +198,7 @@ describe('App and title bar', () => {
     const wrapper = mountApp(api);
     await flushPromises();
     expect(wrapper.get('[data-testid="breadcrumb-project"]').text()).toBe('Home folder');
-    expect(api.listChats).toHaveBeenCalledWith('home');
+    expect(api.listChats).toHaveBeenCalledWith('home', 1);
     expect(wrapper.get('[data-testid="chats-empty"]').text()).toContain('No chats in Home folder yet.');
   });
 
@@ -154,7 +213,7 @@ describe('App and title bar', () => {
 
     api.push(STATE);
     await flushPromises();
-    expect(api.listChats).toHaveBeenCalledWith('p1');
+    expect(api.listChats).toHaveBeenCalledWith('p1', 1);
     expect(wrapper.findAll('[data-chat-id]')).toHaveLength(3);
   });
 
@@ -191,20 +250,70 @@ describe('App and title bar', () => {
     expect((sidebar.element as HTMLElement).style.marginLeft).toBe('-300px');
   });
 
-  it('reserves the traffic-light inset only on macOS and shows the pane toggle only with a pane', async () => {
-    const api = fakeShellApi([], { getState: vi.fn(async () => ({ ...STATE, platform: 'darwin' as const, pane: { open: true } })) });
-    const wrapper = mountApp(api);
+  it('reserves the traffic-light inset only on macOS', async () => {
+    const wrapper = mountApp(fakeShellApi([], { getState: vi.fn(async () => ({ ...STATE, platform: 'darwin' as const })) }));
     await flushPromises();
     expect(wrapper.get('[data-testid="title-bar"]').classes()).toContain('title-bar-darwin');
-    const pane = wrapper.get('[data-testid="toggle-pane"]');
-    expect(pane.attributes('title')).toBe('Hide browser pane (Ctrl+Shift+B)');
-    await pane.trigger('click');
-    expect(api.togglePane).toHaveBeenCalledWith();
 
     const plain = mountApp(fakeShellApi());
     await flushPromises();
     expect(plain.get('[data-testid="title-bar"]').classes()).not.toContain('title-bar-darwin');
-    expect(plain.find('[data-testid="toggle-pane"]').exists()).toBe(false);
+  });
+
+  it('toggles the editor and terminal panes from the title bar, pressed while shown, and opens Quick Open from its search box', async () => {
+    const api = fakeShellApi();
+    const wrapper = mountApp(api);
+    await flushPromises();
+    // Browser pages are editor tabs (slice 8): the title bar's right toggle is the editor's, and no other toggle shows a pane.
+    expect(wrapper.find('[data-testid="toggle-pane"]').exists()).toBe(false);
+    const editor = wrapper.get('[data-testid="toggle-editor"]');
+    const terminal = wrapper.get('[data-testid="toggle-terminal"]');
+    expect(editor.attributes('aria-pressed')).toBe('true');
+    expect(editor.attributes('title')).toBe('Toggle editor & browser pane');
+    expect(terminal.attributes('aria-pressed')).toBe('false');
+    expect(terminal.attributes('title')).toBe('Toggle terminal (Ctrl+`)');
+    await editor.trigger('click');
+    await terminal.trigger('click');
+    expect(api.toggleEditor).toHaveBeenCalledOnce();
+    expect(api.toggleTerminal).toHaveBeenCalledOnce();
+
+    const search = wrapper.get('[data-testid="quick-open-box"]');
+    expect(search.text()).toContain('Search files in all projects');
+    expect(search.text()).toContain('Ctrl+P');
+    // aria-keyshortcuts names keys as the ARIA spec does, never the display label.
+    expect(search.attributes('aria-keyshortcuts')).toBe('Control+P');
+    await search.trigger('click');
+    expect(api.openQuickOpen).toHaveBeenCalledOnce();
+
+    api.push({ ...STATE, platform: 'darwin', shortcuts: { ...STATE.shortcuts, quickOpen: '⌘P' } });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="quick-open-box"]').attributes('aria-keyshortcuts')).toBe('Meta+P');
+  });
+
+  it('draws the window controls off macOS, swaps maximize for restore and hides them in full screen', async () => {
+    const api = fakeShellApi();
+    const wrapper = mountApp(api);
+    await flushPromises();
+
+    const maximize = wrapper.get('[data-testid="window-maximize"]');
+    expect(maximize.attributes('aria-label')).toBe('Maximize');
+    expect(maximize.attributes('tabindex')).toBe('-1');
+    await wrapper.get('[data-testid="window-minimize"]').trigger('click');
+    await maximize.trigger('click');
+    await wrapper.get('[data-testid="window-close"]').trigger('click');
+    expect((api.windowControl as ReturnType<typeof vi.fn>).mock.calls).toEqual([['minimize'], ['toggleMaximize'], ['close']]);
+
+    api.push({ ...STATE, windowState: 'maximized' });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="window-maximize"]').attributes('aria-label')).toBe('Restore');
+
+    api.push({ ...STATE, windowState: 'fullScreen' });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="window-controls"]').exists()).toBe(false);
+
+    const mac = mountApp(fakeShellApi([], { getState: vi.fn(async () => ({ ...STATE, platform: 'darwin' as const })) }));
+    await flushPromises();
+    expect(mac.find('[data-testid="window-controls"]').exists()).toBe(false);
   });
 
   it('focuses the selected chat row when main moves F6 to the sidebar', async () => {
@@ -226,7 +335,7 @@ describe('App and title bar', () => {
 
 function mountProjects(api: DamoclesShellApi, selectedKey = 'p1') {
   return track(mount(ProjectsSection, {
-    props: { api, projects: STATE.projects, selectedKey, collapsed: false, size: 150 },
+    props: { api, projects: STATE.projects, selectedKey, collapsed: false, bodySize: 150 },
     global: { plugins: [shellI18n] },
     attachTo: document.body,
   }));
@@ -243,6 +352,11 @@ describe('projects section', () => {
     expect(options[1]!.text()).toContain('main');
     expect(options[1]!.get('[data-testid="untrusted-badge"]').text()).toBe('Untrusted');
     expect(options[1]!.get('[data-testid="activity-badge"]').text()).toBe('1 waiting');
+    // D48: a badge whose tone is picked at runtime takes .d-tone-<tone>, its tint mixed from --tone.
+    const tone = (badge: ReturnType<typeof wrapper.get>): string[] => badge.classes().filter((name) => name.startsWith('d-tone-') || name.includes('-text)'));
+    expect(tone(options[0]!.get('[data-testid="activity-badge"]'))).toEqual(['d-tone-accent']);
+    expect(tone(options[1]!.get('[data-testid="activity-badge"]'))).toEqual(['d-tone-warning']);
+    expect(tone(options[1]!.get('[data-testid="untrusted-badge"]'))).toEqual(['d-tone-warning']);
     expect(wrapper.get('[data-testid="add-project"]').attributes('aria-label')).toBe('Open a project folder');
   });
 
@@ -292,7 +406,7 @@ const CHATS: ShellChat[] = [
 
 function mountChats(api: DamoclesShellApi, selectedChatId: string | undefined = 'c1') {
   return track(mount(ChatsSection, {
-    props: { api, projectKey: 'p1', projectName: 'alpha', selectedChatId, newChatShortcut: 'Ctrl+N', collapsed: false },
+    props: { api, projectKey: 'p1', stateRevision: 1, projectName: 'alpha', selectedChatId, newChatShortcut: 'Ctrl+N', collapsed: false },
     global: { plugins: [shellI18n] },
     attachTo: document.body,
   }));
@@ -306,7 +420,7 @@ describe('chats section', () => {
     const wrapper = mountChats(api);
     await flushPromises();
 
-    expect(api.listChats).toHaveBeenCalledWith('p1');
+    expect(api.listChats).toHaveBeenCalledWith('p1', 1);
     const list = wrapper.get('[role="listbox"]');
     expect(list.attributes('aria-label')).toBe('Chats in alpha');
     expect(list.text()).toMatch(/Today[\s\S]*Fix login[\s\S]*Write docs[\s\S]*Earlier[\s\S]*Old idea/);
@@ -318,6 +432,8 @@ describe('chats section', () => {
     expect(first.text()).toContain('Sonnet 5.5');
     expect(first.find('.provider-logo svg').exists()).toBe(true);
     expect(first.get('[data-testid="chat-tag"]').text()).toBe('auth');
+    // The tag sits inside the row's spans, so it is phrasing content too.
+    expect(first.get('[data-testid="chat-tag"]').element.tagName).toBe('SPAN');
     expect(wrapper.get('[data-chat-id="c2"]').text()).toContain('Needs you');
     const unknown = wrapper.get('[data-chat-id="c3"]');
     expect(unknown.text()).toContain('custom-model');
@@ -508,7 +624,7 @@ describe('chats section', () => {
     await wrapper.get('[data-testid="chat-search"]').setValue('nothing here');
     await vi.advanceTimersByTimeAsync(200);
     await flushPromises();
-    expect(api.searchChats).toHaveBeenCalledWith('p1', 'nothing here');
+    expect(api.searchChats).toHaveBeenCalledWith('p1', 'nothing here', 1);
     expect(wrapper.get('[data-testid="chats-no-match"]').text()).toBe('No sessions found');
 
     const empty = mountChats(fakeShellApi([]), undefined);
@@ -584,7 +700,7 @@ describe('chats section', () => {
 
     await wrapper.get('[data-testid="chats-load-failed"] button').trigger('click');
     await flushPromises();
-    expect(api.listChats).toHaveBeenLastCalledWith('p2');
+    expect(api.listChats).toHaveBeenLastCalledWith('p2', 1);
     expect(wrapper.find('[data-testid="chats-load-failed"]').exists()).toBe(false);
     expect(wrapper.findAll('[role="option"]')).toHaveLength(3);
   });
@@ -603,28 +719,66 @@ describe('chats section', () => {
     expect(wrapper.find('[data-testid="chats-load-failed"]').exists()).toBe(false);
     expect(wrapper.findAll('[role="option"]')).toHaveLength(3);
   });
+
+  // Main answers null for a project that left its list after the state the key came from, and has sent the next state.
+  it('waits for the next state when the project left main\'s list, showing no failure and no other project\'s chats', async () => {
+    const api = fakeShellApi(CHATS);
+    const wrapper = mountChats(api);
+    await flushPromises();
+    vi.mocked(api.listChats).mockResolvedValueOnce(null);
+    api.chatsChanged('p1');
+    await flushPromises();
+    expect(wrapper.findAll('[role="option"]')).toHaveLength(3);
+    expect(wrapper.find('[data-testid="chats-load-failed"]').exists()).toBe(false);
+
+    vi.mocked(api.listChats).mockResolvedValueOnce(null);
+    await wrapper.setProps({ projectKey: 'p2', projectName: 'beta', stateRevision: 2 });
+    await flushPromises();
+    expect(api.listChats).toHaveBeenLastCalledWith('p2', 2);
+    expect(wrapper.findAll('[role="option"]')).toHaveLength(0);
+    expect(wrapper.find('[data-testid="chats-load-failed"]').exists()).toBe(false);
+
+    await wrapper.setProps({ projectKey: 'p1', projectName: 'alpha', stateRevision: 3 });
+    await flushPromises();
+    expect(api.listChats).toHaveBeenLastCalledWith('p1', 3);
+    expect(wrapper.findAll('[role="option"]')).toHaveLength(3);
+  });
 });
 
 describe('sidebar layout', () => {
-  it('reports a section collapse with main\'s sidebar visibility and keeps the sash at 60px or more', async () => {
+  it('lists Files only for an open project; the home folder shows the open-a-project hint', async () => {
+    const api = fakeShellApi(CHATS);
+    const wrapper = track(mount(Sidebar, { props: { api, state: { ...STATE, selected: { projectKey: 'home', chatId: 'c1' } } }, global: sidebarGlobal(api), attachTo: document.body }));
+    await flushPromises();
+    expect(wrapper.get('[data-testid="files-section"]').text()).toContain('Open a project to see its files.');
+    expect(api.listFiles).not.toHaveBeenCalled();
+
+    await wrapper.setProps({ state: STATE });
+    await flushPromises();
+    expect(api.listFiles).toHaveBeenCalledWith({ projectKey: 'p1', relativeDir: '' });
+  });
+
+  it('reports a section collapse with the sidebar\'s own fields alone and keeps the sash at 60px or more', async () => {
     const api = fakeShellApi(CHATS);
     const state: ShellState = STATE;
-    const wrapper = track(mount(Sidebar, { props: { api, state }, global: { plugins: [shellI18n] }, attachTo: document.body }));
+    const wrapper = track(mount(Sidebar, { props: { api, state }, global: sidebarGlobal(api), attachTo: document.body }));
     await flushPromises();
 
-    const sash = wrapper.getComponent(RowSash);
+    const sash = wrapper.get('[data-testid="projects-sash"]');
     await sash.trigger('keydown', { key: 'Home' });
-    expect(api.reportLayout).toHaveBeenLastCalledWith(expect.objectContaining({ sections: expect.objectContaining({ projects: { collapsed: false, size: 60 } }) }));
+    expect(api.reportSidebarLayout).toHaveBeenLastCalledWith(expect.objectContaining({ sections: expect.objectContaining({ projects: { collapsed: false, size: 60 } }) }));
     await sash.trigger('keydown', { key: 'ArrowUp' });
-    expect(api.reportLayout).toHaveBeenLastCalledWith(expect.objectContaining({ sections: expect.objectContaining({ projects: { collapsed: false, size: 60 } }) }));
+    expect(api.reportSidebarLayout).toHaveBeenLastCalledWith(expect.objectContaining({ sections: expect.objectContaining({ projects: { collapsed: false, size: 60 } }) }));
 
     await wrapper.get('[data-testid="sidebar-projects"] button[aria-expanded]').trigger('click');
-    expect(api.reportLayout).toHaveBeenLastCalledWith(expect.objectContaining({
-      sidebarVisible: true,
+    expect(api.reportSidebarLayout).toHaveBeenLastCalledWith({
       sidebarWidth: 300,
-      sections: { projects: { collapsed: true, size: 60 }, chats: { collapsed: false } },
-    }));
-    expect(wrapper.findComponent(RowSash).exists()).toBe(false);
+      sections: { projects: { collapsed: true, size: 60 }, chats: { collapsed: false }, files: { collapsed: false, size: 60 }, search: { collapsed: true, size: 260 } },
+      search: {},
+    });
+    expect(wrapper.find('[data-testid="projects-sash"]').exists()).toBe(false);
+    // The report crosses the context bridge, which cannot clone a Vue proxy.
+    expect(() => structuredClone(vi.mocked(api.reportSidebarLayout).mock.lastCall![0])).not.toThrow();
     expect(wrapper.get('[data-testid="sidebar-projects"] button[aria-expanded]').attributes('aria-expanded')).toBe('false');
     // A collapsed body stays in the DOM so its height can animate, but leaves the focus order and the accessibility tree.
     const bodyId = wrapper.get('[data-testid="sidebar-projects"] button[aria-expanded]').attributes('aria-controls')!;
@@ -632,17 +786,17 @@ describe('sidebar layout', () => {
     expect((wrapper.get('[data-testid="sidebar"]').element as HTMLElement).style.transition).toContain('margin-left');
   });
 
-  it('keeps a Projects/Chats sash drag through state pushes, then adopts only a layout main changed', async () => {
+  it('keeps a Projects/Chats sash drag through state pushes, then adopts only a layout main replaced', async () => {
     const api = fakeShellApi(CHATS);
-    const wrapper = track(mount(Sidebar, { props: { api, state: STATE }, global: { plugins: [shellI18n] }, attachTo: document.body }));
+    const wrapper = track(mount(Sidebar, { props: { api, state: STATE }, global: sidebarGlobal(api), attachTo: document.body }));
     await flushPromises();
     const sidebarSize = FakeResizeObserver.instances.find((observer) => observer.observed[0]?.getAttribute('data-testid') === 'sidebar')!;
     (sidebarSize.callback as (entries: unknown[]) => void)([{ contentBoxSize: [{ inlineSize: 300, blockSize: 800 }] }]);
     await flushPromises();
-    const sash = wrapper.get('[data-testid="row-sash"]');
-    const size = (): string | undefined => wrapper.get('[data-testid="row-sash"]').attributes('aria-valuenow');
-    const push = (projects: { collapsed: boolean; size: number }) =>
-      wrapper.setProps({ state: { ...STATE, layout: { ...STATE.layout, sections: { ...STATE.layout.sections, projects } } } });
+    const sash = wrapper.get('[data-testid="projects-sash"]');
+    const size = (): string | undefined => wrapper.get('[data-testid="projects-sash"]').attributes('aria-valuenow');
+    const push = (projects: { collapsed: boolean; size: number }, layoutRevision = 0) =>
+      wrapper.setProps({ state: { ...STATE, layout: { ...STATE.layout, sections: { ...STATE.layout.sections, projects } }, layoutRevision } });
     expect(size()).toBe('150');
 
     await sash.trigger('pointerdown', { button: 0, pointerId: 1, clientY: 200 });
@@ -654,23 +808,42 @@ describe('sidebar layout', () => {
     await push({ collapsed: false, size: 120 });
     expect(size()).toBe('250');
     await sash.trigger('pointerup', { pointerId: 1 });
-    expect(api.reportLayout).toHaveBeenLastCalledWith(expect.objectContaining({ sections: { projects: { collapsed: false, size: 250 }, chats: { collapsed: false } } }));
+    expect(api.reportSidebarLayout).toHaveBeenLastCalledWith(expect.objectContaining({ sections: { projects: { collapsed: false, size: 250 }, chats: { collapsed: false }, files: { collapsed: false, size: 230 }, search: { collapsed: true, size: 260 } } }));
 
+    // A push main made for another reason carries older sizes; only Restore default layout (a new revision) replaces them.
     await push({ collapsed: false, size: 120 });
     expect(size()).toBe('250');
     await push({ collapsed: false, size: 100 });
+    expect(size()).toBe('250');
+    await push({ collapsed: false, size: 100 }, 1);
     expect(size()).toBe('100');
   });
 
-  it('resizes the sidebar from the keyboard within 220px and the space the chat slot leaves', async () => {
+  it('drives the Projects sash with the grid sash, its value the Projects size above it', async () => {
+    const api = fakeShellApi(CHATS);
+    const wrapper = track(mount(Sidebar, { props: { api, state: STATE }, global: sidebarGlobal(api), attachTo: document.body }));
+    await flushPromises();
+    const sashes = wrapper.findAllComponents(Sash);
+    expect(sashes.map((sash) => sash.attributes('data-testid'))).toEqual(['projects-sash', 'files-sash']);
+    const projects = sashes[0]!;
+    expect(projects.classes()).toEqual(expect.arrayContaining(['grid-sash', 'z-3']));
+    expect(projects.classes()).not.toContain('z-2');
+    expect(projects.attributes('aria-label')).toBe('Resize the Projects section');
+    await projects.trigger('pointerdown', { button: 0, pointerId: 1, clientY: 200 });
+    expect(projects.attributes('data-active')).toBeDefined();
+    await projects.trigger('pointerup', { pointerId: 1 });
+  });
+
+  it('resizes the sidebar from the keyboard within 220px and the space the grid\'s columns leave', async () => {
     vi.stubGlobal('innerWidth', 900);
     const api = fakeShellApi(CHATS);
-    const wrapper = track(mount(Sidebar, { props: { api, state: STATE }, global: { plugins: [shellI18n] }, attachTo: document.body }));
+    const wrapper = track(mount(Sidebar, { props: { api, state: STATE }, global: sidebarGlobal(api), attachTo: document.body }));
     await flushPromises();
     const sash = wrapper.get('[data-testid="sidebar-sash"]');
     await sash.trigger('keydown', { key: 'Home' });
-    expect(api.reportLayout).toHaveBeenLastCalledWith(expect.objectContaining({ sidebarWidth: 220 }));
+    expect(api.reportSidebarLayout).toHaveBeenLastCalledWith(expect.objectContaining({ sidebarWidth: 220 }));
+    // The editor shows beside the chat: two 300px columns and the 5px sash between them.
     await sash.trigger('keydown', { key: 'End' });
-    expect(api.reportLayout).toHaveBeenLastCalledWith(expect.objectContaining({ sidebarWidth: 540 }));
+    expect(api.reportSidebarLayout).toHaveBeenLastCalledWith(expect.objectContaining({ sidebarWidth: 900 - 605 }));
   });
 });

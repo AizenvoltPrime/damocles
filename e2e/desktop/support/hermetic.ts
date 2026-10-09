@@ -1,6 +1,8 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { SUBSCRIPTION_SOURCE } from '../../../src/core/pi-session/subscription';
+import { describeLeftovers } from './file-holders';
 import { STUB_MODEL_ID } from './openai-stub';
 
 export const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -13,8 +15,17 @@ export interface HermeticHome {
   readonly agentDir: string;
   /** A project folder with its own .damocles dir, outside the home. */
   readonly project: string;
-  dispose(): void;
+  dispose(): Promise<void>;
 }
+
+/**
+ * Windows PowerShell 5.1's module analysis cache, warmed once per run by global-setup.ts and copied into each home: without
+ * it a shell's first cmdlet analyses every module on the module path first, which on a GitHub runner (AWSPowershell, Az,
+ * Microsoft.Graph) outlasts a test's wait.
+ */
+export const WINDOWS_POWERSHELL_CACHE = path.join(REPO_ROOT, 'dist', 'e2e-cache', 'ModuleAnalysisCache');
+// Where Windows PowerShell 5.1 keeps the cache under a profile's LOCALAPPDATA.
+export const WINDOWS_POWERSHELL_CACHE_IN_PROFILE = path.join('Microsoft', 'Windows', 'PowerShell', 'ModuleAnalysisCache');
 
 /**
  * A fresh HOME, userData and project folder under one temp root; nothing outside it is touched. Names stay short:
@@ -31,6 +42,11 @@ export function createHermeticHome(): HermeticHome {
   for (const dir of [home, userData, project, agentDir, path.join(home, 'AppData', 'Roaming'), path.join(home, 'AppData', 'Local'), path.join(root, 'tmp')]) {
     fs.mkdirSync(dir, { recursive: true });
   }
+  if (process.platform === 'win32') {
+    const cache = path.join(home, 'AppData', 'Local', WINDOWS_POWERSHELL_CACHE_IN_PROFILE);
+    fs.mkdirSync(path.dirname(cache), { recursive: true });
+    fs.copyFileSync(WINDOWS_POWERSHELL_CACHE, cache);
+  }
   return {
     root,
     home,
@@ -38,8 +54,16 @@ export function createHermeticHome(): HermeticHome {
     damoclesDir,
     agentDir,
     project,
-    // Windows frees a dead process's file handles late, and Chrome's helper processes (crashpad) outlive the browser by seconds.
-    dispose: () => fs.rmSync(root, { recursive: true, force: true, maxRetries: 25, retryDelay: 200 }),
+    // Windows frees a dead process's file handles late, and Chrome's helper processes (crashpad) outlive the browser by seconds,
+    // so rm retries EBUSY and EPERM. rmSync would sleep between its retries on the worker's thread, where the foreground lock
+    // refreshes (foreground.ts). A delete that still fails names what is left and the processes holding it.
+    dispose: async () => {
+      try {
+        await fs.promises.rm(root, { recursive: true, force: true, maxRetries: 25, retryDelay: 200 });
+      } catch (err) {
+        throw new Error(`${err instanceof Error ? err.message : String(err)}\n${describeLeftovers(root)}`, { cause: err });
+      }
+    },
   };
 }
 
@@ -71,6 +95,21 @@ export function seedStubModel(h: HermeticHome, baseUrl: string): void {
   writeUserSettings(h, { 'damocles.model': STUB_MODEL_ID });
 }
 
+/**
+ * Installs the subscription plugin stub as pi's clone of the pinned plugin and lists it, as a finished download leaves them, so
+ * signing in to Claude finds the plugin installed and downloads nothing.
+ */
+export function seedSubscriptionPlugin(h: HermeticHome): void {
+  const repo = new URL(SUBSCRIPTION_SOURCE.slice(0, SUBSCRIPTION_SOURCE.lastIndexOf('@')));
+  const clone = path.join(h.agentDir, 'git', repo.hostname, ...repo.pathname.split('/').filter(Boolean));
+  fs.mkdirSync(path.join(clone, 'src'), { recursive: true });
+  fs.copyFileSync(path.join(__dirname, '..', 'fixtures', 'subscription-plugin', 'src', 'index.ts'), path.join(clone, 'src', 'index.ts'));
+  fs.writeFileSync(path.join(clone, 'package.json'), JSON.stringify({ name: 'subscription-plugin-stub', type: 'module', pi: { extensions: ['./src/index.ts'] } }, null, 2));
+  const settings = path.join(h.agentDir, 'settings.json');
+  const current = fs.existsSync(settings) ? (JSON.parse(fs.readFileSync(settings, 'utf8')) as Record<string, unknown>) : {};
+  fs.writeFileSync(settings, JSON.stringify({ ...current, packages: [SUBSCRIPTION_SOURCE] }, null, 2));
+}
+
 export function writeAuth(h: HermeticHome, auth: Record<string, unknown>): void {
   fs.writeFileSync(path.join(h.agentDir, 'auth.json'), JSON.stringify(auth, null, 2), { mode: 0o600 });
 }
@@ -86,6 +125,9 @@ export function writeUserSettings(h: HermeticHome, values: Record<string, unknow
   fs.writeFileSync(path.join(h.damoclesDir, 'settings.json'), JSON.stringify({ ...readUserSettings(h), ...values }, null, 2));
 }
 
+/** Where git is sent for every GitHub URL in a launched app: a folder that does not exist, so nothing is fetched. */
+const GITHUB_BLOCKED = 'file:///damocles-e2e-no-network/';
+
 /** Set to `1` to let launches reach the developer's Linux keyring (Secret Service over the session D-Bus). */
 export const OS_KEYRING_ENV = 'DAMOCLES_E2E_OS_KEYRING';
 
@@ -95,11 +137,11 @@ const PASSTHROUGH_ENV = [
   'DISPLAY', 'WAYLAND_DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR', 'LANG', 'LC_ALL', 'SHELL', 'TERM',
 ];
 
-function appData(h: HermeticHome): string {
+function appData(h: Pick<HermeticHome, 'home'>): string {
   return path.join(h.home, 'AppData', 'Roaming');
 }
 
-function localAppData(h: HermeticHome): string {
+function localAppData(h: Pick<HermeticHome, 'home'>): string {
   return path.join(h.home, 'AppData', 'Local');
 }
 
@@ -107,7 +149,7 @@ function localAppData(h: HermeticHome): string {
  * The environment every launched process gets: an allowlist of OS variables plus the hermetic home.
  * Provider keys, proxies and CA overrides from the developer's shell never leak in.
  */
-export function hermeticEnv(h: HermeticHome, extra: Record<string, string> = {}): Record<string, string> {
+export function hermeticEnv(h: Pick<HermeticHome, 'root' | 'home'>, extra: Record<string, string> = {}): Record<string, string> {
   const env: Record<string, string> = {};
   for (const key of PASSTHROUGH_ENV) {
     const value = process.env[key];
@@ -127,6 +169,10 @@ export function hermeticEnv(h: HermeticHome, extra: Record<string, string> = {})
     PI_OFFLINE: '1',
     PI_SKIP_VERSION_CHECK: '1',
     PI_TELEMETRY: '0',
+    // A git clone or fetch from GitHub (pi installing a package) fails at once instead of reaching the network.
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: `url.${GITHUB_BLOCKED}.insteadOf`,
+    GIT_CONFIG_VALUE_0: 'https://github.com/',
   });
   // libsecret falls back to $XDG_RUNTIME_DIR/bus, so without an unusable address safeStorage reads and writes the real keyring.
   // macOS safeStorage uses the mock keychain every launcher requests (--use-mock-keychain); Windows DPAPI stores nothing outside userData.

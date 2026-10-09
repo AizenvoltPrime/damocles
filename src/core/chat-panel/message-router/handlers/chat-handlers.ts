@@ -8,6 +8,8 @@ import { resumeStoredSession } from "./resume-session";
 import { extractTextFromContent, hasImageContent } from "../../../../shared/utils";
 import { t } from "../../../l10n";
 import { settingsFolderOf } from "../../../workspace-folders/folder-registry";
+import { formatTerminalAttachmentBlock } from "../../../terminal-attachment";
+import { MAX_PENDING_TERMINAL_ATTACHMENTS } from "../../terminal-attachment-manager";
 
 /** Build the echo of a locally-handled slash command that bypasses sendMessage. It commits no user
  *  entry, so it is injected: it names no prompt and carries the latest prompt's index, as a cancel note does. */
@@ -195,19 +197,56 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       }
 
       const baseContent = transformedContent ?? msgContent;
-      const finalContent = msg.includeIdeContext ? ctx.ideContextManager.buildContentBlocks(baseContent) : baseContent;
+      const ids = msg.terminalAttachmentIds;
+      const validIds = Array.isArray(ids) && ids.length <= MAX_PENDING_TERMINAL_ATTACHMENTS && ids.every((id) => typeof id === "string");
+      const attaching = validIds && ctx.terminalAttachments.displayInfo().some((info) => ids.includes(info.id));
+      const withIde = msg.includeIdeContext === true && ctx.ideContextManager.getDisplayInfo() !== null;
+      // pi acts on a slash invocation only at the start of the prompt text, so one that blocks will lead is resolved first.
+      const baseText = extractTextFromContent(baseContent);
+      const slash = transformedContent === null && (attaching || withIde) && baseText.startsWith("/")
+        ? await ctx.session.resolveSlashInvocation(baseText)
+        : null;
+      const broadcast = { content: originalTextContent, ...(contentBlocks !== undefined ? { contentBlocks } : {}) };
 
+      if (slash?.kind === "command") {
+        if (attaching) {
+          postMessage(ctx.host, {
+            type: "notification",
+            message: t("A command takes no terminal output, so the attached output stays in the composer for your next message."),
+            notificationType: "info",
+          });
+        }
+        await ctx.session.sendMessage(baseContent, msg.agentId, correlationId, broadcast);
+        return;
+      }
+
+      const typedContent = slash?.kind === "expanded" ? withText(baseContent, slash.text) : baseContent;
+      const withIdeContext = withIde ? ctx.ideContextManager.buildContentBlocks(typedContent) : typedContent;
+      // Each attachment block starts its own line of the prompt (`extractText` joins blocks with "\n"), ahead of the IDE block and the typed text.
+      const attached = attaching ? ctx.terminalAttachments.take(ids) : [];
+      const finalContent: ContentInput = attached.length === 0 ? withIdeContext : [
+        ...attached.map(({ attachment }) => ({ type: "text" as const, text: formatTerminalAttachmentBlock(attachment) })),
+        ...(typeof withIdeContext === "string" ? [{ type: "text" as const, text: withIdeContext }] : withIdeContext),
+      ];
+
+      const restoreAttached = (): void => ctx.terminalAttachments.restore(attached);
       try {
-        await ctx.session.sendMessage(finalContent, msg.agentId, correlationId, {
-          content: originalTextContent,
-          ...(contentBlocks !== undefined ? { contentBlocks } : {}),
-        });
+        const outcome = await ctx.session.sendMessage(finalContent, msg.agentId, correlationId, {
+          ...broadcast,
+          ...(attached.length > 0 ? { terminalAttachments: attached.map(({ info }) => info) } : {}),
+        }, restoreAttached);
+        if (outcome === "unsent") restoreAttached();
       } catch (err) {
         if (preApprovedSkillName) {
           ctx.permissionHandler.revokeSkillPreApproval(preApprovedSkillName);
         }
         throw err;
       }
+    },
+
+    removeTerminalAttachment: (msg, ctx) => {
+      if (msg.type !== "removeTerminalAttachment" || typeof msg.id !== "string") return;
+      ctx.terminalAttachments.remove(msg.id);
     },
 
     cancelSession: (_msg, ctx) => {
@@ -237,7 +276,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       const contentToQueue: ContentInput = transformedContent ?? msgContent;
 
       const queuedMessage = createQueuedMessage(contentToQueue);
-      const disposition = ctx.session.queueInput(contentToQueue, queuedMessage.id);
+      const disposition = ctx.session.queueInput(contentToQueue, queuedMessage.id, textContent);
 
       if (disposition === "queued") {
         postMessage(ctx.host, { type: "messageQueued", message: queuedMessage });
@@ -286,6 +325,12 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       await ctx.session.cancelAutoCompact();
     },
   };
+}
+
+/** `content` with its text replaced by `text`, as pi would send it; image blocks stay. */
+function withText(content: ContentInput, text: string): ContentInput {
+  if (typeof content === "string") return text;
+  return [{ type: "text", text }, ...content.filter((block) => block.type !== "text")];
 }
 
 type DirectCommandResult =

@@ -3,19 +3,24 @@ import { WebContentsView, type BrowserWindow, type IpcMainEvent, type IpcMainInv
 import { HOST_THEME_STYLE_ID } from '../../shared/host-theme';
 import {
   MAX_OVERLAY_COORDINATE,
+  MAX_COMMAND_ID_LENGTH,
   MAX_OVERLAY_ID_LENGTH,
   MAX_OVERLAY_ITEMS,
   MAX_OVERLAY_LABEL_LENGTH,
   MAX_OVERLAY_TAGS,
   MAX_MESSAGE_ACTIONS,
+  MAX_MESSAGE_PREVIEW_LINES,
   MAX_OVERLAY_TEXT_LENGTH,
   MAX_RASTER_PNG_BYTES,
   OVERLAY_ACK_TIMEOUT_MS,
   OVERLAY_CHANNELS,
+  OVERLAY_CLIPBOARD_ACTIONS,
   OVERLAY_ICONS,
   type OverlayAnswer,
+  type OverlayClipboardAction,
   type OverlayIcon,
   type OverlayMenuItem,
+  type OverlayPoint,
   type OverlayRasterRequest,
   type OverlayRect,
   type RasterArt,
@@ -23,11 +28,15 @@ import {
   type OverlayState,
 } from '../preload/overlay-channels';
 import type { PanelTheme } from '../preload/panel-channels';
-import { MAX_TAG_LENGTH } from '../preload/shell-channels';
+import { TERMINAL_COLORS, TERMINAL_CUSTOM_ICONS, TERMINAL_ICONS, type TerminalColor, type TerminalGlyph } from '../preload/terminal-channels';
+import { DEFAULT_GRID_LAYOUT, GRID_PANES, GRID_SLOTS, MAX_EDITOR_LINE, MAX_TAG_LENGTH, type GridPane, type GridSlot } from '../preload/shell-channels';
+import { isRelativeFilePath } from '../../shared/relative-path';
 import { validPng } from './notification-art';
 import { APP_ORIGIN, OVERLAY_PAGE_URL } from './protocol';
 import { loadAppPage, loggableUrl } from './security';
+import { tickDeadline } from './tick-deadline';
 import { isPanelSender } from './views';
+import { parseGridLayout } from './window-layout-store';
 
 export type OverlayMode = 'hidden' | 'full';
 
@@ -40,6 +49,9 @@ export interface OverlayHostDeps {
   // a popup opened while the window is unfocused; focusing a view activates its window on macOS and Linux, so the caller
   // draws attention and calls focus() once the window activates
   readonly awaitActivation: () => void;
+  // the last open popup closed: what awaitActivation started ends here, before focus returns, since focusing a view can
+  // activate the window
+  readonly popupsClosed: () => void;
   // rasterize can draw again: the page (re)loaded, or answered after a deadline for the first time since it loaded
   readonly canRasterize: () => void;
   readonly log: (line: string) => void;
@@ -53,23 +65,9 @@ const MAX_PENDING_RASTERS = 16;
 const MAX_CRASHES_IN_WINDOW = 3;
 const CRASH_WINDOW_MS = 60_000;
 const TRANSPARENT = '#00000000';
-// Renderer deadlines count ticks of main's own timer, not wall-clock time: a stall of main's event loop costs one tick,
-// and a reply that arrived during it is handled before the next.
-const DEADLINE_TICK_MS = 250;
 
 const ICONS: ReadonlySet<string> = new Set(OVERLAY_ICONS);
-
-/** Runs `expire` after ceil(deadlineMs / DEADLINE_TICK_MS) ticks; the returned function cancels it. */
-function tickDeadline(deadlineMs: number, expire: () => void): () => void {
-  let ticksLeft = Math.ceil(deadlineMs / DEADLINE_TICK_MS);
-  const timer = setInterval(() => {
-    ticksLeft--;
-    if (ticksLeft > 0) return;
-    clearInterval(timer);
-    expire();
-  }, DEADLINE_TICK_MS);
-  return () => clearInterval(timer);
-}
+const GLYPHS: ReadonlySet<string> = new Set([...TERMINAL_ICONS, ...TERMINAL_CUSTOM_ICONS]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -112,9 +110,15 @@ function parseMenuItem(raw: unknown): OverlayMenuItem | undefined {
   const id = field(raw, 'id');
   const label = field(raw, 'label');
   const icon = field(raw, 'icon');
+  const glyph = field(raw, 'glyph');
+  const color = field(raw, 'color');
   const shortcut = field(raw, 'shortcut');
+  const clipboard = field(raw, 'clipboard');
   if (!isNonEmptyText(id, MAX_OVERLAY_ID_LENGTH) || !isNonEmptyText(label, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
+  if (clipboard !== undefined && !OVERLAY_CLIPBOARD_ACTIONS.includes(clipboard as OverlayClipboardAction)) return undefined;
   if (icon !== undefined && !(typeof icon === 'string' && ICONS.has(icon))) return undefined;
+  if (glyph !== undefined && !(typeof glyph === 'string' && GLYPHS.has(glyph))) return undefined;
+  if (color !== undefined && !(TERMINAL_COLORS as readonly unknown[]).includes(color)) return undefined;
   if (shortcut !== undefined && !isText(shortcut, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
   const danger = optionalFlag(raw, 'danger');
   const disabled = optionalFlag(raw, 'disabled');
@@ -124,7 +128,10 @@ function parseMenuItem(raw: unknown): OverlayMenuItem | undefined {
     kind: 'item',
     id,
     label,
+    ...(clipboard !== undefined ? { clipboard: clipboard as OverlayClipboardAction } : {}),
     ...(icon !== undefined ? { icon: icon as OverlayIcon } : {}),
+    ...(glyph !== undefined ? { glyph: glyph as TerminalGlyph } : {}),
+    ...(color !== undefined ? { color: color as TerminalColor } : {}),
     ...(shortcut !== undefined ? { shortcut } : {}),
     ...(danger.value !== undefined ? { danger: danger.value } : {}),
     ...(disabled.value !== undefined ? { disabled: disabled.value } : {}),
@@ -137,21 +144,35 @@ function parseMenu(raw: Record<string, unknown>): OverlayRequest | undefined {
   const anchor = parseRect(field(raw, 'anchor'));
   const rawItems = field(raw, 'items');
   const filterPlaceholder = field(raw, 'filterPlaceholder');
+  const caption = field(raw, 'caption');
   if (!isNonEmptyText(label, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
+  if (caption !== undefined && !isText(caption, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
   if (!anchor || !Array.isArray(rawItems) || rawItems.length === 0 || rawItems.length > MAX_OVERLAY_ITEMS) return undefined;
   if (filterPlaceholder !== undefined && !isText(filterPlaceholder, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
   const items: OverlayMenuItem[] = [];
   const ids = new Set<string>();
+  const clipboardActions = new Set<OverlayClipboardAction>();
   for (const rawItem of rawItems as unknown[]) {
     const item = parseMenuItem(rawItem);
     if (!item) return undefined;
     if (item.kind === 'item') {
       if (ids.has(item.id)) return undefined;
       ids.add(item.id);
+      if (item.clipboard !== undefined) {
+        if (clipboardActions.has(item.clipboard)) return undefined;
+        clipboardActions.add(item.clipboard);
+      }
     }
     items.push(item);
   }
-  return { kind: 'menu', label, anchor, items, ...(filterPlaceholder !== undefined ? { filterPlaceholder } : {}) };
+  return {
+    kind: 'menu',
+    label,
+    anchor,
+    items,
+    ...(filterPlaceholder !== undefined ? { filterPlaceholder } : {}),
+    ...(caption !== undefined ? { caption } : {}),
+  };
 }
 
 function parseConfirm(raw: Record<string, unknown>): OverlayRequest | undefined {
@@ -213,6 +234,22 @@ function parseNotifications(raw: Record<string, unknown>): OverlayRequest | unde
   return anchor ? { kind: 'notifications', anchor } : undefined;
 }
 
+function parsePoint(raw: unknown): OverlayPoint | undefined {
+  if (!isRecord(raw)) return undefined;
+  const x = field(raw, 'x');
+  const y = field(raw, 'y');
+  return isCoordinate(x) && isCoordinate(y) ? { x, y } : undefined;
+}
+
+function parseDropZones(raw: Record<string, unknown>): OverlayRequest | undefined {
+  const pane = field(raw, 'pane');
+  const slots = parseGridLayout({ ...DEFAULT_GRID_LAYOUT, slots: field(raw, 'slots') })?.slots;
+  const grid = parseRect(field(raw, 'grid'));
+  const pointer = parsePoint(field(raw, 'pointer'));
+  if (!(GRID_PANES as readonly unknown[]).includes(pane) || !slots || !grid || !pointer) return undefined;
+  return { kind: 'dropZones', pane: pane as GridPane, slots, grid, pointer };
+}
+
 /** A clean copy of a popup request from a renderer, or undefined when any field is malformed or out of bounds; only main opens settings and asks messages. */
 export function parseOverlayRequest(raw: unknown): OverlayRequest | undefined {
   if (!isRecord(raw)) return undefined;
@@ -221,6 +258,7 @@ export function parseOverlayRequest(raw: unknown): OverlayRequest | undefined {
     case 'confirm': return parseConfirm(raw);
     case 'tagPicker': return parseTagPicker(raw);
     case 'notifications': return parseNotifications(raw);
+    case 'dropZones': return parseDropZones(raw);
     default: return undefined;
   }
 }
@@ -238,20 +276,26 @@ export function parseMessageRequest(raw: unknown): Extract<OverlayRequest, { kin
   const actions = field(raw, 'actions');
   const cancelLabel = field(raw, 'cancelLabel');
   const defaultAction = field(raw, 'defaultAction');
+  const preview = field(raw, 'preview');
   if (severity !== 'info' && severity !== 'warning' && severity !== 'danger') return undefined;
-  if (!isNonEmptyText(message, MAX_OVERLAY_TEXT_LENGTH) || !isNonEmptyText(cancelLabel, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
+  if (!isNonEmptyText(message, MAX_OVERLAY_TEXT_LENGTH)) return undefined;
+  if (cancelLabel !== undefined && !isNonEmptyText(cancelLabel, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
   if (detail !== undefined && !isText(detail, MAX_OVERLAY_TEXT_LENGTH)) return undefined;
   if (!Array.isArray(actions) || actions.length > MAX_MESSAGE_ACTIONS) return undefined;
   if (!(actions as unknown[]).every((action) => isNonEmptyText(action, MAX_OVERLAY_LABEL_LENGTH))) return undefined;
   if (defaultAction !== undefined && !isIndexBelow(defaultAction, actions.length)) return undefined;
+  // Without a Cancel button the first focus must land on an action.
+  if (cancelLabel === undefined && (actions.length === 0 || defaultAction === undefined)) return undefined;
+  if (preview !== undefined && !(Array.isArray(preview) && preview.length <= MAX_MESSAGE_PREVIEW_LINES && (preview as unknown[]).every((line) => isText(line, MAX_OVERLAY_LABEL_LENGTH)))) return undefined;
   return {
     kind: 'message',
     severity,
     message,
     ...(detail !== undefined && detail !== '' ? { detail } : {}),
     actions: [...(actions as string[])],
-    cancelLabel,
+    ...(cancelLabel !== undefined ? { cancelLabel } : {}),
     ...(defaultAction !== undefined ? { defaultAction } : {}),
+    ...(preview !== undefined ? { preview: [...(preview as string[])] } : {}),
   };
 }
 
@@ -259,6 +303,21 @@ function parseNotificationsAnswer(raw: Record<string, unknown>): OverlayAnswer |
   const action = field(raw, 'action');
   const entryId = field(raw, 'entryId');
   return action === 'open' && isNonEmptyText(entryId, MAX_OVERLAY_ID_LENGTH) ? { kind: 'notifications', action: 'open', entryId } : undefined;
+}
+
+function parseQuickOpenAnswer(raw: Record<string, unknown>): OverlayAnswer | undefined {
+  const command = field(raw, 'command');
+  if (command !== undefined) return isNonEmptyText(command, MAX_COMMAND_ID_LENGTH) && field(raw, 'pick') === undefined ? { kind: 'quickOpen', command } : undefined;
+  const pick = field(raw, 'pick');
+  if (pick === null) return { kind: 'quickOpen', pick: null };
+  if (!isRecord(pick)) return undefined;
+  const projectKey = field(pick, 'projectKey');
+  const relativePath = field(pick, 'relativePath');
+  const line = field(pick, 'line');
+  const mention = field(pick, 'mention');
+  if (!isNonEmptyText(projectKey, MAX_OVERLAY_ID_LENGTH) || !isRelativeFilePath(relativePath) || typeof mention !== 'boolean') return undefined;
+  if (line !== undefined && !(typeof line === 'number' && Number.isInteger(line) && line >= 1 && line <= MAX_EDITOR_LINE)) return undefined;
+  return { kind: 'quickOpen', pick: { projectKey, relativePath, mention, ...(line !== undefined ? { line } : {}) } };
 }
 
 /** The overlay's answer as a clean copy, when it answers this request; a menu answer must name one of its enabled items. */
@@ -283,6 +342,22 @@ export function parseOverlayAnswer(raw: unknown, request: OverlayRequest): Overl
     return isIndexBelow(action, request.actions.length) ? { kind: 'message', action } : undefined;
   }
   if (request.kind === 'notifications') return parseNotificationsAnswer(raw);
+  if (request.kind === 'quickOpen') return parseQuickOpenAnswer(raw);
+  if (request.kind === 'newTerminal') {
+    const profileId = field(raw, 'profileId');
+    const projectKey = field(raw, 'projectKey');
+    const offered = request.profiles.some((profile) => profile.id === profileId) && request.projects.some((project) => project.key === projectKey);
+    return offered ? { kind: 'newTerminal', profileId: profileId as string, projectKey: projectKey as string } : undefined;
+  }
+  if (request.kind === 'quickPick') {
+    const itemId = field(raw, 'itemId');
+    return request.items.some((item) => item.id === itemId) ? { kind: 'quickPick', itemId: itemId as string } : undefined;
+  }
+  if (request.kind === 'dropZones') {
+    const slot = field(raw, 'slot');
+    if (slot === null) return { kind: 'dropZones', slot: null };
+    return (GRID_SLOTS as readonly unknown[]).includes(slot) ? { kind: 'dropZones', slot: slot as GridSlot } : undefined;
+  }
   const tag = field(raw, 'tag');
   if (tag === null) return { kind: 'tagPicker', tag: null };
   return isTag(tag) ? { kind: 'tagPicker', tag: tag.trim() } : undefined;
@@ -315,6 +390,7 @@ interface OpenRequest {
   readonly resolve: (answer: OverlayAnswer) => void;
   readonly reject: (err: Error) => void;
   readonly shown: (() => void) | undefined;
+  readonly sentAt: number;
   cancelAckDeadline: (() => void) | undefined;
 }
 
@@ -335,6 +411,8 @@ export class OverlayHost {
   private readonly deps: OverlayHostDeps;
   private readonly invokeChannels: string[] = [];
   private readonly sendHandlers: Array<[string, (event: IpcMainEvent, ...args: unknown[]) => void]> = [];
+  // the page's requests main is still answering
+  private readonly answering = new Set<Promise<unknown>>();
   // in the order they opened
   private open: OpenRequest[] = [];
   // where keyboard focus returns when the last open popup closes; never the overlay itself
@@ -348,6 +426,8 @@ export class OverlayHost {
   private readonly lateRasters = new Set<string>();
   // only the first late answer since the page loaded asks for a redraw, so a page that is always slow cannot loop
   private lateAnswered = false;
+  // The first acknowledgement since the page loaded is logged with its time: a cold first render is the slowest.
+  private coldAck = false;
   private readonly onResize = (): void => this.applyMode();
 
   constructor(deps: OverlayHostDeps) {
@@ -375,6 +455,10 @@ export class OverlayHost {
       if (!open || open.cancelAckDeadline === undefined) return;
       open.cancelAckDeadline();
       open.cancelAckDeadline = undefined;
+      if (this.coldAck) {
+        this.coldAck = false;
+        this.deps.log(`[overlay] the first request since the page loaded (${open.request.kind}) was acknowledged in ${Date.now() - open.sentAt} ms of ${OVERLAY_ACK_TIMEOUT_MS}`);
+      }
       open.shown?.();
     });
     this.on(OVERLAY_CHANNELS.answer, (requestId, raw) => {
@@ -411,6 +495,7 @@ export class OverlayHost {
     const contents = this.view.webContents;
     contents.on('did-finish-load', () => {
       this.loaded = true;
+      this.coldAck = true;
       this.lateRasters.clear();
       this.lateAnswered = false;
       this.deps.canRasterize();
@@ -474,7 +559,7 @@ export class OverlayHost {
       for (const previous of this.open.filter((entry) => entry.request.kind !== 'message')) this.settle(previous, { kind: 'dismissed' }, { keepFocus: true });
     }
     return new Promise<OverlayAnswer>((resolve, reject) => {
-      const open: OpenRequest = { id: randomUUID(), request, resolve, reject, shown, cancelAckDeadline: undefined };
+      const open: OpenRequest = { id: randomUUID(), request, resolve, reject, shown, sentAt: Date.now(), cancelAckDeadline: undefined };
       open.cancelAckDeadline = tickDeadline(OVERLAY_ACK_TIMEOUT_MS, () => {
         if (!this.open.includes(open)) return;
         this.deps.log(`[overlay] the overlay did not acknowledge a ${request.kind} request within ${OVERLAY_ACK_TIMEOUT_MS} ms; hiding it`);
@@ -486,6 +571,14 @@ export class OverlayHost {
       else this.deps.awaitActivation();
       this.send(OVERLAY_CHANNELS.request, { requestId: open.id, request });
     });
+  }
+
+  /** Its window is closing: every open request of `kind` closes in the page and settles as dismissed. */
+  dismiss(kind: OverlayRequest['kind']): void {
+    const dismissed = this.open.filter((entry) => entry.request.kind === kind);
+    if (dismissed.length === 0) return;
+    for (const open of dismissed) this.settle(open, { kind: 'dismissed' }, { keepFocus: true });
+    this.applyMode();
   }
 
   /** Gives the open popups keyboard focus; nothing while none is open. */
@@ -612,8 +705,11 @@ export class OverlayHost {
       if (mode !== previous) this.restack();
       this.view.setVisible(true);
     }
-    // A hidden view keeps keyboard focus, so focus leaves with the popup.
-    if (previous === 'full' && mode === 'hidden') this.releaseFocus(hadFocus);
+    if (previous === 'full' && mode === 'hidden') {
+      this.deps.popupsClosed();
+      // A hidden view keeps keyboard focus, so focus leaves with the popup.
+      this.releaseFocus(hadFocus);
+    }
   }
 
   // Main's own overlay features (the settings modal) post and listen on the overlay page through these.
@@ -634,9 +730,20 @@ export class OverlayHost {
   handle(channel: string, handler: (...args: unknown[]) => unknown): void {
     this.view.webContents.ipc.handle(channel, async (event, ...args: unknown[]) => {
       if (!this.accepts(event, channel)) throw new Error('Rejected');
-      return handler(...args);
+      const answer = (async () => handler(...args))();
+      this.answering.add(answer);
+      try {
+        return await answer;
+      } finally {
+        this.answering.delete(answer);
+      }
     });
     this.invokeChannels.push(channel);
+  }
+
+  // After dispose no request is accepted, so this settles once the last one main was still answering has.
+  async settled(): Promise<void> {
+    await Promise.allSettled([...this.answering]);
   }
 
   on(channel: string, handler: (...args: unknown[]) => void): void {

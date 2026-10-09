@@ -135,14 +135,6 @@ export const THEME_PALETTES: Readonly<Record<ThemeKind, ThemePalette>> = { dark:
 // The window and every view paint this before their page does.
 export const THEME_BACKGROUND: Readonly<Record<ThemeKind, string>> = { dark: DARK_THEME['--d-bg']!, light: LIGHT_THEME['--d-bg']! };
 
-// AD7: the native window controls (Windows, Linux) on the title bar's panel colour; the shell's title bar is this tall.
-export const TITLE_BAR_HEIGHT = 40;
-
-export function titleBarOverlay(kind: ThemeKind): { readonly color: string; readonly symbolColor: string; readonly height: number } {
-  const palette = THEME_PALETTES[kind];
-  return { color: palette['--d-panel']!, symbolColor: palette['--d-muted']!, height: TITLE_BAR_HEIGHT };
-}
-
 // The served path must match vite.shell.config.ts, which copies DESKTOP_FONT_FILES into dist/desktop-shell/fonts/.
 export const FONT_FACE_CSS: string = DESKTOP_FONT_FILES.map((font) =>
   `@font-face { font-family: '${font.family}'; font-style: normal; font-display: swap; font-weight: 100 900; `

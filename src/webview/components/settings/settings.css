@@ -483,7 +483,8 @@ mark.sm-mark {
   outline-offset: 2px;
 }
 
-.sm-root .sm-search input:focus-visible {
+/* A field inside a bordered box shows focus on the box (`:focus-within`), so the field itself draws no ring. */
+.sm-root :is(.sm-search, .sm-input) input:focus-visible {
   outline: none;
 }
 
@@ -675,10 +676,6 @@ mark.sm-mark {
   font: inherit;
   font-family: var(--d-mono);
   font-size: 0.78125rem;
-}
-
-.sm-input input:focus-visible {
-  outline: none;
 }
 
 .sm-input input::placeholder {

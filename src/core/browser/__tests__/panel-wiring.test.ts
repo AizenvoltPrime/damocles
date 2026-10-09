@@ -6,6 +6,7 @@ import { BrowserService } from '../index';
 import { createFakePlatform, installFakePlatform, type FakePanelHost, type FakePlatform } from '../../../__mocks__/fake-platform';
 import { BrowserPanel } from '../browser-panel';
 import { BROWSER_WEBVIEW_SCRIPT } from '../browser-webview-script';
+import { AS_TYPED, HTTP_AT_ONCE, REFUSED, UPGRADED } from '../../../shared/__tests__/typed-address-cases';
 
 /**
  * Slice 2 acceptance suite — host side: hidden-tab teardown, the `ready` handshake as the single
@@ -145,7 +146,7 @@ async function makeService(): Promise<BrowserService> {
  * the ordering of every observable side effect — the resync-before-first-frame criterion is an
  * assertion about this array, not about internal state.
  */
-async function addTab(service: BrowserService, url = 'http://a'): Promise<{
+async function addTab(service: BrowserService, url = 'http://a', ownerScopeId = BrowserService.PRIMARY_SCOPE_ID): Promise<{
   entry: TestEntry;
   page: ReturnType<typeof fakePage>;
   start: ReturnType<typeof vi.spyOn>;
@@ -154,7 +155,7 @@ async function addTab(service: BrowserService, url = 'http://a'): Promise<{
   calls: string[];
 }> {
   const page = fakePage(url);
-  await priv(service).registerPage(page, BrowserService.PRIMARY_SCOPE_ID);
+  await priv(service).registerPage(page, ownerScopeId);
   const entry = priv(service).pages.get(page)!;
   const calls: string[] = [];
   vi.spyOn(entry.controller, 'ackScreencastFrame').mockImplementation(async () => {});
@@ -254,7 +255,7 @@ describe('hide → show restores the whole panel with no user action', () => {
       'cursor',
       'frame',
     ]);
-    expect(panel.posted[0]).toEqual({ type: 'urlChanged', url: 'http://example.test/page' });
+    expect(panel.posted[0]).toEqual({ type: 'urlChanged', url: 'http://example.test/page', notSecure: true });
     expect(panel.posted[1]).toEqual({ type: 'viewport', width: 1024, height: 768 });
     expect(panel.posted[2]).toEqual({ type: 'pickingStateChanged', picking: true });
     expect(panel.posted[3]).toEqual({ type: 'cursor', cursor: 'pointer' });
@@ -285,6 +286,59 @@ describe('hide → show restores the whole panel with no user action', () => {
     // And the replay landed before the stream resumed, so the first live frame meets a synced webview.
     expect(postedTypes(panel).indexOf('viewport')).toBeGreaterThanOrEqual(0);
     service.dispose();
+  });
+
+  describe('on a host that keeps a hidden page running (desktop), which posts no ready on show', () => {
+    async function desktopTab() {
+      platform = installFakePlatform({ chatBrowserPane: true });
+      const service = await makeService();
+      const chat = platform.window.createPanel({ kind: 'chat', title: 'chat', localResourceRoots: [] });
+      const tab = await addTab(service, 'http://example.test/page', service.chatScope(chat).id);
+      return { service, ...tab, panel: panelOf(tab.entry) };
+    }
+
+    it('replays the panel state and restarts the stream when the hidden tab is shown again', async () => {
+      const { service, entry, calls, panel } = await desktopTab();
+      expect(panel.retainsContextWhenHidden).toBe(true);
+      fireReady(entry);
+      priv(service).onScreencastFrame(entry, cdpFrame(1));
+      panel.setVisible(false);
+      await Promise.resolve();
+      expect(calls).toContain('stopScreencast');
+      calls.length = 0;
+      panel.posted.length = 0;
+
+      panel.setVisible(true);
+      await Promise.resolve();
+
+      expect(calls).toEqual(['startScreencast']);
+      expect(postedTypes(panel)).toEqual(['urlChanged', 'viewport', 'pickingStateChanged', 'cursor', 'navigationState', 'frame']);
+      service.dispose();
+    });
+
+    it('starts nothing on a view-state event while the stream already runs', async () => {
+      const { service, entry, calls, panel } = await desktopTab();
+      fireReady(entry);
+      calls.length = 0;
+      panel.setActive(false);
+      panel.setActive(true);
+      panel.setVisible(true);
+      await Promise.resolve();
+      expect(calls).toEqual([]);
+      service.dispose();
+    });
+
+    it('waits for ready when the page was shown before it ever listened', async () => {
+      const { service, entry, calls, panel } = await desktopTab();
+      panel.setVisible(false);
+      panel.setVisible(true);
+      await Promise.resolve();
+      expect(calls).not.toContain('startScreencast');
+      fireReady(entry);
+      await Promise.resolve();
+      expect(calls).toContain('startScreencast');
+      service.dispose();
+    });
   });
 
   it('replays a NEVER-CURSORED entry as `default` rather than posting nothing', async () => {
@@ -748,6 +802,63 @@ describe('an unexpected Chrome exit produces EXACTLY ONE localised warning', () 
 // ── Acceptance: "Toolbar Back/Forward/Reload work on a page that overrides window.history.back and
 //    location.reload, and issue no Runtime.evaluate." (T3) ────────────────────────────────────────
 
+// The page's own address bar (the extension's toolbar, the desktop navigation bar through main) posts the text as typed.
+describe('core reads a typed address as Chrome does, and falls back to http for an upgraded one', () => {
+  async function navigateWith(message: Record<string, unknown>, errorText: string | undefined): Promise<string[]> {
+    const service = await makeService();
+    const { entry } = await addTab(service);
+    const navigated: string[] = [];
+    entry.session.send.mockImplementation(async (method: string, params?: { url?: string }) => {
+      if (method !== 'Page.navigate') return {};
+      navigated.push(params!.url!);
+      return navigated.length === 1 && errorText !== undefined ? { frameId: 'f', loaderId: 'l', errorText } : { frameId: 'f', loaderId: 'l' };
+    });
+    panelOf(entry).fireMessage({ type: 'navigate', ...message });
+    await vi.waitFor(() => expect(navigated.length).toBeGreaterThan(0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    service.dispose();
+    return navigated;
+  }
+
+  it.each(UPGRADED)('loads %s over https', async (_kind, typed, url) => {
+    expect(await navigateWith({ url: typed }, undefined)).toEqual([url]);
+  });
+
+  it.each([...HTTP_AT_ONCE, ...AS_TYPED])('loads %s at once, with no fallback', async (_kind, typed, url) => {
+    expect(await navigateWith({ url: typed }, 'net::ERR_CONNECTION_REFUSED')).toEqual([url]);
+  });
+
+  it.each(REFUSED)('navigates nowhere for %s', async (typed) => {
+    const service = await makeService();
+    const { entry } = await addTab(service);
+    entry.session.send.mockClear();
+    panelOf(entry).fireMessage({ type: 'navigate', url: typed });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(entry.session.send.mock.calls.filter(([method]) => method === 'Page.navigate')).toEqual([]);
+    service.dispose();
+  });
+
+  it.each(['net::ERR_CONNECTION_REFUSED', 'net::ERR_CONNECTION_RESET', 'net::ERR_SSL_PROTOCOL_ERROR', 'net::ERR_CERT_AUTHORITY_INVALID', 'net::ERR_EMPTY_RESPONSE'])(
+    'loads the http address after an upgraded https load fails with %s',
+    async (errorText) => {
+      expect(await navigateWith({ url: 'dev.example.com/a?b#c' }, errorText)).toEqual(['https://dev.example.com/a?b#c', 'http://dev.example.com/a?b#c']);
+    },
+  );
+
+  // A timeout never falls back: Chrome 150 stopped downgrading a typed address whose https load timed out (crbug.com/515265983).
+  it.each(['net::ERR_NAME_NOT_RESOLVED', 'net::ERR_INTERNET_DISCONNECTED', 'net::ERR_ABORTED', 'net::ERR_TIMED_OUT', 'net::ERR_CONNECTION_TIMED_OUT', 'net::ERR_BLOCKED_BY_CLIENT'])(
+    'keeps the https error page after %s',
+    async (errorText) => {
+      expect(await navigateWith({ url: 'dev.example.com' }, errorText)).toEqual(['https://dev.example.com/']);
+    },
+  );
+
+  it('never falls back for an address typed with its scheme, whatever the message claims', async () => {
+    expect(await navigateWith({ url: 'https://dev.example.com/' }, 'net::ERR_CONNECTION_REFUSED')).toEqual(['https://dev.example.com/']);
+    expect(await navigateWith({ url: 'https://dev.example.com/', upgraded: true }, 'net::ERR_CONNECTION_REFUSED')).toEqual(['https://dev.example.com/']);
+  });
+});
+
 describe('T3 — toolbar history goes through Playwright, never through page-overridable JS', () => {
   it.each([
     ['goBack', 'goBack'],
@@ -1074,7 +1185,8 @@ describe('Q1 — every user-visible panel string comes from l10n', () => {
     const { keys } = markedHtml();
     const expected = [
       'Back', 'Forward', 'Reload', 'Pick Element',
-      'Open Developer Tools (F12)', 'New Tab', 'Enter URL...', 'Waiting for browser frames...',
+      'Open Developer Tools (F12)', 'New Tab', 'Enter URL...', 'Waiting for browser frames...', 'Not secure',
+      'The connection to this site is not encrypted, so others on the network can read and change what it sends.',
     ];
 
     expect([...keys].sort()).toEqual([...expected].sort());

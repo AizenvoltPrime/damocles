@@ -82,7 +82,7 @@ async function resetLayout(): Promise<void> {
       @click="resetLayout"
     >
       <RotateCcw
-        :size="12"
+        class="size-3"
         aria-hidden="true"
       />
       {{ t('settingsHost.restoreDefaults') }}

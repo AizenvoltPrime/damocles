@@ -2,14 +2,13 @@
 import { storeToRefs } from 'pinia';
 import { useEditorStore } from '@/stores/useEditorStore';
 import EditorViewOverlay from './EditorViewOverlay.vue';
-import SettingsJsonEditor from './SettingsJsonEditor.vue';
 
 const emit = defineEmits<{
   (e: 'decide', toolUseId: string, approved: boolean): void;
 }>();
 
 const editorStore = useEditorStore();
-const { view, settingsEditorScope } = storeToRefs(editorStore);
+const { view } = storeToRefs(editorStore);
 </script>
 
 <template>
@@ -20,11 +19,5 @@ const { view, settingsEditorScope } = storeToRefs(editorStore);
     :view="view"
     @close="editorStore.dismissView()"
     @decide="(toolUseId, approved) => emit('decide', toolUseId, approved)"
-  />
-  <SettingsJsonEditor
-    v-if="settingsEditorScope"
-    :key="settingsEditorScope"
-    :scope="settingsEditorScope"
-    @close="editorStore.closeSettingsEditor()"
   />
 </template>

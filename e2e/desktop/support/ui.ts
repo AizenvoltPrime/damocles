@@ -21,23 +21,36 @@ export interface RecordedBox {
   message: string;
   detail?: string;
   buttons?: string[];
+  type?: string;
   // shown as a modal of the app window rather than a free-standing box
   parented: boolean;
+  // the button a rule chose; absent when the box was cancelled
+  answered?: string;
+  // Date.now() in main as it asked
+  at: number;
 }
 
 /**
- * Replaces dialog.showMessageBox in main with a recorder that answers with `response` (button index),
- * or with the button whose label matches `answers[message substring]`. Returns nothing; read with `messageBoxes`.
+ * Replaces dialog.showMessageBox in main with a recorder that answers with the button labelled `answers[message or detail
+ * substring]`, or cancels when no rule matches. Each call replaces the rules. Read with `messageBoxes`.
  */
 export async function answerMessageBoxes(app: ElectronApplication, answers: Record<string, string> = {}): Promise<void> {
   await app.evaluate(({ dialog }, rules) => {
-    const g = globalThis as unknown as { __e2eBoxes?: { message: string; detail?: string; buttons?: string[]; parented: boolean }[] };
+    const g = globalThis as unknown as { __e2eBoxes?: RecordedBox[] };
     g.__e2eBoxes = g.__e2eBoxes ?? [];
     const box = (...args: unknown[]): Promise<{ response: number; checkboxChecked: boolean }> => {
-      const opts = (args.length > 1 ? args[1] : args[0]) as { message: string; detail?: string; buttons?: string[]; cancelId?: number };
-      g.__e2eBoxes!.push({ message: opts.message, ...(opts.detail ? { detail: opts.detail } : {}), ...(opts.buttons ? { buttons: opts.buttons } : {}), parented: args.length > 1 });
+      const opts = (args.length > 1 ? args[1] : args[0]) as { message: string; detail?: string; buttons?: string[]; type?: string; cancelId?: number };
       const rule = Object.entries(rules).find(([needle]) => opts.message.includes(needle) || (opts.detail ?? '').includes(needle));
       const index = rule ? (opts.buttons ?? []).indexOf(rule[1]) : -1;
+      g.__e2eBoxes!.push({
+        message: opts.message,
+        ...(opts.detail ? { detail: opts.detail } : {}),
+        ...(opts.buttons ? { buttons: opts.buttons } : {}),
+        ...(opts.type ? { type: opts.type } : {}),
+        parented: args.length > 1,
+        ...(index >= 0 ? { answered: rule![1] } : {}),
+        at: Date.now(),
+      });
       return Promise.resolve({ response: index >= 0 ? index : (opts.cancelId ?? (opts.buttons?.length ? opts.buttons.length - 1 : 0)), checkboxChecked: false });
     };
     dialog.showMessageBox = box as typeof dialog.showMessageBox;
@@ -49,23 +62,28 @@ export async function messageBoxes(app: ElectronApplication): Promise<RecordedBo
 }
 
 export interface RecordedDialog {
+  // where main asked (D41): the overlay's dialog, or the OS message box it falls back to
+  surface: 'overlay' | 'os';
   message: string;
   detail?: string;
   buttons: string[];
   severity: string;
-  // the button answerDialogs clicked
+  // the button answerDialogs chose
   answered?: string;
+  at: number;
 }
 
 /**
- * Records every dialog the overlay shows (D41) and clicks, as the user would, the button labelled `answers[message
- * substring]`; a dialog no rule matches is left for the test. Each call replaces the rules, which apply only to dialogs
- * that open after it: one already seen is never answered by a later call. Read with `askedDialogs`.
+ * Answers every question main asks, wherever it asks it (D41), with the button labelled `answers[message or detail
+ * substring]`: an overlay dialog once it is drawn, as the user would, and the OS message box main falls back to
+ * (`answerMessageBoxes`, which cancels a box no rule matches). An overlay dialog no rule matches is left for the test. Each
+ * call replaces the rules, which apply only to questions asked after it. Read with `askedDialogs`.
  */
 export async function answerDialogs(app: ElectronApplication, answers: Record<string, string> = {}): Promise<void> {
+  await answerMessageBoxes(app, answers);
   const overlay = await readyOverlay(app);
   await overlay.evaluate((rules) => {
-    type Recorded = { message: string; detail?: string; buttons: string[]; severity: string; answered?: string };
+    type Recorded = { surface: 'overlay'; message: string; detail?: string; buttons: string[]; severity: string; answered?: string; at: number };
     const w = window as unknown as { __e2eDialogs?: Recorded[]; __e2eDialogRules?: Record<string, string>; __e2eDialogObserver?: MutationObserver };
     w.__e2eDialogRules = rules;
     if (w.__e2eDialogObserver) return;
@@ -73,15 +91,28 @@ export async function answerDialogs(app: ElectronApplication, answers: Record<st
     const visit = (dialog: HTMLElement): void => {
       if (dialog.dataset.e2eSeen !== undefined || dialog.closest('[inert]')) return;
       dialog.dataset.e2eSeen = '';
-      const message = dialog.querySelector('h2')?.textContent?.trim() ?? '';
-      const detail = dialog.querySelector('p')?.textContent?.trim();
-      const buttons = [...dialog.querySelectorAll('button')].map((button) => button.textContent?.trim() ?? '');
-      w.__e2eDialogs!.push({ message, ...(detail ? { detail } : {}), buttons, severity: dialog.dataset.severity ?? '' });
-      const rule = Object.entries(w.__e2eDialogRules ?? {}).find(([needle]) => message.includes(needle) || (detail ?? '').includes(needle));
-      const button = rule ? [...dialog.querySelectorAll('button')].find((candidate) => candidate.textContent?.trim() === rule[1]) : undefined;
-      if (!button) return;
-      w.__e2eDialogs!.at(-1)!.answered = rule![1];
-      button.click();
+      const seenRules = w.__e2eDialogRules ?? {};
+      // The overlay acknowledges a request in the task that renders it; a click in that task suppresses the acknowledgement,
+      // and main's 2 s deadline then runs on through the exit animation the answer waits for, which needs frames.
+      requestAnimationFrame(() => {
+        // main withdrew it before it was drawn
+        if (!dialog.isConnected || dialog.closest('[inert]')) return;
+        const message = dialog.querySelector('h2')?.textContent?.trim() ?? '';
+        const detail = dialog.querySelector('p')?.textContent?.trim();
+        const buttons = [...dialog.querySelectorAll('button')];
+        const rule = Object.entries(seenRules).find(([needle]) => message.includes(needle) || (detail ?? '').includes(needle));
+        const button = rule ? buttons.find((candidate) => candidate.textContent?.trim() === rule[1]) : undefined;
+        w.__e2eDialogs!.push({
+          surface: 'overlay',
+          message,
+          ...(detail ? { detail } : {}),
+          buttons: buttons.map((candidate) => candidate.textContent?.trim() ?? ''),
+          severity: dialog.dataset.severity ?? '',
+          ...(button ? { answered: rule![1] } : {}),
+          at: Date.now(),
+        });
+        button?.click();
+      });
     };
     w.__e2eDialogObserver = new MutationObserver(() => {
       for (const dialog of document.querySelectorAll<HTMLElement>('[role="alertdialog"]')) visit(dialog);
@@ -90,9 +121,22 @@ export async function answerDialogs(app: ElectronApplication, answers: Record<st
   }, answers);
 }
 
+const NATIVE_SEVERITY: Readonly<Record<string, string>> = { info: 'info', warning: 'warning', error: 'danger' };
+
+/** Every question the recorders saw, on either surface, in the order they showed. */
 export async function askedDialogs(app: ElectronApplication): Promise<RecordedDialog[]> {
   const overlay = await readyOverlay(app);
-  return overlay.evaluate(() => (window as unknown as { __e2eDialogs?: RecordedDialog[] }).__e2eDialogs ?? []);
+  const drawn = await overlay.evaluate(() => (window as unknown as { __e2eDialogs?: RecordedDialog[] }).__e2eDialogs ?? []);
+  const boxes = (await messageBoxes(app)).map((box): RecordedDialog => ({
+    surface: 'os',
+    message: box.message,
+    ...(box.detail !== undefined ? { detail: box.detail } : {}),
+    buttons: box.buttons ?? [],
+    severity: NATIVE_SEVERITY[box.type ?? ''] ?? '',
+    ...(box.answered !== undefined ? { answered: box.answered } : {}),
+    at: box.at,
+  }));
+  return [...drawn, ...boxes].sort((a, b) => a.at - b.at);
 }
 
 /** Answers the next showOpenDialog with `dir`. */
@@ -113,7 +157,7 @@ export async function clickMenu(app: ElectronApplication, id: string): Promise<v
 }
 
 /**
- * Adds a project through the menu, answering the folder picker and the trust question in the overlay, and returns once
+ * Adds a project through the menu, answering the folder picker and the trust question wherever main asks it, and returns once
  * main has selected the new chat it opens in the project, which it does only after the question is answered.
  */
 export async function addProject(app: ElectronApplication, dir: string, trust: boolean): Promise<void> {

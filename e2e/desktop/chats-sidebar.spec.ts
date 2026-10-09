@@ -117,7 +117,7 @@ test('chat retention: six stored chats keep at most the selected, the active and
   }
 });
 
-test('sidebar edits: rename, tag and delete change the session files for loaded and unloaded chats; the chat menu opens in the overlay above the chat view', async ({ home, launch }) => {
+test('sidebar edits: rename, tag and delete change the session files for loaded and unloaded chats; the chat menu opens in the overlay above the chat view', async ({ foreground: _foreground, home, launch }) => {
   test.setTimeout(300_000);
   const stub = await startOpenAIStub();
   try {
@@ -260,7 +260,7 @@ test('chats across projects: per-chat model and thinking, fork with replayed his
   }
 });
 
-test('the New button stays in place on hover, and enabled controls in the shell, the chat view and the overlay show the pointer cursor', async ({ home, launch }) => {
+test('the New button stays in place on hover, and enabled controls in the shell, the chat view and the overlay show the pointer cursor', async ({ foreground: _foreground, home, launch }) => {
   const { app } = await launch();
   const shell = await openProject(app, home.project);
 

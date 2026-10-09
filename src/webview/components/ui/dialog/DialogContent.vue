@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { DialogContentEmits, DialogContentProps } from "reka-ui"
-import type { HTMLAttributes } from "vue"
+import { useTemplateRef, type ComponentPublicInstance, type HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"
 import { X } from "lucide-vue-next"
 import { useI18n } from "vue-i18n"
@@ -13,11 +13,11 @@ import {
 } from "reka-ui"
 import { cn } from "@/lib/utils"
 import { definedProps } from "@/lib/definedProps"
-import { usePopperZIndex } from "@/composables/useOverlayEscape"
+import { useDialogLayer } from "@/composables/useOverlayEscape"
 
 const props = withDefaults(
   defineProps<DialogContentProps & { class?: HTMLAttributes["class"]; showClose?: boolean }>(),
-  { showClose: true },
+  { class: undefined, showClose: true },
 )
 const emits = defineEmits<DialogContentEmits>()
 
@@ -26,23 +26,22 @@ const delegatedProps = reactiveOmit(props, "class", "showClose")
 const forwarded = useForwardPropsEmits(delegatedProps, emits)
 const { t } = useI18n()
 
-// Portalled to `body`, so a dialog opened from an overlay must paint above it, as popper content does.
-const popperZIndex = usePopperZIndex()
+// A layer of the overlay stack while open, so it paints above the overlay it was opened from and below one opened over it.
+const zIndex = useDialogLayer(useTemplateRef<ComponentPublicInstance>("content"))
 </script>
 
 <template>
   <DialogPortal>
     <DialogOverlay
       class="d-scrim fixed inset-0 bg-(--d-scrim) backdrop-blur-xs"
-      :class="popperZIndex === undefined && 'z-50'"
-      :style="popperZIndex === undefined ? undefined : { zIndex: popperZIndex }"
+      :style="{ zIndex }"
     />
     <DialogContent
+      ref="content"
       v-bind="definedProps(forwarded)"
-      :style="popperZIndex === undefined ? undefined : { zIndex: popperZIndex }"
+      :style="{ zIndex }"
       :class="
         cn(
-          popperZIndex === undefined && 'z-50',
           'd-dialog fixed left-1/2 top-1/2 grid w-full max-w-lg -translate-1/2 gap-4 rounded-2xl border border-(--d-border2) bg-(--d-card) p-6 text-(--d-text) shadow-(--d-shadow)',
           props.class,
         )"

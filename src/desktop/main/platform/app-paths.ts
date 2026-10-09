@@ -28,3 +28,26 @@ export function createDesktopAppPaths(layout: DesktopLayout): AppPaths {
     workerEntry: (name) => path.join(unpackedRoot, 'dist', WORKER_BUNDLES[name]),
   };
 }
+
+// dist/quick-open-worker.js, which a worker thread loads as a real file.
+export function quickOpenWorkerPath(paths: AppPaths): string {
+  return path.join(paths.unpackedRoot, 'dist', 'quick-open-worker.js');
+}
+
+export interface PtyHostPaths {
+  // dist/pty-host.js, which a utility process loads as a real file.
+  readonly script: string;
+  // The node-pty package the host requires. Under app.asar when packaged: node-pty rewrites its spawn-helper path from app.asar to
+  // app.asar.unpacked, so a copy loaded from app.asar.unpacked would point at app.asar.unpacked.unpacked.
+  readonly nodePty: string;
+  // resources/shell-integration, which shells read as real files: inside the install, never a folder a project can write
+  readonly shellIntegration: string;
+}
+
+export function ptyHostPaths(paths: AppPaths): PtyHostPaths {
+  return {
+    script: path.join(paths.unpackedRoot, 'dist', 'pty-host.js'),
+    nodePty: path.join(paths.resourceRoot, 'node_modules', 'node-pty'),
+    shellIntegration: path.join(paths.unpackedRoot, 'resources', 'shell-integration'),
+  };
+}

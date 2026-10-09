@@ -9,12 +9,25 @@ import { chromium } from 'playwright-core';
 import { startFeedServer } from '../../../scripts/desktop-update-feed.mjs';
 import { writeOverride } from '../../../scripts/desktop-update-override.mjs';
 import { isEntryPoint } from '../../../scripts/entry-point.mjs';
-import { NOTIFIER_URL, noticeAction, RELEASE_PAGE_ACTION, RESTART_ACTION, SHELL_URL } from './update-notice.mjs';
+import {
+  aboutRestart,
+  aboutUpdateStatus,
+  NOTIFIER_URL,
+  noticeAction,
+  OVERLAY_URL,
+  PILL_AVAILABLE,
+  PILL_READY,
+  RELEASE_PAGE_ACTION,
+  RESTART_ACTION,
+  SHELL_URL,
+  updatePill,
+} from './update-notice.mjs';
 
 // Installs version N of the packaged desktop app, points it at a loopback feed holding N+1, and checks the
-// update end to end. Windows and Linux: N+1 must end up installed, and "Restart Now" must relaunch it. macOS:
-// the update notice must appear and its action must target the N+1 release page. Drives the real renderers over
-// --remote-debugging-port, which reaches renderers only; the app itself carries no test hook.
+// update end to end. Windows and Linux: the app must download N+1 and the title-bar pill read "Restart to update", the
+// notice must offer "Restart Now", Settings › About must show the ready state, and its Restart must install and relaunch
+// N+1. macOS: the pill must read "Update available", and the notice's action must target the N+1 release page. Drives
+// the real renderers over --remote-debugging-port, which reaches renderers only; the app itself carries no test hook.
 
 const USAGE = `Usage: node e2e/desktop/update/drive-update.mjs --platform <win32|linux|darwin> --installer <file>
          --feed-dir <dir> --from-version <N> --to-version <N+1> [--mode restart|quit] [--work-dir <dir>]
@@ -22,7 +35,7 @@ const USAGE = `Usage: node e2e/desktop/update/drive-update.mjs --platform <win32
 
 --installer     version N: the NSIS .exe (win32), the .deb (linux) or the .dmg (darwin)
 --feed-dir      electron-builder output of N+1: its latest*.yml plus the installer and blockmap it names
---mode          restart (default): answer "Restart Now"; quit: close the window and let install-on-quit run.
+--mode          restart (default): press Restart in Settings › About; quit: close the window and let install-on-quit run.
                 Ignored on darwin, where the notice's "Open Release Page" action is taken.
 --work-dir      scratch directory without spaces (default: a new temp dir)
 --grant-pkexec  linux on GitHub Actions only: add a polkit rule letting this user run /bin/bash through pkexec
@@ -280,8 +293,41 @@ async function appPages(port, timeoutMs, failFast) {
   return { browser, shell, pageAt };
 }
 
+// The pill's data-state is the update state main pushed; a loopback download may end before a poll sees its percent, so
+// the downloading state is read from main's state log lines instead.
+async function pillShows(shell, state, label, timeoutMs, failFast) {
+  const pill = updatePill(shell);
+  await waitFor(`the "${label}" pill`, timeoutMs, async () => {
+    if ((await pill.count()) === 0 || (await pill.getAttribute('data-state')) !== state) return false;
+    return (await pill.innerText()).includes(label);
+  }, failFast);
+  say(`title-bar pill reads "${label}"`);
+}
+
+function assertDownloadedBeforeReady(logFile, version) {
+  const states = readLog(logFile).split('\n').flatMap((line) => {
+    const match = /\[updater\] state (downloading|ready) (\S+)$/.exec(line.trimEnd());
+    return match ? [`${match[1]} ${match[2]}`] : [];
+  });
+  const downloading = states.indexOf(`downloading ${version}`);
+  if (downloading === -1 || states.indexOf(`ready ${version}`) < downloading) {
+    throw new Error(`Expected the downloading state, then ready, for ${version}; the log has ${JSON.stringify(states)}`);
+  }
+  say(`main reported downloading, then ready, for ${version}`);
+}
+
+// Restart from Settings › About, opened through the shell bridge the title-bar gear uses.
+async function restartFromAbout(pages, timeoutMs, failFast) {
+  await pages.shell.evaluate(() => window.damoclesShell.openSettings('about'));
+  const overlay = await waitFor('the overlay page', timeoutMs, () => pages.pageAt(OVERLAY_URL), failFast);
+  const status = aboutUpdateStatus(overlay);
+  await waitFor('About showing the ready state', timeoutMs, async () => (await status.count()) > 0 && (await status.getAttribute('data-state')) === 'ready', failFast);
+  say('Settings › About shows the ready state');
+  return { overlay, button: aboutRestart(overlay) };
+}
+
 // The popup window's page exists once the first popup opened it, which the update notice may be.
-async function clickToastAction(pages, label, timeoutMs, failFast) {
+async function toastActionShows(pages, label, timeoutMs, failFast) {
   const popup = await waitFor('the popup window page', timeoutMs, () => pages.pageAt(NOTIFIER_URL), failFast);
   const button = noticeAction(popup, label);
   await waitFor(`the "${label}" toast action`, timeoutMs, () => button.isVisible(), failFast);
@@ -342,9 +388,12 @@ async function selfUpdate(target, options, work) {
     const failFast = failOnUpdaterError(logFile);
     const pages = await appPages(port, options.timeoutMs, failFast);
     browser = pages.browser;
-    const restart = await clickToastAction(pages, RESTART_ACTION, options.timeoutMs, failFast);
+    await pillShows(pages.shell, 'ready', PILL_READY, options.timeoutMs, failFast);
+    assertDownloadedBeforeReady(logFile, options.toVersion);
+    await toastActionShows(pages, RESTART_ACTION, options.timeoutMs, failFast);
     if (options.mode === 'restart') {
-      await actionThatQuits({ browser, page: restart.popup }, () => restart.button.click({ timeout: options.timeoutMs }));
+      const restart = await restartFromAbout(pages, options.timeoutMs, failFast);
+      await actionThatQuits({ browser, page: restart.overlay }, () => restart.button.click({ timeout: options.timeoutMs }));
     } else {
       say('closing the window so install-on-quit runs');
       await actionThatQuits({ browser, page: pages.shell }, () => pages.shell.evaluate(() => window.close()));
@@ -395,7 +444,8 @@ async function macNotice(options, work) {
     const failFast = failOnUpdaterError(launched.logFile);
     const pages = await appPages(port, options.timeoutMs, failFast);
     browser = pages.browser;
-    const open = await clickToastAction(pages, RELEASE_PAGE_ACTION, options.timeoutMs, failFast);
+    await pillShows(pages.shell, 'available', PILL_AVAILABLE, options.timeoutMs, failFast);
+    const open = await toastActionShows(pages, RELEASE_PAGE_ACTION, options.timeoutMs, failFast);
     await open.button.click();
     const expected = `[updater] opening the release page ${RELEASES_URL}/tag/v${options.toVersion}`;
     await waitFor(`the log line "${expected}"`, options.timeoutMs, () => readLog(launched.logFile).split('\n').some((line) => line.endsWith(expected)), failFast);

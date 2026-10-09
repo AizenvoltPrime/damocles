@@ -2,6 +2,8 @@
 import { computed, nextTick, ref, useId, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { FolderPlus, ShieldAlert } from 'lucide-vue-next';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import type { DamoclesShellApi, ShellProject } from '../../preload/shell-channels';
 import type { OverlayMenuItem } from '../../preload/overlay-channels';
 import SidebarSection from './SidebarSection.vue';
@@ -12,8 +14,8 @@ const props = defineProps<{
   projects: readonly ShellProject[];
   selectedKey: string | undefined;
   collapsed: boolean;
-  // absent, the section takes the sidebar's remaining height
-  size?: number | undefined;
+  // CSS px of the body; absent, the section takes the sidebar's remaining height
+  bodySize?: number | undefined;
 }>();
 const emit = defineEmits<{ toggle: [] }>();
 const { t } = useI18n();
@@ -122,23 +124,25 @@ defineExpose({
     :title="t('projects.heading')"
     :count="projects.length"
     :collapsed="collapsed"
-    :size="size"
+    :body-size="bodySize"
     @toggle="emit('toggle')"
   >
     <template #actions>
-      <button
+      <Button
         type="button"
+        variant="ghost"
+        size="icon-sm"
         data-testid="add-project"
-        class="flex size-[22px] shrink-0 items-center justify-center rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text)"
+        class="size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.25"
         :aria-label="t('projects.add')"
         :title="t('projects.add')"
         @click="refusal = undefined; api.addProject()"
       >
         <FolderPlus
           aria-hidden="true"
-          class="size-[13px]"
+          class="size-3.25"
         />
-      </button>
+      </Button>
     </template>
     <p
       v-if="projects.length === 0"
@@ -146,6 +150,7 @@ defineExpose({
     >
       {{ t('projects.empty') }}
     </p>
+    <!-- A listbox with aria-activedescendant and type-ahead, which no shadcn part provides outside a popup. -->
     <div
       v-else
       :id="listId"
@@ -166,7 +171,7 @@ defineExpose({
         :aria-selected="project.key === selectedKey"
         :data-project-key="project.key"
         :title="project.fsPath"
-        class="group/row flex h-[34px] shrink-0 cursor-pointer items-center gap-2.5 rounded-lg px-2 transition-colors hover:bg-(--d-hover)"
+        class="group/row flex h-8.5 shrink-0 cursor-pointer items-center gap-2.5 rounded-lg px-2 transition-colors hover:bg-(--d-hover)"
         :class="[
           project.key === selectedKey ? 'bg-(--d-accent-soft) font-semibold' : '',
           index === activeIndex ? 'group-focus-visible/list:outline group-focus-visible/list:-outline-offset-1 group-focus-visible/list:outline-(--d-accent)' : '',
@@ -176,7 +181,7 @@ defineExpose({
       >
         <ProjectAvatar
           :name="project.name"
-          class="size-[22px] rounded-md text-[11px]"
+          class="size-5.5 rounded-md text-11"
           :class="project.key === selectedKey ? 'project-avatar-ring' : ''"
         />
         <span class="flex min-w-0 flex-1 flex-col leading-tight">
@@ -185,36 +190,37 @@ defineExpose({
             v-if="project.branch"
             data-testid="project-branch"
             dir="ltr"
-            class="truncate font-mono text-[10.5px] font-normal"
+            class="truncate font-mono text-10.5 font-normal"
             :class="project.key === selectedKey ? 'text-(--d-faint-text)' : 'text-(--d-faint) group-hover/row:text-(--d-faint-text)'"
           >{{ project.branch }}</span>
         </span>
-        <span
+        <Badge
           v-if="!project.trusted"
+          variant="tone"
           data-testid="untrusted-badge"
-          class="flex shrink-0 items-center gap-1 rounded-[5px] bg-(--d-warning)/15 px-1.5 py-px text-[10.5px] font-normal text-(--d-warning-text)"
+          class="d-tone-warning flex shrink-0 rounded-5 border-0 bg-(--tone)/15 px-1.5 py-px text-10.5 font-normal"
           :title="t('projects.untrustedTitle')"
           @click.stop="trust(project)"
         >
           <ShieldAlert
             aria-hidden="true"
-            class="size-[11px]"
+            class="size-2.75"
           />
           {{ t('projects.untrusted') }}
-        </span>
-        <span
+        </Badge>
+        <Badge
           v-if="badge(project)"
+          variant="tone"
           data-testid="activity-badge"
-          class="flex shrink-0 items-center gap-1 rounded-full px-1.5 py-px font-mono text-[10.5px] font-normal"
-          :class="badge(project)?.waiting ? 'bg-(--d-warning)/15 text-(--d-warning-text)' : 'bg-(--d-accent-soft) text-(--d-accent-text)'"
+          :class="['flex shrink-0 border-0 bg-(--tone)/15 px-1.5 py-px font-mono text-10.5 font-normal', badge(project)?.waiting ? 'd-tone-warning' : 'd-tone-accent']"
           :title="badge(project)?.title"
         >
           <span
             aria-hidden="true"
-            class="size-[5px] animate-[d-pulse_1.4s_infinite] rounded-full bg-current"
+            class="size-1.25 animate-[d-pulse_1.4s_infinite] rounded-full bg-current"
           />
           {{ badge(project)?.text }}
-        </span>
+        </Badge>
       </div>
     </div>
     <p

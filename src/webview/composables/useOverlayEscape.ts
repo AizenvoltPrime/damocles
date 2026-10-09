@@ -1,4 +1,5 @@
 import { onKeyStroke } from '@vueuse/core';
+import { injectDialogRootContext } from 'reka-ui';
 import {
   computed,
   inject,
@@ -6,6 +7,8 @@ import {
   onScopeDispose,
   provide,
   shallowRef,
+  watch,
+  type ComponentPublicInstance,
   type ComputedRef,
   type InjectionKey,
   type ShallowRef,
@@ -14,6 +17,7 @@ import {
 interface EscapeEntry {
   readonly onClose: () => void;
   readonly modal: boolean;
+  readonly root: (() => HTMLElement | null) | undefined;
 }
 
 /** The bottom overlay sits here; each one opened on top of it takes the next value up. */
@@ -58,9 +62,22 @@ export function openOverlayCount(): number {
   return stack.value.length;
 }
 
+/** The root element of the top overlay that registered one, where focus goes back when the control that opened a closing overlay is gone. */
+export function topOverlayRoot(): HTMLElement | null {
+  for (let index = stack.value.length - 1; index >= 0; index--) {
+    const root = stack.value[index]!.root?.();
+    if (root?.isConnected) return root;
+  }
+  return null;
+}
+
 export interface OverlayOptions {
   /** A host prompt that must cover every overlay: it paints on MODAL_Z_INDEX and stays on top of overlays opened after it. */
   readonly modal?: boolean;
+  /** A dialog that stays mounted while closed (a reka dialog playing its exit) holds its place in the stack only while this is true. */
+  readonly active?: () => boolean;
+  /** The overlay's root element, which takes focus when an overlay opened over it closes after its opener went away. */
+  readonly root?: () => HTMLElement | null;
 }
 
 /**
@@ -70,41 +87,65 @@ export interface OverlayOptions {
  * sibling order in `App.vue`; a nested overlay mounts strictly after the overlay it opens over.
  */
 export function useOverlayEscape(onClose: () => void, options: OverlayOptions = {}): OverlayLayer {
-  const entry: EscapeEntry = { onClose, modal: options.modal === true };
+  const entry: EscapeEntry = { onClose, modal: options.modal === true, root: options.root };
 
-  // Registered before the first render, so a nested overlay never paints one frame behind the one it opened over.
+  // A dialog playing its exit keeps the layer it had while open, or it would drop behind the overlay it was opened over.
+  let exitZIndex = BASE_Z_INDEX;
+  const zIndex = computed(() => {
+    if (entry.modal) return MODAL_Z_INDEX;
+    const depth = stack.value.indexOf(entry);
+    if (depth === -1) return exitZIndex;
+    return Math.min(BASE_Z_INDEX + depth, MODAL_Z_INDEX - 1);
+  });
+
   // An overlay opened under an open modal goes below it, so Escape and the Tab trap stay with the modal the user sees.
-  onBeforeMount(() => {
+  function enter(): void {
     const firstModal = entry.modal ? -1 : stack.value.findIndex((e) => e.modal);
     stack.value = firstModal === -1
       ? [...stack.value, entry]
       : [...stack.value.slice(0, firstModal), entry, ...stack.value.slice(firstModal)];
-  });
+  }
+
+  function leave(): void {
+    exitZIndex = zIndex.value;
+    stack.value = stack.value.filter((e) => e !== entry);
+  }
+
+  // Registered before the first render, so a nested overlay never paints one frame behind the one it opened over.
+  const { active } = options;
+  if (active) watch(active, (open) => (open ? enter() : leave()), { immediate: true, flush: 'sync' });
+  else onBeforeMount(enter);
 
   // Scope stop runs synchronously inside unmount, while `onUnmounted` is queued post-flush and stops
   // running app-wide once any post-flush callback has thrown; the entry has to leave either way.
-  onScopeDispose(() => {
-    stack.value = stack.value.filter((e) => e !== entry);
-  });
+  onScopeDispose(leave);
 
   const isTop = computed(() => stack.value[stack.value.length - 1] === entry);
 
   onKeyStroke('Escape', (e) => {
     if (!isTop.value) return;
-    // The open popup closes itself; stopping the event here would close the overlay around it instead.
-    if (document.querySelector(NESTED_LAYER_SELECTOR)) return;
+    // The open popup or dialog closes itself; stopping the event here would close the overlay around it instead. A dialog
+    // registered beneath this overlay is not one of them.
+    const beneath = stack.value.filter((e) => e !== entry).map((e) => e.root?.());
+    if ([...document.querySelectorAll(NESTED_LAYER_SELECTOR)].some((layer) => !beneath.includes(layer as HTMLElement))) return;
     e.stopPropagation();
     e.preventDefault();
     entry.onClose();
   }, { target: document });
 
-  const zIndex = computed(() => {
-    if (entry.modal) return MODAL_Z_INDEX;
-    const depth = stack.value.indexOf(entry);
-    if (depth === -1) return BASE_Z_INDEX;
-    return Math.min(BASE_Z_INDEX + depth, MODAL_Z_INDEX - 1);
-  });
   provide(OVERLAY_Z_INDEX, zIndex);
 
   return { zIndex, isTop };
+}
+
+/**
+ * A reka modal dialog's layer of the stack (`ui/alert-dialog`, `ui/dialog` content), held while the dialog is open, so an
+ * overlay opened over it paints above it and takes Escape. `content` is the reka content component.
+ */
+export function useDialogLayer(content: Readonly<ShallowRef<ComponentPublicInstance | null>>): ComputedRef<number> {
+  const dialog = injectDialogRootContext();
+  // The stack reads the root only while the dialog is open, when reka renders its content element.
+  const root = (): HTMLElement | null => (content.value?.$el as HTMLElement | undefined) ?? null;
+  // reka's own dismissable layer takes Escape, which the stack leaves to an open dialog.
+  return useOverlayEscape(() => undefined, { active: () => dialog.open.value, root }).zIndex;
 }

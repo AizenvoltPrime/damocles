@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDesktopKeyValueState } from '../platform/key-value-state';
+import { flushAcrossHeldRename } from '../../../__mocks__/held-rename';
 
 let userData: string;
 
@@ -57,5 +58,20 @@ describe('desktop key-value state', () => {
     expect(createDesktopKeyValueState(userData, () => undefined).global.get('a')).toBe(1);
     expect(createDesktopKeyValueState(userData, () => undefined).global.get('b')).toBe(2);
     expect([state.global.get('a'), state.global.get('b')]).toEqual([1, 2]);
+  });
+
+  it('flush waits for a write in flight and for one queued while it waits, in either memento', async () => {
+    const state = createDesktopKeyValueState(userData, () => undefined);
+    await state.workspace.update('seed', 0);
+    const onDisk = await flushAcrossHeldRename(path.join(userData, 'state', 'global.json'), {
+      first: () => state.global.update('a', 1),
+      flush: () => state.flush(),
+      second: () => Promise.all([state.global.update('b', 2), state.workspace.update('c', 3)]),
+      onDisk: () => {
+        const reopened = createDesktopKeyValueState(userData, () => undefined);
+        return [reopened.global.get('a'), reopened.global.get('b'), reopened.workspace.get('c')];
+      },
+    });
+    expect(onDisk).toEqual([1, 2, 3]);
   });
 });

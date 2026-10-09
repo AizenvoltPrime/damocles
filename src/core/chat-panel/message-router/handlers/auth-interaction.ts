@@ -1,4 +1,4 @@
-import type { AuthInteraction } from "@earendil-works/pi-ai";
+import type { AuthInteraction, AuthPrompt } from "@earendil-works/pi-ai";
 import type { Platform } from "../../../../platform/platform";
 import { log } from "../../../logger";
 
@@ -10,6 +10,11 @@ export interface AuthInteractionOptions {
   /** Log prefix for info/progress events, e.g. "[ClaudeAuth]". */
   logPrefix: string;
   platform: Pick<Platform, "shell" | "notifications" | "dialogs">;
+  /**
+   * Answers `manual_code` prompts in the caller's own UI instead of the input box. It must honour the same rejection
+   * semantics as the input box below: `cancelSentinel` on a flow abort, the prompt signal's reason on a prompt abort.
+   */
+  manualCode?: (prompt: Extract<AuthPrompt, { type: "manual_code" }>) => Promise<string>;
 }
 
 /**
@@ -58,6 +63,7 @@ export function buildAuthInteraction(opts: AuthInteractionOptions): AuthInteract
         if (first === undefined) throw new Error("Auth select prompt had no options");
         return first.id;
       }
+      if (p.type === "manual_code" && opts.manualCode) return opts.manualCode(p);
       const dismiss = new AbortController();
       const onAbort = (): void => dismiss.abort();
       p.signal?.addEventListener("abort", onAbort, { once: true });

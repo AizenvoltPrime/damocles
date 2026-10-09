@@ -5,6 +5,8 @@ import { useVirtualList } from '@vueuse/core';
 import { ChevronDown, MessageSquareDashed, Plus, Search, Tag, X } from 'lucide-vue-next';
 import { MAX_SEARCH_LENGTH, type DamoclesShellApi, type ShellChat, type ShellChatList } from '../../preload/shell-channels';
 import { MAX_OVERLAY_ITEMS, type OverlayMenuItem, type OverlayRect } from '../../preload/overlay-channels';
+import { Button } from '@/components/ui/button';
+import { remPx } from '@/composables/useRemPx';
 import { chatListRows, hasSavedConversation, tagCounts, type ChatListRow } from '../chat-list';
 import SidebarSection from './SidebarSection.vue';
 import ChatRow from './ChatRow.vue';
@@ -13,6 +15,8 @@ const props = defineProps<{
   api: DamoclesShellApi;
   // the selected project, or the home folder when no project is open; absent until main knows either
   projectKey: string | undefined;
+  // ShellState.revision of the state projectKey came from
+  stateRevision: number;
   projectName: string;
   selectedChatId: string | undefined;
   newChatShortcut: string;
@@ -21,10 +25,11 @@ const props = defineProps<{
 const emit = defineEmits<{ toggle: [] }>();
 const { t } = useI18n();
 
-// Fixed row heights in CSS px; the virtual list positions rows from these.
-const GROUP_ROW_HEIGHT = 26;
-const CHAT_ROW_HEIGHT = 46;
+// Fixed row heights in rem; the virtual list positions rows from their px.
+const GROUP_ROW_REM = 1.625;
+const CHAT_ROW_REM = 2.875;
 const SEARCH_DEBOUNCE_MS = 150;
+const STATE_ACTION = 'h-auto rounded-7 border-(--d-border2) bg-transparent px-2.5 py-1 text-xs font-normal text-(--d-text) transition-none hover:border-(--d-accent) hover:bg-transparent hover:text-(--d-accent)';
 
 const listId = useId();
 const helpId = useId();
@@ -52,22 +57,34 @@ async function refresh(): Promise<void> {
     return;
   }
   const trimmed = query.value.trim();
+  const revision = props.stateRevision;
   try {
-    const [full, matches] = await Promise.all([props.api.listChats(key), trimmed ? props.api.searchChats(key, trimmed) : Promise.resolve(null)]);
+    const [full, matches] = await Promise.all([
+      props.api.listChats(key, revision),
+      trimmed ? props.api.searchChats(key, trimmed, revision) : Promise.resolve(undefined),
+    ]);
     if (seq !== refreshSeq) return;
+    // The project left main's list after this state; the state without it, already sent, refreshes the list as its key changes.
+    if (full === null || matches === null) {
+      dropOtherProject(key);
+      return;
+    }
     now.value = new Date();
     list.value = full;
-    found.value = matches;
+    found.value = matches ?? null;
     loadFailed.value = false;
   } catch {
     if (seq !== refreshSeq) return;
-    // Another project's chats never stay on screen under this project's name.
-    if (list.value?.projectKey !== key) {
-      list.value = null;
-      found.value = null;
-    }
+    dropOtherProject(key);
     loadFailed.value = true;
   }
+}
+
+// Another project's chats never stay on screen under this project's name.
+function dropOtherProject(key: string): void {
+  if (list.value?.projectKey === key) return;
+  list.value = null;
+  found.value = null;
 }
 
 watch(() => props.projectKey, () => {
@@ -104,7 +121,7 @@ const shown = computed(() => {
   return tagFilter.value === undefined ? source : source.filter((chat) => chat.tag === tagFilter.value);
 });
 const rows = computed<ChatListRow[]>(() => chatListRows(shown.value, now.value));
-const rowHeight = (row: ChatListRow | undefined): number => (row?.kind === 'group' ? GROUP_ROW_HEIGHT : CHAT_ROW_HEIGHT);
+const rowHeight = (row: ChatListRow | undefined): number => remPx(row?.kind === 'group' ? GROUP_ROW_REM : CHAT_ROW_REM);
 const { list: visibleRows, containerProps, wrapperProps } = useVirtualList(rows, {
   itemHeight: (index) => rowHeight(rows.value[index]),
   overscan: 8,
@@ -365,10 +382,12 @@ defineExpose({
     @toggle="emit('toggle')"
   >
     <template #actions>
-      <button
+      <Button
         type="button"
+        variant="ghost"
+        size="icon-sm"
         data-testid="chat-search-toggle"
-        class="flex size-[22px] shrink-0 items-center justify-center rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text)"
+        class="size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.25"
         :class="searchOpen ? 'bg-(--d-hover) text-(--d-text)' : ''"
         :aria-label="t('chats.search')"
         :title="t('chats.search')"
@@ -378,13 +397,14 @@ defineExpose({
       >
         <Search
           aria-hidden="true"
-          class="size-[13px]"
+          class="size-3.25"
         />
-      </button>
-      <button
+      </Button>
+      <Button
         type="button"
+        size="sm"
         data-testid="new-chat"
-        class="flex h-[22px] shrink-0 items-center gap-1 rounded-md bg-(--d-accent) px-[7px] text-[11.5px] font-medium text-(--d-on-accent) hover:bg-[color-mix(in_srgb,var(--d-accent)_88%,var(--d-text))]"
+        class="h-5.5 gap-1 rounded-md px-1.75 text-11.5 hover:bg-[color-mix(in_srgb,var(--d-accent)_88%,var(--d-text))] [&_svg]:size-3"
         :aria-label="t('chats.newChat')"
         :title="t('chats.newTitle', { shortcut: newChatShortcut })"
         @click="newChat"
@@ -394,14 +414,15 @@ defineExpose({
           class="size-3"
         />
         {{ t('chats.new') }}
-      </button>
+      </Button>
     </template>
 
     <div
       v-if="searchOpen"
       class="animate-[d-pop_.16s_ease-out] px-2.5 pt-0.5 pb-1.5"
     >
-      <label class="flex h-7 items-center gap-[7px] rounded-[7px] border border-(--d-border2) bg-(--d-input) px-[9px] focus-within:border-(--d-accent)">
+      <!-- The label draws the field around the icon and a bare input; Input's own box would be replaced wholesale. -->
+      <label class="flex h-7 items-center gap-1.75 rounded-7 border border-(--d-border2) bg-(--d-input) px-2.25 focus-within:border-(--d-accent)">
         <Search
           aria-hidden="true"
           class="size-3 shrink-0 text-(--d-faint)"
@@ -431,17 +452,21 @@ defineExpose({
         :aria-label="t('chats.tagFilters')"
         class="flex h-5 min-w-0 flex-1 flex-wrap gap-1 overflow-hidden"
       >
-        <button
+        <Button
           v-for="(entry, index) in orderedTags"
           :key="entry.tag"
           type="button"
+          variant="outline"
+          size="sm"
           data-testid="tag-chip"
           :data-tag="entry.tag"
           :aria-pressed="entry.tag === tagFilter"
           :title="entry.tag === tagFilter ? t('chats.clearTagFilter') : t('chats.showTagged', { tag: entry.tag })"
-          class="flex h-5 max-w-24 shrink-0 items-center gap-1 rounded-full border px-2 text-[11px] whitespace-nowrap hover:border-(--d-accent)"
+          class="flex h-5 max-w-24 shrink-0 justify-start gap-1 rounded-full px-2 text-11 font-normal transition-none hover:border-(--d-accent) [&_svg]:size-2.5"
           :class="[
-            entry.tag === tagFilter ? 'border-(--d-accent) bg-(--d-accent-soft) text-(--d-accent-text)' : 'border-(--d-border) text-(--d-muted)',
+            entry.tag === tagFilter
+              ? 'border-(--d-accent) bg-(--d-accent-soft) text-(--d-accent-text) hover:bg-(--d-accent-soft) hover:text-(--d-accent-text)'
+              : 'border-(--d-border) bg-transparent text-(--d-muted) hover:bg-transparent hover:text-(--d-muted)',
             index >= visibleChips ? 'invisible' : '',
           ]"
           @click="toggleTagFilter(entry.tag)"
@@ -458,16 +483,18 @@ defineExpose({
           />
           <span class="min-w-0 truncate">{{ entry.tag }}</span>
           <span
-            class="shrink-0 font-mono text-[10px]"
+            class="shrink-0 font-mono text-10"
             :class="entry.tag === tagFilter ? 'text-(--d-faint-text)' : 'text-(--d-faint)'"
           >{{ entry.count }}</span>
-        </button>
+        </Button>
       </div>
-      <button
+      <Button
         v-if="hiddenChips > 0"
         type="button"
+        variant="outline"
+        size="sm"
         data-testid="all-tags"
-        class="flex h-5 shrink-0 items-center gap-[3px] rounded-full border border-(--d-border) px-[7px] text-[11px] text-(--d-muted) hover:border-(--d-accent) hover:text-(--d-text)"
+        class="flex h-5 shrink-0 gap-0.75 rounded-full border-(--d-border) bg-transparent px-1.75 text-11 font-normal text-(--d-muted) transition-none hover:border-(--d-accent) hover:bg-transparent hover:text-(--d-text) [&_svg]:size-2.5"
         :aria-label="t('chats.moreTags', { count: hiddenChips })"
         :title="t('chats.allTags')"
         aria-haspopup="menu"
@@ -478,7 +505,7 @@ defineExpose({
           aria-hidden="true"
           class="size-2.5"
         />
-      </button>
+      </Button>
     </div>
 
     <p
@@ -490,21 +517,22 @@ defineExpose({
     </p>
     <div
       v-if="isEmpty"
-      class="flex animate-[d-fade_.3s] flex-col items-center gap-2 px-4 py-[18px] text-center text-xs text-(--d-muted)"
+      class="flex animate-[d-fade_.3s] flex-col items-center gap-2 px-4 py-4.5 text-center text-xs text-(--d-muted)"
       data-testid="chats-empty"
     >
       <MessageSquareDashed
         aria-hidden="true"
-        class="size-[22px] text-(--d-faint)"
+        class="size-5.5 text-(--d-faint)"
       />
       {{ t('chats.empty', { project: projectName }) }}
-      <button
+      <Button
         type="button"
-        class="rounded-[7px] border border-(--d-border2) px-2.5 py-1 text-(--d-text) hover:border-(--d-accent) hover:text-(--d-accent)"
+        variant="outline"
+        :class="STATE_ACTION"
         @click="newChat"
       >
         {{ t('chats.startFirst') }}
-      </button>
+      </Button>
     </div>
     <div
       v-if="loadFailed"
@@ -517,15 +545,17 @@ defineExpose({
       >
         {{ t('chats.loadFailed') }}
       </p>
-      <button
+      <Button
         type="button"
-        class="rounded-[7px] border border-(--d-border2) px-2.5 py-1 text-(--d-text) hover:border-(--d-accent) hover:text-(--d-accent)"
+        variant="outline"
+        :class="STATE_ACTION"
         @click="refresh"
       >
         {{ t('chats.retry') }}
-      </button>
+      </Button>
     </div>
 
+    <!-- A virtualized listbox with aria-activedescendant; no shadcn part virtualizes its rows. -->
     <div
       v-bind="containerProps"
       :id="listId"
@@ -549,7 +579,7 @@ defineExpose({
           <div
             v-if="row.kind === 'group'"
             aria-hidden="true"
-            class="px-2 pt-2 pb-[3px] text-[10.5px] font-medium text-(--d-faint)"
+            class="px-2 pt-2 pb-0.75 text-10.5 font-medium text-(--d-faint)"
           >
             {{ t(`chats.${row.group}`) }}
           </div>

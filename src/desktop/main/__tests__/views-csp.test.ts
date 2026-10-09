@@ -13,11 +13,11 @@ vi.mock('../security', () => ({ registerPanelContents: vi.fn(), loadAppPage: vi.
 
 import type { PanelOptions } from '../../../platform/window-service';
 import type { PanelStateStore } from '../panel-state-store';
-import { CHAT_WORKER_SRC, DesktopPanel, type PanelViews } from '../views';
+import { CHAT_WORKER_SRC, DesktopPanel, type PagesHost, type PanelViews } from '../views';
 
 function panel(kind: PanelOptions['kind']): DesktopPanel {
-  const deps = { window: {} as never, preloadPath: '', panePreloadPath: '', states: { set: vi.fn() } as unknown as PanelStateStore, log: vi.fn(), onChange: vi.fn(), onRestack: vi.fn(), onReveal: vi.fn(), onRendererGaveUp: vi.fn(), onSavedSessionChange: vi.fn(), onPaneGaveUp: vi.fn(), paneContext: vi.fn() };
-  return new DesktopPanel({} as PanelViews, deps, { options: { kind, title: '', localResourceRoots: [] } }, undefined, undefined);
+  const deps = { window: {} as never, preloadPath: '', states: { set: vi.fn() } as unknown as PanelStateStore, pages: {} as PagesHost, log: vi.fn(), onChange: vi.fn(), onRestack: vi.fn(), onReveal: vi.fn(), onRendererGaveUp: vi.fn(), onSavedSessionChange: vi.fn(), popupOpen: () => false };
+  return new DesktopPanel({} as PanelViews, deps, { options: { kind, title: '', localResourceRoots: [] } }, undefined);
 }
 
 // workerSrc becomes the chat page's CSP worker-src (core panel HTML); Monaco's workers need it and nothing else may get it.

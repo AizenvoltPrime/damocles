@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { mainLog } from './support/app';
+import { logBeforeQuit, mainLog } from './support/app';
 import { activeChat, expect, nextChat, test } from './support/fixtures';
 import { seedStubModel, type HermeticHome } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
@@ -75,8 +75,10 @@ test.describe('child process environment', () => {
       await sendAndAwaitEcho(second, 'another tab with no git');
       await expect.poll(() => count(desktop.output(), '[CheckpointService] git unavailable')).toBe(2);
 
-      expect(count(desktop.output(), `[notification:warning] ${GIT_MISSING}`)).toBe(1);
-      expect(desktop.output()).not.toContain('[CheckpointService] turnStart failed');
+      await desktop.close();
+      const log = logBeforeQuit(home);
+      expect(count(log, `[notification:warning] ${GIT_MISSING}`)).toBe(1);
+      expect(log).not.toContain('[CheckpointService] turnStart failed');
     } finally {
       await stub.close();
     }

@@ -3,6 +3,6 @@
   "private": true,
   "description": "Dependencies of drive-update.mjs alone, so the desktop-update-test job installs only these",
   "dependencies": {
-    "playwright-core": "1.63.0"
+    "playwright-core": "1.64.0"
   }
 }

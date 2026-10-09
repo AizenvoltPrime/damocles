@@ -4,7 +4,9 @@ import { useI18n } from 'vue-i18n';
 import { Check, Search } from 'lucide-vue-next';
 import type { OverlayAnswer, OverlayMenuItem, OverlayRequest } from '../../../preload/overlay-channels';
 import { OVERLAY_ICON_COMPONENTS } from '../icons';
+import { glyphLook } from '../../terminal/terminal-icons';
 import { placePopup } from '../placement';
+import { createPointerMoveFilter } from '../pointer-moved';
 
 type MenuRequest = Extract<OverlayRequest, { kind: 'menu' }>;
 type MenuEntry = Extract<OverlayMenuItem, { kind: 'item' }>;
@@ -27,6 +29,8 @@ const rows = computed<OverlayMenuItem[]>(() => {
   return props.request.items.filter((item) => item.kind === 'item' && item.label.toLocaleLowerCase().includes(needle));
 });
 const items = computed(() => rows.value.filter((row): row is MenuEntry => row.kind === 'item'));
+// A row without an icon keeps the icon column when others have one, so every label starts at the same edge.
+const iconColumn = computed(() => items.value.some((item) => item.icon !== undefined || item.glyph !== undefined));
 
 const itemElements = (): HTMLElement[] => [...(root.value?.querySelectorAll<HTMLElement>('[data-menu-item]') ?? [])];
 
@@ -37,6 +41,11 @@ function focusItem(index: number): void {
 }
 
 const focusedIndex = (): number => itemElements().indexOf(document.activeElement as HTMLElement);
+
+const pointerMoved = createPointerMoveFilter();
+function onItemMouseMove(event: MouseEvent): void {
+  if (pointerMoved(event)) (event.currentTarget as HTMLElement).focus();
+}
 
 function choose(item: MenuEntry): void {
   if (item.disabled) return;
@@ -98,16 +107,17 @@ onMounted(() => {
 });
 </script>
 
+<!-- DropdownMenu needs its trigger in this document; its anchor is in the shell view, so this menu places itself at the rect it is sent. -->
 <template>
   <div
     ref="root"
     data-testid="overlay-menu"
-    class="fixed flex max-h-[min(420px,calc(100vh-16px))] w-[230px] animate-[d-pop_.14s_ease-out] flex-col overflow-hidden rounded-[11px] border border-(--d-border2) bg-(--d-card) text-(--d-text) shadow-(--d-shadow)"
+    class="fixed flex max-h-[min(32rem,calc(100vh-1rem))] w-max max-w-80 min-w-57.5 animate-[d-pop_.14s_ease-out] flex-col overflow-hidden rounded-11 border border-(--d-border2) bg-(--d-card) text-(--d-text) shadow-(--d-shadow)"
     :style="{ left: `${position.left}px`, top: `${position.top}px` }"
   >
     <label
       v-if="request.filterPlaceholder !== undefined"
-      class="flex h-8 shrink-0 items-center gap-[7px] border-b border-(--d-border) px-2.5"
+      class="flex h-8 shrink-0 items-center gap-1.75 border-b border-(--d-border) px-2.5"
     >
       <Search
         aria-hidden="true"
@@ -124,10 +134,18 @@ onMounted(() => {
         @keydown="onFilterKeydown"
       >
     </label>
+    <p
+      v-if="request.caption"
+      data-testid="overlay-menu-caption"
+      class="shrink-0 truncate px-3.5 pt-2.25 pb-0.5 font-mono text-11 text-(--d-faint-text)"
+      :title="request.caption"
+    >
+      {{ request.caption }}
+    </p>
     <div
       role="menu"
       :aria-label="request.label"
-      class="min-h-0 flex-1 overflow-y-auto p-[5px]"
+      class="min-h-0 flex-1 overflow-y-auto p-1.25"
     >
       <template
         v-for="(row, index) in rows"
@@ -146,22 +164,34 @@ onMounted(() => {
           :aria-checked="row.checked"
           :aria-disabled="row.disabled || undefined"
           tabindex="-1"
-          class="group/item flex cursor-pointer items-center gap-[9px] rounded-[7px] px-[9px] py-1.5 text-[12.5px] outline-none hover:bg-(--d-hover) focus:bg-(--d-hover)"
+          class="group/item flex cursor-pointer items-center gap-2.25 rounded-7 px-2.25 py-1.5 text-12.5 outline-none hover:bg-(--d-hover) focus:bg-(--d-hover)"
           :class="[row.danger ? 'text-(--d-danger) hover:text-(--d-danger-text) focus:text-(--d-danger-text)' : '', row.disabled ? 'cursor-default opacity-50' : '']"
           @click="choose(row)"
           @keydown="onItemKeydown($event, row)"
-          @mousemove="($event.currentTarget as HTMLElement).focus()"
+          @mousemove="onItemMouseMove"
         >
           <component
-            :is="OVERLAY_ICON_COMPONENTS[row.icon]"
-            v-if="row.icon"
+            :is="glyphLook(row.glyph, row.color).icon"
+            v-if="row.glyph"
             aria-hidden="true"
-            class="size-[13px] shrink-0"
+            class="size-3.25 shrink-0"
+            :style="{ color: glyphLook(row.glyph, row.color).color }"
+          />
+          <component
+            :is="OVERLAY_ICON_COMPONENTS[row.icon]"
+            v-else-if="row.icon"
+            aria-hidden="true"
+            class="size-3.25 shrink-0"
+          />
+          <span
+            v-else-if="iconColumn"
+            aria-hidden="true"
+            class="size-3.25 shrink-0"
           />
           <span class="min-w-0 flex-1 truncate">{{ row.label }}</span>
           <span
             v-if="row.shortcut"
-            class="shrink-0 font-mono text-[10.5px] text-(--d-faint) group-hover/item:text-(--d-faint-text) group-focus/item:text-(--d-faint-text)"
+            class="shrink-0 font-mono text-10.5 text-(--d-faint) group-hover/item:text-(--d-faint-text) group-focus/item:text-(--d-faint-text)"
           >{{ row.shortcut }}</span>
           <Check
             v-if="row.checked !== undefined"

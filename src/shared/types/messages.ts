@@ -1,4 +1,5 @@
 import type { UserContentBlock, ContentBlock, HistoryToolCall, HistoryAgentMessage, ImageBlock } from './content';
+import type { TerminalAttachmentInfo } from './terminal-attachment';
 import type {
   McpConfigError,
   McpRenamedToolRuleNotice,
@@ -56,7 +57,9 @@ export type { ObservationCursor } from './memory';
 
 export type WebviewToExtensionMessage =
   | { type: "log"; message: string }
-  | { type: "sendMessage"; content: string | UserContentBlock[]; agentId?: string; includeIdeContext?: boolean }
+  // terminalAttachmentIds: pending terminal attachments sent with the message; absent on hosts without them
+  | { type: "sendMessage"; content: string | UserContentBlock[]; agentId?: string; includeIdeContext?: boolean; terminalAttachmentIds?: string[] }
+  | { type: "removeTerminalAttachment"; id: string }
   | { type: "cancelSession" }
   | { type: "cancelAutoCompact" }
   | { type: "resumeSession"; sessionId: string }
@@ -108,10 +111,13 @@ export type WebviewToExtensionMessage =
   | { type: "openSettings" }
   /** Opens the host's settings modal outside the chat page (desktop overlay); the section must be a SETTINGS_SECTION_IDS entry. */
   | { type: "openAppSettings"; section?: SettingsSectionId; account?: SettingsAccountId }
+  /** The chat header's Terminal toggle, posted only when `HostCapabilities.windowLayout`; the host runs its Toggle Terminal command. */
+  | { type: "toggleTerminal" }
   /** An attached settings view's bootstrap, in place of the chat's `ready`: core re-posts the settings state the view renders. */
   | { type: "requestSettingsState" }
-  /** Opens the chat's own settings.json editor; core posts openSettingsFileEditor to the chat only. */
-  | { type: "openSettingsFileInChat"; scope: SettingsFileScope }
+  /** Opens the scope's settings file in the host's editor (desktop: an editor pane tab saved under settings-file-editor's rules).
+   *  `key`: a setting key whose line the editor shows, as VS Code's "Edit in settings.json" does. */
+  | { type: "openSettingsFileInChat"; scope: SettingsFileScope; key?: string }
   | { type: "renameSession"; sessionId: string; newName: string }
   | { type: "deleteSession"; sessionId: string }
   | { type: "openSessionLog" }
@@ -125,6 +131,8 @@ export type WebviewToExtensionMessage =
   | { type: "searchSessions"; query: string; offset?: number; selectedSessionId?: string }
   | { type: "requestPromptHistory"; offset?: number }
   | { type: "requestWorkspaceFiles" }
+  /** A file dropped on the composer with FILE_DRAG_MIME (src/shared/file-drag.ts); core confines it and answers with insertMention. */
+  | { type: "mentionDropped"; projectKey: string; relativePath: string }
   | { type: "openFile"; filePath: string; line?: number }
   | { type: "openSystemPrompt" }
   | { type: "openMcpToolInfo"; piName: string }
@@ -243,7 +251,7 @@ export type WebviewToExtensionMessage =
   | { type: "steerAgent"; agentId: string; message: string; images?: ImageBlock[]; requestId: string }
   | { type: "requestSteerTargets" }
   | { type: "pickBrowserElement" }
-  | { type: "openBrowser"; url: string }
+  | { type: "openBrowser" }
   | { type: "openElementContext"; content: string }
   | { type: "requestTeamData"; teamId: string }
   | { type: "requestTeamDataByToolUse"; toolUseId: string }
@@ -285,11 +293,10 @@ export type WebviewToExtensionMessage =
   | { type: "claudeSetBilling"; useAllowance: boolean }
   | { type: "claudeSetApiKey"; key: string }
   | { type: "claudeSignOut" }
-  | { type: "extensionUiResponse"; requestId: string; value: string | boolean | null }
-  | { type: "settingsFileLoad"; scope: SettingsFileScope }
-  /** `baseVersion` is the `version` the editor loaded; the host refuses the save as a conflict when the file changed since. */
-  | { type: "settingsFileSave"; scope: SettingsFileScope; content: string; baseVersion: string }
-  | { type: "revealSettingsFile"; scope: SettingsFileScope };
+  /** The redirect URL or code the user pasted while a sign-in waits for the browser; carries an auth code, never log it. */
+  | { type: "claudeSignInPaste"; input: string }
+  | { type: "claudeSignInCancel" }
+  | { type: "extensionUiResponse"; requestId: string; value: string | boolean | null };
 
 /**
  * Carried by every message that reports MCP config state, so the two producers cannot disagree.
@@ -318,7 +325,7 @@ export interface HostCapabilities {
   diffReview: boolean;
   /** `settingsUpdate` carries `settingSources` and the settings panel shows each value's source file. */
   settingsSources: boolean;
-  /** The host renders editors in the chat panel with Monaco (`editorShowDiff`, `editorOpenFile`); the lazy Monaco chunk may load. */
+  /** The host renders approval diffs in the chat panel with Monaco (`editorShowDiff`); the lazy Monaco chunk may load. */
   monaco: boolean;
   /** The host has an active text editor whose file and selection can be attached to a prompt (`damocles.ideContext.enabled`). */
   ideContext: boolean;
@@ -330,6 +337,10 @@ export interface HostCapabilities {
   historyInPanel: boolean;
   /** With two or more folders open, the chat header's folder label picks the chat's folder; false where the host chooses it elsewhere (the desktop Projects list). */
   folderPickerInPanel: boolean;
+  /** The composer accepts a file dragged from the host's file views (FILE_DRAG_MIME) and posts mentionDropped; the empty state then says so. */
+  fileMentionDrop: boolean;
+  /** The host window has a layout grid with a terminal pane; the chat header shows a Terminal toggle that posts `toggleTerminal`. */
+  windowLayout: boolean;
 }
 
 /** What the VS Code host supplies, and the webview's value until the host says otherwise. */
@@ -345,6 +356,8 @@ export const VSCODE_HOST_CAPABILITIES: Readonly<HostCapabilities> = {
   settingsInPanel: true,
   historyInPanel: true,
   folderPickerInPanel: true,
+  fileMentionDrop: false,
+  windowLayout: false,
 };
 
 /** Text of a file or buffer the host shows in a chat panel editor; the host decides the body, the webview never reads files. */
@@ -370,21 +383,7 @@ export type SettingsFileScope = "user" | "project" | "local";
 /** Why a project or local settings file does not apply: no project is open, or the default project is untrusted. */
 export type SettingsFileUnavailableReason = "noProject" | "untrusted";
 
-/** `version` is the sha256 hex of the file's text read as UTF-8, '' when the file does not exist. `parseError` is set when the file on disk does not parse; saving is then refused. */
-export type SettingsFileState =
-  | { scope: SettingsFileScope; status: "ready"; path: string; exists: boolean; content: string; version: string; parseError?: string }
-  | { scope: SettingsFileScope; status: "unavailable"; reason: SettingsFileUnavailableReason }
-  /** The path exists but cannot be read (a directory, no permission); `error` is the reader's message. */
-  | { scope: SettingsFileScope; status: "unavailable"; reason: "unreadable"; path: string; error: string };
-
 export type SettingsFileAvailability = { available: true } | { available: false; reason: SettingsFileUnavailableReason };
-
-/** The file a save conflicted with, read inside the save's lock; `version` is '' when the file was deleted. */
-export interface SettingsFileOnDisk {
-  exists: boolean;
-  content: string;
-  version: string;
-}
 
 /** Where a setting's effective value comes from when a `.damocles` project or local file supplies it. */
 export interface SettingSource {
@@ -407,14 +406,26 @@ export interface ExtensionUiItem {
 export type AttentionKind = 'approval' | 'plan' | 'question';
 
 /** A desktop command that opens part of a chat's UI (AD11). */
-export type ChatCommand = 'subscriptionUsage';
+export const CHAT_COMMANDS = [
+  'contextUsage',
+  'subscriptionUsage',
+  'usageStatistics',
+  'mcpServers',
+  'tools',
+  'memory',
+  'rewind',
+  'sideQuestion',
+  'openSessionLog',
+  'viewSessionPlan',
+] as const;
+export type ChatCommand = (typeof CHAT_COMMANDS)[number];
 
 export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
   | { type: "partial"; data: PartialMessage; parentToolUseId?: string | null }
   | { type: "done"; data: ResultMessage }
   // `isCommandEcho` marks the echo of a slash command that commits no user entry; it is always injected too.
-  | { type: "userMessage"; content: string; contentBlocks?: UserContentBlock[]; correlationId: string; promptIndex: number; isInjected?: boolean; isCommandEcho?: boolean }
+  | { type: "userMessage"; content: string; contentBlocks?: UserContentBlock[]; terminalAttachments?: TerminalAttachmentInfo[]; correlationId: string; promptIndex: number; isInjected?: boolean; isCommandEcho?: boolean }
   | { type: "userMessageIdAssigned"; sdkMessageId: string; correlationId: string }
   | { type: "toolPending"; toolUseId: string; toolName: string; input: unknown; parentToolUseId?: string | null }
   | { type: "error"; message: string }
@@ -446,20 +457,11 @@ export type ExtensionToWebviewMessage =
    */
   | { type: "settingWriteResult"; key: string; ok: true; scope: SettingsFileScope; file?: string }
   | { type: "settingWriteResult"; key: string; ok: false; error: string }
-  /** `approvalId` (purpose "proposal" only) is the `toolUseId` of the pending `requestPermission` the diff belongs to. */
-  | { type: "editorShowDiff"; viewId: string; title: string; purpose: "proposal" | "checkpoint"; approvalId?: string; original: EditorDocument; modified: EditorDocument }
-  /** Read-only view; `untitled` marks an in-memory buffer with no path. */
-  | { type: "editorOpenFile"; viewId: string; title: string; document: EditorDocument; line?: number; untitled?: boolean }
+  /** An approval diff only (D15): `approvalId` is the `toolUseId` of the pending `requestPermission` the diff belongs to. Every other diff opens in the host's editor. */
+  | { type: "editorShowDiff"; viewId: string; title: string; purpose: "proposal"; approvalId: string; original: EditorDocument; modified: EditorDocument }
   /** An unknown `viewId` is ignored. */
   | { type: "editorCloseView"; viewId: string }
-  | { type: "settingsFileContent"; file: SettingsFileState }
-  | { type: "settingsFileSaveResult"; scope: SettingsFileScope; ok: true; version: string }
-  /** `onDisk` accompanies a conflict with a newer file on disk; a conflict without it (the default project moved) needs a reload. */
-  | { type: "settingsFileSaveResult"; scope: SettingsFileScope; ok: false; error: string; conflict?: boolean; onDisk?: SettingsFileOnDisk }
-  /** Sent only to panels that loaded `scope`, when the file changed on disk to a new `version`. */
-  | { type: "settingsFileChanged"; scope: SettingsFileScope; version: string }
   | { type: "settingsFileAvailability"; files: Record<SettingsFileScope, SettingsFileAvailability> }
-  | { type: "openSettingsFileEditor"; scope: SettingsFileScope }
   | { type: "supportedCommands"; commands: SlashCommandInfo[] }
   | { type: "budgetWarning"; currentSpend: number; limit: number; percentUsed: number }
   | { type: "budgetExceeded"; finalSpend: number; limit: number }
@@ -513,13 +515,15 @@ export type ExtensionToWebviewMessage =
   | { type: "sessionUsage"; usage: AgentUsageTotals; numTurns: number }
   | { type: "rewindHistory"; prompts: RewindHistoryItem[]; restorePoints: RestorePoint[]; canFork: boolean }
   | { type: "prefillInput"; text: string }
-  | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean; isMidStream?: boolean; steerTarget?: { agentId: string; agentType?: string; description?: string }; promptIndex?: number }
+  | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; terminalAttachments?: TerminalAttachmentInfo[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean; isMidStream?: boolean; steerTarget?: { agentId: string; agentType?: string; description?: string }; promptIndex?: number; timestamp?: number }
   | { type: "assistantReplay"; content: string; thinking?: string; tools?: HistoryToolCall[]; contentBlocks?: ContentBlock[]; effort?: import('../effort-badge').EffortBadgeLevel }
   | { type: "errorReplay"; content: string }
   | { type: "promptHistory"; history: string[]; hasMore: boolean }
   | { type: "promptHistoryPush"; entry: string }
   | { type: "panelFocused" }
   | { type: "workspaceFiles"; files: WorkspaceFileInfo[] }
+  /** Insert `@<display> ` at the composer caret, exactly as an @ autocomplete file pick does; `path` is the absolute path core resolved inside the chat's folder. */
+  | { type: "insertMention"; path: string; display: string }
   | {
       type: "requestPermission";
       toolUseId: string;
@@ -554,7 +558,10 @@ export type ExtensionToWebviewMessage =
   | { type: "messageQueued"; message: QueuedMessage }
   | { type: "queueProcessed"; messageId: string }
   | { type: "queueBatchProcessed"; messageIds: string[]; combinedContent: string; contentBlocks?: UserContentBlock[] }
-  /** `returnToInput`: the chip's message was never sent, and goes back into the composer rather than away. */
+  /**
+   * `messageId`: a queued chip's id, or the correlation id of a prompt pi queued into the running run.
+   * `returnToInput`: the message was never sent, and goes back into the composer rather than away.
+   */
   | { type: "queueCancelled"; messageId: string; returnToInput?: boolean }
   | { type: "flushedMessagesAssigned"; queueMessageIds: string[]; sdkMessageId: string }
   | ({ type: "mcpConfigUpdate"; servers: McpServerStatusInfo[]; configErrors: McpConfigError[] } & McpLocalUnignoredFlag)
@@ -574,6 +581,8 @@ export type ExtensionToWebviewMessage =
   | { type: "requestQuestion"; toolUseId: string; questions: Question[]; owner: PromptOwner; parentToolUseId?: string | null }
   | { type: "requestForm"; toolUseId: string; form: FormSchema; owner: PromptOwner; parentToolUseId?: string | null }
   | { type: "ideContextUpdate"; context: IdeContextDisplayInfo | null }
+  // the composer's pending terminal attachments, whole list, on every change; focusComposer: the user just added one
+  | { type: "terminalAttachmentsUpdate"; attachments: TerminalAttachmentInfo[]; focusComposer?: true }
   | {
       type: "requestPlanApproval";
       toolUseId: string;
@@ -595,6 +604,8 @@ export type ExtensionToWebviewMessage =
       type: "interruptRecovery";
       correlationId: string;
       promptContent: string;
+      /** The typed text and images, for a prompt sent with images. */
+      contentBlocks?: UserContentBlock[];
     }
   | { type: "languageChange"; locale: string }
   | { type: "showPlanContent"; content: string; filePath: string }
@@ -718,6 +729,9 @@ export type ExtensionToWebviewMessage =
   | { type: "openTeamOverlay"; teamId: string }
   // A desktop command for this chat's UI (AD11); the only path from a command to a chat.
   | { type: "runChatCommand"; command: ChatCommand }
+  // Whether the window shows its terminal pane, and Toggle Terminal's shortcut as the platform writes it, for the chat header's
+  // Terminal toggle (HostCapabilities.windowLayout).
+  | { type: "terminalShown"; shown: boolean; shortcut: string }
   | { type: "compassStatusUpdate"; status: CompassIndexStatus }
   | { type: "compassBuildProgress"; current: number; total: number; phase: 'build' | 'postprocess' | 'serialize'; label?: string }
   | { type: "compassSearchResults"; results: CompassSearchResult[] }
@@ -755,6 +769,8 @@ export type ExtensionToWebviewMessage =
   | { type: "claudeAuthBusy"; busy: boolean }
   | { type: "claudeAuthCancelled" }
   | { type: "claudeAuthError"; error: string }
+  /** True while a sign-in waits for the browser to return and accepts a pasted redirect URL instead. */
+  | { type: "claudeSignInWaiting"; waiting: boolean }
   | { type: "openSettingsPanel"; section?: SettingsSectionId; account?: SettingsAccountId }
   | { type: "openOpenAIAuthPanel" }
   | {

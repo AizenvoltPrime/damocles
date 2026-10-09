@@ -20,6 +20,9 @@ files:
   - dist/compass-worker.js
   - dist/usage-stats-worker.js
   - dist/sentinel.js
+  - dist/formatter-host.js
+  - dist/pty-host.js
+  - dist/quick-open-worker.js
   # Nothing loads source maps at runtime (no --enable-source-maps); they were a quarter of app.asar.
   - '!**/*.map'
   - l10n/**
@@ -46,6 +49,14 @@ files:
   # Only chord's unreachable ./bundler export uses esbuild, the VSIX excludes it on the same review (scripts/sync-vscodeignore.mjs EXCLUDED_NESTED_DEPS),
   # and electron-builder hoists it to the top-level node_modules.
   - '!**/node_modules/{esbuild,@esbuild}{,/**}'
+  # node-pty ships only this target's prebuild, without its debug symbols and native sources, the conpty copy its postinstall writes to
+  # build/, or any .node a source build leaves in build/, which node-pty loads ahead of the prebuild. scripts/verify-desktop-package.mjs checks the result.
+  - '!node_modules/node-pty/prebuilds/!(${platform}-${arch}){,/**}'
+  - '!node_modules/node-pty/**/*.pdb'
+  - '!node_modules/node-pty/{build,deps,src,third_party,scripts}{,/**}'
+  # Nothing on Windows loads @parcel/watcher (src/desktop/main/platform/file-watcher-factory.ts), and only a Windows install has these.
+  # Never move an exclusion under win: electron-builder reads a platform files set that only excludes as "everything but", and ships it all.
+  - '!node_modules/@parcel/watcher-win32-*{,/**}'
 
 # Monaco is a devDependency bundled into dist/webview, so the notices for the code it vendors ship from here, not from node_modules.
 extraResources:
@@ -62,12 +73,17 @@ asarUnpack:
   - dist/compass-worker.js
   - dist/usage-stats-worker.js
   - dist/sentinel.js
+  - dist/formatter-host.js
+  - dist/pty-host.js
+  - dist/quick-open-worker.js
   - resources/grammars/**
+  - resources/shell-integration/**
   - python/**
   - node_modules/web-tree-sitter/**
   - node_modules/@vscode/ripgrep-*/**
   - node_modules/@koromix/koffi-*/**
   - node_modules/@parcel/watcher-*/**
+  - node_modules/node-pty/prebuilds/**
 
 # docs/invariants.md "Desktop packaging and updates"; scripts/verify-desktop-package.mjs reads these back from every built binary.
 electronFuses:

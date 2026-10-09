@@ -97,6 +97,7 @@ const H = vi.hoisted(() => {
       sendUserMessage: vi.fn(async () => undefined),
       sendCustomMessage: vi.fn(async () => undefined),
       clearQueue: vi.fn(() => ({ steering: [], followUp: [] })),
+      getFollowUpMessages: vi.fn((): string[] => []),
       // pi's registered extension commands, which `prompt()` runs without committing a user entry.
       extensionRunner: { getCommand: vi.fn((_name: string): unknown => undefined), hasHandlers: vi.fn(() => false) },
       abort: vi.fn(async () => undefined),
@@ -227,7 +228,7 @@ const H = vi.hoisted(() => {
         get disposed() { return disposed; },
       };
     }),
-    SessionManager: { create: vi.fn(() => ({ kind: 'persistent' })), inMemory: vi.fn(() => ({ kind: 'memory' })) },
+    SessionManager: { create: vi.fn(() => ({ kind: 'persistent', getBranch: () => [] })), inMemory: vi.fn(() => ({ kind: 'memory' })) },
     SettingsManager: { inMemory: vi.fn(() => ({ kind: 'settings' })), create: vi.fn(() => ({ kind: 'settings' })) },
     ModelRuntime: { create: vi.fn(async () => services.modelRuntime) },
     DefaultPackageManager: class { getInstalledPath(): string | undefined { return undefined; } },
@@ -369,6 +370,7 @@ import { RepoManager, getGitDir, getRepoDir } from '../checkpoints';
 import { PiRuntime } from '../pi-runtime';
 import { FolderRuntime } from '../folder-runtime';
 import { reconstructMessages } from '../session-store/history-loader';
+import { formatTerminalAttachmentBlock } from '../../terminal-attachment';
 import { getPiCodingAgent } from '../pi-loader';
 import { resolveAgentToolset } from '../subagents/agent-toolset';
 import { DEFAULT_AGENTS } from '../subagents/default-agents';
@@ -783,7 +785,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     // in-flight reload rather than stacking a second rebuild — so the failed reload fired exactly once.
     expect(reload).toHaveBeenCalledTimes(1);
     // The panel still serves a turn afterwards (the rejection didn't poison the session).
-    await expect(session.sendMessage('go', undefined, 'c1', { content: 'go' })).resolves.toBeUndefined();
+    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
     expect(live.prompt as ReturnType<typeof vi.fn>).toHaveBeenCalled();
     await session.dispose();
   });
@@ -1095,6 +1097,184 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     await session.dispose();
   });
 
+  it("a new chat returns every queued message to the input, one still being screened included, and empties pi's queue", async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    (live as { isStreaming: boolean }).isStreaming = true;
+    session.queueInput('pending', 'q1');
+    // An input handler that has not answered yet holds the next one in screening.
+    const runner = live.extensionRunner as unknown as { hasHandlers: ReturnType<typeof vi.fn>; emitInput?: () => Promise<unknown> };
+    runner.hasHandlers.mockReturnValue(true);
+    runner.emitInput = () => new Promise(() => {});
+    session.queueInput('screening', 'q2');
+    messages.length = 0;
+    (live.clearQueue as ReturnType<typeof vi.fn>).mockClear();
+
+    session.clear();
+
+    expect(messages.filter((m) => m.type === 'queueCancelled')).toEqual([
+      { type: 'queueCancelled', messageId: 'q1', returnToInput: true },
+      { type: 'queueCancelled', messageId: 'q2', returnToInput: true },
+    ]);
+    // The old run streams until the replacement aborts it, and must not deliver the batch meanwhile.
+    expect(live.clearQueue).toHaveBeenCalled();
+    await session.whenReplaced();
+    await session.dispose();
+  });
+
+  it("a folder switch, which disposes the session, first returns every queued message and every prompt pi queued to the input", async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const followUps: string[] = [];
+    Object.assign(live, { isStreaming: true, getFollowUpMessages: () => followUps });
+    (live.clearQueue as ReturnType<typeof vi.fn>).mockImplementation(() => ({ steering: [], followUp: followUps.splice(0) }));
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async (text: string, opts: { preflightResult: (d: string) => void }) => {
+      followUps.push(text);
+      opts.preflightResult('queued');
+    });
+    const withdrawn = vi.fn();
+    expect(await session.sendMessage('also look at this', undefined, 'c1', { content: 'also look at this' }, withdrawn)).toBe('sent');
+    session.queueInput('pending', 'q1');
+    const runner = live.extensionRunner as unknown as { hasHandlers: ReturnType<typeof vi.fn>; emitInput?: () => Promise<unknown> };
+    runner.hasHandlers.mockReturnValue(true);
+    runner.emitInput = () => new Promise(() => {});
+    session.queueInput('screening', 'q2');
+    messages.length = 0;
+
+    const disposed = session.dispose();
+
+    expect(messages.filter((m) => m.type === 'queueCancelled')).toEqual([
+      { type: 'queueCancelled', messageId: 'q1', returnToInput: true },
+      { type: 'queueCancelled', messageId: 'q2', returnToInput: true },
+      { type: 'queueCancelled', messageId: 'c1', returnToInput: true },
+    ]);
+    expect(withdrawn).toHaveBeenCalledOnce();
+    expect(followUps).toEqual([]);
+    await disposed;
+  });
+
+  describe("a folder switch, which disposes the session, returns a prompt pi's input handlers still hold to the input once", () => {
+    const IMAGE = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'iVBORw0KGgo=' } };
+    const TYPED = [{ type: 'text' as const, text: 'what is this?' }, IMAGE];
+    const returned = (messages: ExtensionToWebviewMessage[]) => messages.filter((m) => m.type === 'interruptRecovery' || m.type === 'queueCancelled');
+
+    it.each([
+      ['to open a run, after the disposal settled', 'started', false],
+      ['to open a run, while the disposal still aborts the turn', 'started', true],
+      ['into the running run, after the disposal settled', 'queued', false],
+      ['into the running run, while the disposal still aborts the turn', 'queued', true],
+    ])('with its text, image and chips, and pi releasing it %s delivers nothing', async (_when, disposition, duringAbort) => {
+      const messages: ExtensionToWebviewMessage[] = [];
+      const session = new PiSession(makeOptions(messages));
+      await session.initializeEarly();
+      const live = H.getLastSession()!;
+      const followUps: string[] = [];
+      Object.assign(live, { isStreaming: disposition === 'queued', getFollowUpMessages: () => followUps });
+      (live.clearQueue as ReturnType<typeof vi.fn>).mockImplementation(() => ({ steering: [], followUp: followUps.splice(0) }));
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      const runs: string[] = [];
+      (live.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async (text: string, opts: { preflightResult: (d: string) => void }) => {
+        await held;
+        if (disposition === 'queued') followUps.push(text);
+        opts.preflightResult(disposition);
+        if (disposition === 'started') runs.push(text);
+      });
+      if (duringAbort) {
+        (live.abort as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+          release();
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+      }
+      const withdrawn = vi.fn();
+      const sending = session.sendMessage(TYPED, undefined, 'c1', { content: 'what is this?', contentBlocks: TYPED }, withdrawn);
+      await vi.waitFor(() => expect(live.prompt).toHaveBeenCalledOnce());
+
+      const disposed = session.dispose();
+
+      // Back before the panel moves, which a folder switch does once the disposal settles.
+      expect(returned(messages)).toEqual([{ type: 'interruptRecovery', correlationId: 'c1', promptContent: 'what is this?', contentBlocks: TYPED }]);
+      expect(withdrawn).toHaveBeenCalledOnce();
+      await disposed;
+      release();
+
+      expect(await sending).toBe('withdrawn');
+      expect(withdrawn).toHaveBeenCalledOnce();
+      expect(returned(messages)).toHaveLength(1);
+      expect(runs).toEqual([]);
+      expect(followUps).toEqual([]);
+    });
+
+    it('before pi has it, with no echo shown', async () => {
+      const messages: ExtensionToWebviewMessage[] = [];
+      const session = new PiSession(makeOptions(messages));
+      await session.initializeEarly();
+      const live = H.getLastSession()!;
+      session.requestInterruptionCheck();
+      let disposed!: Promise<void>;
+      vi.mocked(reconcileInterruptions).mockImplementationOnce(async () => {
+        disposed = session.dispose();
+        return [];
+      });
+      const withdrawn = vi.fn();
+
+      const outcome = await session.sendMessage(TYPED, undefined, 'c1', { content: 'what is this?', contentBlocks: TYPED }, withdrawn);
+      await disposed;
+
+      expect(outcome).toBe('withdrawn');
+      expect(withdrawn).toHaveBeenCalledOnce();
+      expect(returned(messages)).toEqual([{ type: 'interruptRecovery', correlationId: 'c1', promptContent: 'what is this?', contentBlocks: TYPED }]);
+      expect(messages.some((m) => m.type === 'userMessage')).toBe(false);
+      expect(live.prompt).not.toHaveBeenCalled();
+    });
+
+    it('but not one whose run started, which reached the model', async () => {
+      const messages: ExtensionToWebviewMessage[] = [];
+      const session = new PiSession(makeOptions(messages));
+      await session.initializeEarly();
+      const live = H.getLastSession()!;
+      let finish!: () => void;
+      const running = new Promise<void>((resolve) => { finish = resolve; });
+      (live.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async (_text: string, opts: { preflightResult: (d: string) => void }) => {
+        opts.preflightResult('started');
+        await running;
+      });
+      const withdrawn = vi.fn();
+      const sending = session.sendMessage(TYPED, undefined, 'c1', { content: 'what is this?', contentBlocks: TYPED }, withdrawn);
+      await vi.waitFor(() => expect(live.prompt).toHaveBeenCalledOnce());
+
+      const disposed = session.dispose();
+      finish();
+      await disposed;
+
+      expect(await sending).not.toBe('withdrawn');
+      expect(withdrawn).not.toHaveBeenCalled();
+      expect(returned(messages)).toEqual([]);
+    });
+
+    it('nor one a Stop already handed back', async () => {
+      const messages: ExtensionToWebviewMessage[] = [];
+      const session = new PiSession(makeOptions(messages));
+      await session.initializeEarly();
+      const live = H.getLastSession()!;
+      (live.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async (_text: string, opts: { preflightResult: (d: string) => void }) => {
+        session.cancel();
+        opts.preflightResult('started');
+      });
+      const withdrawn = vi.fn();
+      expect(await session.sendMessage(TYPED, undefined, 'c1', { content: 'what is this?', contentBlocks: TYPED }, withdrawn)).toBe('unsent');
+
+      await session.dispose();
+
+      expect(withdrawn).not.toHaveBeenCalled();
+      expect(returned(messages)).toHaveLength(1);
+    });
+  });
+
   it('sendMessage after cancel() waits for the abort to settle before prompting', async () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
@@ -1399,6 +1579,161 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     await session.dispose();
   });
 
+  // --- terminal attachment sidecar and send outcome -------------------------------------------------
+  const attachmentInfo = (id: string) => ({ id, source: 'command' as const, commandLine: 'npm test', exitCode: 1, terminalTitle: 'pwsh', lineCount: 1, omittedLines: 0, preview: 'FAIL' });
+  const ATTACHED = { content: 'what failed?', terminalAttachments: [attachmentInfo('t1'), attachmentInfo('t2')] };
+  const attachmentSidecars = (append: ReturnType<typeof vi.fn>) => append.mock.calls.filter((c) => c[0] === 'damocles-terminal-attachments').map((c) => c[1]);
+
+  it('records the attachment count for the entry the prompt committed, at its commit, and reports it sent', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const append = live.sessionManager.appendCustomEntry as ReturnType<typeof vi.fn>;
+    const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn>;
+    getBranch.mockReturnValue([]);
+    let atCommit: unknown[] = [];
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, opts: unknown) => {
+      piRuns(opts, getBranch, [
+        { type: 'message', id: 'u-new', message: { role: 'user', content: [{ type: 'text', text: 'blocks then what failed?' }] } },
+        { type: 'message', id: 'u-note', message: { role: 'user', content: [{ type: 'text', text: 'skip it' }] } },
+      ]);
+      await Promise.resolve();
+      atCommit = attachmentSidecars(append);
+    });
+
+    const outcome = await session.sendMessage('blocks then what failed?', undefined, 'c1', ATTACHED);
+
+    expect(atCommit).toEqual([{ userEntryId: 'u-new', count: 2 }]);
+    expect(attachmentSidecars(append)).toEqual([{ userEntryId: 'u-new', count: 2 }]);
+    expect(outcome).toBe('sent');
+    await session.dispose();
+  });
+
+  it('records no attachment count for a prompt stopped before its run, which goes back unsent', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const append = live.sessionManager.appendCustomEntry as ReturnType<typeof vi.fn>;
+    (live.sessionManager.getBranch as ReturnType<typeof vi.fn>).mockReturnValue([]);
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, opts: unknown) => {
+      session.cancel();
+      (opts as { preflightResult: (disposition: string) => void }).preflightResult('started');
+    });
+
+    const outcome = await session.sendMessage('blocks then what failed?', undefined, 'c1', ATTACHED);
+
+    expect(attachmentSidecars(append)).toEqual([]);
+    expect(outcome).toBe('unsent');
+    expect(messages).toContainEqual({ type: 'interruptRecovery', correlationId: 'c1', promptContent: 'what failed?' });
+    await session.dispose();
+  });
+
+  it.each([
+    ['after its echo', true],
+    ['before its echo', false],
+  ])('returns a prompt stopped before its run %s with its typed text and images', async (_when, echoed) => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const image = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'iVBORw0KGgo=' } };
+    const typed = [{ type: 'text' as const, text: 'what is this?' }, image];
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, opts: unknown) => {
+      session.cancel();
+      (opts as { preflightResult: (disposition: string) => void }).preflightResult('started');
+    });
+    if (!echoed) {
+      session.requestInterruptionCheck();
+      vi.mocked(reconcileInterruptions).mockImplementationOnce(async () => {
+        session.cancel();
+        return [];
+      });
+    }
+
+    const outcome = await session.sendMessage(typed, undefined, 'c1', { content: 'what is this?', contentBlocks: typed });
+
+    expect(outcome).toBe('unsent');
+    expect(messages.some((m) => m.type === 'userMessage')).toBe(echoed);
+    expect(messages).toContainEqual({ type: 'interruptRecovery', correlationId: 'c1', promptContent: 'what is this?', contentBlocks: typed });
+    await session.dispose();
+  });
+
+  it('records no attachment count when the session was replaced before the prompt committed', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const append = live.sessionManager.appendCustomEntry as ReturnType<typeof vi.fn>;
+    const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn>;
+    getBranch.mockReturnValue([]);
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, opts: unknown) => {
+      (opts as { preflightResult: (disposition: string) => void }).preflightResult('started');
+      session.reset();
+      await session.whenReplaced();
+      const message = { role: 'user', content: [{ type: 'text', text: 'blocks then what failed?' }] };
+      // The replaced session's own listeners, which still include the prompt's entry watch.
+      for (const listener of [...live.listeners]) listener({ type: 'message_end', message });
+      getBranch.mockReturnValue([{ type: 'message', id: 'u-new', message }]);
+      await Promise.resolve();
+    });
+
+    await session.sendMessage('blocks then what failed?', undefined, 'c1', ATTACHED);
+
+    expect(H.getLastSession()).not.toBe(live);
+    expect(attachmentSidecars(append)).toEqual([]);
+    expect(append.mock.calls.some((c) => c[0] === 'damocles-original-input')).toBe(false);
+    await session.dispose();
+  });
+
+  it('names the typed text as the prompt a UserPromptSubmit hook sees, sent alone or behind blocks, and queued', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    (live.sessionManager.getBranch as ReturnType<typeof vi.fn>).mockReturnValue([]);
+    const gate = (cwdFolder() as unknown as { _panelRegistry: Map<string, PanelGateContext> })._panelRegistry.get(live.sessionId as string)!;
+    const seen: Array<string | undefined> = [];
+    // pi runs no hook on the re-steered batch, which it gets as `source: 'extension'`.
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (text: string, opts?: { source?: string }) => {
+      if (opts?.source !== 'extension') seen.push(gate.typedPromptOf?.(text));
+    });
+
+    await session.sendMessage('/review src', undefined, 'c1', { content: '/review src' });
+    await session.sendMessage('blocks\nreview prompt body src', undefined, 'c2', { content: '/review src', terminalAttachments: [attachmentInfo('t1')] });
+
+    Object.assign(live, { isStreaming: true });
+    const runner = live.extensionRunner as unknown as { hasHandlers: ReturnType<typeof vi.fn>; emitInput?: (text: string) => Promise<unknown> };
+    runner.hasHandlers.mockReturnValue(true);
+    runner.emitInput = async (text) => { seen.push(gate.typedPromptOf?.(text)); return { action: 'continue' }; };
+    session.queueInput('Execute skill simplify', 'q1', '/simplify');
+    await vi.waitFor(() => expect(seen).toHaveLength(3));
+
+    expect(seen).toEqual(['/review src', '/review src', '/simplify']);
+    expect(gate.typedPromptOf?.('/review src')).toBeUndefined();
+    await session.dispose();
+  });
+
+  it('reports a prompt unsent when it is refused, and sent when pi queued it into the running run', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    (live.sessionManager.getBranch as ReturnType<typeof vi.fn>).mockReturnValue([]);
+    let release!: () => void;
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async (_text: string, opts: unknown) => {
+      (opts as { preflightResult: (disposition: string) => void }).preflightResult('queued');
+      await new Promise<void>((resolve) => { release = resolve; });
+    });
+
+    const queued = session.sendMessage('first', undefined, 'c1', { content: 'first' });
+    await vi.waitFor(() => expect(release).toBeDefined());
+    expect(await session.sendMessage('second', undefined, 'c2', { content: 'second' })).toBe('unsent');
+    release();
+    expect(await queued).toBe('sent');
+
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => { throw new Error('No API key found for anthropic'); });
+    expect(await session.sendMessage('third', undefined, 'c3', { content: 'third' })).toBe('unsent');
+    await session.dispose();
+  });
+
   // --- memory candidate enqueue (consolidation wiring) ---------------------------------------------
   function memorySpy() {
     return {
@@ -1679,7 +2014,9 @@ describe('PiSession lifecycle (US-P1-4)', () => {
   const errorsOf = (messages: ExtensionToWebviewMessage[]): string[] =>
     messages.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'error' }> => m.type === 'error').map((m) => m.message);
 
-  it('compact() surfaces a "nothing to compact" refusal as a friendly info notice, not an error', async () => {
+  it('compact() surfaces a "nothing to compact" refusal as a friendly info notice in the UI language, not an error', async () => {
+    const greek = elBundle as Record<string, string>;
+    const t = vi.spyOn(testPlatform.localization, 't').mockImplementation((message) => greek[message] ?? message);
     const messages: ExtensionToWebviewMessage[] = [];
     const session = new PiSession(makeOptions(messages));
     await session.initializeEarly();
@@ -1689,13 +2026,46 @@ describe('PiSession lifecycle (US-P1-4)', () => {
       new Error('Nothing to compact (session too small)'),
     );
 
-    await session.compact();
+    try {
+      await session.compact();
+    } finally {
+      t.mockRestore();
+    }
 
     // The adapter deliberately reports nothing for this one, so `compact()` is still its only owner.
     expect(errorsOf(messages)).toEqual([]);
     const notice = messages.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'notification' }> => m.type === 'notification');
     expect(notice?.notificationType).toBe('info');
-    expect(notice?.message).toContain('Nothing to compact');
+    expect(greek['The conversation is too short to compact yet.']).toBeDefined();
+    expect(notice?.message).toBe(greek['The conversation is too short to compact yet.']);
+    expect(notice?.message).not.toMatch(/[—:]/);
+    await session.dispose();
+  });
+
+  it('compact() while a compaction runs refuses with a warning in the UI language', async () => {
+    const greek = elBundle as Record<string, string>;
+    const t = vi.spyOn(testPlatform.localization, 't').mockImplementation((message) => greek[message] ?? message);
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    let finish!: () => void;
+    (H.getLastSession()!.compact as ReturnType<typeof vi.fn>).mockImplementationOnce(() => new Promise<void>((resolve) => (finish = resolve)));
+
+    let running: Promise<void> | undefined;
+    try {
+      running = session.compact();
+      await session.compact();
+    } finally {
+      t.mockRestore();
+    }
+
+    const notice = messages.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'notification' }> => m.type === 'notification');
+    expect(notice?.notificationType).toBe('warning');
+    expect(greek['Finish or stop the current turn before compacting.']).toBeDefined();
+    expect(notice?.message).toBe(greek['Finish or stop the current turn before compacting.']);
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    finish();
+    await running;
     await session.dispose();
   });
 
@@ -2959,7 +3329,7 @@ describe('PiSession.steerSubagent (Slice 2 — /steer live flow)', () => {
       dispose: vi.fn(),
     };
     const appendCustomEntry = vi.fn();
-    (session as unknown as { runtime: unknown }).runtime = { session: { sessionManager: { appendCustomEntry } }, dispose: vi.fn() };
+    (session as unknown as { runtime: unknown }).runtime = { session: { sessionManager: { appendCustomEntry }, clearQueue: vi.fn(() => ({ steering: [], followUp: [] })) }, dispose: vi.fn() };
 
     await session.steerSubagent('agent-1', 'focus on tests');
 
@@ -2982,7 +3352,7 @@ describe('PiSession.steerSubagent (Slice 2 — /steer live flow)', () => {
       dispose: vi.fn(),
     };
     const appendCustomEntry = vi.fn();
-    (session as unknown as { runtime: unknown }).runtime = { session: { sessionManager: { appendCustomEntry } }, dispose: vi.fn() };
+    (session as unknown as { runtime: unknown }).runtime = { session: { sessionManager: { appendCustomEntry }, clearQueue: vi.fn(() => ({ steering: [], followUp: [] })) }, dispose: vi.fn() };
 
     await session.steerSubagent('agent-1', 'too late');
 
@@ -3063,7 +3433,7 @@ describe('PiSession.steerSubagent (Slice 2 — /steer live flow)', () => {
     const steer = vi.fn(async () => status);
     (session as unknown as { subagentManager: unknown }).subagentManager = { steer, getRecord: vi.fn(() => record), dispose: vi.fn() };
     const appendCustomEntry = vi.fn();
-    (session as unknown as { runtime: unknown }).runtime = { session: { sessionManager: { appendCustomEntry } }, dispose: vi.fn() };
+    (session as unknown as { runtime: unknown }).runtime = { session: { sessionManager: { appendCustomEntry }, clearQueue: vi.fn(() => ({ steering: [], followUp: [] })) }, dispose: vi.fn() };
     return { record, steer, appendCustomEntry };
   }
 
@@ -3223,7 +3593,7 @@ describe('PiSession.steerTarget (/steer routing to team members)', () => {
     const subagentSteer = vi.fn();
     (session as unknown as { subagentManager: unknown }).subagentManager = { steer: subagentSteer, getRecord: vi.fn(() => undefined), dispose: vi.fn() };
     const appendCustomEntry = vi.fn();
-    (session as unknown as { runtime: unknown }).runtime = { session: { sessionManager: { appendCustomEntry } }, dispose: vi.fn() };
+    (session as unknown as { runtime: unknown }).runtime = { session: { sessionManager: { appendCustomEntry }, clearQueue: vi.fn(() => ({ steering: [], followUp: [] })) }, dispose: vi.fn() };
 
     await session.steerTarget('member-1', 'use the new schema', undefined, 'req-1');
 
@@ -3250,7 +3620,7 @@ describe('PiSession.steerTarget (/steer routing to team members)', () => {
     const session = new PiSession(makeOptions(messages, { teamService: teamService as unknown as NonNullable<SessionOptions['teamService']> }));
     await session.initializeEarly();
     const appendCustomEntry = vi.fn();
-    (session as unknown as { runtime: unknown }).runtime = { session: { sessionManager: { appendCustomEntry } }, dispose: vi.fn() };
+    (session as unknown as { runtime: unknown }).runtime = { session: { sessionManager: { appendCustomEntry }, clearQueue: vi.fn(() => ({ steering: [], followUp: [] })) }, dispose: vi.fn() };
 
     await session.steerTarget('member-1', '', [png], 'req-1');
 
@@ -3266,7 +3636,7 @@ describe('PiSession.steerTarget (/steer routing to team members)', () => {
     const session = new PiSession(makeOptions(messages, { teamService: teamService as unknown as NonNullable<SessionOptions['teamService']> }));
     await session.initializeEarly();
     const appendCustomEntry = vi.fn();
-    (session as unknown as { runtime: unknown }).runtime = { session: { sessionManager: { appendCustomEntry } }, dispose: vi.fn() };
+    (session as unknown as { runtime: unknown }).runtime = { session: { sessionManager: { appendCustomEntry }, clearQueue: vi.fn(() => ({ steering: [], followUp: [] })) }, dispose: vi.fn() };
 
     await session.steerTarget('member-1', 'too late', undefined, 'req-1');
 
@@ -3297,7 +3667,7 @@ describe('PiSession.steerTarget (/steer routing to team members)', () => {
     const session = new PiSession(makeOptions(messages, { teamService: teamService as unknown as NonNullable<SessionOptions['teamService']> }));
     await session.initializeEarly();
     const appendCustomEntry = vi.fn();
-    (session as unknown as { runtime: unknown }).runtime = { session: { sessionManager: { appendCustomEntry } }, dispose: vi.fn() };
+    (session as unknown as { runtime: unknown }).runtime = { session: { sessionManager: { appendCustomEntry }, clearQueue: vi.fn(() => ({ steering: [], followUp: [] })) }, dispose: vi.fn() };
 
     await session.steerTarget('member-1', '  ', [png], 'req-1');
 
@@ -5078,6 +5448,194 @@ describe('PiSession — the on-disk invariant, against a REAL pi SessionManager'
       warn.mockRestore();
     }
   });
+
+  describe("a prompt's sidecars land when pi commits its entry", () => {
+    const output = (text: string) => ({ source: 'command' as const, commandLine: 'npm test', exitCode: 1, terminalTitle: 'pwsh', text, omittedLines: 0 });
+    const blocks = [output('FAIL a.test.ts'), output('FAIL b.test.ts')].map(formatTerminalAttachmentBlock).join('\n');
+    const info = (id: string) => ({ id, source: 'command' as const, commandLine: 'npm test', exitCode: 1, terminalTitle: 'pwsh', lineCount: 1, omittedLines: 0, preview: 'FAIL' });
+    const TWO_ATTACHED = [info('t1'), info('t2')];
+
+    async function panelOn(file: string, messages: ExtensionToWebviewMessage[] = []): Promise<{ session: PiSession; pi: NonNullable<ReturnType<typeof H.getLastSession>>; live: realPi.SessionManager }> {
+      const live = realPi.SessionManager.open(file, dir);
+      H.setSessionManagerFactory(() => live);
+      const session = new PiSession(makeOptions(messages));
+      await session.initializeEarly();
+      return { session, pi: H.getLastSession()!, live };
+    }
+
+    /** What pi does with a user message it delivers: listeners see its message_end, then pi appends that same object. */
+    function piCommits(live: realPi.SessionManager, text: string): void {
+      const message = { role: 'user', content: [{ type: 'text', text }], timestamp: 0 };
+      H.fireEvent({ type: 'message_end', message });
+      live.appendMessage(message as never);
+    }
+
+    const lastReplayedUser = (file: string) => {
+      const replayed = reconstructMessages(realPi.SessionManager.open(file, dir).getBranch()).messages.filter((m) => m.kind === 'user').at(-1);
+      if (replayed?.kind !== 'user') throw new Error('no user message');
+      return replayed;
+    };
+
+    it('a prompt pi queues into the running run reloads as the typed text and its chips once pi delivers it', async () => {
+      const { file } = await seededManager();
+      const { session, pi, live } = await panelOn(file);
+      const followUps: string[] = [];
+      Object.assign(pi, { isStreaming: true, getFollowUpMessages: () => followUps });
+      (pi.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (text: string, opts: { preflightResult: (d: string) => void }) => {
+        followUps.push(text);
+        opts.preflightResult('queued');
+      });
+
+      expect(await session.sendMessage(`${blocks}\nwhat failed?`, undefined, 'c1', { content: 'what failed?', terminalAttachments: TWO_ATTACHED })).toBe('sent');
+      piCommits(live, followUps.shift()!);
+      await Promise.resolve();
+
+      const replayed = lastReplayedUser(file);
+      expect(replayed.content).toBe('what failed?');
+      expect(replayed.terminalAttachments).toHaveLength(2);
+      await session.dispose();
+    });
+
+    it('a queued prompt a Stop withdrew leaves nothing behind, even for a later entry with its text', async () => {
+      const { file } = await seededManager();
+      const { session, pi, live } = await panelOn(file);
+      const followUps: string[] = [];
+      const sent = `${blocks}\nwhat failed?`;
+      Object.assign(pi, { isStreaming: true, getFollowUpMessages: () => followUps });
+      (pi.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async (text: string, opts: { preflightResult: (d: string) => void }) => {
+        followUps.push(text);
+        opts.preflightResult('queued');
+      });
+      await session.sendMessage(sent, undefined, 'c1', { content: 'what failed?', terminalAttachments: TWO_ATTACHED });
+      await session.interrupt();
+      followUps.length = 0;
+      Object.assign(pi, { isStreaming: false });
+
+      // The user then types the wrapper text itself, which pi runs as a prompt of its own.
+      (pi.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async (text: string, opts: { preflightResult: (d: string) => void }) => {
+        opts.preflightResult('started');
+        piCommits(live, text);
+        await Promise.resolve();
+      });
+      await session.sendMessage(sent, undefined, 'c2', { content: sent });
+
+      const replayed = lastReplayedUser(file);
+      expect(replayed.content).toBe(sent);
+      expect(replayed.terminalAttachments).toBeUndefined();
+      await session.dispose();
+    });
+
+    const IMAGE = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'iVBORw0KGgo=' } };
+    const TYPED = [{ type: 'text' as const, text: 'what failed?' }, IMAGE];
+    const SENT = [{ type: 'text' as const, text: blocks }, ...TYPED];
+    const BROADCAST = { content: 'what failed?', contentBlocks: TYPED, terminalAttachments: TWO_ATTACHED };
+    const sidecarsIn = (file: string) =>
+      realPi.SessionManager.open(file, dir).getEntries().flatMap((e) => (e.type === 'custom' && ['damocles-terminal-attachments', 'damocles-original-input'].includes(e.customType) ? [e.customType] : []));
+
+    /** pi's queue while a run streams: `prompt()` pushes the text onto the follow-ups and reports `queued`, `clearQueue()` empties it. */
+    function queuesFollowUps(pi: NonNullable<ReturnType<typeof H.getLastSession>>): string[] {
+      const followUps: string[] = [];
+      Object.assign(pi, { isStreaming: true, getFollowUpMessages: () => followUps });
+      (pi.clearQueue as ReturnType<typeof vi.fn>).mockImplementation(() => ({ steering: [], followUp: followUps.splice(0) }));
+      (pi.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (text: string, opts: { preflightResult: (d: string) => void }) => {
+        followUps.push(text);
+        opts.preflightResult('queued');
+      });
+      return followUps;
+    }
+
+    it('a queued prompt a Stop withdrew goes back to the composer with its text, image and chips, its echo withdrawn and no sidecar written', async () => {
+      const { file } = await seededManager();
+      const messages: ExtensionToWebviewMessage[] = [];
+      const { session, pi, live } = await panelOn(file, messages);
+      const followUps = queuesFollowUps(pi);
+      let windDown!: () => void;
+      const wound = new Promise<void>((resolve) => { windDown = resolve; });
+      (pi.abort as ReturnType<typeof vi.fn>).mockImplementation(() => wound);
+      const withdrawn = vi.fn();
+
+      expect(await session.sendMessage(SENT, undefined, 'c1', BROADCAST, withdrawn)).toBe('sent');
+      expect(messages).toContainEqual(expect.objectContaining({ type: 'userMessage', correlationId: 'c1', contentBlocks: TYPED, terminalAttachments: TWO_ATTACHED }));
+      expect(withdrawn).not.toHaveBeenCalled();
+      const stopped = session.interrupt();
+
+      // Back at the Stop, not once a slow tool lets the run wind down.
+      expect(followUps).toEqual([]);
+      expect(withdrawn).toHaveBeenCalledOnce();
+      // The webview takes the echo out and puts its typed text and image back in the composer.
+      expect(messages.filter((m) => m.type === 'queueCancelled')).toEqual([{ type: 'queueCancelled', messageId: 'c1', returnToInput: true }]);
+      piCommits(live, `${blocks}\nwhat failed?`);
+      await Promise.resolve();
+      expect(sidecarsIn(file)).toEqual([]);
+      windDown();
+      await stopped;
+      await session.dispose();
+    });
+
+    it('a queued prompt a new chat drops goes back to the composer with its chips', async () => {
+      const { file } = await seededManager();
+      const messages: ExtensionToWebviewMessage[] = [];
+      const { session, pi } = await panelOn(file, messages);
+      queuesFollowUps(pi);
+      const withdrawn = vi.fn();
+      await session.sendMessage(SENT, undefined, 'c1', BROADCAST, withdrawn);
+
+      session.clear();
+
+      expect(withdrawn).toHaveBeenCalledOnce();
+      expect(messages.filter((m) => m.type === 'queueCancelled')).toEqual([{ type: 'queueCancelled', messageId: 'c1', returnToInput: true }]);
+      await session.whenReplaced().catch(() => undefined);
+      await session.dispose();
+    });
+
+    it('a prompt pi queues into a run a Stop stopped while its input handlers ran is taken back out at once', async () => {
+      const { file } = await seededManager();
+      const messages: ExtensionToWebviewMessage[] = [];
+      const { session, pi } = await panelOn(file, messages);
+      const followUps = queuesFollowUps(pi);
+      // pi's abort() waits for the one wind-down however many callers ask.
+      let windDown!: () => void;
+      const wound = new Promise<void>((resolve) => { windDown = resolve; });
+      (pi.abort as ReturnType<typeof vi.fn>).mockImplementation(() => wound);
+      (pi.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async (text: string, opts: { preflightResult: (d: string) => void }) => {
+        void session.interrupt();
+        followUps.push(text);
+        opts.preflightResult('queued');
+      });
+      const withdrawn = vi.fn();
+
+      await session.sendMessage(SENT, undefined, 'c1', BROADCAST, withdrawn);
+
+      // Still winding down: nothing but this prompt would take it out of pi's queue before the stopped run settles.
+      expect(followUps).toEqual([]);
+      expect(withdrawn).toHaveBeenCalledOnce();
+      expect(messages.filter((m) => m.type === 'queueCancelled')).toEqual([{ type: 'queueCancelled', messageId: 'c1', returnToInput: true }]);
+      windDown();
+      await session.dispose();
+    });
+
+    it.each([
+      ['pi expanded', '/review src', 'review prompt body src', undefined],
+      ['Damocles expanded behind attachments', `${blocks}\nreview prompt body src`, `${blocks}\nreview prompt body src`, TWO_ATTACHED],
+    ])('a template turn stopped after its prompt committed reloads as what the user typed (%s)', async (_how, sent, stored, attachments) => {
+      const { file } = await seededManager();
+      const { session, pi, live } = await panelOn(file);
+      (pi.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, opts: { preflightResult: (d: string) => void }) => {
+        opts.preflightResult('started');
+        piCommits(live, stored);
+        await Promise.resolve();
+        await session.interrupt();
+        throw new Error('This operation was aborted');
+      });
+
+      await session.sendMessage(sent, undefined, 'c1', { content: '/review src', ...(attachments ? { terminalAttachments: attachments } : {}) });
+
+      const replayed = lastReplayedUser(file);
+      expect(replayed.content).toBe('/review src');
+      expect(replayed.terminalAttachments?.length ?? 0).toBe(attachments?.length ?? 0);
+      await session.dispose();
+    });
+  });
 });
 
 describe('PiSession session-replacement contract (what a destructive delete is sequenced off)', () => {
@@ -5404,6 +5962,7 @@ async function forkableSession(messages: ExtensionToWebviewMessage[], parentTime
   sm['getSessionId'] = () => 'src';
   sm['getEntries'] = () => [];
   (H.fakePi.SessionManager as Record<string, unknown>)['open'] = () => ({
+    getBranch: () => [],
     createBranchedSession: () => '/fake/agent/sessions/cwd/2026-03-04T10-00-00-000Z_fork.jsonl',
   });
   return { session, onSpawnFork };
@@ -5625,7 +6184,7 @@ describe('PiSession undelivered background results', () => {
     H.resetServices();
     vi.mocked(collectUndeliveredFromFiles).mockReset();
     vi.mocked(resolvePiSessionFile).mockReset();
-    (H.fakePi.SessionManager as Record<string, unknown>)['open'] = () => ({ kind: 'opened' });
+    (H.fakePi.SessionManager as Record<string, unknown>)['open'] = () => ({ kind: 'opened', getBranch: () => [] });
   });
   afterEach(async () => {
     H.setSessionSetup(null);
@@ -5829,6 +6388,46 @@ describe('PiSession undelivered background results', () => {
     expect(collectUndeliveredFromFiles).toHaveBeenCalledTimes(1);
     expect(deliveredCalls(live)).toEqual([['tx']]);
     expect(resultsSent(live)[0]!.order).toBeLessThan(beginTurn.mock.invocationCallOrder[0]!);
+    await session.dispose();
+  });
+
+  it("a resume switch returns everything queued in the old conversation to the input, and none of it reaches the other", async () => {
+    storedSessions([{ id: 'sess-A', branch: [] }, { id: 'sess-B', branch: [] }]);
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const a = H.getLastSession()!;
+    const followUps: string[] = [];
+    Object.assign(a, { isStreaming: true, getFollowUpMessages: () => followUps });
+    (a.clearQueue as ReturnType<typeof vi.fn>).mockImplementation(() => ({ steering: [], followUp: followUps.splice(0) }));
+    (a.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async (text: string, opts: { preflightResult: (d: string) => void }) => {
+      followUps.push(text);
+      opts.preflightResult('queued');
+    });
+    const withdrawn = vi.fn();
+    expect(await session.sendMessage('also look at this', undefined, 'c1', { content: 'also look at this' }, withdrawn)).toBe('sent');
+    expect(session.queueInput('for A', 'q1')).toBe('queued');
+    // A cancel note pi accepted and echoed in A, not yet delivered.
+    (session as unknown as { injectedNotes: Array<{ text: string; echoed: boolean }> }).injectedNotes.push({ text: 'skip it', echoed: true });
+    messages.length = 0;
+
+    session.setResumeSession('sess-B');
+
+    expect(messages.filter((m) => m.type === 'queueCancelled')).toEqual([
+      { type: 'queueCancelled', messageId: 'q1', returnToInput: true },
+      { type: 'queueCancelled', messageId: 'c1', returnToInput: true },
+    ]);
+    expect(withdrawn).toHaveBeenCalledOnce();
+    await session.whenReplaced();
+    const b = H.getLastSession()!;
+    expect(b.sessionId).toBe('sess-B');
+    (b as { isStreaming: boolean }).isStreaming = true;
+    expect(session.queueInput('for B', 'q2')).toBe('queued');
+    await vi.waitFor(() => expect(b.prompt).toHaveBeenCalled());
+    expect((b.prompt as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0])).toEqual(['for B']);
+    // A's note left with A's transcript, so a Stop in B reports no note of its own discarded.
+    await session.interrupt();
+    expect(messages.some((m) => m.type === 'notification' && m.message.includes('discarded your cancel note'))).toBe(false);
     await session.dispose();
   });
 
@@ -7853,6 +8452,86 @@ describe("the panel gate's cancel handle", () => {
 
     expect(session.cancelToolCall('held-call', 'wrong folder')).toBe(true);
     await vi.waitFor(() => expect(live.prompt).toHaveBeenCalledWith('wrong folder', expect.objectContaining({ streamingBehavior: 'steer', expandPromptTemplates: false })));
+    await session.dispose();
+  });
+});
+
+describe('a resumed conversation continues on the model and thinking level its file recorded', () => {
+  const SONNET = { id: 'claude-sonnet-5-5', name: 'Sonnet', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 1_000_000 };
+  const recorded = (provider: string, modelId: string, thinkingLevel?: string) => [
+    { type: 'model_change', id: 'm1', provider, modelId },
+    ...(thinkingLevel ? [{ type: 'thinking_level_change', id: 't1', thinkingLevel }] : []),
+    { type: 'message', id: 'u1', message: { role: 'user', content: 'hello' } },
+  ];
+
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+    const opus = H.getServices().modelRuntime.getModel;
+    H.getServices().modelRuntime.getModel = (provider: string, id: string) => (provider === 'anthropic' && id === SONNET.id ? SONNET : opus(provider, id)) as never;
+    vi.mocked(resolvePiSessionFile).mockImplementation(async (_cwd, id) => `/fake/agent/sessions/cwd/2026-01-01T00-00-00-000Z_${id}.jsonl`);
+  });
+  afterEach(async () => {
+    delete (H.fakePi.SessionManager as Record<string, unknown>)['open'];
+    vi.mocked(resolvePiSessionFile).mockReset();
+    await PiRuntime.disposeInstance();
+  });
+
+  async function restore(branch: unknown[], hasConfiguredAuth = true) {
+    (H.fakePi.SessionManager as Record<string, unknown>)['open'] = () => ({ kind: 'opened', getBranch: () => branch });
+    H.getServices().modelRuntime.hasConfiguredAuth = () => hasConfiguredAuth;
+    const restored = vi.fn();
+    const session = new PiSession(makeOptions([], { onRecordedSelection: restored }));
+    session.setResumeSession('stored');
+    await session.initializeEarly();
+    const created = H.fakePi.createAgentSessionFromServices.mock.calls.at(-1)![0] as unknown as { model?: { id: string } };
+    return { session, restored, createdOn: created.model?.id, modelValue: (session as unknown as { modelValue: string }).modelValue };
+  }
+
+  it('hands pi the recorded model and reports it with the recorded level, so the panel shows and resolves them', async () => {
+    const { session, restored, createdOn, modelValue } = await restore(recorded('anthropic', 'claude-sonnet-5-5', 'xhigh'));
+    expect(createdOn).toBe('claude-sonnet-5-5');
+    expect(modelValue).toBe('claude-sonnet-5-5');
+    expect(restored).toHaveBeenCalledExactlyOnceWith('claude-sonnet-5-5', 'xhigh');
+    await session.dispose();
+  });
+
+  it('keeps the panel model when the recorded one is no longer signed in, or not in the catalog', async () => {
+    const unsigned = await restore(recorded('anthropic', 'claude-sonnet-5-5', 'xhigh'), false);
+    expect(unsigned.restored).not.toHaveBeenCalled();
+    expect(unsigned.modelValue).toBe('claude-opus-5-5');
+    await unsigned.session.dispose();
+    await PiRuntime.disposeInstance();
+
+    const unknown = await restore(recorded('openrouter', 'claude-sonnet-5-5', 'xhigh'));
+    expect(unknown.restored).not.toHaveBeenCalled();
+    expect(unknown.createdOn).toBe('claude-opus-5-5');
+    await unknown.session.dispose();
+  });
+
+  it('publishes the account of the recorded model when a started panel switches to the conversation', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const restored = vi.fn();
+    const session = new PiSession(makeOptions(messages, { onRecordedSelection: restored }));
+    await session.initializeEarly();
+    const manager = H.fakePi.SessionManager.create.mock.results.at(-1)!.value as { getBranch: () => unknown[] };
+    manager.getBranch = () => recorded('anthropic', 'claude-sonnet-5-5', 'high');
+
+    session.setResumeSession('stored');
+    await session.whenReplaced();
+
+    expect(restored).toHaveBeenCalledExactlyOnceWith('claude-sonnet-5-5', 'high');
+    const accounts = messages.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'accountInfo' }> => m.type === 'accountInfo');
+    expect(accounts.at(-1)?.data.model).toBe('claude-sonnet-5-5');
+    await session.dispose();
+  });
+
+  it('starts a new conversation on the panel model', async () => {
+    const restored = vi.fn();
+    const session = new PiSession(makeOptions([], { onRecordedSelection: restored }));
+    await session.initializeEarly();
+    expect(restored).not.toHaveBeenCalled();
     await session.dispose();
   });
 });

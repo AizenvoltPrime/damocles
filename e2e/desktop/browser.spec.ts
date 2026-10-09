@@ -4,10 +4,10 @@ import type { Page } from '@playwright/test';
 import { activeChat, expect, panelIdOf, test } from './support/fixtures';
 import { seedStubModel, writeUserSettings } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
-import { chromeEnv, panePage, paneState, startSite, systemChrome } from './support/pane';
+import { browserTabs, chromeEnv, startSite, systemChrome } from './support/browser';
 import { closeSettingsModal, settingsNav } from './support/settings';
 import { listChats } from './support/shell-ui';
-import { answerToast, overlayPage, pressKeys, recordedToasts, recordToasts, shellState } from './support/shell';
+import { answerToast, overlayPage, pressKeys, recordedToasts, recordToasts, shellPage, shellState } from './support/shell';
 import { chatInput, hostMessages, postFromWebview, recordHostMessages } from './support/ui';
 
 const PAGE_TITLE = 'E2E Browser Page';
@@ -27,7 +27,7 @@ async function framesReceived(page: Page): Promise<number> {
   return page.evaluate(() => ((window as unknown as { __e2eFrames?: number }).__e2eFrames ?? 0));
 }
 
-test('browser page in the side pane: opens, screencasts, picks an element, downloads a file, and F12 offers the settings when the DevTools port is off', async ({ home, launch }) => {
+test('browser page as an editor tab: opens, screencasts, picks an element, downloads a file, and F12 offers the settings when the DevTools port is off', async ({ home, launch }) => {
   const chrome = systemChrome();
   test.skip(chrome === undefined, 'No system-wide Chrome or Edge is installed on this runner, and the browser feature launches the installed browser by channel.');
   test.setTimeout(180_000);
@@ -49,10 +49,14 @@ test('browser page in the side pane: opens, screencasts, picks an element, downl
 
     // The page opens once Chrome has launched, which a cold profile can take well past the default event timeout.
     const opened = app.waitForEvent('window', { predicate: (p) => p.url().includes('/panel/') && p !== homeTab, timeout: 90_000 });
-    await postFromWebview(homeTab, { type: 'openBrowser', url: `${site.url}/` });
+    await postFromWebview(homeTab, { type: 'openBrowser' });
     const browserPage = await opened;
     const browserId = panelIdOf(browserPage);
     const homeId = panelIdOf(homeTab);
+    const shell = await shellPage(app);
+    const address = shell.getByRole('textbox', { name: 'Address' });
+    await address.fill(`${site.url}/`);
+    await address.press('Enter');
 
     // Screencast frames arrive as binary through the tab's own channel.
     await browserPage.evaluate(() => {
@@ -64,14 +68,14 @@ test('browser page in the side pane: opens, screencasts, picks an element, downl
       });
     });
     await expect.poll(() => framesReceived(browserPage), { timeout: 60_000 }).toBeGreaterThan(0);
-    // The page lives in the chat's side pane, never as a chat of its own, and the chat stays selected.
-    await expect.poll(async () => (await paneState(app)).pages).toMatchObject([{ id: browserId, title: PAGE_TITLE }]);
+    // The page is an editor tab of its chat, never a chat of its own, and the chat stays selected.
+    await expect.poll(async () => (await browserTabs(app)).map((tab) => ({ id: tab.id, title: tab.title }))).toEqual([{ id: browserId, title: PAGE_TITLE }]);
     const homeChatId = (await shellState(app)).selected.chatId;
     expect(panelIdOf(await activeChat(app))).toBe(homeId);
     const listed = (await listChats(app)).chats.filter((chat) => chat.loaded).map((chat) => chat.id);
     expect(listed).toEqual([homeChatId]);
 
-    // F12 is bound while the chat's pane shows a page; with the debugging port off it offers the settings, which open on Tools & integrations.
+    // F12 opens DevTools for the active page tab, wherever focus is; with the debugging port off it offers the settings, which open on Tools & integrations.
     await pressKeys(app, `/panel/${homeId}/`, 'F12');
     await expect.poll(async () => (await recordedToasts(app)).find((t) => t.message.startsWith(DEVTOOLS_OFF))?.actions).toEqual(['Open Settings']);
     const devtools = (await recordedToasts(app)).find((t) => t.message.startsWith(DEVTOOLS_OFF))!;
@@ -81,9 +85,8 @@ test('browser page in the side pane: opens, screencasts, picks an element, downl
     await closeSettingsModal(settingsOverlay);
     await expect.poll(async () => (await shellState(app)).selected.chatId).toBe(homeChatId);
 
-    // Element picker: the pane's pick button, then a click on the page through the screencast input path.
-    const pane = await panePage(app);
-    const pick = pane.getByRole('button', { name: 'Pick an element for the chat' });
+    // Element picker: the navigation bar's pick button, then a click on the page through the screencast input path.
+    const pick = shell.getByRole('button', { name: 'Pick an element for the chat' });
     await pick.click();
     await expect(pick).toHaveAttribute('aria-pressed', 'true');
     const at = { x: 120, y: 120, modifiers: 0 };
@@ -99,8 +102,7 @@ test('browser page in the side pane: opens, screencasts, picks an element, downl
 
     await expect(pick).toHaveAttribute('aria-pressed', 'false');
 
-    // Download: navigating the pane's address field to an attachment saves it under the hermetic home's browser downloads.
-    const address = pane.getByRole('textbox', { name: 'Address' });
+    // Download: navigating the address field to an attachment saves it under the hermetic home's browser downloads.
     await address.fill(`${site.url}/report.txt`);
     await address.press('Enter');
     const downloads = path.join(home.damoclesDir, 'browser-downloads');

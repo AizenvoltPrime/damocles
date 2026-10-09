@@ -18,6 +18,7 @@ import { isCancelNoteDispatch, nextPromptIndex } from './session-store/prompt-in
 import { estimateTokens } from '../memory/token-estimate';
 import { escapeAttribute } from '../memory/injection/render';
 import { splitIdeContext } from '@shared/ide-context';
+import { withoutTerminalAttachments } from '../terminal-attachment';
 import type { ContextInjectionDetailsV1, LiveInjections } from '../memory/injection/details';
 import type { InjectionBuildResult } from '../memory/managers/injection-manager';
 import type { PanelGateContext, SystemPromptEnv } from './permission-gate';
@@ -219,8 +220,8 @@ async function buildMemoryContext(
   if (!memory?.isEnabled) return null;
   panel.postMessage({ type: 'contextInjectionStarted', promptIndex });
   // The IDE block is Damocles-authored and the only source of the file gate's editor file, never the
-  // query: a message sent without one attached no file.
-  const { context: ide, text: userText } = splitIdeContext(prompt);
+  // query: a message sent without one attached no file. Attached terminal output is never the query either.
+  const { context: ide, text: userText } = splitIdeContext(withoutTerminalAttachments(prompt));
   const activeFile = ide?.filePath ?? null;
   try {
     await memory.ensureInitialized();

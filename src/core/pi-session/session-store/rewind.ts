@@ -29,6 +29,8 @@ import { log } from '../../logger';
 import { ensurePiSessionDir } from './session-dir';
 import { resolvePiSessionFile } from './reading';
 import { extractOriginalInputs } from './original-input';
+import { extractTerminalAttachmentCounts } from './terminal-attachments';
+import { storedTypedText } from './prompt-context';
 import { promptTest } from './prompt-index';
 
 /** `git show <commit>:<path>` failure messages that genuinely mean "this path is absent from the
@@ -241,7 +243,8 @@ export async function getPiRewindHistory(
     // A turn's recorded prompt is pi's expanded slash-command body; show the original typed input when
     // a sidecar recorded it, so the rewind list matches the transcript/up-arrow/preview.
     const originalInputs = extractOriginalInputs(branch);
-    if (!fileCheckpoints) return { items: conversationOnlyRewindItems(branch, originalInputs), restorePoints: [] };
+    const typedText = typedTextOf(branch);
+    if (!fileCheckpoints) return { items: conversationOnlyRewindItems(branch, originalInputs, typedText), restorePoints: [] };
     // A checkpoint whose userEntryId matches a compaction entry is a compaction snapshot, not a prompt
     // turn: it must enrich the compaction anchor (below) instead of leaking a phantom empty-prompt row.
     const compactionIds = new Set<string>();
@@ -267,7 +270,7 @@ export async function getPiRewindHistory(
     const rows: CheckpointRow[] = checkpoints.map((cp, i) => ({
       userEntryId: cp.userEntryId,
       changes: liveDiffs[i] ?? cp.fileChanges,
-      prompt: cp.prompt,
+      prompt: typedText(cp.userEntryId, cp.prompt),
       createdAt: cp.createdAt,
       ...(cp.v === 3 ? { skipped: cp.skipped } : {}),
     }));
@@ -278,7 +281,7 @@ export async function getPiRewindHistory(
       .map((r): RewindHistoryItem => ({
         kind: 'prompt',
         messageId: r.userEntryId,
-        content: (originalInputs.get(r.userEntryId) ?? userEntryText(branch, r.userEntryId)).slice(0, 200),
+        content: (originalInputs.get(r.userEntryId) ?? typedText(r.userEntryId, userEntryText(branch, r.userEntryId))).slice(0, 200),
         timestamp: Date.parse(r.createdAt) || 0,
         filesAffected: 0,
         notRewindable: { reason: r.reason, params: r.params },
@@ -314,16 +317,26 @@ export async function getPiRewindHistory(
 }
 
 /** Every prompt and compaction anchor, none restoring files, for a chat that takes no file checkpoints. Runs no git. */
-function conversationOnlyRewindItems(branch: readonly SessionEntry[], originalInputs: ReadonlyMap<string, string>): RewindHistoryItem[] {
+function conversationOnlyRewindItems(
+  branch: readonly SessionEntry[],
+  originalInputs: ReadonlyMap<string, string>,
+  typedText: (userEntryId: string, stored: string) => string,
+): RewindHistoryItem[] {
   const prompts = branch.filter(promptTest(branch)).map((entry): RewindHistoryItem => ({
     kind: 'prompt',
     messageId: entry.id,
-    content: (originalInputs.get(entry.id) ?? userEntryText(branch, entry.id)).slice(0, 200),
+    content: (originalInputs.get(entry.id) ?? typedText(entry.id, userEntryText(branch, entry.id))).slice(0, 200),
     timestamp: Date.parse(entry.timestamp) || 0,
     filesAffected: 0,
     notRewindable: { reason: 'no-project', params: {} },
   }));
   return mergeRewindAnchorsNewestFirst(prompts.reverse(), getCompactionRewindItems(branch));
+}
+
+/** A user entry's stored text without the terminal attachment and IDE blocks Damocles put before it, as the transcript shows it. */
+function typedTextOf(branch: readonly SessionEntry[]): (userEntryId: string, stored: string) => string {
+  const attachmentCounts = extractTerminalAttachmentCounts(branch);
+  return (userEntryId, stored) => storedTypedText(stored, attachmentCounts.get(userEntryId) ?? 0);
 }
 
 /** The text of the user message entry `id` on `branch`, or '' when it is not there. */

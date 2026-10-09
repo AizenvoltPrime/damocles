@@ -4,7 +4,7 @@ import { safeStorage } from 'electron';
 import type { LocalizationService } from '../../../platform/localization-service';
 import type { NotificationService } from '../../../platform/notification-service';
 import type { SecretsStore } from '../../../platform/secrets-store';
-import { writeJsonConfig } from '../../../core/config/json-config-write';
+import { jsonConfigWritesSettled, writeJsonConfig } from '../../../core/config/json-config-write';
 import { Emitter } from './emitter';
 
 const SCHEMA_VERSION = 1;
@@ -60,13 +60,18 @@ function readEncrypted(filePath: string, log: (line: string) => void): StoredSec
   return stored;
 }
 
+export interface DesktopSecretsStore extends SecretsStore {
+  // Settles once every write to the file, one queued meanwhile included, has landed or failed; a quit awaits it.
+  flush(): Promise<void>;
+}
+
 /** safeStorage-encrypted secrets in a user-only file under userData; memory only when encryption is unusable. */
 export function createDesktopSecretsStore(
   userDataDir: string,
   notifications: NotificationService,
   t: LocalizationService['t'],
   log: (line: string) => void,
-): SecretsStore {
+): DesktopSecretsStore {
   const filePath = path.join(userDataDir, SECRETS_FILE);
   const isPersistent = encryptionUsable();
   const stored: StoredSecrets = isPersistent ? readEncrypted(filePath, log) : { values: new Map(), undecryptable: new Map() };
@@ -104,5 +109,6 @@ export function createDesktopSecretsStore(
     },
     keys: async () => [...stored.values.keys()],
     onDidChange: (listener) => changed.add(listener),
+    flush: () => jsonConfigWritesSettled(filePath),
   };
 }

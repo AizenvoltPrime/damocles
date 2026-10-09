@@ -19,20 +19,20 @@ const large = computed(() => props.size === 'toast');
       v-if="view.project"
       :name="view.project.name"
       class="size-full"
-      :class="large ? 'rounded-xl text-lg' : 'rounded-[9px] text-[13px]'"
+      :class="large ? 'rounded-xl text-lg' : 'rounded-9 text-13'"
     />
     <span
       v-else
       class="flex size-full items-center justify-center bg-(--d-accent-soft) font-bold text-(--d-accent-text)"
-      :class="large ? 'rounded-xl text-lg' : 'rounded-[9px] text-[13px]'"
+      :class="large ? 'rounded-xl text-lg' : 'rounded-9 text-13'"
     >D</span>
     <span
       class="absolute flex items-center justify-center rounded-full border-2 border-(--d-card) text-(--d-bg)"
-      :class="[tone.badge, large ? '-right-1 -bottom-1 size-[22px]' : '-right-[3px] -bottom-[3px] size-4']"
+      :class="[tone.badge, large ? '-right-1 -bottom-1 size-5.5' : '-right-0.75 -bottom-0.75 size-4']"
     >
       <component
         :is="view.icon"
-        :class="large ? 'size-[11px]' : 'size-2'"
+        :class="large ? 'size-2.75' : 'size-2'"
         :stroke-width="2.5"
       />
     </span>

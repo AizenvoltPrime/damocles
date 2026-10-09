@@ -8,6 +8,8 @@ import { trapTab } from '../focus-trap';
 import { notificationView, relativeTime, TONE_CLASSES, type NotificationView } from '../notification-view';
 import NotificationAvatar from './NotificationAvatar.vue';
 import ToastLife from './ToastLife.vue';
+import { Button } from '@/components/ui/button';
+import { remPx } from '@/composables/useRemPx';
 
 const props = defineProps<{ api: DamoclesOverlayApi }>();
 const { t, locale } = useI18n();
@@ -17,10 +19,10 @@ const LOGO_URL = 'app://damocles/resources/icon.png';
 const APP_NAME = 'Damocles';
 // At most this many toasts show; older ones collapse into the "N more · Dismiss all" pill.
 const MAX_VISIBLE = 3;
-// CSS px between the stack and the popup window's bottom-right corner; the reported area includes it on every side.
-// The toast and pill shadows reach at most 14px below and 10px beside them, so the window never clips them.
+// rem between the stack and the popup window's bottom-right corner (its right-4 bottom-4); the reported area includes it
+// on every side. The toast and pill shadows reach at most 14px below and 10px beside them, so the window never clips them.
 // The stack's width is fixed: the window is sized to the area it reports, so a width from 100vw would feed back.
-const MARGIN = 16;
+const MARGIN_REM = 1;
 // How often the header's relative time is refreshed while a toast shows.
 const CLOCK_TICK_MS = 30_000;
 
@@ -186,15 +188,16 @@ let reported = '';
 function reportArea(): void {
   const element = stack.value;
   let area: OverlayToastArea = { width: 0, height: 0, parts: [] };
+  const margin = remPx(MARGIN_REM);
   if (element && (toasts.value.length > 0 || leaving.value > 0)) {
     const tops = [...element.querySelectorAll<HTMLElement>('[data-toast-id]')].map((toast) => offsetWithin(toast, element).top);
     const top = Math.min(0, ...tops);
     const parts = [...element.querySelectorAll<HTMLElement>(PART)].flatMap((part): OverlayRect[] => {
       const offset = offsetWithin(part, element);
-      const box = { x: MARGIN + offset.left, y: MARGIN - top + offset.top, width: part.offsetWidth, height: part.offsetHeight };
+      const box = { x: margin + offset.left, y: margin - top + offset.top, width: part.offsetWidth, height: part.offsetHeight };
       return box.width > 0 && box.height > 0 ? [box] : [];
     });
-    area = { width: Math.ceil(element.offsetWidth) + MARGIN * 2, height: Math.ceil(element.offsetHeight - top) + MARGIN * 2, parts };
+    area = { width: Math.ceil(element.offsetWidth) + margin * 2, height: Math.ceil(element.offsetHeight - top) + margin * 2, parts };
   }
   const key = JSON.stringify(area);
   if (key === reported) return;
@@ -277,7 +280,7 @@ onBeforeUnmount(() => {
     ref="stack"
     data-testid="overlay-toasts"
     :aria-label="t('toasts.region')"
-    class="pointer-events-none fixed right-4 bottom-4 flex w-[380px] flex-col items-end gap-2.5"
+    class="pointer-events-none fixed right-4 bottom-4 flex w-95 flex-col items-end gap-2.5"
     @keydown="onKeydown"
   >
     <Transition name="t-fade">
@@ -286,7 +289,7 @@ onBeforeUnmount(() => {
         type="button"
         data-testid="overlay-toasts-more"
         data-toast-part
-        class="d-press pointer-events-auto self-center rounded-full border border-(--d-border2) bg-(--d-card) px-3 py-1 text-[11.5px] text-(--d-muted) shadow-[0_1px_2px_rgb(0_0_0/0.12),0_4px_12px_-2px_rgb(0_0_0/0.24)] hover:text-(--d-text)"
+        class="d-press pointer-events-auto self-center rounded-full border border-(--d-border2) bg-(--d-card) px-3 py-1 text-11.5 text-(--d-muted) shadow-[0_1px_2px_rgb(0_0_0/0.12),0_4px_12px_-2px_rgb(0_0_0/0.24)] hover:text-(--d-text)"
         @click="dismissAll"
       >
         {{ t('toasts.moreDismissAll', { count: hiddenCount }) }}
@@ -306,6 +309,7 @@ onBeforeUnmount(() => {
         {{ announcement.text }}
       </p>
     </div>
+    <!-- Not Sonner: main times each toast and sizes the popup window to the area this stack reports. -->
     <TransitionGroup
       tag="div"
       name="toast"
@@ -321,7 +325,7 @@ onBeforeUnmount(() => {
         :data-toast-id="toast.id"
         :data-kind="shown.kind"
         :data-severity="toast.body.kind === 'notice' ? toast.body.severity : undefined"
-        class="toast-card pointer-events-auto relative flex w-full gap-3 overflow-hidden rounded-[14px] border border-(--d-border2) bg-(--d-card) p-3 pb-[13px] text-(--d-text) shadow-[0_1px_2px_rgb(0_0_0/0.12),0_4px_12px_-2px_rgb(0_0_0/0.24)]"
+        class="toast-card pointer-events-auto relative flex w-full gap-3 overflow-hidden rounded-[0.875rem] border border-(--d-border2) bg-(--d-card) p-3 pb-3.25 text-(--d-text) shadow-[0_1px_2px_rgb(0_0_0/0.12),0_4px_12px_-2px_rgb(0_0_0/0.24)]"
         :class="shown.kind === 'notice' ? '' : 'cursor-pointer'"
         @mouseenter="hold(toast.id, 'pointer', true)"
         @mouseleave="hold(toast.id, 'pointer', false)"
@@ -334,7 +338,7 @@ onBeforeUnmount(() => {
           size="toast"
         />
         <div class="flex min-w-0 flex-1 flex-col gap-0.5">
-          <div class="flex h-[18px] items-center gap-1.5 text-[11px] text-(--d-faint)">
+          <div class="flex h-4.5 items-center gap-1.5 text-11 text-(--d-faint)">
             <img
               :src="LOGO_URL"
               alt=""
@@ -348,10 +352,12 @@ onBeforeUnmount(() => {
               class="shrink-0"
               :datetime="new Date(toast.at).toISOString()"
             >{{ relativeTime(toast.at, now, translate) }}</time>
-            <button
+            <Button
               type="button"
+              variant="ghost"
+              size="icon-sm"
               data-testid="overlay-toast-dismiss"
-              class="-mr-1 flex size-5 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-(--d-hover) hover:text-(--d-text)"
+              class="-mr-1 size-5 rounded-md hover:bg-(--d-hover) hover:text-(--d-text) [&_svg]:size-3"
               :aria-label="t('toasts.dismiss')"
               :title="t('toasts.dismiss')"
               @click.stop="resolve(toast.id)"
@@ -360,18 +366,18 @@ onBeforeUnmount(() => {
                 aria-hidden="true"
                 class="size-3"
               />
-            </button>
+            </Button>
           </div>
           <template v-if="shown.kind === 'notice'">
-            <p class="max-h-40 overflow-y-auto text-[12.5px] break-words whitespace-pre-wrap text-(--d-text)">
+            <p class="max-h-40 overflow-y-auto text-12.5 wrap-break-word whitespace-pre-wrap text-(--d-text)">
               <span class="sr-only">{{ shown.where }}: </span>{{ shown.message }}
             </p>
           </template>
           <template v-else>
-            <div class="truncate text-[13.5px] font-semibold">
+            <div class="truncate text-13.5 font-semibold">
               {{ shown.title }}
             </div>
-            <p class="line-clamp-2 text-[12.5px] text-pretty text-(--d-muted)">
+            <p class="line-clamp-2 text-12.5 text-pretty text-(--d-muted)">
               <span
                 class="font-semibold"
                 :class="TONE_CLASSES[shown.tone].cardLead"
@@ -386,7 +392,7 @@ onBeforeUnmount(() => {
               v-if="shown.action"
               type="button"
               data-toast-primary
-              class="d-press flex h-7 items-center gap-1.5 rounded-lg px-[11px] text-xs font-semibold whitespace-nowrap hover:brightness-115"
+              class="d-press flex h-7 items-center gap-1.5 rounded-lg px-2.75 text-xs font-semibold whitespace-nowrap hover:brightness-115"
               :class="[TONE_CLASSES[shown.tone].pill, TONE_CLASSES[shown.tone].pillText]"
               @click.stop="resolve(toast.id, TOAST_OPEN_ACTION)"
             >
@@ -402,7 +408,7 @@ onBeforeUnmount(() => {
               :key="index"
               type="button"
               :data-toast-primary="index === 0 ? '' : undefined"
-              class="d-press flex h-7 items-center rounded-lg px-[11px] text-xs whitespace-nowrap"
+              class="d-press flex h-7 items-center rounded-lg px-2.75 text-xs whitespace-nowrap"
               :class="index === 0
                 ? [TONE_CLASSES[shown.tone].pill, TONE_CLASSES[shown.tone].pillText, 'font-semibold hover:brightness-115']
                 : 'border border-(--d-border2) text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text)'"

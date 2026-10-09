@@ -203,3 +203,16 @@ describe('session status copy', () => {
     expect(value).toMatch(/^[\u0370-\u03ff\u1f00-\u1fff\s.,:!\u037e\u00b7]+$/);
   });
 });
+
+describe('settings write copy', () => {
+  it('composes Saved to with every scope into grammatical Greek', () => {
+    // SettingsRow.vue interpolates scopeFile into savedTo, so the preposition and article must agree for every scope.
+    const sentence = (scope: string): string => EL.get('settingsModal.savedTo')!.replace('{file}', EL.get(`settingsModal.scopeFile.${scope}`)!);
+
+    expect(['user', 'project', 'local'].map(sentence)).toEqual([
+      'Αποθηκεύτηκε στις ρυθμίσεις χρήστη',
+      'Αποθηκεύτηκε στις ρυθμίσεις χώρου εργασίας',
+      'Αποθηκεύτηκε στις ρυθμίσεις αυτού του φακέλου',
+    ]);
+  });
+});

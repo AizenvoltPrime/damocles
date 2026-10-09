@@ -1,4 +1,4 @@
-// Webview sizes are rem so they follow the host font (docs/invariants.md "Design tokens"); px stays for border and outline
+// Renderer sizes are rem so they follow the host font (docs/invariants.md "Design tokens"); px stays for border and outline
 // widths, blur and shadows, none of which these properties carry.
 const PX_SIZED = String.raw`/^(?:font-size|line-height|gap|row-gap|column-gap|top|right|bottom|left|flex|flex-basis)$|^(?:padding|margin|inset)(?:-|$)|^(?:min-|max-)?(?:width|height|inline-size|block-size)$|^border(?:-[a-z]+)*-radius$/`;
 

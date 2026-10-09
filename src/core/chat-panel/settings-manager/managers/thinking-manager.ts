@@ -8,6 +8,8 @@ import {
   defaultEffortForModel,
   thinkingDisableAppliesToModel,
 } from "../utils";
+import { DEFAULT_MODELS } from "../../../../shared/types/constants";
+import { effortToPiThinking } from "../../../pi-session/pi-models";
 
 /**
  * ThinkingManager owns per-panel reasoning controls (disabled toggle, effort
@@ -16,8 +18,8 @@ import {
  * and `damocles.maxThinkingTokens`. Effort and max-tokens are keyed per-(panel,
  * model) so switching models inside a panel preserves prior intent.
  *
- * Per-panel state is in-memory only. The workspace defaults serve as the
- * safety net on reload — matching the existing ModelManager behavior.
+ * Per-panel state is in-memory only; a resumed conversation takes the level its
+ * session file recorded (restoreRecordedLevel), else the workspace defaults apply.
  */
 export class ThinkingManager {
   private readonly perPanelDisabled: Map<string, boolean> = new Map();
@@ -121,6 +123,16 @@ export class ThinkingManager {
     } else {
       panelMap[model] = effort;
     }
+  }
+
+  /**
+   * A resumed conversation's recorded pi thinking level, the level it ran at after pi's clamp, as this panel's reasoning for
+   * `model`: the first effort the model lists that maps to it, and thinking off or on where the model offers the switch.
+   */
+  restoreRecordedLevel(panelId: string, model: string, level: string): void {
+    if (thinkingDisableAppliesToModel(model)) this.perPanelDisabled.set(panelId, level === "off");
+    const effort = DEFAULT_MODELS.find((info) => info.value === model)?.supportedEffortLevels?.find((candidate) => effortToPiThinking(candidate) === level);
+    if (effort) this.setPanelEffort(panelId, model, effort);
   }
 
   /** Set the per-(panel, model) max-tokens override. `null` clears the override. */

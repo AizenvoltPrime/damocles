@@ -2,11 +2,12 @@
  * agent-toolset.ts — Map an agent definition's `tools:` to the Damocles active-set tool names.
  *
  * New for the Damocles port (no upstream equivalent). Frontmatter `tools:` uses pi-native lowercase
- * names (read/bash/edit/write/grep/find/ls). Damocles' active set is mixed-case and excludes pi's
- * native `edit` (replaced by the custom `Edit`; see PI_EXCLUDED_TOOLS). This maps frontmatter names →
- * Damocles names so a subagent gets the right tools:
+ * names (read/bash/edit/write/grep/find/ls/powershell). Damocles' active set is mixed-case and excludes pi's
+ * native `edit` (replaced by the custom `Edit`; see PI_EXCLUDED_TOOLS) and `powershell` (never active;
+ * the custom `PowerShell` stands in). This maps frontmatter names → Damocles names so a subagent gets
+ * the right tools:
  *  - read/bash/write/grep/find/ls → kept pi-native (those ARE the Damocles active-set names)
- *  - edit → Edit (custom)
+ *  - edit → Edit (custom), powershell → PowerShell (custom)
  *  - `*` / `all` / omitted (builtinToolNames === undefined) → mirror the parent's full active set
  *  - an explicit list is intersected with the parent's available set: EVERY named tool only resolves
  *    when it is actually active in the panel. This matters most for opt-in tools (web search/fetch,
@@ -37,6 +38,7 @@
 
 import {
   TOOL_EDIT,
+  TOOL_POWERSHELL,
   TOOL_TOOL_SEARCH,
   SUBAGENT_TOOLS,
   PLAN_MODE_TOOLS,
@@ -56,6 +58,7 @@ const FRONTMATTER_TO_ACTIVE: Readonly<Record<string, string>> = {
   find: 'find',
   ls: 'ls',
   edit: TOOL_EDIT,
+  powershell: TOOL_POWERSHELL,
 };
 
 /**

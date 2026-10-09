@@ -14,7 +14,16 @@ const UTF8_OUTPUT_PREFIX = 'try { [Console]::OutputEncoding=[System.Text.Encodin
 /** `pwsh` leads so PowerShell 7 wins where both exist, and it is the only one that resolves off Windows. */
 const POWERSHELL_EXECUTABLES = ['pwsh', 'powershell.exe'] as const;
 
-const POWERSHELL_ARGS = ['-NoProfile', '-NonInteractive', '-Command'];
+/**
+ * Process-scope `Bypass`, so `.ps1` shims such as `npm.ps1` run under Windows' default `Restricted`
+ * policy. A Group Policy setting still overrides it. Execution policy exists only on Windows.
+ */
+const POWERSHELL_ARGS = [
+  '-NoProfile',
+  '-NonInteractive',
+  ...(process.platform === 'win32' ? ['-ExecutionPolicy', 'Bypass'] : []),
+  '-Command',
+];
 
 /** pi's shell definition carries its own schema and render types; only the erased shape is assignable both ways. */
 type AnyToolDefinition = ToolDefinition<any, any, any>;

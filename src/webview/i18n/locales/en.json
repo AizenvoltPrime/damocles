@@ -9,54 +9,19 @@
   },
   "editor": {
     "loadFailed": "The editor could not load: {error}",
-    "readOnly": "Read-only",
     "proposal": "Proposed edit. Approve or reject it here or in the chat.",
     "proposalDecided": "Proposed edit. The decision is made in the chat.",
-    "checkpoint": "Changes since the checkpoint",
     "approve": "Approve",
     "reject": "Reject",
-    "untitled": "Unsaved buffer, shown read-only",
-    "line": "Line {line}",
     "side": {
       "original": "Original",
-      "modified": "Modified",
-      "document": "File"
+      "modified": "Modified"
     },
     "body": {
       "tooLarge": "Too large to display ({size} MiB, limit {limit} MiB)",
       "binary": "Binary file not shown",
       "unreadable": "Could not read the file: {error}"
     }
-  },
-  "settingsEditor": {
-    "title": {
-      "user": "User settings",
-      "project": "Project settings",
-      "local": "Local project settings"
-    },
-    "loading": "Loading settings file...",
-    "notCreated": "This file does not exist yet. Saving creates it.",
-    "parseError": "This file is not valid JSON, so it opens read-only. Fix it in another editor: {error}",
-    "saving": "Saving...",
-    "saved": "Saved",
-    "unsaved": "Unsaved changes",
-    "conflict": "Not saved: the file changed on disk after you opened it. Compare your text with it, or overwrite it with your text.",
-    "changedOnDisk": "The file changed on disk.",
-    "reload": "Reload from disk",
-    "keepEditing": "Keep my edits",
-    "discardPrompt": "Close and discard your unsaved changes?",
-    "discard": "Discard",
-    "problems": "Problems: {count}",
-    "problemLine": "Line {line}: {message}",
-    "compare": "Compare",
-    "overwrite": "Overwrite",
-    "comparing": "Left: the file on disk, read-only. Right: your text. Merge on the right, then save.",
-    "endCompare": "Close comparison",
-    "overwriteTitle": "Overwrite the newer file?",
-    "overwriteDescription": "The file changed on disk after you opened it. Overwriting replaces those changes with your text.",
-    "switchPrompt": "Open {file} and discard your unsaved changes?",
-    "unreadable": "{path} cannot be read: {error}",
-    "reveal": "Show in file manager"
   },
   "common": {
     "cancel": "Cancel",
@@ -108,7 +73,7 @@
       }
     },
     "yolo": {
-      "tooltip": "YOLO mode - auto-approve all tool calls (except plan approval and questions)",
+      "tooltip": "YOLO mode. Approves every tool call automatically, except plan approval and questions.",
       "active": "YOLO",
       "inactive": "YOLO"
     },
@@ -422,11 +387,11 @@
       "description": "Where should this allow rule be saved?",
       "descriptionDeny": "Where should this deny rule be saved?",
       "local": "Local (Recommended)",
-      "localDesc": ".damocles/settings.local.json - Personal, this project only",
+      "localDesc": "Personal, this project only (.damocles/settings.local.json)",
       "project": "Project",
-      "projectDesc": ".damocles/settings.json - Shared with team via git",
+      "projectDesc": "Shared with the team through git (.damocles/settings.json)",
       "global": "Global",
-      "globalDesc": "~/.damocles/settings.json - All your projects",
+      "globalDesc": "All your projects (~/.damocles/settings.json)",
       "cancel": "Cancel"
     },
     "sendToClaude": "Send to Damocles",
@@ -1498,8 +1463,8 @@
   "toast": {
     "workspaceFolderSwitched": "Switched to folder {folder}",
     "conversationCleared": "Conversation cleared",
-    "interrupted": "Message interrupted - prompt restored to input",
-    "queueReturned": "Stopped before your queued messages were sent - they are back in the input",
+    "interrupted": "Message interrupted. Your prompt is back in the input.",
+    "queueReturned": "Your queued messages were not sent. They are back in the input.",
     "rewindFiles": "Files rewound successfully",
     "rewindFailed": "Rewind failed: {message}",
     "noSessionToBindPlan": "Start a conversation before binding a plan file",
@@ -1778,6 +1743,13 @@
     "signOut": "Sign out",
     "clearKey": "Clear key",
     "working": "Working…",
+    "signIn": "Sign in with Claude",
+    "signInHint": "Opens your browser to sign in to your Claude account.",
+    "waiting": "Complete the sign-in in your browser. Damocles continues on its own when the browser returns.",
+    "pasteInstead": "Paste link instead",
+    "pasteLabel": "Redirect URL or code",
+    "pastePlaceholder": "Address bar URL or code",
+    "pasteSubmit": "Continue",
     "toast": {
       "error": "Claude auth failed: {error}"
     }
@@ -2743,7 +2715,10 @@
     "sideQuestion": "Side question (/btw)",
     "contextUsage": "Context usage",
     "subscriptionUsage": "Subscription usage",
-    "usageStatistics": "Usage statistics"
+    "usageStatistics": "Usage statistics",
+    "terminal": "Terminal",
+    "toggleTerminal": "Toggle terminal",
+    "toggleTerminalShortcut": "Toggle terminal ({shortcut})"
   },
   "history": {
     "search": "Search conversations",
@@ -2769,7 +2744,8 @@
     "acClose": "Close",
     "mentionList": "Files and agents to mention",
     "commandList": "Commands",
-    "agentList": "Agents to steer"
+    "agentList": "Agents to steer",
+    "dropToMention": "Drop to mention in chat"
   },
   "emptyState": {
     "title": "What should we work on in {project}?",
@@ -2777,10 +2753,27 @@
     "subtitle": "Type below, use {'@'} to mention files, or start from one of these.",
     "explain": "Explain this codebase",
     "fixBug": "Find and fix a bug",
-    "writeTests": "Write tests"
+    "writeTests": "Write tests",
+    "subtitleDrag": "Type below, drag files from the sidebar to mention them, or start from one of these."
   },
   "pinned": {
     "you": "You",
     "prompt": "prompt {n}"
+  },
+  "terminalAttachment": {
+    "listLabel": "Attached terminal output",
+    "command": "Terminal: {command}",
+    "selection": "Terminal selection",
+    "selectionFrom": "Selection from {terminal}",
+    "exit": "exit {code}",
+    "lines": "{n} line | {n} lines",
+    "preview": "Preview {label}",
+    "remove": "Remove {label}",
+    "removeTitle": "Remove",
+    "added": "Terminal output attached: {label}",
+    "omitted": "{n} earlier line was left out before attaching | {n} earlier lines were left out before attaching",
+    "previewTail": "Preview of the last {n} line | Preview of the last {n} lines",
+    "empty": "No output",
+    "previewRegion": "Terminal output"
   }
 }

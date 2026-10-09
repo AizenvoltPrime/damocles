@@ -1,3 +1,4 @@
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import type { Disposable } from '../../platform/disposable';
 import type { ActiveEditorContext, DiffRequest, DiffSide, DiffView, EditorService, OpenFileOptions } from '../../platform/editor-service';
@@ -50,6 +51,7 @@ function showOptions(opts: OpenFileOptions): vscode.TextDocumentShowOptions | un
   const options: vscode.TextDocumentShowOptions = {
     ...(opts.preview !== undefined ? { preview: opts.preview } : {}),
     ...(opts.line !== undefined ? { selection: selectionAt(opts.line) } : {}),
+    ...(opts.preserveFocus !== undefined ? { preserveFocus: opts.preserveFocus } : {}),
   };
   return Object.keys(options).length > 0 ? options : undefined;
 }
@@ -125,7 +127,7 @@ export function createVsCodeEditorService(subscriptions: Disposable[]): EditorSe
         if (right.scheme === scheme) provider.deleteContent(right.path);
       };
       try {
-        await vscode.commands.executeCommand('vscode.diff', left, right, req.title, {
+        await vscode.commands.executeCommand('vscode.diff', left, right, req.title(path.basename(req.filePath)), {
           ...(req.column !== undefined ? { viewColumn: req.column } : {}),
           ...(req.preserveFocus !== undefined ? { preserveFocus: req.preserveFocus } : {}),
           ...(req.preview !== undefined ? { preview: req.preview } : {}),
@@ -167,6 +169,9 @@ export function createVsCodeEditorService(subscriptions: Disposable[]): EditorSe
     openHostSettings: async (query) => {
       await vscode.commands.executeCommand('workbench.action.openSettings', query);
     },
+
+    // VS Code keeps its own settings, not the .damocles files (settingsSources is false).
+    openSettingsFile: () => Promise.reject(new Error('VS Code has no Damocles settings files to edit')),
 
     isHostExtensionActive: (id) => vscode.extensions.getExtension(id)?.isActive ?? false,
 

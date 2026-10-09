@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication } from '@playwright/test';
 import { activeChat, expect, nextChat, test } from './support/fixtures';
+import { DEFAULT_GRID_LAYOUT } from '../../src/desktop/preload/shell-channels';
 import { seedStubModel } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { listChats, projectKeyOf } from './support/shell-ui';
@@ -15,7 +16,7 @@ const userSettings = (dir: string): Record<string, unknown> => {
   return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown> : {};
 };
 
-test('the title-bar gear opens settings over the window, and This chat changes the selected chat', async ({ launch }) => {
+test('the title-bar gear opens settings over the window, and This chat changes the selected chat', async ({ foreground: _foreground, launch }) => {
   const { app } = await launch();
   const tab = await activeChat(app);
   await expect(chatInput(tab)).toBeVisible();
@@ -41,7 +42,7 @@ test('the title-bar gear opens settings over the window, and This chat changes t
   await expect.poll(async () => (await overlayViewState(app)).visible).toBe(false);
 });
 
-test('Ctrl+, (Cmd+, on macOS) opens settings from the chat, and Escape returns focus to it', async ({ launch }) => {
+test('Ctrl+, (Cmd+, on macOS) opens settings from the chat, and Escape returns focus to it', async ({ foreground: _foreground, launch }) => {
   const { app } = await launch();
   const tab = await activeChat(app);
   await expect(chatInput(tab)).toBeVisible();
@@ -167,7 +168,9 @@ test('Restore default layout resets window-layout.json, and with Reopen where I 
     await expect.poll(() => readLayout(home.userData)).toEqual({
       sidebarVisible: true,
       sidebarWidth: 264,
-      sections: { projects: { collapsed: false, size: 180 }, chats: { collapsed: false } },
+      sections: { projects: { collapsed: false, size: 180 }, chats: { collapsed: false }, files: { collapsed: false, size: 230 }, search: { collapsed: true, size: 260 } },
+      grid: DEFAULT_GRID_LAYOUT,
+      search: {},
     });
     await expect.poll(async () => (await shellState(desktop.app)).layout.sidebarVisible).toBe(true);
 

@@ -5,7 +5,8 @@ import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import type { PermissionMode } from "@shared/types/settings";
 import type { UserContentBlock } from "@shared/types/content";
-import { ArrowUp, CheckCheck, ClipboardList, Code, Eye, LoaderCircle, LockOpen, Mic, Paperclip, Pencil } from "lucide-vue-next";
+import { ArrowUp, AtSign, CheckCheck, ClipboardList, Code, Eye, LoaderCircle, LockOpen, Mic, Paperclip, Pencil } from "lucide-vue-next";
+import { FILE_DRAG_MIME, parseFileDragPayload } from "@shared/file-drag";
 import { usePromptHistory } from "@/composables/usePromptHistory";
 import { useAtMentionAutocomplete } from "@/composables/useAtMentionAutocomplete";
 import { useSlashCommandAutocomplete } from "@/composables/useSlashCommandAutocomplete";
@@ -24,6 +25,7 @@ import AtMentionPopup from "./AtMentionPopup.vue";
 import SlashCommandPopup from "./SlashCommandPopup.vue";
 import ImageThumbnailStrip from "./ImageThumbnailStrip.vue";
 import ElementAttachmentStrip from "./ElementAttachmentStrip.vue";
+import TerminalAttachmentStrip from "./TerminalAttachmentStrip.vue";
 import ModelEffortPopover from "./composer/ModelEffortPopover.vue";
 
 const { t } = useI18n();
@@ -39,7 +41,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  send: [content: string | UserContentBlock[], includeIdeContext: boolean];
+  send: [content: string | UserContentBlock[], includeIdeContext: boolean, terminalAttachmentIds: string[]];
   queue: [content: string | UserContentBlock[]];
   steer: [steer: SteerRequest, requestId: string];
   cancel: [];
@@ -109,6 +111,38 @@ const {
 } = useVoiceInput();
 
 const { postMessage } = usePlatformBridge();
+
+// A file dragged from the desktop sidebar or an editor tab: the composer shows a drop target, and core resolves the drop into
+// the same mention an @ pick inserts (insertMention). Counting enters and leaves keeps the target up over child elements.
+const fileDropDepth = ref(0);
+const fileDropping = computed(() => fileDropDepth.value > 0);
+const carriesFile = (event: DragEvent): boolean =>
+  settingsStore.hostCapabilities.fileMentionDrop && (event.dataTransfer?.types.includes(FILE_DRAG_MIME) ?? false);
+
+function onFileDragEnter(event: DragEvent): void {
+  if (!carriesFile(event)) return;
+  event.preventDefault();
+  fileDropDepth.value++;
+}
+
+function onFileDragOver(event: DragEvent): void {
+  if (!carriesFile(event)) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+}
+
+function onFileDragLeave(event: DragEvent): void {
+  if (!carriesFile(event)) return;
+  fileDropDepth.value = Math.max(0, fileDropDepth.value - 1);
+}
+
+function onFileDrop(event: DragEvent): void {
+  fileDropDepth.value = 0;
+  if (!carriesFile(event)) return;
+  event.preventDefault();
+  const payload = parseFileDragPayload(event.dataTransfer?.getData(FILE_DRAG_MIME));
+  if (payload) postMessage({ type: "mentionDropped", projectKey: payload.projectKey, relativePath: payload.relativePath });
+}
 
 const voiceJarvisStore = useVoiceJarvisStore();
 const {
@@ -384,7 +418,7 @@ function handleSend() {
   if (steer.kind === "steer") {
     emit("steer", { agentId: steer.agentId, message: steer.message, images: steer.images }, holdSteerDraft());
   } else {
-    dispatch(content);
+    dispatch(content, uiStore.terminalAttachments.map((attachment) => attachment.id));
   }
 
   inputText.value = "";
@@ -393,9 +427,14 @@ function handleSend() {
   resetHistory();
 }
 
-function dispatch(content: string | UserContentBlock[]) {
+// Terminal attachments go only with a message sent now; a queued one leaves the chips for the next send.
+function dispatch(content: string | UserContentBlock[], terminalAttachmentIds: string[] = []) {
   if (props.isProcessing) emit("queue", content);
-  else emit("send", content, ideContextEnabled.value);
+  else emit("send", content, ideContextEnabled.value, terminalAttachmentIds);
+}
+
+function removeTerminalAttachment(id: string) {
+  postMessage({ type: "removeTerminalAttachment", id });
 }
 
 /** Sends `prompt` on its own; the draft and its attachments stay staged in the box. */
@@ -566,10 +605,33 @@ onUnmounted(() => {
       ref="cardRef"
       class="group/composer relative rounded-2xl border border-(--d-border2) bg-(--d-input) shadow-[0_1px_2px_rgb(0_0_0/.15)] transition-colors duration-200 focus-within:border-(--d-accent)"
       data-testid="composer"
+      :data-file-drop="fileDropping || undefined"
+      @dragenter="onFileDragEnter"
+      @dragover="onFileDragOver"
+      @dragleave="onFileDragLeave"
+      @drop="onFileDrop"
     >
+      <Transition name="t-fade">
+        <div
+          v-if="fileDropping"
+          data-testid="composer-drop-target"
+          class="composer-drop-target pointer-events-none absolute inset-0 z-5 flex items-center justify-center gap-2 rounded-2xl border-[1.5px] border-dashed border-(--d-accent) bg-(--d-accent-soft) font-medium text-(--d-accent-text)"
+        >
+          <AtSign
+            aria-hidden="true"
+            class="size-3.75"
+          />
+          {{ t("composer.dropToMention") }}
+        </div>
+      </Transition>
       <span
         class="pointer-events-none absolute -inset-1.25 rounded-[1.25rem] border-4 border-(--d-accent-soft) opacity-0 transition-opacity duration-200 group-focus-within/composer:opacity-100"
         aria-hidden="true"
+      />
+      <TerminalAttachmentStrip
+        :attachments="uiStore.terminalAttachments"
+        @remove="removeTerminalAttachment"
+        @focus-composer="focus"
       />
       <ElementAttachmentStrip
         :attachments="elementAttachments"

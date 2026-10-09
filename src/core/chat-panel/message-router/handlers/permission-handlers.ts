@@ -85,16 +85,16 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
         const newMessage = buildPlanImplementationMessage(fullPlan, transcriptPath);
         const correlationId = `plan-impl-${Date.now()}`;
 
-        postMessage(ctx.host, {
-          type: "sessionCleared",
-          pendingMessage: { content: newMessage, correlationId },
-        });
-
         await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, "acceptEdits");
         await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
         settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
 
         ctx.session.clear();
+        // After the clear, whose returned queue the webview can only put back while the old conversation is still on screen.
+        postMessage(ctx.host, {
+          type: "sessionCleared",
+          pendingMessage: { content: newMessage, correlationId },
+        });
         // Wait only for the session swap (NOT the whole implementation turn), then write the continuation
         // plan file immediately — so "view session plan" works the moment the new session is created, not
         // only after streaming finishes. `newMessage` is the continuation's first user message, so its path

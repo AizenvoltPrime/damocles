@@ -268,41 +268,20 @@ jobs:
           node-version: 24
           cache: npm
 
-      - name: Install rpm, Xvfb and a window manager
+      - name: Install rpm and Xvfb
         if: matrix.os == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends rpm xvfb openbox
+          sudo apt-get install -y --no-install-recommends rpm xvfb
 
       - name: Install dependencies
         run: npm ci
-
-      # The electron package has no install script and downloads its binary on first require, which the setuid step below and two parallel Playwright workers cannot wait for.
-      - name: Download the Electron binary
-        run: npx --no install-electron
 
       - name: Build
         run: npm run build
 
       - name: Build desktop
         run: npm run build:desktop
-
-      # Ubuntu 24.04 restricts unprivileged user namespaces for binaries without an AppArmor profile, so Chromium needs its setuid helper; the sandbox stays on.
-      - name: Enable the setuid sandbox helper of the dev Electron binary
-        if: matrix.os == 'linux'
-        run: |
-          sudo chown root:root node_modules/electron/dist/chrome-sandbox
-          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
-
-      # Linux: minimizing needs a window manager and the pane tests size the window to 1400x900. playwright.desktop.config.ts
-      # sets the worker count per platform.
-      - name: Desktop end-to-end suite
-        run: |
-          if [ "$RUNNER_OS" = Linux ]; then
-            xvfb-run -a -s '-screen 0 1920x1080x24' sh -c 'openbox & exec npm run test:desktop'
-          else
-            npm run test:desktop
-          fi
 
       # Windows builds the unpacked app and the installer in two steps so signing can sit between them (docs/desktop-signing.md).
       # The nsis target is required here: only it makes electron-builder write resources/app-update.yml, and --dir or --prepackaged never do.
@@ -317,6 +296,7 @@ jobs:
       - name: Verify desktop package integrity and fuses
         run: node scripts/verify-desktop-package.mjs --platform ${{ matrix.os }} --arch ${{ matrix.arch }} --app "${{ matrix.appDir }}"
 
+      # Ubuntu 24.04 restricts unprivileged user namespaces for binaries without an AppArmor profile, so Chromium needs its setuid helper; the sandbox stays on.
       - name: Enable the setuid sandbox helper of the packaged app
         if: matrix.os == 'linux'
         run: |
@@ -388,6 +368,100 @@ jobs:
         if: failure()
         with:
           name: e2e-report-${{ matrix.target }}
+          path: |
+            dist/e2e-report
+            dist/e2e-results
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # The dev end-to-end suite, split into Playwright shards beside package-desktop, which runs only the packaged-app suite.
+  # Keep each target's runner equal to its package-desktop leg (release-targets.test.ts fails on drift).
+  e2e-desktop:
+    needs: verify
+    strategy:
+      # Every shard reports all its failures; attest and release still need every shard.
+      fail-fast: false
+      matrix:
+        target: [win-x64, win-arm64, mac-arm64, linux-x64, linux-arm64]
+        shard: [1, 2, 3]
+        exclude:
+          - target: linux-x64
+            shard: 3
+          - target: linux-arm64
+            shard: 3
+        include:
+          - target: win-x64
+            runner: windows-latest
+            os: win32
+            shards: 3
+          - target: win-arm64
+            runner: windows-11-arm
+            os: win32
+            shards: 3
+          - target: mac-arm64
+            runner: macos-latest
+            os: darwin
+            shards: 3
+          - target: linux-x64
+            runner: ubuntu-latest
+            os: linux
+            shards: 2
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            os: linux
+            shards: 2
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Xvfb and a window manager
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb openbox
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The electron package has no install script and downloads its binary on first require, which the setuid step below and two parallel Playwright workers cannot wait for.
+      - name: Download the Electron binary
+        run: npx --no install-electron
+
+      # Ubuntu 24.04 restricts unprivileged user namespaces for binaries without an AppArmor profile, so Chromium needs its setuid helper; the sandbox stays on.
+      - name: Enable the setuid sandbox helper of the dev Electron binary
+        if: matrix.os == 'linux'
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+
+      # test:desktop fetches the assets and builds the webview and the desktop app itself; the suite never loads dist/extension.js.
+      # Linux: minimizing needs a window manager and the pane tests size the window to 1400x900. playwright.desktop.config.ts
+      # sets the worker count per platform.
+      - name: Desktop end-to-end suite (shard ${{ matrix.shard }} of ${{ matrix.shards }})
+        env:
+          SHARD: ${{ matrix.shard }}/${{ matrix.shards }}
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a -s '-screen 0 1920x1080x24' sh -c 'openbox & exec npm run test:desktop -- --shard="$SHARD"'
+          else
+            npm run test:desktop -- --shard="$SHARD"
+          fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: e2e-report-${{ matrix.target }}-${{ matrix.shard }}
           path: |
             dist/e2e-report
             dist/e2e-results
@@ -687,7 +761,7 @@ jobs:
   # Build provenance for every file the release attaches. The OIDC token this job can mint signs attestations, so the job
   # holds no secret and installs and runs no package. Its subject-path list must equal the asset list in "Create GitHub Release".
   attest:
-    needs: [package, package-desktop, verify-desktop-install, desktop-update-test]
+    needs: [package, package-desktop, e2e-desktop, verify-desktop-install, desktop-update-test]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -719,7 +793,7 @@ jobs:
             dist-artifacts/latest*.yml
 
   release:
-    needs: [package, package-desktop, verify-desktop-install, desktop-update-test, attest]
+    needs: [package, package-desktop, e2e-desktop, verify-desktop-install, desktop-update-test, attest]
     runs-on: ubuntu-latest
     # Only this job writes: `gh release create` authenticates with the job's own GITHUB_TOKEN.
     permissions:

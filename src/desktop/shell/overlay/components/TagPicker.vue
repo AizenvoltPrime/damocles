@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref, useId } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { Check, Tag, X } from 'lucide-vue-next';
+import { Button } from '@/components/ui/button';
 import { MAX_TAG_LENGTH } from '../../../preload/shell-channels';
 import type { OverlayAnswer, OverlayRequest } from '../../../preload/overlay-channels';
 import { placePopup } from '../placement';
@@ -61,6 +62,7 @@ onMounted(() => {
 });
 </script>
 
+<!-- Popover and Command need their trigger in this document; its anchor is in the shell view, so this panel places itself at the rect it is sent. -->
 <template>
   <div
     ref="root"
@@ -68,7 +70,7 @@ onMounted(() => {
     aria-modal="true"
     data-testid="overlay-tag-picker"
     :aria-label="t('overlay.tagPicker')"
-    class="fixed flex w-[260px] animate-[d-pop_.14s_ease-out] flex-col gap-1.5 rounded-[11px] border border-(--d-border2) bg-(--d-card) p-1.5 text-(--d-text) shadow-(--d-shadow)"
+    class="fixed flex w-65 animate-[d-pop_.14s_ease-out] flex-col gap-1.5 rounded-11 border border-(--d-border2) bg-(--d-card) p-1.5 text-(--d-text) shadow-(--d-shadow)"
     :style="{ left: `${position.left}px`, top: `${position.top}px` }"
     @keydown="onKeydown"
   >
@@ -94,10 +96,11 @@ onMounted(() => {
         @input="activeIndex = -1"
         @keydown="onInputKeydown"
       >
-      <button
+      <Button
         type="button"
+        size="icon-sm"
         data-testid="overlay-tag-save"
-        class="flex size-[22px] shrink-0 items-center justify-center rounded-md bg-(--d-accent) text-(--d-on-accent)"
+        class="size-5.5 rounded-md hover:bg-primary [&_svg]:size-3"
         :aria-label="t('overlay.save')"
         :title="t('overlay.save')"
         @click="save(value)"
@@ -106,12 +109,14 @@ onMounted(() => {
           aria-hidden="true"
           class="size-3"
         />
-      </button>
-      <button
+      </Button>
+      <Button
         v-if="request.current"
         type="button"
+        variant="ghost"
+        size="icon-sm"
         data-testid="overlay-tag-remove"
-        class="flex size-[22px] shrink-0 items-center justify-center rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text)"
+        class="size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3"
         :aria-label="t('overlay.removeTag')"
         :title="t('overlay.removeTag')"
         @click="emit('answer', { kind: 'tagPicker', tag: null })"
@@ -120,7 +125,7 @@ onMounted(() => {
           aria-hidden="true"
           class="size-3"
         />
-      </button>
+      </Button>
     </div>
     <div
       v-show="suggestions.length > 0"
@@ -141,7 +146,7 @@ onMounted(() => {
       >
         <Tag
           aria-hidden="true"
-          class="size-[11px] shrink-0 text-(--d-faint)"
+          class="size-2.75 shrink-0 text-(--d-faint)"
         />
         <span class="min-w-0 truncate">{{ tag }}</span>
       </div>

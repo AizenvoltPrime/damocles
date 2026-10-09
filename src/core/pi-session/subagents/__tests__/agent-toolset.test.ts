@@ -35,6 +35,11 @@ describe('resolveAgentToolset', () => {
     expect(names.sort()).toEqual(['Edit', 'grep', 'read', 'write'].sort());
   });
 
+  it('maps pi-native powershell to the Damocles PowerShell tool', () => {
+    const { names } = resolveAgentToolset(cfg({ builtinToolNames: ['read', 'powershell'] }), PARENT);
+    expect(names.sort()).toEqual(['PowerShell', 'read'].sort());
+  });
+
   it('read-only set stays read-only (no Edit/Write leak)', () => {
     const { names } = resolveAgentToolset(cfg({ builtinToolNames: ['read', 'bash', 'grep', 'find', 'ls'] }), PARENT);
     expect(names.sort()).toEqual(['bash', 'find', 'grep', 'ls', 'read'].sort());

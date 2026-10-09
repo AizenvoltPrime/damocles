@@ -1,6 +1,6 @@
 import { onKeyStroke } from '@vueuse/core';
 import { onMounted, onScopeDispose, shallowRef, useId, type ComputedRef, type ShallowRef } from 'vue';
-import { useOverlayEscape, type OverlayOptions } from './useOverlayEscape';
+import { topOverlayRoot, useOverlayEscape, type OverlayOptions } from './useOverlayEscape';
 
 /**
  * Marks the region an overlay hands focus back to when the control that opened it is gone.
@@ -21,6 +21,21 @@ const FOCUSABLE_SELECTOR = ['a[href]', 'button:not([disabled])', 'input:not([dis
   .map((selector) => `${selector}:not([tabindex="-1"])`)
   .join(', ');
 
+/**
+ * Hands focus back as a closing dialog must (WAI-ARIA APG): to the control that opened it, else into the overlay it was opened
+ * over, unless focus is in that overlay already, else to the transcript region.
+ */
+export function restoreFocus(opener: HTMLElement | null): void {
+  // The body holds focus when nothing does, so it names no control to go back to.
+  if (opener?.isConnected === true && opener !== document.body) {
+    opener.focus();
+    return;
+  }
+  const beneath = topOverlayRoot();
+  if (beneath?.contains(document.activeElement)) return;
+  (beneath ?? document.querySelector<HTMLElement>(RETURN_FOCUS_FALLBACK))?.focus();
+}
+
 export interface OverlayDialog {
   /** Bind on the dialog's root element; an overlay left on a fixed z-index cannot be opened over. */
   readonly zIndex: ComputedRef<number>;
@@ -36,13 +51,19 @@ export interface OverlayDialog {
  * Modal dialog behaviour for a full-screen overlay: stack registration, Escape, paint order, an
  * accessible name, and focus moved in on open, contained while open and handed back on close.
  */
-export function useOverlayDialog(onClose: () => void, options: OverlayOptions = {}): OverlayDialog {
-  const { zIndex, isTop } = useOverlayEscape(onClose, options);
+export interface OverlayDialogOptions extends OverlayOptions {
+  /** The control focus goes back to on close, for a caller that knows it better than the focus at setup. */
+  readonly opener?: HTMLElement | null;
+}
+
+export function useOverlayDialog(onClose: () => void, options: OverlayDialogOptions = {}): OverlayDialog {
+  const { opener: givenOpener, ...overlay } = options;
   const root = shallowRef<HTMLElement | null>(null);
+  const { zIndex, isTop } = useOverlayEscape(onClose, { ...overlay, root: () => root.value });
   const titleId = useId();
 
   // Read during setup, while the control that opened the overlay still holds focus.
-  const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const opener = givenOpener !== undefined ? givenOpener : document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
   function focusableItems(): HTMLElement[] {
     const el = root.value;
@@ -55,12 +76,7 @@ export function useOverlayDialog(onClose: () => void, options: OverlayOptions = 
     (el?.querySelector<HTMLElement>(INITIAL_FOCUS_SELECTOR) ?? el?.querySelector<HTMLElement>(FALLBACK_FOCUS_SELECTOR) ?? focusableItems()[0] ?? el)?.focus();
   });
 
-  onScopeDispose(() => {
-    const target = opener?.isConnected === true
-      ? opener
-      : document.querySelector<HTMLElement>(RETURN_FOCUS_FALLBACK);
-    target?.focus();
-  });
+  onScopeDispose(() => restoreFocus(opener));
 
   onKeyStroke(
     'Tab',

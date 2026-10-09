@@ -22,7 +22,7 @@ export const OUTPUT = join(ROOT, 'src', 'shared', 'generated', 'settings-schema.
 // JSON Schema keywords copied from a contributed property; each must mean the same to Monaco's JSON service.
 const KEPT_KEYWORDS = new Set([
   'type', 'default', 'enum', 'enumDescriptions', 'description', 'markdownDescription',
-  'minimum', 'maximum', 'items', 'properties', 'additionalProperties',
+  'minimum', 'maximum', 'items', 'properties', 'additionalProperties', 'anyOf', 'required',
 ]);
 // VS Code settings-editor keywords with no JSON Schema meaning for a file on disk.
 const DROPPED_KEYWORDS = new Set(['scope', 'enumItemLabels', 'order']);
@@ -55,6 +55,8 @@ function toSchema(property, key, nls) {
       schema.properties = Object.fromEntries(Object.entries(value).map(([name, sub]) => [name, toSchema(sub, `${key}.${name}`, nls)]));
     } else if ((keyword === 'items' || keyword === 'additionalProperties') && typeof value === 'object' && value !== null) {
       schema[keyword] = toSchema(value, `${key}.${keyword}`, nls);
+    } else if (keyword === 'anyOf') {
+      schema.anyOf = value.map((sub, index) => toSchema(sub, `${key}.anyOf[${index}]`, nls));
     } else {
       schema[keyword] = localize(value, nls);
     }
