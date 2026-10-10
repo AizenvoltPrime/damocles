@@ -34,6 +34,11 @@ export function quickOpenWorkerPath(paths: AppPaths): string {
   return path.join(paths.unpackedRoot, 'dist', 'quick-open-worker.js');
 }
 
+// dist/watch-worker.js, which a worker thread loads as a real file.
+export function watchWorkerPath(paths: AppPaths): string {
+  return path.join(paths.unpackedRoot, 'dist', 'watch-worker.js');
+}
+
 export interface PtyHostPaths {
   // dist/pty-host.js, which a utility process loads as a real file.
   readonly script: string;

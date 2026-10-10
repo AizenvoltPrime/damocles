@@ -65,6 +65,19 @@ describe('chat store cancelled derivation', () => {
     expect(tool.liveOutput).toBeUndefined();
   });
 
+  it('flips a failed call carrying the marker to cancelled, in either order', () => {
+    const first = seedRunningTool();
+    first.updateToolMetadata('t-1', CANCELLED_METADATA);
+    first.updateToolStatus('t-1', 'failed', { errorMessage: 'Command aborted' });
+    expect(toolOf(first, 't-1').status).toBe('cancelled');
+
+    setActivePinia(createPinia());
+    const second = seedRunningTool();
+    second.updateToolStatus('t-1', 'failed', { errorMessage: 'Command aborted' });
+    second.updateToolMetadata('t-1', CANCELLED_METADATA);
+    expect(toolOf(second, 't-1').status).toBe('cancelled');
+  });
+
   it('leaves an uncancelled completed call alone', () => {
     const store = seedRunningTool();
 

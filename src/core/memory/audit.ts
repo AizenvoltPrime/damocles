@@ -22,6 +22,7 @@ import type { MemorySubCallResult, MemorySubCallRunner } from './subcall-runner'
 import { estimateTokens, truncateToChars } from './token-estimate';
 import { RUBRIC_VERSION, USEFULNESS_RUBRIC } from './rubric';
 import { EPISODE_TTL_MS } from './dedup-decay';
+import type { EffortBadgeLevel } from '@shared/effort-badge';
 import { matchKnownWorkspace, sameWorkspace } from './workspaces';
 import {
   DYNAMIC_CHAR_CAP,
@@ -47,14 +48,17 @@ export const AUDIT_LEASE_MS: number = 2.5 * AUDIT_ATTEMPTS * AUDIT_CALL_TIMEOUT_
 export const AUDIT_BATCH_MAX_MEMORIES: number = 20;
 export const AUDIT_BATCH_MAX_TOKENS: number = 6000;
 
-// Estimate terms fitted to the memory-audit ledger lines of a full run on claude-haiku-4-5; other models tokenize differently.
+// Estimate terms fitted to the memory-audit ledger lines of a full run on claude-haiku-5-5 at AUDIT_ESTIMATE_EFFORT (2026-10-09); other models tokenize differently.
+/** Thinking output has no fixed ratio between levels, so the estimate names this level instead of scaling to another. */
+export const AUDIT_ESTIMATE_EFFORT: EffortBadgeLevel = 'low';
 /** Provider tokens per `estimateTokens` token of audit prompt text, which is JSON- and id-heavy. */
-const AUDIT_TOKENIZER_RATIO = 1.12;
+const AUDIT_TOKENIZER_RATIO = 1.55;
 /** Input each structured call adds beyond its own text: the tool definition framing and the user-turn wrapper. */
-const AUDIT_CALL_FRAMING_TOKENS = 500;
-export const AUDIT_OUTPUT_TOKENS_PER_MEMORY: number = 66;
-export const AUDIT_OUTPUT_TOKENS_PER_BATCH: number = 460;
-export const AUDIT_PROFILE_OUTPUT_TOKENS: number = 880;
+const AUDIT_CALL_FRAMING_TOKENS = 640;
+export const AUDIT_OUTPUT_TOKENS_PER_MEMORY: number = 80;
+/** Includes the call's thinking, which averaged about 850 tokens per call at low effort. */
+export const AUDIT_OUTPUT_TOKENS_PER_BATCH: number = 1000;
+export const AUDIT_PROFILE_OUTPUT_TOKENS: number = 2190;
 
 const AUDIT_CONCURRENCY = 2;
 const APPLY_CHUNK = 50;
@@ -361,6 +365,7 @@ export function estimateAudit(
     batchCount: batches.length,
     inputTokens,
     outputTokens,
+    fittedEffort: AUDIT_ESTIMATE_EFFORT,
     model,
     unpriced,
     costUsd,

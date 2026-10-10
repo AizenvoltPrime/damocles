@@ -7,7 +7,7 @@ import { parse } from 'yaml';
 vi.mock('electron', () => ({ app: { getVersion: () => '9.8.7' } }));
 
 import { createDesktopAppInfo } from '../platform/app-info';
-import { createDesktopAppPaths, ptyHostPaths, quickOpenWorkerPath, unpackagedResourceRoot } from '../platform/app-paths';
+import { createDesktopAppPaths, ptyHostPaths, quickOpenWorkerPath, unpackagedResourceRoot, watchWorkerPath } from '../platform/app-paths';
 import { ASAR_UNPACK, asarUnpackFor, WATCHER_UNPACK } from '../platform/unpacked-assets';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
@@ -44,6 +44,7 @@ describe('desktop AppPaths', () => {
     expect(paths.workerEntry('usageStats')).toBe(path.join(unpacked, 'dist', 'usage-stats-worker.js'));
     expect(paths.workerEntry('sentinel')).toBe(path.join(unpacked, 'dist', 'sentinel.js'));
     expect(quickOpenWorkerPath(paths)).toBe(path.join(unpacked, 'dist', 'quick-open-worker.js'));
+    expect(watchWorkerPath(paths)).toBe(path.join(unpacked, 'dist', 'watch-worker.js'));
   });
 
   it('runs the pty host from app.asar.unpacked and requires node-pty from app.asar when packaged', () => {
@@ -86,6 +87,7 @@ describe('ASAR_UNPACK', () => {
       ...(['compass', 'usageStats', 'sentinel'] as const).map((name) => paths.workerEntry(name)),
       ptyHostPaths(paths).script,
       quickOpenWorkerPath(paths),
+      watchWorkerPath(paths),
       path.join(paths.unpackedRoot, 'resources', 'grammars', 'tree-sitter-typescript.wasm'),
       path.join(paths.unpackedRoot, 'python', 'damocles_voice_sidecar', 'damocles_voice_sidecar', 'models', 'MODEL_MANIFEST.json'),
     ].map((p) => path.relative(paths.unpackedRoot, p).split(path.sep).join('/'));

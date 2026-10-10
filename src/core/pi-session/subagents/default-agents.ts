@@ -35,7 +35,7 @@ import { BROWSER_PI_TOOL_NAMES } from '../tools/browser-tools';
  * The web and browser names stay listed here even though both groups are deferred: deferral operates
  * on the RESOLVED toolset, not on this allowlist. `resolveAgentToolset` intersects this list with the
  * parent's eligible set and `AgentManager.run` derives the deferrable set from `toolset.names`.
- * pi freezes `options.tools` into `_allowedToolNames` and filters the registry by it, and
+ * pi turns `options.tools` into its allowlist and filters the registry by it, and
  * `setActiveToolsByName` silently ignores unknown names, so a name dropped from `tools:` can NEVER be
  * re-activated via `ToolSearch`. Do not "helpfully" remove them.
  *

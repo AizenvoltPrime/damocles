@@ -3,8 +3,8 @@ import type { MemoryClassifyRequest, MemorySubCallRunner } from './subcall-runne
 import { truncateToChars } from './token-estimate';
 
 /**
- * Jev's contradiction probability decides alone at or above `high` and at or below `low`; between them
- * the LLM judge decides. Retune only with `__tests__/classifier-eval.test.ts`.
+ * The classifier's contradiction probability decides alone at or above `high` and at or below `low`; between them
+ * the LLM judge decides. Calibrated on Jev and applied to GPT-6 Luna as is; retune only with `__tests__/classifier-eval.test.ts`.
  */
 export const CONTRADICTION_THRESHOLDS = { high: 0.85, low: 0.15 } as const;
 
@@ -19,16 +19,16 @@ const CONTRADICTION_QUESTION: ClassifierBoolQuestion = {
   },
 };
 
-/** Ordered levels; Jev's score is a probability-weighted index into this list, from 0 to its length - 1. */
+/** Ordered levels; a classifier's score is a probability-weighted index into this list, from 0 to its length - 1. */
 export const RERANK_CRITERIA = ['unrelated', 'partially relevant', 'directly relevant'] as const;
 
 /**
- * Score questions per Jev request; batches run in parallel. TypeSafe documents no question cap, only a
+ * Score questions per classifier request; batches run in parallel. TypeSafe documents no question cap, only a
  * token budget (64k per request, 32k for the state plus the longest question; OpenRouter lists 32k).
  */
 export const RERANK_BATCH_SIZE = 10;
 
-/** The query length both rerank paths send, Jev and the LLM. */
+/** The query length both rerank paths send, the classifier and the LLM. */
 export const RERANK_QUERY_CHARS = 2000;
 
 /** Below this much of the rerank cap, the LLM fallback cannot finish, so it is not started (and not billed). */
@@ -52,7 +52,7 @@ export interface ClassifierGrade {
 
 const RELEVANCE_BY_LEVEL: readonly RerankRelevance[] = ['low', 'medium', 'high'];
 
-/** Rounds Jev's score to the nearest level. */
+/** Rounds a classifier's score to the nearest level. */
 export function gradeFromScore(score: number): ClassifierGrade {
   const top = RERANK_CRITERIA.length - 1;
   const level = Math.min(top, Math.max(0, Math.round(score)));
@@ -64,7 +64,7 @@ export function classifierReason(grade: ClassifierGrade): string {
   return `Classifier: ${grade.verdict} (${grade.score.toFixed(2)})`;
 }
 
-/** `true` or `false` when Jev is decisive, `'undecided'` in the middle band. */
+/** `true` or `false` when the classifier is decisive, `'undecided'` in the middle band. */
 export function contradictionFromProbability(p: number): boolean | 'undecided' {
   if (p >= CONTRADICTION_THRESHOLDS.high) return true;
   if (p <= CONTRADICTION_THRESHOLDS.low) return false;
@@ -80,7 +80,7 @@ export function contradictionRequest(newFact: string, existingFact: string): Mem
   };
 }
 
-/** Jev's verdict on whether `newFact` contradicts `existingFact`; null when no classifier answered. */
+/** The classifier's verdict on whether `newFact` contradicts `existingFact`; null when no classifier answered. */
 export async function classifyContradiction(
   runner: MemorySubCallRunner,
   newFact: string,
@@ -131,7 +131,7 @@ function gradeBatch(batch: RerankBatch, answers: Record<string, ClassifierAnswer
 }
 
 /**
- * Grades every item with Jev within `timeoutMs`; null when no classifier is configured or any batch fails.
+ * Grades every item with the classifier within `timeoutMs`; null when no classifier is configured or any batch fails.
  * The first failed batch aborts the others and returns at once, leaving the LLM fallback the rest of the cap.
  */
 export async function classifierRerank(

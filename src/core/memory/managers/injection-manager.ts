@@ -76,7 +76,7 @@ interface InjectRerankResult {
   results: Array<{ id: string; relevance: RerankRelevance; reason?: string }>;
 }
 
-/** `reason` comes from the LLM rerank, `classifierScore` (0..1) from Jev. */
+/** `reason` comes from the LLM rerank, `classifierScore` (0..1) from the classifier. */
 interface RerankGrade {
   relevance: RerankRelevance;
   reason?: string;
@@ -1085,8 +1085,8 @@ export class InjectionManager {
   }
 
   /**
-   * Reorder the gated set with one hard-capped (~2s) blocking rerank over its top entries: Jev when a
-   * classifier is configured, else (or when Jev fails) the LLM in the time left. A `low` grade demotes
+   * Reorder the gated set with one hard-capped (~2s) blocking rerank over its top entries: the classifier when the
+   * Memory judge has one, else (or when it fails) the LLM in the time left. A `low` grade demotes
    * to compact. On timeout, null or failure the lexical order stands.
    */
   private async rerank(userPrompt: string, gated: GatedCandidate[]): Promise<GatedCandidate[] | null> {

@@ -387,7 +387,8 @@ export function createOAuthStateStore(id: McpAuthIdentity, options: { interactiv
     },
     save: (state) =>
       withKeyLock(id, async () => {
-        const next: AuthEntry = { ...((await readEntry(id)) ?? {}) };
+        const current = await readEntry(id);
+        const next: AuthEntry = { ...(current ?? {}) };
         if (tokensSnapshot(state) !== loadedTokens) {
           if (state.tokens) {
             const tokens: StoredTokens = { accessToken: state.tokens.access_token };
@@ -411,7 +412,8 @@ export function createOAuthStateStore(id: McpAuthIdentity, options: { interactiv
         }
         if (state.discovery) discoveryByKey.set(key, state.discovery);
         else discoveryByKey.delete(key);
-        await writeEntry(id, next);
+        // Discovery lives in memory, so a save that changes nothing else leaves the keychain entry alone.
+        if (JSON.stringify(next) !== JSON.stringify(current ?? {})) await writeEntry(id, next);
       }),
   };
 }

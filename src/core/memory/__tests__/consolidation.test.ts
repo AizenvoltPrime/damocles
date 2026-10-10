@@ -13,15 +13,19 @@ import {
   runConsolidation,
   reclaimExpiredClaims,
   mergePendingConsolidation,
+  accumulateRunResult,
   isExtractionResult,
   buildExtractionSchema,
   EXTRACTION_SYSTEM_PROMPT,
   CANDIDATE_TOKEN_BUDGET,
   LEASE_TTL_MS,
+  MAX_EXTRACT_CALLS_PER_PASS,
+  countSetAsideCandidates,
+  retrySetAsideCandidates,
   type ConsolidationCtx,
 } from '../consolidation';
 import { maybeVacuum, VACUUM_FREELIST_RATIO, VACUUM_MIN_PAGES } from '../dedup-decay';
-import type { ConsolidationPhaseEvent } from '@shared/types/consolidation';
+import type { ConsolidationExtractedMemory, ConsolidationPhaseEvent, ConsolidationResult } from '@shared/types/consolidation';
 import { subCallSpy, type SubCallSpy } from './subcall-spy';
 import { USEFULNESS_RUBRIC } from '../rubric';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
@@ -168,7 +172,7 @@ describe('runConsolidation', () => {
     seedCandidate(db, SESSION_ID, 'q2', 'a2');
 
     const run = subCallSpy(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
-      if (req.purpose === 'extract') return { value: null, failure: 'transient' };
+      if (req.purpose === 'extract') return { value: null, failure: 'unreachable' };
       if (req.purpose === 'profile') return { value: { static: '', dynamic: '' } as T };
       return { value: { contradicts: false, merged_ids: [], content: '' } as T };
     });
@@ -177,6 +181,20 @@ describe('runConsolidation', () => {
 
     expect(countConsumedCandidates(db)).toBe(0);
     expect(countLiveMemories(db, 'project')).toBe(0);
+  });
+
+  it('names an extraction failure by a reason token the panel words, never by English text', async () => {
+    for (const failure of ['unreachable', 'rejected', 'unanswered', 'credential'] as const) {
+      const fresh = await createTestMemoryDb();
+      seedCandidate(fresh, SESSION_ID, 'q1', 'a1');
+      const run = subCallSpy(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
+        if (req.purpose === 'extract') return { value: null, failure };
+        if (req.purpose === 'profile') return { value: { static: '', dynamic: '' } as T };
+        return { value: { contradicts: false, merged_ids: [], content: '' } as T };
+      });
+      const result = await runConsolidation(makeCtx(fresh, { run }));
+      expect(result.failure).toEqual({ kind: 'error', reason: failure, phase: 'extract' });
+    }
   });
 
   it('releases the batch and signals onNoModel when no extraction model is available (H1)', async () => {
@@ -518,7 +536,7 @@ describe('consolidation leases — cross-window claim stamping + expiry reclaim 
     const id = seedCandidate(db, SESSION_ID, 'q', 'a');
     // Transient extraction failure after the claim stamped a lease → the batch is released.
     const run = subCallSpy(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
-      if (req.purpose === 'extract') return { value: null, failure: 'transient' };
+      if (req.purpose === 'extract') return { value: null, failure: 'unreachable' };
       if (req.purpose === 'profile') return { value: { static: '', dynamic: '' } as T };
       return { value: { contradicts: false, merged_ids: [], content: '' } as T };
     });
@@ -652,9 +670,82 @@ describe('mergePendingConsolidation — forceExtract survival (flag-loss fix)', 
     expect(merged.forceExtract).toBe(true);
   });
 
+  it('keeps the turns a run declined across a merge, so a merged pass counts none of them again', () => {
+    const declined = new Set(['t1']);
+    const followUp = { reason: 'manual' as const, forceExtract: true, declinedInRun: declined };
+
+    expect(mergePendingConsolidation(null, followUp).declinedInRun).toBe(declined);
+    expect([...mergePendingConsolidation({ reason: 'idle' }, followUp).declinedInRun!]).toEqual(['t1']);
+    expect([...mergePendingConsolidation(followUp, { reason: 'switch', sessionId: 's' }).declinedInRun!]).toEqual(['t1']);
+    expect(
+      [...mergePendingConsolidation(followUp, { reason: 'manual', declinedInRun: new Set(['t2']) }).declinedInRun!].sort(),
+    ).toEqual(['t1', 't2']);
+    expect(mergePendingConsolidation({ reason: 'idle' }, { reason: 'switch', sessionId: 's' })).not.toHaveProperty('declinedInRun');
+  });
+
   it('omits forceExtract entirely when neither request forces it', () => {
     const merged = mergePendingConsolidation({ reason: 'idle' }, { reason: 'switch', sessionId: 'x' });
     expect(merged.forceExtract).toBeUndefined();
+  });
+
+  it('keeps the result a run has so far across a merge, so the run still ends in one result', () => {
+    const soFar = runPass({ status: 'extracted' });
+    const followUp = { reason: 'manual' as const, forceExtract: true, runSoFar: soFar };
+
+    expect(mergePendingConsolidation({ reason: 'switch', sessionId: 's' }, followUp).runSoFar).toBe(soFar);
+    expect(mergePendingConsolidation(followUp, { reason: 'idle' }).runSoFar).toBe(soFar);
+    expect(mergePendingConsolidation({ reason: 'idle' }, { reason: 'manual', forceExtract: true })).not.toHaveProperty('runSoFar');
+  });
+});
+
+function runPass(over: Partial<ConsolidationResult>): ConsolidationResult {
+  return {
+    ranAt: 1,
+    trigger: 'manual',
+    status: 'empty',
+    extracted: [],
+    maintenance: { promoted: 0, decayed: 0, pruned: 0 },
+    candidatesReviewed: 0,
+    ...over,
+  };
+}
+
+describe('accumulateRunResult', () => {
+  const memory = (content: string): ConsolidationExtractedMemory => ({ kind: 'fact', scope: 'project', content, outcome: 'inserted' });
+
+  it('is the pass itself for a run of one pass', () => {
+    const pass = runPass({ status: 'extracted', extracted: [memory('a')], candidatesReviewed: 2 });
+    expect(accumulateRunResult(undefined, pass)).toBe(pass);
+  });
+
+  it('sums the passes of a run and takes the run end from the last one', () => {
+    const first = runPass({ ranAt: 10, status: 'extracted', extracted: [memory('a'), memory('b')], candidatesReviewed: 2, maintenance: { promoted: 1, decayed: 2, pruned: 3 } });
+    const second = runPass({ ranAt: 20, trigger: 'auto', status: 'extracted', extracted: [memory('c')], candidatesReviewed: 1, maintenance: { promoted: 1, decayed: 0, pruned: 1 } });
+
+    expect(accumulateRunResult(first, second)).toEqual({
+      ranAt: 20,
+      trigger: 'manual',
+      status: 'extracted',
+      extracted: [memory('a'), memory('b'), memory('c')],
+      maintenance: { promoted: 2, decayed: 2, pruned: 4 },
+      candidatesReviewed: 3,
+    });
+  });
+
+  it('is extracted when an earlier pass extracted and the last found nothing new', () => {
+    const run = accumulateRunResult(runPass({ status: 'extracted', extracted: [memory('a')] }), runPass({ status: 'empty', candidatesReviewed: 1 }));
+    expect(run.status).toBe('extracted');
+    expect(run.failure).toBeUndefined();
+  });
+
+  it('fails with the last pass\'s failure and keeps what earlier passes extracted', () => {
+    const failure = { kind: 'error' as const, reason: 'unreachable' as const, phase: 'extract' as const };
+    const run = accumulateRunResult(
+      runPass({ status: 'extracted', extracted: [memory('a')], candidatesReviewed: 1 }),
+      runPass({ status: 'failed', failure, candidatesReviewed: 1 }),
+    );
+    expect(run).toMatchObject({ status: 'failed', failure, candidatesReviewed: 2 });
+    expect(run.extracted).toEqual([memory('a')]);
   });
 });
 
@@ -1257,5 +1348,274 @@ describe('runConsolidation — a batch holds one folder and files under it', () 
     expect(prompt).toContain('Folder B uses esbuild');
     expect(prompt).not.toContain('Folder C uses webpack');
     expect(updateProfile).toHaveBeenCalledWith('project', FOLDER_B);
+  });
+});
+
+describe('runConsolidation: a turn the model keeps declining is set aside, never re-sent forever', () => {
+  let db: DatabaseInstance;
+  const T0 = Date.now() - 60_000;
+
+  beforeEach(async () => {
+    db = await createTestMemoryDb();
+  });
+
+  /** Seeds turns `q1..qN` oldest first. */
+  function seedTurns(texts: string[]): string[] {
+    return texts.map((text, i) => {
+      const id = crypto.randomUUID();
+      db.prepare(
+        `INSERT INTO memory_candidates (id, session_id, prompt_index, user_text, assistant_text, files, salient, consumed, reprocessed, created_at)
+         VALUES (?, ?, 0, ?, ?, '[]', 0, 0, 0, ?)`,
+      ).run(id, SESSION_ID, text, `answer to ${text}`, T0 + i);
+      return id;
+    });
+  }
+
+  function turn(id: string): { consumed: number; reprocessed: number; failed_attempts: number; set_aside_at: number | null } {
+    return db.prepare('SELECT consumed, reprocessed, failed_attempts, set_aside_at FROM memory_candidates WHERE id = ?').get(id) as never;
+  }
+
+  /**
+   * Extraction answers with one fact per turn in the prompt, and fails any part holding a turn in
+   * `declined` with `failure`, the way a refusal or a provider's content rejection arrives.
+   */
+  function decliningRunner(
+    declined: readonly string[],
+    failure: 'unanswered' | 'rejected' | 'unreachable' | 'credential' | 'no-model' = 'unanswered',
+  ): { runner: MemorySubCallRunner; extractCalls: () => number; extractedUsers: () => string[][] } {
+    const prompts: string[][] = [];
+    const run = subCallSpy(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
+      if (req.purpose === 'extract') {
+        const users = [...req.prompt.matchAll(/User: (\S+)/g)].map(m => m[1]!);
+        prompts.push(users);
+        if (users.some(u => declined.includes(u))) return { value: null, failure };
+        return { value: { memories: users.map(u => ({ kind: 'fact', scope: 'project', content: `The user asked about ${u}.` })) } as T };
+      }
+      if (req.purpose === 'profile') return { value: { static: '', dynamic: '' } as T };
+      return { value: { contradicts: false, merged_ids: [], content: '' } as T };
+    });
+    return {
+      runner: { run },
+      extractCalls: () => run.mock.calls.filter(([r]) => (r as MemorySubCallRequest).purpose === 'extract').length,
+      extractedUsers: () => prompts,
+    };
+  }
+
+  /** A probe picker that always takes the queued turn at `index` of `of`. */
+  const probeAt = (index: number, of: number) => () => (index + 0.5) / of;
+
+  it.each(['unanswered', 'rejected'] as const)(
+    'extracts the other three turns of a batch of four and sets a turn %s alone aside after 3 runs',
+    async (failure) => {
+      const [a, b, poison, d] = seedTurns(['q1', 'q2', 'poison', 'q4']);
+      const { runner, extractCalls } = decliningRunner(['poison'], failure);
+
+      const first = await runConsolidation(makeCtx(db, runner));
+      expect(first.status).toBe('extracted');
+      expect(first.extracted.map(m => m.content).sort()).toEqual([
+        'The user asked about q1.',
+        'The user asked about q2.',
+        'The user asked about q4.',
+      ]);
+      // The whole batch, its two halves, then each turn of the failing half.
+      expect(extractCalls()).toBe(5);
+      for (const id of [a!, b!, d!]) expect(turn(id)).toMatchObject({ consumed: 1, reprocessed: 1 });
+      expect(turn(poison!)).toMatchObject({ consumed: 0, failed_attempts: 1, set_aside_at: null });
+
+      // Alone in the queue, a turn already declined beside answered turns keeps counting.
+      const second = await runConsolidation(makeCtx(db, runner));
+      expect(second.candidatesReviewed).toBe(1);
+      expect(second.status).toBe('failed');
+      expect(turn(poison!)).toMatchObject({ consumed: 0, failed_attempts: 2, set_aside_at: null });
+
+      // A run that answered nothing fails, so the idle timer backs off, even when it set a turn aside.
+      const third = await runConsolidation(makeCtx(db, runner));
+      expect(third.status).toBe('failed');
+      expect(turn(poison!)).toMatchObject({ consumed: 0, failed_attempts: 3 });
+      expect(turn(poison!).set_aside_at).not.toBeNull();
+      expect(countSetAsideCandidates(db)).toBe(1);
+
+      const callsBefore = extractCalls();
+      const fourth = await runConsolidation(makeCtx(db, runner));
+      expect(fourth.candidatesReviewed).toBe(0);
+      expect(extractCalls()).toBe(callsBefore);
+    },
+  );
+
+  it('counts only a turn declined on its own call, once per run', async () => {
+    const [h1, poison, venom, h4] = seedTurns(['q1', 'poison', 'venom', 'q4']);
+    const { runner, extractCalls, extractedUsers } = decliningRunner(['poison', 'venom']);
+
+    // Both halves fail with nothing answered; the probe (q1) answers, so the split goes on.
+    await runConsolidation(makeCtx(db, runner, { random: probeAt(0, 4) }));
+
+    expect(extractedUsers().slice(0, 4)).toEqual([['q1', 'poison', 'venom', 'q4'], ['q1', 'poison'], ['venom', 'q4'], ['q1']]);
+    expect(extractCalls()).toBe(7);
+    for (const id of [h1!, h4!]) expect(turn(id)).toMatchObject({ consumed: 1, reprocessed: 1, failed_attempts: 0 });
+    for (const id of [poison!, venom!]) expect(turn(id)).toMatchObject({ consumed: 0, failed_attempts: 1, set_aside_at: null });
+
+    await runConsolidation(makeCtx(db, runner));
+    for (const id of [poison!, venom!]) expect(turn(id)).toMatchObject({ failed_attempts: 2, set_aside_at: null });
+    await runConsolidation(makeCtx(db, runner));
+    expect(countSetAsideCandidates(db)).toBe(2);
+  });
+
+  it.each(['unanswered', 'rejected'] as const)(
+    'backs off from a %s failure that hits every call: one split and one probe, nothing counted or set aside',
+    async (failure) => {
+      const texts = Array.from({ length: 8 }, (_, i) => `q${i}`);
+      const ids = seedTurns(texts);
+      const { runner, extractCalls } = decliningRunner(texts, failure);
+
+      for (let i = 0; i < 5; i++) {
+        const result = await runConsolidation(makeCtx(db, runner));
+        expect(result.status).toBe('failed');
+        expect(result.failure?.phase).toBe('extract');
+      }
+
+      // The whole batch, its two halves and one lone probe per run.
+      expect(extractCalls()).toBe(5 * 4);
+      expect(candidateCounts(db).stranded).toBe(0);
+      for (const id of ids) expect(turn(id)).toMatchObject({ consumed: 0, failed_attempts: 0, set_aside_at: null });
+    },
+  );
+
+  it('never counts a turn alone in the queue that no answered run has implicated', async () => {
+    const [only] = seedTurns(['poison']);
+    const { runner, extractCalls } = decliningRunner(['poison']);
+
+    for (let i = 0; i < 5; i++) expect((await runConsolidation(makeCtx(db, runner))).status).toBe('failed');
+
+    expect(extractCalls()).toBe(5);
+    expect(turn(only!)).toMatchObject({ consumed: 0, failed_attempts: 0, set_aside_at: null });
+  });
+
+  it.each(['unreachable', 'credential', 'no-model'] as const)('never counts a %s failure, however many runs it lasts', async (failure) => {
+    const ids = seedTurns(['q1', 'q2']);
+    const { runner, extractCalls } = decliningRunner(['q1'], failure);
+
+    for (let i = 0; i < 5; i++) {
+      const result = await runConsolidation(makeCtx(db, runner));
+      expect(result.status).toBe('failed');
+    }
+    // No split: the batch is released whole on each run.
+    expect(extractCalls()).toBe(5);
+    for (const id of ids) expect(turn(id)).toMatchObject({ consumed: 0, failed_attempts: 0, set_aside_at: null });
+  });
+
+  it('releases the unsettled turns uncounted when the model becomes unreachable mid-split', async () => {
+    const ids = seedTurns(['q1', 'q2', 'q3', 'q4']);
+    let calls = 0;
+    const run = subCallSpy(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
+      if (req.purpose === 'extract') return { value: null, failure: calls++ === 0 ? 'unanswered' : 'unreachable' };
+      return { value: { static: '', dynamic: '' } as T };
+    });
+
+    const result = await runConsolidation(makeCtx(db, { run }));
+
+    expect(result.status).toBe('failed');
+    expect(calls).toBe(2);
+    for (const id of ids) expect(turn(id)).toMatchObject({ consumed: 0, reprocessed: 0, failed_attempts: 0, set_aside_at: null });
+  });
+
+  it('bounds the extraction calls of one run and releases what it could not reach', async () => {
+    const texts = ['q0', ...Array.from({ length: 7 }, (_, i) => `poison${i}`)];
+    const ids = seedTurns(texts);
+    const { runner, extractCalls } = decliningRunner(texts.slice(1));
+
+    await runConsolidation(makeCtx(db, runner, { random: probeAt(0, 8) }));
+
+    expect(extractCalls()).toBe(MAX_EXTRACT_CALLS_PER_PASS);
+    expect(candidateCounts(db).stranded).toBe(0);
+    expect(turn(ids[0]!)).toMatchObject({ consumed: 1, reprocessed: 1 });
+    // poison0..poison5 were each declined alone; poison6 was released untried.
+    for (const id of ids.slice(1, 7)) expect(turn(id)).toMatchObject({ consumed: 0, failed_attempts: 1 });
+    expect(turn(ids[7]!)).toMatchObject({ consumed: 0, failed_attempts: 0 });
+  });
+
+  it('a later pass of the same run skips the turns it declined and takes the turns the call cap released', async () => {
+    const texts = ['q0', ...Array.from({ length: 6 }, (_, i) => `poison${i}`), 'q7'];
+    const ids = seedTurns(texts);
+    const { runner, extractCalls, extractedUsers } = decliningRunner(texts.slice(1, 7));
+    const declinedInRun = new Set<string>();
+
+    await runConsolidation(makeCtx(db, runner, { random: probeAt(0, 8), declinedInRun }));
+    expect(extractCalls()).toBe(MAX_EXTRACT_CALLS_PER_PASS);
+    expect([...declinedInRun].sort()).toEqual(ids.slice(1, 7).sort());
+    expect(turn(ids[7]!)).toMatchObject({ consumed: 0, failed_attempts: 0 });
+
+    const followUp = await runConsolidation(makeCtx(db, runner, { declinedInRun }));
+
+    expect(followUp.candidatesReviewed).toBe(1);
+    expect(extractedUsers().at(-1)).toEqual(['q7']);
+    expect(turn(ids[7]!)).toMatchObject({ consumed: 1, reprocessed: 1 });
+    for (const id of ids.slice(1, 7)) expect(turn(id)).toMatchObject({ consumed: 0, failed_attempts: 1, set_aside_at: null });
+  });
+
+  it('a pass of a run with nothing left but turns it declined claims nothing', async () => {
+    const [, poison] = seedTurns(['q1', 'poison']);
+    const { runner, extractCalls } = decliningRunner(['poison']);
+    const declinedInRun = new Set<string>();
+
+    await runConsolidation(makeCtx(db, runner, { declinedInRun }));
+    const calls = extractCalls();
+    const again = await runConsolidation(makeCtx(db, runner, { declinedInRun }));
+
+    expect(again.candidatesReviewed).toBe(0);
+    expect(extractCalls()).toBe(calls);
+    expect(turn(poison!)).toMatchObject({ consumed: 0, failed_attempts: 1 });
+  });
+
+  it('reports extraction progress in turns after each call', async () => {
+    seedTurns(['q1', 'q2', 'poison', 'q4']);
+    const { runner } = decliningRunner(['poison']);
+    const { onPhase, events } = makePhaseCollector();
+
+    await runConsolidation(makeCtx(db, runner, { onPhase }));
+
+    const progress = events.filter(e => e.phase === 'extract' && e.status === 'active').map(e => e.meta?.done);
+    expect(progress).toEqual([0, 0, 2, 2, 3, 4]);
+    expect(events.filter(e => e.phase === 'extract' && e.status === 'active').every(e => e.meta?.total === 4)).toBe(true);
+  });
+
+  it('names the failure in the extract phase with a stable token', async () => {
+    seedTurns(['q1', 'q2']);
+    const { runner } = decliningRunner(['q1', 'q2'], 'rejected');
+    const { onPhase, events } = makePhaseCollector();
+
+    await runConsolidation(makeCtx(db, runner, { onPhase }));
+
+    expect(events.find(e => e.phase === 'extract' && e.status === 'failed')?.meta?.reason).toBe('rejected');
+  });
+
+  it('names a refused credential in the extract phase and on the failure card', async () => {
+    seedTurns(['q1', 'q2']);
+    const onNoModel = vi.fn();
+    const { runner } = decliningRunner(['q1'], 'credential');
+    const { onPhase, events } = makePhaseCollector();
+
+    const result = await runConsolidation(makeCtx(db, runner, { onPhase, onNoModel }));
+
+    expect(events.find(e => e.phase === 'extract' && e.status === 'failed')?.meta?.reason).toBe('credential');
+    expect(result.failure).toEqual({ kind: 'error', reason: 'credential', phase: 'extract' });
+    expect(onNoModel).not.toHaveBeenCalled();
+  });
+
+  it('Retry returns a set-aside turn to the queue with a fresh count', async () => {
+    const [, poison] = seedTurns(['q1', 'poison']);
+    const { runner, extractCalls } = decliningRunner(['poison']);
+    for (let i = 0; i < 3; i++) await runConsolidation(makeCtx(db, runner));
+    expect(countSetAsideCandidates(db)).toBe(1);
+
+    expect(await retrySetAsideCandidates(db, new MemoryWriteQueue())).toBe(1);
+
+    expect(turn(poison!)).toMatchObject({ consumed: 0, failed_attempts: 0, set_aside_at: null });
+    expect(countSetAsideCandidates(db)).toBe(0);
+    const callsBefore = extractCalls();
+    const next = await runConsolidation(makeCtx(db, runner));
+    expect(next.candidatesReviewed).toBe(1);
+    expect(extractCalls()).toBe(callsBefore + 1);
+    // Back with a fresh count, it waits for a run that also answers another turn.
+    expect(turn(poison!)).toMatchObject({ failed_attempts: 0, set_aside_at: null });
   });
 });

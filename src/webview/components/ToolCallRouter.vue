@@ -9,15 +9,12 @@ import ExitPlanModeToolCard from './ExitPlanModeToolCard.vue';
 import EnterPlanModeToolCard from './EnterPlanModeToolCard.vue';
 import SkillToolCard from './SkillToolCard.vue';
 import SubagentCard from './SubagentCard.vue';
-import ExploreCard from './ExploreCard.vue';
 import TeamCard from './TeamCard.vue';
 import SteerSubagentToolCard from './SteerSubagentToolCard.vue';
 import { useTeamStore } from '@/stores/useTeamStore';
-import { useExploreStore } from '@/stores/useExploreStore';
 import { computed } from 'vue';
 
 const teamStore = useTeamStore();
-const exploreStore = useExploreStore();
 
 const props = defineProps<{
   toolCall: ToolCall;
@@ -45,7 +42,6 @@ const team = computed(() =>
 );
 // Each create_team or resume_team call is one run of the team and its card shows only that run.
 const run = computed(() => team.value?.runs.find(r => r.toolUseId === props.toolUseId) ?? null);
-const explore = computed(() => exploreStore.explores[props.toolUseId] ?? null);
 
 const agentSubagent = computed(() =>
   props.toolName === TOOL_AGENT ? props.subagents?.[props.toolUseId] ?? null : null
@@ -53,13 +49,8 @@ const agentSubagent = computed(() =>
 </script>
 
 <template>
-  <ExploreCard
-    v-if="explore"
-    :explore="explore"
-    @expand="exploreStore.expandExplore(toolUseId)"
-  />
   <TeamCard
-    v-else-if="team && run"
+    v-if="team && run"
     :team="team"
     :run="run"
     @expand="teamStore.openOverlay(team!.teamId)"

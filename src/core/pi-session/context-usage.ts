@@ -380,7 +380,7 @@ function activeToolNames(session: AgentSession): Set<string> | null {
 
 /**
  * Every REGISTERED tool by name, or null when the read throws. pi builds `_toolDefinitions` from the
- * whole registry, independently of the active set (`agent-session.ts:3459` in pi 0.99.2), so a deferred tool has a
+ * whole registry, independently of the active set (`agent-session.ts:3529` in pi 1.1.0), so a deferred tool has a
  * real `ToolInfo` and a real cost — these sections never have to fabricate one.
  */
 function registeredToolsByName(session: AgentSession): Map<string, ToolInfo> | null {

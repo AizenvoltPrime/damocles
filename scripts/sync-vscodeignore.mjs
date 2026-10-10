@@ -130,7 +130,7 @@ function computeClosure() {
 /**
  * Optional peers a shipped package declares that no shipped code path loads, so they are not walked.
  * openai 7 requires undici only from its opt-in `auth/x509-transport` subpath, which neither pi nor
- * Damocles imports; the hoisted undici is the desktop bundle's. Re-check on an openai bump.
+ * Damocles imports. Re-check on an openai bump.
  * @google/genai names @modelcontextprotocol/sdk only in its type declarations, and the hoisted SDK is the
  * MCP interop test's devDependency. Re-check on a @google/genai bump.
  */
@@ -161,9 +161,9 @@ function assertEsbuildDependentsReviewed(dependents) {
 /**
  * Packages this project declares only in `devDependencies` that a shipped runtime package also requires,
  * with a top-level copy satisfying both ranges. Each was checked against the requiring package's declared
- * range: `@earendil-works/pi-agent-core` requires `diff@8.0.4`, `@google/genai` and `openai` require
- * `ws@^8.18.0`, `@earendil-works/pi-mcp` requires `cross-spawn@7.0.6`,
- * `protobufjs` requires `@types/node@>=13.7.0`, `@earendil-works/pi-agent-core` requires `yaml@2.9.0`. They
+ * range: `@earendil-works/pi-coding-agent` requires `diff@8.0.4`, `@google/genai` requires `ws@^8.18.0` and
+ * `openai` declares it as an optional peer `^8.21.0`, `@earendil-works/pi-mcp` requires `cross-spawn@7.0.6`,
+ * `protobufjs` requires `@types/node@>=13.7.0`, `@earendil-works/pi-coding-agent` requires `yaml@2.9.0`. They
  * ship because the runtime loads them, not because the build tooling does.
  */
 const DEV_DEPS_SHARED_WITH_RUNTIME = new Set(['@types/node', 'cross-spawn', 'diff', 'ws', 'yaml']);
@@ -198,13 +198,11 @@ function assertNoDevOnlyPackages(topLevel, requirers) {
 
 /**
  * Packages only the desktop app uses: its externals that the extension lacks (Electron, the native
- * watcher, the updater), node-pty, which only the pty host loads, undici, which the desktop bundle inlines while pi ships its own nested copy,
- * and the desktop editor, terminal, fonts, test and packaging tooling.
+ * watcher, the updater), node-pty, which only the pty host loads, and the desktop editor, terminal, fonts, test and packaging tooling.
  */
 export const DESKTOP_ONLY_PACKAGES = [
   ...DESKTOP_EXTERNALS.filter((name) => !EXTENSION_EXTERNALS.includes(name)),
   'node-pty',
-  'undici',
   'monaco-editor',
   '@fontsource-variable/geist',
   '@fontsource-variable/geist-mono',
@@ -321,11 +319,10 @@ const RUNTIME_NARROW_PKGS = new Set(
         '@earendil-works/pi-tui',
         '@earendil-works/chord',
         '@earendil-works/pi-mcp',
-        // Nested under pi-coding-agent today, so its own globs cover them; listed for when npm hoists them.
         '@earendil-works/pi-codemode',
         'quickjs-wasi',
         // Not in the current closure. pi-coding-agent pulled pi-server (and pi-protocol under it) in
-        // 0.85.0 and declares neither at 0.99.2, so a later pi release can pull them back.
+        // 0.85.0 and declares neither at 1.1.0, so a later pi release can pull them back.
         '@earendil-works/pi-protocol',
         '@earendil-works/pi-server',
         'openai',
@@ -673,6 +670,7 @@ export const DESKTOP_EXCLUDE_RULES = [
   'dist/formatter-host.js',
   'dist/pty-host.js',
   'dist/quick-open-worker.js',
+  'dist/watch-worker.js',
   'dist/e2e*/**',
   'dist-desktop/**',
   'e2e/**',

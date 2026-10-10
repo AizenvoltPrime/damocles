@@ -93,7 +93,7 @@ describe('backgroundResultsDetails', () => {
     expect(details.agents).toEqual([
       { agentId: 'a1', toolCallId: 'tc1', status: 'completed', result: 'found A' },
       { agentId: 'a2', toolCallId: 'tc2', status: 'stopped', stopReason: 'user', result: expect.stringMatching(/^half \(STOPPED BY THE USER/) },
-      { agentId: 'a3', toolCallId: 'tc3', status: 'error', result: 'no model' },
+      { agentId: 'a3', toolCallId: 'tc3', status: 'error', result: 'no model (FAILED before completion. Resume it with Agent({resume:"a3"}) if the user asks to continue.)' },
     ]);
   });
 });

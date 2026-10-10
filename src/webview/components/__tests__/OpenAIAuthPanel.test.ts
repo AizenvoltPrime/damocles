@@ -8,13 +8,17 @@ import ExtensionUiDialog from '../ExtensionUiDialog.vue';
 import { i18n } from '@/i18n';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { useExtensionUiStore } from '@/stores/useExtensionUiStore';
-import type { WebviewToExtensionMessage } from '@shared/types/messages';
+import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@shared/types/messages';
 
 const posted: WebviewToExtensionMessage[] = [];
+const listeners: Array<(m: ExtensionToWebviewMessage) => void> = [];
 vi.mock('@/composables/usePlatformBridge', () => ({
   usePlatformBridge: () => ({
     postMessage: (m: WebviewToExtensionMessage) => posted.push(m),
-    onMessage: () => () => {},
+    onMessage: (fn: (m: ExtensionToWebviewMessage) => void) => {
+      listeners.push(fn);
+      return () => {};
+    },
     getState: () => undefined,
     setState: () => {},
   }),
@@ -43,6 +47,7 @@ const typesPosted = () => posted.map((m) => m.type);
 
 beforeEach(() => {
   posted.length = 0;
+  listeners.length = 0;
   setActivePinia(createPinia());
 });
 afterEach(() => {
@@ -179,5 +184,29 @@ describe('OpenAIAuthPanel prefer-API-key toggle', () => {
     const wrapper = mountPanel(initial);
     const toggle = wrapper.get('[role="switch"]');
     expect(toggle.attributes('disabled') !== undefined).toBe(disabled);
+  });
+});
+
+describe('OpenAIAuthPanel API key', () => {
+  type Ack = Extract<ExtensionToWebviewMessage, { type: 'setOpenAIApiKeyAck' }>;
+
+  async function save(wrapper: ReturnType<typeof mountPanel>, ack: Omit<Ack, 'type' | 'requestId'>): Promise<void> {
+    await wrapper.get('input[type="password"]').setValue('sk-test');
+    await wrapper.get('input[type="password"]').trigger('keydown.enter');
+    const set = posted.find((m) => m.type === 'setOpenAIApiKey') as { requestId: string };
+    for (const fn of listeners) fn({ type: 'setOpenAIApiKeyAck', requestId: set.requestId, ...ack });
+    await nextTick();
+  }
+
+  it('announces a failed save as an alert', async () => {
+    const wrapper = mountPanel();
+    await save(wrapper, { ok: false, error: 'keyring locked' });
+    expect(wrapper.get('[role="alert"]').text()).toBe('keyring locked');
+  });
+
+  it('announces a saved key as a status', async () => {
+    const wrapper = mountPanel();
+    await save(wrapper, { ok: true, validated: false, warning: 'saved, not checked' });
+    expect(wrapper.findAll('[role="status"]').map((el) => el.text())).toContain('saved, not checked');
   });
 });

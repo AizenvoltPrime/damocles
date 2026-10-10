@@ -5,6 +5,7 @@ import { storeToRefs } from 'pinia';
 import { Ban, Circle, CircleCheck, CircleX, LoaderCircle } from 'lucide-vue-next';
 import { useConsolidationStore } from '@/stores/useConsolidationStore';
 import type { ConsolidationPhaseId } from '@shared/types/consolidation';
+import { consolidationReasonKey } from './consolidation-reasons';
 
 const store = useConsolidationStore();
 const { phaseStatus, phaseMeta, persistProgress } = storeToRefs(store);
@@ -13,13 +14,18 @@ const { t } = useI18n();
 
 const PHASES: ConsolidationPhaseId[] = ['claim', 'extract', 'persist', 'maintain', 'profiles'];
 
+function reasonText(reason: string): string {
+  const key = consolidationReasonKey(reason);
+  return key ? t(key) : reason;
+}
+
 /** Trailing text per phase: real counts on done rows, reason/summary on skipped/failed rows. */
 function trailing(id: ConsolidationPhaseId): string {
   const status = phaseStatus.value[id];
   const meta = phaseMeta.value[id];
   if (id === 'claim' && status === 'done') return t('consolidation.stepper.turns', meta.count ?? 0);
   if (id === 'extract') {
-    if (status === 'active') return t('consolidation.stepper.readingTurns');
+    if (status === 'active') return meta.total && meta.done ? `${meta.done}/${meta.total}` : t('consolidation.stepper.readingTurns');
     if (status === 'done') return t('consolidation.stepper.found', { n: meta.count ?? 0 });
   }
   if (id === 'persist') {
@@ -28,19 +34,26 @@ function trailing(id: ConsolidationPhaseId): string {
   }
   if (id === 'maintain' && status === 'done') return meta.summary ?? '';
   if (id === 'profiles' && status === 'done') return t('consolidation.stepper.profilesDone');
-  if (status === 'skipped') return meta.reason ? t('consolidation.stepper.skippedBecause', { reason: meta.reason }) : t('consolidation.stepper.skipped');
-  if (status === 'failed') return meta.reason ?? t('consolidation.stepper.failed');
+  if (status === 'skipped') return meta.reason ? t('consolidation.stepper.skippedBecause', { reason: reasonText(meta.reason) }) : t('consolidation.stepper.skipped');
+  if (status === 'failed') return meta.reason ? reasonText(meta.reason) : t('consolidation.stepper.failed');
   if (status === 'active') return t('consolidation.stepper.working');
   return '—';
 }
 
-/** How far the phase's bar is filled; only persist knows its real progress while it runs. */
+/** A running phase's measured progress as a fraction, or null when it reports none. */
+function progress(id: ConsolidationPhaseId): number | null {
+  if (id === 'persist' && persistProgress.value.total > 0) return persistProgress.value.done / persistProgress.value.total;
+  const meta = phaseMeta.value[id];
+  if (id === 'extract' && meta.total && meta.done) return meta.done / meta.total;
+  return null;
+}
+
+/** How far the phase's bar is filled. */
 function fill(id: ConsolidationPhaseId): number {
   const status = phaseStatus.value[id];
   if (status === 'done' || status === 'failed' || status === 'skipped') return 1;
   if (status !== 'active') return 0;
-  if (id === 'persist' && persistProgress.value.total > 0) return persistProgress.value.done / persistProgress.value.total;
-  return 0.5;
+  return progress(id) ?? 0.5;
 }
 
 const rows = computed(() =>
@@ -53,7 +66,7 @@ const rows = computed(() =>
       trailing: trailing(id),
       fill: fill(id),
       // An active phase with no measurable progress sweeps instead of claiming a fraction.
-      sweep: status === 'active' && !(id === 'persist' && persistProgress.value.total > 0),
+      sweep: status === 'active' && progress(id) === null,
     };
   }),
 );

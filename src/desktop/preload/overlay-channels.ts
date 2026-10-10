@@ -15,6 +15,7 @@ export const OVERLAY_CHANNELS = {
   getState: 'damocles:overlay:get-state',
   // renderer → main, send
   ack: 'damocles:overlay:ack',
+  shown: 'damocles:overlay:shown',
   answer: 'damocles:overlay:answer',
   resolveToast: 'damocles:overlay:resolve-toast',
   toastArea: 'damocles:overlay:toast-area',
@@ -159,7 +160,7 @@ export const MAX_OVERLAY_COORDINATE = 100_000;
 export const MAX_TOAST_PARTS = 32;
 // JSON characters of one settings view request; a pasted API key is far smaller.
 export const MAX_SETTINGS_MESSAGE_CHARS: number = 64 * 1024;
-// The overlay must ack a request within this many ms or main hides it and rejects the request.
+// The overlay must ack receipt of a request within this many ms or main hides it and rejects the request.
 export const OVERLAY_ACK_TIMEOUT_MS = 2000;
 // Bytes of one rasterized PNG; main refuses a larger answer.
 export const MAX_RASTER_PNG_BYTES: number = 64 * 1024;
@@ -458,8 +459,10 @@ export interface DamoclesOverlayApi {
   onRequest(listener: (requestId: string, request: OverlayRequest) => void): () => void;
   // main withdrew the request (timeout, crash, window closing); the overlay closes it without answering
   onCancel(listener: (requestId: string) => void): () => void;
-  // the request is on screen; send within OVERLAY_ACK_TIMEOUT_MS
+  // the page received the request; send as it arrives, before rendering it, within OVERLAY_ACK_TIMEOUT_MS
   ack(requestId: string): void;
+  // the request is on screen, however long its render took
+  shown(requestId: string): void;
   answer(requestId: string, answer: OverlayAnswer): void;
   // the popup page's toast stack (D52), from here to holdToast
   onToast(listener: (toast: OverlayToast) => void): () => void;

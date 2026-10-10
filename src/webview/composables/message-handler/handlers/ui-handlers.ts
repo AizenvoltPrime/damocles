@@ -5,6 +5,7 @@ import { useUsageStatsStore } from "@/stores/useUsageStatsStore";
 import { useBindPlanStore } from "@/stores/useBindPlanStore";
 import type { PermissionMode } from "@shared/types/settings";
 import type { HandlerRegistry } from "../types";
+import { nestedTranscript } from "./nested-transcript";
 
 export function createUIHandlers(): Partial<HandlerRegistry> {
   return {
@@ -118,7 +119,17 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
 
     statusUpdate: (msg, ctx) => {
       const { uiStore, settingsStore } = ctx.stores;
+      // A nested agent's retry wait is its own card's, never the main status bar's.
+      if (msg.parentToolUseId !== undefined) {
+        nestedTranscript(ctx.stores, msg.parentToolUseId)?.setRetry(msg.status === "retrying" ? { attempt: msg.attempt, maxAttempts: msg.maxAttempts } : null);
+        return;
+      }
       uiStore.setCompacting(msg.status === "compacting");
+      if (msg.status === "retrying") {
+        uiStore.setRetryStatus({ attempt: msg.attempt, maxAttempts: msg.maxAttempts });
+        return;
+      }
+      uiStore.setRetryStatus(null);
       if (msg.permissionMode) {
         settingsStore.setPermissionMode(msg.permissionMode as PermissionMode);
       }

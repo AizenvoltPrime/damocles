@@ -3,10 +3,24 @@ import { CLASSIFIER_PROBE_AFTER_MS, createClassifierBreakers, credentialRejectio
 
 function breakersAt(start = 1_000_000) {
   let clock = start;
-  const breakers = createClassifierBreakers(() => clock);
+  const timers = new Set<{ at: number; run: () => void }>();
+  const schedule = (run: () => void, ms: number): (() => void) => {
+    const timer = { at: clock + ms, run };
+    timers.add(timer);
+    return () => void timers.delete(timer);
+  };
+  const breakers = createClassifierBreakers(() => clock, schedule);
   const changes = vi.fn();
   breakers.onChange(changes);
-  return { breakers, changes, advance: (ms: number) => void (clock += ms) };
+  const advance = (ms: number): void => {
+    clock += ms;
+    for (const timer of [...timers]) {
+      if (timer.at > clock) continue;
+      timers.delete(timer);
+      timer.run();
+    }
+  };
+  return { breakers, changes, advance, pendingTimers: () => timers.size };
 }
 
 const PAYMENT = { kind: 'rejected', reason: 'payment-required' } as const;
@@ -31,7 +45,8 @@ describe('createClassifierBreakers', () => {
     expect(changes).not.toHaveBeenCalled();
   });
 
-  it('a refusal skips the provider for the cooldown, then admits exactly one probe', () => {
+  // Each change of `admits` notifies, so a status read on change names the provider the next request goes to.
+  it('a refusal skips the provider for the cooldown, then admits exactly one probe, notifying at each change of admission', () => {
     const { breakers, changes, advance } = breakersAt();
     breakers.settle(breakers.claim('openrouter'), PAYMENT);
     expect(breakers.rejection('openrouter')).toBe('payment-required');
@@ -41,38 +56,74 @@ describe('createClassifierBreakers', () => {
 
     advance(CLASSIFIER_PROBE_AFTER_MS - 1);
     expect(breakers.admits('openrouter')).toBe(false);
+    expect(changes).toHaveBeenCalledTimes(1);
     advance(1);
     expect(breakers.admits('openrouter')).toBe(true);
+    expect(changes).toHaveBeenCalledTimes(2);
 
     const probe = breakers.claim('openrouter');
     expect(breakers.admits('openrouter')).toBe(false);
+    expect(changes).toHaveBeenCalledTimes(3);
     breakers.settle(probe, { kind: 'answered' });
     expect(breakers.admits('openrouter')).toBe(true);
     expect(breakers.rejection('openrouter')).toBeUndefined();
-    expect(changes).toHaveBeenCalledTimes(2);
+    expect(changes).toHaveBeenCalledTimes(4);
   });
 
-  it('a refused probe restarts the cooldown and notifies only when the reason changes', () => {
+  it('claiming a provider with no refusal notifies nothing', () => {
+    const { breakers, changes } = breakersAt();
+    breakers.settle(breakers.claim('openrouter'), { kind: 'answered' });
+    expect(changes).not.toHaveBeenCalled();
+  });
+
+  it('a reset or an answer cancels the cooldown timer, and a refused probe restarts it', () => {
+    const { breakers, advance, pendingTimers } = breakersAt();
+    breakers.settle(breakers.claim('openrouter'), PAYMENT);
+    expect(pendingTimers()).toBe(1);
+    breakers.reset('openrouter');
+    expect(pendingTimers()).toBe(0);
+
+    breakers.settle(breakers.claim('typesafe'), PAYMENT);
+    advance(CLASSIFIER_PROBE_AFTER_MS);
+    breakers.settle(breakers.claim('typesafe'), PAYMENT);
+    expect(pendingTimers()).toBe(1);
+    advance(CLASSIFIER_PROBE_AFTER_MS);
+    breakers.settle(breakers.claim('typesafe'), { kind: 'answered' });
+    expect(pendingTimers()).toBe(0);
+
+    breakers.settle(breakers.claim('openai'), PAYMENT);
+    breakers.dispose();
+    expect(pendingTimers()).toBe(0);
+  });
+
+  it('a refused probe restarts the cooldown, and its settle notifies only when the reason changes', () => {
     const { breakers, changes, advance } = breakersAt();
     breakers.settle(breakers.claim('openrouter'), PAYMENT);
     advance(CLASSIFIER_PROBE_AFTER_MS);
-    breakers.settle(breakers.claim('openrouter'), PAYMENT);
-    expect(changes).toHaveBeenCalledTimes(1);
+    const probe = breakers.claim('openrouter');
+    changes.mockClear();
+    breakers.settle(probe, PAYMENT);
+    expect(changes).not.toHaveBeenCalled();
     expect(breakers.admits('openrouter')).toBe(false);
 
     advance(CLASSIFIER_PROBE_AFTER_MS);
-    breakers.settle(breakers.claim('openrouter'), { kind: 'rejected', reason: 'unauthorized' });
+    const second = breakers.claim('openrouter');
+    changes.mockClear();
+    breakers.settle(second, { kind: 'rejected', reason: 'unauthorized' });
     expect(breakers.rejection('openrouter')).toBe('unauthorized');
-    expect(changes).toHaveBeenCalledTimes(2);
+    expect(changes).toHaveBeenCalledTimes(1);
   });
 
-  it('a transient failure of the probe keeps the refusal and lets the next request probe', () => {
-    const { breakers, advance } = breakersAt();
+  it('a transient failure of the probe keeps the refusal and lets the next request probe, which notifies', () => {
+    const { breakers, changes, advance } = breakersAt();
     breakers.settle(breakers.claim('openrouter'), PAYMENT);
     advance(CLASSIFIER_PROBE_AFTER_MS);
-    breakers.settle(breakers.claim('openrouter'), { kind: 'failed' });
+    const probe = breakers.claim('openrouter');
+    changes.mockClear();
+    breakers.settle(probe, { kind: 'failed' });
     expect(breakers.rejection('openrouter')).toBe('payment-required');
     expect(breakers.admits('openrouter')).toBe(true);
+    expect(changes).toHaveBeenCalledTimes(1);
   });
 
   it('a credential change clears the refusal at once and voids outcomes of requests sent with the old key', () => {
@@ -88,6 +139,19 @@ describe('createClassifierBreakers', () => {
     breakers.settle(inFlight, PAYMENT);
     expect(breakers.admits('openrouter')).toBe(true);
     expect(changes).toHaveBeenCalledTimes(2);
+  });
+
+  it('an OpenAI credential change resets only the OpenAI breaker, and voids its request sent with the old credential', () => {
+    const { breakers } = breakersAt();
+    const sentWithKey = breakers.claim('openai');
+    breakers.settle(breakers.claim('typesafe'), PAYMENT);
+    breakers.settle(breakers.claim('openai'), { kind: 'rejected', reason: 'unauthorized' });
+
+    breakers.reset('openai');
+    breakers.settle(sentWithKey, { kind: 'rejected', reason: 'unauthorized' });
+    expect(breakers.rejection('openai')).toBeUndefined();
+    expect(breakers.admits('openai')).toBe(true);
+    expect(breakers.rejection('typesafe')).toBe('payment-required');
   });
 
   it('an answer to a request claimed before the refusal never clears it, whatever the settle order', () => {

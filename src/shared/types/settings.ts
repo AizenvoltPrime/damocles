@@ -37,7 +37,6 @@ export type ContextWarningLevel = 'none' | 'warning' | 'soft' | 'critical';
 export interface SessionSettings {
   model?: string;
   permissionMode: PermissionMode;
-  maxThinkingTokens?: number | null;
 }
 
 export interface ExtensionSettings {
@@ -59,6 +58,27 @@ export interface ExtensionSettings {
   ideContextEnabled: boolean;
   pinnedHeaderHidden: boolean;
   team: TeamRoleSettings;
+  background: BackgroundSettings;
+  judge: MemoryJudgeSettings;
+  explore: ExploreSettings;
+}
+
+/** `damocles.background.*`: `model` '' is Automatic, `effort` null is Per job. */
+export interface BackgroundSettings {
+  model: string;
+  effort: EffortLevel | null;
+}
+
+/** `damocles.memory.judge*`: `choice` '' is Automatic, else a classifier choice or a catalog model; `effort` null is Per job. */
+export interface MemoryJudgeSettings {
+  choice: string;
+  effort: EffortLevel | null;
+}
+
+/** `damocles.explore.*`: `model` '' is Default (the chat's small model), `effort` null is medium. */
+export interface ExploreSettings {
+  model: string;
+  effort: EffortLevel | null;
 }
 
 /** One OpenRouter image model from pi's image catalog. */
@@ -100,16 +120,12 @@ export interface TeamRoleSettings {
  * Field scoping:
  * - `effort` is **model-scoped** — the value belongs to a specific model and
  *   is only meaningful when read alongside the matching model identifier.
- * - `maxThinkingTokens` is **model-scoped** in the per-panel matrix but the
- *   workspace default `damocles.maxThinkingTokens` is a single value shared
- *   across models; both expressions surface through this field.
  * - `thinkingDisabled` is **model-agnostic** — a single boolean per panel /
  *   per workspace, never keyed by model.
  */
 export interface PanelThinkingState {
   thinkingDisabled: boolean;
   effort: EffortLevel | null;
-  maxThinkingTokens: number | null;
 }
 
 export interface ModelInfo {
@@ -152,20 +168,27 @@ export interface AccountInfo {
   dollarBilled: boolean;
 }
 
-/** A provider that serves the Jev classifier. */
-export type ClassifierProvider = "typesafe" | "openrouter";
+/** A provider that serves a memory-judge classifier: Jev on TypeSafe or OpenRouter, GPT-6 Luna on OpenAI. */
+export type ClassifierProvider = "typesafe" | "openrouter" | "openai";
 
 /** Why a classifier provider's credential was refused: HTTP 401, 402 or 403. */
 export type ClassifierRejection = "unauthorized" | "payment-required" | "forbidden";
 
+/** Why a classifier cannot serve the memory judges: no key, or ChatGPT is the active OpenAI credential. */
+export type ClassifierCredential = "ok" | "no-key" | "chatgpt-active";
+
+/** Why a Memory judge chosen in `damocles.memory.judge` cannot run; `unrecognized`: the stored value is no judge this version offers. */
+export type MemoryJudgeUnavailable = Exclude<ClassifierCredential, "ok"> | "rejected" | "signed-out" | "unrecognized" | "not-in-catalog";
+
 /**
  * The model the memory contradiction judge and reranks run on. `model` is `<provider>/<id>`. `unknown`: no
- * classifier key, and the sub-call model is resolved only once a chat has started pi.
+ * classifier key, and the judge model is resolved only once a chat has started pi. `forced`: the chosen
+ * judge that cannot run, which never falls back to another.
  */
 export type MemoryJudge = (
-  | { kind: "jev"; via: ClassifierProvider }
+  | { kind: "classifier"; via: ClassifierProvider }
   | { kind: "model"; model: string }
-  | { kind: "none" }
+  | { kind: "none"; forced?: { choice: string; reason: MemoryJudgeUnavailable } }
   | { kind: "unknown" }
 ) & {
   /** Configured classifier providers the judges skip because their credential was refused. */

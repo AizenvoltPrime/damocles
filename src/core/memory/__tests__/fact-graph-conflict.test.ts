@@ -20,7 +20,7 @@ import type { MemorySubCallRequest, MemorySubCallResult, MemorySubCallRunner } f
 /** Judge outage: run() resolves { value: null } → judgeContradiction must return null, not false. */
 const outageRunner: MemorySubCallRunner = {
   async run<T>(_req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> {
-    return { value: null, failure: 'transient' };
+    return { value: null, failure: 'unreachable' };
   },
 };
 
@@ -389,7 +389,7 @@ describe('Slice 8 C14 — identical created_at contradictions tiebreak by higher
 });
 
 /** Bump with each new memory-DB migration. */
-const LATEST_SCHEMA_VERSION = 5;
+const LATEST_SCHEMA_VERSION = 7;
 
 describe('Slice 8 — migration v3 schema (needs_conflict_check column, partial index, version bump)', () => {
   it('a fresh fully-migrated DB has the NOT NULL DEFAULT 0 column and the partial index', async () => {
@@ -432,7 +432,7 @@ describe('Slice 8 — migration v3 schema (needs_conflict_check column, partial 
     raw.exec('PRAGMA foreign_keys = ON');
     raw.exec('CREATE TABLE schema_version (version INTEGER NOT NULL)');
     raw.exec('CREATE TABLE memories (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL)');
-    raw.exec('CREATE TABLE memory_candidates (id TEXT PRIMARY KEY, consumed INTEGER NOT NULL DEFAULT 0)');
+    raw.exec('CREATE TABLE memory_candidates (id TEXT PRIMARY KEY, consumed INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0)');
     raw.exec("INSERT INTO memories (id, created_at) VALUES ('legacy-row', 1)");
     raw.exec('INSERT INTO schema_version (version) VALUES (1)');
     raw.exec('INSERT INTO schema_version (version) VALUES (2)');
@@ -480,7 +480,7 @@ describe('migration v4 schema (memory_candidates.workspace + claim index)', () =
   it('applies onto a v3 database, leaving existing candidates with a NULL workspace', () => {
     const raw = new DatabaseSync(':memory:');
     raw.exec('CREATE TABLE schema_version (version INTEGER NOT NULL)');
-    raw.exec('CREATE TABLE memory_candidates (id TEXT PRIMARY KEY, consumed INTEGER NOT NULL DEFAULT 0)');
+    raw.exec('CREATE TABLE memory_candidates (id TEXT PRIMARY KEY, consumed INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0)');
     raw.exec("INSERT INTO memory_candidates (id) VALUES ('legacy-candidate')");
     for (const v of [1, 2, 3]) raw.exec(`INSERT INTO schema_version (version) VALUES (${v})`);
 

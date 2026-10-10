@@ -44,8 +44,8 @@ const RUN_ID = 'run-1';
 function estimate(over: Partial<MemoryAuditEstimate> = {}): MemoryAuditEstimate {
   return {
     memoryCount: 1000, profileCount: 2, batchCount: 50, inputTokens: 200_000, outputTokens: 45_000,
-    model: { provider: 'anthropic', id: 'claude-haiku', inputPerMTok: 1, outputPerMTok: 5, dollarBilled: true },
-    unpriced: false, costUsd: 0.4, ...over,
+    model: { provider: 'anthropic', id: 'claude-haiku', inputPerMTok: 1, outputPerMTok: 5, dollarBilled: true, effort: 'low' },
+    fittedEffort: 'low', unpriced: false, costUsd: 0.4, ...over,
   };
 }
 
@@ -130,6 +130,17 @@ describe('estimate', () => {
     expect(est.get('[data-estimate="input-tokens"]').text()).toBe('200.0K');
     expect(est.get('[data-estimate="output-tokens"]').text()).toBe('45.0K');
     expect(est.get('[data-estimate="model"]').text()).toBe('anthropic/claude-haiku');
+  });
+
+  it('names the effort the estimate assumes when the run uses another', async () => {
+    const e = estimate();
+    expect((await openOverlay()).find('[data-estimate="effort-caveat"]').exists()).toBe(false);
+
+    const wrapper = await openOverlay(payload({ estimate: { ...e, model: { ...e.model!, effort: 'high' } } }));
+
+    expect(wrapper.get('[data-estimate="effort-caveat"]').text()).toBe(
+      i18n.global.t('memoryAudit.estimate.effortCaveat', { fitted: i18n.global.t('effortBadge.level.low'), effort: i18n.global.t('effortBadge.level.high') }),
+    );
   });
 
   it('shows a billed cost as a plain amount', async () => {

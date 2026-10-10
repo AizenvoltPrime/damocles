@@ -5,13 +5,22 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
+import { ModelsError } from '@earendil-works/pi-ai';
 import { PiRuntime, type LiveSessionMutator } from '../pi-runtime';
 import { FolderRuntime } from '../folder-runtime';
 import { McpClientManager } from '../mcp/mcp-client-manager';
-import { initPiLoader, nodeSupportsPi, PI_MIN_NODE_MAJOR, type PiCodingAgentModule } from '../pi-loader';
+import { initPiLoader, loadPiAi, nodeSupportsPi, PI_MIN_NODE_MAJOR, type PiCodingAgentModule } from '../pi-loader';
 import type { SecretResolver } from '../custom-providers';
 import { LEGACY_SUBSCRIPTION_REPOS, SUBSCRIPTION_SOURCE, classifySubscriptionSource } from '../subscription';
 import { SUBCALL_USAGE_LEDGER_PATH } from '../../paths';
+import { SUBCALL_THINKING, type StructuredSubCallPurpose } from '../subcall-model';
+
+/** Lets a test make pi-ai fail to load; every other test loads the real module. */
+const piAiLoad = vi.hoisted(() => ({ fail: false }));
+vi.mock('../pi-loader', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../pi-loader')>();
+  return { ...actual, loadPiAi: () => (piAiLoad.fail ? Promise.resolve(null) : actual.loadPiAi()) };
+});
 
 /** Trust and watchers for the folder runtimes built here; trusted by default, as the host is. */
 const testPlatform = createFakePlatform();
@@ -88,19 +97,19 @@ describe('PiRuntime singleton (B1)', () => {
  * file records it. The ledger is best-effort: a write failure must leave the sub-call result unchanged.
  */
 describe('PiRuntime.runStructuredCompletion usage ledger', () => {
-  const MODEL = { id: 'claude-haiku-4-5', provider: 'anthropic' };
+  const MODEL = { id: 'claude-haiku-5-5', provider: 'anthropic' };
   const USAGE = { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { input: 0.01, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.03 } };
   const REQ = { systemPrompt: 's', userMessage: 'u', outputToolName: 'submit_result', outputToolDescription: 'd', schema: { type: 'object' }, purpose: 'memory-extract' as const };
 
   function runtimeReturning(complete: () => Promise<unknown>): PiRuntime {
     const runtime = PiRuntime.get();
-    const internals = runtime as unknown as { _modelRuntime: unknown; _resolveSmallFastModel: () => unknown };
+    const internals = runtime as unknown as { _modelRuntime: unknown; subCallModelFor: () => unknown };
     internals._modelRuntime = { hasConfiguredAuth: () => true, completeSimple: vi.fn(complete) };
-    internals._resolveSmallFastModel = () => MODEL;
+    internals.subCallModelFor = () => ({ model: MODEL });
     return runtime;
   }
   const message = (stopReason: string) => ({
-    role: 'assistant', api: 'anthropic-messages', provider: 'anthropic', model: 'claude-haiku-4-5', stopReason, timestamp: 0, usage: USAGE,
+    role: 'assistant', api: 'anthropic-messages', provider: 'anthropic', model: 'claude-haiku-5-5', stopReason, timestamp: 0, usage: USAGE,
     content: [{ type: 'toolCall', id: '1', name: 'submit_result', arguments: { ok: true } }],
   });
   const ledger = (): Array<Record<string, unknown>> =>
@@ -115,33 +124,204 @@ describe('PiRuntime.runStructuredCompletion usage ledger', () => {
 
   it('records a completed sub-call with its purpose, attribution and full usage', async () => {
     const runtime = runtimeReturning(async () => message('toolUse'));
-    expect(await runtime.runStructuredCompletion({ ...REQ, attribution: { cwd: '/ws', sessionId: 's1' } })).toEqual({ ok: true });
-    expect(ledger()).toEqual([expect.objectContaining({ v: 1, type: 'subcall', purpose: 'memory-extract', provider: 'anthropic', model: 'claude-haiku-4-5', stopReason: 'toolUse', cwd: '/ws', sessionId: 's1', usage: USAGE })]);
+    expect(await runtime.runStructuredCompletion({ ...REQ, attribution: { cwd: '/ws', sessionId: 's1' } })).toEqual({ kind: 'answered', value: { ok: true } });
+    expect(ledger()).toEqual([expect.objectContaining({ v: 1, type: 'subcall', purpose: 'memory-extract', provider: 'anthropic', model: 'claude-haiku-5-5', stopReason: 'toolUse', cwd: '/ws', sessionId: 's1', usage: USAGE })]);
   });
 
   it('records an errored sub-call, which was still billed', async () => {
     const runtime = runtimeReturning(async () => message('error'));
-    expect(await runtime.runStructuredCompletion(REQ)).toBeNull();
+    expect(await runtime.runStructuredCompletion(REQ)).toEqual({ kind: 'unanswered' });
     expect(ledger()).toEqual([expect.objectContaining({ stopReason: 'error', cwd: null, sessionId: null })]);
   });
 
   it('records nothing for a sub-call that billed no tokens and no cost', async () => {
     const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
     const runtime = runtimeReturning(async () => ({ ...message('toolUse'), usage: zero }));
-    expect(await runtime.runStructuredCompletion(REQ)).toEqual({ ok: true });
+    expect(await runtime.runStructuredCompletion(REQ)).toEqual({ kind: 'answered', value: { ok: true } });
     expect(ledger()).toEqual([]);
   });
 
   it('records nothing when the request throws before any usage exists', async () => {
     const runtime = runtimeReturning(async () => { throw new Error('network'); });
-    expect(await runtime.runStructuredCompletion(REQ)).toBeNull();
+    expect(await runtime.runStructuredCompletion(REQ)).toEqual({ kind: 'unreachable' });
     expect(ledger()).toEqual([]);
+  });
+
+  it.each([
+    ['a refusal', 'The model refused to complete the request', 'unanswered'],
+    ['a timeout', 'Request timed out.', 'unreachable'],
+    ['a 529 the provider SDK reported', '529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}', 'unreachable'],
+  ])('classifies an error stop for %s with pi-ai\'s own transient classifier', async (_label, errorMessage, kind) => {
+    const runtime = runtimeReturning(async () => ({ ...message('error'), content: [], errorMessage }));
+    expect(await runtime.runStructuredCompletion(REQ)).toEqual({ kind });
+  });
+
+  /** pi's own setup error stop: no status, no usage, the request never left. */
+  const setupFailure = (errorMessage: string) => async () => ({ ...message('error'), content: [], usage: { ...USAGE, input: 0, output: 0, totalTokens: 0 }, errorMessage });
+
+  it.each<[string, () => Promise<unknown>]>([
+    ['pi refuses to refresh the OAuth grant', async () => { throw new ModelsError('oauth', 'OAuth refresh failed for anthropic'); }],
+    ['pi no longer has a credential', async () => undefined],
+  ])('names a credential cause for a no-contact error stop when %s', async (_label, getAuth) => {
+    const runtime = runtimeReturning(setupFailure('OAuth refresh failed for anthropic: invalid_grant'));
+    const modelRuntime = (runtime as unknown as { _modelRuntime: Record<string, unknown> })._modelRuntime;
+    modelRuntime.getAuth = vi.fn(getAuth);
+    expect(await runtime.runStructuredCompletion(REQ)).toEqual({ kind: 'unreachable', cause: 'credential' });
+    expect(modelRuntime.getAuth).toHaveBeenCalledWith(MODEL, expect.anything());
+  });
+
+  it('keeps a no-contact error stop plainly unreachable when pi still resolves the credential', async () => {
+    const runtime = runtimeReturning(setupFailure('Unknown provider: anthropic'));
+    (runtime as unknown as { _modelRuntime: Record<string, unknown> })._modelRuntime.getAuth = vi.fn(async () => ({ auth: { apiKey: 'k' } }));
+    expect(await runtime.runStructuredCompletion(REQ)).toEqual({ kind: 'unreachable' });
+  });
+
+  it('names a credential cause when the provider has no configured credential at call time', async () => {
+    const runtime = runtimeReturning(async () => message('toolUse'));
+    (runtime as unknown as { _modelRuntime: Record<string, unknown> })._modelRuntime.hasConfiguredAuth = () => false;
+    expect(await runtime.runStructuredCompletion(REQ)).toEqual({ kind: 'unreachable', cause: 'credential' });
+  });
+
+  it('is unreachable with no sub-call model', async () => {
+    const runtime = runtimeReturning(async () => message('toolUse'));
+    (runtime as unknown as { subCallModelFor: () => unknown }).subCallModelFor = () => null;
+    expect(await runtime.runStructuredCompletion(REQ)).toEqual({ kind: 'unreachable' });
   });
 
   it('returns the result unchanged when the ledger cannot be written', async () => {
     fs.mkdirSync(SUBCALL_USAGE_LEDGER_PATH, { recursive: true });
     const runtime = runtimeReturning(async () => message('toolUse'));
-    expect(await runtime.runStructuredCompletion(REQ)).toEqual({ ok: true });
+    expect(await runtime.runStructuredCompletion(REQ)).toEqual({ kind: 'answered', value: { ok: true } });
+  });
+});
+
+/**
+ * Every sub-call names its thinking level, clamped by pi: with no level, pi runs a Claude 5.x model at
+ * adaptive `high`. Models come from the catalog files pi-ai ships, so the clamp sees real level maps.
+ */
+describe('PiRuntime.runStructuredCompletion thinking level', () => {
+  const PURPOSES = Object.keys(SUBCALL_THINKING) as StructuredSubCallPurpose[];
+  const REQ = { systemPrompt: 's', userMessage: 'u', outputToolName: 'submit_result', outputToolDescription: 'd', schema: { type: 'object' } };
+
+  function catalogModel(file: string, api: string, id: string): unknown {
+    const url = new URL(`../../../../node_modules/@earendil-works/pi-ai/dist/providers/data/${file}`, import.meta.url);
+    return (JSON.parse(fs.readFileSync(url, 'utf8')) as Record<string, Record<string, unknown>>)[api]?.[`chat:${id}`];
+  }
+  const HAIKU = catalogModel('anthropic.json', 'anthropic-messages', 'claude-haiku-5-5');
+  const LUNA = catalogModel('openai.json', 'openai-responses', 'gpt-6-luna');
+
+  const SONNET = catalogModel('anthropic.json', 'anthropic-messages', 'claude-sonnet-5-5');
+
+  /**
+   * Runs one sub-call per purpose and returns the options each `completeSimple` call received. With `model` the
+   * sub-call model is stubbed; without it the runtime resolves the Background setting against a registry of Sonnet 5.5.
+   */
+  async function optionsPerPurpose(model?: unknown): Promise<Map<StructuredSubCallPurpose, Record<string, unknown>>> {
+    const seen = new Map<StructuredSubCallPurpose, Record<string, unknown>>();
+    const runtime = PiRuntime.get();
+    const internals = runtime as unknown as { _modelRuntime: unknown; _folders: Map<string, unknown>; subCallModelFor: () => unknown };
+    let current: StructuredSubCallPurpose = PURPOSES[0]!;
+    internals._modelRuntime = {
+      getModel: (provider: string, id: string) => (provider === 'anthropic' && id === 'claude-sonnet-5-5' ? SONNET : undefined),
+      hasConfiguredAuth: () => true,
+      completeSimple: vi.fn(async (_m: unknown, _c: unknown, options: Record<string, unknown>) => {
+        seen.set(current, options);
+        return { role: 'assistant', stopReason: 'toolUse', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, content: [{ type: 'toolCall', id: '1', name: 'submit_result', arguments: { ok: true } }] };
+      }),
+    };
+    if (model === undefined) internals._folders.set('/ws', {});
+    else internals.subCallModelFor = () => ({ model });
+    for (const purpose of PURPOSES) {
+      current = purpose;
+      expect(await runtime.runStructuredCompletion({ ...REQ, purpose })).toEqual({ kind: 'answered', value: { ok: true } });
+    }
+    return seen;
+  }
+
+  afterEach(async () => {
+    piAiLoad.fail = false;
+    await PiRuntime.disposeInstance();
+  });
+
+  it('sends reasoning low for every purpose on Haiku 5.5', async () => {
+    expect(HAIKU).toBeDefined();
+    const seen = await optionsPerPurpose(HAIKU);
+    expect(seen.size).toBe(PURPOSES.length);
+    for (const purpose of PURPOSES) expect(seen.get(purpose)?.reasoning, purpose).toBe('low');
+  });
+
+  it('sends no reasoning for the four off purposes on GPT-6 Luna and low for the other three', async () => {
+    expect(LUNA).toBeDefined();
+    const seen = await optionsPerPurpose(LUNA);
+    const off = PURPOSES.filter((p) => SUBCALL_THINKING[p] === 'off');
+    expect(off).toEqual(['session-title', 'memory-query-expansion', 'memory-rerank', 'memory-merge']);
+    for (const purpose of off) expect(seen.get(purpose), purpose).not.toHaveProperty('reasoning');
+    for (const purpose of PURPOSES.filter((p) => !off.includes(p))) expect(seen.get(purpose)?.reasoning, purpose).toBe('low');
+  });
+
+  it('sends reasoning high for every purpose with the Background model and the Memory judge on Sonnet 5.5 at High', async () => {
+    installFakePlatform({
+      settings: {
+        user: {
+          'damocles.background.model': 'claude-sonnet-5-5',
+          'damocles.background.effort': 'high',
+          'damocles.memory.judge': 'claude-sonnet-5-5',
+          'damocles.memory.judgeEffort': 'high',
+        },
+      },
+    });
+    const seen = await optionsPerPurpose();
+    expect(seen.size).toBe(PURPOSES.length);
+    for (const purpose of PURPOSES) expect(seen.get(purpose)?.reasoning, purpose).toBe('high');
+  });
+
+  it('logs no sub-call that answered in time', async () => {
+    logLines.length = 0;
+    await optionsPerPurpose(HAIKU);
+    expect(logLines.filter((line) => line.includes('[PiRuntime] sub-call'))).toEqual([]);
+  });
+
+  it('logs the purpose, model, level, stop reason and time of a sub-call that failed or ran slow', async () => {
+    const ZERO = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+    let now = 1_000;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const runtime = PiRuntime.get();
+    const internals = runtime as unknown as { _modelRuntime: unknown; subCallModelFor: () => unknown };
+    const replies = [
+      { role: 'assistant', stopReason: 'error', errorMessage: '400 invalid request', usage: ZERO, content: [] },
+      { role: 'assistant', stopReason: 'toolUse', usage: ZERO, content: [{ type: 'toolCall', id: '1', name: 'submit_result', arguments: { ok: true } }] },
+    ];
+    internals._modelRuntime = {
+      hasConfiguredAuth: () => true,
+      completeSimple: vi.fn(async () => {
+        const reply = replies.shift()!;
+        if (reply.stopReason === 'toolUse') now += 12_000;
+        return reply;
+      }),
+    };
+    internals.subCallModelFor = () => ({ model: HAIKU });
+    logLines.length = 0;
+
+    await runtime.runStructuredCompletion({ ...REQ, purpose: 'memory-extract' });
+    await runtime.runStructuredCompletion({ ...REQ, purpose: 'memory-merge' });
+
+    const subCalls = logLines.filter((line) => line.includes('[PiRuntime] sub-call'));
+    expect(subCalls).toHaveLength(2);
+    expect(subCalls[0]).toMatch(/sub-call memory-extract on anthropic\/claude-haiku-5-5 at low ended with error in 0ms/);
+    expect(subCalls[1]).toMatch(/sub-call memory-merge on anthropic\/claude-haiku-5-5 at low ended with toolUse in 12000ms/);
+    vi.restoreAllMocks();
+  });
+
+  it('is unreachable without calling completeSimple when pi-ai fails to load', async () => {
+    piAiLoad.fail = true;
+    const completeSimple = vi.fn();
+    const runtime = PiRuntime.get();
+    const internals = runtime as unknown as { _modelRuntime: unknown; subCallModelFor: () => unknown };
+    internals._modelRuntime = { hasConfiguredAuth: () => true, completeSimple };
+    internals.subCallModelFor = () => ({ model: HAIKU });
+
+    expect(await runtime.runStructuredCompletion({ ...REQ, purpose: 'memory-extract' })).toEqual({ kind: 'unreachable' });
+    expect(completeSimple).not.toHaveBeenCalled();
   });
 });
 
@@ -1000,24 +1180,50 @@ describe('PiRuntime.syncCustomProviders', () => {
   });
 });
 
-describe('PiRuntime sub-call model credential', () => {
+describe('PiRuntime sub-call model', () => {
+  const HAIKU = { id: 'claude-haiku-5-5', provider: 'anthropic', reasoning: true, cost: { input: 1, output: 5 } };
+  const STEP = { id: 'step-5-preview', provider: 'stepfun', reasoning: true, cost: { input: 0.2, output: 0.8 } };
+
+  function runtimeWith(authed: Set<string>): PiRuntime {
+    const runtime = PiRuntime.get();
+    const internals = runtime as unknown as { _modelRuntime: unknown; _folders: Map<string, unknown> };
+    internals._modelRuntime = {
+      getModel: (provider: string, id: string) => [HAIKU, STEP].find((m) => m.provider === provider && m.id === id),
+      hasConfiguredAuth: (provider: string) => authed.has(provider),
+    };
+    internals._folders.set('/ws', {});
+    return runtime;
+  }
+
   afterEach(async () => {
     vi.restoreAllMocks();
     await PiRuntime.disposeInstance();
   });
 
-  it('treats an Explore model whose provider has no configured credential as no model, not a fallback', () => {
-    installFakePlatform({ settings: { user: { 'damocles.explore.enabled': true, 'damocles.explore.provider': 'stepfun' } } });
-    const model = { id: 'step-3.7-flash', provider: 'stepfun', cost: { input: 0.2, output: 0.8 } };
-    let authed = false;
-    const runtime = PiRuntime.get();
-    const internals = runtime as unknown as { _modelRuntime: unknown; _folders: Map<string, unknown> };
-    internals._modelRuntime = { getModel: () => model, hasConfiguredAuth: () => authed };
-    internals._folders.set('/ws', {});
+  it('ignores the Explore settings', () => {
+    installFakePlatform({ settings: { user: { 'damocles.explore.model': 'step-5-preview', 'damocles.explore.effort': 'high' } } });
+    const runtime = runtimeWith(new Set(['anthropic', 'stepfun']));
+    expect(runtime.describeSubCallModel()).toMatchObject({ provider: 'anthropic', id: 'claude-haiku-5-5' });
+  });
 
-    expect(runtime.hasAuthedSubCallModel()).toBe(false);
+  it('treats a picked Background model whose provider is signed out as no model, not a fallback', () => {
+    installFakePlatform({ settings: { user: { 'damocles.background.model': 'step-5-preview' } } });
+    const authed = new Set(['anthropic']);
+    const runtime = runtimeWith(authed);
+
+    expect(runtime.hasAuthedSubCallModel('memory-extract')).toBe(false);
     expect(runtime.describeSubCallModel()).toBeNull();
-    authed = true;
-    expect(runtime.describeSubCallModel()).toMatchObject({ provider: 'stepfun', id: 'step-3.7-flash', inputPerMTok: 0.2, outputPerMTok: 0.8 });
+    authed.add('stepfun');
+    expect(runtime.describeSubCallModel()).toMatchObject({ provider: 'stepfun', id: 'step-5-preview', inputPerMTok: 0.2, outputPerMTok: 0.8 });
+  });
+
+  it('reports the effort an audit call runs at: the purpose level on Automatic, the picked effort otherwise', async () => {
+    await loadPiAi();
+    installFakePlatform();
+    expect(runtimeWith(new Set(['anthropic'])).describeSubCallModel()).toMatchObject({ id: 'claude-haiku-5-5', effort: SUBCALL_THINKING['memory-audit'] });
+    await PiRuntime.disposeInstance();
+
+    installFakePlatform({ settings: { user: { 'damocles.background.model': 'step-5-preview', 'damocles.background.effort': 'high' } } });
+    expect(runtimeWith(new Set(['stepfun'])).describeSubCallModel()).toMatchObject({ id: 'step-5-preview', effort: 'high' });
   });
 });

@@ -9,7 +9,7 @@ import { getDefaultSelectors } from 'eslint-plugin-better-tailwindcss/defaults';
 const VSCODE_ONLY = 'Only src/vscode may import vscode; core code reaches the host through src/platform.';
 const NO_ELECTRON = 'Only src/desktop may import electron.';
 const NO_ELECTRON_SHELL = 'The shell renderer never imports electron; it reaches main only through window.damoclesShell.';
-const NO_ELECTRON_WORKER = 'The Quick Open worker is a plain Node worker thread and never imports electron.';
+const NO_ELECTRON_WORKER = 'The Quick Open and watch workers are plain Node worker threads and never import electron.';
 
 // no-restricted-imports misses dynamic import(), typeof import() and vi.mock, so these selectors close the same boundary.
 function moduleSyntax(pattern, message) {
@@ -183,7 +183,7 @@ export default [
     },
   },
   {
-    files: ['src/desktop/quick-open-worker/**/*.ts'],
+    files: ['src/desktop/quick-open-worker/**/*.ts', 'src/desktop/watch-worker/**/*.ts'],
     rules: {
       '@typescript-eslint/no-restricted-imports': ['error', {
         paths: [{ name: 'vscode', message: VSCODE_ONLY }, IN_WORKER.path],

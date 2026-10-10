@@ -13,7 +13,10 @@ import { answerConfirm, answerTagPicker, confirmDialog, focusedMenuItem, overlay
 type RewindItem = { messageId: string; content: string };
 
 // A catalog model whose thinking can be turned off, so the per-chat override shows in panelThinkingUpdate.
-const OTHER_MODEL = 'claude-haiku-4-5-20251001';
+const OTHER_MODEL = 'deepseek-flash';
+// Core commits only a model it holds a credential for. pi reads this one from the environment, which Damocles' key sync
+// leaves alone, where it would delete an auth.json entry no secret backs. Nothing reaches DeepSeek: no prompt runs on it.
+const OTHER_MODEL_ENV = { DEEPSEEK_API_KEY: 'sk-e2e-deepseek-not-real' };
 // AD8: idle chats kept loaded besides the selected and the active ones.
 const IDLE_KEPT = 3;
 
@@ -199,7 +202,7 @@ test('chats across projects: per-chat model and thinking, fork with replayed his
     const beta = path.join(path.dirname(home.project), 'beta');
     fs.mkdirSync(beta, { recursive: true });
 
-    let desktop = await launch();
+    let desktop = await launch({ env: OTHER_MODEL_ENV });
     let app = desktop.app;
     let shell = await openProject(app, home.project);
     const alphaId = await newStoredChat(app, shell, 'alpha one');
@@ -245,7 +248,7 @@ test('chats across projects: per-chat model and thinking, fork with replayed his
     await projectRow(shell, betaKey).click();
     await expect.poll(async () => (await shellState(app)).selected).toEqual({ projectKey: betaKey, chatId: betaId });
     await desktop.close();
-    desktop = await launch();
+    desktop = await launch({ env: OTHER_MODEL_ENV });
     app = desktop.app;
     shell = await readyShell(app);
     await expect.poll(async () => (await shellState(app)).selected).toEqual({ projectKey: betaKey, chatId: betaId });

@@ -33,7 +33,6 @@
     "no": "No",
     "loading": "Loading...",
     "dismiss": "Dismiss",
-    "tokens": "tokens",
     "noFile": "No file",
     "settings": "Settings",
     "close": "close",
@@ -212,6 +211,7 @@
     "effortUltracode": "Ultracode, maximum effort",
     "disableThinking": "Disable thinking",
     "thinkingAlwaysOn": "This model always thinks. Use reasoning effort to control how much.",
+    "modelNotSignedIn": "Not signed in",
     "voice": {
       "provider": "Provider",
       "apiKey": "API Key",
@@ -224,27 +224,24 @@
       "languageHint": "Language used for speech-to-text transcription."
     },
     "explore": {
-      "provider": "Provider",
-      "model": "Model",
-      "modelPlaceholder": "Model ID (e.g. gemini-2.5-flash)",
-      "apiKey": "API Key",
-      "apiKeyPlaceholderOpenrouter": "sk-or-...",
-      "apiKeyPlaceholderGemini": "AIza...",
-      "apiKeyPlaceholderStepfun": "Your StepFun API key",
-      "saveKey": "Save",
-      "deleteKey": "Remove API key",
-      "keyStored": "Key stored",
-      "noKey": "No key",
-      "providerDefault": "Default (match panel model)",
-      "descriptionDefault": "The Explore subagent uses the fast, cheap model matching the panel's current main model (Claude → Haiku, OpenAI → GPT-5.4 mini). No third-party API key required.",
-      "descriptionOpenrouter": "Run the Explore subagent on an OpenRouter model.",
-      "descriptionGemini": "Run the Explore subagent on a Google Gemini model.",
-      "descriptionStepfun": "Run the Explore subagent on StepFun Step Plan (Step 3.7 Flash, Anthropic-compatible).",
-      "effort": "Reasoning effort",
-      "effortDefault": "Default",
-      "effortLow": "Low",
-      "effortMedium": "Medium",
-      "effortHigh": "High"
+      "modelDefault": "Default",
+      "effortDefault": "Default (Medium)"
+    },
+    "background": {
+      "modelAutomatic": "Automatic",
+      "effortPerJob": "Per job"
+    },
+    "memoryJudge": {
+      "automatic": "Automatic",
+      "classifier": {
+        "typesafe": "Jev (TypeSafe)",
+        "openrouter": "Jev (OpenRouter)",
+        "openai": "GPT-6 Luna (Decisions API)"
+      },
+      "unavailable": {
+        "no-key": "No key saved",
+        "chatgpt-active": "Needs the OpenAI API key, not ChatGPT"
+      }
     },
     "imageGeneration": {
       "modelPlaceholder": "Choose an image model",
@@ -443,7 +440,8 @@
     "running": "Running {tool}...",
     "hook": "Hook: {event}",
     "hooksCount": "{count} hooks",
-    "requiresAction": "Waiting for your answer"
+    "requiresAction": "Waiting for your answer",
+    "retrying": "Provider error, retrying ({attempt}/{max})..."
   },
   "subagent": {
     "duration": "{seconds}s",
@@ -1143,9 +1141,10 @@
     "clickToExpand": "Click to expand",
     "awaitingApproval": "Needs approval",
     "notExecuted": "Not executed",
-    "changedCourse": "Damocles changed course before running this tool",
+    "abandonedStopped": "The turn was stopped before this tool ran",
+    "abandonedFailed": "The model call that requested this tool failed, so it never ran",
     "cancelled": "Stopped",
-    "cancelledDescription": "You stopped this command before it finished",
+    "cancelledDescription": "You stopped this tool before it finished",
     "outcomeUnrecorded": "Outcome not recorded",
     "outcomeUnrecordedDescription": "This tool ran, but nothing about how it ended was saved with the transcript",
     "structuredOutput": "Structured Output",
@@ -1395,6 +1394,8 @@
     "resultImagesUnavailable": "Image unavailable",
     "noInput": "No input provided",
     "statusRunning": "Running",
+    "statusApproved": "Approved",
+    "statusDenied": "Denied",
     "statusCompleted": "Completed",
     "statusFailed": "Failed",
     "statusCancelled": "Stopped",
@@ -1636,7 +1637,7 @@
     },
     "preferApiKey": {
       "label": "Prefer API key over ChatGPT sign-in",
-      "descriptionEnabled": "Workspace setting. Inverts the default sign-in-first order.",
+      "descriptionEnabled": "Applies in every workspace. Inverts the default sign-in-first order.",
       "descriptionDisabled": "Add an API key and sign in with ChatGPT to enable this toggle."
     },
     "toast": {
@@ -1658,7 +1659,7 @@
       "saveFailed": "Failed to save key",
       "cleared": "API key cleared",
       "clearFailed": "Failed to clear key",
-      "hint": "Shared with the Explore StepFun key. Step-plan subscription (flat fee); enables Step 3.7 Flash."
+      "hint": "Step-plan subscription (flat fee); enables Step 5 Preview."
     }
   },
   "deepseek": {
@@ -1675,7 +1676,7 @@
       "saveFailed": "Failed to save key",
       "cleared": "API key cleared",
       "clearFailed": "Failed to clear key",
-      "hint": "Pay-per-token API key, stored encrypted by your operating system's credential store; enables DeepSeek V4 Pro and Flash."
+      "hint": "Pay-per-token API key, stored encrypted by your operating system's credential store; enables DeepSeek V4 Pro and V4.1 Flash."
     }
   },
   "typesafe": {
@@ -1692,20 +1693,26 @@
       "saveFailed": "Failed to save key",
       "cleared": "API key cleared",
       "clearFailed": "Failed to clear key",
-      "hint": "Stored encrypted by your operating system's credential store. Runs the memory contradiction judge and reranking on TypeSafe's Jev classifier. Without it, an OpenRouter key runs Jev through OpenRouter."
+      "hint": "Stored encrypted by your operating system's credential store. Runs the memory contradiction judge and reranking on TypeSafe's Jev classifier. Without it, an OpenRouter key runs Jev through OpenRouter, and otherwise an OpenAI API key runs GPT-6 Luna. Settings › Models & accounts › Background work › Memory judge can choose one."
     },
     "memoryJudge": {
       "label": "Memory judge: {judge}",
-      "jevTypesafe": "Jev via TypeSafe",
-      "jevOpenrouter": "Jev via OpenRouter",
-      "model": "{model} (sub-call model)",
       "none": "none (no model configured)",
-      "unknown": "the sub-call model, shown once a chat has started",
+      "forcedNone": "none. {choice} is the chosen judge but cannot run: {reason}. Merges and reranks wait until it can.",
+      "unavailable": {
+        "no-key": "its key is not set",
+        "chatgpt-active": "Sign in with ChatGPT is the active OpenAI credential, and the Decisions API accepts only an API key",
+        "rejected": "its key was refused",
+        "signed-out": "its provider is signed out",
+        "unrecognized": "this version of Damocles does not offer it",
+        "not-in-catalog": "pi's model catalog does not include its model"
+      },
+      "unknown": "the judge model, shown once a chat has started",
       "rejected": "{provider} skipped: {reason}. Damocles tries it again in 5 minutes, or at once when you save its key.",
       "rejection": {
         "unauthorized": "the key was not accepted",
         "payment-required": "the account has no credit",
-        "forbidden": "the key has no access to Jev"
+        "forbidden": "the key has no access to the classifier"
       }
     }
   },
@@ -1723,7 +1730,7 @@
       "saveFailed": "Failed to save key",
       "cleared": "API key cleared",
       "clearFailed": "Failed to clear key",
-      "hint": "Stored encrypted by your operating system's credential store. Used for image generation, for Jev when no TypeSafe key is set, and by the Explore agent when its provider is OpenRouter. Saving it does not turn on the Explore agent."
+      "hint": "Stored encrypted by your operating system's credential store. Used for image generation and for Jev when no TypeSafe key is set."
     }
   },
   "claudeAuth": {
@@ -1835,6 +1842,7 @@
       "noModel": "No sub-call model is configured, so the audit cannot run.",
       "nothing": "No memories are eligible for the audit.",
       "note": "Pinned memories and notes are never graded. Nothing changes until you apply.",
+      "effortCaveat": "Output tokens and cost are estimated at {fitted} effort. This run uses {effort}, so they can differ.",
       "confirmNew": "Starting a new audit ends review and revert of the current run: its undecided proposals can no longer be applied, and its applied changes can no longer be reverted here.",
       "confirmStart": "Start new audit",
       "confirmCancel": "Cancel"
@@ -1949,9 +1957,6 @@
     "decline": "Decline",
     "accept": "Accept"
   },
-  "explore": {
-    "kind": "Explore"
-  },
   "remoteImage": {
     "label": "🖼️ image from {host}, click to load",
     "unknownHost": "remote host"
@@ -2043,6 +2048,11 @@
     "runNowTitle": "Run a full consolidation pass now",
     "runNow": "Run now",
     "retryNow": "Retry now",
+    "setAside": {
+      "summary": "{n} turn set aside after the model failed on it {attempts} times. | {n} turns set aside after the model failed on them {attempts} times.",
+      "returnToQueue": "Return to queue",
+      "returnToQueueTitle": "Return the set-aside turns to the queue for the next pass"
+    },
     "signIn": "Sign in to a model",
     "idle": "Idle",
     "running": "Running",
@@ -2067,6 +2077,7 @@
     "failure": {
       "noModel": "No model is signed in. Queued turns are safe and will retry.",
       "unavailable": "Memory system is unavailable. Try reloading the window.",
+      "extract": "Extraction failed: {reason}. Queued turns are safe and will retry.",
       "generic": "Consolidation failed."
     },
     "justNow": "just now",
@@ -2111,7 +2122,17 @@
       "label": "Consolidation phases",
       "skippedBecause": "skipped: {reason}",
       "skipped": "skipped",
-      "failed": "failed"
+      "failed": "failed",
+      "reason": {
+        "autoExtractOff": "auto-extract off",
+        "noQueuedTurns": "no queued turns",
+        "unanswered": "the model gave no answer",
+        "rejected": "the provider refused the request",
+        "invalidShape": "the answer had an invalid shape",
+        "unreachable": "the model could not be reached",
+        "credential": "the model's sign-in or key was refused",
+        "noModel": "no model available"
+      }
     }
   },
   "memoryPanel": {
@@ -2212,7 +2233,8 @@
     "groups": {
       "workspace": "Workspace",
       "model": "Model",
-      "explore": "Explore & memory",
+      "explore": "Explore",
+      "background": "Background work",
       "imageGeneration": "Image generation"
     },
     "placeholders": {
@@ -2225,8 +2247,7 @@
     "invalid": {
       "integerRange": "Enter a whole number from {min} to {max}.",
       "amount": "Enter an amount above 0, such as 5 or 2.50.",
-      "positiveInteger": "Enter a whole number above 0.",
-      "required": "Enter a value."
+      "positiveInteger": "Enter a whole number above 0."
     },
     "effort": {
       "none": "None",
@@ -2304,10 +2325,6 @@
         "label": "Reasoning effort",
         "description": "Higher effort thinks longer before answering."
       },
-      "thinkingTokens": {
-        "label": "Thinking budget",
-        "description": "Tokens the model may spend thinking before it answers."
-      },
       "disableThinking": {
         "label": "Disable thinking",
         "description": "Answer without a thinking step."
@@ -2327,10 +2344,6 @@
       "defaultEffort": {
         "label": "Default reasoning effort",
         "description": "Remembered per model."
-      },
-      "defaultThinkingTokens": {
-        "label": "Default thinking budget",
-        "description": "Tokens a new chat may spend thinking before it answers."
       },
       "defaultDisableThinking": {
         "label": "Disable thinking",
@@ -2372,21 +2385,26 @@
         "label": "TypeSafe",
         "description": "API key for the Jev memory judge."
       },
-      "exploreProvider": {
-        "label": "Explore model",
-        "description": "Cheap model for the Explore agent and memory extraction."
-      },
       "exploreModel": {
-        "label": "Explore model ID",
-        "description": "The provider's model ID, such as gemini-2.5-flash."
+        "label": "Explore model",
+        "description": "Model for the Explore subagent. Default runs it on the small model of the chat's provider (Haiku 5.5 for Claude, GPT-6 Luna for OpenAI) at medium effort, and on the chat's own model at the chat's effort when that small model is unavailable. A chosen model needs its provider signed in and never falls back to another model. Saved in your user settings, for every project."
       },
       "exploreEffort": {
-        "label": "Explore reasoning effort",
-        "description": "How long the Explore model thinks."
+        "label": "Explore reasoning effort"
       },
-      "exploreApiKey": {
-        "label": "Explore API key",
-        "description": "Stored in your system's secret store."
+      "backgroundModel": {
+        "label": "Background model",
+        "description": "Runs chat titles, memory extraction, profiles, query expansion and the quality audit. Automatic uses the first signed-in model of Haiku 5.5, GPT-6 Luna, Step 5 Preview and DeepSeek V4.1 Flash; a chosen model never falls back to another provider."
+      },
+      "backgroundEffort": {
+        "label": "Background reasoning effort"
+      },
+      "memoryJudge": {
+        "label": "Memory judge",
+        "description": "Judges memory contradictions and reranks memories. Automatic uses the first available classifier of Jev (TypeSafe), Jev (OpenRouter) and GPT-6 Luna, then the first signed-in small model; a chosen judge that cannot run never falls back."
+      },
+      "memoryJudgeEffort": {
+        "label": "Memory judge reasoning effort"
       },
       "teamEnabled": {
         "label": "Enable teams",
@@ -2526,9 +2544,9 @@
     },
     "consolidation": {
       "subtitle": "Turns your conversations into durable memories",
-      "lastPass": "Last pass · extracted {n}",
-      "noPass": "Last pass",
-      "nothingExtracted": "The last pass kept nothing new."
+      "lastRun": "Last run · extracted {n}",
+      "noRun": "Last run",
+      "nothingExtracted": "The last run kept nothing new."
     },
     "navigator": {
       "title": "Prompt navigator",

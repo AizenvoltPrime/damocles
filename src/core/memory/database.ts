@@ -9,7 +9,7 @@ type NodeDatabaseSync = InstanceType<typeof DatabaseSync>;
 
 type SqlParam = null | number | bigint | string | Buffer | Uint8Array;
 
-const CURRENT_VERSION = 5;
+const CURRENT_VERSION = 7;
 
 // Shared so the desynced-index heal can DROP + recreate the FTS table with identical DDL.
 const CREATE_FTS_SQL = `CREATE VIRTUAL TABLE memories_fts USING fts5(
@@ -190,12 +190,27 @@ CREATE TABLE memory_audit_proposals (
 CREATE INDEX idx_audit_proposals_run_status ON memory_audit_proposals(run_id, status);
 `;
 
+// Poison-turn handling: an extraction the model did not answer counts against each turn it held, and a
+// turn that reaches the limit is set aside until the user retries it. The claim reads claimable rows oldest first from the index.
+const MIGRATION_V6 = `
+ALTER TABLE memory_candidates ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE memory_candidates ADD COLUMN set_aside_at INTEGER;
+CREATE INDEX IF NOT EXISTS idx_candidates_claimable ON memory_candidates(consumed, set_aside_at, created_at);
+`;
+
+// The set-aside count reads this partial index; the claimable index leads with `consumed` and cannot serve it.
+const MIGRATION_V7 = `
+CREATE INDEX IF NOT EXISTS idx_candidates_set_aside ON memory_candidates(set_aside_at) WHERE set_aside_at IS NOT NULL;
+`;
+
 const MIGRATIONS: Record<number, string> = {
   1: MIGRATION_V1,
   2: MIGRATION_V2,
   3: MIGRATION_V3,
   4: MIGRATION_V4,
   5: MIGRATION_V5,
+  6: MIGRATION_V6,
+  7: MIGRATION_V7,
 };
 
 export interface OpenDatabaseOptions {

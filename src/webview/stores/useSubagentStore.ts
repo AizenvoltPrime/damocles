@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
-import type { ChatMessage, ToolCall } from '@shared/types/session';
+import type { ChatMessage, ToolAbandonReason, ToolCall } from '@shared/types/session';
 import type { SubagentState, SubagentResult } from '@shared/types/subagents';
 import type { AgentUsageTotals } from '@shared/usage-accounting';
 import type { EffortBadgeLevel } from '@shared/effort-badge';
@@ -15,7 +15,7 @@ export interface StreamingSubagentMessage {
   isThinkingPhase: boolean;
 }
 
-type ToolStatus = { status: ToolCall['status']; result?: string; errorMessage?: string; imageCount?: number };
+type ToolStatus = { status: ToolCall['status']; result?: string; errorMessage?: string; imageCount?: number; abandonReason?: ToolAbandonReason };
 
 /** The card heading: a resume card names the agent it continues until the agent's own details arrive. */
 export function subagentHeading(
@@ -26,6 +26,23 @@ export function subagentHeading(
     return { title: t('subagentDisplay.resuming', { id: subagent.resume.agentId.slice(0, 8) }), resumed: false };
   }
   return { title: subagent.description, resumed: subagent.resume !== undefined };
+}
+
+/** A running card's status line: the retry pi waits out before re-sending a failed call, else the progress summary. */
+export function subagentStatusLine(
+  subagent: SubagentState,
+  t: (key: string, params: Record<string, unknown>) => string,
+): string | undefined {
+  if (subagent.retry) return t('status.retrying', { attempt: subagent.retry.attempt, max: subagent.retry.maxAttempts });
+  return subagent.progressSummary || undefined;
+}
+
+/** The agent's tool count: the recorded one once it ended, else the transcript's calls that ran (an abandoned call never did). */
+export function subagentToolCount(subagent: Pick<SubagentState, 'result' | 'toolCalls' | 'messages'>): number {
+  const recorded = subagent.result?.totalToolUseCount;
+  if (recorded !== undefined) return recorded;
+  const calls = [...subagent.toolCalls, ...subagent.messages.flatMap((message) => message.toolCalls ?? [])];
+  return calls.filter((call) => call.status !== 'abandoned').length;
 }
 
 export type EndedSubagentStatus = Exclude<SubagentState['status'], 'running'>;
@@ -47,6 +64,7 @@ function restoredSubagentStatus(tool: HistoryToolCall): SubagentState['status'] 
 function extractLastTextFromMessages(agentMessages?: HistoryAgentMessage[]): string {
   if (!agentMessages || agentMessages.length === 0) return '';
   for (const msg of [...agentMessages].reverse()) {
+    if (msg.role === 'error') continue;
     const texts = msg.contentBlocks
       .filter((b): b is { type: 'text'; text: string } => b.type === 'text' && 'text' in b)
       .map(b => b.text);
@@ -61,7 +79,12 @@ function buildChatMessagesFromHistory(
   startTime: number,
   existingToolStatuses?: Map<string, ToolStatus>
 ): ChatMessage[] {
-  return agentMessages.map((msg, idx) => {
+  return agentMessages.map((msg, idx): ChatMessage => {
+    const id = `${idPrefix}-msg-${idx}`;
+    if (msg.role === 'error') {
+      const text = msg.contentBlocks.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('');
+      return { id, role: 'error', content: text, timestamp: startTime + idx };
+    }
     const contentBlocks: ContentBlock[] = [];
     const toolCalls: ToolCall[] = [];
 
@@ -80,28 +103,34 @@ function buildChatMessagesFromHistory(
         const errorMessage = existing?.errorMessage ?? (block.isError ? block.result : undefined);
         // Both callers hand this a transcript whose run is over, so a block with no recorded result
         // never reached an outcome and a tracked pre-terminal status would spin for the session's life.
-        const recorded: ToolCall['status'] = block.isError
-          ? 'failed'
-          : block.result === undefined ? 'unrecorded' : 'completed';
+        const recorded: ToolCall['status'] = block.abandoned
+          ? 'abandoned'
+          : block.isError
+            ? 'failed'
+            : block.result === undefined ? 'unrecorded' : 'completed';
         const tracked = existing?.status;
+        const status = resolveCancelledStatus(
+          tracked !== undefined && TERMINAL_TOOL_STATUSES.has(tracked) ? tracked : recorded,
+          block.metadata,
+        );
+        const abandonReason = status === 'abandoned' ? existing?.abandonReason ?? block.abandoned : undefined;
         toolCalls.push({
           id: block.id,
           name: block.name,
           input: block.input,
-          status: resolveCancelledStatus(
-            tracked !== undefined && TERMINAL_TOOL_STATUSES.has(tracked) ? tracked : recorded,
-            block.metadata,
-          ),
+          status,
+          ...(abandonReason !== undefined && { abandonReason }),
           ...(result !== undefined && { result }),
           ...(errorMessage !== undefined && { errorMessage }),
           ...(imageCount !== undefined && { imageCount }),
           ...(block.metadata !== undefined && { metadata: block.metadata }),
+          ...(block.durationMs !== undefined && { durationMs: block.durationMs }),
         });
       }
     }
 
     return {
-      id: `${idPrefix}-msg-${idx}`,
+      id,
       role: msg.role,
       content: '',
       contentBlocks,
@@ -244,7 +273,7 @@ export const useSubagentStore = defineStore('subagent', () => {
     const subagent = subagents.value[toolId];
     if (!subagent) return;
     // The stale end time is dropped, not set to undefined, so a later spread cannot resurrect it.
-    const { endTime: _clearedEndTime, ...withoutEndTime } = subagent;
+    const { endTime: _clearedEndTime, retry: _clearedRetry, ...withoutEndTime } = subagent;
     subagents.value = {
       ...subagents.value,
       [toolId]: {
@@ -259,10 +288,11 @@ export const useSubagentStore = defineStore('subagent', () => {
   function endSubagent(agentToolId: string, status: EndedSubagentStatus): void {
     const subagent = subagents.value[agentToolId];
     if (subagent && subagent.status === 'running') {
+      const { retry: _clearedRetry, ...withoutRetry } = subagent;
       subagents.value = {
         ...subagents.value,
         [agentToolId]: {
-          ...subagent,
+          ...withoutRetry,
           status,
           endTime: Date.now(),
         },
@@ -288,7 +318,8 @@ export const useSubagentStore = defineStore('subagent', () => {
 
     for (const [id, subagent] of entries) {
       if (subagent.status === 'running') {
-        updated[id] = { ...subagent, status: 'cancelled', endTime: now };
+        const { retry: _clearedRetry, ...withoutRetry } = subagent;
+        updated[id] = { ...withoutRetry, status: 'cancelled', endTime: now };
         hasChanges = true;
       } else {
         updated[id] = subagent;
@@ -341,6 +372,38 @@ export const useSubagentStore = defineStore('subagent', () => {
         },
       };
     }
+  }
+
+  /** A failed model call pi will not re-run. Its streamed text, if it sealed none, ends with it. */
+  function addSubagentError(toolUseId: string, message: string): void {
+    const subagent = subagents.value[toolUseId];
+    if (!subagent || subagent.messagesSealed) return;
+    const { [toolUseId]: _, ...restStreaming } = streamingMessages.value;
+    streamingMessages.value = restStreaming;
+    const error: ChatMessage = { id: `${toolUseId}-error-${Date.now()}-${Math.random().toString(36).slice(2)}`, role: 'error', content: message, timestamp: Date.now() };
+    subagents.value = { ...subagents.value, [toolUseId]: { ...subagent, messages: [...subagent.messages, error] } };
+  }
+
+  /** A failed call pi re-runs: what it streamed and sealed under `sdkMessageId` goes, as a reload omits it. */
+  function retractSubagentMessage(toolUseId: string, sdkMessageId: string): void {
+    const subagent = subagents.value[toolUseId];
+    if (!subagent || subagent.messagesSealed) return;
+    if (streamingMessages.value[toolUseId]?.sdkMessageId === sdkMessageId) {
+      const { [toolUseId]: _, ...restStreaming } = streamingMessages.value;
+      streamingMessages.value = restStreaming;
+    }
+    const messages = subagent.messages.filter((m) => m.sdkMessageId !== sdkMessageId);
+    if (messages.length === subagent.messages.length) return;
+    subagents.value = { ...subagents.value, [toolUseId]: { ...subagent, messages } };
+  }
+
+  /** The retry wait of a running card; null ends it. */
+  function setSubagentRetry(toolUseId: string, retry: { attempt: number; maxAttempts: number } | null): void {
+    const subagent = subagents.value[toolUseId];
+    if (!subagent) return;
+    const { retry: _clearedRetry, ...withoutRetry } = subagent;
+    const next = retry && subagent.status === 'running' ? { ...withoutRetry, retry } : withoutRetry;
+    subagents.value = { ...subagents.value, [toolUseId]: next };
   }
 
   function addUserMessageToSubagent(toolUseId: string, message: string, images?: ImageBlock[]): void {
@@ -434,7 +497,8 @@ export const useSubagentStore = defineStore('subagent', () => {
     result?: string,
     errorMessage?: string,
     durationMs?: number,
-    imageCount?: number
+    imageCount?: number,
+    abandonReason?: ToolAbandonReason
   ): boolean {
     // Live output is view state for a running call, so the keys are dropped rather than set to
     // undefined, which exactOptionalPropertyTypes rejects.
@@ -449,6 +513,7 @@ export const useSubagentStore = defineStore('subagent', () => {
         ...(errorMessage !== undefined && { errorMessage }),
         ...(durationMs !== undefined && { durationMs }),
         ...(imageCount !== undefined && { imageCount }),
+        ...(abandonReason !== undefined && { abandonReason }),
       };
     };
 
@@ -751,6 +816,7 @@ export const useSubagentStore = defineStore('subagent', () => {
         ...(tc.result !== undefined && { result: tc.result }),
         ...(tc.errorMessage !== undefined && { errorMessage: tc.errorMessage }),
         ...(tc.imageCount !== undefined && { imageCount: tc.imageCount }),
+        ...(tc.abandonReason !== undefined && { abandonReason: tc.abandonReason }),
       });
     };
     for (const tc of subagent.toolCalls) rememberStatus(tc);
@@ -803,6 +869,9 @@ export const useSubagentStore = defineStore('subagent', () => {
     setSubagentResult,
     addMessageToSubagent,
     addUserMessageToSubagent,
+    addSubagentError,
+    retractSubagentMessage,
+    setSubagentRetry,
     updateSubagentStreaming,
     getSubagentStreaming,
     addToolCallToSubagent,

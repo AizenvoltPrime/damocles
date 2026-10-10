@@ -200,7 +200,7 @@ describe('createSubagentSession — the deferred baseline (Slice 3 §3.2)', () =
   });
 
   it('`tools:` still carries every browser name — the eligible set is NOT narrowed (constraint 1)', async () => {
-    // The failure mode this guards: pi freezes `options.tools` into `_allowedToolNames` and filters the
+    // The failure mode this guards: pi turns `options.tools` into its allowlist and filters the
     // REGISTRY by it, and `setActiveToolsByName` silently ignores unknown names. Narrowing `tools:` here
     // would evict the browser tools from the registry permanently — ToolSearch would "succeed" forever
     // while loading nothing. Only the ACTIVE set may narrow.
@@ -376,7 +376,7 @@ describe('the baseline survives to the first request (real pi AgentSession)', ()
       cwd: process.cwd(),
       resourceLoader,
       modelRuntime: { getAvailableSnapshot: () => [] } as never,
-      // Mirrors what `createAgentSessionFromServices` derives from `opts.tools` (sdk.js:145-148 in pi 0.99.2):
+      // Mirrors what `createAgentSessionFromServices` derives from `opts.tools` (sdk.js:153-160 in pi 1.1.0):
       // `tools:` becomes BOTH the allowlist and the construction-time active set.
       allowedToolNames: tools,
       initialActiveToolNames: tools,
@@ -465,7 +465,7 @@ describe('the baseline survives to the first request (real pi AgentSession)', ()
  *
  * The shape mirrors the `web` case above deliberately: the CONJUNCTION is the whole guard. "The
  * baseline omits every `mcp__*`" alone is satisfied by a bug that narrowed `tools:` and evicted the MCP
- * definitions from pi's registry forever (pi freezes `options.tools` into `_allowedToolNames`, and
+ * definitions from pi's registry forever (pi turns `options.tools` into its allowlist, and
  * `setActiveToolsByName` silently ignores unknown names — so that bug looks like success at every later
  * step). "`tools:` keeps every `mcp__*`" alone is satisfied by not deferring at all. Only both together
  * say "deferred, and still recoverable".
@@ -541,8 +541,8 @@ describe('createSubagentSession — the deferred baseline covers MCP (Slice 1, c
   });
 
   it('an `mcp__*` name with no customTool definition is REPORTED, since pi drops it in silence', async () => {
-    // The single silent failure mode of the whole delivery mechanism: pi filters its registry by the
-    // frozen `_allowedToolNames`, so a name in `tools:` with nothing behind it vanishes with no error,
+    // The single silent failure mode of the whole delivery mechanism: pi registers a name only from a
+    // definition, so a name in `tools:` with nothing behind it vanishes with no error,
     // no warning and no log. Every nested spawn funnels through `createSubagentSession`, which makes it
     // the one place the class is observable at runtime. A diagnostic, not a guard — the spawn still
     // proceeds, because a missing tool must not kill an agent.
@@ -678,14 +678,14 @@ describe('createSubagentSession — the deferred baseline covers MCP (Slice 1, c
 });
 
 /**
- * G2 / criterion 2 — the residual-fragility note at `pi-runtime.ts:706-733`, verified rather than assumed.
+ * G2 / criterion 2 — the residual-fragility note in `FolderRuntime.createSubagentSession`, verified rather than assumed.
  *
  * The note reasons that pi's force-activation branch (`_refreshToolRegistry` unions in every allowed
  * name when `allowedToolNames` is set) cannot fire in a nested session, and ends: "if a future change
  * registers a tool into a LIVE nested session, re-apply this baseline after it." Delivering MCP as
  * `customTools` is adjacent to exactly that. The EXPECTED finding is that it does not apply, because
  * `customTools` are read inside `_refreshToolRegistry` during CONSTRUCTION
- * (`dist/core/agent-session.js:2757` in pi 0.99.2), not through a post-bind `registerTool`.
+ * (`dist/core/agent-session.js:2817` in pi 1.1.0), not through a post-bind `registerTool`.
  *
  * This is asserted on a REAL `AgentSession` because the claim is about pi's construction order, and a
  * fake session is precisely the thing that cannot testify to it. If this suite goes red, the finding is
@@ -726,7 +726,7 @@ describe('G2 — MCP customTools do not defeat the baseline (real pi AgentSessio
       cwd: process.cwd(),
       resourceLoader,
       modelRuntime: { getAvailableSnapshot: () => [] } as never,
-      // Exactly what `createAgentSessionFromServices` derives from `opts.tools` (sdk.js:145-148 in pi 0.99.2).
+      // Exactly what `createAgentSessionFromServices` derives from `opts.tools` (sdk.js:153-160 in pi 1.1.0).
       allowedToolNames: tools,
       initialActiveToolNames: tools,
       customTools,
@@ -779,13 +779,19 @@ describe('G2 — MCP customTools do not defeat the baseline (real pi AgentSessio
     for (const n of baseline) expect(after, n).toContain(n);
   });
 
-  it('an MCP name absent from `tools:` can never be activated — pi ignores it silently', () => {
-    // Why `mcp.names` MUST reach `tools:` (brief §8, first bullet). Registered as a customTool but not
-    // allowed, the tool is filtered out of the registry and every later activation is a silent no-op —
-    // no error, no log, and ToolSearch reporting success the whole time.
-    const session = realSessionWithCustomTools(['read', 'grep'], mcpLikeCustomTools(MCP_NAMES), ['read', 'grep']);
+  // Why every MCP name MUST reach `tools:`: each later activation of an unlisted one is a silent no-op.
+  it('an MCP name absent from a `tools:` that names an `mcp__` entry is unregistered and can never be activated', () => {
+    const session = realSessionWithCustomTools(['read', 'grep', 'mcp__git__commit'], mcpLikeCustomTools(MCP_NAMES), ['read', 'grep']);
 
     expect(session.getAllTools().map((t) => t.name)).not.toContain('mcp__git__status');
+    session.setActiveToolsByName(['read', 'grep', 'mcp__git__status']);
+    expect(session.getActiveToolNames()).not.toContain('mcp__git__status');
+  });
+
+  it('an MCP name absent from a `tools:` that names no `mcp__` entry stays registered but can never be activated', () => {
+    const session = realSessionWithCustomTools(['read', 'grep'], mcpLikeCustomTools(MCP_NAMES), ['read', 'grep']);
+
+    expect(session.getAllTools().map((t) => t.name)).toContain('mcp__git__status');
     session.setActiveToolsByName(['read', 'grep', 'mcp__git__status']);
     expect(session.getActiveToolNames()).not.toContain('mcp__git__status');
   });

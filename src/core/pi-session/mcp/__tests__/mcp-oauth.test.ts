@@ -312,6 +312,27 @@ describe('mcp oauth', () => {
       expect(entry?.clientInfo?.clientId).toBe('new-client');
     });
 
+    it('keeps discovery in memory and writes nothing to the keychain for a save that changes only discovery', async () => {
+      const auth = await import('../mcp-auth');
+      const storage = secretStorage(keychain);
+      const writes: string[] = [];
+      const write = storage.store;
+      storage.store = async (key, value) => {
+        writes.push(key);
+        await write(key, value);
+      };
+      auth.setMcpSecretStorage(storage);
+      await auth.saveAuthEntry(at('discovery-only'), { tokens: { accessToken: 'a', refreshToken: 'r' }, clientInfo: { clientId: 'c' } });
+      writes.length = 0;
+      const store = auth.createOAuthStateStore(at('discovery-only'), { interactive: false });
+
+      await store.save({ ...(await store.load()), discovery: { authorizationServerUrl: 'https://as.example.com' } });
+
+      expect(writes).toEqual([]);
+      expect((await store.load()).discovery).toEqual({ authorizationServerUrl: 'https://as.example.com' });
+      expect((await auth.getAuthEntry(at('discovery-only')))?.tokens?.accessToken).toBe('a');
+    });
+
     it('still applies a connection\u2019s own token change after a load', async () => {
       const auth = await import('../mcp-auth');
       await auth.saveAuthEntry(at('own'), { tokens: { accessToken: 'old', refreshToken: 'r' }, clientInfo: { clientId: 'c' } });
@@ -378,15 +399,81 @@ describe('mcp oauth', () => {
       expect(server.registrations[0]).toMatchObject({ client_name: 'Acme Agent' });
     });
 
+    it('accepts an iss equal to the issuer string, trailing slash included', async () => {
+      const server = await fakeServer({ issuer: (origin) => `${origin}/`, callbackIss: (origin) => `${origin}/` });
+      browserFor(server);
+      const { authenticateMcpServer, getAuthStatus } = await import('../mcp-auth-flow');
+
+      await expect(authenticateMcpServer(await oauthModule(), 'iss-exact', { url: server.mcpUrl, auth: 'oauth' })).resolves.toEqual({ ok: true });
+
+      expect(server.tokenRequests.map((r) => r.params.get('grant_type'))).toEqual(['authorization_code']);
+      expect(await getAuthStatus('iss-exact', server.mcpUrl)).toBe('authenticated');
+    });
+
+    it('rejects an iss that differs from the issuer only by a trailing slash (RFC 9207 compares exactly)', async () => {
+      const server = await fakeServer({ issuer: (origin) => `${origin}/`, callbackIss: (origin) => origin });
+      browserFor(server);
+      const { authenticateMcpServer, getAuthStatus } = await import('../mcp-auth-flow');
+      const oauth = await oauthModule();
+
+      const result = await authenticateMcpServer(oauth, 'iss-slash', { url: server.mcpUrl, auth: 'oauth' });
+
+      expect(result).toEqual({ ok: false, error: new oauth.OAuthIssuerMismatchError(`${server.origin}/`, server.origin).message });
+      expect(server.tokenRequests).toHaveLength(0);
+      expect(await getAuthStatus('iss-slash', server.mcpUrl)).toBe('not_authenticated');
+    });
+
+    it('rejects a code whose iss names another issuer even when the server never advertised iss support', async () => {
+      const server = await fakeServer({ issParameterSupported: false, callbackIss: () => 'https://evil.example.com' });
+      browserFor(server);
+      const { authenticateMcpServer, getAuthStatus } = await import('../mcp-auth-flow');
+      const oauth = await oauthModule();
+
+      const result = await authenticateMcpServer(oauth, 'iss-unadvertised', { url: server.mcpUrl, auth: 'oauth' });
+
+      expect(result).toEqual({ ok: false, error: new oauth.OAuthIssuerMismatchError(server.origin, 'https://evil.example.com').message });
+      expect(server.tokenRequests.filter((r) => r.params.get('grant_type') === 'authorization_code')).toHaveLength(0);
+      expect(await getAuthStatus('iss-unadvertised', server.mcpUrl)).toBe('not_authenticated');
+    });
+
+    it('rejects a code whose iss is not the authorization server the redirect was built for when no metadata was found', async () => {
+      const server = await fakeServer({ discoverable: false, callbackIss: () => 'https://evil.example.com' });
+      browserFor(server);
+      const { authenticateMcpServer, getAuthStatus } = await import('../mcp-auth-flow');
+      const oauth = await oauthModule();
+
+      const result = await authenticateMcpServer(oauth, 'iss-no-metadata', { url: server.mcpUrl, auth: 'oauth' });
+
+      expect(result).toEqual({ ok: false, error: new oauth.OAuthIssuerMismatchError(`${server.origin}/`, 'https://evil.example.com').message });
+      expect(server.authorizeRequests[0]?.pathname).toBe('/authorize');
+      expect(server.tokenRequests).toHaveLength(0);
+      expect(await getAuthStatus('iss-no-metadata', server.mcpUrl)).toBe('not_authenticated');
+    });
+
+    it('accepts an iss naming the authorization server, with or without its trailing slash, when no metadata was found', async () => {
+      const server = await fakeServer({ discoverable: false, callbackIss: (origin) => origin });
+      browserFor(server);
+      const { authenticateMcpServer, getAuthStatus } = await import('../mcp-auth-flow');
+      const oauth = await oauthModule();
+
+      await expect(authenticateMcpServer(oauth, 'iss-origin', { url: server.mcpUrl, auth: 'oauth' })).resolves.toEqual({ ok: true });
+      expect(await getAuthStatus('iss-origin', server.mcpUrl)).toBe('authenticated');
+
+      const slashed = await fakeServer({ discoverable: false, callbackIss: (origin) => `${origin}/` });
+      browserFor(slashed);
+      await expect(authenticateMcpServer(oauth, 'iss-origin-slash', { url: slashed.mcpUrl, auth: 'oauth' })).resolves.toEqual({ ok: true });
+      expect(await getAuthStatus('iss-origin-slash', slashed.mcpUrl)).toBe('authenticated');
+    });
+
     it('rejects a code whose iss names another issuer, and stores no tokens', async () => {
       const server = await fakeServer({ callbackIss: () => 'https://evil.example.com' });
       browserFor(server);
       const { authenticateMcpServer, getAuthStatus } = await import('../mcp-auth-flow');
 
-      const result = await authenticateMcpServer(await oauthModule(), 'iss', { url: server.mcpUrl, auth: 'oauth' });
+      const oauth = await oauthModule();
+      const result = await authenticateMcpServer(oauth, 'iss', { url: server.mcpUrl, auth: 'oauth' });
 
-      expect(result.ok).toBe(false);
-      expect(result.error).toMatch(/issuer/i);
+      expect(result).toEqual({ ok: false, error: new oauth.OAuthIssuerMismatchError(server.origin, 'https://evil.example.com').message });
       expect(server.tokenRequests.filter((r) => r.params.get('grant_type') === 'authorization_code')).toHaveLength(0);
       expect(await getAuthStatus('iss', server.mcpUrl)).toBe('not_authenticated');
     });
@@ -396,10 +483,57 @@ describe('mcp oauth', () => {
       browserFor(server);
       const { authenticateMcpServer, getAuthStatus } = await import('../mcp-auth-flow');
 
-      const result = await authenticateMcpServer(await oauthModule(), 'no-iss', { url: server.mcpUrl, auth: 'oauth' });
+      const oauth = await oauthModule();
+      const result = await authenticateMcpServer(oauth, 'no-iss', { url: server.mcpUrl, auth: 'oauth' });
 
-      expect(result.ok).toBe(false);
+      expect(result).toEqual({ ok: false, error: new oauth.OAuthIssuerMismatchError(server.origin, undefined).message });
+      expect(server.tokenRequests.filter((r) => r.params.get('grant_type') === 'authorization_code')).toHaveLength(0);
       expect(await getAuthStatus('no-iss', server.mcpUrl)).toBe('not_authenticated');
+    });
+
+    it('rejects a code whose iss is not the issuer of oauth.authServerMetadataUrl', async () => {
+      const server = await fakeServer({ discoverable: false, issuer: () => 'https://issuer.example.com', callbackIss: () => 'https://evil.example.com' });
+      browserFor(server);
+      const { authenticateMcpServer, getAuthStatus } = await import('../mcp-auth-flow');
+      const oauth = await oauthModule();
+
+      const result = await authenticateMcpServer(oauth, 'configured-iss', {
+        url: server.mcpUrl,
+        auth: 'oauth',
+        oauth: { authServerMetadataUrl: server.customMetadataUrl },
+      });
+
+      expect(result).toEqual({ ok: false, error: new oauth.OAuthIssuerMismatchError('https://issuer.example.com', 'https://evil.example.com').message });
+      expect(server.tokenRequests).toHaveLength(0);
+      expect(await getAuthStatus('configured-iss', server.mcpUrl)).toBe('not_authenticated');
+    });
+
+    it('signs in against a server that answers an empty grant with scope ""', async () => {
+      const server = await fakeServer();
+      browserFor(server);
+      const { authenticateMcpServer, getAuthStatus } = await import('../mcp-auth-flow');
+
+      await expect(authenticateMcpServer(await oauthModule(), 'empty-scope', { url: server.mcpUrl, auth: 'oauth' })).resolves.toEqual({ ok: true });
+
+      expect(server.authorizeRequests[0]!.searchParams.has('scope')).toBe(false);
+      expect(server.issued).toEqual([expect.objectContaining({ scope: '' })]);
+      const tokens = (await (await import('../mcp-auth')).getAuthEntry(at('empty-scope', server.mcpUrl)))?.tokens;
+      expect(tokens?.accessToken).toBe(server.issued[0]!.accessToken);
+      expect(tokens).not.toHaveProperty('scope');
+      expect(await getAuthStatus('empty-scope', server.mcpUrl)).toBe('authenticated');
+    });
+
+    it('stores a token with expires_in: null as not expiring', async () => {
+      const server = await fakeServer({ expiresIn: null });
+      browserFor(server);
+      const { authenticateMcpServer, getAuthStatus } = await import('../mcp-auth-flow');
+
+      await expect(authenticateMcpServer(await oauthModule(), 'null-expiry', { url: server.mcpUrl, auth: 'oauth' })).resolves.toEqual({ ok: true });
+
+      expect((await (await import('../mcp-auth')).getAuthEntry(at('null-expiry', server.mcpUrl)))?.tokens?.expiresAt).toBeUndefined();
+      expect(await getAuthStatus('null-expiry', server.mcpUrl)).toBe('authenticated');
+      await expect(connectWithFactoryProvider('null-expiry', { url: server.mcpUrl, auth: 'oauth' })).resolves.toHaveLength(1);
+      expect(server.tokenRequests.map((r) => r.params.get('grant_type'))).toEqual(['authorization_code']);
     });
 
     it('uses oauth.authServerMetadataUrl instead of discovery and trusts its issuer', async () => {
@@ -438,6 +572,63 @@ describe('mcp oauth', () => {
 
       expect(server.tokenRequests.at(-1)).toMatchObject({ path: '/custom/token' });
       expect(server.tokenRequests.at(-1)?.params.get('grant_type')).toBe('refresh_token');
+    });
+
+    it('refreshes through oauth.authServerMetadataUrl configured after a sign-in that cached discovered endpoints', async () => {
+      const server = await fakeServer();
+      browserFor(server);
+      const { authenticateMcpServer } = await import('../mcp-auth-flow');
+      await expect(authenticateMcpServer(await oauthModule(), 'late-config', { url: server.mcpUrl, auth: 'oauth' })).resolves.toEqual({ ok: true });
+      server.revokeAccessTokens();
+
+      await expect(
+        connectWithFactoryProvider('late-config', { url: server.mcpUrl, auth: 'oauth', oauth: { authServerMetadataUrl: server.customMetadataUrl } }),
+      ).resolves.toHaveLength(1);
+
+      expect(server.tokenRequests.map((r) => [r.path, r.params.get('grant_type')])).toEqual([
+        ['/token', 'authorization_code'],
+        ['/custom/token', 'refresh_token'],
+      ]);
+    });
+
+    it('never writes a rotated grant back over a newer one when two requests hit 401 at once on an oauth.authServerMetadataUrl server', async () => {
+      let delayNextMetadata = false;
+      const server = await fakeServer({
+        discoverable: false,
+        rotateRefreshTokens: true,
+        // The first configured-document read after expiry outlasts a whole refresh by the other request.
+        metadataDelayMs: (path) => {
+          if (path !== '/custom/as-metadata' || !delayNextMetadata) return 0;
+          delayNextMetadata = false;
+          return 300;
+        },
+      });
+      browserFor(server);
+      const definition = { url: server.mcpUrl, auth: 'oauth' as const, oauth: { authServerMetadataUrl: server.customMetadataUrl } };
+      const oauth = await oauthModule();
+      const { authenticateMcpServer, createMcpAuthProviderFactory } = await import('../mcp-auth-flow');
+      await expect(authenticateMcpServer(oauth, 'rotating', definition)).resolves.toEqual({ ok: true });
+      const rejected = server.issued.at(-1)!.accessToken;
+      server.revokeAccessTokens();
+      const provider = createMcpAuthProviderFactory(oauth)('rotating', server.mcpUrl, definition)!;
+      // What the transport does with a 401: hand it to the provider, then take the token for the retry.
+      const request = async (): Promise<string | undefined> => {
+        await provider.onUnauthorized!({
+          response: new Response('Unauthorized', { status: 401, headers: { 'www-authenticate': 'Bearer' } }),
+          serverUrl: new URL(server.mcpUrl),
+          fetch: globalThis.fetch,
+          token: rejected,
+        });
+        return provider.token();
+      };
+
+      delayNextMetadata = true;
+      const tokens = await Promise.all([request(), request()]);
+
+      const latest = server.issued.at(-1)!.accessToken;
+      expect(tokens).toEqual([latest, latest]);
+      expect(server.tokenRequests.filter((r) => r.params.get('grant_type') === 'refresh_token')).toHaveLength(1);
+      expect((await (await import('../mcp-auth')).getAuthEntry(at('rotating', server.mcpUrl)))?.tokens?.accessToken).toBe(latest);
     });
 
     it('accepts a code without iss when the server never promised one', async () => {
@@ -976,16 +1167,6 @@ describe('mcp oauth', () => {
       ).resolves.toHaveLength(1);
 
       expect(server.tokenRequests.map((r) => r.path)).toEqual(['/custom/token']);
-    });
-  });
-
-  describe('stepUpScope (pi-mcp port)', () => {
-    it('adds the challenged scopes to the granted ones, once each', async () => {
-      const { stepUpScope } = await import('../mcp-oauth-provider');
-      expect(stepUpScope('read write', 'admin read')).toBe('read write admin');
-      expect(stepUpScope(undefined, 'admin')).toBe('admin');
-      expect(stepUpScope('read', undefined)).toBeUndefined();
-      expect(stepUpScope('read', '')).toBeUndefined();
     });
   });
 

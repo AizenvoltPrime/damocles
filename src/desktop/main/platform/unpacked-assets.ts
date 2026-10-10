@@ -10,6 +10,7 @@ export const ASAR_UNPACK: readonly string[] = [
   'dist/formatter-host.js',
   'dist/pty-host.js',
   'dist/quick-open-worker.js',
+  'dist/watch-worker.js',
   'resources/grammars/**',
   // bash, zsh, fish and PowerShell read their integration scripts as real files.
   'resources/shell-integration/**',

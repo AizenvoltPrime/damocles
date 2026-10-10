@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { log } from '../../logger';
 import { PiStreamAdapter, isNothingToCompact } from '../pi-stream-adapter';
 import { TOOL_OUTPUT_COALESCE_MS, ToolOutputCoalescer } from '../tool-output-coalescer';
+import { DAMOCLES_TURN_STOPPED_ENTRY } from '../session-store/constants';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { ModelInfo } from '../../../shared/types/settings';
 import type { TurnState } from '../session-state';
@@ -42,7 +43,9 @@ function fakeSession(events: unknown[], opts?: { entries?: unknown[]; modelRunti
     subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; },
     setAutoCompactionEnabled: () => undefined,
     getLastAssistantText: () => 'Hello there!',
+    getContextUsage: () => undefined,
     play: () => { for (const e of events) listener?.(e); },
+    emit: (e: unknown) => listener?.(e),
   };
 }
 
@@ -52,7 +55,6 @@ function makeAdapter(
     onUserMessageDelivered?: (deliveredText: string) => boolean;
     onMidStreamEntryCommitted?: (id: string) => void;
     modelValue?: () => string;
-    defaultModelValue?: () => string;
     showCacheMissNotices?: () => boolean;
     showThinkingDroppedNotices?: () => boolean;
     onTurnStateChanged?: (state: TurnState, outcome?: TurnOutcome) => void;
@@ -64,8 +66,6 @@ function makeAdapter(
     cwd: '/cwd',
     sessionId: () => 'SID',
     modelValue: hooks?.modelValue ?? (() => 'claude-opus-4-8'),
-    defaultModelValue: hooks?.defaultModelValue ?? (() => 'claude-opus-4-8'),
-    contextWindow: () => 1_000_000,
     supportedModels: () => models,
     permissionMode: () => 'default',
     budgetLimit: () => null,
@@ -89,8 +89,6 @@ function makeBudgetAdapter(out: ExtensionToWebviewMessage[], limit: number, onSt
     cwd: '/cwd',
     sessionId: () => 'SID',
     modelValue: () => 'claude-opus-4-8',
-    defaultModelValue: () => 'claude-opus-4-8',
-    contextWindow: () => 1_000_000,
     supportedModels: () => models,
     permissionMode: () => 'default',
     budgetLimit: () => limit,
@@ -112,6 +110,49 @@ function makeBudgetAdapter(out: ExtensionToWebviewMessage[], limit: number, onSt
 /** A persisted assistant entry billing `cost`, the shape pi's session file holds. */
 function assistantEntry(cost: number, timestamp = '2026-01-01T00:00:00.000Z', usage = { input: 100, output: 42, cacheRead: 5, cacheWrite: 3 }) {
   return { type: 'message', id: `a-${timestamp}`, parentId: null, timestamp, message: { role: 'assistant', usage: { ...usage, cost: { total: cost } } } };
+}
+
+/**
+ * pi's agent loop reports a failed or aborted model call only on the assistant `message_end`
+ * (`stopReason` plus `errorMessage`); it never emits a `message_update` for the stream's error event. Its
+ * `turn_end` follows (pi-agent-core agent-loop.js:141-152).
+ */
+function terminalAssistant(stopReason: 'error' | 'aborted', errorMessage: string, provider = 'anthropic'): unknown[] {
+  const message = { role: 'assistant', content: [], provider, stopReason, errorMessage, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: {} } };
+  return [
+    { type: 'message_start', message },
+    { type: 'message_end', message },
+    { type: 'turn_end', message, toolResults: [] },
+  ];
+}
+
+/**
+ * One failed model call as pi ends its run (pi-agent-core agent-loop.js:143-152), with agent-session's
+ * verdict on `agent_end` (`_willRetryAfterAgentEnd`, agent-session.js:750 and :797).
+ */
+function failedCall(errorMessage: string, willRetry: boolean, provider = 'anthropic'): unknown[] {
+  return [
+    ...terminalAssistant('error', errorMessage, provider),
+    { type: 'agent_end', messages: [], willRetry },
+  ];
+}
+
+/** pi's backoff announcement, emitted before it omits the attempt and sleeps (`_prepareRetry`, agent-session.js:3040). */
+function retryStart(attempt: number, errorMessage: string): unknown {
+  return { type: 'auto_retry_start', attempt, maxAttempts: 3, delayMs: 2000 * 2 ** (attempt - 1), errorMessage };
+}
+
+/** A retried call that answered, then pi's `auto_retry_end` after the listeners saw its `message_end` (agent-session.js:750, :777). */
+function answeredRetry(attempt: number): unknown[] {
+  const message = { role: 'assistant', content: [{ type: 'text', text: 'The answer' }], provider: 'anthropic', stopReason: 'stop', usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: {} } };
+  return [
+    { type: 'agent_start' },
+    { type: 'message_start', message },
+    { type: 'message_end', message },
+    { type: 'auto_retry_end', success: true, attempt },
+    { type: 'turn_end', toolResults: [] },
+    { type: 'agent_end', messages: [], willRetry: false },
+  ];
 }
 
 /**
@@ -218,7 +259,6 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
       { type: 'processing' },
       { type: 'systemInit' },
       { type: 'availableModels' },
-      { type: 'modelUpdate' },
       { type: 'userMessageIdAssigned' },
       { type: 'partial', phase: 'thinking', text: 'Let me think' },
       { type: 'partial', phase: 'text', text: 'Hello there!' },
@@ -321,24 +361,15 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     expect(out).toEqual([]);
   });
 
-  it('session-start modelUpdate reports the true workspace default, not the active panel model', () => {
-    // Regression: `defaultModel: model` clobbered the webview's stored default with the active model
-    // (most visible with stepfun/deepseek). The default must come from defaultModelValue, not modelValue.
+  it('reports no model at the session start, whose one publisher is PiSession', () => {
     const out: ExtensionToWebviewMessage[] = [];
-    const adapter = makeAdapter(out, {
-      modelValue: () => 'step-3.7-flash',
-      defaultModelValue: () => 'claude-opus-4-8',
-    });
+    const adapter = makeAdapter(out, { modelValue: () => 'step-5-preview' });
     const session = fakeSession([{ type: 'agent_settled' }]);
     adapter.subscribe(session as never);
     adapter.beginTurn('corr-default');
 
-    const modelUpdate = out.find((m) => m.type === 'modelUpdate');
-    expect(modelUpdate).toMatchObject({
-      type: 'modelUpdate',
-      activeModel: 'step-3.7-flash',
-      defaultModel: 'claude-opus-4-8',
-    });
+    expect(out.some((m) => m.type === 'systemInit')).toBe(true);
+    expect(out.some((m) => m.type === 'modelUpdate')).toBe(false);
   });
 
   it('a normal completion settles the turn with done + idle + stopInfo', () => {
@@ -379,15 +410,14 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
   });
 
   it('an internally retried turn produces no intermediate idle', () => {
-    // pi decides the retry AFTER the failed assistant message has already emitted its error event, so
-    // the error card must not carry the turn-state transition with it.
+    // pi decides the retry after the failed assistant message has ended, so its message_end cannot carry the turn-state transition.
     const out: ExtensionToWebviewMessage[] = [];
     const turns: TurnState[] = [];
     const adapter = makeAdapter(out, { onTurnStateChanged: (t) => { turns.push(t); } });
     const session = fakeSession([
-      { type: 'message_update', assistantMessageEvent: { type: 'error', reason: 'error', error: { errorMessage: 'overloaded' } } },
-      { type: 'agent_end', messages: [] },
-      { type: 'message_start', message: { role: 'assistant', content: [] } },
+      ...failedCall('overloaded', true),
+      retryStart(1, 'overloaded'),
+      ...answeredRetry(1),
       { type: 'agent_settled' },
     ]);
     adapter.subscribe(session as never);
@@ -396,11 +426,9 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     turns.length = 0;
     session.play();
 
-    expect(out.some((m) => m.type === 'error')).toBe(true);
     // One idle for the whole turn, and it arrives at the settle rather than before the retry.
     expect(turns).toEqual(['idle']);
     expect(out.filter((m) => m.type === 'processing')).toHaveLength(1);
-    expect(out.findIndex((m) => m.type === 'error')).toBeLessThan(out.findIndex((m) => m.type === 'done'));
   });
 
   it('a terminal provider error settles once, with the error card ahead of the result', () => {
@@ -408,7 +436,7 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     const turns: TurnState[] = [];
     const adapter = makeAdapter(out, { onTurnStateChanged: (t) => { turns.push(t); } });
     const session = fakeSession([
-      { type: 'message_update', assistantMessageEvent: { type: 'error', reason: 'error', error: { errorMessage: 'boom' } } },
+      ...terminalAssistant('error', 'boom'),
       { type: 'agent_settled' },
     ]);
     adapter.subscribe(session as never);
@@ -417,7 +445,7 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     turns.length = 0;
     session.play();
 
-    expect(out.map((m) => m.type)).toEqual(['error', 'sessionUsage', 'done', 'processing', 'stopInfo']);
+    expect(out.map((m) => m.type)).toEqual(['userMessageIdAssigned', 'error', 'sessionUsage', 'done', 'processing', 'stopInfo']);
     expect(turns).toEqual(['idle']);
   });
 
@@ -429,7 +457,7 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     const adapter = makeAdapter(out, { onTurnStateChanged: (t) => { turns.push(t); } });
     const session = fakeSession([
       { type: 'agent_end', messages: [] },
-      { type: 'message_update', assistantMessageEvent: { type: 'error', reason: 'aborted', error: { errorMessage: 'cancelled' } } },
+      ...terminalAssistant('aborted', 'cancelled'),
       { type: 'agent_settled' },
     ]);
     adapter.subscribe(session as never);
@@ -457,7 +485,7 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
 
     expect(adapter.markAborted()).toEqual(['tc-1']);
 
-    events.splice(0, events.length, { type: 'message_update', assistantMessageEvent: { type: 'error', reason: 'error', error: { errorMessage: 'This operation was aborted' } } });
+    events.splice(0, events.length, ...failedCall('This operation was aborted', false), { type: 'agent_settled', aborted: true });
     out.length = 0;
     session.play();
     expect(out.some((m) => m.type === 'error' || m.type === 'authFailure')).toBe(false);
@@ -468,7 +496,7 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     const turns: TurnState[] = [];
     const adapter = makeAdapter(out, { onTurnStateChanged: (t) => { turns.push(t); } });
     const session = fakeSession([
-      { type: 'message_update', assistantMessageEvent: { type: 'error', reason: 'aborted', error: { errorMessage: 'cancelled' } } },
+      ...terminalAssistant('aborted', 'cancelled'),
       { type: 'agent_settled' },
     ]);
     adapter.subscribe(session as never);
@@ -477,7 +505,7 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     turns.length = 0;
     session.play();
 
-    expect(out.map((m) => m.type)).toEqual(['sessionCancelled', 'sessionUsage', 'processing']);
+    expect(out.map((m) => m.type)).toEqual(['userMessageIdAssigned', 'sessionCancelled', 'sessionUsage', 'processing']);
     expect(turns).toEqual(['idle']);
   });
 
@@ -606,8 +634,7 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     const out: ExtensionToWebviewMessage[] = [];
     const adapter = makeAdapter(out);
     const session = fakeSession([
-      { type: 'message_start', message: { role: 'assistant', content: [] } },
-      { type: 'message_update', assistantMessageEvent: { type: 'error', reason: 'aborted', error: { errorMessage: 'cancelled' } } },
+      ...terminalAssistant('aborted', 'cancelled'),
     ]);
     adapter.subscribe(session as never);
     adapter.beginTurn('corr-9');
@@ -744,7 +771,8 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     expect(committed).toHaveLength(0);
   });
 
-  it('abandons running tool cards on abort and suppresses a late completion', () => {
+  // pi emits tool_execution_start for every call it handles (agent-loop.js:378-383, :414-419), so a call without one never started.
+  it('abandons at a Stop only the calls pi has not started, and returns every call in flight', () => {
     const out: ExtensionToWebviewMessage[] = [];
     const adapter = makeAdapter(out);
     let listener: ((e: unknown) => void) | undefined;
@@ -752,18 +780,126 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     adapter.subscribe(session as never);
     adapter.beginTurn('corr-10');
 
-    // A long-running tool is mid-execution when the user hits ESC.
-    listener!({ type: 'tool_execution_start', toolCallId: 't1', toolName: 'BrowserOpen', args: { url: 'x' } });
-    adapter.markAborted();
-
-    expect(out.find((m) => m.type === 'toolAbandoned')).toMatchObject({
-      type: 'toolAbandoned', toolUseId: 't1', toolName: 'BrowserOpen',
-    });
-
-    // A tool_execution_end arriving after the abort must NOT resurrect the card as completed.
+    listener!({ type: 'message_update', assistantMessageEvent: { type: 'toolcall_end', toolCall: { id: 't2', name: 'read', arguments: { path: 'a.ts' } } } });
+    listener!({ type: 'tool_execution_start', toolCallId: 't1', toolName: 'bash', args: { command: 'sleep 20' } });
     out.length = 0;
-    listener!({ type: 'tool_execution_end', toolCallId: 't1', toolName: 'BrowserOpen', result: { content: [{ type: 'text', text: 'done' }] }, isError: false });
-    expect(out.some((m) => m.type === 'toolCompleted')).toBe(false);
+
+    expect(adapter.markAborted()).toEqual(['t2', 't1']);
+    expect(out).toEqual([{ type: 'toolAbandoned', toolUseId: 't2', toolName: 'Read', parentToolUseId: null, reason: 'stopped' }]);
+  });
+
+  // pi's abort settles a started call before it returns (agent-loop.js:397, :441, :446); this covers a run that settles without that end.
+  it('settles a started call whose end never arrived when the aborted run settles', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const session = fakeSession([]);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('corr-10b');
+    session.emit({ type: 'tool_execution_start', toolCallId: 't1', toolName: 'bash', args: { command: 'sleep 20' } });
+    adapter.markAborted();
+    out.length = 0;
+
+    session.emit({ type: 'agent_settled', aborted: true });
+    expect(out.filter((m) => m.type === 'toolAbandoned')).toEqual([
+      { type: 'toolAbandoned', toolUseId: 't1', toolName: 'Bash', parentToolUseId: null, reason: 'stopped' },
+    ]);
+  });
+
+  // Order for a running call aborted mid-execute: the tool rejects (bash.js:270-271), executePreparedToolCall turns that
+  // into an error result with its durationMs (agent-loop.js:583-591), tool_result handlers run (:598-639), then
+  // tool_execution_end (:397, :646-655) and the persisted toolResult (:398-399) follow the Stop's markAborted.
+  it('shows the result pi recorded for a call it executed when the late end arrives after a Stop', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    let listener: ((e: unknown) => void) | undefined;
+    const session = { sessionId: 'SID', subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; } };
+    adapter.subscribe(session as never);
+    adapter.beginTurn('corr-11');
+
+    listener!({ type: 'tool_execution_start', toolCallId: 't1', toolName: 'bash', args: { command: 'sleep 20' } });
+    adapter.markAborted();
+    out.length = 0;
+    const result = { content: [{ type: 'text', text: 'Command aborted' }], details: { damoclesCancelled: true } };
+    listener!({ type: 'tool_execution_end', toolCallId: 't1', toolName: 'bash', result, isError: true, durationMs: 812 });
+
+    expect(out).toEqual([
+      { type: 'toolCompleted', toolUseId: 't1', toolName: 'Bash', result: 'Command aborted', durationMs: 812 },
+      { type: 'toolMetadata', toolUseId: 't1', metadata: { damoclesCancelled: true } },
+    ]);
+  });
+
+  it('shows a call that finished as the Stop landed as completed', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    let listener: ((e: unknown) => void) | undefined;
+    const session = { sessionId: 'SID', subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; } };
+    adapter.subscribe(session as never);
+    adapter.beginTurn('corr-12');
+
+    listener!({ type: 'tool_execution_start', toolCallId: 't1', toolName: 'bash', args: { command: 'ls' } });
+    adapter.markAborted();
+    out.length = 0;
+    listener!({ type: 'tool_execution_end', toolCallId: 't1', toolName: 'bash', result: { content: [{ type: 'text', text: 'a.ts' }] }, isError: false, durationMs: 40 });
+
+    expect(out).toEqual([{ type: 'toolCompleted', toolUseId: 't1', toolName: 'Bash', result: 'a.ts', durationMs: 40 }]);
+  });
+
+  // An abort that lands while the gate holds a call settles it before execute (agent-loop.js:500-504, :519-523), so it carries no durationMs.
+  it('abandons a started call pi never executed when its late end arrives after a Stop, once', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const session = fakeSession([]);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('corr-13');
+
+    session.emit({ type: 'tool_execution_start', toolCallId: 't1', toolName: 'bash', args: { command: 'rm -rf build' } });
+    adapter.markAborted();
+    out.length = 0;
+    session.emit({ type: 'tool_execution_end', toolCallId: 't1', toolName: 'bash', result: { content: [{ type: 'text', text: 'Operation aborted' }], details: {} }, isError: true });
+    session.emit({ type: 'agent_settled', aborted: true });
+
+    expect(out.filter((m) => m.type !== 'sessionUsage' && m.type !== 'processing')).toEqual([
+      { type: 'toolAbandoned', toolUseId: 't1', toolName: 'Bash', parentToolUseId: null, reason: 'stopped' },
+    ]);
+  });
+
+  it('lands a stopped error result as completed with its marker, outside a Stop too', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    let listener: ((e: unknown) => void) | undefined;
+    const session = { sessionId: 'SID', subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; } };
+    adapter.subscribe(session as never);
+    adapter.beginTurn('corr-14');
+
+    listener!({ type: 'tool_execution_start', toolCallId: 't1', toolName: 'bash', args: { command: 'sleep 20' } });
+    out.length = 0;
+    listener!({ type: 'tool_execution_end', toolCallId: 't1', toolName: 'bash', result: { content: [{ type: 'text', text: 'Command aborted' }], details: { damoclesCancelled: true } }, isError: true, durationMs: 90 });
+
+    expect(out.map((m) => m.type)).toEqual(['toolCompleted', 'toolMetadata']);
+  });
+
+  it("reports pi's measured execution time, not the time since tool_execution_start, and none for a call that never ran", () => {
+    vi.useFakeTimers();
+    try {
+      const out: ExtensionToWebviewMessage[] = [];
+      const adapter = makeAdapter(out);
+      let listener: ((e: unknown) => void) | undefined;
+      const session = { sessionId: 'SID', subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; } };
+      adapter.subscribe(session as never);
+      adapter.beginTurn('corr-duration');
+      for (const id of ['ran', 'failed', 'denied']) listener!({ type: 'tool_execution_start', toolCallId: id, toolName: 'bash', args: { command: 'ls' } });
+      // pi emits tool_execution_start before the permission gate, so this wait is approval time.
+      vi.advanceTimersByTime(30_000);
+      listener!({ type: 'tool_execution_end', toolCallId: 'ran', toolName: 'bash', result: { content: [{ type: 'text', text: 'ok' }] }, isError: false, durationMs: 1234 });
+      listener!({ type: 'tool_execution_end', toolCallId: 'failed', toolName: 'bash', result: { content: [{ type: 'text', text: 'exit 1' }] }, isError: true, durationMs: 56 });
+      listener!({ type: 'tool_execution_end', toolCallId: 'denied', toolName: 'bash', result: { content: [{ type: 'text', text: 'denied' }] }, isError: true });
+
+      expect(out.find((m) => m.type === 'toolCompleted' && m.toolUseId === 'ran')).toMatchObject({ durationMs: 1234 });
+      expect(out.find((m) => m.type === 'toolFailed' && m.toolUseId === 'failed')).toMatchObject({ durationMs: 56 });
+      expect(out.find((m) => m.type === 'toolFailed' && m.toolUseId === 'denied')).not.toHaveProperty('durationMs');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('marks a successful result that carries images with imageCount, and never a text-only or failed one', () => {
@@ -802,14 +938,540 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
   });
 });
 
+describe('PiStreamAdapter terminal assistant errors', () => {
+  it('shows the Claude sign-in banner only for an Anthropic auth rejection; another provider gets the error card', () => {
+    const run = (provider: string): ExtensionToWebviewMessage[] => {
+      const out: ExtensionToWebviewMessage[] = [];
+      const adapter = makeAdapter(out);
+      const session = fakeSession([...failedCall('401 {"error":{"message":"Incorrect API key provided","type":"invalid_api_key"}}', false, provider), { type: 'agent_settled' }]);
+      adapter.subscribe(session as never);
+      adapter.beginTurn('c');
+      out.length = 0;
+      session.play();
+      return out;
+    };
+
+    expect(run('anthropic').map((m) => m.type)).toContain('authFailure');
+    const stepfun = run('stepfun');
+    expect(stepfun.some((m) => m.type === 'authFailure')).toBe(false);
+    expect(stepfun.find((m) => m.type === 'error')).toMatchObject({ message: expect.stringContaining('Incorrect API key provided') });
+  });
+});
+
+/** Each case plays the events in the order pi's agent-session.js emits them (cited per case). */
+describe('PiStreamAdapter provider errors and pi auto-retry', () => {
+  const run = (
+    play: (session: ReturnType<typeof fakeSession>, adapter: PiStreamAdapter) => void,
+  ): { out: ExtensionToWebviewMessage[]; outcomes: TurnOutcome[] } => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const outcomes: TurnOutcome[] = [];
+    const adapter = makeAdapter(out, { onTurnStateChanged: (state, outcome) => { if (state === 'idle' && outcome) outcomes.push(outcome); } });
+    const session = fakeSession([]);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    out.length = 0;
+    play(session, adapter);
+    return { out, outcomes };
+  };
+  const playing = (events: unknown[]) => (session: ReturnType<typeof fakeSession>): void => replay(session, events);
+  const cards = (out: ExtensionToWebviewMessage[]) => out.filter((m) => m.type === 'error' || m.type === 'authFailure');
+  const statuses = (out: ExtensionToWebviewMessage[]) =>
+    out.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'statusUpdate' }> => m.type === 'statusUpdate');
+
+  // _handlePostAgentRun finds it not retryable (:1426) and the retry counter is 0 (:1436), so no auto_retry_* follows.
+  it('a non-retryable failure shows one error card before the result, and the turn ends on it', () => {
+    const { out, outcomes } = run(playing([...failedCall('400 invalid_request_error: bad tool schema', false), { type: 'agent_settled', aborted: false }]));
+
+    expect(cards(out)).toEqual([{ type: 'error', message: '400 invalid_request_error: bad tool schema' }]);
+    expect(out.findIndex((m) => m.type === 'error')).toBeLessThan(out.findIndex((m) => m.type === 'done'));
+    expect(statuses(out)).toEqual([]);
+    expect(outcomes).toEqual([{ kind: 'error', message: '400 invalid_request_error: bad tool schema' }]);
+  });
+
+  // agent_end{willRetry:true} (:750), auto_retry_start (:3040), the retried call, then auto_retry_end{success:true} at its message_end (:777).
+  it('a failure pi retries into an answer shows no error card, says it is retrying, and the turn completes', () => {
+    const { out, outcomes } = run(playing([
+      ...failedCall('529 overloaded_error: Overloaded', true),
+      retryStart(1, '529 overloaded_error: Overloaded'),
+      ...answeredRetry(1),
+      { type: 'agent_settled', aborted: false },
+    ]));
+
+    expect(cards(out)).toEqual([]);
+    expect(statuses(out)).toEqual([
+      { type: 'statusUpdate', status: 'retrying', attempt: 1, maxAttempts: 3 },
+      { type: 'statusUpdate', status: 'ready' },
+    ]);
+    expect(outcomes).toEqual([{ kind: 'completed' }]);
+  });
+
+  // pi sends nothing when the backoff sleep ends (_prepareRetry, :3050-3062); the retried call opens with its assistant message_start (agent-loop.js:286).
+  it('the retry status ends when the retried call starts, not when it has answered', () => {
+    const { out } = run(playing([
+      ...failedCall('529 overloaded_error: Overloaded', true),
+      retryStart(1, '529 overloaded_error: Overloaded'),
+      ...answeredRetry(1),
+      { type: 'agent_settled', aborted: false },
+    ]));
+
+    const ready = out.findIndex((m) => m.type === 'statusUpdate' && m.status === 'ready');
+    expect(ready).toBeGreaterThanOrEqual(0);
+    expect(ready).toBeLessThan(out.findIndex((m) => m.type === 'assistant'));
+  });
+
+  // agent_end{willRetry:false} once the counter reaches maxRetries (:801), _prepareRetry declines (:3034), auto_retry_end{success:false} (:1436).
+  it('a failure that exhausts the retries shows one error card, for the final attempt', () => {
+    const { out, outcomes } = run(playing([
+      ...failedCall('529 overloaded (1)', true),
+      retryStart(1, '529 overloaded (1)'),
+      ...failedCall('529 overloaded (2)', true),
+      retryStart(2, '529 overloaded (2)'),
+      ...failedCall('529 overloaded (3)', true),
+      retryStart(3, '529 overloaded (3)'),
+      ...failedCall('529 overloaded (4)', false),
+      { type: 'auto_retry_end', success: false, attempt: 3, finalError: '529 overloaded (4)' },
+      { type: 'agent_settled', aborted: false },
+    ]));
+
+    expect(cards(out)).toEqual([{ type: 'error', message: '529 overloaded (4)' }]);
+    // Each retried call ends its backoff status as it starts; the final auto_retry_end has nothing left to end.
+    expect(statuses(out).map((m) => (m.status === 'retrying' ? m.attempt : m.status))).toEqual([1, 'ready', 2, 'ready', 3, 'ready']);
+    expect(outcomes).toEqual([{ kind: 'error', message: '529 overloaded (4)' }]);
+  });
+
+  // abort() cancels the backoff (:1909-1918), _prepareRetry's sleep rejects into auto_retry_end{finalError:'Retry cancelled'} (:3012, :3053), then agent_settled{aborted:true}.
+  it('a Stop during the retry backoff shows no error card and the turn ends cancelled', () => {
+    const { out, outcomes } = run((session, adapter) => {
+      replay(session, [...failedCall('529 overloaded_error', true), retryStart(1, '529 overloaded_error')]);
+      adapter.markAborted();
+      replay(session, [
+        { type: 'auto_retry_end', success: false, attempt: 1, finalError: 'Retry cancelled' },
+        { type: 'agent_settled', aborted: true },
+      ]);
+    });
+
+    expect(cards(out)).toEqual([]);
+    expect(statuses(out).at(-1)).toEqual({ type: 'statusUpdate', status: 'ready' });
+    expect(outcomes).toEqual([{ kind: 'cancelled' }]);
+  });
+
+  // With retry disabled agent_end says willRetry:false (:801) and _prepareRetry returns before counting (:3030), so no auto_retry_* events.
+  it('a retryable failure with retries disabled shows one error card and no retry status', () => {
+    const { out, outcomes } = run(playing([...failedCall('429 rate_limit_error', false), { type: 'agent_settled', aborted: false }]));
+
+    expect(cards(out)).toEqual([{ type: 'error', message: '429 rate_limit_error' }]);
+    expect(statuses(out)).toEqual([]);
+    expect(outcomes).toEqual([{ kind: 'rateLimit' }]);
+  });
+
+  // An overflow is not retryable (:2980) but _checkCompaction omits the attempt and compacts to retry it (:2404-2407, compaction_start at :2477).
+  it('an overflow pi compacts and retries shows no error card for the overflowed attempt', () => {
+    const { out, outcomes } = run(playing([
+      ...failedCall('prompt is too long: 210000 tokens > 200000 maximum', false),
+      { type: 'compaction_start', reason: 'overflow' },
+      { type: 'compaction_end', reason: 'overflow', aborted: false, willRetry: true, result: { summary: 's', firstKeptEntryId: 'k1', tokensBefore: 210000 } },
+      ...answeredRetry(1).filter((e) => (e as { type: string }).type !== 'auto_retry_end'),
+      { type: 'agent_settled', aborted: false },
+    ]));
+
+    expect(cards(out)).toEqual([]);
+    expect(outcomes).toEqual([{ kind: 'completed' }]);
+  });
+
+  // _checkCompaction omits the attempt (:2405-2406), then _runAutoCompaction returns before compaction_start with no model or nothing to compact (:2465-2472).
+  it('an overflow pi could not start recovering shows its card at the settle', () => {
+    const { out } = run(playing([
+      ...failedCall('prompt is too long: 210000 tokens > 200000 maximum', false),
+      { type: 'agent_settled', aborted: false },
+    ]));
+
+    expect(cards(out)).toEqual([{ type: 'error', message: 'prompt is too long: 210000 tokens > 200000 maximum' }]);
+  });
+
+  // The recovered call overflowed again: _checkCompaction reports a compaction_end with no compaction_start and keeps the call in context (:2383-2399).
+  it('an overflow recovery that failed a second time shows one card, the recovery failure', () => {
+    const recoveryFailed = 'Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.';
+    const { out, outcomes } = run(playing([
+      ...failedCall('prompt is too long: 210000 tokens > 200000 maximum', false),
+      { type: 'compaction_start', reason: 'overflow' },
+      { type: 'compaction_end', reason: 'overflow', aborted: false, willRetry: true, result: { summary: 's', firstKeptEntryId: 'k1', tokensBefore: 210000 } },
+      { type: 'agent_start' },
+      ...failedCall('prompt is too long: 201000 tokens > 200000 maximum', false),
+      { type: 'compaction_end', reason: 'overflow', result: undefined, aborted: false, willRetry: false, errorMessage: recoveryFailed },
+      { type: 'agent_settled', aborted: false },
+    ]));
+
+    expect(cards(out)).toEqual([{ type: 'error', message: recoveryFailed }]);
+    expect(outcomes).toEqual([{ kind: 'error', message: 'prompt is too long: 201000 tokens > 200000 maximum' }]);
+  });
+
+  // A dropped connection ends the call with the streamed text in its content (agent-loop.js:286-319); pi then omits it and re-runs it (:3040-3048).
+  it('a call pi re-runs takes back the text it streamed before failing, as the reload hides it', () => {
+    const dropped = { role: 'assistant', content: [{ type: 'text', text: 'Half an ans' }], provider: 'anthropic', stopReason: 'error', errorMessage: 'terminated', usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: {} } };
+    const { out } = run(playing([
+      { type: 'message_start', message: dropped },
+      { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Half an ans' }, message: dropped },
+      { type: 'message_end', message: dropped },
+      { type: 'turn_end', toolResults: [] },
+      { type: 'agent_end', messages: [], willRetry: true },
+      retryStart(1, 'terminated'),
+      ...answeredRetry(1),
+      { type: 'agent_settled', aborted: false },
+    ]));
+
+    const partial = out.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'partial' }> => m.type === 'partial');
+    const retracted = out.filter((m) => m.type === 'assistantRetracted');
+    expect(retracted).toEqual([{ type: 'assistantRetracted', messageId: partial?.data.messageId }]);
+    const answer = out.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'assistant' }> => m.type === 'assistant').at(-1);
+    expect(answer?.data.message.id).not.toBe(partial?.data.messageId);
+    expect(out.indexOf(retracted[0]!)).toBeLessThan(out.indexOf(answer!));
+    expect(cards(out)).toEqual([]);
+  });
+
+  it('a failure pi does not re-run is not taken back', () => {
+    const dropped = { role: 'assistant', content: [{ type: 'text', text: 'Half an ans' }], provider: 'anthropic', stopReason: 'error', errorMessage: 'terminated', usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: {} } };
+    const { out } = run(playing([
+      { type: 'message_start', message: dropped },
+      { type: 'message_end', message: dropped },
+      { type: 'turn_end', toolResults: [] },
+      { type: 'agent_end', messages: [], willRetry: false },
+      { type: 'agent_settled', aborted: false },
+    ]));
+
+    expect(out.some((m) => m.type === 'assistantRetracted')).toBe(false);
+    expect(cards(out)).toEqual([{ type: 'error', message: 'terminated' }]);
+  });
+
+  // pi returns from the turn before executing any tool of an errored message (agent-loop.js:143-152).
+  const withToolCall = {
+    role: 'assistant',
+    content: [{ type: 'text', text: 'Reading' }, { type: 'toolCall', id: 'never-ran', name: 'read', arguments: { path: '/a.ts' } }],
+    provider: 'anthropic',
+    stopReason: 'error',
+    errorMessage: 'terminated',
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: {} },
+  };
+  const streamedToolCall = [
+    { type: 'message_start', message: withToolCall },
+    { type: 'message_update', assistantMessageEvent: { type: 'toolcall_end', toolCall: withToolCall.content[1] }, message: withToolCall },
+    { type: 'message_end', message: withToolCall },
+    { type: 'turn_end', toolResults: [] },
+  ];
+
+  it('settles the tool cards of a failed call pi does not re-run as not executed when the call ends', () => {
+    const { out } = run(playing([...streamedToolCall, { type: 'agent_end', messages: [], willRetry: false }, { type: 'agent_settled', aborted: false }]));
+
+    const abandoned = out.filter((m) => m.type === 'toolAbandoned');
+    expect(abandoned).toEqual([{ type: 'toolAbandoned', toolUseId: 'never-ran', toolName: 'Read', parentToolUseId: null, reason: 'failed' }]);
+    expect(out.indexOf(abandoned[0]!)).toBeGreaterThan(out.findIndex((m) => m.type === 'assistant'));
+    expect(out.indexOf(abandoned[0]!)).toBeLessThan(out.findIndex((m) => m.type === 'error'));
+  });
+
+  it('takes back a re-run call together with its tool cards, which never ran', () => {
+    const { out } = run(playing([
+      ...streamedToolCall,
+      { type: 'agent_end', messages: [], willRetry: true },
+      retryStart(1, 'terminated'),
+      ...answeredRetry(1),
+      { type: 'agent_settled', aborted: false },
+    ]));
+
+    const streamed = out.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'toolStreaming' }> => m.type === 'toolStreaming');
+    expect(out.filter((m) => m.type === 'assistantRetracted')).toEqual([{ type: 'assistantRetracted', messageId: streamed?.messageId }]);
+    expect(out.filter((m) => m.type === 'toolAbandoned').map((m) => (m as { toolUseId: string }).toolUseId)).toEqual(['never-ran']);
+  });
+
+  it('a Stop after the failed call abandons no card twice', () => {
+    const { out } = run((session, adapter) => {
+      replay(session, streamedToolCall);
+      adapter.markAborted();
+    });
+
+    expect(out.filter((m) => m.type === 'toolAbandoned')).toHaveLength(1);
+  });
+
+  // An aborted message ends the turn before pi runs its tools (agent-loop.js:143), whoever aborted the run.
+  const abortedToolCall = { ...withToolCall, stopReason: 'aborted', errorMessage: 'Request was aborted' };
+  const streamedAbortedCall = [
+    { type: 'message_start', message: abortedToolCall },
+    { type: 'message_update', assistantMessageEvent: { type: 'toolcall_end', toolCall: abortedToolCall.content[1] }, message: abortedToolCall },
+    { type: 'message_end', message: abortedToolCall },
+    { type: 'turn_end', toolResults: [] },
+  ];
+
+  it('settles the tool cards of a call the stream aborted with no Stop as stopped', () => {
+    const { out } = run(playing([...streamedAbortedCall, { type: 'agent_end', messages: [] }, { type: 'agent_settled', aborted: true }]));
+
+    expect(out.filter((m) => m.type === 'toolAbandoned')).toEqual([{ type: 'toolAbandoned', toolUseId: 'never-ran', toolName: 'Read', parentToolUseId: null, reason: 'stopped' }]);
+    expect(cards(out)).toEqual([]);
+  });
+
+  it('a Stop abandons the cards of the call it aborts once, as stopped', () => {
+    const { out } = run((session, adapter) => {
+      replay(session, streamedAbortedCall.slice(0, 2));
+      adapter.markAborted();
+      replay(session, streamedAbortedCall.slice(2));
+    });
+
+    expect(out.filter((m) => m.type === 'toolAbandoned')).toEqual([{ type: 'toolAbandoned', toolUseId: 'never-ran', toolName: 'Read', parentToolUseId: null, reason: 'stopped' }]);
+  });
+
+  // An abort during a tool batch: pi finalizes the call it was running and starts none after it (agent-loop.js:402-404
+  // sequential, :429-431 and :449-451 parallel), records the results of the calls it finalized (:398-399, :453-458), ends the turn (:179-180),
+  // and the next model call, made under the aborted signal, ends aborted (:141-152); a request setup the signal rejects first ends it on an error stop instead (pi-ai lazy.js:41-44).
+  const batch = {
+    role: 'assistant',
+    content: [
+      { type: 'toolCall', id: 'ran', name: 'read', arguments: { path: '/a.ts' } },
+      { type: 'toolCall', id: 'skipped-1', name: 'read', arguments: { path: '/b.ts' } },
+      { type: 'toolCall', id: 'skipped-2', name: 'bash', arguments: { command: 'ls' } },
+    ],
+    provider: 'anthropic',
+    stopReason: 'toolUse',
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: {} },
+  };
+  const ranResult = { role: 'toolResult', toolCallId: 'ran', toolName: 'read', content: [{ type: 'text', text: 'Operation aborted' }], isError: true };
+  const abortedAfterBatch = { role: 'assistant', content: [], provider: 'anthropic', stopReason: 'aborted', errorMessage: 'Request was aborted', usage: batch.usage };
+  const batchCutShort = (between: unknown[] = []) => [
+    { type: 'message_start', message: batch },
+    ...batch.content.map((toolCall) => ({ type: 'message_update', assistantMessageEvent: { type: 'toolcall_end', toolCall }, message: batch })),
+    { type: 'message_end', message: batch },
+    { type: 'tool_execution_start', toolCallId: 'ran', toolName: 'read', args: { path: '/a.ts' } },
+    { type: 'tool_execution_end', toolCallId: 'ran', toolName: 'read', result: ranResult, isError: true },
+    { type: 'message_start', message: ranResult },
+    { type: 'message_end', message: ranResult },
+    { type: 'turn_end', message: batch, toolResults: [ranResult] },
+    ...between,
+    { type: 'turn_start' },
+    { type: 'message_start', message: abortedAfterBatch },
+    { type: 'message_end', message: abortedAfterBatch },
+    { type: 'turn_end', message: abortedAfterBatch, toolResults: [] },
+    { type: 'agent_end', messages: [], willRetry: false },
+    { type: 'agent_settled', aborted: true },
+  ];
+
+  it('settles the calls an abort skipped as stopped when the aborted call that follows ends, with no Stop', () => {
+    const { out } = run(playing(batchCutShort()));
+
+    expect(out.filter((m) => m.type === 'toolAbandoned')).toEqual([
+      { type: 'toolAbandoned', toolUseId: 'skipped-1', toolName: 'Read', parentToolUseId: null, reason: 'stopped' },
+      { type: 'toolAbandoned', toolUseId: 'skipped-2', toolName: 'Bash', parentToolUseId: null, reason: 'stopped' },
+    ]);
+    expect(out.filter((m) => m.type === 'toolFailed').map((m) => (m as { toolUseId: string }).toolUseId)).toEqual(['ran']);
+  });
+
+  // pi drains the steering queue into the transcript before the aborted call (agent-loop.js:186, :116-121).
+  it('settles the skipped calls when pi delivered a steer before the aborted call', () => {
+    const steer = { role: 'user', content: [{ type: 'text', text: 'also check c.ts' }] };
+    const { out } = run(playing(batchCutShort([{ type: 'message_start', message: steer }, { type: 'message_end', message: steer }])));
+
+    expect(out.filter((m) => m.type === 'toolAbandoned').map((m) => (m as { toolUseId: string }).toolUseId)).toEqual(['skipped-1', 'skipped-2']);
+  });
+
+  it('a Stop during the batch abandons each skipped call once', () => {
+    const events = batchCutShort();
+    const { out } = run((session, adapter) => {
+      replay(session, events.slice(0, 6));
+      adapter.markAborted();
+      replay(session, events.slice(6));
+    });
+
+    // `ran` had started, so it settles at its own end, after the Stop settled the two pi never started.
+    expect(out.filter((m) => m.type === 'toolAbandoned').map((m) => (m as { toolUseId: string }).toolUseId)).toEqual(['skipped-1', 'skipped-2', 'ran']);
+  });
+
+  it('touches no call of a batch that ran to the end before an aborted call', () => {
+    const second = { ...ranResult, toolCallId: 'skipped-1' };
+    const third = { ...ranResult, toolCallId: 'skipped-2', toolName: 'bash' };
+    const events = batchCutShort().flatMap((e) => ((e as { type: string }).type === 'turn_end' && (e as { message: unknown }).message === batch
+      ? [
+          { type: 'tool_execution_end', toolCallId: 'skipped-1', toolName: 'read', result: second, isError: true },
+          { type: 'tool_execution_end', toolCallId: 'skipped-2', toolName: 'bash', result: third, isError: true },
+          e,
+        ]
+      : [e]));
+    const { out } = run(playing(events));
+
+    expect(out.filter((m) => m.type === 'toolAbandoned')).toEqual([]);
+  });
+
+  it("a Stop's wind-down failure leaves its cards stopped, not failed", () => {
+    const { out } = run((session, adapter) => {
+      replay(session, streamedToolCall.slice(0, 2));
+      adapter.markAborted();
+      replay(session, streamedToolCall.slice(2));
+    });
+
+    expect(out.filter((m) => m.type === 'toolAbandoned').map((m) => (m as { reason: string }).reason)).toEqual(['stopped']);
+  });
+
+  it('a failed call that showed nothing is taken back with no message', () => {
+    const { out } = run(playing([
+      ...failedCall('529 overloaded_error', true),
+      retryStart(1, '529 overloaded_error'),
+      ...answeredRetry(1),
+      { type: 'agent_settled', aborted: false },
+    ]));
+
+    expect(out.some((m) => m.type === 'assistantRetracted')).toBe(false);
+  });
+
+  it('a failure pi moves past without re-running shows its card before what follows', () => {
+    const { out } = run(playing([
+      ...failedCall('400 invalid_request_error', false),
+      { type: 'compaction_start', reason: 'threshold' },
+    ]));
+
+    expect(out.findIndex((m) => m.type === 'error')).toBeGreaterThanOrEqual(0);
+    expect(out.findIndex((m) => m.type === 'error')).toBeLessThan(out.findIndex((m) => m.type === 'preCompact'));
+  });
+
+  it('an Anthropic sign-in failure raises the banner once, only when pi will not retry it', () => {
+    const { out } = run(playing([
+      ...failedCall('401 authentication_error: OAuth token has expired', false),
+      { type: 'agent_settled', aborted: false },
+    ]));
+
+    expect(cards(out)).toEqual([{ type: 'authFailure', message: '401 authentication_error: OAuth token has expired' }]);
+  });
+});
+
+/** Deliver `events` to the adapter subscribed to `session`, in order. */
+function replay(session: ReturnType<typeof fakeSession>, events: unknown[]): void {
+  for (const e of events) session.emit(e);
+}
+
+/**
+ * The model call pi makes under an aborted run signal fails its request setup (`model-runtime.js:451-455` in
+ * pi-coding-agent 1.1.0), and pi-ai's lazy stream ends it on an error stop (`lazy.js:41-44` in pi-ai 1.1.0), whoever
+ * aborted the run. pi persists it after the `message_end` listeners (`agent-session.js:750-764`), and the draft
+ * `registerWindDownErrorRecord` returns at its `turn_end` boundary is committed, with its `entry_appended`, before the
+ * listeners get that `turn_end` (`agent-session.js:515`, `:636-641`).
+ */
+describe('PiStreamAdapter abort wind-down errors', () => {
+  const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: {} };
+  const batch = {
+    role: 'assistant',
+    content: [
+      { type: 'toolCall', id: 'ran', name: 'read', arguments: { path: '/a.ts' } },
+      { type: 'toolCall', id: 'skipped', name: 'bash', arguments: { command: 'ls' } },
+    ],
+    provider: 'anthropic',
+    stopReason: 'toolUse',
+    usage,
+  };
+  const ranResult = { role: 'toolResult', toolCallId: 'ran', toolName: 'read', content: [{ type: 'text', text: 'Operation aborted' }], isError: true };
+  const errorStop = (errorMessage: string) => ({ role: 'assistant', content: [], provider: 'anthropic', stopReason: 'error', errorMessage, usage });
+
+  function setup() {
+    const out: ExtensionToWebviewMessage[] = [];
+    const outcomes: TurnOutcome[] = [];
+    const adapter = makeAdapter(out, { onTurnStateChanged: (state, outcome) => { if (state === 'idle' && outcome) outcomes.push(outcome); } });
+    const branch: unknown[] = [];
+    const base = fakeSession([]);
+    const session = { ...base, sessionManager: { ...base.sessionManager, getBranch: () => branch } };
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    out.length = 0;
+    const emit = (...events: unknown[]) => { for (const e of events) session.emit(e); };
+    const persist = (id: string, message: unknown) => branch.push({ type: 'message', id, parentId: null, timestamp: '', message });
+    const record = (entryId: string) => {
+      const entry = { type: 'custom', id: `st-${entryId}`, parentId: null, timestamp: '', customType: DAMOCLES_TURN_STOPPED_ENTRY, data: { toolCallIds: [], entryIds: [entryId] } };
+      branch.push(entry);
+      emit({ type: 'entry_appended', entry });
+    };
+    /** A batch whose first call pi finalized and whose second it skipped, then the next call's error stop up to its message_end. */
+    const cutBatchThen = (failure: unknown) => {
+      emit({ type: 'message_start', message: batch });
+      for (const toolCall of batch.content) emit({ type: 'message_update', assistantMessageEvent: { type: 'toolcall_end', toolCall }, message: batch });
+      emit({ type: 'message_end', message: batch });
+      persist('a1', batch);
+      emit(
+        { type: 'tool_execution_start', toolCallId: 'ran', toolName: 'read', args: { path: '/a.ts' } },
+        { type: 'tool_execution_end', toolCallId: 'ran', toolName: 'read', result: ranResult, isError: true },
+        { type: 'message_start', message: ranResult },
+        { type: 'message_end', message: ranResult },
+      );
+      persist('r1', ranResult);
+      emit({ type: 'turn_end', message: batch, toolResults: [ranResult] }, { type: 'turn_start' }, { type: 'message_start', message: failure }, { type: 'message_end', message: failure });
+      persist('a2', failure);
+    };
+    const settle = (failure: unknown, aborted: boolean) =>
+      emit({ type: 'turn_end', message: failure, toolResults: [] }, { type: 'agent_end', messages: [], willRetry: false }, { type: 'agent_settled', aborted });
+    return { out, outcomes, adapter, emit, record, cutBatchThen, settle };
+  }
+  const cards = (out: ExtensionToWebviewMessage[]) => out.filter((m) => m.type === 'error' || m.type === 'authFailure');
+  const abandoned = (out: ExtensionToWebviewMessage[]) =>
+    out.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'toolAbandoned' }> => m.type === 'toolAbandoned').map((m) => [m.toolUseId, m.reason]);
+
+  // An extension's ctx.abort(), a manual compaction (agent-session.js:2169) or a session replacement aborts with no Stop.
+  it('an abort that is not a Stop: the recorded wind-down error shows no card, the skipped call stops, the turn ends cancelled', () => {
+    const t = setup();
+    const windDown = errorStop('This operation was aborted');
+    t.cutBatchThen(windDown);
+    t.record('a2');
+    t.settle(windDown, true);
+
+    expect(cards(t.out)).toEqual([]);
+    expect(abandoned(t.out)).toEqual([['skipped', 'stopped']]);
+    expect(t.out.filter((m) => m.type === 'sessionCancelled')).toHaveLength(1);
+    expect(t.outcomes).toEqual([{ kind: 'cancelled' }]);
+  });
+
+  it('settles the calls a recorded wind-down error named as stopped, not failed', () => {
+    const t = setup();
+    const named = { ...errorStop('This operation was aborted'), content: [{ type: 'toolCall', id: 'never-ran', name: 'read', arguments: { path: '/b.ts' } }] };
+    t.cutBatchThen(named);
+    t.record('a2');
+    t.settle(named, true);
+
+    expect(abandoned(t.out)).toEqual([['skipped', 'stopped'], ['never-ran', 'stopped']]);
+    expect(cards(t.out)).toEqual([]);
+  });
+
+  // The record's turn_end pass runs after the message_end listeners, so the live view decides there too, from the same record.
+  it('a Stop landing between the error stop and its turn_end hides the card the record hides', () => {
+    const t = setup();
+    const windDown = errorStop('This operation was aborted');
+    t.cutBatchThen(windDown);
+    t.adapter.markAborted();
+    t.record('a2');
+    t.settle(windDown, true);
+
+    expect(cards(t.out)).toEqual([]);
+    expect(abandoned(t.out)).toEqual([['skipped', 'stopped']]);
+  });
+
+  it('a failure with no wind-down record shows its card and leaves the skipped call as a reload does', () => {
+    const t = setup();
+    const failure = errorStop('529 overloaded_error');
+    t.cutBatchThen(failure);
+    t.settle(failure, false);
+
+    expect(cards(t.out)).toEqual([{ type: 'error', message: '529 overloaded_error' }]);
+    expect(abandoned(t.out)).toEqual([]);
+    expect(t.outcomes).toEqual([{ kind: 'error', message: '529 overloaded_error' }]);
+  });
+
+  // A reload shows the card too: the error entry precedes the leaf at Stop, and the record pass saw a live signal.
+  it('a Stop landing after the record pass leaves the card the reload shows', () => {
+    const t = setup();
+    const failure = errorStop('529 overloaded_error');
+    t.cutBatchThen(failure);
+    t.adapter.markAborted();
+    t.settle(failure, true);
+
+    expect(cards(t.out)).toEqual([{ type: 'error', message: '529 overloaded_error' }]);
+  });
+});
+
 describe('PiStreamAdapter refusals (US-023)', () => {
   it('routes a model refusal (stopReason error + errorMessage) to a clean error, not authFailure', () => {
     const out: ExtensionToWebviewMessage[] = [];
     const turns: TurnState[] = [];
     const adapter = makeAdapter(out, { onTurnStateChanged: (s) => { turns.push(s); } });
     const session = fakeSession([
-      { type: 'message_start', message: { role: 'assistant', content: [] } },
-      { type: 'message_update', assistantMessageEvent: { type: 'error', reason: 'error', error: { errorMessage: "I'm sorry, but I can't help with that request." } } },
+      ...terminalAssistant('error', "I'm sorry, but I can't help with that request."),
       { type: 'agent_settled' },
     ]);
     adapter.subscribe(session as never);
@@ -830,7 +1492,8 @@ describe('PiStreamAdapter refusals (US-023)', () => {
     const out: ExtensionToWebviewMessage[] = [];
     const adapter = makeAdapter(out);
     const session = fakeSession([
-      { type: 'message_update', assistantMessageEvent: { type: 'error', reason: 'error', error: { errorMessage: 'Request failed: 401 Unauthorized (invalid api key)' } } },
+      ...failedCall('Request failed: 401 Unauthorized (invalid api key)', false),
+      { type: 'agent_settled' },
     ]);
     adapter.subscribe(session as never);
     adapter.beginTurn('corr-auth');
@@ -1080,8 +1743,6 @@ describe('PiStreamAdapter budget enforcement (US-008)', () => {
       cwd: '/cwd',
       sessionId: () => 'SID',
       modelValue: () => 'claude-opus-4-8',
-      defaultModelValue: () => 'claude-opus-4-8',
-      contextWindow: () => 1_000_000,
       supportedModels: () => [{ value: 'claude-opus-4-8', displayName: 'Opus 4.8', description: '' }],
       permissionMode: () => 'default',
       budgetLimit: () => limit,

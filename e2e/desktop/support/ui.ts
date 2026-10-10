@@ -92,8 +92,7 @@ export async function answerDialogs(app: ElectronApplication, answers: Record<st
       if (dialog.dataset.e2eSeen !== undefined || dialog.closest('[inert]')) return;
       dialog.dataset.e2eSeen = '';
       const seenRules = w.__e2eDialogRules ?? {};
-      // The overlay acknowledges a request in the task that renders it; a click in that task suppresses the acknowledgement,
-      // and main's 2 s deadline then runs on through the exit animation the answer waits for, which needs frames.
+      // Answered once drawn, as a user would: a click in the task that renders it closes it before the page reports it shown.
       requestAnimationFrame(() => {
         // main withdrew it before it was drawn
         if (!dialog.isConnected || dialog.closest('[inert]')) return;
@@ -144,6 +143,33 @@ export async function answerOpenDialog(app: ElectronApplication, dir: string): P
   await app.evaluate(({ dialog }, d) => {
     dialog.showOpenDialog = (() => Promise.resolve({ canceled: false, filePaths: [d] })) as typeof dialog.showOpenDialog;
   }, dir);
+}
+
+interface HostPromptGlobals {
+  __damoclesE2e: {
+    dialogs: { inputBox(opts: { prompt: string; password: boolean }): Promise<string | undefined> };
+    secrets: { store(key: string, value: string): Promise<void> };
+  };
+  __e2eHostPrompt?: Promise<string | undefined>;
+}
+
+/**
+ * Asks for a masked value through main's DialogService.inputBox, as a host key prompt does, and with `storeAs` stores the
+ * answer under that secret key in the app's secret store, as a key prompt's handler does; needs DAMOCLES_E2E_HOOKS=1.
+ */
+export async function askHostPassword(app: ElectronApplication, prompt: string, storeAs?: string): Promise<void> {
+  await app.evaluate((_electron, [title, secretKey]) => {
+    const { dialogs, secrets } = (globalThis as unknown as HostPromptGlobals).__damoclesE2e;
+    (globalThis as unknown as HostPromptGlobals).__e2eHostPrompt = dialogs.inputBox({ prompt: title, password: true }).then(async (answer) => {
+      if (answer !== undefined && secretKey !== undefined) await secrets.store(secretKey, answer);
+      return answer;
+    });
+  }, [prompt, storeAs] as const);
+}
+
+/** The answer to the last askHostPassword, once the prompt has settled and any store has finished; undefined when it was dismissed. */
+export function hostPromptAnswer(app: ElectronApplication): Promise<string | undefined> {
+  return app.evaluate(() => (globalThis as unknown as HostPromptGlobals).__e2eHostPrompt);
 }
 
 /** Clicks an application menu item by id, as a user choosing it would. */

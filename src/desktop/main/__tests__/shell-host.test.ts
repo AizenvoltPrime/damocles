@@ -278,6 +278,22 @@ describe('ShellHost', () => {
     expect(contents.send).toHaveBeenCalledWith(SHELL_CHANNELS.updateState, snapshot);
   });
 
+  // A reload by any route (DevTools, Ctrl+R) commits a new document whose listeners exist only once it has loaded.
+  it('sends nothing and asks for no flush between a reload committing and the reloaded page loading', () => {
+    actions.state = vi.fn(() => ({ projects: [], selected: {} }) as never);
+    const shell = host();
+    contents.emit('did-finish-load');
+    expect(shell.editorFlush('flush-1', [])).toBe(true);
+    contents.emit('did-navigate', {}, SHELL_PAGE_URL, 200, 'OK');
+    contents.send.mockClear();
+    expect(shell.editorFlush('flush-2', [])).toBe(false);
+    shell.chatsChanged('p');
+    expect(contents.send).not.toHaveBeenCalled();
+    contents.emit('did-finish-load');
+    expect(contents.send).toHaveBeenCalledWith(SHELL_CHANNELS.state, expect.anything());
+    expect(shell.editorFlush('flush-3', [])).toBe(true);
+  });
+
   // The page asks by the state it holds while main may already have changed the list and sent the next state.
   it('answers a chat list only for a project of the state the page names; one that left the list since answers null after the state without it', async () => {
     const projects = (...keys: string[]): ShellState['projects'] => keys.map((key) => ({ key, name: key, fsPath: key, trusted: true, running: 0, waiting: 0 }));

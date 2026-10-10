@@ -54,6 +54,14 @@ describe('D37 write scopes', () => {
     expect(platform.settings.inspect('damocles.ideContext.enabled')).toStrictEqual({ projectValue: false });
   });
 
+  it('drops an effort stored under a retired id of the model when its default effort is set or cleared', async () => {
+    const { platform, manager } = setup();
+    await platform.settings.update('damocles.effortByModel', { 'step-3.7-flash': 'high', 'deepseek-v4-flash': 'max', 'claude-opus-5-5': 'low' }, 'user');
+    await manager.handleSetDefaultEffort(null, 'step-5-preview', undefined);
+    await manager.handleSetDefaultEffort('low', 'deepseek-flash', undefined);
+    expect(platform.settings.inspect('damocles.effortByModel')).toStrictEqual({ userValue: { 'claude-opus-5-5': 'low', 'deepseek-flash': 'low' } });
+  });
+
   it('refuses a Workspace write in an untrusted folder with a reason, and still saves a chat with no folder to user settings', async () => {
     const { platform, manager } = setup();
     platform.trust.setTrusted(false);
@@ -82,6 +90,170 @@ describe('D37 write scopes', () => {
   });
 });
 
+describe('Background model setters', () => {
+  it('saves the model and effort in user settings', async () => {
+    const { platform, manager } = setup();
+    expect(await manager.handleSetBackgroundModel('claude-sonnet-5-5')).toStrictEqual({ key: 'damocles.background.model', home: 'user' });
+    expect(await manager.handleSetBackgroundEffort('high')).toStrictEqual({ key: 'damocles.background.effort', home: 'user' });
+    expect(platform.settings.inspect('damocles.background.model')).toStrictEqual({ userValue: 'claude-sonnet-5-5' });
+    expect(platform.settings.inspect('damocles.background.effort')).toStrictEqual({ userValue: 'high' });
+  });
+
+  it('clears an effort the new model does not support, and keeps one it does', async () => {
+    const { platform, manager } = setup();
+    await manager.handleSetBackgroundModel('claude-sonnet-5-5');
+    await manager.handleSetBackgroundEffort('ultracode');
+    await manager.handleSetBackgroundModel('claude-haiku-5-5');
+    expect(platform.settings.get('damocles.background.effort')).toBe('ultracode');
+    await manager.handleSetBackgroundModel('gpt-6-luna');
+    expect(platform.settings.inspect('damocles.background.effort')).toStrictEqual({});
+  });
+
+  it('removes both keys when the model goes back to Automatic', async () => {
+    const { platform, manager } = setup();
+    await manager.handleSetBackgroundModel('step-5-preview');
+    await manager.handleSetBackgroundEffort('medium');
+    await manager.handleSetBackgroundModel('');
+    expect(platform.settings.inspect('damocles.background.model')).toStrictEqual({});
+    expect(platform.settings.inspect('damocles.background.effort')).toStrictEqual({});
+  });
+
+  it('rejects an effort on Automatic, an effort the model lacks and a model outside the catalog', async () => {
+    const { platform, manager } = setup();
+    await expect(manager.handleSetBackgroundEffort('low')).rejects.toThrow('Automatic sets the effort of each job itself.');
+    await manager.handleSetBackgroundModel('step-5-preview');
+    await expect(manager.handleSetBackgroundEffort('max')).rejects.toThrow(/not supported/);
+    await expect(manager.handleSetBackgroundModel('claude-3-opus')).rejects.toThrow(/not a known model/);
+    expect(platform.settings.inspect('damocles.background.effort')).toStrictEqual({});
+    expect(platform.settings.get('damocles.background.model')).toBe('step-5-preview');
+  });
+
+  it('sends the stored Background pair with a retired id mapped and an unsupported effort dropped', async () => {
+    const permissionHandler = { getPermissionMode: () => 'default', getDangerouslySkipPermissions: () => false } as never;
+    const sent = async (user: Record<string, unknown>) => {
+      const posted: ExtensionToWebviewMessage[] = [];
+      const manager = new ConfigManager((_host, message) => posted.push(message), createFakePlatform({ settings: { user } }));
+      await manager.sendCurrentSettings({} as never, permissionHandler, folderA);
+      const update = posted.find((m) => m.type === 'settingsUpdate');
+      return update?.type === 'settingsUpdate' ? update.settings.background : undefined;
+    };
+    expect(await sent({})).toStrictEqual({ model: '', effort: null });
+    expect(await sent({ 'damocles.background.model': 'step-3.7-flash', 'damocles.background.effort': 'high' })).toStrictEqual({ model: 'step-5-preview', effort: 'high' });
+    expect(await sent({ 'damocles.background.model': 'step-5-preview', 'damocles.background.effort': 'max' })).toStrictEqual({ model: 'step-5-preview', effort: null });
+  });
+});
+
+describe('Memory judge setters', () => {
+  it('saves a chosen model and its effort in user settings', async () => {
+    const { platform, manager } = setup();
+    expect(await manager.handleSetMemoryJudge('claude-sonnet-5-5')).toStrictEqual({ key: 'damocles.memory.judge', home: 'user' });
+    expect(await manager.handleSetMemoryJudgeEffort('high')).toStrictEqual({ key: 'damocles.memory.judgeEffort', home: 'user' });
+    expect(platform.settings.inspect('damocles.memory.judge')).toStrictEqual({ userValue: 'claude-sonnet-5-5' });
+    expect(platform.settings.inspect('damocles.memory.judgeEffort')).toStrictEqual({ userValue: 'high' });
+  });
+
+  it('clears the effort on a classifier, on Automatic and on a model without that level', async () => {
+    const { platform, manager } = setup();
+    await manager.handleSetMemoryJudge('claude-sonnet-5-5');
+    await manager.handleSetMemoryJudgeEffort('ultracode');
+    await manager.handleSetMemoryJudge('claude-haiku-5-5');
+    expect(platform.settings.get('damocles.memory.judgeEffort')).toBe('ultracode');
+    await manager.handleSetMemoryJudge('gpt-6-luna-classifier');
+    expect(platform.settings.inspect('damocles.memory.judgeEffort')).toStrictEqual({});
+    expect(platform.settings.inspect('damocles.memory.judge')).toStrictEqual({ userValue: 'gpt-6-luna-classifier' });
+
+    await manager.handleSetMemoryJudge('step-5-preview');
+    await manager.handleSetMemoryJudgeEffort('medium');
+    await manager.handleSetMemoryJudge('');
+    expect(platform.settings.inspect('damocles.memory.judge')).toStrictEqual({});
+    expect(platform.settings.inspect('damocles.memory.judgeEffort')).toStrictEqual({});
+  });
+
+  it('rejects an effort unless a model is chosen, an effort the model lacks and an unknown judge', async () => {
+    const { platform, manager } = setup();
+    await expect(manager.handleSetMemoryJudgeEffort('low')).rejects.toThrow('Only a model chosen as the memory judge takes an effort.');
+    await manager.handleSetMemoryJudge('jev-typesafe');
+    await expect(manager.handleSetMemoryJudgeEffort('low')).rejects.toThrow('Only a model chosen as the memory judge takes an effort.');
+    await manager.handleSetMemoryJudge('step-5-preview');
+    await expect(manager.handleSetMemoryJudgeEffort('max')).rejects.toThrow(/not supported/);
+    await expect(manager.handleSetMemoryJudge('jev-somewhere')).rejects.toThrow(/not a known memory judge/);
+    expect(platform.settings.inspect('damocles.memory.judgeEffort')).toStrictEqual({});
+    expect(platform.settings.get('damocles.memory.judge')).toBe('step-5-preview');
+  });
+
+  it('sends the stored judge pair with a retired id mapped and an effort the choice does not take dropped', async () => {
+    const permissionHandler = { getPermissionMode: () => 'default', getDangerouslySkipPermissions: () => false } as never;
+    const sent = async (user: Record<string, unknown>) => {
+      const posted: ExtensionToWebviewMessage[] = [];
+      const manager = new ConfigManager((_host, message) => posted.push(message), createFakePlatform({ settings: { user } }));
+      await manager.sendCurrentSettings({} as never, permissionHandler, folderA);
+      const update = posted.find((m) => m.type === 'settingsUpdate');
+      return update?.type === 'settingsUpdate' ? update.settings.judge : undefined;
+    };
+    expect(await sent({})).toStrictEqual({ choice: '', effort: null });
+    expect(await sent({ 'damocles.memory.judge': 'step-3.7-flash', 'damocles.memory.judgeEffort': 'high' })).toStrictEqual({ choice: 'step-5-preview', effort: 'high' });
+    expect(await sent({ 'damocles.memory.judge': 'jev-openrouter', 'damocles.memory.judgeEffort': 'high' })).toStrictEqual({ choice: 'jev-openrouter', effort: null });
+  });
+});
+
+describe('Explore model setters', () => {
+  const explore = (platform: ReturnType<typeof setup>['platform']) => new ExploreManager(() => {}, platform);
+
+  it('saves a picked model and its effort in user settings', async () => {
+    const { platform } = setup();
+    expect(await explore(platform).setModel('claude-sonnet-5-5')).toStrictEqual({ key: 'damocles.explore.model', home: 'user' });
+    expect(await explore(platform).setEffort('high')).toStrictEqual({ key: 'damocles.explore.effort', home: 'user' });
+    expect(platform.settings.inspect('damocles.explore.model')).toStrictEqual({ userValue: 'claude-sonnet-5-5' });
+    expect(platform.settings.inspect('damocles.explore.effort')).toStrictEqual({ userValue: 'high' });
+  });
+
+  it('writes user settings even where a project file holds a value, which never applies to these keys', async () => {
+    const { platform } = setup({}, { 'damocles.explore.model': 'claude-haiku-5-5', 'damocles.explore.effort': 'low' });
+    await explore(platform).setModel('gpt-6-luna');
+    await explore(platform).setEffort('high');
+    expect(platform.settings.inspect('damocles.explore.model')).toStrictEqual({ userValue: 'gpt-6-luna', projectValue: 'claude-haiku-5-5' });
+    expect(platform.settings.inspect('damocles.explore.effort')).toStrictEqual({ userValue: 'high', projectValue: 'low' });
+  });
+
+  it('clears an effort the new model does not support, and every effort on Default', async () => {
+    const { platform } = setup();
+    await explore(platform).setModel('claude-sonnet-5-5');
+    await explore(platform).setEffort('xhigh');
+    await explore(platform).setModel('claude-opus-5-5');
+    expect(platform.settings.get('damocles.explore.effort')).toBe('xhigh');
+    await explore(platform).setModel('step-5-preview');
+    expect(platform.settings.inspect('damocles.explore.effort')).toStrictEqual({});
+    await explore(platform).setEffort('high');
+    await explore(platform).setModel('');
+    expect(platform.settings.inspect('damocles.explore.model')).toStrictEqual({});
+    expect(platform.settings.inspect('damocles.explore.effort')).toStrictEqual({});
+  });
+
+  it('rejects an effort on Default, an unsupported effort and an unknown model', async () => {
+    const { platform } = setup();
+    await expect(explore(platform).setEffort('low')).rejects.toThrow('Default runs Explore at medium effort.');
+    await explore(platform).setModel('step-5-preview');
+    await expect(explore(platform).setEffort('max')).rejects.toThrow(/not supported/);
+    await expect(explore(platform).setModel('gemini-3-flash-preview')).rejects.toThrow(/not a known model/);
+    expect(platform.settings.inspect('damocles.explore.effort')).toStrictEqual({});
+    expect(platform.settings.get('damocles.explore.model')).toBe('step-5-preview');
+  });
+
+  it('sends the stored Explore pair with a retired id mapped and an unsupported effort dropped', async () => {
+    const permissionHandler = { getPermissionMode: () => 'default', getDangerouslySkipPermissions: () => false } as never;
+    const sent = async (user: Record<string, unknown>) => {
+      const posted: ExtensionToWebviewMessage[] = [];
+      const manager = new ConfigManager((_host, message) => posted.push(message), createFakePlatform({ settings: { user } }));
+      await manager.sendCurrentSettings({} as never, permissionHandler, folderA);
+      const update = posted.find((m) => m.type === 'settingsUpdate');
+      return update?.type === 'settingsUpdate' ? update.settings.explore : undefined;
+    };
+    expect(await sent({})).toStrictEqual({ model: '', effort: null });
+    expect(await sent({ 'damocles.explore.model': 'step-3.7-flash', 'damocles.explore.effort': 'high' })).toStrictEqual({ model: 'step-5-preview', effort: 'high' });
+    expect(await sent({ 'damocles.explore.model': 'step-5-preview', 'damocles.explore.effort': 'max' })).toStrictEqual({ model: 'step-5-preview', effort: null });
+  });
+});
+
 describe('settingWriteResult', () => {
   const ctx = (folder: FolderTarget): HandlerContext => ({ host: {} as never, folder } as unknown as HandlerContext);
 
@@ -100,33 +272,31 @@ describe('settingWriteResult', () => {
 
   it('reports a write that leaves its key at the default as saved to the home scope, with no file', async () => {
     const { platform, posted } = setup();
+    await platform.settings.update('damocles.explore.model', 'step-5-preview', 'user');
     await platform.settings.update('damocles.explore.effort', 'high', 'user');
     const explore = new ExploreManager((_host, message) => posted.push(message), platform);
     const deps = { platform, postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => posted.push(message) };
-    const saved = await writeSetting(deps, ctx(targetA), 'damocles.explore.effort', (d) => d, () => explore.setEffort(''));
+    const saved = await writeSetting(deps, ctx(targetA), 'damocles.explore.effort', (d) => d, () => explore.setEffort(null));
     expect(saved).toBe(true);
     expect(platform.settings.inspect('damocles.explore.effort')).toStrictEqual({});
     expect(posted).toStrictEqual([{ type: 'settingWriteResult', key: 'damocles.explore.effort', ok: true, scope: 'user' }]);
   });
 
-  it('reports where the key a setter actually wrote landed, under the key of the row that asked', async () => {
-    const { platform, posted } = setup({}, { 'damocles.explore.enabled': true });
-    const explore = new ExploreManager((_host, message) => posted.push(message), platform);
+  it('reports where a window-level write landed, the project file that held the value', async () => {
+    const { platform, manager, posted } = setup({}, { 'damocles.ideContext.enabled': true });
     const deps = { platform, postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => posted.push(message) };
-    await writeSetting(deps, ctx(targetA), 'damocles.explore.provider', (d) => d, () => explore.setProvider('default'));
-    expect(platform.settings.inspect('damocles.explore.enabled')).toStrictEqual({ projectValue: false });
-    expect(posted).toStrictEqual([{ type: 'settingWriteResult', key: 'damocles.explore.provider', ok: true, scope: 'project', file: `${A}/.damocles/settings.json` }]);
+    await writeSetting(deps, ctx(targetA), 'damocles.ideContext.enabled', (d) => d, () => manager.handleSetIdeContextEnabled(false));
+    expect(platform.settings.inspect('damocles.ideContext.enabled')).toStrictEqual({ projectValue: false });
+    expect(posted).toStrictEqual([{ type: 'settingWriteResult', key: 'damocles.ideContext.enabled', ok: true, scope: 'project', file: `${A}/.damocles/settings.json` }]);
   });
 
   it('settles an invalid value as a failed write instead of throwing', async () => {
     const { platform, posted } = setup();
     const explore = new ExploreManager((_host, message) => posted.push(message), platform);
     const deps = { platform, postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => posted.push(message) };
-    await expect(writeSetting(deps, ctx(targetA), 'damocles.explore.effort', (d) => d, () => explore.setEffort('loud'))).resolves.toBe(false);
-    await expect(writeSetting(deps, ctx(targetA), 'damocles.explore.provider', (d) => d, () => explore.setProvider('nowhere'))).resolves.toBe(false);
+    await expect(writeSetting(deps, ctx(targetA), 'damocles.explore.model', (d) => d, () => explore.setModel('nowhere'))).resolves.toBe(false);
     expect(posted.filter((m) => m.type === 'settingWriteResult')).toStrictEqual([
-      { type: 'settingWriteResult', key: 'damocles.explore.effort', ok: false, error: 'loud is not an effort level.' },
-      { type: 'settingWriteResult', key: 'damocles.explore.provider', ok: false, error: 'nowhere is not an Explore provider.' },
+      { type: 'settingWriteResult', key: 'damocles.explore.model', ok: false, error: 'Model "nowhere" is not a known model' },
     ]);
   });
 

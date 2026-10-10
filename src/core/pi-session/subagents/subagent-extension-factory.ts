@@ -31,6 +31,7 @@ import {
 import { dispatchToolCall, dispatchObserveOnly } from '../hooks/dispatch';
 import { buildAgentEndPayload } from '../hooks/payload';
 import { registerTurnEndImagePruning, registerAgentStartImageReconcile } from '../context-image-pruning';
+import { registerAbortSettledCallRecord, registerStoppedToolResultMarker, registerWindDownErrorRecord } from '../stopped-tool-result';
 import { createToolSearchTool, mcpGroupsOf, type McpToolMenuEntry, type ToolActivationPort } from '../tools/tool-search-tool';
 
 /** The state a subagent's gate hook routes to: the parent handler + mode reader + the spawning tool id. */
@@ -195,6 +196,9 @@ export function createSubagentExtensionFactory(ctx: SubagentGateContext): Extens
     // btw sessions register the pruner directly via their inline factory in pi-session.ts.
     registerTurnEndImagePruning(pi);
     registerAgentStartImageReconcile(pi);
+    registerStoppedToolResultMarker(pi);
+    registerAbortSettledCallRecord(pi);
+    registerWindDownErrorRecord(pi);
 
     if (ctx.deferrableToolNames.length > 0) {
       try {

@@ -8,7 +8,7 @@
  */
 
 import type { InjectedAgentResult, SubagentResultsDetails } from '../agent-records';
-import { getStatusNote, recordResultText } from './status-note';
+import { recordOutcomeText, recordResultText } from './status-note';
 import type { AgentRecord } from './types';
 
 /** Custom-message type for the injected results (display:false → seen by the model, not rendered as a bubble). */
@@ -54,7 +54,7 @@ export function backgroundResultsDetails(records: readonly AgentRecord[]): Subag
       toolCallId: r.toolCallId,
       status: r.status,
       ...(r.stopReason ? { stopReason: r.stopReason } : {}),
-      result: (r.result ?? r.error ?? '') + getStatusNote(r.status, r.stopReason, r.id),
+      result: recordOutcomeText(r),
     });
   }
   return { agents };

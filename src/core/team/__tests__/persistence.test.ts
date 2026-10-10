@@ -17,7 +17,7 @@ import { CANCELLED_TOOL_DETAIL_KEY } from '../../../shared/types/session';
 import { TeamPersistence, isTeamCheckpoint, parseTeamEventLog } from '../persistence';
 import type { TeamCheckpoint } from '../types';
 import { ensurePiSessionDir } from '../../pi-session/session-store';
-import { DAMOCLES_AGENT_LAUNCH_ENTRY } from '../../pi-session/session-store/constants';
+import { DAMOCLES_AGENT_LAUNCH_ENTRY, DAMOCLES_TURN_STOPPED_ENTRY } from '../../pi-session/session-store/constants';
 import { teamCheckpointPath, teamEventLogPath, teamMemberSessionId, teamMembersDir, type TeamMemberLaunchData } from '../../pi-session/agent-records';
 import { mapPiToolName, normalizeToolDetails, normalizeToolInput } from '../../pi-session/tool-normalization';
 import { joinResultText } from '../../pi-session/tool-result-text';
@@ -217,6 +217,63 @@ describe('member card history from the member pi session file', () => {
       },
       { id: `0:${entryIds[4]}`, role: 'toolResult', content: [{ type: 'tool_result', tool_use_id: 'tc-read', content: 'export function parse() {}', is_error: false }] },
     ]);
+  });
+
+  it('reloads a call pi retried as nothing and a call that failed for good with its error, as the live card showed them', async () => {
+    const cwd = join(DAMOCLES_HOME_DIR, 'failed-calls');
+    const failed = (text: string, errorMessage: string): PiMessage =>
+      ({ ...(assistantMessage([{ type: 'text', text }]) as object), stopReason: 'error', errorMessage }) as unknown as PiMessage;
+    const dir = teamMembersDir(ensurePiSessionDir(cwd), SESSION_ID, TEAM_ID);
+    const sm = SessionManager.create(cwd, dir, { id: teamMemberSessionId(AGENT_ID, 0) });
+    sm.appendCustomEntry(DAMOCLES_AGENT_LAUNCH_ENTRY, launch(0, 'fix the parser'));
+    const task = sm.appendMessage(userMessage('fix the parser'));
+    // `_prepareRetry` omits the attempt it re-runs (`agent-session.js:3048`).
+    sm.appendContextEdit(sm.appendMessage(failed('Let me', '529 overloaded_error')), null);
+    const final = sm.appendMessage(failed('Now I will', '400 invalid_request_error'));
+
+    const history = await new TeamPersistence(cwd, SESSION_ID).loadAgentConversation(TEAM_ID, AGENT_ID);
+
+    expect(history).toEqual([
+      { id: `0:${task}`, role: 'user', content: [{ type: 'text', text: 'fix the parser' }] },
+      { id: `0:${final}`, role: 'assistant', content: [{ type: 'text', text: 'Now I will' }] },
+      { id: `0:${final}:error`, role: 'error', content: [{ type: 'text', text: '400 invalid_request_error' }] },
+    ]);
+  });
+
+  // The nested extension records a call the abort settled at the gate (agent-loop.js:500-504), whose result has no durationMs.
+  it('reloads a call its aborted run settled before it ran as stopped, without the result pi wrote', async () => {
+    const cwd = join(DAMOCLES_HOME_DIR, 'stopped-calls');
+    const dir = teamMembersDir(ensurePiSessionDir(cwd), SESSION_ID, TEAM_ID);
+    const sm = SessionManager.create(cwd, dir, { id: teamMemberSessionId(AGENT_ID, 0) });
+    sm.appendCustomEntry(DAMOCLES_AGENT_LAUNCH_ENTRY, launch(0, 'fix the parser'));
+    sm.appendMessage(userMessage('fix the parser'));
+    const call = sm.appendMessage(assistantMessage([{ type: 'toolCall', id: 'tc-gated', name: 'bash', arguments: { command: 'rm -rf build' } }]));
+    sm.appendCustomEntry(DAMOCLES_TURN_STOPPED_ENTRY, { toolCallIds: ['tc-gated'], entryIds: [] });
+    sm.appendMessage(toolResultMessage('tc-gated', 'bash', 'Operation aborted', {}, true));
+
+    const history = await new TeamPersistence(cwd, SESSION_ID).loadAgentConversation(TEAM_ID, AGENT_ID);
+
+    expect(history.map((m) => m.role)).toEqual(['user', 'assistant']);
+    expect(history.find((m) => m.id === `0:${call}`)!.content).toEqual([
+      { type: 'tool_use', id: 'tc-gated', name: 'Bash', input: { command: 'rm -rf build' }, abandoned: 'stopped' },
+    ]);
+  });
+
+  // The nested extension records an error stop that ended under the aborted signal (`registerWindDownErrorRecord`).
+  it('reloads no error row for a wind-down error the record names, as the live card showed none', async () => {
+    const cwd = join(DAMOCLES_HOME_DIR, 'wind-down');
+    const failed = (errorMessage: string): PiMessage =>
+      ({ ...(assistantMessage([]) as object), stopReason: 'error', errorMessage }) as unknown as PiMessage;
+    const dir = teamMembersDir(ensurePiSessionDir(cwd), SESSION_ID, TEAM_ID);
+    const sm = SessionManager.create(cwd, dir, { id: teamMemberSessionId(AGENT_ID, 0) });
+    sm.appendCustomEntry(DAMOCLES_AGENT_LAUNCH_ENTRY, launch(0, 'fix the parser'));
+    sm.appendMessage(userMessage('fix the parser'));
+    const windDown = sm.appendMessage(failed('This operation was aborted'));
+    sm.appendCustomEntry(DAMOCLES_TURN_STOPPED_ENTRY, { toolCallIds: [], entryIds: [windDown] });
+
+    const history = await new TeamPersistence(cwd, SESSION_ID).loadAgentConversation(TEAM_ID, AGENT_ID);
+
+    expect(history.map((m) => m.role)).toEqual(['user']);
   });
 
   it('keeps the images of a user turn after its text, dropping an image with an unsupported media type', async () => {

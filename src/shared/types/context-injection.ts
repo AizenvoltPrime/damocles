@@ -45,7 +45,7 @@ export interface InjectedMemory {
   isForgotten?: boolean;
   rerankRelevance?: 'high' | 'medium' | 'low';
   rerankReason?: string;
-  /** Set when Jev graded the entry: its relevance score, 0 to 1. The card renders a localized verdict from it. */
+  /** Set when a classifier graded the entry: its relevance score, 0 to 1. The card renders a localized verdict from it. */
   rerankClassifierScore?: number;
 }
 

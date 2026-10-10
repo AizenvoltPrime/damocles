@@ -592,6 +592,7 @@ async function runWithToolCalls(blocks: PiToolCallBlock[]): Promise<{ messages: 
   const fake = new FakeSession({
     onPrompt: (_t, s) => {
       s.emit({ type: 'message_end', message: { role: 'assistant', content: blocks.map((b) => ({ type: 'toolCall', ...b })) } });
+      for (const b of blocks) s.emit({ type: 'tool_execution_start', toolCallId: b.id, toolName: b.name, args: b.arguments });
       s.emit({ type: 'turn_end' });
     },
   });
@@ -666,6 +667,79 @@ describe('AgentRunner tool normalization', () => {
 
     expect(toolCallMessages(messages)[0]?.toolName).toBe('mcp__pi__team_send_message');
     expect(assistantToolUse(messages, 'tc-5').input).toEqual({ to: 'lead', content: 'done' });
+  });
+});
+
+describe('AgentRunner tool count', () => {
+  const read = (id: string) => ({ type: 'toolCall', id, name: 'read', arguments: { path: `/${id}.ts` } });
+  const started = (id: string) => ({ type: 'tool_execution_start', toolCallId: id, toolName: 'read', args: { path: `/${id}.ts` } });
+  const ended = (id: string, text: string, isError: boolean) => ({
+    type: 'tool_execution_end', toolCallId: id, toolName: 'read', result: { content: [{ type: 'text', text }], details: {} }, isError,
+  });
+
+  // pi emits `tool_execution_start` (agent-loop.js:379, :415) before `beforeToolCall`, where the gate blocks a call (:493).
+  it('counts each call as pi starts it, a blocked call included', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const counts: Array<[string, number]> = [];
+    let countedAtSeal = -1;
+    const fake = new FakeSession({
+      onPrompt: (_t, s) => {
+        s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
+        s.emit({ type: 'message_end', message: { role: 'assistant', content: [read('tc-ok'), read('tc-blocked')], stopReason: 'toolUse' } });
+        countedAtSeal = counts.length;
+        s.emit(started('tc-ok'));
+        s.emit(ended('tc-ok', 'contents', false));
+        s.emit(started('tc-blocked'));
+        s.emit(ended('tc-blocked', 'Blocked by policy', true));
+        s.emit({ type: 'turn_end' });
+      },
+    });
+    const config = baseConfig({
+      createSession: async () => fake as never,
+      keepAlive: () => false,
+      onMessage: (m: ExtensionToWebviewMessage) => { messages.push(m); },
+      onToolCall: (name, count) => { counts.push([name, count]); },
+    });
+
+    const result = await new AgentRunner().startAgent(config);
+
+    expect(countedAtSeal).toBe(0);
+    expect(counts).toEqual([['Read', 1], ['Read', 2]]);
+    expect(result.toolCallCount).toBe(2);
+    expect(toolCallMessages(messages)).toEqual([
+      expect.objectContaining({ toolName: 'Read', toolInput: { file_path: '/tc-ok.ts' } }),
+      expect.objectContaining({ toolName: 'Read', toolInput: { file_path: '/tc-blocked.ts' } }),
+    ]);
+  });
+
+  // pi starts no call after the one an abort lands in (agent-loop.js:402-404, :429-431, :449-451).
+  it('counts no call a batch cut short by an abort skipped', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const onToolCall = vi.fn();
+    const fake = new FakeSession({
+      settleOn: 'agent_settled',
+      onPrompt: (_t, s) => {
+        s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
+        s.emit({ type: 'message_end', message: { role: 'assistant', content: [read('tc-ran'), read('tc-skipped')], stopReason: 'toolUse' } });
+        s.emit(started('tc-ran'));
+        s.emit(ended('tc-ran', 'Operation aborted', true));
+        s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
+        s.emit({ type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'aborted', errorMessage: 'Request was aborted' } });
+        s.emit({ type: 'agent_settled', aborted: true });
+      },
+    });
+    const config = baseConfig({
+      createSession: async () => fake as never,
+      keepAlive: () => false,
+      onMessage: (m: ExtensionToWebviewMessage) => { messages.push(m); },
+      onToolCall,
+    });
+
+    const result = await new AgentRunner().startAgent(config);
+
+    expect(onToolCall.mock.calls).toEqual([['Read', 1]]);
+    expect(result.toolCallCount).toBe(1);
+    expect(toolCallMessages(messages).map((m) => m.toolInput)).toEqual([{ file_path: '/tc-ran.ts' }]);
   });
 });
 
@@ -903,7 +977,7 @@ async function withStopHook(body: (hook: StopHook, fake: FakeSession) => Promise
 
 /**
  * A completed assistant message carrying one tool call per name, each paired with the successful result
- * pi builds for it (`createToolResultMessage`, `agent-loop.js:649-662` in pi 0.99.2, keys the result to the call id and carries `isError`).
+ * pi builds for it (`createToolResultMessage`, `agent-loop.js:656-670` in pi 1.1.0, keys the result to the call id and carries `isError`).
  */
 function turnWith(...names: string[]): AgentTurnContext {
   return {
@@ -1440,5 +1514,463 @@ describe('AgentRunner image steers', () => {
     expect(m.taker.take()).toEqual([{ text: steer, echoed: true }]);
     m.abort.abort();
     await m.run;
+  });
+});
+
+/**
+ * A model call that fails, in the order pi 1.1.0 reports it. pi-agent-core's loop emits the assistant
+ * `message_start` (`agent-loop.js:286`), its deltas (`agent-loop.js:299`), the `message_end` carrying
+ * `stopReason: 'error'` (`agent-loop.js:319`), then `turn_end` and `agent_end` (`agent-loop.js:151-152`), and
+ * `AgentSession` stamps `willRetry` on that `agent_end` (`agent-session.js:750`, `_willRetryAfterAgentEnd`).
+ */
+function emitFailedCall(s: FakeSession, errorMessage: string, opts: { partial?: string; toolCall?: boolean; willRetry: boolean }): void {
+  s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
+  if (opts.partial) s.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: opts.partial } });
+  const content = [
+    ...(opts.partial ? [{ type: 'text', text: opts.partial }] : []),
+    ...(opts.toolCall ? [{ type: 'toolCall', id: 'tc-failed', name: 'read', arguments: { path: '/a.ts' } }] : []),
+  ];
+  const message = { role: 'assistant', content, stopReason: 'error', errorMessage };
+  s.emit({ type: 'message_end', message });
+  s.emit({ type: 'turn_end', message, toolResults: [] });
+  s.emit({ type: 'agent_end', messages: [message], willRetry: opts.willRetry });
+}
+
+/** A call that answers with `text`, from its `message_start` to its `message_end` (`agent-loop.js:286-319`). */
+function emitAnsweredCall(s: FakeSession, text: string): void {
+  s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
+  s.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: text } });
+  s.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text }], stopReason: 'stop' } });
+}
+
+/** The run's end: `agent_settled` (`agent-session.js:691`), after which pi's `prompt()` resolves. */
+function emitSettled(s: FakeSession): void {
+  s.emit({ type: 'agent_settled', aborted: false });
+}
+
+/**
+ * pi's auto-retry, between a failed call's `agent_end { willRetry: true }` and the retried call:
+ * `_prepareRetry` emits `auto_retry_start` (`agent-session.js:3041`) and omits the failed call from context
+ * (`agent-session.js:3048`), then the retried run opens with `agent_start` (`agent-loop.js:68`).
+ */
+function emitRetryBackoff(s: FakeSession, attempt: number): void {
+  s.emit({ type: 'auto_retry_start', attempt, maxAttempts: 3, delayMs: 2000, errorMessage: 'overloaded' });
+  s.emit({ type: 'agent_start' });
+}
+
+describe('AgentRunner provider failures', () => {
+  const sentOf = (config: AgentRunConfig): ExtensionToWebviewMessage[] => vi.mocked(config.onMessage).mock.calls.map(([m]) => m);
+
+  it('ends the agent failed with the provider message when its last call fails for good, without reconciling it', async () => {
+    const fake = new FakeSession({
+      settleOn: 'agent_settled',
+      onPrompt: (_t, s) => {
+        emitAnsweredCall(s, 'found the bug in parse()');
+        s.emit({ type: 'turn_end' });
+        emitFailedCall(s, '529 overloaded_error', { partial: 'Now I will', willRetry: false });
+        emitSettled(s);
+      },
+    });
+    const messageBus = new MessageBus('team-1');
+    const broadcasts: string[] = [];
+    messageBus.subscribe((m) => { if (m.to === null) broadcasts.push(m.content); });
+    const config = baseConfig({ messageBus, createSession: async () => fake as never, keepAlive: () => false, onReconcileBeforeEnd: vi.fn() });
+
+    const result = await new AgentRunner().startAgent(config);
+
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe('529 overloaded_error');
+    expect(result.finalResponse).toBe('529 overloaded_error\n\nPartial output:\nfound the bug in parse()');
+    expect(config.onReconcileBeforeEnd).not.toHaveBeenCalled();
+    expect(broadcasts).toEqual(['Agent "worker" failed: 529 overloaded_error']);
+  });
+
+  it('shows the failure in the transcript once, at the boundary after the call, never at its message_end', async () => {
+    let sentAtAgentEnd = -1;
+    const fake = new FakeSession({
+      settleOn: 'agent_settled',
+      onPrompt: (_t, s) => {
+        emitFailedCall(s, '529 overloaded_error', { partial: 'Now I will', willRetry: false });
+        sentAtAgentEnd = sentOf(config).length;
+        emitSettled(s);
+      },
+    });
+    const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false });
+
+    await new AgentRunner().startAgent(config);
+
+    const sent = sentOf(config);
+    expect(sent.slice(0, sentAtAgentEnd).some((m) => m.type === 'error')).toBe(false);
+    expect(sent.filter((m) => m.type === 'error')).toEqual([{ type: 'error', message: '529 overloaded_error', parentToolUseId: 'a1' }]);
+    // The failed call's text stays, as a reload shows it (`memberHistoryMessages`).
+    expect(sent.some((m) => m.type === 'assistantRetracted')).toBe(false);
+  });
+
+  it('completes a run whose failed call pi retried and that then answered, withdrawing the failed attempt', async () => {
+    let failedMessageId = '';
+    const fake = new FakeSession({
+      settleOn: 'agent_settled',
+      onPrompt: (_t, s) => {
+        emitFailedCall(s, '529 overloaded_error', { partial: 'Let me', toolCall: true, willRetry: true });
+        failedMessageId = sentOf(config).flatMap((m) => (m.type === 'teamAgentAssistant' ? [m.messageId] : [])).at(-1) ?? '';
+        emitRetryBackoff(s, 1);
+        emitAnsweredCall(s, 'done');
+        // pi reports the retry's success after the retried call's `message_end` listeners ran (`agent-session.js:777`).
+        s.emit({ type: 'auto_retry_end', success: true, attempt: 1 });
+        s.emit({ type: 'turn_end' });
+        s.emit({ type: 'agent_end', messages: [], willRetry: false });
+        emitSettled(s);
+      },
+    });
+    const onToolCall = vi.fn();
+    const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false, onToolCall });
+
+    const result = await new AgentRunner().startAgent(config);
+
+    expect(result.status).toBe('completed');
+    expect(result).not.toHaveProperty('error');
+    expect(result.finalResponse).toBe('done');
+    const sent = sentOf(config);
+    expect(sent.some((m) => m.type === 'error')).toBe(false);
+    expect(failedMessageId).not.toBe('');
+    expect(sent.filter((m) => m.type === 'assistantRetracted')).toEqual([{ type: 'assistantRetracted', messageId: failedMessageId, parentToolUseId: 'a1' }]);
+    // The failed attempt's tool call never ran: pi ends an errored turn before executing tools (`agent-loop.js:143`).
+    expect(onToolCall).not.toHaveBeenCalled();
+    expect(sent.some((m) => m.type === 'teamAgentToolCall')).toBe(false);
+    // The wait ends when the retried call starts, before anything it streams.
+    expect(sent.filter((m) => m.type === 'statusUpdate')).toEqual([
+      { type: 'statusUpdate', status: 'retrying', attempt: 1, maxAttempts: 3, parentToolUseId: 'a1' },
+      { type: 'statusUpdate', status: 'ready', parentToolUseId: 'a1' },
+    ]);
+    const types = sent.map((m) => (m.type === 'statusUpdate' ? `status:${m.status}` : m.type));
+    expect(types.indexOf('status:ready')).toBeLessThan(types.lastIndexOf('teamAgentStreamDelta'));
+  });
+
+  it("ends failed when the retries run out, with the last attempt's error", async () => {
+    const fake = new FakeSession({
+      settleOn: 'agent_settled',
+      onPrompt: (_t, s) => {
+        emitFailedCall(s, '529 first', { willRetry: true });
+        emitRetryBackoff(s, 1);
+        emitFailedCall(s, '529 second', { willRetry: false });
+        // pi gives up after the last attempt's agent_end (`agent-session.js:1437`).
+        s.emit({ type: 'auto_retry_end', success: false, attempt: 1, finalError: '529 second' });
+        emitSettled(s);
+      },
+    });
+    const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false });
+
+    const result = await new AgentRunner().startAgent(config);
+
+    expect(result).toMatchObject({ status: 'failed', error: '529 second', finalResponse: '529 second' });
+    expect(sentOf(config).filter((m) => m.type === 'error')).toEqual([{ type: 'error', message: '529 second', parentToolUseId: 'a1' }]);
+  });
+
+  it('ends a parked agent failed when the call of a later wake fails', async () => {
+    let alive = true;
+    const messageBus = new MessageBus('team-1');
+    const fake = new FakeSession({
+      settleOn: 'agent_settled',
+      onPrompt: (text, s) => {
+        if (text === 'do the task') {
+          emitAnsweredCall(s, 'reported');
+        } else {
+          alive = false;
+          emitFailedCall(s, '503 upstream unavailable', { willRetry: false });
+        }
+        emitSettled(s);
+      },
+    });
+    let parked: (() => void) | null = null;
+    const idle = new Promise<void>((r) => { parked = r; });
+    const config = baseConfig({
+      messageBus,
+      createSession: async () => fake as never,
+      keepAlive: () => alive,
+      onTurnEnd: () => parked?.(),
+    });
+
+    const run = new AgentRunner().startAgent(config);
+    await idle;
+    messageBus.send('Lead', 'worker', 'revise section 2');
+    const result = await run;
+
+    expect(fake.prompts).toEqual(['do the task', '[Message from Lead]: revise section 2']);
+    expect(result).toMatchObject({ status: 'failed', error: '503 upstream unavailable', finalResponse: '503 upstream unavailable\n\nPartial output:\nreported' });
+  });
+
+  it('reports a Stop that lands on a failing call as cancelled, never failed', async () => {
+    const abort = new AbortController();
+    const fake = new FakeSession({
+      settleOn: 'agent_settled',
+      onPrompt: (_t, s) => {
+        abort.abort();
+        emitFailedCall(s, 'socket hang up', { willRetry: false });
+        emitSettled(s);
+      },
+    });
+    const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false, abortSignal: abort.signal });
+
+    const result = await new AgentRunner().startAgent(config);
+
+    expect(result.status).toBe('cancelled');
+    expect(result).not.toHaveProperty('error');
+  });
+});
+
+describe('AgentRunner reloaded transcript of a failed call', () => {
+  const failed = { role: 'assistant', content: [{ type: 'text', text: 'Now I will' }], stopReason: 'error', errorMessage: '529 overloaded_error' } as unknown as PersistedAgentMessage;
+
+  it("shows the failed call's text and then its error, as the live card did", () => {
+    expect(memberHistoryMessages([failed], new Map([[failed, 'e7']]))).toEqual([
+      { id: 'e7', role: 'assistant', content: [{ type: 'text', text: 'Now I will' }] },
+      { id: 'e7:error', role: 'error', content: [{ type: 'text', text: '529 overloaded_error' }] },
+    ]);
+  });
+
+  // pi returns from the turn before executing any tool of an errored message (agent-loop.js:143-152).
+  it('marks the tool calls of a failed call as not executed, with the same blocks the live card was sent', async () => {
+    const withTool = { ...failed, content: [{ type: 'text', text: 'Now I will' }, { type: 'toolCall', id: 'tc-failed', name: 'read', arguments: { path: '/a.ts' } }] } as unknown as PersistedAgentMessage;
+    const fake = new FakeSession({
+      settleOn: 'agent_settled',
+      onPrompt: (_t, s) => {
+        emitFailedCall(s, '529 overloaded_error', { partial: 'Now I will', toolCall: true, willRetry: false });
+        emitSettled(s);
+      },
+    });
+    const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false });
+    await new AgentRunner().startAgent(config);
+    const live = vi.mocked(config.onMessage).mock.calls.flatMap(([m]) => (m.type === 'teamAgentAssistant' ? [m.content] : []));
+
+    const [reloaded] = memberHistoryMessages([withTool], new Map([[withTool, 'e9']]));
+    expect(reloaded!.content).toEqual([
+      { type: 'text', text: 'Now I will' },
+      { type: 'tool_use', id: 'tc-failed', name: 'Read', input: expect.anything(), abandoned: 'failed' },
+    ]);
+    expect(live).toEqual([reloaded!.content]);
+  });
+
+  // pi returns before executing any tool of an aborted message too (agent-loop.js:143).
+  it('marks the tool calls of an aborted call as stopped, with the same blocks the live card was sent', async () => {
+    const aborted = { role: 'assistant', content: [{ type: 'toolCall', id: 'tc-aborted', name: 'read', arguments: { path: '/a.ts' } }], stopReason: 'aborted', errorMessage: 'Request was aborted' };
+    const fake = new FakeSession({
+      settleOn: 'agent_settled',
+      onPrompt: (_t, s) => {
+        s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
+        s.emit({ type: 'message_end', message: aborted });
+        s.emit({ type: 'turn_end', message: aborted, toolResults: [] });
+        s.emit({ type: 'agent_end', messages: [aborted] });
+        emitSettled(s);
+      },
+    });
+    const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false });
+    await new AgentRunner().startAgent(config);
+    const sent = vi.mocked(config.onMessage).mock.calls.map(([m]) => m);
+    const live = sent.flatMap((m) => (m.type === 'teamAgentAssistant' ? [m.content] : []));
+
+    const persisted = aborted as unknown as PersistedAgentMessage;
+    const [reloaded] = memberHistoryMessages([persisted], new Map([[persisted, 'e10']]));
+    expect(reloaded!.content).toEqual([{ type: 'tool_use', id: 'tc-aborted', name: 'Read', input: expect.anything(), abandoned: 'stopped' }]);
+    expect(live).toEqual([reloaded!.content]);
+    expect(sent.some((m) => m.type === 'teamAgentToolCall')).toBe(false);
+  });
+
+  // pi finalizes the call it was running and starts none after it (agent-loop.js:402-404, :429-431, :449-451),
+  // drains steers (:186) and makes the next call under the aborted signal, which ends aborted (:141-152);
+  // a request setup the signal rejects first ends it on an error stop instead (pi-ai lazy.js:41-44).
+  it('re-seals a batch an abort cut short with its skipped calls stopped, the blocks its reload builds', async () => {
+    const call = (id: string) => ({ type: 'toolCall', id, name: 'read', arguments: { path: `/${id}.ts` } });
+    const batch = { role: 'assistant', content: [{ type: 'text', text: 'Reading' }, call('tc-ran'), call('tc-skipped')], stopReason: 'toolUse' };
+    const ranResult = { role: 'toolResult', toolCallId: 'tc-ran', toolName: 'read', content: [{ type: 'text', text: 'Operation aborted' }], isError: true };
+    const steer = { role: 'user', content: [{ type: 'text', text: '[Message from Lead]: stop' }] };
+    const aborted = { role: 'assistant', content: [], stopReason: 'aborted', errorMessage: 'Request was aborted' };
+    const fake = new FakeSession({
+      settleOn: 'agent_settled',
+      onPrompt: (_t, s) => {
+        s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
+        s.emit({ type: 'message_end', message: batch });
+        s.emit({ type: 'tool_execution_start', toolCallId: 'tc-ran', toolName: 'read', args: { path: '/tc-ran.ts' } });
+        s.emit({ type: 'tool_execution_end', toolCallId: 'tc-ran', toolName: 'read', result: ranResult, isError: true });
+        s.emit({ type: 'message_start', message: ranResult });
+        s.emit({ type: 'message_end', message: ranResult });
+        s.emit({ type: 'turn_end', message: batch, toolResults: [ranResult] });
+        s.emit({ type: 'message_start', message: steer });
+        s.emit({ type: 'message_end', message: steer });
+        s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
+        s.emit({ type: 'message_end', message: aborted });
+        s.emit({ type: 'turn_end', message: aborted, toolResults: [] });
+        s.emit({ type: 'agent_end', messages: [aborted] });
+        s.emit({ type: 'agent_settled', aborted: true });
+      },
+    });
+    const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false });
+    await new AgentRunner().startAgent(config);
+    const sealed = vi.mocked(config.onMessage).mock.calls.flatMap(([m]) => (m.type === 'teamAgentAssistant' ? [m] : []));
+
+    const persisted = [batch, ranResult, steer, aborted] as unknown as PersistedAgentMessage[];
+    const [reloaded] = memberHistoryMessages(persisted, new Map(persisted.map((m, i) => [m, `e${i}`])));
+    expect(reloaded!.content).toEqual([
+      { type: 'text', text: 'Reading' },
+      { type: 'tool_use', id: 'tc-ran', name: 'Read', input: expect.anything() },
+      { type: 'tool_use', id: 'tc-skipped', name: 'Read', input: expect.anything(), abandoned: 'stopped' },
+    ]);
+    expect(sealed).toHaveLength(2);
+    expect(sealed[1]!.messageId).toBe(sealed[0]!.messageId);
+    expect(JSON.stringify(sealed[1]!.content)).toBe(JSON.stringify(reloaded!.content));
+  });
+
+  // The nested extension records a call the abort settled at the gate (agent-loop.js:500-504) and pi emits the
+  // entry inside the extension pass, before listeners get that call's tool_execution_end (agent-session.js:749, :2721-2726).
+  it('re-seals a call the turn-stopped record names as stopped, sends no result for it, and matches its reload', async () => {
+    const call = (id: string) => ({ type: 'toolCall', id, name: 'bash', arguments: { command: `run ${id}` } });
+    const batch = { role: 'assistant', content: [call('tc-gated'), call('tc-skipped')], stopReason: 'toolUse' };
+    const gatedResult = { role: 'toolResult', toolCallId: 'tc-gated', toolName: 'bash', content: [{ type: 'text', text: 'Operation aborted' }], details: {}, isError: true };
+    const record = { type: 'custom', id: 's1', parentId: null, timestamp: '', customType: 'damocles-turn-stopped', data: { toolCallIds: ['tc-gated'], entryIds: [] } };
+    const aborted = { role: 'assistant', content: [], stopReason: 'aborted', errorMessage: 'Request was aborted' };
+    const fake = new FakeSession({
+      settleOn: 'agent_settled',
+      onPrompt: (_t, s) => {
+        s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
+        s.emit({ type: 'message_end', message: batch });
+        s.emit({ type: 'tool_execution_start', toolCallId: 'tc-gated', toolName: 'bash', args: { command: 'run tc-gated' } });
+        s.emit({ type: 'entry_appended', entry: record });
+        s.emit({ type: 'tool_execution_end', toolCallId: 'tc-gated', toolName: 'bash', result: gatedResult, isError: true });
+        s.emit({ type: 'message_start', message: gatedResult });
+        s.emit({ type: 'message_end', message: gatedResult });
+        s.emit({ type: 'turn_end', message: batch, toolResults: [gatedResult] });
+        s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
+        s.emit({ type: 'message_end', message: aborted });
+        s.emit({ type: 'turn_end', message: aborted, toolResults: [] });
+        s.emit({ type: 'agent_end', messages: [aborted] });
+        s.emit({ type: 'agent_settled', aborted: true });
+      },
+    });
+    const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false });
+    await new AgentRunner().startAgent(config);
+    const sent = vi.mocked(config.onMessage).mock.calls.map(([m]) => m);
+    const sealed = sent.flatMap((m) => (m.type === 'teamAgentAssistant' ? [m] : []));
+
+    const persisted = [batch, gatedResult, aborted] as unknown as PersistedAgentMessage[];
+    const reloaded = memberHistoryMessages(persisted, new Map(persisted.map((m, i) => [m, `e${i}`])), new Set(['tc-gated']));
+    expect(reloaded.map((m) => m.role)).toEqual(['assistant']);
+    expect(reloaded[0]!.content).toEqual([
+      { type: 'tool_use', id: 'tc-gated', name: 'Bash', input: expect.anything(), abandoned: 'stopped' },
+      { type: 'tool_use', id: 'tc-skipped', name: 'Bash', input: expect.anything(), abandoned: 'stopped' },
+    ]);
+    expect(sent.some((m) => m.type === 'teamAgentToolResult')).toBe(false);
+    expect(sealed.map((m) => m.messageId)).toEqual(Array(sealed.length).fill(sealed[0]!.messageId));
+    expect(JSON.stringify(sealed.at(-1)!.content)).toBe(JSON.stringify(reloaded[0]!.content));
+  });
+
+  it('shows the error of a failed call that streamed nothing', () => {
+    const empty = { ...failed, content: [] } as unknown as PersistedAgentMessage;
+    expect(memberHistoryMessages([empty], new Map([[empty, 'e8']]))).toEqual([
+      { id: 'e8:error', role: 'error', content: [{ type: 'text', text: '529 overloaded_error' }] },
+    ]);
+  });
+});
+
+/**
+ * A team cancel while a member runs a tool, in pi 1.1.0's order: the runner's abort listener aborts the session,
+ * pi records the killed call with its `durationMs` (`agent-loop.js:583-591`), and the loop's next call, made under the
+ * aborted signal (`:141`), ends on an error stop because its auth setup rejects first (`model-runtime.js:451-455`,
+ * `lazy.js:41-44` in pi-ai 1.1.0). The nested extension names its entry at its `turn_end` boundary
+ * (`registerWindDownErrorRecord`), which pi commits before the listeners get that `turn_end` (`agent-session.js:515`,
+ * `:636-641`).
+ */
+describe('AgentRunner wind-down error of a cancelled run', () => {
+  const call = (id: string) => ({ type: 'toolCall', id, name: 'bash', arguments: { command: 'sleep 20' } });
+  const batch = { role: 'assistant', content: [{ type: 'text', text: 'Waiting' }, call('tc-ran'), call('tc-skipped')], stopReason: 'toolUse' };
+  const killed = { role: 'toolResult', toolCallId: 'tc-ran', toolName: 'bash', content: [{ type: 'text', text: 'Command aborted' }], details: { [CANCELLED_TOOL_DETAIL_KEY]: true }, isError: true, durationMs: 700 };
+  const windDown = { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'This operation was aborted' };
+
+  /** Append the turn-stopped entry naming `message`'s entry, and emit its `entry_appended`, as pi commits the draft. */
+  const recordWindDown = (s: FakeSession, message: unknown): void => {
+    const persisted = s.branch.find((e) => (e as { message?: unknown }).message === message) as { id: string };
+    const entry = { type: 'custom', id: `st-${persisted.id}`, customType: 'damocles-turn-stopped', data: { toolCallIds: [], entryIds: [persisted.id] } };
+    s.branch.push(entry);
+    s.emit({ type: 'entry_appended', entry });
+  };
+
+  const cancelledRun = (opts: { recorded: boolean }) => {
+    const cancel = new AbortController();
+    const fake = new FakeSession({
+      settleOn: 'agent_settled',
+      onPrompt: (_t, s) => {
+        s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
+        s.emit({ type: 'message_end', message: batch });
+        s.emit({ type: 'tool_execution_start', toolCallId: 'tc-ran', toolName: 'bash', args: { command: 'sleep 20' } });
+        cancel.abort();
+        s.emit({ type: 'tool_execution_end', toolCallId: 'tc-ran', toolName: 'bash', result: killed, isError: true, durationMs: 700 });
+        s.emit({ type: 'message_start', message: killed });
+        s.emit({ type: 'message_end', message: killed });
+        s.emit({ type: 'turn_end', message: batch, toolResults: [killed] });
+        s.emit({ type: 'message_start', message: windDown });
+        s.emit({ type: 'message_end', message: windDown });
+        if (opts.recorded) recordWindDown(s, windDown);
+        s.emit({ type: 'turn_end', message: windDown, toolResults: [] });
+        s.emit({ type: 'agent_end', messages: [windDown], willRetry: false });
+        s.emit({ type: 'agent_settled', aborted: true });
+      },
+    });
+    return baseConfig({ createSession: async () => fake as never, keepAlive: () => false, abortSignal: cancel.signal });
+  };
+
+  it('shows no error card for it, stops the calls the abort skipped, and matches its reload', async () => {
+    const config = cancelledRun({ recorded: true });
+
+    const result = await new AgentRunner().startAgent(config);
+
+    expect(result.status).toBe('cancelled');
+    const sent = vi.mocked(config.onMessage).mock.calls.map(([m]) => m);
+    expect(sent.some((m) => m.type === 'error')).toBe(false);
+    const sealed = sent.flatMap((m) => (m.type === 'teamAgentAssistant' ? [m] : []));
+    const persisted = [batch, killed, windDown] as unknown as PersistedAgentMessage[];
+    const entryIds = new Map(persisted.map((m, i) => [m, `e${i}`]));
+    const reloaded = memberHistoryMessages(persisted, entryIds, new Set(), new Set([persisted[2]!]));
+    expect(reloaded.map((m) => m.role)).toEqual(['assistant', 'toolResult']);
+    expect(reloaded[0]!.content).toEqual([
+      { type: 'text', text: 'Waiting' },
+      { type: 'tool_use', id: 'tc-ran', name: 'Bash', input: expect.anything() },
+      { type: 'tool_use', id: 'tc-skipped', name: 'Bash', input: expect.anything(), abandoned: 'stopped' },
+    ]);
+    expect(sealed.map((m) => m.messageId)).toEqual(Array(sealed.length).fill(sealed[0]!.messageId));
+    expect(JSON.stringify(sealed.at(-1)!.content)).toBe(JSON.stringify(reloaded[0]!.content));
+  });
+
+  // No record: the record pass saw a live signal (the abort landed after it) or a later handler discarded the draft.
+  it('shows the card and leaves the skipped call when no record names the error, as its reload does', async () => {
+    const config = cancelledRun({ recorded: false });
+
+    await new AgentRunner().startAgent(config);
+
+    const sent = vi.mocked(config.onMessage).mock.calls.map(([m]) => m);
+    expect(sent.filter((m) => m.type === 'error')).toEqual([{ type: 'error', message: 'This operation was aborted', parentToolUseId: 'a1' }]);
+    const sealed = sent.flatMap((m) => (m.type === 'teamAgentAssistant' ? [m] : []));
+    const persisted = [batch, killed, windDown] as unknown as PersistedAgentMessage[];
+    const reloaded = memberHistoryMessages(persisted, new Map(persisted.map((m, i) => [m, `e${i}`])));
+    expect(JSON.stringify(sealed.at(-1)!.content)).toBe(JSON.stringify(reloaded[0]!.content));
+  });
+
+  it('keeps the error row of a member file written before the record existed', () => {
+    const persisted = [windDown] as unknown as PersistedAgentMessage[];
+    expect(memberHistoryMessages(persisted, new Map([[persisted[0]!, 'e0']])).map((m) => m.role)).toEqual(['error']);
+  });
+
+  it('still shows a provider failure no record names', async () => {
+    const fake = new FakeSession({
+      settleOn: 'agent_settled',
+      onPrompt: (_t, s) => {
+        emitFailedCall(s, '529 overloaded_error', { willRetry: false });
+        emitSettled(s);
+      },
+    });
+    const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false });
+
+    const result = await new AgentRunner().startAgent(config);
+
+    expect(result.status).toBe('failed');
+    const sent = vi.mocked(config.onMessage).mock.calls.map(([m]) => m);
+    expect(sent.filter((m) => m.type === 'error')).toEqual([{ type: 'error', message: '529 overloaded_error', parentToolUseId: 'a1' }]);
   });
 });

@@ -39,7 +39,8 @@ vi.mock('node:fs', async (importOriginal) => {
 import * as fs from 'node:fs';
 import type { OpenFolder, WorkspaceFolders } from '../../../platform/workspace-folders';
 import type { FileWatcher } from '../../../platform/file-watcher';
-import { DesktopFileWatcherFactory, isShallowGlob, SHALLOW_COALESCE_MS, watchRoot } from '../platform/file-watcher-factory';
+import { createInProcessTreeHost, SHALLOW_COALESCE_MS } from '../../watch-worker/fs-watch-tree';
+import { DesktopFileWatcherFactory, isShallowGlob, watchRoot } from '../platform/file-watcher-factory';
 
 let dir: string;
 let factory: DesktopFileWatcherFactory;
@@ -51,7 +52,8 @@ beforeEach(() => {
   // Not realpath'd: the temp directory may sit under a symlink (macOS /var) or an 8.3 short name (Windows), as a user's project can.
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-watch-'));
   lines = [];
-  factory = new DesktopFileWatcherFactory(noFolders, (line) => lines.push(line));
+  const log = (line: string): number => lines.push(line);
+  factory = new DesktopFileWatcherFactory(noFolders, log, createInProcessTreeHost(log));
   H.hiddenOnce.clear();
   H.unlistable.clear();
   H.openWatches.clear();
@@ -361,7 +363,8 @@ describe('DesktopFileWatcherFactory', { timeout: 20_000 }, () => {
     const alpha = path.join(dir, 'alpha');
     const beta = path.join(dir, 'beta');
     for (const project of [alpha, beta]) fs.mkdirSync(path.join(project, '.damocles'), { recursive: true });
-    const workspaceFactory = new DesktopFileWatcherFactory(folders, (line) => lines.push(line));
+    const log = (line: string): number => lines.push(line);
+    const workspaceFactory = new DesktopFileWatcherFactory(folders, log, createInProcessTreeHost(log));
     const watcher = workspaceFactory.watchWorkspace('.damocles/settings.json');
     const events: string[] = [];
     watcher.onDidCreate((p) => events.push(`create ${p}`));

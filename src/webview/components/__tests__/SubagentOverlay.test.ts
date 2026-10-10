@@ -222,3 +222,19 @@ describe('the subagent overlay meta chips', () => {
     expect(chips(subagent({ result: { content: 'done', totalTokens: 999 } }))).not.toContain('tokens');
   });
 });
+
+describe('a failed model call in the subagent overlay', () => {
+  it('shows the error the card holds as an error notice', () => {
+    const wrapper = open(subagent({ messages: [{ id: 'e1', role: 'error', content: '529 overloaded_error', timestamp: 1 }] }));
+
+    const notice = wrapper.get('[data-testid="agent-error"]');
+    expect(notice.text()).toContain(i18n.global.t('common.error'));
+    expect(notice.text()).toContain('529 overloaded_error');
+  });
+
+  it('names the retry on the working line while pi waits to re-send the call', () => {
+    const wrapper = open(subagent({ retry: { attempt: 1, maxAttempts: 3 } }));
+
+    expect(wrapper.get('[data-testid="agent-working"]').text()).toContain(i18n.global.t('status.retrying', { attempt: 1, max: 3 }));
+  });
+});

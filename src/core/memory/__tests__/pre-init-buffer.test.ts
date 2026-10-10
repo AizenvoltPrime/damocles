@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as crypto from 'crypto';
 import { DatabaseSync } from 'node:sqlite';
 import type { DatabaseInstance } from '../types';
+import type { ConsolidationResult } from '@shared/types/consolidation';
 
 // Drive MemoryService init against a per-test temp DB instead of the global ~/.damocles file, and
 // stub the sub-call runner so no PiRuntime/LLM path is touched.
@@ -343,9 +344,9 @@ describe('MemoryService — consolidation files memories under the folder its co
     const extracting = new Promise<void>((resolve) => { extractStarted = resolve; });
     // Settles only on abort, as the real runner's model call does once its signal fires.
     runnerHolder.run = (req, lifetime) => {
-      if (req.purpose !== 'extract') return Promise.resolve({ value: null, failure: 'transient' });
+      if (req.purpose !== 'extract') return Promise.resolve({ value: null, failure: 'unreachable' });
       extractStarted();
-      return new Promise((resolve) => lifetime.addEventListener('abort', () => resolve({ value: null, failure: 'transient' }), { once: true }));
+      return new Promise((resolve) => lifetime.addEventListener('abort', () => resolve({ value: null, failure: 'unreachable' }), { once: true }));
     };
 
     const pass = service.triggerConsolidation();
@@ -361,5 +362,343 @@ describe('MemoryService — consolidation files memories under the folder its co
     } finally {
       raw.close();
     }
+  });
+});
+
+describe('MemoryService: set-aside turns and Retry', () => {
+  let service: MemoryService;
+  let scheduledDelays: number[];
+  let setTimeoutSpy: ReturnType<typeof vi.spyOn>;
+  let broadcasts: Array<{ type: string; count?: number; setAside?: number }>;
+
+  function seed(db: DatabaseInstance, user: string, setAside: boolean): void {
+    db.prepare(
+      `INSERT INTO memory_candidates (id, session_id, prompt_index, user_text, assistant_text, files, workspace, salient, consumed, reprocessed, created_at, failed_attempts, set_aside_at)
+       VALUES (?, 'sess-aside', 0, ?, 'a', '[]', '/ws/aside', 0, 0, 0, ?, ?, ?)`,
+    ).run(crypto.randomUUID(), user, Date.now(), setAside ? 3 : 0, setAside ? Date.now() : null);
+  }
+
+  /** The last `consolidationPendingCount` published, the pill's and the set-aside notice's only source. */
+  function lastCounts(): { count?: number; setAside?: number } | undefined {
+    return broadcasts.filter((m) => m.type === 'consolidationPendingCount').at(-1);
+  }
+
+  beforeEach(async () => {
+    dbHolder.path = createTestDbPath();
+    service = new MemoryService(createFakePlatform());
+    broadcasts = [];
+    service.setConsolidationBroadcast((msg) => broadcasts.push(msg as never));
+    scheduledDelays = [];
+    setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation(((_fn: (...a: unknown[]) => void, delay?: number) => {
+      scheduledDelays.push(delay ?? 0);
+      return 0 as unknown as ReturnType<typeof setTimeout>;
+    }) as unknown as typeof setTimeout);
+    await service.ensureInitialized();
+  });
+
+  afterEach(async () => {
+    setTimeoutSpy.mockRestore();
+    runnerHolder.run = null;
+    await service.dispose();
+  });
+
+  it('Retry returns the set-aside turns, publishes both counts and arms the idle timer', async () => {
+    const db = service.database!;
+    seed(db, 'aside one', true);
+    seed(db, 'aside two', true);
+    expect(service.getSetAsideCount()).toBe(2);
+    expect(service.getPendingCount()).toBe(0);
+
+    scheduledDelays = [];
+    await service.retrySetAsideTurns();
+
+    expect(service.getSetAsideCount()).toBe(0);
+    expect(lastCounts()).toEqual({ type: 'consolidationPendingCount', count: 2, setAside: 0 });
+    expect(scheduledDelays).toContain(180_000);
+    expect(broadcasts.some((m) => m.type === 'consolidationResult')).toBe(false);
+  });
+
+  it('Retry with nothing set aside arms no timer', async () => {
+    scheduledDelays = [];
+    await service.retrySetAsideTurns();
+    expect(scheduledDelays).toEqual([]);
+    expect(lastCounts()).toEqual({ type: 'consolidationPendingCount', count: 0, setAside: 0 });
+  });
+
+  it('a pass that ends after a Retry made while it ran publishes the fresh count', async () => {
+    const db = service.database!;
+    seed(db, 'aside', true);
+    seed(db, 'queued', false);
+    let extractStarted!: () => void;
+    const started = new Promise<void>((resolve) => { extractStarted = resolve; });
+    let finishExtract!: () => void;
+    const held = new Promise<void>((resolve) => { finishExtract = resolve; });
+    runnerHolder.run = async (req) => {
+      if (req.purpose === 'extract') {
+        extractStarted();
+        await held;
+        return { value: { memories: [] } };
+      }
+      if (req.purpose === 'profile') return { value: { static: '', dynamic: '' } };
+      return { value: { contradicts: false, merged_ids: [], content: '' } };
+    };
+
+    const pass = service.triggerConsolidation();
+    await started;
+    await service.retrySetAsideTurns();
+    finishExtract();
+    await pass;
+
+    expect(service.getSetAsideCount()).toBe(0);
+    expect(lastCounts()?.setAside).toBe(0);
+  });
+
+  it('a failed pass still publishes the turns set aside before it', async () => {
+    const db = service.database!;
+    seed(db, 'aside', true);
+    seed(db, 'queued', false);
+
+    await service.triggerConsolidation();
+
+    expect(service.getLastConsolidationResult()).toMatchObject({ status: 'failed' });
+    expect(lastCounts()).toEqual({ type: 'consolidationPendingCount', count: 1, setAside: 1 });
+  });
+});
+
+describe('MemoryService: a run counts a turn the model declines at most once', () => {
+  let service: MemoryService;
+  let setTimeoutSpy: ReturnType<typeof vi.spyOn>;
+  /** The users of every extraction prompt, in call order. */
+  let prompts: string[][];
+
+  function seed(db: DatabaseInstance, user: string, workspace: string, order: number): string {
+    const id = crypto.randomUUID();
+    db.prepare(
+      `INSERT INTO memory_candidates (id, session_id, prompt_index, user_text, assistant_text, files, workspace, salient, consumed, reprocessed, created_at)
+       VALUES (?, 'sess-count', 0, ?, 'a', '[]', ?, 0, 0, 0, ?)`,
+    ).run(id, user, workspace, Date.now() + order);
+    return id;
+  }
+
+  function turn(id: string): { consumed: number; reprocessed: number; failed_attempts: number; set_aside_at: number | null } {
+    return service.database!.prepare('SELECT consumed, reprocessed, failed_attempts, set_aside_at FROM memory_candidates WHERE id = ?').get(id) as never;
+  }
+
+  const idleRun = (): Promise<void> =>
+    (service as unknown as { runConsolidation: (o: { reason: 'idle' }) => Promise<void> }).runConsolidation({ reason: 'idle' });
+
+  beforeEach(async () => {
+    dbHolder.path = createTestDbPath();
+    prompts = [];
+    runnerHolder.run = async (req) => {
+      if (req.purpose === 'extract') {
+        const users = [...(req as unknown as { prompt: string }).prompt.matchAll(/User: (\S+)/g)].map((m) => m[1]!);
+        prompts.push(users);
+        if (users.includes('poison')) return { value: null, failure: 'unanswered' };
+        return { value: { memories: users.map((u) => ({ kind: 'fact', scope: 'project', content: `The user asked about ${u}.` })) } };
+      }
+      if (req.purpose === 'profile') return { value: { static: '', dynamic: '' } };
+      return { value: { contradicts: false, merged_ids: [], content: '' } };
+    };
+    service = new MemoryService(createFakePlatform());
+    setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation((() => 0) as unknown as typeof setTimeout);
+    await service.ensureInitialized();
+  });
+
+  afterEach(async () => {
+    setTimeoutSpy.mockRestore();
+    runnerHolder.run = null;
+    await service.dispose();
+  });
+
+  it('counts a declined turn once in a manual run whose follow-up pass takes the remaining turns, and never re-sends it', async () => {
+    const db = service.database!;
+    seed(db, 'q1', '/ws/a', 1);
+    const poison = seed(db, 'poison', '/ws/a', 2);
+    const other = seed(db, 'q2', '/ws/b', 3);
+
+    await service.triggerConsolidation();
+
+    expect(turn(poison)).toMatchObject({ consumed: 0, failed_attempts: 1, set_aside_at: null });
+    expect(turn(other)).toMatchObject({ consumed: 1, reprocessed: 1 });
+    expect(prompts.filter((users) => users.length === 1 && users[0] === 'poison')).toHaveLength(1);
+    expect(service.getPendingCount()).toBe(1);
+  });
+
+  it('sets a declined turn aside after three separate manual runs', async () => {
+    const db = service.database!;
+    seed(db, 'q1', '/ws/a', 1);
+    const poison = seed(db, 'poison', '/ws/a', 2);
+
+    await service.triggerConsolidation();
+    expect(turn(poison)).toMatchObject({ failed_attempts: 1, set_aside_at: null });
+    await service.triggerConsolidation();
+    expect(turn(poison)).toMatchObject({ failed_attempts: 2, set_aside_at: null });
+    await service.triggerConsolidation();
+    expect(turn(poison).failed_attempts).toBe(3);
+    expect(turn(poison).set_aside_at).not.toBeNull();
+    expect(service.getSetAsideCount()).toBe(1);
+  });
+
+  it('counts a declined turn once in each automatic run', async () => {
+    const db = service.database!;
+    seed(db, 'q1', '/ws/a', 1);
+    const poison = seed(db, 'poison', '/ws/a', 2);
+    seed(db, 'q2', '/ws/b', 3);
+
+    await idleRun();
+    expect(turn(poison)).toMatchObject({ failed_attempts: 1, set_aside_at: null });
+    await idleRun();
+    expect(turn(poison)).toMatchObject({ failed_attempts: 2, set_aside_at: null });
+    await idleRun();
+    expect(turn(poison).failed_attempts).toBe(3);
+    expect(turn(poison).set_aside_at).not.toBeNull();
+  });
+});
+
+describe('MemoryService: the terminal result describes the whole run', () => {
+  let service: MemoryService;
+  let setTimeoutSpy: ReturnType<typeof vi.spyOn>;
+  let broadcasts: Array<{ type: string; running?: boolean; result?: ConsolidationResult; event?: { phase: string; status: string } }>;
+  /** Users whose extraction call answers `unreachable`. */
+  let unreachableUsers: Set<string>;
+
+  function seed(db: DatabaseInstance, user: string, workspace: string, order: number): void {
+    db.prepare(
+      `INSERT INTO memory_candidates (id, session_id, prompt_index, user_text, assistant_text, files, workspace, salient, consumed, reprocessed, created_at)
+       VALUES (?, 'sess-run', 0, ?, 'a', '[]', ?, 0, 0, 0, ?)`,
+    ).run(crypto.randomUUID(), user, workspace, Date.now() + order);
+  }
+
+  const results = (): ConsolidationResult[] => broadcasts.filter((m) => m.type === 'consolidationResult').map((m) => m.result!);
+  const runningFlags = (): boolean[] => broadcasts.filter((m) => m.type === 'consolidationRunning').map((m) => m.running!);
+  const failures = (): number => (service as unknown as { consecutiveConsolidationFailures: number }).consecutiveConsolidationFailures;
+  const idleRun = (): Promise<void> =>
+    (service as unknown as { runConsolidation: (o: { reason: 'idle' }) => Promise<void> }).runConsolidation({ reason: 'idle' });
+
+  beforeEach(async () => {
+    dbHolder.path = createTestDbPath();
+    broadcasts = [];
+    unreachableUsers = new Set();
+    runnerHolder.run = async (req) => {
+      if (req.purpose === 'extract') {
+        const users = [...(req as unknown as { prompt: string }).prompt.matchAll(/User: (\S+)/g)].map((m) => m[1]!);
+        if (users.some((u) => unreachableUsers.has(u))) return { value: null, failure: 'unreachable' };
+        return { value: { memories: users.map((u) => ({ kind: 'fact', scope: 'project', content: `The user asked about ${u}.` })) } };
+      }
+      if (req.purpose === 'profile') return { value: { static: '', dynamic: '' } };
+      return { value: { contradicts: false, merged_ids: [], content: '' } };
+    };
+    service = new MemoryService(createFakePlatform());
+    service.setConsolidationBroadcast((msg) => broadcasts.push(msg as never));
+    setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation((() => 0) as unknown as typeof setTimeout);
+    await service.ensureInitialized();
+  });
+
+  afterEach(async () => {
+    setTimeoutSpy.mockRestore();
+    runnerHolder.run = null;
+    await service.dispose();
+  });
+
+  it('a manual run with a follow-up pass ends in one result that sums both passes', async () => {
+    const db = service.database!;
+    seed(db, 'alpha', '/ws/a', 1);
+    seed(db, 'beta', '/ws/a', 2);
+    seed(db, 'gamma', '/ws/b', 3);
+
+    await service.triggerConsolidation();
+
+    expect(results()).toHaveLength(1);
+    const [run] = results();
+    expect(run).toMatchObject({ trigger: 'manual', status: 'extracted', candidatesReviewed: 3 });
+    expect(run!.failure).toBeUndefined();
+    expect(run!.extracted.map((m) => m.content)).toEqual([
+      'The user asked about alpha.',
+      'The user asked about beta.',
+      'The user asked about gamma.',
+    ]);
+    expect(service.getLastConsolidationResult()).toEqual(run);
+    expect(runningFlags()).toEqual([true, false]);
+    expect(broadcasts.filter((m) => m.type === 'consolidationProgress' && m.event!.phase === 'claim')).toHaveLength(2);
+  });
+
+  it('a manual run whose follow-up pass fails keeps the first pass\'s memories beside the failure', async () => {
+    const db = service.database!;
+    seed(db, 'alpha', '/ws/a', 1);
+    seed(db, 'beta', '/ws/a', 2);
+    seed(db, 'gamma', '/ws/b', 3);
+    unreachableUsers.add('gamma');
+
+    await service.triggerConsolidation();
+
+    expect(results()).toHaveLength(1);
+    const [run] = results();
+    expect(run).toMatchObject({
+      trigger: 'manual',
+      status: 'failed',
+      candidatesReviewed: 3,
+      failure: { kind: 'error', reason: 'unreachable', phase: 'extract' },
+    });
+    expect(run!.extracted.map((m) => m.content)).toEqual(['The user asked about alpha.', 'The user asked about beta.']);
+    expect(service.getLastConsolidationResult()).toEqual(run);
+    expect(runningFlags()).toEqual([true, false]);
+    expect(failures()).toBe(1);
+    expect(service.getPendingCount()).toBe(1);
+  });
+
+  it('a pass that throws mid-run still ends the run with its earlier memories and the error', async () => {
+    const db = service.database!;
+    seed(db, 'alpha', '/ws/a', 1);
+    seed(db, 'gamma', '/ws/b', 2);
+    let extractStarts = 0;
+    service.setConsolidationBroadcast((msg) => {
+      broadcasts.push(msg as never);
+      if (msg.type === 'consolidationProgress' && msg.event.phase === 'extract' && msg.event.status === 'active' && msg.event.meta?.done === 0) {
+        extractStarts += 1;
+        if (extractStarts === 2) throw new Error('boom');
+      }
+    });
+
+    await service.triggerConsolidation();
+
+    expect(results()).toHaveLength(1);
+    expect(results()[0]).toMatchObject({ status: 'failed', candidatesReviewed: 2, failure: { kind: 'error', detail: 'boom' } });
+    expect(results()[0]!.extracted.map((m) => m.content)).toEqual(['The user asked about alpha.']);
+    expect(runningFlags()).toEqual([true, false]);
+    expect(service.getPendingCount()).toBe(1);
+  });
+
+  it('a manual run cut short by memory being turned off still ends with what it extracted', async () => {
+    const db = service.database!;
+    seed(db, 'alpha', '/ws/a', 1);
+    seed(db, 'gamma', '/ws/b', 2);
+    let enabled = true;
+    vi.spyOn(service, 'isEnabled', 'get').mockImplementation(() => enabled);
+    service.setConsolidationBroadcast((msg) => {
+      broadcasts.push(msg as never);
+      if (msg.type === 'consolidationProgress' && msg.event.phase === 'profiles' && msg.event.status === 'done') enabled = false;
+    });
+
+    await service.triggerConsolidation();
+
+    expect(results()).toHaveLength(1);
+    expect(results()[0]).toMatchObject({ status: 'extracted', candidatesReviewed: 1 });
+    expect(runningFlags()).toEqual([true, false]);
+  });
+
+  it('each automatic pass is its own run with its own result', async () => {
+    const db = service.database!;
+    seed(db, 'alpha', '/ws/a', 1);
+    seed(db, 'gamma', '/ws/b', 2);
+
+    await idleRun();
+    await idleRun();
+
+    expect(results().map((r) => [r.trigger, r.status, r.extracted.map((m) => m.content)])).toEqual([
+      ['auto', 'extracted', ['The user asked about alpha.']],
+      ['auto', 'extracted', ['The user asked about gamma.']],
+    ]);
+    expect(runningFlags()).toEqual([true, false, true, false]);
   });
 });

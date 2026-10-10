@@ -35,7 +35,15 @@ vi.mock('../agent-dir', async (importOriginal) => ({
 import type { AuthInteraction } from '@earendil-works/pi-ai';
 import { installFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
 import { PiRuntime } from '../pi-runtime';
-import { OPENAI_API_KEY_SECRET, OPENAI_PREFER_API_KEY_STATE, openaiRuntimeKeyWanted, readOpenAIAuthFromDisk } from '../openai-auth';
+import {
+  OPENAI_API_KEY_SECRET,
+  OPENAI_PREFER_API_KEY_STATE,
+  movePreferApiKeyToGlobalState,
+  openaiRequestCredentialIsKey,
+  openaiRuntimeKeyWanted,
+  readOpenAIAuthFromDisk,
+} from '../openai-auth';
+import type { ClassifierBreakers } from '../classifier-breaker';
 
 type Cred = { type: string; key?: string; expires?: number };
 
@@ -193,7 +201,7 @@ describe('PiRuntime OpenAI auth', () => {
   it('signOutChatGPT logs out openai and re-applies the key that the logout dropped', async () => {
     mock.writeState({ openai: { type: 'oauth', expires: 5 } });
     const rt = PiRuntime.get(agentDir);
-    await platform.state.workspace.update(OPENAI_PREFER_API_KEY_STATE, true);
+    await platform.state.global.update(OPENAI_PREFER_API_KEY_STATE, true);
     await rt.setOpenAIApiKey('sk-test');
     expect(mock.modelRuntime.runtimeKeys.get('openai')).toBe('sk-test');
 
@@ -221,7 +229,7 @@ describe('PiRuntime OpenAI auth', () => {
     await rt.setOpenAIApiKey('sk-test');
     expect(await rt.getChatGPTAccessToken()).toBe('token-openai');
 
-    await platform.state.workspace.update(OPENAI_PREFER_API_KEY_STATE, true);
+    await platform.state.global.update(OPENAI_PREFER_API_KEY_STATE, true);
     await rt.syncOpenAIRuntimeKey();
     expect(await rt.getChatGPTAccessToken()).toBeUndefined();
   });
@@ -232,6 +240,93 @@ describe('PiRuntime OpenAI auth', () => {
     await rt.init();
     mock.modelRuntime.runtimeKeys.set('openai', 'sk-stray');
     expect(await rt.getChatGPTAccessToken()).toBeUndefined();
+  });
+
+  // A refusal of one OpenAI credential says nothing about the next, but a token refresh keeps the credential.
+  it('resets the OpenAI classifier breaker on each OpenAI credential change, never on an auth.json change', async () => {
+    const rt = PiRuntime.get(agentDir);
+    await rt.init();
+    const reset = vi.spyOn((rt as unknown as { _classifierBreakers: { reset: (p: string) => void } })._classifierBreakers, 'reset');
+    const openaiResets = (): number => reset.mock.calls.filter(([provider]) => provider === 'openai').length;
+
+    mock.writeState({ openai: { type: 'oauth', expires: 6 } });
+    platform.fileWatchers.watcher(agentDir, 'auth.json').fireChange(path.join(agentDir, 'auth.json'));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(openaiResets()).toBe(0);
+
+    const steps: Array<[string, () => Promise<unknown>]> = [
+      ['set key', () => rt.setOpenAIApiKey('sk-test')],
+      ['clear key', () => rt.clearOpenAIApiKey()],
+      ['prefer toggle', () => rt.applyOpenAIPreferApiKey()],
+      ['ChatGPT sign-in', () => rt.signInChatGPT(callerInteraction())],
+      ['ChatGPT sign-out', () => rt.signOutChatGPT()],
+    ];
+    for (const [step, run] of steps) {
+      const before = openaiResets();
+      await run();
+      expect(openaiResets(), step).toBeGreaterThan(before);
+    }
+
+    const before = openaiResets();
+    await platform.secrets.store(OPENAI_API_KEY_SECRET, 'sk-other-window');
+    await vi.waitFor(() => expect(openaiResets()).toBeGreaterThan(before));
+    expect(reset.mock.calls.every(([provider]) => provider === 'openai')).toBe(true);
+  });
+
+  // A judge request claimed before the new key reaches pi goes out with the old key; its refusal must not stand for the new one.
+  it("a refusal of a request claimed while another window's key change is still syncing does not hold the breaker open", async () => {
+    await platform.secrets.store(OPENAI_API_KEY_SECRET, 'sk-old');
+    const rt = PiRuntime.get(agentDir);
+    await rt.init();
+    const breakers = (rt as unknown as { _classifierBreakers: ClassifierBreakers })._classifierBreakers;
+    let applyNewKey!: () => void;
+    mock.modelRuntime.setRuntimeApiKey.mockImplementationOnce(async (provider: string, key: string) => {
+      await new Promise<void>((resolve) => { applyNewKey = resolve; });
+      mock.modelRuntime.runtimeKeys.set(provider, key);
+    });
+
+    await platform.secrets.store(OPENAI_API_KEY_SECRET, 'sk-new');
+    await vi.waitFor(() => expect(mock.modelRuntime.setRuntimeApiKey).toHaveBeenLastCalledWith('openai', 'sk-new'));
+    const sentWithOldKey = breakers.claim('openai');
+    breakers.settle(sentWithOldKey, { kind: 'rejected', reason: 'unauthorized' });
+    applyNewKey();
+
+    await vi.waitFor(() => expect(mock.modelRuntime.runtimeKeys.get('openai')).toBe('sk-new'));
+    await vi.waitFor(() => expect(breakers.rejection('openai')).toBeUndefined());
+    expect(breakers.admits('openai')).toBe(true);
+  });
+
+  it('the prefer toggle resets the OpenAI breaker even when its runtime key sync fails', async () => {
+    const rt = PiRuntime.get(agentDir);
+    await rt.init();
+    const breakers = (rt as unknown as { _classifierBreakers: ClassifierBreakers })._classifierBreakers;
+    breakers.settle(breakers.claim('openai'), { kind: 'rejected', reason: 'unauthorized' });
+    mock.modelRuntime.removeRuntimeApiKey.mockRejectedValueOnce(new Error('auth.json is locked'));
+
+    await platform.state.global.update(OPENAI_PREFER_API_KEY_STATE, true);
+    await expect(rt.applyOpenAIPreferApiKey()).rejects.toThrow('auth.json is locked');
+
+    expect(breakers.rejection('openai')).toBeUndefined();
+  });
+
+  // The flag is global state, which another VS Code window can change with no event to this one.
+  it('a prefer flag another window wrote re-applies the runtime key at the next read', async () => {
+    mock.writeState({ openai: { type: 'oauth', expires: 5 } });
+    await platform.secrets.store(OPENAI_API_KEY_SECRET, 'sk-test');
+    const rt = PiRuntime.get(agentDir);
+    await rt.init();
+    expect(mock.modelRuntime.runtimeKeys.has('openai')).toBe(false);
+    const session = { publishAccountInfo: vi.fn() };
+    rt.registerSessionMutator('s1', session as never);
+
+    await platform.state.global.update(OPENAI_PREFER_API_KEY_STATE, true);
+    expect(rt.preferOpenAIApiKey()).toBe(true);
+
+    await vi.waitFor(() => expect(mock.modelRuntime.runtimeKeys.get('openai')).toBe('sk-test'));
+    await vi.waitFor(() => expect(session.publishAccountInfo).toHaveBeenCalledTimes(2));
+    rt.preferOpenAIApiKey();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(session.publishAccountInfo).toHaveBeenCalledTimes(2);
   });
 
   it('re-syncs when another window changes the key secret', async () => {
@@ -414,6 +509,28 @@ describe('PiRuntime OpenAI auth', () => {
   });
 });
 
+describe('movePreferApiKeyToGlobalState', () => {
+  it('moves the workspace value to global state and clears the workspace copy', async () => {
+    const platform = installFakePlatform({ workspaceState: { [OPENAI_PREFER_API_KEY_STATE]: true } });
+    await movePreferApiKeyToGlobalState(platform.state);
+    expect(platform.state.global.get(OPENAI_PREFER_API_KEY_STATE)).toBe(true);
+    expect(platform.state.workspace.get(OPENAI_PREFER_API_KEY_STATE)).toBeUndefined();
+  });
+
+  it("keeps the value an earlier workspace moved, and still clears this workspace's copy", async () => {
+    const platform = installFakePlatform({ globalState: { [OPENAI_PREFER_API_KEY_STATE]: true }, workspaceState: { [OPENAI_PREFER_API_KEY_STATE]: false } });
+    await movePreferApiKeyToGlobalState(platform.state);
+    expect(platform.state.global.get(OPENAI_PREFER_API_KEY_STATE)).toBe(true);
+    expect(platform.state.workspace.get(OPENAI_PREFER_API_KEY_STATE)).toBeUndefined();
+  });
+
+  it('leaves global state alone when the workspace holds no value', async () => {
+    const platform = installFakePlatform();
+    await movePreferApiKeyToGlobalState(platform.state);
+    expect(platform.state.global.get(OPENAI_PREFER_API_KEY_STATE)).toBeUndefined();
+  });
+});
+
 describe('openaiRuntimeKeyWanted', () => {
   it.each([
     [false, false, false, false],
@@ -424,6 +541,20 @@ describe('openaiRuntimeKeyWanted', () => {
     [true, true, true, true],
   ])('apiKey=%s chatgpt=%s prefer=%s -> %s', (apiKey, chatgpt, prefer, wanted) => {
     expect(openaiRuntimeKeyWanted({ apiKey, chatgpt }, prefer)).toBe(wanted);
+  });
+});
+
+/** The Decisions API rejects a ChatGPT token, so GPT-6 Luna judges only while pi sends `openai` an API key. */
+describe('openaiRequestCredentialIsKey', () => {
+  it.each([
+    ['key only', { apiKey: true, chatgpt: false }, false, true, true],
+    ['ChatGPT only', { apiKey: false, chatgpt: true }, false, true, false],
+    ['ChatGPT plus a key not preferred', { apiKey: true, chatgpt: true }, false, true, false],
+    ['ChatGPT plus a key preferred', { apiKey: true, chatgpt: true }, true, true, true],
+    ['OPENAI_API_KEY in the environment only', { apiKey: false, chatgpt: false }, false, true, true],
+    ['Codex only, which is not the openai provider', { apiKey: false, chatgpt: false }, false, false, false],
+  ])('%s', (_case, status, prefer, configured, isKey) => {
+    expect(openaiRequestCredentialIsKey(status, prefer, configured)).toBe(isKey);
   });
 });
 

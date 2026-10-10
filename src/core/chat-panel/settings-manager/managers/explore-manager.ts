@@ -1,60 +1,24 @@
 import type { Platform } from "../../../../platform/platform";
-import type { SettingsStore } from "../../../../platform/settings-store";
 import type { PanelHost } from "../../../../platform/window-service";
 import type { PostMessageFn } from "../types";
-import type { ExploreThirdPartyProvider } from "../../../pi-session/explore-providers";
-import { DEFAULT_EXPLORE_MODELS, EXPLORE_SECRET_KEYS, EXPLORE_THIRD_PARTY_PROVIDERS } from "../../../pi-session/explore-providers";
-import { updateConfigAtEffectiveScope, type SettingWrite } from "../utils";
-import { parseEffortLevel, exploreSupportedEffortLevels } from "../../../../shared/types/constants";
+import { PROVIDER_SECRET_KEYS } from "../../../pi-session/explore-providers";
+import { readExploreSetting } from "../../../pi-session/subagents/cheap-model";
+import { EXPLORE_EFFORT_SETTING, EXPLORE_MODEL_SETTING } from "../../../../shared/explore-settings";
+import { assertEffortSupported, type SettingWrite } from "../utils";
+import { DEFAULT_MODELS, migrateLegacyModelValue, supportedStoredEffort } from "../../../../shared/types/constants";
+import type { EffortLevel } from "../../../../shared/types/settings";
 import { log } from "../../../logger";
 import { t } from "../../../l10n";
 import { PiRuntime } from "../../../pi-session/pi-runtime";
 import { TYPESAFE_SECRET_KEY } from "../../../pi-session/custom-providers";
-import { CLASSIFIER_ENV_KEYS, JEV_VIA_OPENROUTER, JEV_VIA_TYPESAFE, memoryJudgeOf } from "../../../pi-session/classifier-model";
+import { CLASSIFIER_ENV_KEYS, CLASSIFIER_MODELS, classifierCredential, classifierModelOf, memoryJudgeOf, pickClassifierModel } from "../../../pi-session/classifier-model";
+import { OPENAI_API_KEY_SECRET, openaiAuthStatus, readOpenAIAuthFromDisk, readPreferOpenAIApiKey } from "../../../pi-session/openai-auth";
+import { PI_AGENT_DIR } from "../../../pi-session/agent-dir";
+import { MEMORY_JUDGE_SETTING, forcedClassifierOf, isKnownMemoryJudgeChoice } from "../../../../shared/memory-judge";
 import type { ExtensionToWebviewMessage } from "../../../../shared/types/messages";
-import type { ClassifierProvider } from "../../../../shared/types/settings";
+import type { ClassifierCredential, ClassifierProvider, MemoryJudge } from "../../../../shared/types/settings";
 
-const VALID_PROVIDERS: ReadonlySet<ExploreThirdPartyProvider> = new Set(EXPLORE_THIRD_PARTY_PROVIDERS);
-const DEFAULT_PROVIDER_ID = "default" as const;
-type ProviderSelection = typeof DEFAULT_PROVIDER_ID | ExploreThirdPartyProvider;
-
-/** DeepSeek's dedicated SecretStorage key — intentionally NOT under `damocles.explore.apiKey.*`, so it
- *  never appears in the Explore provider dropdown. */
 const DEEPSEEK_SECRET_KEY = "damocles.deepseek.apiKey";
-
-function isInterceptEnabled(settings: SettingsStore): boolean {
-  return settings.get<boolean>("damocles.explore.enabled", false);
-}
-
-function getProvider(settings: SettingsStore): ExploreThirdPartyProvider {
-  const raw = settings.get<string>("damocles.explore.provider", "openrouter");
-  return VALID_PROVIDERS.has(raw as ExploreThirdPartyProvider) ? (raw as ExploreThirdPartyProvider) : "openrouter";
-}
-
-function getEffectiveProviderSelection(settings: SettingsStore): ProviderSelection {
-  return isInterceptEnabled(settings) ? getProvider(settings) : DEFAULT_PROVIDER_ID;
-}
-
-function getSecretKey(settings: SettingsStore): string {
-  return EXPLORE_SECRET_KEYS[getProvider(settings)];
-}
-
-function getEffectiveModel(settings: SettingsStore): string {
-  const provider = getProvider(settings);
-  const map = settings.get<Record<string, string>>("damocles.explore.modelByProvider", {});
-  const stored = map[provider]?.trim();
-  if (stored) return stored;
-  return DEFAULT_EXPLORE_MODELS[provider];
-}
-
-function getEffort(settings: SettingsStore): string {
-  const raw = settings.get<string>("damocles.explore.effort", "");
-  const effort = parseEffortLevel(raw);
-  // Coerce against the selected model's advertised levels (same catalog double-match as the resolver +
-  // the settings UI): a syntactically valid but unsupported level reads as unset, so the broadcast never
-  // diverges from what the UI can display or the subagent resolver will honor.
-  return effort && exploreSupportedEffortLevels(getProvider(settings), getEffectiveModel(settings)).includes(effort) ? effort : "";
-}
 
 export class ExploreManager {
   private readonly postMessage: PostMessageFn;
@@ -65,119 +29,54 @@ export class ExploreManager {
     this.platform = platform;
   }
 
-  async storeApiKey(apiKey: string): Promise<void> {
-    if (getProvider(this.platform.settings) === "openrouter") return storeOpenrouterApiKey(this.platform, apiKey);
-    const key = getSecretKey(this.platform.settings);
-    if (!key) {
-      log("[ExploreManager] storeApiKey: provider has no secret key, ignoring");
-      return;
-    }
-    await this.platform.secrets.store(key, apiKey.trim());
-    log("[ExploreManager] storeApiKey: stored for %s", key);
-    await resyncCustomProvidersNow(this.platform);
-  }
-
-  async deleteApiKey(): Promise<void> {
-    const key = getSecretKey(this.platform.settings);
-    if (!key) {
-      log("[ExploreManager] deleteApiKey: provider has no secret key, ignoring");
-      return;
-    }
-    await this.platform.secrets.delete(key);
-    log("[ExploreManager] deleteApiKey: deleted for %s", key);
-    await resyncCustomProvidersNow(this.platform);
-  }
-
   /**
-   * Re-wire the native custom providers on the live pi runtime after an explore key changes (Phase 5,
-   * US-018.8), so a subagent can reach the model without a window reload. Guarded by `PiRuntime.exists`
-   * so the settings path never boots pi.
+   * Re-wire the native custom providers on the live pi runtime after a key changes, so a chat can reach the
+   * model without a window reload. Guarded by `PiRuntime.exists` so the settings path never boots pi.
    */
   private resyncCustomProviders(): void {
     if (!PiRuntime.exists) return;
     void PiRuntime.get().syncCustomProviders((k) => this.platform.secrets.get(k));
   }
 
-  async setProvider(provider: string): Promise<SettingWrite> {
-    if (provider === DEFAULT_PROVIDER_ID) {
-      const written = await updateConfigAtEffectiveScope(this.platform, "damocles.explore.enabled", false);
-      log("[ExploreManager] setProvider: default (interception disabled)");
-      return written;
-    }
-    if (!VALID_PROVIDERS.has(provider as ExploreThirdPartyProvider)) throw new Error(t("{0} is not an Explore provider.", provider));
-    const written = await updateConfigAtEffectiveScope(this.platform, "damocles.explore.provider", provider);
-    await updateConfigAtEffectiveScope(this.platform, "damocles.explore.enabled", true);
-    log("[ExploreManager] setProvider: %s (effective model: %s, interception enabled)", provider, getEffectiveModel(this.platform.settings));
-    return written;
-  }
-
+  /** Explore is read with no folder, so its settings are user-level only (application scope). */
   async setModel(model: string): Promise<SettingWrite> {
-    const provider = getProvider(this.platform.settings);
-    const current = this.platform.settings.get<Record<string, string>>("damocles.explore.modelByProvider", {});
-    const next: Record<string, string> = { ...current, [provider]: model };
-    const written = await updateConfigAtEffectiveScope(this.platform, "damocles.explore.modelByProvider", next);
-    log("[ExploreManager] setModel: provider=%s model=%s", provider, model);
-    return written;
-  }
-
-  async setEffort(effort: string): Promise<SettingWrite> {
-    const parsed = effort === "" ? null : parseEffortLevel(effort);
-    if (effort !== "" && !parsed) throw new Error(t("{0} is not an effort level.", effort));
-    // Persist only a level the currently-selected model advertises (same catalog double-match as the
-    // resolver + UI); an unsupported level is stored as unset so settings.json never holds a value the
-    // model can't honor. Passing `undefined` removes the override at the effective scope.
-    const next = parsed && exploreSupportedEffortLevels(getProvider(this.platform.settings), getEffectiveModel(this.platform.settings)).includes(parsed) ? parsed : undefined;
-    const written = await updateConfigAtEffectiveScope(this.platform, "damocles.explore.effort", next);
-    log("[ExploreManager] setEffort: %s", next ?? "(cleared)");
-    return written;
-  }
-
-  async sendExploreKeyStatus(host: PanelHost): Promise<void> {
-    const key = getSecretKey(this.platform.settings);
-    if (!key) {
-      this.postMessage(host, { type: "exploreApiKeyUpdate", hasApiKey: false });
-      return;
+    if (model !== "" && !DEFAULT_MODELS.some((m) => m.value === model)) throw new Error(t("Model \"{0}\" is not a known model", model));
+    const config = this.platform.settings;
+    await config.update(EXPLORE_MODEL_SETTING, model === "" ? undefined : model, "user");
+    // Default takes no effort, and a picked model keeps only one it supports.
+    const storedEffort = config.get<string>(EXPLORE_EFFORT_SETTING, "");
+    if (storedEffort !== "" && supportedStoredEffort(model, storedEffort) === null) {
+      await config.update(EXPLORE_EFFORT_SETTING, undefined, "user");
     }
-    const stored = await this.platform.secrets.get(key);
-    const hasApiKey = stored !== undefined && stored.length > 0;
-    log("[ExploreManager] sendExploreKeyStatus: hasApiKey: %s (%s)", hasApiKey, key);
-    this.postMessage(host, { type: "exploreApiKeyUpdate", hasApiKey });
+    log("[ExploreManager] setModel: %s", model || "(default)");
+    return { key: EXPLORE_MODEL_SETTING, home: "user" };
   }
 
-  sendExploreConfig(host: PanelHost): void {
-    const provider = getEffectiveProviderSelection(this.platform.settings);
-    const model = provider === DEFAULT_PROVIDER_ID ? "" : getEffectiveModel(this.platform.settings);
-    const effort = provider === DEFAULT_PROVIDER_ID ? "" : getEffort(this.platform.settings);
-    log("[ExploreManager] sendExploreConfig: provider=%s model=%s effort=%s", provider, model, effort);
-    this.postMessage(host, { type: "exploreConfigUpdate", provider, model, effort });
+  async setEffort(effort: EffortLevel | null): Promise<SettingWrite> {
+    const { model } = readExploreSetting(this.platform.settings);
+    if (effort !== null && model === "") throw new Error(t("Default runs Explore at medium effort. Choose a model to set one."));
+    assertEffortSupported(model, effort);
+    await this.platform.settings.update(EXPLORE_EFFORT_SETTING, effort ?? undefined, "user");
+    log("[ExploreManager] setEffort: %s", effort ?? "(default)");
+    return { key: EXPLORE_EFFORT_SETTING, home: "user" };
   }
 
-  /** The currently selected explore provider (used to decide whether an Explore-key write also affects
-   *  the shared StepFun panel). */
-  selectedExploreProvider(): ExploreThirdPartyProvider {
-    return getProvider(this.platform.settings);
-  }
-
-  // ---- StepFun (shared key) -------------------------------------------------
-  // StepFun's key is the SAME entry the Explore section writes for provider=stepfun
-  // (`damocles.explore.apiKey.stepfun`). These write that fixed key directly — NOT the
-  // currently-selected explore provider's key — so the dedicated StepFun panel works regardless of the
-  // Explore provider selection.
+  // ---- StepFun (own key) ----------------------------------------------------
 
   async storeStepfunApiKey(key: string): Promise<void> {
-    await this.platform.secrets.store(EXPLORE_SECRET_KEYS.stepfun, key.trim());
+    await this.platform.secrets.store(PROVIDER_SECRET_KEYS.stepfun, key.trim());
     log("[ExploreManager] storeStepfunApiKey: stored");
     this.resyncCustomProviders();
   }
 
   async deleteStepfunApiKey(): Promise<void> {
-    await this.platform.secrets.delete(EXPLORE_SECRET_KEYS.stepfun);
+    await this.platform.secrets.delete(PROVIDER_SECRET_KEYS.stepfun);
     log("[ExploreManager] deleteStepfunApiKey: deleted");
     this.resyncCustomProviders();
   }
 
   async sendStepfunAuthStatus(host: PanelHost): Promise<void> {
-    const stored = await this.platform.secrets.get(EXPLORE_SECRET_KEYS.stepfun);
+    const stored = await this.platform.secrets.get(PROVIDER_SECRET_KEYS.stepfun);
     const configured = stored !== undefined && stored.length > 0;
     this.postMessage(host, { type: "stepfunAuthStatusChanged", configured });
   }
@@ -229,36 +128,55 @@ export async function deleteTypesafeApiKey(platform: Platform): Promise<void> {
   await resyncCustomProvidersNow(platform);
 }
 
-/** The OpenRouter key without touching the Explore provider or its enabled state: image generation and Jev use it too. */
+/** The OpenRouter key, which image generation and Jev on OpenRouter use. */
 export async function storeOpenrouterApiKey(platform: Platform, key: string): Promise<void> {
-  await storeClassifierKey(platform, "openrouter", EXPLORE_SECRET_KEYS.openrouter, key);
+  await storeClassifierKey(platform, "openrouter", PROVIDER_SECRET_KEYS.openrouter, key);
 }
 
 export async function deleteOpenrouterApiKey(platform: Platform): Promise<void> {
-  await platform.secrets.delete(EXPLORE_SECRET_KEYS.openrouter);
+  await platform.secrets.delete(PROVIDER_SECRET_KEYS.openrouter);
   log("[ExploreManager] deleteOpenrouterApiKey: deleted");
   await resyncCustomProvidersNow(platform);
 }
 
 export async function openrouterAuthStatus(platform: Platform): Promise<Extract<ExtensionToWebviewMessage, { type: "openrouterAuthStatusChanged" }>> {
-  const stored = await platform.secrets.get(EXPLORE_SECRET_KEYS.openrouter);
+  const stored = await platform.secrets.get(PROVIDER_SECRET_KEYS.openrouter);
   return { type: "openrouterAuthStatusChanged", configured: (stored ?? "").length > 0 };
 }
 
 /**
- * Until a chat has started pi, the judge is read from the stored keys and pi's environment keys alone, and
- * the sub-call model is unknown.
+ * Until a chat has started pi, the judge is read from the stored keys, the OpenAI auth state and pi's environment
+ * keys alone, and a judge model is unknown.
  */
 export async function typesafeAuthStatus(platform: Platform): Promise<Extract<ExtensionToWebviewMessage, { type: "typesafeAuthStatusChanged" }>> {
   const hasSecret = async (key: string): Promise<boolean> => ((await platform.secrets.get(key)) ?? "").length > 0;
   const configured = await hasSecret(TYPESAFE_SECRET_KEY);
   if (PiRuntime.exists && PiRuntime.get().memoryJudgeKnown) {
-    return { type: "typesafeAuthStatusChanged", configured, memoryJudge: PiRuntime.get().describeMemoryJudge() };
+    const runtime = PiRuntime.get();
+    return { type: "typesafeAuthStatusChanged", configured, memoryJudge: runtime.describeMemoryJudge(), classifierCredentials: runtime.classifierCredentials() };
   }
   const inEnv = (provider: ClassifierProvider): boolean => (process.env[CLASSIFIER_ENV_KEYS[provider]] ?? "").length > 0;
-  const classifier =
-    configured || inEnv("typesafe") ? JEV_VIA_TYPESAFE
-    : inEnv("openrouter") || (await hasSecret(EXPLORE_SECRET_KEYS.openrouter)) ? JEV_VIA_OPENROUTER
-    : null;
-  return { type: "typesafeAuthStatusChanged", configured, memoryJudge: classifier ? memoryJudgeOf(classifier, null) : { kind: "unknown" } };
+  const openai = openaiAuthStatus(readOpenAIAuthFromDisk(PI_AGENT_DIR), await hasSecret(OPENAI_API_KEY_SECRET));
+  const keyed: Record<ClassifierProvider, boolean> = {
+    typesafe: configured || inEnv("typesafe"),
+    openrouter: inEnv("openrouter") || (await hasSecret(PROVIDER_SECRET_KEYS.openrouter)),
+    openai: openai.apiKey || openai.chatgpt || inEnv("openai"),
+  };
+  const preferApiKey = readPreferOpenAIApiKey(platform.state);
+  const classifierCredentials = Object.fromEntries(
+    CLASSIFIER_MODELS.map(({ provider }) => [provider, classifierCredential(provider, (p) => keyed[p], { status: openai, preferApiKey })]),
+  ) as Record<ClassifierProvider, ClassifierCredential>;
+  const choice = migrateLegacyModelValue(platform.settings.get<string>(MEMORY_JUDGE_SETTING, ""));
+  const forced = forcedClassifierOf(choice);
+  let memoryJudge: MemoryJudge = { kind: "unknown" };
+  if (!isKnownMemoryJudgeChoice(choice)) {
+    memoryJudge = memoryJudgeOf(null, null, [], { choice, reason: "unrecognized" });
+  } else if (choice === "") {
+    const classifier = pickClassifierModel(({ provider }) => classifierCredentials[provider] === "ok");
+    if (classifier) memoryJudge = memoryJudgeOf(classifier, null);
+  } else if (forced) {
+    const credential = classifierCredentials[forced];
+    memoryJudge = credential === "ok" ? memoryJudgeOf(classifierModelOf(forced), null) : memoryJudgeOf(null, null, [], { choice, reason: credential });
+  }
+  return { type: "typesafeAuthStatusChanged", configured, memoryJudge, classifierCredentials };
 }

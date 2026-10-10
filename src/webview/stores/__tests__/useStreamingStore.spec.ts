@@ -33,6 +33,17 @@ describe('useStreamingStore.addSteerChip', () => {
 });
 
 describe('useStreamingStore.updateToolStatus after a final status', () => {
+  it('keeps why a call never ran, also when the status arrived before the call', () => {
+    const store = useStreamingStore();
+    store.updateToolStatus('t-early', 'abandoned', { abandonReason: 'failed' });
+    store.addToolCall({ id: 't-early', name: 'Read', input: {} });
+    store.addToolCall({ id: 't-late', name: 'Read', input: {} });
+    store.updateToolStatus('t-late', 'abandoned', { abandonReason: 'stopped' });
+
+    const calls = defined(at(store.messages, 0).toolCalls, 'toolCalls');
+    expect(calls.map((t) => [t.status, t.abandonReason])).toEqual([['abandoned', 'failed'], ['abandoned', 'stopped']]);
+  });
+
   it('keeps a finished card finished when a live status arrives late', () => {
     const store = useStreamingStore();
     store.addToolCall({ id: 't-1', name: 'Read', input: {} });

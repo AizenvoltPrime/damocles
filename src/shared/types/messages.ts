@@ -12,7 +12,7 @@ import type {
 import type { SlashCommandInfo, SlashCommandItem, CustomAgentInfo, WorkspaceFileInfo } from './commands';
 import type { Question, PermissionUpdate, QuestionAnnotations, PromptOwner, PendingPromptOwner, PromptApprover } from './permissions';
 import type { FormSchema, FormValues } from './forms';
-import type { PermissionMode, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, CacheWarmingMode, EffortLevel, PanelThinkingState, TeamRole, MemoryJudge, ImageGenerationSettings } from './settings';
+import type { PermissionMode, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, CacheWarmingMode, EffortLevel, PanelThinkingState, TeamRole, MemoryJudge, ClassifierProvider, ClassifierCredential, ImageGenerationSettings } from './settings';
 import type {
   SystemInitData,
   QueuedMessage,
@@ -29,6 +29,7 @@ import type {
   StoredSession,
   CompactionTrigger,
   ToolResultOwner,
+  ToolAbandonReason,
 } from './session';
 import type { SubscriptionUsageData } from './usage';
 import type { UsageStatsQuery, UsageStatsReport } from './usage-stats';
@@ -77,12 +78,14 @@ export type WebviewToExtensionMessage =
   | { type: "setDefaultWorkspaceFolder"; folderKey: string }
   | { type: "setPanelThinkingDisabled"; disabled: boolean }
   | { type: "setPanelEffort"; effort: EffortLevel | null; model: string }
-  | { type: "setPanelMaxThinkingTokens"; tokens: number | null; model: string }
   | { type: "setDefaultThinkingDisabled"; disabled: boolean }
   | { type: "setDefaultEffort"; effort: EffortLevel | null; model: string }
-  | { type: "setDefaultMaxThinkingTokens"; tokens: number | null }
   | { type: "setTeamRoleModel"; role: TeamRole; model: string }
   | { type: "setTeamRoleEffort"; role: TeamRole; effort: EffortLevel | null }
+  | { type: "setBackgroundModel"; model: string }
+  | { type: "setBackgroundEffort"; effort: EffortLevel | null }
+  | { type: "setMemoryJudge"; judge: string }
+  | { type: "setMemoryJudgeEffort"; effort: EffortLevel | null }
   | { type: "setBudgetLimit"; budgetUsd: number | null }
   | { type: "setTaskBudget"; budget: number | null }
   | { type: "setAutoCompact"; config: AutoCompactConfig }
@@ -201,6 +204,7 @@ export type WebviewToExtensionMessage =
   | { type: "setProfileSection"; scope: "project" | "global"; section: "static" | "dynamic"; content: string }
   | { type: "requestConsolidationPreview" }
   | { type: "triggerConsolidation" }
+  | { type: "retrySetAsideTurns" }
   | { type: "requestMemoryAudit" }
   | { type: "requestMemoryAuditSummary" }
   | { type: "startMemoryAudit" }
@@ -267,13 +271,8 @@ export type WebviewToExtensionMessage =
   | { type: "compassRequestBlastRadius"; filePath: string; line: number }
   | { type: "compassDismissBlastRadius" }
   | { type: "compassRequestValidation" }
-  | { type: "setExploreApiKey"; apiKey: string }
-  | { type: "deleteExploreApiKey" }
-  | { type: "setExploreProvider"; provider: string }
   | { type: "setExploreModel"; model: string }
-  | { type: "setExploreEffort"; effort: string }
-  | { type: "requestExploreKeyStatus" }
-  | { type: "requestExploreConfig" }
+  | { type: "setExploreEffort"; effort: EffortLevel | null }
   | { type: "setOpenAIApiKey"; key: string; requestId: string }
   | { type: "clearOpenAIApiKey"; requestId: string }
   | { type: "getOpenAIAuthStatus" }
@@ -423,12 +422,15 @@ export type ChatCommand = (typeof CHAT_COMMANDS)[number];
 export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
   | { type: "partial"; data: PartialMessage; parentToolUseId?: string | null }
+  /** A failed model call pi re-runs: the webview removes the assistant message `messageId` (its `partial`/`assistant` id), which a reload omits too. `parentToolUseId` names the nested agent whose transcript holds it, as on `error` and `statusUpdate`. */
+  | { type: "assistantRetracted"; messageId: string; parentToolUseId?: string }
   | { type: "done"; data: ResultMessage }
   // `isCommandEcho` marks the echo of a slash command that commits no user entry; it is always injected too.
   | { type: "userMessage"; content: string; contentBlocks?: UserContentBlock[]; terminalAttachments?: TerminalAttachmentInfo[]; correlationId: string; promptIndex: number; isInjected?: boolean; isCommandEcho?: boolean }
   | { type: "userMessageIdAssigned"; sdkMessageId: string; correlationId: string }
   | { type: "toolPending"; toolUseId: string; toolName: string; input: unknown; parentToolUseId?: string | null }
-  | { type: "error"; message: string }
+  /** `parentToolUseId` names the nested agent the error belongs to: a subagent's `Agent` call id or a team agent's id. */
+  | { type: "error"; message: string; parentToolUseId?: string }
   | { type: "authFailure"; message: string }
   | { type: "authFailureCleared" }
   /** `stored`: the conversation has a session file, so it is what a restart restores. pi writes none before the first prompt. */
@@ -479,7 +481,7 @@ export type ExtensionToWebviewMessage =
   /** Replies to `requestToolResultImages`; `[]` means unavailable, for any reason; read failures are logged. */
   | { type: "toolResultImages"; requestId: string; images: ImageBlock[] }
   | { type: "toolFailed"; toolUseId: string; toolName: string; error: string; isInterrupt?: boolean; parentToolUseId?: string | null; durationMs?: number }
-  | { type: "toolAbandoned"; toolUseId: string; toolName: string; parentToolUseId?: string | null }
+  | { type: "toolAbandoned"; toolUseId: string; toolName: string; parentToolUseId?: string | null; reason: ToolAbandonReason }
   /** No live shell call matched the cancel, so the optimistic "Stopping..." state has nothing to clear it.
    *  Match on `requestId` when present, else fall back to `toolUseId`. Not an error: the ordinary case is
    *  a click landing after the call finished. */
@@ -642,7 +644,7 @@ export type ExtensionToWebviewMessage =
   // A failed section save: the panel clears that section's pending flag (keeping the draft) so a later
   // unrelated profileData can't silently overwrite the user's unsaved edit with the old server value.
   | { type: "profileSectionError"; scope: "project" | "global"; section: "static" | "dynamic"; message: string }
-  | { type: "consolidationPendingCount"; count: number }
+  | { type: "consolidationPendingCount"; count: number; setAside: number }
   | { type: "consolidationPreview"; candidates: PendingConsolidationCandidate[] }
   | { type: "consolidationRunning"; running: boolean }
   | { type: "consolidationProgress"; event: ConsolidationPhaseEvent }
@@ -683,7 +685,10 @@ export type ExtensionToWebviewMessage =
   | { type: "voiceFilesSizeUpdate"; bytes: number }
   | { type: "voiceCpuFallbackActive"; reason: "no-cuda" | "low-vram" | "user-pref" | "cuda-oom-fallback" | "tts-unloaded" }
   | { type: "voiceTurnLost"; reason: "sidecar-crash" | "timeout" }
-  | { type: "statusUpdate"; status: "compacting" | "ready"; permissionMode?: string }
+  /** With `parentToolUseId`, a `ready` ends that nested agent's retry wait and nothing else. */
+  | { type: "statusUpdate"; status: "compacting" | "ready"; permissionMode?: string; parentToolUseId?: string }
+  /** pi is waiting out the backoff before re-sending a failed model call; `attempt` of `maxAttempts` retries. A `ready` status, sent when the retried call starts or the retry ends, ends it. `parentToolUseId` names the nested agent waiting. */
+  | { type: "statusUpdate"; status: "retrying"; attempt: number; maxAttempts: number; parentToolUseId?: string }
   | { type: "taskStarted"; taskId: string; toolUseId?: string; description: string; taskType?: string; isBackground?: boolean }
   | { type: "taskNotification"; taskId: string; toolUseId?: string; status: "completed" | "failed" | "stopped"; summary: string; outputFile: string | null; usage?: { totalTokens: number; toolUses: number; durationMs: number } }
   | { type: "toolProgress"; toolUseId: string; toolName: string; parentToolUseId: string | null; elapsedTimeSeconds: number; taskId?: string; output?: string; outputTruncated?: boolean }
@@ -709,7 +714,8 @@ export type ExtensionToWebviewMessage =
   | { type: "teamPhaseUpdate"; teamId: string; phase: import('./team').TeamPhase }
   // A partial delta. An absent field means the sender has nothing new to say about it, not a reset.
   // `attempt` rides only on a launch, and an advance is what tells the card its work fields start over.
-  | { type: "teamAgentStatusUpdate"; teamId: string; agentId: string; status: import('./team').TeamAgentStatus; progressSummary?: string; logFilePath?: string | null; model?: string; dollarBilled?: boolean; attempt?: number; effort?: import('../effort-badge').EffortBadgeLevel | null; stopwatch?: import('../team-stopwatch').Stopwatch }
+  // `result` is what the settle recorded in `agent-completed`, so the card matches a reload.
+  | { type: "teamAgentStatusUpdate"; teamId: string; agentId: string; status: import('./team').TeamAgentStatus; progressSummary?: string; logFilePath?: string | null; model?: string; dollarBilled?: boolean; attempt?: number; effort?: import('../effort-badge').EffortBadgeLevel | null; stopwatch?: import('../team-stopwatch').Stopwatch; result?: string | null }
   | { type: "teamAgentToolCall"; teamId: string; agentId: string; toolName: string; toolInput: Record<string, unknown> }
   | { type: "teamMessage"; teamId: string; message: import('./team').TeamMessage }
   | { type: "teamScratchpadUpdate"; teamId: string; entry: import('./team').ScratchpadEntry }
@@ -739,12 +745,6 @@ export type ExtensionToWebviewMessage =
   | { type: "compassBlastRadiusData"; data: CompassBlastRadiusResult }
   | { type: "compassBlastRadiusDismissed" }
   | { type: "compassValidationResult"; data: CompassValidationResult }
-  | { type: "exploreApiKeyUpdate"; hasApiKey: boolean }
-  | { type: "exploreConfigUpdate"; provider: string; model: string; effort: string }
-  | { type: "exploreStarted"; toolUseId: string; model: string; prompt: string; description: string; startTime: number }
-  | { type: "exploreToolCall"; toolUseId: string; innerToolUseId: string; toolName: string; toolInput: Record<string, unknown> }
-  | { type: "exploreCompleted"; toolUseId: string; status: 'completed' | 'failed'; result: string | null; elapsed: number; toolCount: number; model: string }
-  | { type: "exploreMessagesUpdate"; toolUseId: string; messages: HistoryAgentMessage[] }
   | { type: "openaiAuthStatusChanged"; status: { chatgpt: { signedIn: boolean; expiresAt?: number }; codex: { signedIn: boolean; expiresAt?: number }; apikey: { configured: boolean } }; preferApiKey: boolean }
   | { type: "setOpenAIApiKeyAck"; requestId: string; ok: boolean; validated?: boolean; modelCount?: number; warning?: string; error?: string }
   | { type: "clearOpenAIApiKeyAck"; requestId: string; ok: boolean; error?: string }
@@ -757,7 +757,8 @@ export type ExtensionToWebviewMessage =
   | { type: "deepseekAuthStatusChanged"; configured: boolean }
   | { type: "setTypesafeApiKeyAck"; requestId: string; ok: boolean; error?: string }
   | { type: "clearTypesafeApiKeyAck"; requestId: string; ok: boolean; error?: string }
-  | { type: "typesafeAuthStatusChanged"; configured: boolean; memoryJudge: MemoryJudge }
+  /** `classifierCredentials`: whether each classifier provider's credential can serve a Memory judge choice. */
+  | { type: "typesafeAuthStatusChanged"; configured: boolean; memoryJudge: MemoryJudge; classifierCredentials: Record<ClassifierProvider, ClassifierCredential> }
   | { type: "setOpenrouterApiKeyAck"; requestId: string; ok: boolean; error?: string }
   | { type: "clearOpenrouterApiKeyAck"; requestId: string; ok: boolean; error?: string }
   | { type: "openrouterAuthStatusChanged"; configured: boolean }

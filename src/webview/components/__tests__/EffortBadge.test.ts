@@ -85,7 +85,7 @@ describe('the reply effort badge', () => {
 describe('the subagent effort badge', () => {
   const subagent = (over: Partial<SubagentState> = {}): SubagentState => ({
     id: 'sub-1', agentType: 'Explore', description: 'look', prompt: 'p', status: 'running', startTime: 0,
-    messages: [], toolCalls: [], messagesSealed: false, model: 'Haiku 4.5', ...over,
+    messages: [], toolCalls: [], messagesSealed: false, model: 'Haiku 5.5', ...over,
   });
   const card = (state: SubagentState) => mount(SubagentCard, { props: { subagent: state }, global: { plugins: [i18n], stubs: { MarkdownRenderer: true } } });
   const overlay = (state: SubagentState) => {
@@ -104,10 +104,10 @@ describe('the subagent effort badge', () => {
     const state = subagent({ effort: 'medium' });
     const onCard = card(state);
     expect(onCard.get('[data-testid="subagent-card-effort"]').text()).toBe('Medium effort');
-    expect(onCard.text()).toContain('Haiku 4.5');
+    expect(onCard.text()).toContain('Haiku 5.5');
     const onOverlay = overlay(state);
     expect(effortChips(onOverlay)).toEqual(['Medium effort']);
-    expect(onOverlay.text()).toContain('Haiku 4.5');
+    expect(onOverlay.text()).toContain('Haiku 5.5');
   });
 
   it('shows no badge or chip for a run with no published effort', () => {

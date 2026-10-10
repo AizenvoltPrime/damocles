@@ -26,6 +26,10 @@ describe('getStatusNote', () => {
     );
   });
 
+  it('a failure names the resume call, since a failed agent can be resumed', () => {
+    expect(getStatusNote('error', undefined, 'abc')).toBe(' (FAILED before completion. Resume it with Agent({resume:"abc"}) if the user asks to continue.)');
+  });
+
   it('a stop with no recorded reason offers no resume', () => {
     expect(getStatusNote('stopped', undefined, 'abc')).toBe(' (STOPPED before completion; output is partial and the task was not finished)');
   });

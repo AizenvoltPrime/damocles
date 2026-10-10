@@ -1,4 +1,5 @@
 import type { AgentUsageTotals } from '../usage-accounting';
+import type { ToolAbandonReason } from './session';
 
 export interface TextBlock {
   type: "text";
@@ -70,10 +71,12 @@ export type HistoryAgentContentBlock =
   | { type: 'thinking'; thinking: string }
   | { type: 'text'; text: string }
   | ImageBlock
-  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown>; result?: string; isError?: boolean; imageCount?: number; metadata?: Record<string, unknown> };
+  // `abandoned`: its model call failed or was aborted, or an abort skipped it in its batch, so pi never ran it.
+  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown>; result?: string; isError?: boolean; imageCount?: number; metadata?: Record<string, unknown>; durationMs?: number; abandoned?: ToolAbandonReason };
 
 export interface HistoryAgentMessage {
-  role: 'user' | 'assistant';
+  /** `error` carries a failed model call's error as one text block. */
+  role: 'user' | 'assistant' | 'error';
   contentBlocks: HistoryAgentContentBlock[];
 }
 
@@ -86,8 +89,10 @@ export interface HistoryToolCall {
   /** Success results only; the images load on demand. */
   imageCount?: number;
   feedback?: string;
-  /** A Stop abandoned this call, so it replays as abandoned whatever result pi wrote while stopping. */
-  stopped?: true;
+  /** The call never ran: a Stop cut it short before pi executed it, whatever result pi wrote while stopping, or its model call failed or was aborted, or an abort skipped it in its batch. */
+  abandoned?: ToolAbandonReason;
+  /** pi's measured `execute()` time; absent for a call that never ran and for sessions recorded before pi 1.1.0. */
+  durationMs?: number;
   agentToolCalls?: HistoryToolCall[];
   agentModel?: string;
   agentTemplatePath?: string;

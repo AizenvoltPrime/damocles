@@ -44,28 +44,6 @@ export function extractSlashCommandDisplay(content: string): string | null {
 }
 
 /**
- * Formats a Claude model ID into a human-readable display name.
- * E.g., "claude-haiku-4-5-20251001" → "Haiku 4.5"
- */
-export function formatModelDisplayName(modelId: string | undefined | null): string | null {
-  if (!modelId) return null;
-
-  const versionMatch = modelId.match(/-(\d+)(?:-(\d+))?/);
-  // Anthropic appends an 8-digit release date to every dated alias, so a segment of that shape is a date
-  // and never a version number.
-  const version = versionMatch
-    ? [versionMatch[1], versionMatch[2]].filter((segment) => segment && !/^\d{8}$/.test(segment)).join('.')
-    : '';
-
-  if (modelId.includes('fable')) return `Fable ${version}`.trim();
-  if (modelId.includes('opus')) return `Opus ${version}`.trim();
-  if (modelId.includes('sonnet')) return `Sonnet ${version}`.trim();
-  if (modelId.includes('haiku')) return `Haiku ${version}`.trim();
-
-  return modelId.split('-').slice(1, 3).join(' ');
-}
-
-/**
  * Lowercase a string and collapse every run of non-alphanumeric characters into a single hyphen,
  * trimming leading/trailing hyphens. No length cap — callers slice as needed.
  */

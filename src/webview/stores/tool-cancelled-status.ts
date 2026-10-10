@@ -2,16 +2,16 @@ import type { ToolCall } from '@shared/types/session';
 import { CANCELLED_TOOL_DETAIL_KEY } from '@shared/types/session';
 
 /**
- * A per-call cancel returns a normal tool result, so the extension marks it on the result's `details`
- * and it arrives as tool metadata. Metadata and completion arrive as two independent messages in
- * either order, so both the status path and the metadata path run this and neither assumes it is
- * second.
+ * The extension marks a call stopped mid-run on the result's `details`, and it arrives as tool metadata:
+ * a per-call cancel's normal result, or the error result of a call its aborted run cut short. Metadata
+ * and completion arrive as two independent messages in either order, so both the status path and the
+ * metadata path run this and neither assumes it is second.
  */
 export function resolveCancelledStatus(
   status: ToolCall['status'],
   metadata: Record<string, unknown> | undefined,
 ): ToolCall['status'] {
-  if (status !== 'completed') return status;
+  if (status !== 'completed' && status !== 'failed') return status;
   return metadata?.[CANCELLED_TOOL_DETAIL_KEY] === true ? 'cancelled' : status;
 }
 

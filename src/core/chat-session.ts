@@ -40,6 +40,8 @@ export interface ChatSession extends ActivitySource {
   readonly memorySessionId: string;
   readonly teamService: TeamService | undefined;
   readonly processing: boolean;
+  /** Whether a turn is running, the lifecycle `sessionStateChanged` and the webview's spinner follow. */
+  readonly turnRunning: boolean;
   /** The running prompt's index, else the latest prompt's, per `session-store/prompt-index.ts`. */
   readonly currentPromptIndex: number;
   readonly conversationHead: string | null;
@@ -96,8 +98,8 @@ export interface ChatSession extends ActivitySource {
   /** Stops one running shell call; the turn continues, unlike interrupt/cancel which tear it down. */
   cancelToolCall(toolUseId: string, note?: string): boolean;
   cancelAutoCompact(): Promise<void>;
-  /** Manually compact the conversation, optionally focusing the summary with `instructions` (US-030). */
-  compact(instructions?: string): Promise<void>;
+  /** Manually compact the conversation, optionally focusing the summary with `instructions` (US-030). `onAccepted` runs only when it is not refused. */
+  compact(instructions?: string, onAccepted?: () => void): Promise<void>;
   reset(): void;
   clear(): void;
   dispose(): Promise<void>;
@@ -117,7 +119,10 @@ export interface ChatSession extends ActivitySource {
   disableThinkingForNextQuery(): void;
   restoreThinkingConfig(): void;
   setPermissionMode(mode: PermissionMode): Promise<void>;
-  setModel(model?: string): void;
+  /** Resolves once the switch was committed or refused and the committed model was published; a session disposed meanwhile resolves without publishing. */
+  setModel(model?: string): Promise<void>;
+  /** The end of an OpenAI sign-in: applies a model pick that asked for it when `signedIn`, and drops that pick either way. */
+  openaiSignInEnded(signedIn: boolean): Promise<void>;
 
   /** Push the account state (model, dollar-metered flag) to the webview.
    *  Callers own the timing: it is derived state with no publisher of its own. */

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import { DAMOCLES_TURN_STOPPED_ENTRY } from '../constants';
-import { stoppedOnBranch, turnStoppedRecord } from '../turn-stopped';
+import { stoppedOnBranch, turnStoppedRecord, windDownRecorded } from '../turn-stopped';
 
 const assistantError = (id: string): SessionEntry =>
   ({ type: 'message', id, message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'x' } }) as unknown as SessionEntry;
@@ -24,6 +24,28 @@ describe('turnStoppedRecord', () => {
 
   it('is null when the Stop cut nothing short', () => {
     expect(turnStoppedRecord([toolResult('leaf')], 'leaf', [])).toBeNull();
+  });
+
+  // registerWindDownErrorRecord names the wind-down error at its turn_end, before the Stop's record is written after the settle.
+  it('leaves out an error a wind-down record on the branch already names', () => {
+    const branch = [toolResult('leaf'), assistantError('wound'), record('s1', { toolCallIds: [], entryIds: ['wound'] })];
+    expect(turnStoppedRecord(branch, 'leaf', ['tc-1'])).toEqual({ toolCallIds: ['tc-1'], entryIds: [] });
+    expect(turnStoppedRecord(branch, 'leaf', [])).toBeNull();
+  });
+});
+
+describe('windDownRecorded', () => {
+  const entryOf = (id: string, message: unknown): SessionEntry => ({ type: 'message', id, message }) as unknown as SessionEntry;
+  const error = { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'This operation was aborted' };
+
+  it('is true when a turn-stopped entry after the message entry names it', () => {
+    expect(windDownRecorded([toolResult('r1'), entryOf('a1', error), record('s1', { toolCallIds: [], entryIds: ['a1'] })], error)).toBe(true);
+  });
+
+  it('is false with no record, a record naming another entry, or a message not on the branch', () => {
+    expect(windDownRecorded([entryOf('a1', error)], error)).toBe(false);
+    expect(windDownRecorded([entryOf('a1', error), record('s1', { toolCallIds: [], entryIds: ['a0'] })], error)).toBe(false);
+    expect(windDownRecorded([record('s1', { toolCallIds: [], entryIds: ['a1'] })], error)).toBe(false);
   });
 });
 

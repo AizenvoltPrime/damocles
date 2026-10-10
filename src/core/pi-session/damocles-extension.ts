@@ -16,6 +16,7 @@ import {
 import { dispatchToolCall, type DispatchDeps } from './hooks/dispatch';
 import type { HookCommon } from './hooks/payload';
 import { registerTurnEndImagePruning, registerAgentStartImageReconcile } from './context-image-pruning';
+import { registerStoppedToolResultMarker, registerWindDownErrorRecord } from './stopped-tool-result';
 import { createToolSearchTool } from './tools/tool-search-tool';
 
 /**
@@ -111,6 +112,9 @@ export function createDamoclesExtensionFactory(
     // and `pi-session.ts:2545`), so deleting either of those leaves those sessions unpruned.
     registerTurnEndImagePruning(pi);
     registerAgentStartImageReconcile(pi);
+    // Nested sessions register both in `subagents/subagent-extension-factory.ts`.
+    registerStoppedToolResultMarker(pi);
+    registerWindDownErrorRecord(pi);
 
     // The always-active ToolSearch tool: the sole path that activates this session's deferred tools
     // (browser, compass, web, MCP). Registered here rather than in `buildCustomTools` because

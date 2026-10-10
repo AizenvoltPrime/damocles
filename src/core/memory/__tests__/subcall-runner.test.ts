@@ -22,7 +22,7 @@ describe('createMemorySubCallRunner', () => {
   it('returns the structured value when the runtime resolves one', async () => {
     mockPiRuntime();
     hasAuthedSubCallModel.mockReturnValue(true);
-    runStructuredCompletion.mockResolvedValue({ rank: [1, 2, 3] });
+    runStructuredCompletion.mockResolvedValue({ kind: 'answered', value: { rank: [1, 2, 3] } });
 
     const { createMemorySubCallRunner } = await import('../subcall-runner');
     const runner = createMemorySubCallRunner(new AbortController().signal);
@@ -49,16 +49,28 @@ describe('createMemorySubCallRunner', () => {
     expect(runStructuredCompletion).not.toHaveBeenCalled();
   });
 
-  it('null completion → transient', async () => {
+  it.each(['unanswered', 'rejected', 'unreachable'] as const)('a %s completion surfaces as that failure kind', async (kind) => {
     mockPiRuntime();
     hasAuthedSubCallModel.mockReturnValue(true);
-    runStructuredCompletion.mockResolvedValue(null);
+    runStructuredCompletion.mockResolvedValue({ kind });
 
     const { createMemorySubCallRunner } = await import('../subcall-runner');
     const runner = createMemorySubCallRunner(new AbortController().signal);
     const result = await runner.run({ prompt: 'p', systemPrompt: 's', schema: {}, purpose: 'extract' });
 
-    expect(result).toEqual({ value: null, failure: 'transient' });
+    expect(result).toEqual({ value: null, failure: kind });
+  });
+
+  it('an unreachable completion with a credential cause surfaces as a credential failure', async () => {
+    mockPiRuntime();
+    hasAuthedSubCallModel.mockReturnValue(true);
+    runStructuredCompletion.mockResolvedValue({ kind: 'unreachable', cause: 'credential' });
+
+    const { createMemorySubCallRunner } = await import('../subcall-runner');
+    const runner = createMemorySubCallRunner(new AbortController().signal);
+    const result = await runner.run({ prompt: 'p', systemPrompt: 's', schema: {}, purpose: 'extract' });
+
+    expect(result).toEqual({ value: null, failure: 'credential' });
   });
 
   it('routes classify to the runtime under the memory ledger purpose', async () => {
@@ -86,7 +98,7 @@ describe('createMemorySubCallRunner', () => {
     const runner = createMemorySubCallRunner(lifetime.signal);
     const questions = { q: { type: 'bool' as const, instructions: 'i', criteria: { true: 't', false: 'f' } } };
 
-    expect(await runner.run({ prompt: 'p', systemPrompt: 's', schema: {}, purpose: 'extract' })).toEqual({ value: null, failure: 'transient' });
+    expect(await runner.run({ prompt: 'p', systemPrompt: 's', schema: {}, purpose: 'extract' })).toEqual({ value: null, failure: 'unreachable' });
     expect(runner.hasClassifier?.()).toBe(false);
     expect(await runner.classify?.({ purpose: 'merge', state: {}, questions, timeoutMs: 5 })).toBeNull();
     expect(runStructuredCompletion).not.toHaveBeenCalled();
@@ -96,7 +108,7 @@ describe('createMemorySubCallRunner', () => {
   it('aborting the lifetime cancels a call in flight, alongside the caller signal', async () => {
     mockPiRuntime();
     hasAuthedSubCallModel.mockReturnValue(true);
-    runStructuredCompletion.mockResolvedValue(null);
+    runStructuredCompletion.mockResolvedValue({ kind: 'unreachable' });
     const lifetime = new AbortController();
     const caller = new AbortController();
 

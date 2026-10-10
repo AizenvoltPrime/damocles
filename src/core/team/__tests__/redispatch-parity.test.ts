@@ -88,7 +88,7 @@ function makeAgent(name: string, role: TeamAgent['role']): TeamAgent {
     toolCallCount: 0, carriedToolCallCount: 0, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0,
     cacheCreationTokens: 0, costUsd: 0,
     carriedUsage: { totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 },
-    dollarBilled: false, effort: null, finalResponse: null, error: null, logFilePath: null,
+    dollarBilled: false, effort: null, finalResponse: null, result: null, error: null, logFilePath: null,
   };
 }
 
@@ -167,13 +167,9 @@ async function makeHarness(cwd: string) {
 
   /** One attempt's work: the tool calls it made, then the usage its messages reported. */
   const work = (session: FakeSession, attempt: { tools: string[]; usage: { input: number; output: number; cacheRead: number; cacheWrite: number }; cost: number }): void => {
-    session.emit({
-      type: 'message_end',
-      message: {
-        role: 'assistant',
-        content: attempt.tools.map((name, i) => ({ type: 'toolCall', id: `tc-${name}-${i}`, name, arguments: {} })),
-      },
-    });
+    const calls = attempt.tools.map((name, i) => ({ type: 'toolCall', id: `tc-${name}-${i}`, name, arguments: {} }));
+    session.emit({ type: 'message_end', message: { role: 'assistant', content: calls } });
+    for (const call of calls) session.emit({ type: 'tool_execution_start', toolCallId: call.id, toolName: call.name, args: {} });
     session.emitAssistantUsage(attempt.usage, attempt.cost);
   };
 
@@ -310,6 +306,43 @@ describe('a cancelled and re-dispatched specialist', () => {
     // Both entries carry an attempt-local figure, and the restored total is exactly their sum.
     expect(alpha?.costUsd).toBeCloseTo(ATTEMPT_1.cost + ATTEMPT_2.cost, 10);
     expect(alpha?.attempt).toBe(1);
+  });
+});
+
+describe('a batch an abort cut short', () => {
+  it('counts only the call that ran, on the live card and run, in the log and on a reopened team', async () => {
+    const cwd = join(DAMOCLES_HOME_DIR, 'cut-batch');
+    const h = await makeHarness(cwd);
+    // `run()` opens the run that stamps each `agent-completed`; the harness does not call it.
+    (h.runner as unknown as { beginRun: (toolUseId: string, at: string) => void }).beginRun('toolu_1', new Date().toISOString());
+    const read = (id: string) => ({ type: 'toolCall', id, name: 'read', arguments: { path: `/${id}.ts` } });
+
+    const session = h.queueSession();
+    h.runner.startSpecialist('alpha', TASK);
+    await session.whenPrompted(1);
+    session.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
+    session.emit({ type: 'message_end', message: { role: 'assistant', content: [read('tc-ran'), read('tc-skipped')], stopReason: 'toolUse' } });
+    session.emit({ type: 'tool_execution_start', toolCallId: 'tc-ran', toolName: 'read', args: { path: '/tc-ran.ts' } });
+    h.runner.cancelSpecialist('alpha');
+    session.emit({ type: 'tool_execution_end', toolCallId: 'tc-ran', toolName: 'read', result: { content: [{ type: 'text', text: 'Operation aborted' }], details: {} }, isError: true });
+    session.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
+    session.emit({ type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'aborted', errorMessage: 'Request was aborted' } });
+    session.emit({ type: 'turn_end' });
+    await h.settle();
+    await h.persistence.flush();
+
+    const entries = readFileSync(teamEventLogPath(ensurePiSessionDir(cwd), SESSION_ID, TEAM_ID), 'utf-8')
+      .split(String.fromCharCode(10)).filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>);
+    const reloaded = await h.persistence.loadTeamState(TEAM_ID);
+    expect(entries.filter((e) => e['type'] === 'agent-completed').map((e) => e['toolCallCount'])).toEqual([1]);
+    expect({
+      card: h.liveAgent('alpha').toolCount,
+      team: h.liveTeam().totalToolCount,
+      liveRun: h.liveTeam().runs.at(-1)?.toolCount,
+      runnerRun: h.runner.getTeamState().runs.at(-1)?.toolCount,
+      reloadedCard: reloaded?.agents.find((a) => a.name === 'alpha')?.toolCount,
+      reloadedRun: reloaded?.runs.at(-1)?.toolCount,
+    }).toEqual({ card: 1, team: 1, liveRun: 1, runnerRun: 1, reloadedCard: 1, reloadedRun: 1 });
   });
 });
 

@@ -164,6 +164,8 @@ export interface TeamAgent {
   /** A work field: the attempt's session's published effort, null until that session exists. */
   effort: EffortBadgeLevel | null;
   finalResponse: string | null;
+  /** A work field: the `result` this attempt's latest `agent-completed` entry recorded, which the card shows. */
+  result: string | null;
   error: string | null;
   logFilePath: string | null;
 }
@@ -294,6 +296,8 @@ export interface AgentRunConfig {
 export interface AgentResult {
   agentId: string;
   status: 'completed' | 'failed' | 'cancelled';
+  /** A failed run's error: its last model call's, once pi stopped retrying it, or what the run threw. */
+  error?: string;
   finalResponse: string | null;
   toolCallCount: number;
   totalInputTokens: number;

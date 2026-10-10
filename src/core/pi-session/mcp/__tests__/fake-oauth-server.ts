@@ -29,6 +29,10 @@ export interface FakeOAuthServerOptions {
   authorizationServers?: (origin: string) => string[];
   /** A refresh answers `invalid_client`, as a server does for a client it no longer knows. */
   invalidClientOnRefresh?: boolean;
+  /** A refresh token works once: a refresh revokes it, as a server with rotating refresh tokens does. */
+  rotateRefreshTokens?: boolean;
+  /** Milliseconds to wait before answering a metadata document request for `path`. */
+  metadataDelayMs?: (path: string) => number;
   /** Paths whose requests are held open and never answered, like a stalled server. */
   stalledPaths?: string[];
   /** The revocation endpoint answers with a body that never ends. */
@@ -127,8 +131,7 @@ export async function startFakeOAuthServer(options: FakeOAuthServerOptions = {})
       access_token: accessToken,
       token_type: 'Bearer',
       refresh_token: refreshToken,
-      // Published pi-mcp 0.99.2 rejects `scope: ""` (fixed upstream after 0.99.2), so an empty grant omits it.
-      ...(scope ? { scope } : {}),
+      scope,
       ...(options.expiresIn !== undefined ? { expires_in: options.expiresIn } : {}),
     };
   };
@@ -159,6 +162,7 @@ export async function startFakeOAuthServer(options: FakeOAuthServerOptions = {})
         json(response, 400, { error: 'invalid_grant' });
         return;
       }
+      if (options.rotateRefreshTokens) refreshTokens.delete(params.get('refresh_token') ?? '');
       json(response, 200, issue(scope));
       return;
     }
@@ -221,6 +225,8 @@ export async function startFakeOAuthServer(options: FakeOAuthServerOptions = {})
     if (options.stalledPaths?.includes(url.pathname)) return;
     if (url.pathname.startsWith('/.well-known/') || url.pathname === '/custom/as-metadata') {
       state.metadataRequests.push(url.pathname);
+      const delay = options.metadataDelayMs?.(url.pathname) ?? 0;
+      if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
       if (url.pathname === '/custom/as-metadata') {
         json(response, 200, metadata('/custom'));
         return;

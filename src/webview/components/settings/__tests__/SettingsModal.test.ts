@@ -8,6 +8,7 @@ import { i18n, initLocaleMessaging } from '@/i18n';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { VSCODE_HOST_CAPABILITIES, type WebviewToExtensionMessage } from '@shared/types/messages';
 import type { SettingsSectionId } from '@shared/settings-sections';
+import type { EffortLevel } from '@shared/types/settings';
 import { settingsViewHandlers, type SettingsHandlerContext } from '@/composables/message-handler/handlers/settings-handlers';
 import { useUIStore } from '@/stores/useUIStore';
 import { useExtensionUiStore } from '@/stores/useExtensionUiStore';
@@ -149,7 +150,7 @@ describe('state', () => {
     settingsViewHandlers.deepseekAuthStatusChanged({ type: 'deepseekAuthStatusChanged', configured: true }, ctx);
     settingsViewHandlers.stepfunAuthStatusChanged({ type: 'stepfunAuthStatusChanged', configured: true }, ctx);
     settingsViewHandlers.openrouterAuthStatusChanged({ type: 'openrouterAuthStatusChanged', configured: true }, ctx);
-    settingsViewHandlers.typesafeAuthStatusChanged({ type: 'typesafeAuthStatusChanged', configured: true, memoryJudge: { kind: 'unknown' } }, ctx);
+    settingsViewHandlers.typesafeAuthStatusChanged({ type: 'typesafeAuthStatusChanged', configured: true, memoryJudge: { kind: 'unknown' }, classifierCredentials: { typesafe: 'ok', openrouter: 'ok', openai: 'no-key' } }, ctx);
     await nextTick();
     const status = (provider: string): string => row(`account-${provider}`)!.querySelector('[role="status"]')!.textContent!.trim();
     expect(status('anthropic')).toBe(t('claudeAuth.status.allowance'));
@@ -318,6 +319,18 @@ describe('controls write their messages', () => {
     press('Enter', {}, option);
     await flush();
     expect(posted.some((message) => message.type === 'setDefaultModel')).toBe(true);
+  });
+
+  it('the chat model row sends a pick of the model it already shows, which withdraws an earlier refused pick in core', async () => {
+    useSettingsStore().setModelState('claude-opus-5-5', 'claude-opus-5-5');
+    await open(NO_HOST_SETTINGS, 'chat');
+    const trigger = row('model')!.querySelector<HTMLElement>('button[role="combobox"]')!;
+    press('Enter', {}, trigger);
+    await flush();
+    const current = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((el) => el.getAttribute('data-state') === 'checked')!;
+    press('Enter', {}, current);
+    await flush();
+    expect(posted).toContainEqual({ type: 'setActiveModel', model: 'claude-opus-5-5' });
   });
 
   it('a slider saves on release, not on every input event', async () => {
@@ -577,14 +590,14 @@ describe('Edit settings.json menu', () => {
     availability('untrusted', 'noProject');
     await open(NO_HOST_SETTINGS, 'chat', 'settingsFiles');
     await openMenu();
-    expect(item('project').hasAttribute('data-disabled')).toBe(true);
+    expect(item('project').getAttribute('aria-disabled') === 'true').toBe(true);
     expect(item('project').textContent).toContain(t('settings.jsonFiles.untrusted'));
     expect(item('local').textContent).toContain(t('settings.jsonFiles.noProject'));
-    expect(item('user').hasAttribute('data-disabled')).toBe(false);
+    expect(item('user').getAttribute('aria-disabled') === 'true').toBe(false);
 
     availability('available', 'available');
     await nextTick();
-    expect(item('project').hasAttribute('data-disabled')).toBe(false);
+    expect(item('project').getAttribute('aria-disabled') === 'true').toBe(false);
     expect(item('project').textContent).not.toContain(t('settings.jsonFiles.untrusted'));
   });
 
@@ -693,6 +706,230 @@ describe('workspace folder rows', () => {
     await nextTick();
     expect(folderSelect().textContent).toContain('beta');
     expect(folderSelect().disabled).toBe(false);
+  });
+});
+
+describe('Models & accounts model and effort rows', () => {
+  const PAIRS = [
+    { name: 'Background', id: 'damocles.background.model', model: 'Background model', effort: 'Background reasoning effort', modelMessage: 'setBackgroundModel', effortMessage: 'setBackgroundEffort', modelKey: 'damocles.background.model' },
+    { name: 'Explore', id: 'damocles.explore.model', model: 'Explore model', effort: 'Explore reasoning effort', modelMessage: 'setExploreModel', effortMessage: 'setExploreEffort', modelKey: 'damocles.explore.model' },
+    { name: 'Memory judge', id: 'damocles.memory.judge', model: 'Memory judge', effort: 'Memory judge reasoning effort', modelMessage: 'setMemoryJudge', effortMessage: 'setMemoryJudgeEffort', modelKey: 'damocles.memory.judge' },
+  ] as const;
+  type Pair = (typeof PAIRS)[number];
+
+  function setPair(pair: Pair, model: string, effort: EffortLevel | null): void {
+    const store = useSettingsStore();
+    if (pair.name === 'Background') store.setBackgroundSettings({ model, effort });
+    else if (pair.name === 'Explore') store.setExploreSettings({ model, effort });
+    else store.setJudgeSettings({ choice: model, effort });
+  }
+
+  function readPair(pair: Pair): { model: string; effort: EffortLevel | null } {
+    const settings = useSettingsStore().currentSettings;
+    if (pair.name === 'Background') return { ...settings.background };
+    if (pair.name === 'Explore') return { ...settings.explore };
+    return { model: settings.judge.choice, effort: settings.judge.effort };
+  }
+
+  function signInEverywhere(): void {
+    const store = useSettingsStore();
+    store.setClaudeAuthMode('apikey');
+    store.setOpenAIAuthStatus({ chatgpt: { signedIn: true }, codex: { signedIn: false }, apikey: { configured: false } }, false);
+    store.setDeepseekConfigured(true);
+    store.setStepfunConfigured(true);
+  }
+
+  const trigger = (rowId: string, label: string): HTMLElement => row(rowId)!.querySelector<HTMLElement>(`button[aria-label="${label}"]`)!;
+  const optionLabel = (el: HTMLElement): string => el.querySelector('.sm-option-text > span')!.textContent!.trim();
+  const listed = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+  const option = (label: string): HTMLElement => listed().find((el) => optionLabel(el) === label)!;
+
+  async function openSelect(rowId: string, label: string): Promise<void> {
+    const button = trigger(rowId, label);
+    button.focus();
+    press('Enter', {}, button);
+    await flush();
+  }
+
+  async function choose(rowId: string, label: string, choice: string): Promise<void> {
+    await openSelect(rowId, label);
+    press('Enter', {}, option(choice));
+    await flush();
+  }
+
+  it.each(PAIRS)('$name: a model change clears an effort the new model lacks and keeps one it takes', async (pair) => {
+    signInEverywhere();
+    setPair(pair, 'claude-sonnet-5-5', 'xhigh');
+    await open(NO_HOST_SETTINGS, 'accounts');
+    await choose(pair.id, pair.model, 'Step 5 Preview');
+    expect(readPair(pair)).toEqual({ model: 'step-5-preview', effort: null });
+    expect(posted.filter((message) => message.type === pair.effortMessage)).toEqual([]);
+
+    await choose(pair.id, pair.effort, t('settingsModal.effort.high'));
+    expect(readPair(pair)).toEqual({ model: 'step-5-preview', effort: 'high' });
+    await choose(pair.id, pair.model, 'Sonnet 5.5');
+    expect(readPair(pair)).toEqual({ model: 'claude-sonnet-5-5', effort: 'high' });
+    expect(trigger(pair.id, pair.effort).textContent).toContain(t('settingsModal.effort.high'));
+    expect(posted.filter((message) => message.type === pair.modelMessage)).toHaveLength(2);
+  });
+
+  it.each(PAIRS)('$name: a failed model write puts back only the fields it changed', async (pair) => {
+    signInEverywhere();
+    setPair(pair, 'claude-sonnet-5-5', 'high');
+    await open(NO_HOST_SETTINGS, 'accounts');
+    await choose(pair.id, pair.model, 'Step 5 Preview');
+    await choose(pair.id, pair.effort, t('settingsModal.effort.low'));
+    settingsViewHandlers.settingWriteResult({ type: 'settingWriteResult', key: pair.modelKey, ok: false, error: 'EACCES' }, context());
+    await nextTick();
+    expect(readPair(pair)).toEqual({ model: 'claude-sonnet-5-5', effort: 'low' });
+
+    setPair(pair, 'claude-sonnet-5-5', 'xhigh');
+    await choose(pair.id, pair.model, 'Step 5 Preview');
+    settingsViewHandlers.settingWriteResult({ type: 'settingWriteResult', key: pair.modelKey, ok: false, error: 'EACCES' }, context());
+    await nextTick();
+    expect(readPair(pair)).toEqual({ model: 'claude-sonnet-5-5', effort: 'xhigh' });
+  });
+
+  it.each(PAIRS)('$name: a model whose provider is signed out is listed disabled with the reason, and shows it when selected', async (pair) => {
+    useSettingsStore().setStepfunConfigured(true);
+    setPair(pair, 'claude-sonnet-5-5', null);
+    await open(NO_HOST_SETTINGS, 'accounts');
+    const selected = trigger(pair.id, pair.model);
+    expect(selected.textContent).toContain('Sonnet 5.5');
+    expect(selected.textContent).toContain(t('settings.modelNotSignedIn'));
+    expect(document.getElementById(selected.getAttribute('aria-describedby')!)!.textContent).toBe(t('settings.modelNotSignedIn'));
+
+    await openSelect(pair.id, pair.model);
+    for (const name of ['Sonnet 5.5', 'GPT-6 Luna', 'DeepSeek V4 Pro']) {
+      expect(option(name).getAttribute('aria-disabled') === 'true').toBe(true);
+      expect(option(name).textContent).toContain(t('settings.modelNotSignedIn'));
+    }
+    expect(option('Step 5 Preview').getAttribute('aria-disabled') === 'true').toBe(false);
+
+    useSettingsStore().setClaudeAuthMode('allowance');
+    await nextTick();
+    expect(option('Sonnet 5.5').getAttribute('aria-disabled') === 'true').toBe(false);
+    expect(trigger(pair.id, pair.model).textContent).not.toContain(t('settings.modelNotSignedIn'));
+  });
+
+  it('keeps an unavailable option reachable by keyboard, announces its reason, and never selects it', async () => {
+    useSettingsStore().setStepfunConfigured(true);
+    setPair(PAIRS[0]!, 'step-5-preview', null);
+    await open(NO_HOST_SETTINGS, 'accounts');
+    await openSelect(PAIRS[0]!.id, PAIRS[0]!.model);
+    const sonnet = option('Sonnet 5.5');
+    expect(sonnet.getAttribute('tabindex')).toBe('-1');
+    expect(document.getElementById(sonnet.getAttribute('aria-describedby')!)!.textContent).toBe(t('settings.modelNotSignedIn'));
+
+    press('Enter', {}, sonnet);
+    await flush();
+    expect(readPair(PAIRS[0]!).model).toBe('step-5-preview');
+    expect(posted.filter((message) => message.type === PAIRS[0]!.modelMessage)).toEqual([]);
+  });
+
+  it('lists a classifier whose credential cannot serve it as disabled, with the reason', async () => {
+    useSettingsStore().setTypesafeStatus(false, { kind: 'unknown' }, { typesafe: 'no-key', openrouter: 'ok', openai: 'chatgpt-active' });
+    await open(NO_HOST_SETTINGS, 'accounts');
+    await openSelect('damocles.memory.judge', 'Memory judge');
+    expect(option('Jev (TypeSafe)').getAttribute('aria-disabled') === 'true').toBe(true);
+    expect(option('Jev (TypeSafe)').textContent).toContain(t('settings.memoryJudge.unavailable.no-key'));
+    expect(option('Jev (OpenRouter)').getAttribute('aria-disabled') === 'true').toBe(false);
+    expect(option('GPT-6 Luna (Decisions API)').getAttribute('aria-disabled') === 'true').toBe(true);
+    expect(option('GPT-6 Luna (Decisions API)').textContent).toContain(t('settings.memoryJudge.unavailable.chatgpt-active'));
+  });
+
+  it('says in the Memory judge row why the chosen judge cannot run', async () => {
+    const store = useSettingsStore();
+    const credentials = { typesafe: 'no-key', openrouter: 'ok', openai: 'ok' } as const;
+    store.setJudgeSettings({ choice: 'jev-typesafe', effort: null });
+    store.setTypesafeStatus(false, { kind: 'none', forced: { choice: 'jev-typesafe', reason: 'no-key' } }, credentials);
+    await open(NO_HOST_SETTINGS, 'accounts');
+    const warning = (): HTMLElement | null => row('damocles.memory.judge')!.querySelector<HTMLElement>('[role="status"][data-testid="memory-judge-warning"]');
+    expect(warning()!.textContent!.trim()).toBe(
+      'Memory judge: none. Jev (TypeSafe) is the chosen judge but cannot run: its key is not set. Merges and reranks wait until it can.',
+    );
+    expect(trigger('damocles.memory.judge', 'Memory judge').textContent).toContain(t('settings.memoryJudge.unavailable.no-key'));
+
+    store.setJudgeSettings({ choice: 'claude-sonnet-5-5', effort: null });
+    store.setTypesafeStatus(false, { kind: 'none', forced: { choice: 'claude-sonnet-5-5', reason: 'signed-out' } }, credentials);
+    await nextTick();
+    expect(warning()!.textContent).toContain('Sonnet 5.5 is the chosen judge but cannot run: its provider is signed out.');
+
+    store.setJudgeSettings({ choice: 'claude-opus-1', effort: null });
+    store.setTypesafeStatus(false, { kind: 'none', forced: { choice: 'claude-opus-1', reason: 'unrecognized' } }, credentials);
+    await nextTick();
+    expect(warning()!.textContent).toContain('claude-opus-1 is the chosen judge but cannot run: this version of Damocles does not offer it.');
+
+    store.setTypesafeStatus(false, { kind: 'classifier', via: 'openrouter' }, credentials);
+    await nextTick();
+    expect(warning()!.textContent!.trim()).toBe('');
+  });
+
+  it('labels the Explore effort Default with the level it runs at', async () => {
+    signInEverywhere();
+    useSettingsStore().setExploreSettings({ model: 'claude-sonnet-5-5', effort: null });
+    await open(NO_HOST_SETTINGS, 'accounts');
+    expect(trigger('damocles.explore.model', 'Explore reasoning effort').textContent!.trim()).toBe('Default (Medium)');
+  });
+
+  it('shows the Explore description it searches', async () => {
+    await open(NO_HOST_SETTINGS, 'accounts');
+    expect(row('damocles.explore.model')!.querySelector('.sm-row-desc')!.textContent!.trim()).toBe(t('settingsModal.rows.exploreModel.description'));
+    await type('haiku 5.5 for claude');
+    expect(row('damocles.explore.model')).not.toBeNull();
+  });
+});
+
+describe('always-thinking models', () => {
+  const thinking = { thinkingDisabled: false, effort: null };
+
+  it.each(['step-5-preview', 'claude-haiku-5-5'])('This chat disables the thinking switch for %s and says why', async (model) => {
+    const store = useSettingsStore();
+    store.setModelState(model, model);
+    store.setPanelThinking(thinking, model);
+    await open(NO_HOST_SETTINGS, 'chat');
+    const toggle = row('disable-thinking')!.querySelector<HTMLButtonElement>('[role="switch"]')!;
+    expect(toggle.disabled).toBe(true);
+    expect(row('disable-thinking')!.querySelector('.sm-row-desc')!.textContent).toContain(t('settings.thinkingAlwaysOn'));
+  });
+
+  it.each(['step-5-preview', 'claude-haiku-5-5'])('Defaults disables the thinking switch for %s and says why', async (model) => {
+    const store = useSettingsStore();
+    store.setModelState('', model);
+    store.setDefaultThinking(thinking, model);
+    await open(NO_HOST_SETTINGS, 'defaults');
+    const toggle = row('damocles.thinkingDisabled')!.querySelector<HTMLButtonElement>('[role="switch"]')!;
+    expect(toggle.disabled).toBe(true);
+    expect(row('damocles.thinkingDisabled')!.querySelector('.sm-row-desc')!.textContent).toContain(t('settings.thinkingAlwaysOn'));
+  });
+
+  it('leaves the switch on for a model that can stop thinking', async () => {
+    const store = useSettingsStore();
+    store.setModelState('deepseek-v4-pro', 'deepseek-v4-pro');
+    store.setPanelThinking(thinking, 'deepseek-v4-pro');
+    await open(NO_HOST_SETTINGS, 'chat');
+    expect(row('disable-thinking')!.querySelector<HTMLButtonElement>('[role="switch"]')!.disabled).toBe(false);
+    expect(row('disable-thinking')!.textContent).not.toContain(t('settings.thinkingAlwaysOn'));
+  });
+});
+
+describe('This chat model', () => {
+  it('stays on the committed model after a pick until core reports the change', async () => {
+    const store = useSettingsStore();
+    store.setModelState('claude-opus-5-5', 'claude-opus-5-5');
+    await open(NO_HOST_SETTINGS, 'chat');
+    const trigger = row('model')!.querySelector<HTMLElement>('button[role="combobox"]')!;
+    press('Enter', {}, trigger);
+    await flush();
+    const sonnet = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((el) => el.textContent?.trim() === 'Sonnet 5.5')!;
+    press('Enter', {}, sonnet);
+    await flush();
+    expect(posted).toContainEqual({ type: 'setActiveModel', model: 'claude-sonnet-5-5' });
+    expect(trigger.textContent).toContain('Opus 5.5');
+
+    store.setModelState('claude-sonnet-5-5', 'claude-opus-5-5');
+    await nextTick();
+    expect(trigger.textContent).toContain('Sonnet 5.5');
   });
 });
 

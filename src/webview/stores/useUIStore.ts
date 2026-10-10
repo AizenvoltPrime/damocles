@@ -56,6 +56,8 @@ export const useUIStore = defineStore('ui', () => {
   // The composer's pending terminal attachments as core holds them; core owns the list, a conversation reset keeps it.
   const terminalAttachments = shallowRef<readonly TerminalAttachmentInfo[]>([]);
   const isCompacting = ref(false);
+  // Set while pi waits to re-send a failed model call; the status bar names the attempt.
+  const retryStatus = ref<{ attempt: number; maxAttempts: number } | null>(null);
   const activeHooks = ref<Map<string, { hookName: string; hookEvent: string }>>(new Map());
   const lastCheckpointTime = ref<number | null>(null);
   const authFailureMessage = ref<string | null>(null);
@@ -67,6 +69,7 @@ export const useUIStore = defineStore('ui', () => {
     isProcessing.value = value;
     if (!value) {
       activeHooks.value = new Map();
+      retryStatus.value = null;
     }
   }
 
@@ -248,6 +251,10 @@ export const useUIStore = defineStore('ui', () => {
     isCompacting.value = value;
   }
 
+  function setRetryStatus(value: { attempt: number; maxAttempts: number } | null) {
+    retryStatus.value = value;
+  }
+
   function setHookActive(hookId: string, hookName: string, hookEvent: string) {
     const updated = new Map(activeHooks.value);
     updated.set(hookId, { hookName, hookEvent });
@@ -297,6 +304,7 @@ export const useUIStore = defineStore('ui', () => {
     ideContextEnabled.value = ideContextDefaultEnabled.value;
     ideContextUserOverride.value = false;
     isCompacting.value = false;
+    retryStatus.value = null;
     activeHooks.value = new Map();
     lastCheckpointTime.value = null;
     authFailureMessage.value = null;
@@ -363,6 +371,8 @@ export const useUIStore = defineStore('ui', () => {
     lastCheckpointTime,
     authFailureMessage,
     setCompacting,
+    retryStatus,
+    setRetryStatus,
     setHookActive,
     removeHook,
     setLastCheckpointTime,

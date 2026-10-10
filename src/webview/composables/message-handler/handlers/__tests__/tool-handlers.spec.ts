@@ -302,3 +302,34 @@ describe('toolCompleted image count', () => {
     expect(updateStatus).toHaveBeenCalledWith('tc-1', 'completed', result, undefined, 5, 1);
   });
 });
+
+describe('toolAbandoned', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  const abandon = (msg: Extract<ExtensionToWebviewMessage, { type: 'toolAbandoned' }>, ctx: HandlerContext): void => {
+    const handler = createToolHandlers().toolAbandoned;
+    if (!handler) throw new Error('no toolAbandoned handler registered');
+    handler(msg, ctx);
+  };
+
+  it('settles a main-session call with the reason it never ran', () => {
+    const ctx = context();
+    ctx.stores.streamingStore.addToolCall({ id: 't-1', name: 'Read', input: {} });
+
+    abandon({ type: 'toolAbandoned', toolUseId: 't-1', toolName: 'Read', parentToolUseId: null, reason: 'failed' }, ctx);
+
+    const tool = ctx.stores.streamingStore.messages.flatMap((m) => m.toolCalls ?? []).find((t) => t.id === 't-1');
+    expect(tool).toMatchObject({ status: 'abandoned', abandonReason: 'failed' });
+  });
+
+  it('settles a subagent call with the reason it never ran', () => {
+    const ctx = context();
+    const { subagentStore } = ctx.stores;
+    subagentStore.registerAgentTool('agent-1', { description: 'build', prompt: 'go' });
+    subagentStore.addToolCallToSubagent('agent-1', { id: 't-1', name: 'Bash', input: {}, status: 'pending' });
+
+    abandon({ type: 'toolAbandoned', toolUseId: 't-1', toolName: 'Bash', parentToolUseId: 'agent-1', reason: 'stopped' }, ctx);
+
+    expect(subagentStore.getSubagent('agent-1')?.toolCalls[0]).toMatchObject({ status: 'abandoned', abandonReason: 'stopped' });
+  });
+});

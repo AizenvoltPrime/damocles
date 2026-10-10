@@ -8,6 +8,7 @@ import CodeBlock from './CodeBlock.vue';
 import OverlayShell from './OverlayShell.vue';
 import ImageLightbox from './ImageLightbox.vue';
 import ToolResultImages from './ToolResultImages.vue';
+import { useToolStatusBadge } from '@/composables/useToolCardStatus';
 
 const { t } = useI18n();
 
@@ -44,14 +45,7 @@ const isRunning = computed(() =>
 
 const isFailed = computed(() => props.tool.status === 'failed');
 
-const isCompleted = computed(() => props.tool.status === 'completed');
-
-const statusBadge = computed(() => {
-  if (isRunning.value) return { label: t('toolOverlay.statusRunning'), class: 'd-tone-accent', pulse: true };
-  if (isCompleted.value) return { label: t('toolOverlay.statusCompleted'), class: 'd-tone-success' };
-  if (isFailed.value) return { label: t('toolOverlay.statusFailed'), class: 'd-tone-danger' };
-  return { label: props.tool.status, class: 'd-tone-muted' };
-});
+const statusBadge = useToolStatusBadge(() => props.tool.status);
 
 const hasResult = computed(() => Boolean(resultText.value.trim()) || (props.tool.imageCount ?? 0) > 0);
 

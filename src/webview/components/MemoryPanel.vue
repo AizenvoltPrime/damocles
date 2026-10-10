@@ -53,7 +53,7 @@ function requestClose(): void {
 const { t, te, locale } = useI18n();
 
 const scoreFormat = computed(() => new Intl.NumberFormat(locale.value, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
-/** A Jev grade renders as a localized verdict; `reason` is model-facing English. */
+/** A classifier grade renders as a localized verdict; `reason` is model-facing English. */
 function searchReason(result: SearchResult): string | undefined {
   if (result.rerankRelevance === undefined || result.rerankClassifierScore === undefined) return result.reason;
   return t('contextInjection.rerankClassifier', {

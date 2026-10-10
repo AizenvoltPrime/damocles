@@ -6,15 +6,10 @@ export function createModelHandlers(deps: HandlerDependencies): Partial<HandlerR
   const { getPanels, settingsManager } = deps;
 
   return {
-    setActiveModel: async (msg, ctx) => {
+    // A request only: the session publishes the model it committed, which the panel then shows.
+    setActiveModel: (msg, ctx) => {
       if (msg.type !== "setActiveModel") return;
-      const changed = settingsManager.setActiveModelForPanel(ctx.panelId, msg.model);
-      if (changed) {
-        ctx.session.setModel(msg.model);
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
-      }
-      settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
-      settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId, ctx.folder);
+      void ctx.session.setModel(msg.model);
     },
 
     setDefaultModel: async (msg, ctx) => {

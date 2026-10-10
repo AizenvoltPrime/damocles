@@ -6,8 +6,12 @@
  * subscribes to a nested `AgentSession` and emits, all via the PARENT panel's `postMessage`:
  *   - `subagentStart` when the record is created, queued or not, `subagentModelUpdate` once it runs, and
  *     `subagentModelUpdate` with the effort at attach,
- *   - per nested tool: `toolPending` → `toolProgress` → `toolCompleted`/`toolFailed`, stamped with
- *     `parentToolUseId = <Agent tool-call id>` so they land on the subagent card,
+ *   - per nested tool: `toolPending` → `toolProgress` → `toolCompleted`/`toolFailed`, or `toolAbandoned` for a
+ *     call a turn-stopped entry names, stamped with `parentToolUseId = <Agent tool-call id>` so they land on the subagent card,
+ *   - per failed or aborted model call, stamped the same way: `toolAbandoned` for each tool it named (an
+ *     aborted one, or an abort's wind-down error the turn-stopped record names at its `turn_end` (`windDownRecorded`),
+ *     also for the calls its abort skipped, `skippedToolCalls`), and for any other failed one `error`,
+ *     `assistantRetracted` and the `statusUpdate` retry wait, by the rule of `NestedCallFailures`,
  *   - at completion: a final (sealing) `subagentMessagesUpdate` built by `piMessagesToHistoryAgentMessages`,
  *     and `subagentStop`.
  *
@@ -19,7 +23,7 @@
  * the card's resolution independent of the parent stream; the later real event is a harmless no-op.
  */
 
-import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
+import type { AgentSession, AgentSessionEvent, SessionEntry } from '@earendil-works/pi-coding-agent';
 import type { AssistantMessageEvent } from '@earendil-works/pi-ai';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { ContentBlock } from '../../../shared/types/content';
@@ -29,6 +33,11 @@ import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from '../tool
 import { joinResultText, resultImageCount } from '../tool-result-text';
 import { ToolOutputCoalescer } from '../tool-output-coalescer';
 import { piMessagesToHistoryAgentMessages } from './message-mapper';
+import { NestedCallFailures, failedCallError } from '../nested-call-failures';
+import { skippedToolCalls } from '../abandoned-tool-calls';
+import { turnStoppedToolCallIds, windDownRecorded } from '../session-store/turn-stopped';
+import type { ToolAbandonReason } from '../../../shared/types/session';
+import { CANCELLED_TOOL_DETAIL_KEY } from '../../../shared/types/session';
 import { runUsageMeter, sameAgentUsage } from '../session-usage';
 import { emptyAgentUsage, type AgentUsageTotals } from '../../../shared/usage-accounting';
 import type { EffortBadgeLevel } from '../../../shared/effort-badge';
@@ -86,6 +95,29 @@ export class SubagentStreamBridge {
   private streamingText = '';
   private streamingThinking = '';
   private thinkingStart: number | null = null;
+  /** Whether the current assistant message has reached the card, so a re-run must take it back. */
+  private currentRendered = false;
+  /** The tool calls of the latest assistant message, and every call pi reported a result for. */
+  private batch: Array<{ id: string; name: string }> = [];
+  private readonly answered = new Set<string>();
+  /** The calls this session's turn-stopped entries name: its aborted run settled them before they ran. */
+  private readonly stopped = new Set<string>();
+  /** The error stops that were an abort's wind-down, which the sealing snapshot maps as a reload does. */
+  private readonly windDown = new Set<unknown>();
+  /** An error stop, decided at its `turn_end` by the wind-down record (`decideErrorStop`). */
+  private undecidedError: {
+    message: { errorMessage?: string };
+    calls: Array<{ id: string; name: string }>;
+    skipped: Array<{ id: string; name: string }>;
+    shownId: string | undefined;
+  } | null = null;
+  private branch: () => readonly SessionEntry[] = () => [];
+  private readonly failures = new NestedCallFailures({
+    show: (message) => this.emit({ type: 'error', message, parentToolUseId: this.deps.parentToolUseId }),
+    withdraw: (messageId) => this.emit({ type: 'assistantRetracted', messageId, parentToolUseId: this.deps.parentToolUseId }),
+    retrying: (attempt, maxAttempts) => this.emit({ type: 'statusUpdate', status: 'retrying', attempt, maxAttempts, parentToolUseId: this.deps.parentToolUseId }),
+    retryEnded: () => this.emit({ type: 'statusUpdate', status: 'ready', parentToolUseId: this.deps.parentToolUseId }),
+  });
   /** Messages the session held when attached; a reopened session's earlier runs belong to earlier cards. */
   private firstMessageIndex = 0;
   /** This run's usage; the baseline is taken at attach, so a reopened session's earlier runs are excluded. */
@@ -138,6 +170,7 @@ export class SubagentStreamBridge {
     this.dollarBilled = dollarBilled;
     if (effort) this.emitModel(this.emittedModel?.model, effort);
     this.firstMessageIndex = session.messages.length;
+    this.branch = () => session.sessionManager.getBranch();
     this.runUsage = runUsageMeter(session);
     const unsubscribe = session.subscribe((event: AgentSessionEvent) => this.handle(event));
     return () => {
@@ -149,6 +182,7 @@ export class SubagentStreamBridge {
 
   private handle(event: AgentSessionEvent): void {
     const parentToolUseId = this.deps.parentToolUseId;
+    this.failures.observe(event);
     switch (event.type) {
       case 'message_start':
         if (event.message.role === 'assistant') this.startAssistantMessage();
@@ -158,13 +192,32 @@ export class SubagentStreamBridge {
         break;
       case 'message_end':
         if (event.message.role === 'assistant') {
-          this.emitAssistantMessage(event.message.content);
+          const messageId = this.assistantMessageId();
+          const sealed = this.emitAssistantMessage(event.message.content);
+          // pi ends the turn before it executes any tool a failed or aborted call named; a re-run takes the cards back with the message.
+          const calls = event.message.content.flatMap((block) => (block.type === 'toolCall' ? [{ id: block.id, name: block.name }] : []));
+          const skipped = skippedToolCalls(this.batch, (id) => this.answered.has(id));
+          this.batch = calls;
+          // pi reports a failed call only here, and decides whether to re-run it after this event.
+          if (event.message.stopReason === 'error') {
+            this.undecidedError = { message: event.message, calls, skipped, shownId: sealed || this.currentRendered ? messageId : undefined };
+          } else if (event.message.stopReason === 'aborted') {
+            for (const call of [...skipped, ...calls]) this.emitAbandoned(call, 'stopped');
+          }
           // pi persists the message after notifying listeners, so its stats include it only from the next microtask.
           queueMicrotask(() => this.emitUsage());
         }
         break;
+      // pi emits it after every error stop (`agent-loop.js:141-152`, `agent.js:375-378` in pi-agent-core 1.1.0).
+      case 'turn_end':
+        this.decideErrorStop();
+        break;
       case 'compaction_end':
         this.emitUsage();
+        break;
+      // `registerAbortSettledCallRecord` appends it before listeners get the call's `tool_execution_end`.
+      case 'entry_appended':
+        for (const id of turnStoppedToolCallIds(event.entry)) this.stopped.add(id);
         break;
       case 'tool_execution_start': {
         this.toolStarts.set(event.toolCallId, Date.now());
@@ -201,19 +254,26 @@ export class SubagentStreamBridge {
       case 'tool_execution_end': {
         // Cancel before anything else: a pending partial landing after toolCompleted would resurrect stale output.
         this.outputCoalescer.cancel(event.toolCallId);
-        const durationMs = this.elapsed(event.toolCallId) * 1000;
+        this.answered.add(event.toolCallId);
+        // pi's measured `execute()` time, absent when the call never ran (blocked, denied, unknown tool).
+        const duration = event.durationMs === undefined ? {} : { durationMs: event.durationMs };
         const toolName = mapPiToolName(event.toolName);
         this.toolStarts.delete(event.toolCallId);
+        if (this.stopped.has(event.toolCallId) && event.durationMs === undefined) {
+          this.emitAbandoned({ id: event.toolCallId, name: event.toolName }, 'stopped');
+          break;
+        }
         const resultText = joinResultText(event.result);
         const details = (event.result as { details?: unknown } | undefined)?.details;
         const metadata = details && typeof details === 'object' ? normalizeToolDetails(details as Record<string, unknown>) : undefined;
-        if (event.isError) {
-          this.emit({ type: 'toolFailed', toolUseId: event.toolCallId, toolName, error: resultText || 'Tool failed', parentToolUseId, durationMs });
+        // A stopped call lands as completed, and its marker alone tells the card apart from a success.
+        if (event.isError && metadata?.[CANCELLED_TOOL_DETAIL_KEY] !== true) {
+          this.emit({ type: 'toolFailed', toolUseId: event.toolCallId, toolName, error: resultText || 'Tool failed', parentToolUseId, ...duration });
           // An error result keeps the details a tool returned with it (a thrown error's are empty), and a reload shows them.
           if (metadata && Object.keys(metadata).length > 0) this.emit({ type: 'toolMetadata', toolUseId: event.toolCallId, metadata });
         } else {
           const imageCount = resultImageCount(event.result);
-          this.emit({ type: 'toolCompleted', toolUseId: event.toolCallId, toolName, result: resultText, parentToolUseId, durationMs, ...(imageCount > 0 ? { imageCount } : {}) });
+          this.emit({ type: 'toolCompleted', toolUseId: event.toolCallId, toolName, result: resultText, parentToolUseId, ...duration, ...(imageCount > 0 ? { imageCount } : {}) });
           if (metadata) this.emit({ type: 'toolMetadata', toolUseId: event.toolCallId, metadata });
         }
         break;
@@ -223,6 +283,28 @@ export class SubagentStreamBridge {
     }
   }
 
+  /**
+   * Decide an error stop from the record a reload reads: `registerWindDownErrorRecord` names it at its `turn_end`
+   * boundary when the run was aborted then, and pi commits that record before this `turn_end` (`agent-session.js:515`,
+   * `:636-641` in pi-coding-agent 1.1.0). A named stop is the abort's wind-down, handled as an aborted stop.
+   */
+  private decideErrorStop(): void {
+    const pending = this.undecidedError;
+    if (!pending) return;
+    this.undecidedError = null;
+    if (windDownRecorded(this.branch(), pending.message)) {
+      this.windDown.add(pending.message);
+      for (const call of [...pending.skipped, ...pending.calls]) this.emitAbandoned(call, 'stopped');
+      return;
+    }
+    for (const call of pending.calls) this.emitAbandoned(call, 'failed');
+    this.failures.hold(failedCallError(pending.message.errorMessage), pending.shownId);
+  }
+
+  private emitAbandoned(call: { id: string; name: string }, reason: ToolAbandonReason): void {
+    this.emit({ type: 'toolAbandoned', toolUseId: call.id, toolName: mapPiToolName(call.name), parentToolUseId: this.deps.parentToolUseId, reason });
+  }
+
   /** Begin a new nested assistant message: assign its own webview id and reset streaming buffers. */
   private startAssistantMessage(): void {
     this.assistantSeq += 1;
@@ -230,6 +312,11 @@ export class SubagentStreamBridge {
     this.streamingText = '';
     this.streamingThinking = '';
     this.thinkingStart = null;
+    this.currentRendered = false;
+  }
+
+  private assistantMessageId(): string {
+    return this.currentMsgId || `${this.deps.agentId}:a:${this.assistantSeq}`;
   }
 
   /** Stream text/thinking deltas into the card as `partial` messages (stamped with parentToolUseId). */
@@ -259,6 +346,7 @@ export class SubagentStreamBridge {
   }
 
   private emitPartial(extra: { streamingText?: string; streamingThinking?: string; isThinking?: boolean; thinkingDuration?: number }): void {
+    this.currentRendered = true;
     this.emit({
       type: 'partial',
       data: { type: 'partial', content: [], session_id: this.deps.getSessionId(), messageId: this.currentMsgId, ...extra },
@@ -269,8 +357,8 @@ export class SubagentStreamBridge {
   /** Seal one completed nested assistant message into the card (clears the live streaming buffer). */
   private emitAssistantMessage(
     content: ReadonlyArray<{ type: string; text?: string; thinking?: string; thinkingSignature?: string; id?: string; name?: string; arguments?: Record<string, unknown> }> | undefined,
-  ): void {
-    if (!content) return;
+  ): boolean {
+    if (!content) return false;
     const blocks: ContentBlock[] = [];
     for (const c of content) {
       if (c.type === 'text' && c.text) {
@@ -281,17 +369,18 @@ export class SubagentStreamBridge {
         blocks.push({ type: 'tool_use', id: c.id, name: mapPiToolName(c.name), input: normalizeToolInput(c.name, c.arguments ?? {}) });
       }
     }
-    if (blocks.length === 0) return;
+    if (blocks.length === 0) return false;
     this.emit({
       type: 'assistant',
       data: {
         type: 'assistant',
-        message: { id: this.currentMsgId || `${this.deps.agentId}:a:${this.assistantSeq}`, role: 'assistant', content: blocks, model: '', stop_reason: null },
+        message: { id: this.assistantMessageId(), role: 'assistant', content: blocks, model: '', stop_reason: null },
         session_id: this.deps.getSessionId(),
       },
       parentToolUseId: this.deps.parentToolUseId,
     });
     this.currentMsgId = '';
+    return true;
   }
 
   /** Read the run's usage once more at its end, for spend that raised no event, such as a cache warm. */
@@ -319,7 +408,7 @@ export class SubagentStreamBridge {
     this.emit({
       type: 'subagentMessagesUpdate',
       agentToolId: this.deps.parentToolUseId,
-      messages: piMessagesToHistoryAgentMessages(session.messages.slice(this.firstMessageIndex)),
+      messages: piMessagesToHistoryAgentMessages(session.messages.slice(this.firstMessageIndex), this.stopped, this.windDown),
     });
   }
 

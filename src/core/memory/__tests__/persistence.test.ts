@@ -157,6 +157,56 @@ describe('memory database persistence (node:sqlite WAL)', () => {
   });
 });
 
+describe('migration v6', () => {
+  it('adds the failed-answer count, the set-aside stamp and the claimable index onto a v5 database, keeping its rows', () => {
+    const v5 = createDatabaseWrapper(new DatabaseSync(':memory:'));
+    runMigrations(v5);
+    v5.exec(
+      'DROP INDEX idx_candidates_set_aside; DROP INDEX idx_candidates_claimable; ALTER TABLE memory_candidates DROP COLUMN set_aside_at; ' +
+        'ALTER TABLE memory_candidates DROP COLUMN failed_attempts; DELETE FROM schema_version WHERE version >= 6',
+    );
+    v5.prepare(`INSERT INTO memory_candidates (id, user_text, assistant_text, created_at) VALUES ('kept', 'q', 'a', 1)`).run();
+
+    runMigrations(v5);
+
+    expect(v5.prepare('SELECT user_text, failed_attempts, set_aside_at FROM memory_candidates WHERE id = ?').get('kept')).toEqual({
+      user_text: 'q',
+      failed_attempts: 0,
+      set_aside_at: null,
+    });
+    const idx = (v5.prepare("PRAGMA index_info('idx_candidates_claimable')").all() as Array<{ name: string }>).map(c => c.name);
+    expect(idx).toEqual(['consumed', 'set_aside_at', 'created_at']);
+    // The claim's oldest-claimable lookup reads the index in order instead of sorting or scanning set-aside rows.
+    const plan = (v5
+      .prepare('EXPLAIN QUERY PLAN SELECT workspace FROM memory_candidates WHERE consumed = 0 AND set_aside_at IS NULL ORDER BY created_at LIMIT 1')
+      .all() as Array<{ detail: string }>).map(r => r.detail).join('\n');
+    expect(plan).toContain('idx_candidates_claimable');
+    expect(plan).not.toContain('TEMP B-TREE');
+    expect((v5.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v).toBe(7);
+    v5.close();
+  });
+});
+
+describe('migration v7', () => {
+  it('adds a partial index the set-aside count reads instead of scanning every candidate', () => {
+    const v6 = createDatabaseWrapper(new DatabaseSync(':memory:'));
+    runMigrations(v6);
+    v6.exec('DROP INDEX idx_candidates_set_aside; DELETE FROM schema_version WHERE version = 7');
+    v6.prepare(`INSERT INTO memory_candidates (id, user_text, assistant_text, created_at, set_aside_at) VALUES ('aside', 'q', 'a', 1, 5)`).run();
+
+    runMigrations(v6);
+
+    const plan = (v6
+      .prepare('EXPLAIN QUERY PLAN SELECT COUNT(*) AS n FROM memory_candidates WHERE set_aside_at IS NOT NULL')
+      .all() as Array<{ detail: string }>).map(r => r.detail).join('\n');
+    expect(plan).toContain('idx_candidates_set_aside');
+    expect(plan).not.toMatch(/SCAN memory_candidates(?! USING)/);
+    expect((v6.prepare('SELECT COUNT(*) AS n FROM memory_candidates WHERE set_aside_at IS NOT NULL').get() as { n: number }).n).toBe(1);
+    expect((v6.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v).toBe(7);
+    v6.close();
+  });
+});
+
 describe('cross-process migration race', () => {
   let filePath: string;
 

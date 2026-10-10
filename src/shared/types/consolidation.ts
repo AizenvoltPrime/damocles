@@ -42,8 +42,13 @@ export type ConsolidationStatus = 'extracted' | 'empty' | 'failed';
 export type ConsolidationTrigger = 'auto' | 'manual';
 
 /** Why a pass ended in `failed`. `unavailable` = the memory DB never initialized / init failed. */
+/** Why extraction got no answer; the panel words it, so core never sends English for these. */
+export type ExtractFailureReason = 'unanswered' | 'rejected' | 'invalid-shape' | 'unreachable' | 'credential';
+
 export interface ConsolidationFailure {
   kind: 'no-model' | 'error' | 'unavailable';
+  reason?: ExtractFailureReason;
+  /** A thrown error's own text, shown as it is. */
   detail?: string;
   /** Which phase failed, for the failure-card footer. Absent for `unavailable` (no phase reached). */
   phase?: ConsolidationPhaseId;
@@ -52,7 +57,8 @@ export interface ConsolidationFailure {
 /**
  * The single terminal record of a completed consolidation pass — covering EVERY outcome (success,
  * empty, or failure). Returned by the pure pass on every code path, so a silent finish is impossible
- * by construction. `failure` is present iff `status === 'failed'`.
+ * by construction. The panel receives one per run, its passes folded by `accumulateRunResult`.
+ * `failure` is present iff `status === 'failed'`.
  */
 export interface ConsolidationResult {
   ranAt: number;

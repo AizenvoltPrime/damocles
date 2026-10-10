@@ -11,7 +11,6 @@ import type {
   OAuthClientInformationMixed,
   OAuthClientMetadata,
   OAuthDiscoveryState,
-  OAuthProtectedResourceMetadata,
 } from '@earendil-works/pi-mcp/oauth';
 import type { McpOAuthConfig } from '../../../shared/types/mcp';
 import type { McpOAuthModule } from './mcp-client-loader';
@@ -123,64 +122,12 @@ export function mergeScopes(...scopes: (string | undefined)[]): string | undefin
   return merged.length > 0 ? merged.join(' ') : undefined;
 }
 
-/** Port of `stepUpScope` in pi-mcp/src/oauth/flow.ts: the challenged scopes plus the ones granted so far. */
-export function stepUpScope(granted: string | undefined, challenged: string | undefined): string | undefined {
-  if (!challenged) return undefined;
-  const scopes = [granted, challenged].flatMap((scope) => scope?.split(/\s+/).filter(Boolean) ?? []);
-  return [...new Set(scopes)].join(' ');
-}
-
-function requiredUrl(value: unknown, name: string): string {
-  if (typeof value !== 'string' || !URL.canParse(value)) throw new Error(`Invalid ${name}`);
-  if (['javascript:', 'data:', 'vbscript:'].includes(new URL(value).protocol)) throw new Error(`Invalid ${name}`);
-  return value;
-}
-
-/** The structural checks of pi-mcp's `parseAuthorizationServerMetadata` (src/oauth/types.ts) that the flow relies on. */
-function parseAuthorizationServerMetadata(value: unknown): AuthorizationServerMetadata {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid authorization server metadata');
-  const input = value as Record<string, unknown>;
-  const responseTypes = input['response_types_supported'];
-  if (!Array.isArray(responseTypes) || responseTypes.some((item) => typeof item !== 'string')) {
-    throw new Error('Invalid response_types_supported');
-  }
-  return {
-    ...input,
-    issuer: requiredUrl(input['issuer'], 'authorization server issuer'),
-    authorization_endpoint: requiredUrl(input['authorization_endpoint'], 'authorization endpoint'),
-    token_endpoint: requiredUrl(input['token_endpoint'], 'token endpoint'),
-    response_types_supported: responseTypes as string[],
-  };
-}
-
-/**
- * Discovery for a server: pi-mcp's RFC 9728 / RFC 8414 discovery, or with `oauth.authServerMetadataUrl`
- * that document, trusted as configured so its issuer is not checked (pi's rule). pi-mcp 0.99.2's
- * `authorizeMcp` has no metadata URL option, so callers prime the provider's discovery state with this.
- */
-export async function discoverAuthorizationServer(
-  oauth: McpOAuthModule,
-  serverUrl: string,
-  config: McpOAuthConfig,
-): Promise<OAuthDiscoveryState> {
-  const oauthFetch = createOAuthFetch(oauth);
-  if (config.authServerMetadataUrl === undefined) return oauth.discoverOAuthServerInfo(serverUrl, { fetch: oauthFetch });
-  let resourceMetadata: OAuthProtectedResourceMetadata | undefined;
-  try {
-    resourceMetadata = await oauth.discoverProtectedResourceMetadata(serverUrl, { fetch: oauthFetch });
-  } catch (error) {
-    // As in pi-mcp's discovery: a server without resource metadata has none; only a network failure aborts.
-    if (error instanceof TypeError) throw error;
-  }
-  const url = new URL(config.authServerMetadataUrl);
-  const response = await oauthFetch(url, { headers: { Accept: 'application/json' } });
-  if (!response.ok) throw new Error(`HTTP ${response.status} loading authorization server metadata from ${url.href}`);
-  const metadata = parseAuthorizationServerMetadata(await response.json());
-  return {
-    authorizationServerUrl: metadata.issuer,
-    authorizationServerMetadata: metadata,
-    ...(resourceMetadata ? { resourceMetadata } : {}),
-  };
+/** pi-mcp's RFC 9728 / RFC 8414 discovery, or the `oauth.authServerMetadataUrl` document, whose issuer is trusted as configured. */
+export function discoverOAuthServer(oauth: McpOAuthModule, serverUrl: string, config: McpOAuthConfig): Promise<OAuthDiscoveryState> {
+  return oauth.discoverOAuthServerInfo(serverUrl, {
+    fetch: createOAuthFetch(oauth),
+    ...(config.authServerMetadataUrl !== undefined ? { authorizationServerMetadataUrl: new URL(config.authServerMetadataUrl) } : {}),
+  });
 }
 
 /** The configured client, else a stored dynamically registered one whose secret has not expired. */
@@ -205,7 +152,7 @@ export async function requestClientCredentialsToken(
   scope: string | undefined,
 ): Promise<string> {
   const oauthFetch = createOAuthFetch(oauth);
-  const info = await discoverAuthorizationServer(oauth, id.serverUrl, config);
+  const info = await discoverOAuthServer(oauth, id.serverUrl, config);
   const metadata = info.authorizationServerMetadata;
   const resource = oauth.selectResource(id.serverUrl, info.resourceMetadata);
   const tokenUrl = assertSecureEndpoint(oauth, metadata?.token_endpoint ?? new URL('/token', info.authorizationServerUrl));

@@ -1,5 +1,6 @@
 import { log } from '../logger';
 import { PiRuntime } from '../pi-session/pi-runtime';
+import { structuredValue } from '../pi-session/structured-completion';
 
 const MAX_CACHE_SIZE = 50;
 const TERMS_TOOL = 'submit_terms';
@@ -55,7 +56,7 @@ async function expandViaPi(systemPrompt: string, userMessage: string, schema: Re
   return (await expandViaPiWithStatus(systemPrompt, userMessage, schema)).terms;
 }
 
-/** `failed` is true only when the sub-call itself failed (null) — distinct from a successful empty result. */
+/** `failed` is true only when the sub-call produced no value, distinct from a successful empty result. */
 async function expandViaPiWithStatus(
   systemPrompt: string,
   userMessage: string,
@@ -70,7 +71,8 @@ async function expandViaPiWithStatus(
     purpose: 'memory-query-expansion',
     timeoutMs: 8_000,
   });
-  return { terms: normalizeTerms(result?.terms), failed: result === null };
+  const value = structuredValue(result);
+  return { terms: normalizeTerms(value?.terms), failed: value === null };
 }
 
 export async function expandQuery(userPrompt: string): Promise<string[]> {

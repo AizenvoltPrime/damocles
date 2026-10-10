@@ -45,6 +45,7 @@ export function settings(permissionMode: PermissionMode = 'default', yolo = fals
     cacheWarming: 'off', dangerouslySkipPermissions: yolo, defaultDangerouslySkipPermissions: false,
     ideContextEnabled: true, pinnedHeaderHidden: false,
     team: { leadModel: '', leadEffort: null, implementorModel: '', implementorEffort: null, reviewerModel: '', reviewerEffort: null },
+    background: { model: '', effort: null }, judge: { choice: '', effort: null }, explore: { model: '', effort: null },
   };
 }
 
@@ -56,7 +57,7 @@ export function bootMessages({ mode = 'default', yolo = false }: BootOptions = {
     settingsUpdate(mode, yolo),
     { type: 'mcpConfigUpdate', servers: [], configErrors: [], localMcpUnignored: false },
     { type: 'modelUpdate', activeModel: MODEL, defaultModel: MODEL, contextWindowSize: 1_000_000 },
-    { type: 'panelThinkingUpdate', panel: { thinkingDisabled: false, effort: 'high', maxThinkingTokens: null }, panelModel: MODEL, defaults: { thinkingDisabled: false, effort: 'high', maxThinkingTokens: null }, defaultsModel: MODEL },
+    { type: 'panelThinkingUpdate', panel: { thinkingDisabled: false, effort: 'high' }, panelModel: MODEL, defaults: { thinkingDisabled: false, effort: 'high' }, defaultsModel: MODEL },
     { type: 'languageChange', locale: 'en' },
     { type: 'workspaceFolderUpdate', folders: FOLDERS, panelFolderKey, defaultFolderKey: panelFolderKey },
     { type: 'storedSessions', sessions: [], hasMore: false, nextOffset: 0, isFirstPage: true },

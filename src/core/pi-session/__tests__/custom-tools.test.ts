@@ -296,6 +296,8 @@ function branchAgent(status: BranchAgent['state']['status'], opts: { stopReason?
         { role: 'assistant', content: [{ type: 'text', text: 'it was the cache' }] },
       ],
       entryIds: new Map(),
+      stoppedToolCallIds: new Set(),
+      windDownMessages: new Set(),
     },
     ...(opts.stored !== undefined ? { status: { status: status as 'completed', result: opts.stored } } : {}),
     ...(opts.branchResult !== undefined ? { branchResult: opts.branchResult } : {}),

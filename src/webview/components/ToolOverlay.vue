@@ -6,7 +6,7 @@ import { isShellTool, LIVE_OUTPUT_TOOLS, TOOL_GENERATE_IMAGE } from '@shared/too
 import { TEAM_TOOL_LABELS } from '@shared/team-tool-labels';
 import { cronToIntervalLabel } from '@shared/utils/cron';
 import {
-  Bot, Check, ChevronRight, CircleCheck, CircleX, Clock, Code, Copy, CornerDownRight, ExternalLink, FileText, Globe,
+  Ban, Bot, Check, ChevronRight, CircleCheck, CircleX, Clock, Code, Copy, CornerDownRight, ExternalLink, FileText, Globe,
   ImagePlus, LoaderCircle, Search, SquareTerminal,
 } from 'lucide-vue-next';
 import LiveOutputPane from './LiveOutputPane.vue';
@@ -23,6 +23,7 @@ import { ownEntry } from '@/utils/ownEntry';
 import { useUIStore, type ExpandedToolSource } from '@/stores/useUIStore';
 import { useFolderRelativePath } from '@/composables/useFolderRelativePath';
 import { useCopyToClipboard } from '@/composables/useCopyToClipboard';
+import { useToolStatusBadge } from '@/composables/useToolCardStatus';
 
 const TOOL_ICON_MAP: Record<string, Component> = {
   Bash: SquareTerminal,
@@ -101,8 +102,12 @@ const isRunning = computed(() => {
   return s === 'running' || s === 'pending';
 });
 const isFailed = computed(() => props.tool.status === 'failed');
-const isCompleted = computed(() => props.tool.status === 'completed');
-const isCancelled = computed(() => props.tool.status === 'cancelled');
+/** A stopped call's partial output is neither a success nor a failure. */
+const responseIcon = computed(() => {
+  if (isFailed.value) return { icon: CircleX, class: 'text-(--d-danger)' };
+  if (props.tool.status === 'cancelled') return { icon: Ban, class: 'text-(--d-faint)' };
+  return { icon: CircleCheck, class: 'text-(--d-success)' };
+});
 const isUnrecorded = computed(() => props.tool.status === 'unrecorded');
 
 const showLiveOutput = computed(() =>
@@ -110,15 +115,7 @@ const showLiveOutput = computed(() =>
 );
 const liveOutputText = computed(() => props.tool.liveOutput ?? '');
 
-const statusBadge = computed(() => {
-  if (isRunning.value) return { label: t('toolOverlay.statusRunning'), class: 'd-tone-accent', pulse: true };
-  if (props.tool.status === 'awaiting_approval') return { label: t('toolCall.awaitingApproval'), class: 'd-tone-warning', pulse: true };
-  if (isCompleted.value) return { label: t('toolOverlay.statusCompleted'), class: 'd-tone-success' };
-  if (isFailed.value) return { label: t('toolOverlay.statusFailed'), class: 'd-tone-danger' };
-  if (isCancelled.value) return { label: t('toolOverlay.statusCancelled'), class: 'd-tone-muted' };
-  if (isUnrecorded.value) return { label: t('toolOverlay.statusUnrecorded'), class: 'd-tone-muted' };
-  return { label: props.tool.status, class: 'd-tone-warning' };
-});
+const statusBadge = useToolStatusBadge(() => props.tool.status);
 
 const hasResult = computed(() => Boolean(props.tool.result?.trim()) || (props.tool.imageCount ?? 0) > 0);
 
@@ -697,9 +694,9 @@ function handleFilePathClick(filePath: string): void {
               aria-hidden="true"
             />
             <component
-              :is="isFailed ? CircleX : CircleCheck"
+              :is="responseIcon.icon"
               class="size-3 flex-none"
-              :class="isFailed ? 'text-(--d-danger)' : 'text-(--d-success)'"
+              :class="responseIcon.class"
               aria-hidden="true"
             />
             {{ t('toolOverlay.response') }}

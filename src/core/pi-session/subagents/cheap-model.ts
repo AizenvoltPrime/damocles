@@ -3,15 +3,25 @@
  *
  * New for the Damocles port. The built-in read-only agents don't hard-code a model; when nothing more
  * specific applies they fall back to the cheap model of the panel's CURRENT main provider:
- *   Anthropic main → PI_SMALL_FAST_ANTHROPIC (Haiku), OpenAI main → PI_SMALL_FAST_OPENAI (gpt-6-luna),
+ *   Anthropic main → PI_SMALL_FAST_ANTHROPIC (Haiku 5.5), OpenAI main → PI_SMALL_FAST_OPENAI (gpt-6-luna),
  *   a custom-provider main → that provider's designated cheap model (Step 4 — custom providers).
+ * The caller runs the result at `medium` thinking, which pi clamps per model.
  */
 
 import type { Model, Api } from '@earendil-works/pi-ai';
-import { DEFAULT_MODELS } from '../../../shared/types/constants';
+import type { SettingsStore } from '../../../platform/settings-store';
+import type { ExploreSettings } from '../../../shared/types/settings';
+import { DEFAULT_MODELS, migrateLegacyModelValue, supportedStoredEffort } from '../../../shared/types/constants';
+import { EXPLORE_EFFORT_SETTING, EXPLORE_MODEL_SETTING } from '../../../shared/explore-settings';
 import type { OpenAIAuthStatus } from '../openai-auth';
 import { resolvePiModel, PI_SMALL_FAST_ANTHROPIC, PI_SMALL_FAST_OPENAI, type ModelLookup } from '../pi-models';
 import { cheapModelValueForProvider } from '../custom-providers';
+
+/** The Explore setting, user-level (application scope, no folder): a retired id maps to its successor, and an effort the model does not support reads as unset. */
+export function readExploreSetting(settings: Pick<SettingsStore, 'get'>): ExploreSettings {
+  const model = migrateLegacyModelValue(settings.get<string>(EXPLORE_MODEL_SETTING, ''));
+  return { model, effort: supportedStoredEffort(model, settings.get<string>(EXPLORE_EFFORT_SETTING, '')) };
+}
 
 export interface CheapModelResolution {
   /** The curated/custom model value chosen. */

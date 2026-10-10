@@ -65,6 +65,8 @@ const MAX_PENDING_RASTERS = 16;
 const MAX_CRASHES_IN_WINDOW = 3;
 const CRASH_WINDOW_MS = 60_000;
 const TRANSPARENT = '#00000000';
+// net::ERR_ABORTED: another navigation replaced the one that failed, and that one loads instead.
+const ERR_ABORTED = -3;
 
 const ICONS: ReadonlySet<string> = new Set(OVERLAY_ICONS);
 const GLYPHS: ReadonlySet<string> = new Set([...TERMINAL_ICONS, ...TERMINAL_CUSTOM_ICONS]);
@@ -392,7 +394,21 @@ interface OpenRequest {
   readonly shown: (() => void) | undefined;
   readonly sentAt: number;
   cancelAckDeadline: (() => void) | undefined;
+  acknowledgedAt: number | undefined;
+  shownAt: number | undefined;
 }
+
+// A request made while the page loads, sent once it has.
+interface HeldRequest {
+  readonly request: OverlayRequest;
+  readonly returnFocus: WebContents | undefined;
+  readonly shown: (() => void) | undefined;
+  readonly resolve: (answer: OverlayAnswer) => void;
+  readonly reject: (err: Error) => void;
+}
+
+// none: no page, and none is loading (before the first load, or a page left dead)
+type PageState = 'none' | 'loading' | 'loaded';
 
 interface PendingRaster {
   readonly width: number;
@@ -415,10 +431,12 @@ export class OverlayHost {
   private readonly answering = new Set<Promise<unknown>>();
   // in the order they opened
   private open: OpenRequest[] = [];
+  // in the order they were made
+  private held: HeldRequest[] = [];
   // where keyboard focus returns when the last open popup closes; never the overlay itself
   private returnFocus: WebContents | undefined;
   private currentMode: OverlayMode = 'hidden';
-  private loaded = false;
+  private page: PageState = 'none';
   private crashes: number[] = [];
   private disposed = false;
   private readonly rasters = new Map<string, PendingRaster>();
@@ -426,8 +444,8 @@ export class OverlayHost {
   private readonly lateRasters = new Set<string>();
   // only the first late answer since the page loaded asks for a redraw, so a page that is always slow cannot loop
   private lateAnswered = false;
-  // The first acknowledgement since the page loaded is logged with its time: a cold first render is the slowest.
-  private coldAck = false;
+  // The first popup shown since the page loaded is logged with its times: a cold first render is the slowest.
+  private coldShow = false;
   private readonly onResize = (): void => this.applyMode();
 
   constructor(deps: OverlayHostDeps) {
@@ -452,12 +470,19 @@ export class OverlayHost {
     this.handle(OVERLAY_CHANNELS.getState, () => this.deps.state());
     this.on(OVERLAY_CHANNELS.ack, (requestId) => {
       const open = this.openById(requestId);
-      if (!open || open.cancelAckDeadline === undefined) return;
-      open.cancelAckDeadline();
+      if (!open || open.acknowledgedAt !== undefined) return;
+      open.cancelAckDeadline?.();
       open.cancelAckDeadline = undefined;
-      if (this.coldAck) {
-        this.coldAck = false;
-        this.deps.log(`[overlay] the first request since the page loaded (${open.request.kind}) was acknowledged in ${Date.now() - open.sentAt} ms of ${OVERLAY_ACK_TIMEOUT_MS}`);
+      open.acknowledgedAt = Date.now();
+    });
+    // Never deadlined: an acknowledged page is alive, and its first render can take seconds on a cold or starved renderer.
+    this.on(OVERLAY_CHANNELS.shown, (requestId) => {
+      const open = this.openById(requestId);
+      if (!open || open.acknowledgedAt === undefined || open.shownAt !== undefined) return;
+      open.shownAt = Date.now();
+      if (this.coldShow) {
+        this.coldShow = false;
+        this.deps.log(`[overlay] the first request since the page loaded (${open.request.kind}) was acknowledged in ${open.acknowledgedAt - open.sentAt} ms of ${OVERLAY_ACK_TIMEOUT_MS} and shown in ${open.shownAt - open.sentAt} ms`);
       }
       open.shown?.();
     });
@@ -493,24 +518,47 @@ export class OverlayHost {
     });
 
     const contents = this.view.webContents;
+    // A reload by any route commits a new document that holds none of the old page's popups or drawings.
+    contents.on('did-navigate', () => {
+      const reloaded = this.page === 'loaded';
+      this.page = 'loading';
+      if (!reloaded) return;
+      this.deps.log('[overlay] the page reloaded');
+      this.failAll(new Error('The overlay page reloaded'));
+      this.dropRasters();
+    });
     contents.on('did-finish-load', () => {
-      this.loaded = true;
-      this.coldAck = true;
+      this.page = 'loaded';
+      this.coldShow = true;
       this.lateRasters.clear();
       this.lateAnswered = false;
       this.deps.canRasterize();
+      const held = this.held;
+      this.held = [];
+      for (const entry of held) this.request(entry.request, entry.returnFocus, entry.shown).then(entry.resolve, entry.reject);
+    });
+    contents.on('did-fail-load', (_event, errorCode: number, _description, _url, isMainFrame: boolean) => {
+      if (!isMainFrame || errorCode === ERR_ABORTED || this.page !== 'loading') return;
+      this.page = 'none';
+      this.deps.log(`[overlay] the page did not load (${errorCode})`);
+      this.failHeld(new Error('The overlay page did not load'));
     });
     contents.on('render-process-gone', (_event, details) => {
-      this.loaded = false;
+      this.page = 'none';
       this.deps.log(`[overlay] renderer gone (${details.reason})`);
-      this.failAll(new Error('The overlay page stopped'));
+      const stopped = new Error('The overlay page stopped');
+      this.failAll(stopped);
       this.dropRasters();
       this.applyMode();
-      if (this.disposed || details.reason === 'clean-exit') return;
+      if (this.disposed || details.reason === 'clean-exit') {
+        this.failHeld(stopped);
+        return;
+      }
       const now = Date.now();
       this.crashes = [...this.crashes.filter((at) => now - at < CRASH_WINDOW_MS), now];
       if (this.crashes.length > MAX_CRASHES_IN_WINDOW) {
         this.deps.log(`[overlay] crashed ${this.crashes.length} times within ${CRASH_WINDOW_MS / 1000} s; not reloading it`);
+        this.failHeld(stopped);
         return;
       }
       this.load();
@@ -532,34 +580,37 @@ export class OverlayHost {
   }
 
   load(): void {
-    this.loaded = false;
+    this.page = 'loading';
     loadAppPage(this.view.webContents, OVERLAY_PAGE_URL).catch((err: unknown) => {
       this.deps.log(`[overlay] failed to load: ${err instanceof Error ? err.message : String(err)}`);
     });
   }
 
-  /** Resolves once the overlay page has loaded, at once when it already has; request() refuses until then. */
+  /** Resolves once the overlay page has loaded, at once when it has and is not reloading. */
   whenLoaded(): Promise<void> {
-    if (this.loaded) return Promise.resolve();
+    if (this.page === 'loaded') return Promise.resolve();
     return new Promise((resolve) => this.view.webContents.once('did-finish-load', () => resolve()));
   }
 
   /**
-   * Shows a validated popup and resolves with the user's answer. Rejects when the overlay is not loaded, does not
-   * acknowledge the request within OVERLAY_ACK_TIMEOUT_MS, or crashes; `shown` runs once the overlay acknowledges it.
-   * Focus returns to returnFocus once every open request has closed.
+   * Shows a validated popup and resolves with the user's answer; a request made while the page loads waits for it. Rejects
+   * when no page is loaded or loading, or the page misses the OVERLAY_ACK_TIMEOUT_MS acknowledgement, crashes, reloads or
+   * fails to load; `shown` runs once the overlay has rendered it. Focus returns to returnFocus once every open request has
+   * closed.
    */
   request(request: OverlayRequest, returnFocus: WebContents | undefined, shown?: () => void): Promise<OverlayAnswer> {
-    if (this.disposed || !this.loaded || this.view.webContents.isDestroyed() || this.view.webContents.isCrashed()) {
+    if (this.disposed || this.page === 'none' || this.view.webContents.isDestroyed()) {
       return Promise.reject(new Error('The overlay is not available'));
     }
+    if (this.page === 'loading') return this.hold(request, returnFocus, shown);
+    if (this.view.webContents.isCrashed()) return Promise.reject(new Error('The overlay is not available'));
     // Focus returns where it was before the first of the requests that are open together.
     if (this.open.length === 0) this.returnFocus = returnFocus === this.view.webContents ? undefined : returnFocus;
     if (request.kind !== 'message') {
       for (const previous of this.open.filter((entry) => entry.request.kind !== 'message')) this.settle(previous, { kind: 'dismissed' }, { keepFocus: true });
     }
     return new Promise<OverlayAnswer>((resolve, reject) => {
-      const open: OpenRequest = { id: randomUUID(), request, resolve, reject, shown, sentAt: Date.now(), cancelAckDeadline: undefined };
+      const open: OpenRequest = { id: randomUUID(), request, resolve, reject, shown, sentAt: Date.now(), cancelAckDeadline: undefined, acknowledgedAt: undefined, shownAt: undefined };
       open.cancelAckDeadline = tickDeadline(OVERLAY_ACK_TIMEOUT_MS, () => {
         if (!this.open.includes(open)) return;
         this.deps.log(`[overlay] the overlay did not acknowledge a ${request.kind} request within ${OVERLAY_ACK_TIMEOUT_MS} ms; hiding it`);
@@ -573,8 +624,11 @@ export class OverlayHost {
     });
   }
 
-  /** Its window is closing: every open request of `kind` closes in the page and settles as dismissed. */
+  /** Its window is closing: every open or held request of `kind` settles as dismissed, an open one closing in the page. */
   dismiss(kind: OverlayRequest['kind']): void {
+    const held = this.held.filter((entry) => entry.request.kind === kind);
+    this.held = this.held.filter((entry) => entry.request.kind !== kind);
+    for (const entry of held) entry.resolve({ kind: 'dismissed' });
     const dismissed = this.open.filter((entry) => entry.request.kind === kind);
     if (dismissed.length === 0) return;
     for (const open of dismissed) this.settle(open, { kind: 'dismissed' }, { keepFocus: true });
@@ -592,7 +646,7 @@ export class OverlayHost {
    * loaded, crashes, answers null or a malformed image, or misses RASTER_TIMEOUT_MS.
    */
   rasterize(art: RasterArt): Promise<Buffer | undefined> {
-    if (this.disposed || !this.loaded || this.view.webContents.isDestroyed() || this.view.webContents.isCrashed() || this.rasters.size >= MAX_PENDING_RASTERS) {
+    if (this.disposed || this.page !== 'loaded' || this.view.webContents.isDestroyed() || this.view.webContents.isCrashed() || this.rasters.size >= MAX_PENDING_RASTERS) {
       return Promise.resolve(undefined);
     }
     const id = randomUUID();
@@ -631,7 +685,9 @@ export class OverlayHost {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.failAll(new Error('The window closed'));
+    const closed = new Error('The window closed');
+    this.failAll(closed);
+    this.failHeld(closed);
     this.dropRasters();
     if (!this.deps.window.isDestroyed()) this.deps.window.removeListener('resize', this.onResize);
     const contents = this.view.webContents;
@@ -643,6 +699,24 @@ export class OverlayHost {
 
   private openById(requestId: unknown): OpenRequest | undefined {
     return this.open.find((entry) => entry.id === requestId);
+  }
+
+  // Held as they would be open: a later request dismisses every earlier one but a message dialog.
+  private hold(request: OverlayRequest, returnFocus: WebContents | undefined, shown: (() => void) | undefined): Promise<OverlayAnswer> {
+    if (request.kind !== 'message') {
+      const replaced = this.held.filter((entry) => entry.request.kind !== 'message');
+      this.held = this.held.filter((entry) => entry.request.kind === 'message');
+      for (const entry of replaced) entry.resolve({ kind: 'dismissed' });
+    }
+    return new Promise<OverlayAnswer>((resolve, reject) => {
+      this.held = [...this.held, { request, returnFocus, shown, resolve, reject }];
+    });
+  }
+
+  private failHeld(err: Error): void {
+    const failed = this.held;
+    this.held = [];
+    for (const entry of failed) entry.reject(err);
   }
 
   private settle(open: OpenRequest, answer: OverlayAnswer, options?: { readonly keepFocus: boolean }): void {
@@ -658,7 +732,7 @@ export class OverlayHost {
     open.resolve(answer);
   }
 
-  // A hung, crashed or closing overlay rejects every open request.
+  // A hung, crashed, reloaded or closing overlay rejects every open request.
   private failAll(err: Error): void {
     const failed = this.open;
     if (failed.length === 0) return;
@@ -714,7 +788,7 @@ export class OverlayHost {
 
   // Main's own overlay features (the settings modal) post and listen on the overlay page through these.
   send(channel: string, payload: unknown): void {
-    if (this.disposed || !this.loaded) return;
+    if (this.disposed || this.page !== 'loaded') return;
     const contents = this.view.webContents;
     if (contents.isDestroyed() || contents.isCrashed()) return;
     contents.send(channel, payload);

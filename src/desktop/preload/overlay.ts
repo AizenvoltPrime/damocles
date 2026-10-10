@@ -46,6 +46,9 @@ const api: DamoclesOverlayApi = {
   ack: (requestId) => {
     ipcRenderer.send(OVERLAY_CHANNELS.ack, requestId);
   },
+  shown: (requestId) => {
+    ipcRenderer.send(OVERLAY_CHANNELS.shown, requestId);
+  },
   answer: (requestId, answer) => {
     ipcRenderer.send(OVERLAY_CHANNELS.answer, requestId, answer);
   },

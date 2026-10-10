@@ -7,6 +7,7 @@ import { useSettingsStore } from '@/stores/useSettingsStore';
 import SettingsRow from '../SettingsRow.vue';
 import SettingSelect from '../controls/SettingSelect.vue';
 import SettingSwitch from '../controls/SettingSwitch.vue';
+import { UNSET_OPTION as UNSET } from '../model-options';
 import { useSettingWrite } from '../settings-writes';
 import { useToolGroupSwitch } from '../tool-groups';
 
@@ -15,9 +16,6 @@ const settingsStore = useSettingsStore();
 const { currentSettings, availableModels, activeModel } = storeToRefs(settingsStore);
 const write = useSettingWrite();
 const teamGroup = useToolGroupSwitch('team');
-
-// reka reserves '' for "no selection"; an unset role slot is '' (model) or null (effort) in the settings.
-const UNSET = '__default__';
 
 type TeamSettings = ExtensionSettings['team'];
 const ROLES: { role: TeamRole; id: string; model: keyof TeamSettings; effort: keyof TeamSettings }[] = [

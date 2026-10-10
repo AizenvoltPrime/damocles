@@ -17,6 +17,22 @@ export interface AuthInteractionOptions {
   manualCode?: (prompt: Extract<AuthPrompt, { type: "manual_code" }>) => Promise<string>;
 }
 
+// pi-ai's Anthropic login method ids (`ANTHROPIC_BROWSER_LOGIN_METHOD`, `ANTHROPIC_COPY_CODE_LOGIN_METHOD`), not exported.
+const ANTHROPIC_LOGIN_METHODS: ReadonlySet<string> = new Set(["browser", "copy_code"]);
+
+/**
+ * Answers only the select prompts this host knows. pi's Anthropic login asks browser or copy code, and its browser
+ * method still accepts a pasted redirect URL, so that choice never reaches the user; any other select would need the
+ * user, and picking for them could sign in to the wrong account.
+ */
+function answerSelect(p: Extract<AuthPrompt, { type: "select" }>): string {
+  const ids = new Set(p.options.map((option) => option.id));
+  if (ids.size === p.options.length && ids.size === ANTHROPIC_LOGIN_METHODS.size && [...ids].every((id) => ANTHROPIC_LOGIN_METHODS.has(id))) {
+    return "browser";
+  }
+  throw new Error(`Sign-in asked a question Damocles cannot answer: ${JSON.stringify(p.message)}`);
+}
+
 /**
  * Build the pi `AuthInteraction` that drives OAuth/api-key logins through the host UI.
  *
@@ -56,13 +72,7 @@ export function buildAuthInteraction(opts: AuthInteractionOptions): AuthInteract
       }
     },
     prompt: async (p) => {
-      if (p.type === "select") {
-        // No Damocles login flow sends a select prompt. Throwing would abort an otherwise-answerable
-        // flow, so return the first option id: pi orders options default-first.
-        const first = p.options[0];
-        if (first === undefined) throw new Error("Auth select prompt had no options");
-        return first.id;
-      }
+      if (p.type === "select") return answerSelect(p);
       if (p.type === "manual_code" && opts.manualCode) return opts.manualCode(p);
       const dismiss = new AbortController();
       const onAbort = (): void => dismiss.abort();

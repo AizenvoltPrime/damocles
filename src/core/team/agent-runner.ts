@@ -1,19 +1,24 @@
 import * as crypto from 'crypto';
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
-import type { AssistantMessageEvent } from '@earendil-works/pi-ai';
+import type { AssistantMessage, AssistantMessageEvent } from '@earendil-works/pi-ai';
 import type { AgentRunConfig, AgentResult, UndeliveredMessage } from './types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { ImageBlock } from '../../shared/types/content';
+import type { ToolAbandonReason } from '../../shared/types/session';
 import { LIVE_OUTPUT_TOOLS } from '../../shared/tool-names';
 import { STEER_INSTRUCTION_PREFIX } from '../../shared/steer';
 import { installTurnDecider, TEAM_TERMINAL_HOOK } from '../pi-session/finish-turn';
 import { runUsageMeter, sameAgentUsage } from '../pi-session/session-usage';
 import { emptyAgentUsage } from '../../shared/usage-accounting';
 import { joinResultText } from '../pi-session/tool-result-text';
-import { mapPiToolName } from '../pi-session/tool-normalization';
+import { mapPiToolName, normalizeToolInput } from '../pi-session/tool-normalization';
 import { extractImages } from '../pi-session/branch-text';
 import { ToolOutputCoalescer } from '../pi-session/tool-output-coalescer';
-import { assistantContentBlocks, toolResultBlock, type PiAssistantBlock } from './content-blocks';
+import { NestedCallFailures, failedCallError } from '../pi-session/nested-call-failures';
+import { abandonReasonOf } from '../pi-session/abandoned-tool-calls';
+import { turnStoppedToolCallIds, windDownRecorded } from '../pi-session/session-store/turn-stopped';
+import { failureOutcomeText } from '../pi-session/subagents/status-note';
+import { assistantContentBlocks, skippedCallIds, toolResultBlock, type PiAssistantBlock } from './content-blocks';
 
 /** Messages queued for one run. `onArrival` is a no-op until the session is open to deliver them. */
 interface RunInbox {
@@ -43,6 +48,31 @@ function withSteeredImages(texts: readonly string[], steered: RunInbox['steeredI
     const images = index === -1 ? undefined : unclaimed.splice(index, 1)[0]!.images;
     return { text, echoed: true, ...(images ? { images } : {}) };
   });
+}
+
+/** The assistant message streaming now: its card id, and whether any of it reached the card. */
+interface CurrentCall {
+  id: string;
+  rendered: boolean;
+  /** The latest sealed assistant message, the ids of its calls pi reported a result for, and those an abort settled before they ran. */
+  batch: { messageId: string; content: ReadonlyArray<PiAssistantBlock>; answered: Set<string>; unexecuted: Set<string> } | null;
+  /** The calls this session's turn-stopped entries name. */
+  stopped: Set<string>;
+  /** An error stop, sealed at its `turn_end` once the wind-down record decides it. */
+  undecidedError: AssistantMessage | null;
+}
+
+/** What `handleSessionEvent` reports a member session's events to. */
+interface SessionEventCallbacks {
+  onToolUse: (name: string) => void;
+  onAssistantText: (text: string) => void;
+  /** Called on each assistant `message_end` and `compaction_end`: the points pi's session totals change. */
+  onUsage: () => void;
+  call: CurrentCall;
+  /** The session's branch, whose turn-stopped record tells an abort's wind-down error from a failure (`windDownRecorded`). */
+  branch: () => ReturnType<AgentSession['sessionManager']['getBranch']>;
+  /** Each model call's end: its error, if it failed, the card id of what it rendered, and whether it was an abort's wind-down. */
+  onCallEnd: (error: string | undefined, shownId: string | undefined, windDown: boolean) => void;
 }
 
 /** Tools whose whole point is that the agent stops here, so the engine ends the turn on their result. */
@@ -157,6 +187,22 @@ export class AgentRunner {
     let toolCallCount = 0;
     let finalResponse: string | null = null;
     let status: 'completed' | 'failed' | 'cancelled' = 'completed';
+    /** The error the latest model call ended on; a call pi retries is answered by a later one, which clears it. */
+    let callError: string | undefined;
+    let failure: string | null = null;
+    const call: CurrentCall = { id: '', rendered: false, batch: null, stopped: new Set(), undecidedError: null };
+    const failures = new NestedCallFailures({
+      show: (message) => config.onMessage({ type: 'error', message, parentToolUseId: config.agentId }),
+      withdraw: (messageId) => config.onMessage({ type: 'assistantRetracted', messageId, parentToolUseId: config.agentId }),
+      retrying: (attempt, maxAttempts) => config.onMessage({ type: 'statusUpdate', status: 'retrying', attempt, maxAttempts, parentToolUseId: config.agentId }),
+      retryEnded: () => config.onMessage({ type: 'statusUpdate', status: 'ready', parentToolUseId: config.agentId }),
+    });
+    // pi retries a failed call inside `prompt()`, so once it resolves the latest call's error is final.
+    const endedOnFailure = (): boolean => {
+      if (callError === undefined || config.abortSignal.aborted) return false;
+      failure = callError;
+      return true;
+    };
     // A reopened session's stats include the spend of its earlier runs, which were already counted.
     const runUsage = runUsageMeter(session);
     let usage = emptyAgentUsage();
@@ -209,6 +255,7 @@ export class AgentRunner {
         const index = inbox.steeredIntoPi.findIndex((s) => s.text === text);
         if (text && index !== -1) inbox.steeredIntoPi.splice(index, 1);
       }
+      failures.observe(event);
       this.handleSessionEvent(event, config, outputCoalescer, {
         onToolUse: (name) => {
           toolCallCount++;
@@ -216,6 +263,12 @@ export class AgentRunner {
         },
         onAssistantText: (text) => { finalResponse = text; },
         onUsage: publishUsage,
+        call,
+        branch: () => session.sessionManager.getBranch(),
+        onCallEnd: (error, shownId, windDown) => {
+          callError = error;
+          if (error !== undefined && !windDown) failures.hold(error, shownId);
+        },
       });
     });
 
@@ -274,7 +327,7 @@ export class AgentRunner {
 
       // Event-driven wait/re-prompt loop — no timers. After each turn: re-prompt with the next pending
       // message; else, if the agent must keep waiting, idle until a message arrives or it must abort.
-      while (!config.abortSignal.aborted) {
+      while (!config.abortSignal.aborted && !endedOnFailure()) {
         if (!parked) {
           // Reclaims a message pi never delivered because the run ended on an abort or a provider error,
           // the one path where pi discards the turn decision. It is already echoed, hence `echoed: true`.
@@ -311,13 +364,8 @@ export class AgentRunner {
       }
       if (config.abortSignal.aborted) status = 'cancelled';
     } catch (err) {
-      if (config.abortSignal.aborted) {
-        status = 'cancelled';
-      } else {
-        status = 'failed';
-        const errMsg = err instanceof Error ? err.message : String(err);
-        config.messageBus.broadcast('system', `Agent "${config.name}" failed: ${errMsg}`);
-      }
+      if (config.abortSignal.aborted) status = 'cancelled';
+      else failure = err instanceof Error ? err.message : String(err);
     } finally {
       waitResolve = null;
       release();
@@ -328,6 +376,10 @@ export class AgentRunner {
     }
     // Settle: picks up spend that raised no event, such as a cache warm between turns.
     publishUsage();
+    if (failure !== null) {
+      status = 'failed';
+      config.messageBus.broadcast('system', `Agent "${config.name}" failed: ${failure}`);
+    }
 
     // The reported summary is the agent's own sign-off, so it outranks trailing assistant text, which
     // the turn-ending hook means the agent no longer produces.
@@ -339,6 +391,9 @@ export class AgentRunner {
       if (last) finalResponse = last;
     }
 
+    if (failure !== null) {
+      return { agentId: config.agentId, status, finalResponse: failureOutcomeText(failure, finalResponse), error: failure, toolCallCount, ...usage };
+    }
     return { agentId: config.agentId, status, finalResponse, toolCallCount, ...usage };
   }
 
@@ -347,27 +402,52 @@ export class AgentRunner {
     event: AgentSessionEvent,
     config: AgentRunConfig,
     outputCoalescer: ToolOutputCoalescer<ExtensionToWebviewMessage>,
-    cb: {
-      onToolUse: (name: string) => void;
-      onAssistantText: (text: string) => void;
-      /** Called on each assistant `message_end` and `compaction_end`: the points pi's session totals change. */
-      onUsage: () => void;
-    },
+    cb: SessionEventCallbacks,
   ): void {
     switch (event.type) {
+      case 'message_start':
+        if (event.message.role === 'assistant') {
+          cb.call.id = crypto.randomUUID();
+          cb.call.rendered = false;
+        }
+        break;
       case 'message_update':
-        this.handleAssistantDelta(event.assistantMessageEvent, config);
+        if (this.handleAssistantDelta(event.assistantMessageEvent, config)) cb.call.rendered = true;
         break;
       case 'message_end':
         if (event.message.role === 'assistant') {
-          this.emitAssistant(event.message.content, config, cb);
+          // pi reports a failed call only here; whether it was an abort's wind-down is known at its turn_end.
+          if (event.message.stopReason === 'error') cb.call.undecidedError = event.message;
+          else this.endCall(event.message, config, cb, false);
           // pi persists the message after notifying listeners, so its stats include it only from the next microtask.
           queueMicrotask(cb.onUsage);
         }
         break;
+      // pi emits it after every error stop (`agent-loop.js:141-152`, `agent.js:375-378` in pi-agent-core 1.1.0), once it
+      // committed the record `registerWindDownErrorRecord` returns at that boundary (`agent-session.js:515`, `:636-641`).
+      case 'turn_end': {
+        const failed = cb.call.undecidedError;
+        if (!failed) break;
+        cb.call.undecidedError = null;
+        this.endCall(failed, config, cb, windDownRecorded(cb.branch(), failed));
+        break;
+      }
       case 'compaction_end':
         cb.onUsage();
         break;
+      // `registerAbortSettledCallRecord` appends it before listeners get the call's `tool_execution_end`.
+      case 'entry_appended':
+        for (const id of turnStoppedToolCallIds(event.entry)) cb.call.stopped.add(id);
+        break;
+      // A call counts when pi starts it: a blocked call is started, a call of a failed, aborted or cut-short batch is not.
+      case 'tool_execution_start': {
+        const toolName = mapPiToolName(event.toolName);
+        cb.onToolUse(toolName);
+        // normalizeToolInput switches on the raw pi name.
+        const toolInput = normalizeToolInput(event.toolName, (event.args ?? {}) as Record<string, unknown>);
+        config.onMessage({ type: 'teamAgentToolCall', teamId: config.teamId, agentId: config.agentId, toolName, toolInput });
+        break;
+      }
       case 'tool_execution_update': {
         // The team path has no elapsed-time progress message, so a non-live tool emits nothing at all.
         if (!LIVE_OUTPUT_TOOLS.has(mapPiToolName(event.toolName))) break;
@@ -390,6 +470,12 @@ export class AgentRunner {
       case 'tool_execution_end': {
         // Cancel before anything else: a pending partial landing after the result would resurrect stale output.
         outputCoalescer.cancel(event.toolCallId);
+        cb.call.batch?.answered.add(event.toolCallId);
+        if (cb.call.stopped.has(event.toolCallId) && event.durationMs === undefined && cb.call.batch) {
+          cb.call.batch.unexecuted.add(event.toolCallId);
+          this.resealStopped(cb.call.batch, cb.call.batch.unexecuted, config);
+          break;
+        }
         // The team path has no `toolMetadata` message, so the result's details ride on this one or reach the card never.
         const block = toolResultBlock(event.toolCallId, event.result, event.isError === true);
         config.onMessage({
@@ -408,44 +494,87 @@ export class AgentRunner {
     }
   }
 
+  /**
+   * Seal one model call's message and report its end. pi ends its turn before running any tool a failed or aborted call
+   * named; `windDown` marks an error stop the turn-stopped record names, handled as an aborted stop.
+   */
+  private endCall(
+    message: AssistantMessage,
+    config: AgentRunConfig,
+    cb: SessionEventCallbacks,
+    windDown: boolean,
+  ): void {
+    const messageId = cb.call.id || crypto.randomUUID();
+    cb.call.id = '';
+    const failed = message.stopReason === 'error';
+    const abandoned = windDown ? 'stopped' : abandonReasonOf(message.stopReason);
+    if (abandoned === 'stopped' && cb.call.batch) this.resealSkipped(cb.call.batch, config);
+    const sealed = this.emitAssistant(message.content, config, cb, messageId, failed, abandoned);
+    cb.call.batch = sealed ? { messageId, content: message.content, answered: new Set(), unexecuted: new Set() } : null;
+    cb.onCallEnd(failed ? failedCallError(message.errorMessage) : undefined, sealed || cb.call.rendered ? messageId : undefined, windDown);
+  }
+
   /** Stream text/thinking deltas into the agent card via the existing `teamAgentStreamDelta` message. */
   private handleAssistantDelta(
     ame: AssistantMessageEvent,
     config: AgentRunConfig,
-  ): void {
+  ): boolean {
     if (ame.type === 'text_delta') {
       config.onMessage({ type: 'teamAgentStreamDelta', teamId: config.teamId, agentId: config.agentId, deltaType: 'text', text: ame.delta });
-    } else if (ame.type === 'thinking_delta') {
-      config.onMessage({ type: 'teamAgentStreamDelta', teamId: config.teamId, agentId: config.agentId, deltaType: 'thinking', text: ame.delta });
+      return true;
     }
+    if (ame.type === 'thinking_delta') {
+      config.onMessage({ type: 'teamAgentStreamDelta', teamId: config.teamId, agentId: config.agentId, deltaType: 'thinking', text: ame.delta });
+      return true;
+    }
+    return false;
   }
 
-  /** Seal one completed assistant message: emit `teamAgentAssistant` and count tool uses. */
+  /**
+   * Seal one completed assistant message: emit `teamAgentAssistant`. A failed call's text is not the agent's
+   * response; the tool calls of a failed or aborted call never ran, so they show on the card marked not executed.
+   */
   private emitAssistant(
     content: ReadonlyArray<PiAssistantBlock> | undefined,
     config: AgentRunConfig,
-    cb: {
-      onToolUse: (name: string) => void;
-      onAssistantText: (text: string) => void;
-    },
-  ): void {
-    if (!content) return;
+    cb: { onAssistantText: (text: string) => void },
+    messageId: string,
+    failed: boolean,
+    abandoned: ToolAbandonReason | undefined,
+  ): boolean {
+    if (!content) return false;
 
-    const blocks = assistantContentBlocks(content);
-    for (const b of blocks) {
-      if (b.type === 'text') {
-        cb.onAssistantText(b.text);
-      } else if (b.type === 'tool_use') {
-        cb.onToolUse(b.name);
-        config.onMessage({ type: 'teamAgentToolCall', teamId: config.teamId, agentId: config.agentId, toolName: b.name, toolInput: b.input as Record<string, unknown> });
-      }
+    const blocks = assistantContentBlocks(content, abandoned);
+    for (const b of failed ? [] : blocks) {
+      if (b.type === 'text') cb.onAssistantText(b.text);
     }
-    if (blocks.length === 0) return;
+    if (blocks.length === 0) return false;
 
     config.onMessage({
       type: 'teamAgentAssistant', teamId: config.teamId, agentId: config.agentId,
-      messageId: crypto.randomUUID(),
+      messageId,
       content: blocks,
+      timestamp: Date.now(),
+    });
+    return true;
+  }
+
+  /** Re-seal a batch the following aborted call cut short, once its skipped calls are known. */
+  private resealSkipped(batch: NonNullable<CurrentCall['batch']>, config: AgentRunConfig): void {
+    const skipped = skippedCallIds(batch.content, (toolCallId) => batch.answered.has(toolCallId));
+    if (skipped.size === 0) return;
+    this.resealStopped(batch, new Set([...skipped, ...batch.unexecuted]), config);
+  }
+
+  /**
+   * Re-send a sealed message under its id with the calls an abort cut short `stopped`: the blocks
+   * `memberHistoryMessages` builds for it, so the store's merge matches the live copy.
+   */
+  private resealStopped(batch: NonNullable<CurrentCall['batch']>, stopped: ReadonlySet<string>, config: AgentRunConfig): void {
+    config.onMessage({
+      type: 'teamAgentAssistant', teamId: config.teamId, agentId: config.agentId,
+      messageId: batch.messageId,
+      content: assistantContentBlocks(batch.content, undefined, stopped),
       timestamp: Date.now(),
     });
   }

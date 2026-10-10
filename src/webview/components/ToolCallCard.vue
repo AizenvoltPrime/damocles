@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, type Component } from "vue";
 import { useI18n } from "vue-i18n";
-import type { ToolCall } from "@shared/types/session";
+import type { ToolAbandonReason, ToolCall } from "@shared/types/session";
 import { TOOL_STRUCTURED_OUTPUT, TOOL_GENERATE_IMAGE, LIVE_OUTPUT_TOOLS } from "@shared/tool-names";
 import { TEAM_TOOL_PRESENTATION } from "@shared/team-tool-labels";
 import { useDiffStore } from "@/stores/useDiffStore";
@@ -348,8 +348,17 @@ const outputSummary = computed(() => {
 
 const hasPeek = computed(() => !isFileOperation.value && !isStructuredOutput.value && Boolean(inputSummary.value || outputSummary.value));
 
+const ABANDONED_DESCRIPTION_KEYS: Record<ToolAbandonReason, string> = {
+  stopped: "toolCall.abandonedStopped",
+  failed: "toolCall.abandonedFailed",
+};
+const abandonedDescription = computed(() => {
+  const reason = props.toolCall.abandonReason;
+  return reason ? t(ABANDONED_DESCRIPTION_KEYS[reason]) : undefined;
+});
+
 const statusNote = computed(() => {
-  if (isAbandoned.value) return { icon: Ban, title: t('toolCall.notExecuted'), description: t('toolCall.changedCourse') };
+  if (isAbandoned.value) return { icon: Ban, title: t('toolCall.notExecuted'), description: abandonedDescription.value };
   if (isCancelled.value) return { icon: Ban, title: t('toolCall.cancelled'), description: t('toolCall.cancelledDescription') };
   if (isUnrecorded.value) return { icon: CircleQuestionMark, title: t('toolCall.outcomeUnrecorded'), description: t('toolCall.outcomeUnrecordedDescription') };
   return null;
@@ -519,7 +528,7 @@ const statusNote = computed(() => {
         class="size-3.25 mt-px flex-none text-(--d-faint)"
         aria-hidden="true"
       />
-      <span><span class="font-semibold text-(--d-text)">{{ statusNote.title }}</span> · {{ statusNote.description }}</span>
+      <span><span class="font-semibold text-(--d-text)">{{ statusNote.title }}</span><template v-if="statusNote.description"> · {{ statusNote.description }}</template></span>
       </div>
 
     <div

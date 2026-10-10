@@ -6,6 +6,7 @@ import type { ToolCall } from '@shared/types/session';
 import { CANCELLED_TOOL_DETAIL_KEY } from '@shared/types/session';
 import { TEAM_TOOL_LABELS } from '@shared/team-tool-labels';
 import ToolCallCard from '../ToolCallCard.vue';
+import { convertHistoryTools } from '@/composables/message-handler/utils';
 import ToolOverlay from '../ToolOverlay.vue';
 import SkillToolCard from '../SkillToolCard.vue';
 import LoadingSpinner from '../LoadingSpinner.vue';
@@ -79,6 +80,25 @@ describe('a cancelled tool call', () => {
   it('does not reuse the abandoned card copy', () => {
     expect(card(cancelled).text()).not.toContain('Not executed');
     expect(card({ ...cancelled, status: 'abandoned' }).text()).toContain('Not executed');
+  });
+});
+
+describe('a tool call that never ran', () => {
+  const abandoned: ToolCall = { id: 't-1', name: 'Read', input: { file_path: '/a.ts' }, status: 'abandoned' };
+
+  it('says the model call that requested it failed when that is why it never ran', () => {
+    const text = card({ ...abandoned, abandonReason: 'failed' }).text();
+
+    expect(text).toContain(i18n.global.t('toolCall.notExecuted'));
+    expect(text).toContain(i18n.global.t('toolCall.abandonedFailed'));
+    expect(text).not.toContain(i18n.global.t('toolCall.abandonedStopped'));
+  });
+
+  it('says the turn was stopped when that is why it never finished', () => {
+    const text = card({ ...abandoned, abandonReason: 'stopped' }).text();
+
+    expect(text).toContain(i18n.global.t('toolCall.abandonedStopped'));
+    expect(text).not.toContain(i18n.global.t('toolCall.abandonedFailed'));
   });
 });
 
@@ -391,5 +411,17 @@ describe('the card frame', () => {
     for (const status of ['pending', 'running', 'awaiting_approval'] as const) {
       expect(card({ id: 't-1', name: 'Bash', input: { command: 'ls' }, status, liveOutput: 'x' }).html()).not.toContain('animate-[');
     }
+  });
+});
+
+describe('a call replayed from history', () => {
+  const replay = (durationMs?: number): ToolCall => convertHistoryTools([{ id: 't-1', name: 'Bash', input: { command: 'ls' }, result: 'ok', ...(durationMs === undefined ? {} : { durationMs }) }])![0]!;
+
+  it('shows the execution time pi recorded', () => {
+    expect(card(replay(1234)).text()).toContain('1.2s');
+  });
+
+  it('shows no time for a session recorded before pi kept one', () => {
+    expect(card(replay()).text()).not.toMatch(/\d(ms|\.\ds)\b/);
   });
 });

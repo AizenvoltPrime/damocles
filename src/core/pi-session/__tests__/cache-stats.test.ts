@@ -11,7 +11,7 @@ import {
 } from '../cache-stats';
 
 /**
- * Unit tests for the port of pi's `dist/core/cache-stats.js` @0.99.2. They pin the exact
+ * Unit tests for the port of pi's `dist/core/cache-stats.js` @1.1.0. They pin the exact
  * detection thresholds and reset semantics: TTL-scale idle gaps, the 1024-token noise floor,
  * compaction/branch_summary/context_edit baseline resets, the sticky `reportedCache` behaviour on providers
  * that never report cache activity, cache-read-only total misses, the missed-cost math (paid rate

@@ -426,6 +426,7 @@ describe('context image pruning registration', () => {
 
   const turnEnd = (contextEntries: unknown[]) => ({
     type: 'turn_end',
+    message: { role: 'assistant', content: [], stopReason: 'toolUse' },
     entries: [],
     continue: false,
     context: { contextEntries, contextMessages: [], llmMessages: [], pendingMessages: [], canContinue: true },
@@ -485,6 +486,27 @@ describe('context image pruning registration', () => {
     const pi = fakePiOrdered();
     createDamoclesExtensionFactory(reader(), noCheckpoints())(pi.pi as never);
     expect(pi.handlersFor('context')).toHaveLength(0);
+  });
+
+  // A request setup the aborted run signal rejects ends on an error stop (pi-ai lazy.js:41-44), whatever aborted the run.
+  it('records a wind-down error at turn_end for any session, keeping the pruning drafts', async () => {
+    const pi = fakePiOrdered();
+    createDamoclesExtensionFactory(reader(), noCheckpoints())(pi.pi as never);
+    const run = new AbortController();
+    run.abort();
+    const windDown = { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'This operation was aborted' };
+    const ctx = { sessionManager: { getSessionId: () => 'no-panel' }, signal: run.signal, model: undefined };
+
+    // pi hands each handler the drafts so far and keeps what the last returns (runner.js emitBoundary).
+    let event: Record<string, unknown> = { ...turnEnd(projected(13)), message: windDown };
+    for (const h of pi.handlersFor('turn_end')) {
+      const result = (await h(event, ctx)) as { entries?: unknown[] } | undefined;
+      if (result?.entries) event = { ...event, entries: result.entries };
+    }
+
+    const drafts = event['entries'] as Array<{ type: string; customType?: string; data?: unknown }>;
+    expect(drafts.filter((d) => d.type === 'context_edit')).toHaveLength(6);
+    expect(drafts.filter((d) => d.type === 'custom')).toEqual([{ type: 'custom', customType: 'damocles-turn-stopped', data: { toolCallIds: [], entryIds: ['a1'] } }]);
   });
 
   it('fails soft: a pruning error leaves the turn running', async () => {

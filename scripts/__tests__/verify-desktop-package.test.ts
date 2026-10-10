@@ -210,6 +210,7 @@ describe('verifyPackage', () => {
       'dist/formatter-host.js',
       'dist/pty-host.js',
       'dist/quick-open-worker.js',
+      'dist/watch-worker.js',
       'resources/grammars/tree-sitter-go.wasm',
       ...SHELL_INTEGRATION_FILES.map((file) => `resources/shell-integration/${file}`),
       'python/damocles_voice_sidecar/damocles_voice_sidecar/__main__.py',

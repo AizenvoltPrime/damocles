@@ -51,6 +51,14 @@ describe('ToolOverlay actions', () => {
     expect(posted).toEqual([{ type: 'openFile', filePath: 'src/app.ts', line: 41 }]);
   });
 
+  it('marks the output of a stopped call neither successful nor failed', () => {
+    const wrapper = overlay({ id: 't-3', name: 'Bash', input: { command: 'sleep 20' }, status: 'cancelled', result: 'Command aborted', isError: true });
+    const response = wrapper.findAll('button').find((b) => b.text().startsWith(i18n.global.t('toolOverlay.response')));
+
+    expect(response?.find('svg.lucide-ban').exists()).toBe(true);
+    expect(response?.find('svg.lucide-circle-check').exists()).toBe(false);
+  });
+
   it('offers no Open file for a tool that names no file', () => {
     const wrapper = overlay({ id: 't-2', name: 'Bash', input: { command: 'ls' }, status: 'completed', result: 'a' });
 

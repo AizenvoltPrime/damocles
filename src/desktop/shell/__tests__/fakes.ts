@@ -372,6 +372,7 @@ export function fakeOverlayApi(): FakeOverlayApi {
     onRequest: vi.fn((listener) => { requestListeners.add(listener); return () => requestListeners.delete(listener); }),
     onCancel: vi.fn((listener) => { cancelListeners.add(listener); return () => cancelListeners.delete(listener); }),
     ack: vi.fn(),
+    shown: vi.fn(),
     answer: vi.fn(),
     onToast: vi.fn((listener) => { toastListeners.add(listener); return () => toastListeners.delete(listener); }),
     onToastDismiss: vi.fn((listener) => { dismissListeners.add(listener); return () => dismissListeners.delete(listener); }),

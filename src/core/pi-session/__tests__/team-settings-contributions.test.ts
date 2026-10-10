@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_MODELS, TEAM_EFFORT_LEVELS } from '../../../shared/types/constants';
+import { readContributedConfiguration } from '../../config/contributed-configuration';
+import { MEMORY_JUDGE_CLASSIFIERS } from '../../../shared/memory-judge';
 
 /**
  * Static-JSON ⟷ code drift guard. The six `damocles.team.*` VS Code contributions in package.json
@@ -12,7 +14,7 @@ import { DEFAULT_MODELS, TEAM_EFFORT_LEVELS } from '../../../shared/types/consta
  */
 const packageJsonUrl = new URL('../../../../package.json', import.meta.url);
 const pkg = JSON.parse(readFileSync(fileURLToPath(packageJsonUrl), 'utf8')) as {
-  contributes: { configuration: { properties: Record<string, { enum?: string[]; enumItemLabels?: string[] }> } };
+  contributes: { configuration: { properties: Record<string, { enum?: string[]; enumItemLabels?: string[]; scope?: string }> } };
 };
 const properties = pkg.contributes.configuration.properties;
 
@@ -55,4 +57,57 @@ describe('team role settings contributions — enum sync guard', () => {
       expect(properties[key]!.enum).toEqual(EFFORT_VALUES);
     });
   }
+});
+
+describe('background settings contributions: enum sync guard', () => {
+  it('damocles.background.model enum and labels equal Automatic plus every DEFAULT_MODELS entry', () => {
+    expect(properties['damocles.background.model']!.enum).toEqual(MODEL_VALUES);
+    expect(properties['damocles.background.model']!.enumItemLabels).toEqual(['%configuration.background.modelAutomatic%', ...DEFAULT_MODELS.map((m) => m.displayName)]);
+  });
+
+  it("damocles.background.effort enum equals ['', ...TEAM_EFFORT_LEVELS]", () => {
+    expect(properties['damocles.background.effort']!.enum).toEqual(EFFORT_VALUES);
+  });
+
+  // Memory spans workspaces, so a project file must not pick the model it runs on.
+  it('declares both keys application scope, which the desktop store reads from user settings only', () => {
+    const userOnly = readContributedConfiguration(fileURLToPath(new URL('../../../../', import.meta.url))).userOnlyKeys;
+    for (const key of ['damocles.background.model', 'damocles.background.effort']) {
+      expect(properties[key]!.scope).toBe('application');
+      expect(userOnly).toContain(key);
+    }
+  });
+});
+
+describe('memory judge settings contributions: enum sync guard', () => {
+  it('damocles.memory.judge enum and labels equal Automatic, the classifier choices and every DEFAULT_MODELS entry', () => {
+    const classifiers = MEMORY_JUDGE_CLASSIFIERS.map((entry) => entry.choice);
+    expect(properties['damocles.memory.judge']!.enum).toEqual(['', ...classifiers, ...DEFAULT_MODELS.map((m) => m.value)]);
+    expect(properties['damocles.memory.judge']!.enumItemLabels).toEqual([
+      '%configuration.background.modelAutomatic%',
+      'Jev (TypeSafe)',
+      'Jev (OpenRouter)',
+      'GPT-6 Luna (Decisions API)',
+      ...DEFAULT_MODELS.map((m) => m.displayName),
+    ]);
+  });
+
+  // One stored value must name one judge, so no classifier choice may equal a catalog model id.
+  it('keeps every classifier choice distinct from every catalog model id', () => {
+    const models = new Set(DEFAULT_MODELS.map((m) => m.value));
+    for (const { choice } of MEMORY_JUDGE_CLASSIFIERS) expect(models.has(choice), choice).toBe(false);
+  });
+
+  it("damocles.memory.judgeEffort enum equals ['', ...TEAM_EFFORT_LEVELS]", () => {
+    expect(properties['damocles.memory.judgeEffort']!.enum).toEqual(EFFORT_VALUES);
+  });
+
+  // Memory spans workspaces, so a project file must not pick its judge.
+  it('declares both keys application scope, which the desktop store reads from user settings only', () => {
+    const userOnly = readContributedConfiguration(fileURLToPath(new URL('../../../../', import.meta.url))).userOnlyKeys;
+    for (const key of ['damocles.memory.judge', 'damocles.memory.judgeEffort']) {
+      expect(properties[key]!.scope).toBe('application');
+      expect(userOnly).toContain(key);
+    }
+  });
 });

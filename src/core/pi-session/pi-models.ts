@@ -13,14 +13,14 @@ export { mapPiToolName, PI_TOOL_NAME_MAP, normalizeToolInput, toolCategory } fro
  * Haiku-class model on Anthropic, GPT-6 Luna on OpenAI. Both resolve through
  * `resolvePiModel` to their canonical provider.
  */
-export const PI_SMALL_FAST_ANTHROPIC = 'claude-haiku-4-5-20251001';
+export const PI_SMALL_FAST_ANTHROPIC = 'claude-haiku-5-5';
 export const PI_SMALL_FAST_OPENAI = 'gpt-6-luna';
 
 /**
  * Damocles effort levels → pi thinking levels. pi gained a native `max` level in 0.80.6 (above
  * `xhigh`), so `max` now passes through directly. `ultracode` is Damocles' own top tier with no pi
  * analogue, so it maps to pi's highest (`max`). pi clamps per-model (`clampThinkingLevel`), so a model
- * without native `max` support (e.g. Haiku) degrades gracefully to its top level — never an error.
+ * without native `max` support (e.g. Step 5 Preview) degrades gracefully to its top level — never an error.
  */
 const EFFORT_TO_PI_THINKING: Record<EffortLevel, ThinkingLevel> = {
   none: 'off',

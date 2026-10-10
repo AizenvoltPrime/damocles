@@ -6,8 +6,11 @@ import type { PanelHost } from "../../../../platform/window-service";
 import type { ExtensionSettings, PermissionMode, AutoCompactConfig, CacheWarmingMode, EffortLevel, TeamRoleSettings } from "../../../../shared/types/settings";
 import type { PostMessageFn } from "../types";
 import { updateConfigAtEffectiveScope, assertEffortSupported, coerceEffortForModel, type SettingWrite } from "../utils";
-import { migrateLegacyModelValue, migrateLegacyEffortValue, parseEffortLevel, parseCacheWarmingMode, DEFAULT_MODELS, DEFAULT_FALLBACK_MODEL } from "../../../../shared/types/constants";
+import { migrateLegacyModelValue, migrateLegacyEffortValue, parseEffortLevel, parseCacheWarmingMode, supportedStoredEffort, effortByModelIds, DEFAULT_MODELS, DEFAULT_FALLBACK_MODEL } from "../../../../shared/types/constants";
 import type { TeamRole } from "../../../pi-session/team-model-resolution";
+import { BACKGROUND_EFFORT_SETTING, BACKGROUND_MODEL_SETTING } from "../../../pi-session/subcall-model";
+import { MEMORY_JUDGE_EFFORT_SETTING, MEMORY_JUDGE_SETTING, isKnownMemoryJudgeChoice } from "../../../../shared/memory-judge";
+import { readExploreSetting } from "../../../pi-session/subagents/cheap-model";
 import type { SettingSource } from "../../../../shared/types/messages";
 import { readContributedConfiguration } from "../../../config/contributed-configuration";
 import { CHAT_SETTING_KEYS } from "../../../config/chat-settings";
@@ -85,6 +88,12 @@ export class ConfigManager {
       reviewerEffort: teamEfforts.reviewer,
     };
 
+    // Application scope: read with no folder, since a project file never applies.
+    const backgroundModel = migrateLegacyModelValue(config.get<string>(BACKGROUND_MODEL_SETTING, ""));
+    const background = { model: backgroundModel, effort: supportedStoredEffort(backgroundModel, config.get<string>(BACKGROUND_EFFORT_SETTING, "")) };
+    const judgeChoice = migrateLegacyModelValue(config.get<string>(MEMORY_JUDGE_SETTING, ""));
+    const judge = { choice: judgeChoice, effort: supportedStoredEffort(judgeChoice, config.get<string>(MEMORY_JUDGE_EFFORT_SETTING, "")) };
+
     const settings: ExtensionSettings = {
       maxTurns: config.get<number>("damocles.maxTurns", 100),
       maxBudgetUsd: config.get<number | null>("damocles.maxBudgetUsd", null, folder),
@@ -101,6 +110,9 @@ export class ConfigManager {
       ideContextEnabled: config.get<boolean>("damocles.ideContext.enabled", true),
       pinnedHeaderHidden: config.get<boolean>("damocles.pinnedHeaderHidden", false),
       team,
+      background,
+      judge,
+      explore: readExploreSetting(config),
     };
     this.postMessage(host, {
       type: "settingsUpdate",
@@ -140,10 +152,6 @@ export class ConfigManager {
     }
   }
 
-  async handleSetDefaultMaxThinkingTokens(tokens: number | null, folder: SettingsFolder | undefined): Promise<SettingWrite> {
-    return updateConfigAtEffectiveScope(this.platform, "damocles.maxThinkingTokens", tokens, { folder });
-  }
-
   async handleSetDefaultThinkingDisabled(disabled: boolean, folder: SettingsFolder | undefined): Promise<SettingWrite> {
     return updateConfigAtEffectiveScope(this.platform, "damocles.thinkingDisabled", disabled, { folder });
   }
@@ -157,17 +165,15 @@ export class ConfigManager {
     const config = this.platform.settings;
     const current = config.get<Record<string, EffortLevel | null>>("damocles.effortByModel", {}, folder) ?? {};
     const next: Record<string, EffortLevel | null> = { ...current };
-    if (effort === null) {
-      delete next[model];
-    } else {
-      next[model] = effort;
-    }
+    // A retired id's entry is read as the model's, so it goes too or a cleared effort would come back.
+    for (const id of effortByModelIds(model)) delete next[id];
+    if (effort !== null) next[model] = effort;
     return updateConfigAtEffectiveScope(this.platform, "damocles.effortByModel", next, { folder });
   }
 
   async handleSetTeamRoleModel(role: TeamRole, model: string, folder: SettingsFolder | undefined): Promise<SettingWrite> {
     if (model !== '' && !DEFAULT_MODELS.some(m => m.value === model)) {
-      throw new Error(`Model "${model}" is not a known model`);
+      throw new Error(t("Model \"{0}\" is not a known model", model));
     }
     const written = await updateConfigAtEffectiveScope(this.platform, `damocles.team.${role}Model`, model, { folder });
 
@@ -188,6 +194,54 @@ export class ConfigManager {
     const effectiveModel = roleModel !== "" ? roleModel : this.workspaceFallbackModel(config);
     assertEffortSupported(effectiveModel, effort);
     return updateConfigAtEffectiveScope(this.platform, `damocles.team.${role}Effort`, effort === null ? "" : effort, { folder });
+  }
+
+  /** Background work spans every workspace, so its settings are user-level only (application scope). */
+  async handleSetBackgroundModel(model: string): Promise<SettingWrite> {
+    if (model !== "" && !DEFAULT_MODELS.some(m => m.value === model)) {
+      throw new Error(t("Model \"{0}\" is not a known model", model));
+    }
+    const config = this.platform.settings;
+    await config.update(BACKGROUND_MODEL_SETTING, model === "" ? undefined : model, "user");
+    // Automatic has no effort, and a picked model keeps only an effort it supports.
+    const storedEffort = config.get<string>(BACKGROUND_EFFORT_SETTING, "");
+    if (storedEffort !== "" && supportedStoredEffort(model, storedEffort) === null) {
+      await config.update(BACKGROUND_EFFORT_SETTING, undefined, "user");
+    }
+    return { key: BACKGROUND_MODEL_SETTING, home: "user" };
+  }
+
+  async handleSetBackgroundEffort(effort: EffortLevel | null): Promise<SettingWrite> {
+    const model = migrateLegacyModelValue(this.platform.settings.get<string>(BACKGROUND_MODEL_SETTING, ""));
+    if (effort !== null && model === "") throw new Error(t("Automatic sets the effort of each job itself. Choose a model to set one."));
+    assertEffortSupported(model, effort);
+    await this.platform.settings.update(BACKGROUND_EFFORT_SETTING, effort ?? undefined, "user");
+    return { key: BACKGROUND_EFFORT_SETTING, home: "user" };
+  }
+
+  /** The Memory judge spans every workspace, so its settings are user-level only (application scope). */
+  async handleSetMemoryJudge(choice: string): Promise<SettingWrite> {
+    if (!isKnownMemoryJudgeChoice(choice)) {
+      throw new Error(t("\"{0}\" is not a known memory judge", choice));
+    }
+    const config = this.platform.settings;
+    await config.update(MEMORY_JUDGE_SETTING, choice === "" ? undefined : choice, "user");
+    // Only a model takes an effort, and it keeps only one it supports.
+    const storedEffort = config.get<string>(MEMORY_JUDGE_EFFORT_SETTING, "");
+    if (storedEffort !== "" && supportedStoredEffort(choice, storedEffort) === null) {
+      await config.update(MEMORY_JUDGE_EFFORT_SETTING, undefined, "user");
+    }
+    return { key: MEMORY_JUDGE_SETTING, home: "user" };
+  }
+
+  async handleSetMemoryJudgeEffort(effort: EffortLevel | null): Promise<SettingWrite> {
+    const choice = migrateLegacyModelValue(this.platform.settings.get<string>(MEMORY_JUDGE_SETTING, ""));
+    if (effort !== null && !DEFAULT_MODELS.some(m => m.value === choice)) {
+      throw new Error(t("Only a model chosen as the memory judge takes an effort. Choose a model to set one."));
+    }
+    assertEffortSupported(choice, effort);
+    await this.platform.settings.update(MEMORY_JUDGE_EFFORT_SETTING, effort ?? undefined, "user");
+    return { key: MEMORY_JUDGE_EFFORT_SETTING, home: "user" };
   }
 
   async handleSetBudgetLimit(budgetUsd: number | null, folder: SettingsFolder | undefined): Promise<SettingWrite> {

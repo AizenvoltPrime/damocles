@@ -79,7 +79,7 @@ export const team: Scene = {
     await cancelled;
     await stage.send(
       sessionState('idle'),
-      { type: 'toolAbandoned', toolUseId: CREATE, toolName: 'create_team', parentToolUseId: null },
+      { type: 'toolAbandoned', toolUseId: CREATE, toolName: 'create_team', parentToolUseId: null, reason: 'stopped' },
       { type: 'teamPhaseUpdate', teamId: TEAM_ID, phase: 'synthesizing' },
       { type: 'sessionCancelled' },
       { type: 'processing', isProcessing: false },

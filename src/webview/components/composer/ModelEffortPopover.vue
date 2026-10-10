@@ -58,9 +58,8 @@ const triggerLabel = computed(() => {
 });
 
 function selectModel(value: AcceptableValue): void {
-  if (typeof value !== 'string' || value === chatModel.value) return;
-  if (settingsStore.pendingOpenAIModel && settingsStore.pendingOpenAIModel !== value) settingsStore.setPendingOpenAIModel(null);
-  settingsStore.setModelState(value, defaultModel.value);
+  if (typeof value !== 'string') return;
+  // Sent for the current model too, which withdraws a pick core holds for a sign-in; the label changes only on core's modelUpdate.
   postMessage({ type: 'setActiveModel', model: value });
 }
 

@@ -63,6 +63,7 @@ const PLAN_EXECUTION_MARKER = 'treat the delivery mechanism it assigns each slic
 function promptOptions(over: Partial<NormalizedBuildSystemPromptOptions> = {}): NormalizedBuildSystemPromptOptions {
   return {
     selectedTools: ['read', 'bash', 'edit', 'write'],
+    hiddenTools: [],
     toolSnippets: {},
     toolGuidelines: {},
     promptGuidelines: [],

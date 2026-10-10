@@ -10,7 +10,9 @@ import type {
   ConsolidationResult,
   ConsolidationTrigger,
   ConsolidationPhaseEvent,
+  ConsolidationFailure,
 } from '@shared/types/consolidation';
+import { MAX_FAILED_ANSWERS } from '@shared/consolidation';
 import type { DatabaseInstance, MemoryRow } from './types';
 import type { MemoryWriteQueue } from './write-queue';
 import type { MemorySubCallRunner, MemorySubCallResult } from './subcall-runner';
@@ -37,12 +39,17 @@ export interface PendingConsolidationRequest {
   reason: ConsolidationReason;
   sessionId?: string;
   forceExtract?: boolean;
+  /** Set on a later pass of a run: the turns that run already declined (see {@link ConsolidationCtx.declinedInRun}). */
+  declinedInRun?: Set<string>;
+  /** Set on a later pass of a manual run: the run's result over its earlier passes, folded with each pass's own. */
+  runSoFar?: ConsolidationResult;
 }
 
 /**
  * Folds a mid-pass request into the single pending slot. Two requests targeting different sessions
  * broaden to a global `idle` pass (which claims all unconsumed candidates). `forceExtract` is OR-ed
  * so a manual "Run now" folded into an auto pass still forces extraction even with auto-extract off.
+ * The declined turns are united, so a pass serving a run's later pass never counts a turn that run counted.
  */
 export function mergePendingConsolidation(
   existing: PendingConsolidationRequest | null,
@@ -51,8 +58,37 @@ export function mergePendingConsolidation(
   const forceExtract = (existing?.forceExtract ?? false) || (incoming.forceExtract ?? false);
   const force = forceExtract ? { forceExtract: true } : {};
   if (!existing) return { ...incoming, ...force };
-  if (existing.sessionId === incoming.sessionId) return { ...existing, ...force };
-  return { reason: 'idle', ...force };
+  const declined = existing.declinedInRun || incoming.declinedInRun
+    ? { declinedInRun: new Set([...(existing.declinedInRun ?? []), ...(incoming.declinedInRun ?? [])]) }
+    : {};
+  // Only the pass that just ended queues a run's next pass, so at most one side carries a result so far.
+  const runSoFar = incoming.runSoFar ?? existing.runSoFar;
+  const run = runSoFar ? { runSoFar } : {};
+  if (existing.sessionId === incoming.sessionId) return { ...existing, ...force, ...declined, ...run };
+  return { reason: 'idle', ...force, ...declined, ...run };
+}
+
+/**
+ * Folds one pass into its run's result: memories and counts add up, the run ends when its last pass
+ * ends, and it fails with the last pass's failure, since a run only continues after a pass that did not fail.
+ */
+export function accumulateRunResult(soFar: ConsolidationResult | undefined, pass: ConsolidationResult): ConsolidationResult {
+  if (!soFar) return pass;
+  const extracted = [...soFar.extracted, ...pass.extracted];
+  const status = pass.status === 'failed' ? 'failed' : extracted.length > 0 ? 'extracted' : 'empty';
+  return {
+    ranAt: pass.ranAt,
+    trigger: soFar.trigger,
+    status,
+    extracted,
+    maintenance: {
+      promoted: soFar.maintenance.promoted + pass.maintenance.promoted,
+      decayed: soFar.maintenance.decayed + pass.maintenance.decayed,
+      pruned: soFar.maintenance.pruned + pass.maintenance.pruned,
+    },
+    candidatesReviewed: soFar.candidatesReviewed + pass.candidatesReviewed,
+    ...(pass.failure ? { failure: pass.failure } : {}),
+  };
 }
 
 /** Everything {@link runConsolidation} needs, supplied by MemoryService (or a test harness). */
@@ -91,6 +127,14 @@ export interface ConsolidationCtx {
    * pass scheduled just before disposal cannot claim a batch the service will never release.
    */
   isDisposed?: () => boolean;
+  /** Picks the extraction probe turn; defaults to `Math.random`. */
+  random?: () => number;
+  /**
+   * Turns declined on their own call by an earlier pass of the same run (a manual Run now and the passes it
+   * queues, or one automatic run). The claim skips them and the pass adds the ones it declines, so a run
+   * counts a turn's failed answer at most once.
+   */
+  declinedInRun?: Set<string>;
 }
 
 /**
@@ -165,6 +209,9 @@ export function isExtractionResult(v: unknown): v is ExtractionResult {
 }
 
 const CANDIDATE_BATCH_LIMIT = 50;
+
+/** Enough extraction calls in one pass to isolate one failing turn from a full batch by halving. */
+export const MAX_EXTRACT_CALLS_PER_PASS: number = 2 * Math.ceil(Math.log2(CANDIDATE_BATCH_LIMIT)) + 1;
 
 /**
  * How long a candidate claim stays valid before {@link reclaimExpiredClaims} reclaims it. Sized well
@@ -256,16 +303,23 @@ export function buildExtractionSchema(knownWorkspaces: readonly string[]): Recor
  * Atomically reserves the oldest unconsumed candidates that fit within {@link CANDIDATE_TOKEN_BUDGET}
  * (select-then-update in one write-lock callback so two passes never double-claim a row). Always
  * claims at least one turn so an oversized turn can't stall the queue (clipped at prompt-build time).
- * Scopes to one session when `sessionId` is supplied. A successful pass commits the reservation; a
- * failure releases it — so `consumed = 1` means "in-flight or done", never "lost".
+ * Scopes to one session when `sessionId` is supplied and skips the run's declined turns. A successful pass
+ * commits the reservation; a failure releases it — so `consumed = 1` means "in-flight or done", never "lost".
  *
  * A batch holds one folder's turns only, the folder of the oldest unconsumed candidate, so the pass
  * files every extraction under the folder its conversation ran in. Other folders wait for a later pass.
  */
 function claimCandidates(ctx: ConsolidationCtx): Promise<{ candidates: ClaimedCandidate[]; workspace: string | null }> {
   return ctx.writeQueue.run(() => {
-    const sessionWhere = ctx.sessionId !== undefined ? 'consumed = 0 AND session_id = ?' : 'consumed = 0';
-    const sessionParams: unknown[] = ctx.sessionId !== undefined ? [ctx.sessionId] : [];
+    const declined = ctx.declinedInRun && ctx.declinedInRun.size > 0 ? [...ctx.declinedInRun] : null;
+    const claimable = declined
+      ? 'consumed = 0 AND set_aside_at IS NULL AND id NOT IN (SELECT value FROM json_each(?))'
+      : 'consumed = 0 AND set_aside_at IS NULL';
+    const sessionWhere = ctx.sessionId !== undefined ? `${claimable} AND session_id = ?` : claimable;
+    const sessionParams: unknown[] = [
+      ...(declined ? [JSON.stringify(declined)] : []),
+      ...(ctx.sessionId !== undefined ? [ctx.sessionId] : []),
+    ];
 
     const head = ctx.db
       .prepare(`SELECT workspace FROM memory_candidates WHERE ${sessionWhere} ORDER BY created_at LIMIT 1`)
@@ -381,6 +435,46 @@ function commitCandidates(ctx: ConsolidationCtx, ids: string[]): Promise<void> {
     ctx.db
       .prepare(`UPDATE memory_candidates SET reprocessed = 1 WHERE id IN (${placeholders})`)
       .run(...ids);
+  });
+}
+
+/**
+ * Settles a turn declined on its own call: it gains one failed answer when the model answered other input
+ * this pass or the turn already holds one, and is set aside at {@link MAX_FAILED_ANSWERS}, else released.
+ * True when set aside. Called at most once per turn per run (see {@link ConsolidationCtx.declinedInRun}).
+ */
+function settleDeclinedTurn(ctx: ConsolidationCtx, id: string, modelAnswered: boolean): Promise<boolean> {
+  return ctx.writeQueue.run(() => {
+    ctx.db
+      .prepare('UPDATE memory_candidates SET failed_attempts = failed_attempts + 1 WHERE id = ? AND (? = 1 OR failed_attempts > 0)')
+      .run(id, modelAnswered ? 1 : 0);
+    const setAside = ctx.db
+      .prepare(
+        `UPDATE memory_candidates SET consumed = 0, claimed_by = NULL, claimed_at = NULL, set_aside_at = ?
+          WHERE id = ? AND failed_attempts >= ?`,
+      )
+      .run(Date.now(), id, MAX_FAILED_ANSWERS);
+    if (Number(setAside.changes) > 0) return true;
+    ctx.db
+      .prepare('UPDATE memory_candidates SET consumed = 0, claimed_by = NULL, claimed_at = NULL WHERE id = ?')
+      .run(id);
+    return false;
+  });
+}
+
+/** Turns set aside after {@link MAX_FAILED_ANSWERS} failed answers, waiting for the user's Retry. */
+export function countSetAsideCandidates(db: DatabaseInstance): number {
+  const row = db.prepare('SELECT COUNT(*) AS n FROM memory_candidates WHERE set_aside_at IS NOT NULL').get() as { n: number };
+  return row.n;
+}
+
+/** Returns every set-aside turn to the queue with a fresh attempt count. Resolves to how many were returned. */
+export function retrySetAsideCandidates(db: DatabaseInstance, writeQueue: MemoryWriteQueue): Promise<number> {
+  return writeQueue.run(() => {
+    const result = db
+      .prepare('UPDATE memory_candidates SET set_aside_at = NULL, failed_attempts = 0 WHERE set_aside_at IS NOT NULL')
+      .run();
+    return Number(result.changes);
   });
 }
 
@@ -587,9 +681,172 @@ function errorDetail(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** Part of the claimed batch the model answered for, persisted once the pass's extraction calls end. */
+interface AnsweredBatch {
+  pass: ClaimedPassCtx;
+  candidates: ClaimedCandidate[];
+  memories: ExtractedMemory[];
+}
+
+/** Why a call declined its turns: no valid result, a provider rejection of the request, or a hostile shape. */
+type DeclineCause = 'unanswered' | 'rejected' | 'invalid-shape';
+
+/** Why some claimed turns got no answer: a call that threw, no model, a refused credential, no reply, or a decline. */
+type ExtractFailure =
+  | { kind: 'thrown'; detail: string }
+  | { kind: 'no-model' }
+  | { kind: 'credential' }
+  | { kind: 'unreachable' }
+  | { kind: 'declined'; cause: DeclineCause };
+
+interface ExtractRound {
+  answered: AnsweredBatch[];
+  failure: ExtractFailure | null;
+}
+
+/** A part of the batch waiting for its call. The two halves of one split share `split`. */
+interface QueuedPart {
+  batch: ClaimedCandidate[];
+  split?: { declined: number };
+  probe?: true;
+}
+
+/**
+ * Extracts the claimed batch within {@link MAX_EXTRACT_CALLS_PER_PASS} calls. The decision rule, also in
+ * "Memory consolidation" in docs/invariants.md:
+ * - A declined part (`unanswered`, `rejected` or an invalid shape) of more than one turn is retried as two
+ *   halves, and both halves of a split are sent before either is split again.
+ * - Once both halves of a split decline and no call of the pass was answered, one queued turn picked at
+ *   random is sent alone as a probe; if it declines too the failure is systemic and the pass stops.
+ * - Only a turn declined on its own call is counted, once per run, at the end of the pass, and only when a
+ *   call was answered this pass or the turn already holds a count. A run is a manual Run now with the passes
+ *   it queues, or one automatic run; a later pass of the run never claims a turn the run declined. At
+ *   {@link MAX_FAILED_ANSWERS}, so after three separate runs, it is set aside.
+ * - No model, a refused credential, no reply or a throw releases every unsettled turn uncounted and stops.
+ * `open` holds the claimed turns not yet released or set aside; this removes the ones it settles.
+ */
+async function extractInHalves(
+  ctx: ConsolidationCtx,
+  workspace: string,
+  candidates: ClaimedCandidate[],
+  open: Set<string>,
+  onProgress: (settledTurns: number) => void,
+): Promise<ExtractRound> {
+  const round: ExtractRound = { answered: [], failure: null };
+  const declinedAlone: ClaimedCandidate[] = [];
+  const queue: QueuedPart[] = [{ batch: candidates }];
+  let settled = 0;
+  const release = async (parts: QueuedPart[]): Promise<void> => {
+    const ids = parts.flatMap(p => p.batch).map(c => c.id);
+    await releaseCandidates(ctx, ids);
+    for (const id of ids) open.delete(id);
+    settled += ids.length;
+  };
+
+  for (let calls = 0; queue.length > 0; calls++) {
+    if (calls >= MAX_EXTRACT_CALLS_PER_PASS) {
+      log('[MemoryConsolidation] extraction call limit reached; released %d turn(s) for the next pass', queue.flatMap(p => p.batch).length);
+      await release(queue.splice(0));
+      break;
+    }
+    const part = queue.shift()!;
+    const batch = part.batch;
+    const pass: ClaimedPassCtx = { ...ctx, workspace, knownWorkspaces: extractionWorkspaces(ctx, workspace, batch) };
+    const prompt = buildExtractionPrompt(pass, batch, loadExistingMemoriesForExtraction(pass, batch));
+    let extraction: MemorySubCallResult<ExtractionResult>;
+    try {
+      extraction = await ctx.runner.run<ExtractionResult>({
+        purpose: 'extract',
+        systemPrompt: EXTRACTION_SYSTEM_PROMPT,
+        prompt,
+        schema: buildExtractionSchema(pass.knownWorkspaces),
+      });
+    } catch (err) {
+      log('[MemoryConsolidation] extraction threw; releasing %d turn(s): %O', open.size, err);
+      round.failure = { kind: 'thrown', detail: errorDetail(err) };
+      await release([part, ...queue.splice(0)]);
+      break;
+    }
+    // Keep the lease fresh across a pass of several extraction calls.
+    await renewClaims(ctx, [...open]);
+
+    if (extraction.value !== null && isExtractionResult(extraction.value)) {
+      round.answered.push({ pass, candidates: batch, memories: extraction.value.memories });
+      settled += batch.length;
+      onProgress(settled);
+      continue;
+    }
+    if (extraction.value === null && extraction.failure !== 'unanswered' && extraction.failure !== 'rejected') {
+      round.failure = extraction.failure === 'no-model' || extraction.failure === 'credential' ? { kind: extraction.failure } : { kind: 'unreachable' };
+      await release([part, ...queue.splice(0)]);
+      break;
+    }
+
+    const cause: DeclineCause = extraction.value !== null ? 'invalid-shape' : extraction.failure === 'rejected' ? 'rejected' : 'unanswered';
+    if (cause === 'invalid-shape') log('[MemoryConsolidation] extraction returned an invalid shape for %d turn(s)', batch.length);
+    round.failure ??= { kind: 'declined', cause };
+    if (batch.length === 1) {
+      declinedAlone.push(batch[0]!);
+      settled += 1;
+    } else {
+      const middle = Math.ceil(batch.length / 2);
+      const split = { declined: 0 };
+      queue.push({ batch: batch.slice(0, middle), split }, { batch: batch.slice(middle), split });
+    }
+    onProgress(settled);
+
+    if (part.probe) {
+      log('[MemoryConsolidation] the probe declined too; releasing %d turn(s) uncounted', queue.flatMap(p => p.batch).length);
+      await release(queue.splice(0));
+      break;
+    }
+    if (part.split && ++part.split.declined === 2 && round.answered.length === 0) {
+      const probe = pickProbe(queue, ctx.random ?? Math.random);
+      if (!probe) {
+        log('[MemoryConsolidation] both halves declined with nothing answered; stopping the split');
+        break;
+      }
+      for (const queued of queue) queued.batch = queued.batch.filter(c => c !== probe);
+      queue.splice(0, queue.length, { batch: [probe], probe: true }, ...queue.filter(q => q.batch.length > 0));
+    }
+  }
+
+  const modelAnswered = round.answered.length > 0;
+  for (const turn of declinedAlone) {
+    ctx.declinedInRun?.add(turn.id);
+    if (await settleDeclinedTurn(ctx, turn.id, modelAnswered)) {
+      log('[MemoryConsolidation] set aside turn %s after %d failed answers', turn.id, MAX_FAILED_ANSWERS);
+    }
+    open.delete(turn.id);
+  }
+  return round;
+}
+
+/** A queued turn picked by `random`, to be sent alone; null when the queue is empty. */
+function pickProbe(queue: readonly QueuedPart[], random: () => number): ClaimedCandidate | null {
+  const turns = queue.flatMap(p => p.batch);
+  if (turns.length === 0) return null;
+  return turns[Math.min(turns.length - 1, Math.floor(random() * turns.length))]!;
+}
+
+/** The failure card for a pass in which the model answered for none of the claimed turns. */
+function extractFailureOf(failure: ExtractFailure | null): ConsolidationFailure {
+  if (failure?.kind === 'no-model') return { kind: 'no-model', phase: 'extract' };
+  if (failure?.kind === 'thrown') return { kind: 'error', detail: failure.detail, phase: 'extract' };
+  const reason = failure?.kind === 'declined' ? failure.cause : failure?.kind === 'credential' ? 'credential' : 'unreachable';
+  return { kind: 'error', reason, phase: 'extract' };
+}
+
+/** The extract phase's failure reason for the stepper: a token the panel localizes, or a thrown error's text. */
+function extractFailureReason(failure: ExtractFailure | null): string {
+  if (failure?.kind === 'thrown') return failure.detail;
+  if (failure?.kind === 'declined') return failure.cause;
+  return failure?.kind ?? 'unreachable';
+}
+
 /**
  * Batch memory consolidation. Claims unconsumed candidates under the write lock, extracts durable
- * memories via one privacy-gated `extract` sub-call (outside the lock), runs each through
+ * memories via privacy-gated `extract` sub-calls (outside the lock; see {@link extractInHalves}), runs each through
  * dedup → conflict-resolution → near-dup merge, then promotes/decays episodes and regenerates the
  * profile. Runs maintenance even when auto-extraction is off so a mid-session setting flip can't
  * strand episodes.
@@ -620,10 +877,9 @@ export async function runConsolidation(ctx: ConsolidationCtx): Promise<Consolida
   // release. Short-circuit before reclaim/claim.
   if (ctx.isDisposed?.()) return done({ status: 'empty' });
 
-  // Hoisted to the try scope so the outer catch can release a batch claimed but not yet committed: a
-  // throw anywhere between claim and commit releases it instead of stranding it at consumed=1.
-  let claimedIds: string[] | null = null;
-  let committed = false;
+  // Claimed turns not yet committed, released or set aside. The outer catch releases them, so a throw
+  // anywhere after the claim never strands a turn at consumed=1 and never reverts a committed one.
+  const open = new Set<string>();
 
   try {
     // PHASE 1 — CLAIM. Reclaim expired/stranded claims first so a crashed sibling's batch re-enters
@@ -640,7 +896,7 @@ export async function runConsolidation(ctx: ConsolidationCtx): Promise<Consolida
 
     // Nothing to extract: auto-extract off, or an empty queue. Run maintenance only, end `empty`.
     if (!ctx.autoExtractEnabled || candidates.length === 0 || workspace === null) {
-      const reason = !ctx.autoExtractEnabled ? 'auto-extract off' : 'no queued turns';
+      const reason = !ctx.autoExtractEnabled ? 'auto-extract-off' : 'no-queued-turns';
       phase({ phase: 'extract', status: 'skipped', meta: { reason } });
       phase({ phase: 'persist', status: 'skipped', meta: { reason } });
       maintenance = await runMaintenancePhase(ctx, phase);
@@ -648,84 +904,52 @@ export async function runConsolidation(ctx: ConsolidationCtx): Promise<Consolida
       return done({ status: 'empty' });
     }
 
-    claimedIds = candidates.map(c => c.id);
-    const knownWorkspaces = extractionWorkspaces(ctx, workspace, candidates);
-    const pass: ClaimedPassCtx = { ...ctx, workspace, knownWorkspaces };
-    const batchSessionId = uniqueNonNullSession(candidates);
-    const existing = loadExistingMemoriesForExtraction(pass, candidates);
-    const prompt = buildExtractionPrompt(pass, candidates, existing);
+    for (const c of candidates) open.add(c.id);
 
-    // PHASE 2 — EXTRACT (one LLM call; the slow step, ~5–20s). Can throw, or yield null/no-model.
-    phase({ phase: 'extract', status: 'active', meta: { count: candidatesReviewed } });
-    let extraction: MemorySubCallResult<ExtractionResult>;
-    try {
-      extraction = await ctx.runner.run<ExtractionResult>({
-        purpose: 'extract',
-        systemPrompt: EXTRACTION_SYSTEM_PROMPT,
-        prompt,
-        schema: buildExtractionSchema(knownWorkspaces),
-      });
-    } catch (err) {
-      // Release the batch, but still run maintenance (pure SQL) so an extraction failure doesn't
-      // strand maintainable episodes. End `failed` for the panel's failure card.
-      await releaseCandidates(ctx, claimedIds);
-      phase({ phase: 'extract', status: 'failed', meta: { reason: errorDetail(err) } });
-      log('[MemoryConsolidation] extraction threw; released %d candidates: %O', claimedIds.length, err);
+    // PHASE 2 — EXTRACT (one LLM call per part of the batch; the slow step, ~5–20s each).
+    const extractProgress = (done: number): void =>
+      phase({ phase: 'extract', status: 'active', meta: { count: candidatesReviewed, done, total: candidatesReviewed } });
+    extractProgress(0);
+    const round = await extractInHalves(ctx, workspace, candidates, open, extractProgress);
+    if (round.failure?.kind === 'no-model') ctx.onNoModel();
+
+    if (round.answered.length === 0) {
+      // Every claimed turn is released or set aside; still run maintenance (pure SQL) so an extraction
+      // failure doesn't strand maintainable episodes.
+      phase({ phase: 'extract', status: 'failed', meta: { reason: extractFailureReason(round.failure) } });
       phase({ phase: 'persist', status: 'skipped' });
       maintenance = await runMaintenancePhase(ctx, phase);
       phase({ phase: 'profiles', status: 'skipped' });
-      return done({ status: 'failed', failure: { kind: 'error', detail: errorDetail(err), phase: 'extract' } });
+      // Failed even when a turn was set aside, so a systemic failure backs off instead of re-running.
+      return done({ status: 'failed', failure: extractFailureOf(round.failure) });
     }
+    const total = round.answered.reduce((n, batch) => n + batch.memories.length, 0);
+    phase({ phase: 'extract', status: 'done', meta: { count: total } });
 
-    if (extraction.value === null) {
-      // `no-model` is its own failure-card kind (with a Sign-in action); every other null collapses
-      // to `error` with a consistent detail.
-      await releaseCandidates(ctx, claimedIds);
-      if (extraction.failure === 'no-model') ctx.onNoModel();
-      phase({ phase: 'extract', status: 'failed', meta: { reason: extraction.failure ?? 'transient' } });
-      phase({ phase: 'persist', status: 'skipped' });
-      maintenance = await runMaintenancePhase(ctx, phase);
-      phase({ phase: 'profiles', status: 'skipped' });
-      if (extraction.failure === 'no-model') {
-        return done({ status: 'failed', failure: { kind: 'no-model', phase: 'extract' } });
-      }
-      return done({ status: 'failed', failure: { kind: 'error', detail: 'extraction unavailable', phase: 'extract' } });
-    }
-
-    // Hostile-shape guard: a malformed extraction would otherwise reach the persist loop and throw
-    // past the release path, stranding the batch. Route it down the same release-and-fail path.
-    if (!isExtractionResult(extraction.value)) {
-      await releaseCandidates(ctx, claimedIds);
-      phase({ phase: 'extract', status: 'failed', meta: { reason: 'invalid-shape' } });
-      log('[MemoryConsolidation] extraction returned an invalid shape; released %d candidates', claimedIds.length);
-      phase({ phase: 'persist', status: 'skipped' });
-      maintenance = await runMaintenancePhase(ctx, phase);
-      phase({ phase: 'profiles', status: 'skipped' });
-      return done({ status: 'failed', failure: { kind: 'error', detail: 'extraction returned an invalid shape', phase: 'extract' } });
-    }
-    phase({ phase: 'extract', status: 'done', meta: { count: extraction.value.memories.length } });
-
-    // PHASE 3 — PERSIST (per-item; streams done/total as each extracted memory resolves).
-    const total = extraction.value.memories.length;
+    // PHASE 3 — PERSIST (per-item; streams done/total as each extracted memory resolves). Each
+    // answered part commits once its memories are persisted.
     phase({ phase: 'persist', status: 'active', meta: { done: 0, total } });
     const extracted: ConsolidationExtractedMemory[] = [];
-    for (const memory of extraction.value.memories) {
-      const fields = toNewMemoryFields(memory, pass, ctx.sessionId ?? batchSessionId);
-      try {
-        const outcome = fields ? await persistExtracted(pass, fields) : 'invalid';
-        extracted.push({ ...extractedDisplay(pass, memory, fields), outcome });
-      } catch (err) {
-        extracted.push({ ...extractedDisplay(pass, memory, fields), outcome: 'invalid' });
-        log('[MemoryConsolidation] failed to persist one extracted memory; continuing batch: %O', err);
+    for (const batch of round.answered) {
+      const sessionId = ctx.sessionId ?? uniqueNonNullSession(batch.candidates);
+      for (const memory of batch.memories) {
+        const fields = toNewMemoryFields(memory, batch.pass, sessionId);
+        try {
+          const outcome = fields ? await persistExtracted(batch.pass, fields) : 'invalid';
+          extracted.push({ ...extractedDisplay(batch.pass, memory, fields), outcome });
+        } catch (err) {
+          extracted.push({ ...extractedDisplay(batch.pass, memory, fields), outcome: 'invalid' });
+          log('[MemoryConsolidation] failed to persist one extracted memory; continuing batch: %O', err);
+        }
+        // Keep the lease fresh so a long per-item persist can't outlive the TTL and get double-extracted.
+        await renewClaims(ctx, [...open]);
+        phase({ phase: 'persist', status: 'active', meta: { done: extracted.length, total } });
       }
-      // Keep the lease fresh so a long per-item persist can't outlive the TTL and get double-extracted.
-      await renewClaims(ctx, claimedIds);
-      phase({ phase: 'persist', status: 'active', meta: { done: extracted.length, total } });
+      const ids = batch.candidates.map(c => c.id);
+      await commitCandidates(ctx, ids);
+      for (const id of ids) open.delete(id);
     }
     phase({ phase: 'persist', status: 'done', meta: { done: extracted.length, total } });
-
-    await commitCandidates(ctx, claimedIds);
-    committed = true;
 
     // PHASE 4 — MAINTAIN (pure SQL).
     maintenance = await runMaintenancePhase(ctx, phase);
@@ -734,7 +958,7 @@ export async function runConsolidation(ctx: ConsolidationCtx): Promise<Consolida
     // already persisted, so the status stays `extracted`.
     phase({ phase: 'profiles', status: 'active', meta: { total: 2 } });
     try {
-      await updateProfiles(pass);
+      await updateProfiles(round.answered[0]!.pass);
       phase({ phase: 'profiles', status: 'done', meta: { done: 2, total: 2 } });
     } catch (err) {
       phase({ phase: 'profiles', status: 'failed', meta: { reason: errorDetail(err) } });
@@ -744,13 +968,12 @@ export async function runConsolidation(ctx: ConsolidationCtx): Promise<Consolida
     return done({ status: extracted.length > 0 ? 'extracted' : 'empty', extracted });
   } catch (err) {
     // Catch-all keeps the function total: a throw becomes a terminal `failed` result rather than
-    // crashing the host. If a batch was claimed but not committed, release it here first so an
-    // uncommitted throw always releases (guarded so a post-commit throw never reverts a committed
-    // batch); the release is wrapped so its own failure can't mask the original error.
-    if (claimedIds && claimedIds.length > 0 && !committed) {
+    // crashing the host. Release the claimed turns still open first; the release is wrapped so its own
+    // failure can't mask the original error.
+    if (open.size > 0) {
       try {
-        await releaseCandidates(ctx, claimedIds);
-        log('[MemoryConsolidation] outer catch released %d uncommitted candidate(s)', claimedIds.length);
+        await releaseCandidates(ctx, [...open]);
+        log('[MemoryConsolidation] outer catch released %d uncommitted candidate(s)', open.size);
       } catch (releaseErr) {
         log('[MemoryConsolidation] outer catch FAILED to release candidates (will re-enter via lease reclaim): %O', releaseErr);
       }

@@ -1,3 +1,5 @@
+import type { EffortBadgeLevel } from "../effort-badge";
+
 /** What an accepted proposal does to its memory row or profile. */
 export type MemoryAuditAction = "forget" | "rescope_global" | "rescope_workspace" | "to_episode" | "profile_rewrite";
 
@@ -20,6 +22,8 @@ export interface MemoryAuditModel {
   outputPerMTok: number;
   /** False on a flat subscription, where `costUsd` is an API-equivalent figure rather than a charge (useCostLabel). */
   dollarBilled: boolean;
+  /** The thinking level a grading call runs at, after pi clamps it to the model. */
+  effort: EffortBadgeLevel;
 }
 
 export interface MemoryAuditEstimate {
@@ -35,6 +39,8 @@ export interface MemoryAuditEstimate {
   inputTokens: number;
   /** The measured output per graded memory and per grading call, plus the measured output per profile call. */
   outputTokens: number;
+  /** The thinking level `outputTokens` was measured at; a run at another level thinks more or less. */
+  fittedEffort: EffortBadgeLevel;
   /** Null when no sub-call model is configured. */
   model: MemoryAuditModel | null;
   /** The model has no input or output rate, so the run cannot be priced; `costUsd` is then null. */

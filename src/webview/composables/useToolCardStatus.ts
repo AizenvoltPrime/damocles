@@ -1,4 +1,5 @@
 import { computed, toValue, type Component, type ComputedRef, type MaybeRefOrGetter } from "vue";
+import { useI18n } from "vue-i18n";
 import type { ToolCall } from "@shared/types/session";
 import { Ban, CircleCheck, CircleQuestionMark, CircleX, Hourglass, LoaderCircle } from "lucide-vue-next";
 
@@ -66,6 +67,59 @@ function borderClassFor(status: ToolStatus): string {
     case "approved":
       return "border-(--d-border)";
   }
+}
+
+function labelKeyFor(status: ToolStatus): string {
+  switch (status) {
+    case "pending":
+    case "running":
+      return "toolOverlay.statusRunning";
+    case "awaiting_approval":
+      return "toolCall.awaitingApproval";
+    case "approved":
+      return "toolOverlay.statusApproved";
+    case "denied":
+      return "toolOverlay.statusDenied";
+    case "completed":
+      return "toolOverlay.statusCompleted";
+    case "failed":
+      return "toolOverlay.statusFailed";
+    case "abandoned":
+      return "toolCall.notExecuted";
+    case "cancelled":
+      return "toolOverlay.statusCancelled";
+    case "unrecorded":
+      return "toolOverlay.statusUnrecorded";
+  }
+}
+
+function badgeToneFor(status: ToolStatus): string {
+  switch (status) {
+    case "pending":
+    case "running":
+      return "d-tone-accent";
+    case "awaiting_approval":
+      return "d-tone-warning";
+    case "approved":
+    case "completed":
+      return "d-tone-success";
+    case "denied":
+    case "failed":
+      return "d-tone-danger";
+    case "abandoned":
+    case "cancelled":
+    case "unrecorded":
+      return "d-tone-muted";
+  }
+}
+
+/** A tool overlay's header chip (`OverlayShell` `statusBadge`), in the same vocabulary as the card. */
+export function useToolStatusBadge(status: MaybeRefOrGetter<ToolStatus>): ComputedRef<{ label: string; class: string; pulse: boolean }> {
+  const { t } = useI18n();
+  return computed(() => {
+    const s = toValue(status);
+    return { label: t(labelKeyFor(s)), class: badgeToneFor(s), pulse: s === "pending" || s === "running" || s === "awaiting_approval" };
+  });
 }
 
 export interface ToolCardStatus {

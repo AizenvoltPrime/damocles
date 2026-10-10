@@ -22,6 +22,8 @@ import { installFakePlatform, type FakePlatform } from "../../../__mocks__/fake-
 import { PiRuntime } from "../../pi-session/pi-runtime";
 import { republishAccountInfo } from "../message-router/handlers/account-info";
 import { folderKey } from "../../workspace-folders/folder-key";
+import { PI_AGENT_DIR } from "../../pi-session/agent-dir";
+import * as path from "path";
 import type { Disposable } from "../../../platform/disposable";
 import type { ExtensionToWebviewMessage } from "../../../shared/types/messages";
 
@@ -52,12 +54,14 @@ const judgeUpdates = (posted: Posted[]) =>
   posted.filter((m): m is Extract<Posted, { type: "typesafeAuthStatusChanged" }> => m.type === "typesafeAuthStatusChanged");
 
 beforeEach(() => {
+  for (const name of ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"]) vi.stubEnv(name, "");
   fs.mkdirSync(fakeWorkspace, { recursive: true });
   platform = installFakePlatform({ folders: [{ fsPath: fakeWorkspace, name: "workspace" }] });
   subscriptions = [];
 });
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const subscription of subscriptions) subscription.dispose();
   await PiRuntime.disposeInstance();
 });
@@ -76,15 +80,45 @@ describe("memory judge status in open panels", () => {
     const { posted } = harness();
     PiRuntime.notifyMemoryJudgeChange();
     await vi.waitFor(() => expect(judgeUpdates(posted)).toHaveLength(1));
-    expect(judgeUpdates(posted)[0]).toEqual({ type: "typesafeAuthStatusChanged", configured: false, memoryJudge: { kind: "unknown" } });
+    expect(judgeUpdates(posted)[0]).toEqual({
+      type: "typesafeAuthStatusChanged",
+      configured: false,
+      memoryJudge: { kind: "unknown" },
+      classifierCredentials: { typesafe: "no-key", openrouter: "no-key", openai: "no-key" },
+    });
   });
 
   it("rebroadcasts when a classifier key is stored, here or in another window", async () => {
     const { posted } = harness();
+    await platform.secrets.store("damocles.openai.apiKey", "sk-key");
+    await vi.waitFor(() => expect(judgeUpdates(posted).at(-1)?.memoryJudge).toEqual({ kind: "classifier", via: "openai" }));
     await platform.secrets.store("damocles.explore.apiKey.openrouter", "or-key");
-    await vi.waitFor(() => expect(judgeUpdates(posted).at(-1)?.memoryJudge).toEqual({ kind: "jev", via: "openrouter" }));
+    await vi.waitFor(() => expect(judgeUpdates(posted).at(-1)?.memoryJudge).toEqual({ kind: "classifier", via: "openrouter" }));
     await platform.secrets.store("damocles.typesafe.apiKey", "ts-key");
-    await vi.waitFor(() => expect(judgeUpdates(posted).at(-1)).toMatchObject({ configured: true, memoryJudge: { kind: "jev", via: "typesafe" } }));
+    await vi.waitFor(() => expect(judgeUpdates(posted).at(-1)).toMatchObject({ configured: true, memoryJudge: { kind: "classifier", via: "typesafe" } }));
+  });
+
+  it("rebroadcasts when the Memory judge setting changes, before pi starts", async () => {
+    const { posted } = harness();
+    await platform.settings.update("damocles.memory.judge", "jev-typesafe", "user");
+    await vi.waitFor(() =>
+      expect(judgeUpdates(posted).at(-1)?.memoryJudge).toEqual({ kind: "none", forced: { choice: "jev-typesafe", reason: "no-key" } }),
+    );
+  });
+
+  it("rebroadcasts the judge and the Anthropic row when auth.json changes before pi starts", async () => {
+    const { posted } = harness();
+    await platform.secrets.store("damocles.openai.apiKey", "sk-key");
+    await vi.waitFor(() => expect(judgeUpdates(posted).at(-1)?.memoryJudge).toEqual({ kind: "classifier", via: "openai" }));
+
+    fs.mkdirSync(PI_AGENT_DIR, { recursive: true });
+    fs.writeFileSync(path.join(PI_AGENT_DIR, "auth.json"), JSON.stringify({ openai: { type: "oauth", access: "a", refresh: "r", expires: 9_999_999_999_999 } }));
+    platform.fileWatchers.watcher(PI_AGENT_DIR, "auth.json").fireChange(path.join(PI_AGENT_DIR, "auth.json"));
+
+    await vi.waitFor(() => expect(judgeUpdates(posted).at(-1)?.classifierCredentials.openai).toBe("chatgpt-active"));
+    expect(posted.some((m) => m.type === "claudeAuthStatusChanged")).toBe(true);
+    expect(PiRuntime.exists).toBe(false);
+    fs.rmSync(path.join(PI_AGENT_DIR, "auth.json"), { force: true });
   });
 
   it("rebroadcasts when a Claude or OpenAI credential change republishes the account", async () => {

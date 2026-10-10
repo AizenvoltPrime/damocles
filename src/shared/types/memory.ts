@@ -87,7 +87,7 @@ export interface SearchResult {
   rerankRelevance?: 'high' | 'medium' | 'low';
   /** Model-facing and always English; the Memory panel renders a localized verdict from `rerankClassifierScore`. */
   reason?: string;
-  /** Set when Jev graded the result: its relevance score, 0 to 1. */
+  /** Set when a classifier graded the result: its relevance score, 0 to 1. */
   rerankClassifierScore?: number;
 }
 

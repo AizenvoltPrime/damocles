@@ -35,7 +35,7 @@ export function extractDenialFeedback(errorMessage: string): string | undefined 
  * marker, the same signal the live path reads off the error text; anything else errored on its own.
  */
 function historyToolStatus(tool: HistoryToolCall, denialFeedback: string | undefined): ToolCall["status"] {
-  if (tool.stopped === true) return "abandoned";
+  if (tool.abandoned !== undefined) return "abandoned";
   if (tool.isError === true) return denialFeedback !== undefined ? "denied" : "failed";
   if (tool.result === undefined) return "unrecorded";
   return "completed";
@@ -53,6 +53,8 @@ export function convertHistoryTools(tools: HistoryToolCall[] | undefined): ToolC
       ...(t.isError !== undefined && { isError: t.isError }),
       ...(t.imageCount !== undefined && { imageCount: t.imageCount }),
       ...(t.metadata !== undefined && { metadata: t.metadata }),
+      ...(t.durationMs !== undefined && { durationMs: t.durationMs }),
+      ...(t.abandoned !== undefined && { abandonReason: t.abandoned }),
       ...(denialFeedback !== undefined && { feedback: denialFeedback }),
     };
   });

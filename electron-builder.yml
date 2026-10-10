@@ -23,6 +23,7 @@ files:
   - dist/formatter-host.js
   - dist/pty-host.js
   - dist/quick-open-worker.js
+  - dist/watch-worker.js
   # Nothing loads source maps at runtime (no --enable-source-maps); they were a quarter of app.asar.
   - '!**/*.map'
   - l10n/**
@@ -76,6 +77,7 @@ asarUnpack:
   - dist/formatter-host.js
   - dist/pty-host.js
   - dist/quick-open-worker.js
+  - dist/watch-worker.js
   - resources/grammars/**
   - resources/shell-integration/**
   - python/**

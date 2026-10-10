@@ -2,7 +2,7 @@
 import { ref, computed, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { storeToRefs } from 'pinia';
-import { Database, FileText, Gauge, IdCard, LoaderCircle, Receipt, Send, Square, Timer, UserRound, Wrench, Zap } from 'lucide-vue-next';
+import { CircleAlert, Database, FileText, Gauge, IdCard, LoaderCircle, Receipt, Send, Square, Timer, UserRound, Wrench, Zap } from 'lucide-vue-next';
 import { STEER_INSTRUCTION_PREFIX, stripSteerPrefix } from '@shared/steer';
 import { effortBadgeLabelKey } from '@shared/effort-badge';
 import { agentCacheHitRate, agentTotalTokens } from '@shared/usage-accounting';
@@ -19,6 +19,8 @@ import ImageLightbox from './ImageLightbox.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import ThinkingIndicator from './ThinkingIndicator.vue';
 import ToolCallCard from './ToolCallCard.vue';
+import TranscriptNotice from './TranscriptNotice.vue';
+import ErrorMessageText from './ErrorMessageText.vue';
 import StopTeamConfirm from './StopTeamConfirm.vue';
 import { useTeamStore, type AgentChatMessage } from '@/stores/useTeamStore';
 import { useSessionStore } from '@/stores/useSessionStore';
@@ -40,7 +42,7 @@ const { costLabel, costTitle } = useCostLabel();
 const modelIdentity = useModelIdentity();
 const teamStore = useTeamStore();
 const sessionStore = useSessionStore();
-const { selectedTeam, selectedAgent, currentAgentMessages, currentAgentStreaming, isAgentOverlayOpen } = storeToRefs(teamStore);
+const { selectedTeam, selectedAgent, currentAgentMessages, currentAgentStreaming, isAgentOverlayOpen, agentRetry } = storeToRefs(teamStore);
 
 const ALIVE: ReadonlySet<TeamAgentStatus> = new Set(['running', 'pending', 'awaiting-review', 'standby', 'monitoring']);
 const WAITING: ReadonlySet<TeamAgentStatus> = new Set(['pending', 'awaiting-review', 'standby', 'monitoring']);
@@ -73,6 +75,13 @@ const { elapsedMs } = useElapsedTimer(
   () => selectedAgent.value?.runningSince != null,
   () => selectedAgent.value ?? null,
 );
+
+// The retry pi waits out before re-sending a failed call outranks the progress summary.
+const workingLine = computed(() => {
+  const retry = selectedAgent.value ? agentRetry.value[selectedAgent.value.agentId] : undefined;
+  if (retry) return t('status.retrying', { attempt: retry.attempt, max: retry.maxAttempts });
+  return selectedAgent.value?.progressSummary || t('overlays.agent.working');
+});
 
 const statusBadge = computed(() => (chip.value ? { label: t(chip.value.labelKey), class: chip.value.color, pulse: chip.value.live || chip.value.attention } : undefined));
 
@@ -321,6 +330,18 @@ watch(() => selectedAgent.value?.status, (newStatus, oldStatus) => {
           >
             <MarkdownRenderer :content="msg.content" />
           </div>
+          <TranscriptNotice
+            v-else-if="msg.role === 'error'"
+            tone="danger"
+            :icon="CircleAlert"
+            :title="t('common.error')"
+            data-testid="agent-error"
+          >
+            <ErrorMessageText
+              class="text-12.5 wrap-break-word whitespace-pre-wrap text-(--d-text)"
+              :text="msg.content"
+            />
+          </TranscriptNotice>
 
           <div
             v-else
@@ -367,10 +388,10 @@ watch(() => selectedAgent.value?.status, (newStatus, oldStatus) => {
             class="size-3.5 d-spinning flex-none text-(--d-accent)"
             aria-hidden="true"
           />
-          <span class="d-glint min-w-0 truncate italic text-(--d-muted)">{{ selectedAgent.progressSummary || t('overlays.agent.working') }}<span
+          <span class="d-glint min-w-0 truncate italic text-(--d-muted)">{{ workingLine }}<span
             class="d-glint-window text-(--d-text)"
             aria-hidden="true"
-          ><span>{{ selectedAgent.progressSummary || t('overlays.agent.working') }}</span></span></span>
+          ><span>{{ workingLine }}</span></span></span>
           <span class="flex-1" />
           <span class="font-mono text-11 text-(--d-faint)">{{ formatElapsed(elapsedMs) }}</span>
         </div>

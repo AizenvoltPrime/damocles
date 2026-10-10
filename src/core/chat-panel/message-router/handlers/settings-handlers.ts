@@ -30,29 +30,20 @@ function exposureScopeLabel(scope: McpToolExposureScope): string {
 export function createSettingsHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { postMessage, settingsManager, getPanels, platform } = deps;
 
-  /** Broadcast to every open panel — auth-status changes must propagate cross-panel (and, for the
-   *  shared StepFun key, between the Explore field and the dedicated StepFun panel). */
+  /** Broadcast to every open panel — auth-status changes must propagate cross-panel. */
   function broadcast(message: ExtensionToWebviewMessage): void {
     for (const [, instance] of getPanels()) {
       postMessage(instance.host, message);
     }
   }
 
-  /** Re-broadcast StepFun + Explore status to all panels so both indicators stay in sync (they share
-   *  one SecretStorage entry). */
   async function broadcastStepfunStatus(): Promise<void> {
-    for (const [, instance] of getPanels()) {
-      await settingsManager.sendStepfunAuthStatus(instance.host);
-      await settingsManager.sendExploreKeyStatus(instance.host);
-    }
+    for (const [, instance] of getPanels()) await settingsManager.sendStepfunAuthStatus(instance.host);
   }
 
-  /** The OpenRouter key is also the Explore key when Explore uses OpenRouter, and it decides image generation. */
+  /** The OpenRouter key decides image generation. */
   async function broadcastOpenrouterStatus(): Promise<void> {
     broadcast(await openrouterAuthStatus(platform));
-    if (settingsManager.selectedExploreProvider() === "openrouter") {
-      for (const [, instance] of getPanels()) await settingsManager.sendExploreKeyStatus(instance.host);
-    }
     broadcastImageGenerationState();
   }
 
@@ -184,8 +175,6 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       await settingsManager.sendDeepseekAuthStatus(ctx.host);
       postMessage(ctx.host, await typesafeAuthStatus(platform));
       postMessage(ctx.host, await openrouterAuthStatus(platform));
-      settingsManager.sendExploreConfig(ctx.host);
-      await settingsManager.sendExploreKeyStatus(ctx.host);
       postMessage(ctx.host, { type: "toolStatus", data: ctx.session.getToolStatus() });
       settingsManager.sendImageGenerationSettings(ctx.host);
       await settingsManager.sendVoiceConfig(ctx.host);
@@ -230,12 +219,6 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId, ctx.folder);
     },
 
-    setPanelMaxThinkingTokens: (msg, ctx) => {
-      if (msg.type !== "setPanelMaxThinkingTokens") return;
-      settingsManager.handleSetPanelMaxThinkingTokens(ctx.panelId, msg.model, msg.tokens);
-      settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId, ctx.folder);
-    },
-
     setDefaultThinkingDisabled: async (msg, ctx) => {
       if (msg.type !== "setDefaultThinkingDisabled") return;
       const saved = await writeSetting(deps, ctx, "damocles.thinkingDisabled", (detail) => t("Failed to save default thinking setting: {0}", detail), () =>
@@ -264,11 +247,32 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
-    setDefaultMaxThinkingTokens: async (msg, ctx) => {
-      if (msg.type !== "setDefaultMaxThinkingTokens") return;
-      const saved = await writeSetting(deps, ctx, "damocles.maxThinkingTokens", (detail) => t("Failed to save default thinking tokens: {0}", detail), () =>
-        settingsManager.handleSetDefaultMaxThinkingTokens(msg.tokens, ctx.folder));
-      if (!saved) settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId, ctx.folder);
+    setBackgroundModel: async (msg, ctx) => {
+      if (msg.type !== "setBackgroundModel") return;
+      await writeSetting(deps, ctx, "damocles.background.model", (detail) => t("Failed to save the background model: {0}", detail), () =>
+        settingsManager.handleSetBackgroundModel(msg.model));
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
+    },
+
+    setBackgroundEffort: async (msg, ctx) => {
+      if (msg.type !== "setBackgroundEffort") return;
+      await writeSetting(deps, ctx, "damocles.background.effort", (detail) => t("Failed to save the background effort: {0}", detail), () =>
+        settingsManager.handleSetBackgroundEffort(msg.effort));
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
+    },
+
+    setMemoryJudge: async (msg, ctx) => {
+      if (msg.type !== "setMemoryJudge") return;
+      await writeSetting(deps, ctx, "damocles.memory.judge", (detail) => t("Failed to save the memory judge: {0}", detail), () =>
+        settingsManager.handleSetMemoryJudge(msg.judge));
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
+    },
+
+    setMemoryJudgeEffort: async (msg, ctx) => {
+      if (msg.type !== "setMemoryJudgeEffort") return;
+      await writeSetting(deps, ctx, "damocles.memory.judgeEffort", (detail) => t("Failed to save the memory judge effort: {0}", detail), () =>
+        settingsManager.handleSetMemoryJudgeEffort(msg.effort));
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setBudgetLimit: async (msg, ctx) => {
@@ -551,59 +555,18 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       }
     },
 
-    setExploreApiKey: async (msg, ctx) => {
-      if (msg.type !== "setExploreApiKey") return;
-      await settingsManager.storeExploreApiKey(msg.apiKey);
-      await settingsManager.sendExploreKeyStatus(ctx.host);
-      // The Explore StepFun field and the dedicated StepFun panel share one key — keep the panel's dot
-      // in sync when stepfun is the selected explore provider. Mirror the storage boundary's trim so
-      // a whitespace-only key reports the same "configured" state through both entry points.
-      if (settingsManager.selectedExploreProvider() === "stepfun") {
-        broadcast({ type: "stepfunAuthStatusChanged", configured: msg.apiKey.trim().length > 0 });
-      }
-      if (settingsManager.selectedExploreProvider() === "openrouter") broadcast(await openrouterAuthStatus(platform));
-      broadcastImageGenerationState();
-    },
-
-    deleteExploreApiKey: async (_msg, ctx) => {
-      const deleted = settingsManager.selectedExploreProvider();
-      await settingsManager.deleteExploreApiKey();
-      await settingsManager.sendExploreKeyStatus(ctx.host);
-      if (deleted === "stepfun") {
-        broadcast({ type: "stepfunAuthStatusChanged", configured: false });
-      }
-      if (deleted === "openrouter") broadcast(await openrouterAuthStatus(platform));
-      broadcastImageGenerationState();
-    },
-
-    requestExploreKeyStatus: async (_msg, ctx) => {
-      await settingsManager.sendExploreKeyStatus(ctx.host);
-    },
-
-    setExploreProvider: async (msg, ctx) => {
-      if (msg.type !== "setExploreProvider") return;
-      await writeSetting(deps, ctx, "damocles.explore.provider", (detail) => t("Failed to save the Explore provider: {0}", detail), () =>
-        settingsManager.setExploreProvider(msg.provider));
-      settingsManager.sendExploreConfig(ctx.host);
-      await settingsManager.sendExploreKeyStatus(ctx.host);
-    },
-
     setExploreModel: async (msg, ctx) => {
       if (msg.type !== "setExploreModel") return;
-      await writeSetting(deps, ctx, "damocles.explore.modelByProvider", (detail) => t("Failed to save the Explore model: {0}", detail), () =>
+      await writeSetting(deps, ctx, "damocles.explore.model", (detail) => t("Failed to save the Explore model: {0}", detail), () =>
         settingsManager.setExploreModel(msg.model));
-      settingsManager.sendExploreConfig(ctx.host);
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setExploreEffort: async (msg, ctx) => {
       if (msg.type !== "setExploreEffort") return;
       await writeSetting(deps, ctx, "damocles.explore.effort", (detail) => t("Failed to save the Explore effort: {0}", detail), () =>
         settingsManager.setExploreEffort(msg.effort));
-      settingsManager.sendExploreConfig(ctx.host);
-    },
-
-    requestExploreConfig: (_msg, ctx) => {
-      settingsManager.sendExploreConfig(ctx.host);
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setStepfunApiKey: async (msg, ctx) => {

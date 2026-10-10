@@ -443,6 +443,10 @@
   color: var(--d-danger);
 }
 
+.sm-feedback-warning {
+  color: var(--d-warning);
+}
+
 .sm-fade-enter-active {
   animation: d-fade 0.2s;
 }
@@ -524,6 +528,16 @@ mark.sm-mark {
   white-space: nowrap;
 }
 
+.sm-select-hint {
+  flex: none;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.6875rem;
+  color: var(--d-muted);
+}
+
 .sm-select-chevron {
   flex: none;
   color: var(--d-faint);
@@ -562,7 +576,8 @@ mark.sm-mark {
   background: var(--d-hover);
 }
 
-.sm-option[data-disabled] {
+.sm-option[data-disabled],
+.sm-option[data-unavailable] {
   opacity: 0.5;
   cursor: default;
 }

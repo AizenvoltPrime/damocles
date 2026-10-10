@@ -75,12 +75,6 @@ export const settingsViewHandlers: SettingsViewHandlers = {
   voiceFilesSizeUpdate: (msg, ctx) => {
     ctx.stores.voiceJarvisStore.setVoiceFilesBytes(msg.bytes);
   },
-  exploreApiKeyUpdate: (msg, ctx) => {
-    ctx.stores.settingsStore.setExploreHasApiKey(msg.hasApiKey);
-  },
-  exploreConfigUpdate: (msg, ctx) => {
-    ctx.stores.settingsStore.setExploreConfig(msg.provider, msg.model, msg.effort);
-  },
   openaiAuthStatusChanged: (msg, ctx) => {
     ctx.stores.settingsStore.setOpenAIAuthStatus(msg.status, msg.preferApiKey);
   },
@@ -129,7 +123,7 @@ export const settingsViewHandlers: SettingsViewHandlers = {
   setDeepseekApiKeyAck: acknowledgedByPanel,
   clearDeepseekApiKeyAck: acknowledgedByPanel,
   typesafeAuthStatusChanged: (msg, ctx) => {
-    ctx.stores.settingsStore.setTypesafeStatus(msg.configured, msg.memoryJudge);
+    ctx.stores.settingsStore.setTypesafeStatus(msg.configured, msg.memoryJudge, msg.classifierCredentials);
   },
   setTypesafeApiKeyAck: acknowledgedByPanel,
   clearTypesafeApiKeyAck: acknowledgedByPanel,
@@ -226,8 +220,7 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
       if (msg.error) toast.error(t("toast.authError", { error: msg.error }));
     },
 
-    openaiAuthRequired: (msg, ctx) => {
-      ctx.stores.settingsStore.setPendingOpenAIModel(msg.modelValue);
+    openaiAuthRequired: (_msg, ctx) => {
       openSettings(ctx.stores, ctx.bridge.postMessage, OPENAI_SIGN_IN);
       toast.warning(t("openai.authRequiredToast"));
     },

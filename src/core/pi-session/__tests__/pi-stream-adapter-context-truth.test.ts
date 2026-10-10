@@ -41,8 +41,6 @@ function makeAdapter(
     cwd: '/cwd',
     sessionId: () => 'SID',
     modelValue: () => 'claude-opus-4-8',
-    defaultModelValue: () => 'claude-opus-4-8',
-    contextWindow: () => 1_000_000,
     supportedModels: () => models,
     permissionMode: () => 'default',
     budgetLimit: () => null,

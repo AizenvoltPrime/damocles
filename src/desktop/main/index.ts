@@ -17,8 +17,11 @@ import { announceLeaseRefusal, leaseRefusalFor } from '../../core/chat-panel/ses
 import type { HostInstance } from '../../core/chat-panel/types';
 import { flushCoreWrites } from '../../core/chat-panel';
 import { runLegacySettingsMigrations } from '../../core/config/legacy-settings-migrations';
+import { movePreferApiKeyToGlobalState } from '../../core/pi-session/openai-auth';
+import { deleteRetiredSecrets } from '../../core/config/retired-secrets';
+import { providerKeyStored } from '../../core/pi-session/custom-providers';
+import { PROVIDER_SECRET_KEYS } from '../../core/pi-session/explore-providers';
 import { setCheckpointGitAvailability } from '../../core/pi-session/checkpoints';
-import { setExploreApiKey } from '../../core/pi-session/explore-api-key';
 import { DAMOCLES_HOME_DIR } from '../../core/paths';
 import { folderKey } from '../../core/workspace-folders/folder-key';
 import { settingsFolderOf } from '../../core/workspace-folders/folder-registry';
@@ -599,7 +602,10 @@ class DesktopApp {
     // A screen reader starting or stopping turns xterm's screenReaderMode on or off in every terminal.
     app.on('accessibility-support-changed', () => this.terminals?.publish());
 
-    await runLegacySettingsMigrations(this.platform.settings);
+    const secrets = this.platform.secrets;
+    await runLegacySettingsMigrations(this.platform.settings, () => providerKeyStored((key) => secrets.get(key), PROVIDER_SECRET_KEYS.stepfun));
+    await movePreferApiKeyToGlobalState(this.platform.state);
+    void deleteRetiredSecrets(secrets);
     this.restoreAtLaunch = this.platform.settings.get<boolean>(RESTORE_LAYOUT_SETTING, true);
     if (!this.restoreAtLaunch) {
       this.windowLayout.clear();
@@ -1695,7 +1701,7 @@ class DesktopApp {
       renameChat: reportFailure((id: string, name: string) => this.renameChat(id, name), this.shellFailure('Rename Chat', 'Damocles could not change the session: {0}'), CHAT_CHANGE_FAILED),
       tagChat: reportFailure((id: string, tag: string | null) => this.tagChat(id, tag), this.shellFailure('Tag Chat', 'Damocles could not change the session: {0}'), CHAT_CHANGE_FAILED),
       deleteChat: reportFailure((id: string) => this.deleteChat(id), this.shellFailure('Delete Chat', 'Damocles could not change the session: {0}'), CHAT_CHANGE_FAILED),
-      // A popup the overlay could not show (not loaded, no acknowledgement, a crash) answers as dismissed.
+      // A popup the overlay could not show (no page loaded or loading, no acknowledgement, a crash or reload) answers as dismissed.
       requestOverlay: reportFailure(
         (request: OverlayRequest, returnFocus: WebContents) => this.requestFromShell(overlay, request, returnFocus),
         this.shellFailure('Show Popup', 'Damocles could not open the menu or dialog: {0}'),
@@ -2025,11 +2031,13 @@ class DesktopApp {
     this.fileTree = fileTree;
     this.quickOpenIndex = quickOpenIndex;
     this.editorPane = editorPane;
-    // Playwright drives the agent's side of EditorService (openFile, showDiff without approvalId), routes the browser's
-    // requests and makes Files' trash or permanent delete fail through this, in the unpackaged app only.
+    // Playwright drives the agent's side of EditorService (openFile, showDiff without approvalId), raises host prompts and stores
+    // their answers as secrets, routes the browser's requests and makes Files' trash or permanent delete fail through this, in the unpackaged app only.
     if (!app.isPackaged && process.env['DAMOCLES_E2E_HOOKS'] === '1') {
       const hooks = {
         editor: platform.editor,
+        dialogs: platform.dialogs,
+        secrets: platform.secrets,
         browser: () => this.requireCore().provider.getBrowserService(),
         failFiles: (failure: { readonly trash?: string; readonly remove?: string }) => {
           if (failure.trash !== undefined) this.trashEntry = () => Promise.reject(new Error(failure.trash));
@@ -2786,7 +2794,6 @@ class DesktopApp {
       },
       newBrowserPage: () => { this.browserTabs?.newPage().catch(report('New Browser Page')); },
       toggleBrowserDevTools: () => this.browserTabs?.activePage()?.deliver({ type: 'openDevTools' }),
-      setExploreApiKey: () => { setExploreApiKey(platform).catch(report('Set Explore API Key')); },
       showLog: () => showLog(),
       about: () => this.openSettings({ section: 'about' }),
       releaseNotes: () => this.openSettings({ section: 'about', release: platform.appInfo.version }),

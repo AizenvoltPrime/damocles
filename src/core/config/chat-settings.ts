@@ -8,7 +8,6 @@ export const CHAT_SETTING_KEYS: ReadonlySet<string> = new Set([
   "damocles.autoCompact",
   "damocles.thinkingDisabled",
   "damocles.effortByModel",
-  "damocles.maxThinkingTokens",
   "damocles.permissionMode",
   "damocles.dangerouslySkipPermissions",
   "damocles.team.leadModel",

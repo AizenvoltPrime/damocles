@@ -360,6 +360,7 @@ export class TeamRunner {
         effort: null,
         costUsd: 0,
         finalResponse: null,
+        result: null,
         error: null,
         logFilePath: null,
       });
@@ -446,7 +447,7 @@ export class TeamRunner {
       createSession: () => this.createMemberSession(leadAgent, leadAttempt, LEAD_OPENING_TASK, launch, (store, resolution) => {
         // ONE toolset call per spawn. Names, customTools and the MCP snapshot used to be three
         // separate live reads inside this one object literal, so an `mcp__*` name could reach `tools:`
-        // with no matching definition — pi filters the registry by the frozen `_allowedToolNames` and
+        // with no matching definition — pi registers a name only from a definition and
         // drops the mismatch with no error, no warning and no log. Called INSIDE this per-spawn arrow
         // (never hoisted to a construction-time local) for the same reason `buildExtensionFactory` is:
         // it must read live panel state at spawn, or a server the user enabled mid-run is missed.
@@ -541,6 +542,8 @@ export class TeamRunner {
       leadAgent.toolCallCount = leadAgent.carriedToolCallCount + result.toolCallCount;
       applyAttemptUsage(leadAgent, result);
       leadAgent.finalResponse = result.finalResponse;
+      leadAgent.result = result.finalResponse;
+      if (result.error !== undefined) leadAgent.error = result.error;
 
       this.appendEntry({
         type: 'agent-completed',
@@ -567,7 +570,10 @@ export class TeamRunner {
       }
 
       if (!this.completionResolved) {
-        this.synthesizeResult(result.finalResponse ?? 'Lead agent completed without explicit synthesis.');
+        // A failed lead's text is its error and partial output, never a synthesis, as on its throw path below.
+        this.synthesizeResult(result.status === 'failed'
+          ? this.buildPartialResults()
+          : result.finalResponse ?? 'Lead agent completed without explicit synthesis.');
       }
     }).catch((err) => {
       leadAgent.error = err instanceof Error ? err.message : String(err);
@@ -1034,6 +1040,8 @@ export class TeamRunner {
       agent.toolCallCount = agent.carriedToolCallCount + result.toolCallCount;
       applyAttemptUsage(agent, result);
       agent.finalResponse = result.finalResponse;
+      agent.result = result.finalResponse;
+      if (result.error !== undefined) agent.error = result.error;
 
       // This entry carries one attempt's own usage, never the running total: the loader sums the
       // entries per agent name, so a cumulative figure here would count the earlier attempts twice.
@@ -1066,9 +1074,14 @@ export class TeamRunner {
         if (leadName) {
           const statusText = effectiveStatus === 'completed'
             ? `completed (${completionTally(agent)})`
-            : effectiveStatus;
+            : effectiveStatus === 'failed' && result.error !== undefined
+              ? `failed: ${result.error}`
+              : effectiveStatus;
+          const reRun = effectiveStatus === 'failed' && result.error !== undefined
+            ? ', and re-run it with team_redispatch_specialist if its work is still needed'
+            : '';
           this.messageBus.send('system', leadName,
-            `Specialist "${name}" ${statusText}. Read their scratchpad section for findings.`,
+            `Specialist "${name}" ${statusText}. Read their scratchpad section for findings${reRun}.`,
           );
         }
       }
@@ -1178,6 +1191,7 @@ export class TeamRunner {
     agent.runningSince = spawnedAt.getTime();
     agent.error = null;
     agent.finalResponse = null;
+    agent.result = null;
     agent.toolCallCount = 0;
     agent.carriedToolCallCount = 0;
     // Work restarts, spend does not: the dead attempt's tokens and dollars were really consumed under
@@ -1357,6 +1371,7 @@ export class TeamRunner {
       abort.abort();
     } else {
       agent.status = 'cancelled';
+      agent.result = null;
       const cancelledAt = new Date();
       stopAgentStopwatch(agent, cancelledAt.getTime());
       this.onMessage({
@@ -1365,6 +1380,7 @@ export class TeamRunner {
         agentId: agent.agentId,
         status: 'cancelled',
         stopwatch: stopwatchOf(agent),
+        result: agent.result,
       });
       this.appendEntry({
         type: 'agent-completed',
@@ -2106,6 +2122,7 @@ export class TeamRunner {
         dollarBilled: spawn?.dollarBilled ?? true,
         effort: log.efforts.get(member.agentId) ?? null,
         finalResponse: summaries.get(member.name) ?? log.lastResults.get(member.name) ?? null,
+        result: log.lastResults.get(member.name) ?? null,
         error: null,
         logFilePath: sessionFiles.get(member.agentId) ?? null,
       });
@@ -2560,6 +2577,7 @@ export class TeamRunner {
    */
   private recordThrownSettle(agent: TeamAgent): 'failed' {
     agent.status = 'failed';
+    agent.result = null;
     const failedAt = new Date();
     stopAgentStopwatch(agent, failedAt.getTime());
     this.appendEntry({
@@ -2577,7 +2595,7 @@ export class TeamRunner {
     return 'failed';
   }
 
-  /** The one status update a settled run gets, carrying its closed stopwatch. */
+  /** The one status update a settled run gets, carrying its closed stopwatch and the result its `agent-completed` recorded. */
   private emitSettledStatus(agent: TeamAgent, status: 'completed' | 'failed' | 'cancelled'): void {
     this.onMessage({
       type: 'teamAgentStatusUpdate',
@@ -2586,6 +2604,7 @@ export class TeamRunner {
       status,
       ...(status === 'completed' ? { progressSummary: `Completed (${completionTally(agent)})` } : {}),
       stopwatch: stopwatchOf(agent),
+      result: agent.result,
     });
   }
 
@@ -2620,7 +2639,7 @@ export class TeamRunner {
       dollarBilled: a.dollarBilled,
       effort: a.effort,
       progressSummary: null,
-      result: null,
+      result: a.result,
       logFilePath: a.logFilePath,
     }));
 

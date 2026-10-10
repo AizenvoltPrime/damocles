@@ -2,6 +2,7 @@ import { i18n } from "@/i18n";
 import type { HandlerRegistry } from "../types";
 import type { ChatMessage } from "@shared/types/session";
 import { endReplayIngest } from "@/utils/perf";
+import { nestedTranscript } from "./nested-transcript";
 
 export function createStreamingHandlers(): Partial<HandlerRegistry> {
   const { t } = i18n.global;
@@ -131,6 +132,14 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
       }
     },
 
+    assistantRetracted: (msg, ctx) => {
+      if (msg.parentToolUseId !== undefined) {
+        nestedTranscript(ctx.stores, msg.parentToolUseId)?.retract(msg.messageId);
+        return;
+      }
+      ctx.stores.streamingStore.removeAssistantMessage(msg.messageId);
+    },
+
     done: (msg, ctx) => {
       const { streamingStore, sessionStore } = ctx.stores;
       const resultData = msg.data;
@@ -161,6 +170,10 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
     },
 
     error: (msg, ctx) => {
+      if (msg.parentToolUseId !== undefined) {
+        nestedTranscript(ctx.stores, msg.parentToolUseId)?.addError(msg.message);
+        return;
+      }
       ctx.stores.streamingStore.addErrorMessage(msg.message);
     },
 

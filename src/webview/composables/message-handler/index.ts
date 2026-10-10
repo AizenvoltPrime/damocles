@@ -144,8 +144,6 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
     });
     logSinceNavigation("boot.readySent");
     postMessage({ type: "requestVoiceConfig" });
-    postMessage({ type: "requestExploreKeyStatus" });
-    postMessage({ type: "requestExploreConfig" });
     postMessage({ type: "getOpenAIAuthStatus" });
 
     nextTick(() => {

@@ -160,9 +160,9 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
 
     toolAbandoned: (msg, ctx) => {
       const { streamingStore, subagentStore } = ctx.stores;
-      const found = subagentStore.updateSubagentToolStatus(msg.toolUseId, "abandoned");
+      const found = subagentStore.updateSubagentToolStatus(msg.toolUseId, "abandoned", undefined, undefined, undefined, undefined, msg.reason);
       if (!found) {
-        streamingStore.updateToolStatus(msg.toolUseId, "abandoned");
+        streamingStore.updateToolStatus(msg.toolUseId, "abandoned", { abandonReason: msg.reason });
       }
     },
 

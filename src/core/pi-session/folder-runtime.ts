@@ -546,12 +546,12 @@ export class FolderRuntime {
    * Recompute the additional resource roots in place, so the next `reload()` rebuilds its base set
    * from the dirs that exist right now, in `assetSourceDirs` order (project ahead of user within a
    * source). pi aliases these arrays rather than copying them
-   * (`resource-loader.ts:383-384` in pi 0.99.2) and re-reads them per reload (`:588`, `:603`), which is what makes
+   * (`resource-loader.ts:386-387` in pi 1.1.0) and re-reads them per reload (`:596`, `:611`), which is what makes
    * an in-place splice reach it. Reassigning the fields, or handing pi a fresh array, would leave the
    * loader on the stale one.
    *
    * This has to happen before the reload rather than after it. `extendResources` merges primary-first
-   * (`resource-loader.ts:471-474`), so a dir that reaches the loader only through that call lands
+   * (`resource-loader.ts:476-480`), so a dir that reaches the loader only through that call lands
    * BEHIND the base entries and loses a name collision it should win. That is reachable two ways: a
    * trust grant admitting the project dirs, and a project asset dir created after creation, which is the
    * case the asset watchers exist for.
@@ -756,7 +756,7 @@ export class FolderRuntime {
         appendSystemPromptOverride: () => [],
         noContextFiles: true,
         // No `agentsFilesOverride` here: pi applies it AFTER the `noContextFiles` check
-        // (resource-loader.ts:634-642 in pi 0.99.2), so an override would repopulate the list `noContextFiles`
+        // (resource-loader.ts:642-650 in pi 1.1.0), so an override would repopulate the list `noContextFiles`
         // just emptied and hand `prompt_mode: replace` agents the context they must not see.
         noSkills: true,
         noPromptTemplates: true,
@@ -818,20 +818,22 @@ export class FolderRuntime {
     // solely on the lower-level `AgentSessionConfig`, which this factory does not surface (it derives
     // that field from `options.tools` itself). `setActiveToolsByName` is therefore the correct seam.
     //
-    // The deferred names MUST stay in `opts.tools`: pi freezes `options.tools` into `_allowedToolNames`
-    // and `_refreshToolRegistry` filters the REGISTRY by it. Dropping browser/compass/web — or any
-    // `mcp__*` name — from `tools:` would remove it from the registry entirely, and
-    // `setActiveToolsByName` silently ignores unknown names, so it could never be brought back.
+    // The deferred names MUST stay in `opts.tools`: pi turns `options.tools` into its allowlist and
+    // `_refreshToolRegistry` filters the REGISTRY by it. Dropping browser/compass/web from `tools:`
+    // removes it from the registry entirely, and `setActiveToolsByName` silently ignores unknown names,
+    // so it could never be brought back. An `mcp__*` name left out of `tools:` is unregistered when
+    // `tools:` names any `mcp__` entry; otherwise pi keeps it registered, but `_isActivatable` refuses a
+    // `direct` tool without pi's `tool_search`, so it can never be activated either.
     // `tools:` stays the full ELIGIBLE set; only the ACTIVE set narrows here. For MCP the same name
     // must ALSO appear in `customTools` (that is where its definition comes from in a nested session);
     // a name in `tools:` with no matching definition is dropped with no error at all.
     //
-    // Residual fragility: with `allowedToolNames` set, `_refreshToolRegistry` takes the
-    // `if (allowedToolNames)` branch (agent-session.js:2806, pi 0.99.2) and force-activates every allowed
+    // Residual fragility: with an allowlist set, `_refreshToolRegistry` takes the
+    // `if (allowedTools)` branch (agent-session.js:2866, pi 1.1.0) and force-activates every allowed
     // `direct` tool, undoing this baseline. Verified it still cannot fire after this line in a nested session:
     //  - `customTools` are captured at construction (`this._customTools = config.customTools ?? []`,
-    //    agent-session.js:168) and merged into the registry INSIDE `_refreshToolRegistry` itself
-    //    (line 2757), which the constructor's `_buildRuntime` runs (line 2868). So the MCP tools are
+    //    agent-session.js:182) and merged into the registry INSIDE `_refreshToolRegistry` itself
+    //    (line 2817), which the constructor's `_buildRuntime` runs (line 2931). So the MCP tools are
     //    force-activated during construction and this `setActiveToolsByName` still lands LAST.
     //  - The only `registerTool` in a nested session is ToolSearch, during extension LOAD, where pi's
     //    `runtime.refreshTools` is still a no-op stub (extensions/loader.js:128-129 "registerTool() is

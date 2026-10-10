@@ -21,7 +21,7 @@ vi.mock('../database', async (importActual) => {
   };
 });
 
-const MODEL: MemoryAuditModel = { provider: 'anthropic', id: 'haiku', inputPerMTok: 1, outputPerMTok: 5, dollarBilled: true };
+const MODEL: MemoryAuditModel = { provider: 'anthropic', id: 'haiku', inputPerMTok: 1, outputPerMTok: 5, dollarBilled: true, effort: 'low' };
 const subcall = vi.hoisted(() => ({
   describe: (): unknown => null,
   run: null as null | ((req: MemorySubCallRequest) => Promise<MemorySubCallResult<unknown>>),
@@ -71,7 +71,7 @@ describe('MemoryService quality audit lifecycle', () => {
     subcall.run = (req) => {
       markCalled();
       return new Promise((resolve) => {
-        req.abortSignal?.addEventListener('abort', () => resolve({ value: null, failure: 'transient' }), { once: true });
+        req.abortSignal?.addEventListener('abort', () => resolve({ value: null, failure: 'unreachable' }), { once: true });
       });
     };
     return { called };
@@ -156,7 +156,7 @@ describe('MemoryService quality audit lifecycle', () => {
 
   it('reports a run in which every call failed with the all-failed code, then broadcasts the final state', async () => {
     seed();
-    subcall.run = async () => ({ value: null, failure: 'transient' });
+    subcall.run = async () => ({ value: null, failure: 'unreachable' });
     await service.startAudit();
     await vi.waitFor(() => expect(sent.some((m) => m.type === 'memoryAuditSummary')).toBe(true));
     expect(sent).toContainEqual(expect.objectContaining({ type: 'memoryError', source: 'audit', code: 'all-failed' }));

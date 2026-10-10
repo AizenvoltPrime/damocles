@@ -79,8 +79,8 @@ export const subagents: Scene = {
     await cancelled;
     await stage.send(
       sessionState('idle'),
-      { type: 'toolAbandoned', toolUseId: MAP.toolUseId, toolName: 'Agent', parentToolUseId: null },
-      { type: 'toolAbandoned', toolUseId: MW.toolUseId, toolName: 'Agent', parentToolUseId: null },
+      { type: 'toolAbandoned', toolUseId: MAP.toolUseId, toolName: 'Agent', parentToolUseId: null, reason: 'stopped' },
+      { type: 'toolAbandoned', toolUseId: MW.toolUseId, toolName: 'Agent', parentToolUseId: null, reason: 'stopped' },
       { type: 'sessionCancelled' },
       { type: 'processing', isProcessing: false },
     );

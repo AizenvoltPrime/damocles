@@ -2,7 +2,7 @@
 import { computed } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
-import { DEFAULT_THINKING_TOKENS, thinkingDisableApplies } from '@shared/types/constants';
+import { thinkingDisableApplies } from '@shared/types/constants';
 import type { EffortLevel, PermissionMode } from '@shared/types/settings';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useSettingsStore } from '@/stores/useSettingsStore';
@@ -10,9 +10,7 @@ import SettingsRow from '../SettingsRow.vue';
 import SettingSelect from '../controls/SettingSelect.vue';
 import SettingSeg from '../controls/SettingSeg.vue';
 import SettingSwitch from '../controls/SettingSwitch.vue';
-import SettingInput from '../controls/SettingInput.vue';
 import { effortOptions, modelOptions, permissionOptions } from '../model-options';
-import { parseThinkingTokens } from '../parsers';
 import { useSettingsPage } from '../settings-view';
 
 const { t } = useI18n();
@@ -42,17 +40,12 @@ const openai = computed(() => thinkingModel.value?.backend === 'openai');
 const thinkingOn = computed(() => panelThinking.value !== null && (!panelThinking.value.thinkingDisabled || openai.value));
 
 function setModel(model: string): void {
-  if (settingsStore.pendingOpenAIModel && settingsStore.pendingOpenAIModel !== model) settingsStore.setPendingOpenAIModel(null);
-  settingsStore.setModelState(model, defaultModel.value);
+  // Sent for the current model too, which withdraws a pick core holds for a sign-in; the select changes only on core's modelUpdate.
   postMessage({ type: 'setActiveModel', model });
 }
 
 function setEffort(effort: EffortLevel): void {
   postMessage({ type: 'setPanelEffort', effort, model: panelThinkingModel.value || chatModel.value });
-}
-
-function setThinkingTokens(tokens: number): void {
-  postMessage({ type: 'setPanelMaxThinkingTokens', tokens, model: panelThinkingModel.value || chatModel.value });
 }
 
 function setThinkingDisabled(disabled: boolean): void {
@@ -96,6 +89,7 @@ function setPermissionMode(mode: PermissionMode): void {
       :model-value="chatModel"
       :options="modelOptions(availableModels)"
       :label="t('settingsModal.rows.model.label')"
+      reselectable
       @update:model-value="setModel"
     />
   </SettingsRow>
@@ -108,19 +102,6 @@ function setPermissionMode(mode: PermissionMode): void {
       :options="effortOptions(effortLevels, t)"
       :label="t('settingsModal.rows.effort.label')"
       @update:model-value="setEffort"
-    />
-  </SettingsRow>
-  <SettingsRow
-    v-else-if="panelThinking && thinkingOn && !adaptive"
-    id="thinking-tokens"
-  >
-    <SettingInput
-      :model-value="String(panelThinking.maxThinkingTokens ?? DEFAULT_THINKING_TOKENS)"
-      :parse="(raw) => parseThinkingTokens(raw, t)"
-      :label="t('settingsModal.rows.thinkingTokens.label')"
-      :suffix="t('common.tokens')"
-      inputmode="numeric"
-      @commit="setThinkingTokens"
     />
   </SettingsRow>
   <SettingsRow

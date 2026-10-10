@@ -2,8 +2,7 @@ import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import { getEventListeners } from 'node:events';
 import { installLogSink } from '../../logger';
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
-import type { Api, Model } from '@earendil-works/pi-ai';
-import { CUSTOM_PROVIDER_DEFS, syncCustomProviders, exploreThinkingLevel } from '../custom-providers';
+import { CUSTOM_PROVIDER_DEFS, providerKeyStored, syncCustomProviders } from '../custom-providers';
 
 /**
  * Guards the StepFun wire behavior (Slice 2): step_plan takes reasoning effort as adaptive
@@ -11,42 +10,62 @@ import { CUSTOM_PROVIDER_DEFS, syncCustomProviders, exploreThinkingLevel } from 
  * model MUST carry `compat: { forceAdaptiveThinking: true }`. This test fails if that flag is dropped.
  */
 describe('CUSTOM_PROVIDER_DEFS — StepFun adaptive-thinking compat', () => {
-  it('registers step-3.7-flash with compat.forceAdaptiveThinking', () => {
+  it('registers step-5-preview with compat.forceAdaptiveThinking', () => {
     const stepfun = CUSTOM_PROVIDER_DEFS.find((d) => d.provider === 'stepfun');
     expect(stepfun?.registerConfig?.models?.[0]).toHaveProperty('compat', { forceAdaptiveThinking: true });
   });
+
+  // StepFun has no way to disable thinking, so `off` must clamp up to low rather than reach the wire.
+  it('registers Step 5 Preview with low, medium and high only, as its own cheap model', () => {
+    const stepfun = CUSTOM_PROVIDER_DEFS.find((d) => d.provider === 'stepfun');
+    expect(stepfun?.cheapModelId).toBe('step-5-preview');
+    expect(stepfun?.registerConfig?.models).toEqual([
+      expect.objectContaining({
+        id: 'step-5-preview',
+        name: 'StepFun Step 5 Preview',
+        reasoning: true,
+        input: ['text', 'image'],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 1_000_000,
+        maxTokens: 64_000,
+        thinkingLevelMap: { off: null, minimal: null, xhigh: null, max: null },
+      }),
+    ]);
+  });
+
+  it('names DeepSeek V4.1 Flash as the DeepSeek cheap model', () => {
+    expect(CUSTOM_PROVIDER_DEFS.find((d) => d.provider === 'deepseek')?.cheapModelId).toBe('deepseek-flash');
+  });
 });
 
-/**
- * `exploreThinkingLevel` double-match guard: an effort maps to a pi thinking level only when it parses
- * to a valid level AND the model matches a DEFAULT_MODELS entry by BOTH `value` and `piProvider`.
- * effortToPiThinking maps 'low'/'medium'/'high' to the identical pi levels 'low'/'medium'/'high'.
- */
-describe('exploreThinkingLevel', () => {
-  const model = (provider: string, id: string) => ({ provider, id }) as unknown as Model<Api>;
-  const stepFlash = model('stepfun', 'step-3.7-flash');
-
-  it('maps supported effort levels on the matching catalog model', () => {
-    expect(exploreThinkingLevel(stepFlash, 'low')).toBe('low');
-    expect(exploreThinkingLevel(stepFlash, 'medium')).toBe('medium');
-    expect(exploreThinkingLevel(stepFlash, 'high')).toBe('high');
+describe('CUSTOM_PROVIDER_DEFS: the OpenRouter and StepFun keys', () => {
+  it('registers no Gemini provider, so a stored Gemini key wires nothing', () => {
+    expect(CUSTOM_PROVIDER_DEFS.map((d) => d.provider)).toEqual(['stepfun', 'deepseek', 'openrouter', 'typesafe']);
   });
 
-  it('returns undefined for empty or garbage effort', () => {
-    expect(exploreThinkingLevel(stepFlash, '')).toBeUndefined();
-    expect(exploreThinkingLevel(stepFlash, 'bogus')).toBeUndefined();
+  // The stored names predate the keys' current uses; renaming one would drop every user's saved key.
+  it('reads the OpenRouter and StepFun keys from their stored names', () => {
+    expect(CUSTOM_PROVIDER_DEFS.find((d) => d.provider === 'openrouter')?.secretKey).toBe('damocles.explore.apiKey.openrouter');
+    expect(CUSTOM_PROVIDER_DEFS.find((d) => d.provider === 'stepfun')?.secretKey).toBe('damocles.explore.apiKey.stepfun');
   });
 
-  it('returns undefined for a non-catalog model id', () => {
-    expect(exploreThinkingLevel(model('openrouter', 'deepseek/deepseek-v4-flash'), 'high')).toBeUndefined();
+  it('gives OpenRouter no cheap model, so the Explore default never runs on it', () => {
+    expect(CUSTOM_PROVIDER_DEFS.find((d) => d.provider === 'openrouter')?.cheapModelId).toBeUndefined();
   });
 
-  it('returns undefined when the catalog value matches but the provider does not (double-match guard)', () => {
-    expect(exploreThinkingLevel(model('openrouter', 'deepseek-v4-flash'), 'high')).toBeUndefined();
+  it('wires OpenRouter from its key, which image generation and Jev read as the openrouter runtime key', async () => {
+    const { runtime, asModelRuntime } = makeRuntime();
+    const result = await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret: secrets({ 'damocles.explore.apiKey.openrouter': 'sk-or' }) });
+    expect(result.wired).toEqual(['openrouter']);
+    expect(runtime.setRuntimeApiKey).toHaveBeenCalledWith('openrouter', 'sk-or', {});
   });
 
-  it('returns undefined for a valid level the model does not support', () => {
-    expect(exploreThinkingLevel(stepFlash, 'max')).toBeUndefined();
+  it('registers StepFun from its key, which StepFun chats run on', async () => {
+    const { runtime, asModelRuntime } = makeRuntime();
+    const result = await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret: secrets({ 'damocles.explore.apiKey.stepfun': 'sf' }) });
+    expect(result.wired).toEqual(['stepfun']);
+    expect(runtime.registerProvider).toHaveBeenCalledWith('stepfun', expect.objectContaining({ apiKey: 'sf', baseUrl: 'https://api.stepfun.ai/step_plan' }));
+    expect(runtime.setRuntimeApiKey).toHaveBeenCalledWith('stepfun', 'sf', {});
   });
 });
 
@@ -182,13 +201,13 @@ describe('syncCustomProviders', () => {
 
   it('leaves ambient environment auth alone when the secret is absent', async () => {
     const { runtime, asModelRuntime } = makeRuntime({
-      google: { configured: true, source: 'environment', label: 'GEMINI_API_KEY' },
+      typesafe: { configured: true, source: 'environment', label: 'TYPESAFE_API_KEY' },
     });
 
     await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret: secrets({}) });
 
-    expect(runtime.logout).not.toHaveBeenCalledWith('google', expect.anything());
-    expect(runtime.removeRuntimeApiKey).not.toHaveBeenCalledWith('google', expect.anything());
+    expect(runtime.logout).not.toHaveBeenCalledWith('typesafe', expect.anything());
+    expect(runtime.removeRuntimeApiKey).not.toHaveBeenCalledWith('typesafe', expect.anything());
     expect(runtime.unregisterProvider).not.toHaveBeenCalled();
   });
 
@@ -207,7 +226,7 @@ describe('syncCustomProviders', () => {
   it('wires nothing when the signal is already aborted, and reports only known-configured providers', async () => {
     // A4: nothing has been read yet and nothing is cached, so the only provider Damocles can honestly
     // call "configured but not live" is the one pi already reports a credential for.
-    const { runtime, asModelRuntime } = makeRuntime({ google: { configured: true, source: 'stored' } });
+    const { runtime, asModelRuntime } = makeRuntime({ typesafe: { configured: true, source: 'stored' } });
 
     const result = await syncCustomProviders({
       modelRuntime: asModelRuntime,
@@ -215,7 +234,7 @@ describe('syncCustomProviders', () => {
       signal: AbortSignal.abort(),
     });
 
-    expect(result).toEqual({ wired: [], aborted: true, notWired: ['google'], changed: [] });
+    expect(result).toEqual({ wired: [], aborted: true, notWired: ['typesafe'], changed: [] });
     expect(runtime.registerProvider).not.toHaveBeenCalled();
     expect(runtime.setRuntimeApiKey).not.toHaveBeenCalled();
   });
@@ -244,7 +263,7 @@ describe('syncCustomProviders', () => {
   it('keeps an unreached provider in notWired when the runtime already reports it configured', async () => {
     const { runtime, asModelRuntime } = makeRuntime({
       openrouter: { configured: true, source: 'stored' },
-      google: { configured: true, source: 'environment', label: 'GEMINI_API_KEY' },
+      typesafe: { configured: true, source: 'environment', label: 'TYPESAFE_API_KEY' },
     });
     const controller = new AbortController();
     runtime.setRuntimeApiKey.mockImplementationOnce(async () => {
@@ -257,7 +276,7 @@ describe('syncCustomProviders', () => {
       signal: controller.signal,
     });
 
-    expect(result).toEqual({ wired: ['stepfun'], aborted: true, notWired: ['openrouter', 'google'], changed: ['stepfun'] });
+    expect(result).toEqual({ wired: ['stepfun'], aborted: true, notWired: ['openrouter', 'typesafe'], changed: ['stepfun'] });
   });
 
   it('reports a CredentialSynchronizationError provider as wired and caches its key (pi commits the key first)', async () => {
@@ -300,7 +319,7 @@ describe('syncCustomProviders', () => {
     });
 
     // deepseek's secret WAS read this sync, so it is known-configured even though it never applied;
-    // openrouter/google were never read and have no key, so they stay out of both lists.
+    // openrouter/typesafe were never read and have no key, so they stay out of both lists.
     expect(result).toEqual({ wired: [], aborted: true, notWired: ['deepseek'], changed: [] });
     // …and the key was NOT cached, so an un-aborted resync re-applies it.
     const retry = await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret: secrets({ [DEEPSEEK_SECRET]: 'ds-key' }) });
@@ -406,7 +425,7 @@ describe('syncCustomProviders — a failed secret read never deauthenticates (A3
   });
 
   it('keeps the read-failure, absent-secret and failed-to-apply cases distinguishable', async () => {
-    const { runtime, asModelRuntime } = makeRuntime({ google: { configured: true, source: 'stored' } });
+    const { runtime, asModelRuntime } = makeRuntime({ typesafe: { configured: true, source: 'stored' } });
     runtime.setRuntimeApiKey.mockImplementationOnce(async () => {
       throw new Error('provider rejected the key');
     });
@@ -418,12 +437,32 @@ describe('syncCustomProviders — a failed secret read never deauthenticates (A3
 
     const result = await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret });
 
-    expect(result).toEqual({ wired: [], aborted: false, notWired: ['stepfun', 'deepseek'], changed: ['google'] });
+    expect(result).toEqual({ wired: [], aborted: false, notWired: ['stepfun', 'deepseek'], changed: ['typesafe'] });
     const output = logLines.join('\n');
     expect(output).toContain('failed to wire stepfun');
     expect(output).toContain('could not read the stored secret for deepseek');
-    expect(output).toContain('deauthenticated google (secret absent)');
-    expect(runtime.logout).toHaveBeenCalledWith('google', {});
+    expect(output).toContain('deauthenticated typesafe (secret absent)');
+    expect(runtime.logout).toHaveBeenCalledWith('typesafe', {});
     expect(runtime.logout).not.toHaveBeenCalledWith('deepseek', expect.anything());
+  });
+});
+
+describe('providerKeyStored', () => {
+  it('answers whether a non-empty key is stored', async () => {
+    expect(await providerKeyStored(async () => 'sk-step', 'k')).toBe(true);
+    expect(await providerKeyStored(async () => '', 'k')).toBe(false);
+    expect(await providerKeyStored(async () => undefined, 'k')).toBe(false);
+  });
+
+  it('answers undefined when the read fails or the store does not answer in time', async () => {
+    expect(await providerKeyStored(() => Promise.reject(new Error('keyring is locked')), 'k')).toBeUndefined();
+    vi.useFakeTimers();
+    try {
+      const read = providerKeyStored(() => new Promise<never>(() => undefined), 'k');
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(await read).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

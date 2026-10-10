@@ -41,8 +41,8 @@ function errorText(err: unknown): string {
 
 /**
  * Every desktop question renders as the overlay's dialog (D41). The OS message box asks only when the overlay cannot:
- * no overlay page, a crashed one, a missed acknowledgement, or a question beyond the overlay's bounds, except once a quit
- * closes the window.
+ * no overlay page loaded or loading, a crashed or reloaded one, a missed acknowledgement, or a question beyond the
+ * overlay's bounds, except once a quit closes the window.
  */
 export function createMessageAsker(deps: MessageAskerDeps): AskMessage {
   const native = async (question: MessageQuestion): Promise<number | undefined> => {

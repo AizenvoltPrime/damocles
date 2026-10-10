@@ -2,6 +2,17 @@ import { describe, it, expect } from 'vitest';
 import { piMessagesToHistoryAgentMessages } from '../message-mapper';
 
 describe('piMessagesToHistoryAgentMessages', () => {
+  it("carries a tool result's recorded execution time onto its tool_use block, and none when pi recorded none", () => {
+    const out = piMessagesToHistoryAgentMessages([
+      { role: 'assistant', content: [{ type: 'toolCall', id: 'timed', name: 'read', arguments: {} }, { type: 'toolCall', id: 'old', name: 'read', arguments: {} }] },
+      { role: 'toolResult', toolCallId: 'timed', toolName: 'read', content: [{ type: 'text', text: 'a' }], durationMs: 1234 },
+      { role: 'toolResult', toolCallId: 'old', toolName: 'read', content: [{ type: 'text', text: 'b' }] },
+    ]);
+    const [timed, old] = out[0]!.contentBlocks;
+    expect(timed).toMatchObject({ type: 'tool_use', id: 'timed', durationMs: 1234 });
+    expect(old).not.toHaveProperty('durationMs');
+  });
+
   it('maps user + assistant messages and pairs tool results back to their tool-call id', () => {
     const messages = [
       { role: 'user', content: 'do the thing' },
@@ -107,5 +118,113 @@ describe('piMessagesToHistoryAgentMessages', () => {
       { role: 'assistant', content: [] },
     ]);
     expect(out).toEqual([]);
+  });
+});
+
+describe('piMessagesToHistoryAgentMessages: a failed model call', () => {
+  it('maps the text a failed call streamed and then its error, as the live card showed them', () => {
+    const out = piMessagesToHistoryAgentMessages([
+      { role: 'assistant', content: [{ type: 'text', text: 'Now I will' }], stopReason: 'error', errorMessage: '529 overloaded_error' },
+    ]);
+    expect(out).toEqual([
+      { role: 'assistant', contentBlocks: [{ type: 'text', text: 'Now I will' }] },
+      { role: 'error', contentBlocks: [{ type: 'text', text: '529 overloaded_error' }] },
+    ]);
+  });
+
+  it('maps the error of a failed call that streamed nothing, and names an unknown one as the live card does', () => {
+    const out = piMessagesToHistoryAgentMessages([{ role: 'assistant', content: [], stopReason: 'error' }]);
+    expect(out).toEqual([{ role: 'error', contentBlocks: [{ type: 'text', text: 'Unknown error' }] }]);
+  });
+
+  it('maps no error for an aborted call', () => {
+    expect(piMessagesToHistoryAgentMessages([{ role: 'assistant', content: [], stopReason: 'aborted', errorMessage: 'Request was aborted' }])).toEqual([]);
+  });
+
+  // pi returns before executing any tool of an errored or aborted message (agent-loop.js:143).
+  it('marks the tool calls of a failed call failed and those of an aborted call stopped', () => {
+    const call = (id: string) => ({ type: 'toolCall', id, name: 'bash', arguments: { command: 'ls' } });
+    const out = piMessagesToHistoryAgentMessages([
+      { role: 'assistant', content: [call('failed-call')], stopReason: 'error', errorMessage: 'terminated' },
+      { role: 'assistant', content: [call('aborted-call')], stopReason: 'aborted', errorMessage: 'Request was aborted' },
+    ]);
+    expect(out.flatMap((m) => m.contentBlocks).filter((b) => b.type === 'tool_use')).toEqual([
+      expect.objectContaining({ id: 'failed-call', abandoned: 'failed' }),
+      expect.objectContaining({ id: 'aborted-call', abandoned: 'stopped' }),
+    ]);
+  });
+
+  // pi finalizes the call it was running and starts none after it (agent-loop.js:402-404, :429-431, :449-451),
+  // then drains steers (:186) and makes the next call under the aborted signal, which ends aborted (:141-152);
+  // a request setup the signal rejects first ends it on an error stop instead (pi-ai lazy.js:41-44).
+  it('marks the calls an abort skipped in a tool batch stopped when the aborted call follows', () => {
+    const call = (id: string) => ({ type: 'toolCall', id, name: 'bash', arguments: { command: 'ls' } });
+    const out = piMessagesToHistoryAgentMessages([
+      { role: 'assistant', content: [call('ran'), call('skipped')], stopReason: 'toolUse' },
+      { role: 'toolResult', toolCallId: 'ran', content: [{ type: 'text', text: 'Operation aborted' }], isError: true },
+      { role: 'user', content: [{ type: 'text', text: 'steer' }] },
+      { role: 'assistant', content: [], stopReason: 'aborted', errorMessage: 'Request was aborted' },
+    ]);
+    const tools = out.flatMap((m) => m.contentBlocks).filter((b) => b.type === 'tool_use');
+    expect(tools).toEqual([
+      expect.objectContaining({ id: 'ran', result: 'Operation aborted', isError: true }),
+      expect.objectContaining({ id: 'skipped', abandoned: 'stopped' }),
+    ]);
+    expect(tools[0]).not.toHaveProperty('abandoned');
+  });
+
+  // The nested turn-stopped record names a call the abort settled before `execute` (agent-loop.js:500-504), which has no durationMs.
+  it('marks a call the record names as stopped without the result pi wrote, and keeps one pi executed', () => {
+    const call = (id: string) => ({ type: 'toolCall', id, name: 'bash', arguments: { command: 'ls' } });
+    const out = piMessagesToHistoryAgentMessages([
+      { role: 'assistant', content: [call('gated'), call('ran')], stopReason: 'toolUse' },
+      { role: 'toolResult', toolCallId: 'gated', content: [{ type: 'text', text: 'Operation aborted' }], details: {}, isError: true },
+      { role: 'toolResult', toolCallId: 'ran', content: [{ type: 'text', text: 'Command aborted' }], details: { damoclesCancelled: true }, isError: true, durationMs: 40 },
+    ], new Set(['gated', 'ran']));
+    const tools = out.flatMap((m) => m.contentBlocks).filter((b) => b.type === 'tool_use');
+    expect(tools[0]).toEqual({ type: 'tool_use', id: 'gated', name: 'Bash', input: { command: 'ls' }, abandoned: 'stopped' });
+    expect(tools[1]).toMatchObject({ id: 'ran', result: 'Command aborted', durationMs: 40 });
+    expect(tools[1]).not.toHaveProperty('abandoned');
+  });
+
+  it('leaves a call with no result unmarked when no aborted call follows', () => {
+    const call = (id: string) => ({ type: 'toolCall', id, name: 'bash', arguments: { command: 'ls' } });
+    const out = piMessagesToHistoryAgentMessages([
+      { role: 'assistant', content: [call('ran'), call('unknown')], stopReason: 'toolUse' },
+      { role: 'toolResult', toolCallId: 'ran', content: [{ type: 'text', text: 'ok' }] },
+    ]);
+    expect(out.flatMap((m) => m.contentBlocks).find((b) => b.type === 'tool_use' && b.id === 'unknown')).not.toHaveProperty('abandoned');
+  });
+});
+
+describe('piMessagesToHistoryAgentMessages: a Stop\'s wind-down error', () => {
+  const call = (id: string) => ({ type: 'toolCall', id, name: 'bash', arguments: { command: 'sleep 20' } });
+  const batch = { role: 'assistant', content: [call('ran'), call('skipped')], stopReason: 'toolUse' };
+  const killed = { role: 'toolResult', toolCallId: 'ran', content: [{ type: 'text', text: 'Command aborted' }], details: { damoclesCancelled: true }, isError: true, durationMs: 700 };
+  // pi-ai's lazy stream ends a request setup the aborted signal rejected on an error stop (lazy.js:41-44 in pi-ai 1.1.0).
+  const windDown = { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'This operation was aborted' };
+
+  it('maps no error for a wind-down error and stops the calls the abort skipped, as for an aborted stop', () => {
+    const out = piMessagesToHistoryAgentMessages([batch, killed, windDown], new Set(), new Set([windDown]));
+
+    expect(out.map((m) => m.role)).toEqual(['assistant']);
+    expect(out[0]!.contentBlocks).toEqual([
+      expect.objectContaining({ id: 'ran', result: 'Command aborted', durationMs: 700 }),
+      expect.objectContaining({ id: 'skipped', abandoned: 'stopped' }),
+    ]);
+  });
+
+  it('marks the calls a wind-down error named as stopped', () => {
+    const named = { ...windDown, content: [call('never-ran')] };
+    const out = piMessagesToHistoryAgentMessages([named], new Set(), new Set([named]));
+    expect(out).toEqual([{ role: 'assistant', contentBlocks: [expect.objectContaining({ id: 'never-ran', abandoned: 'stopped' })] }]);
+  });
+
+  it('keeps the error of a file written before the record existed, and of a failure the record does not name', () => {
+    expect(piMessagesToHistoryAgentMessages([batch, killed, windDown]).map((m) => m.role)).toEqual(['assistant', 'error']);
+    const failure = { role: 'assistant', content: [], stopReason: 'error', errorMessage: '529 overloaded_error' };
+    expect(piMessagesToHistoryAgentMessages([failure, windDown], new Set(), new Set([windDown]))).toEqual([
+      { role: 'error', contentBlocks: [{ type: 'text', text: '529 overloaded_error' }] },
+    ]);
   });
 });

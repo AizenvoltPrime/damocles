@@ -74,6 +74,21 @@ describe('BackgroundTasksOverlay', () => {
     }
   });
 
+  it("shows a running row's retry wait, as its card does, in place of its progress summary", () => {
+    useBackgroundTaskStore().handleTaskStarted(task());
+    useSubagentStore().subagents = { tc1: card({ progressSummary: 'reading the parser' }) };
+    const wrapper = render();
+    expect(wrapper.get('[data-testid="bg-subagent-row"]').text()).toContain('reading the parser');
+
+    useSubagentStore().setSubagentRetry('tc1', { attempt: 2, maxAttempts: 3 });
+
+    return nextTick().then(() => {
+      const row = wrapper.get('[data-testid="bg-subagent-row"]').text();
+      expect(row).toContain(i18n.global.t('status.retrying', { attempt: 2, max: 3 }));
+      expect(row).not.toContain('reading the parser');
+    });
+  });
+
   it('opens the subagent overlay when a row is clicked', async () => {
     useBackgroundTaskStore().handleTaskStarted(task());
     useSubagentStore().subagents = { tc1: card() };

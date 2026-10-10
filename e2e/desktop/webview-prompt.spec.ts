@@ -1,22 +1,24 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { PROVIDER_SECRET_KEYS } from '../../src/core/pi-session/explore-providers';
 import { activeChat, expect, test } from './support/fixtures';
-import { chatInput, clickMenu, postFromWebview } from './support/ui';
-import { openSettingsModal, settingsModal, settingsRow } from './support/settings';
-import { popupPage, popupToasts } from './support/shell';
+import { askHostPassword, chatInput, hostPromptAnswer, postFromWebview } from './support/ui';
+import { openSettingsModal, settingsModal, settingsRow, waitForSettingsState } from './support/settings';
 
 const SECRET = 'sk-or-e2e-7f3a91';
+const KEY_PROMPT = 'Enter the e2e API key';
+const HOOKS = { env: { DAMOCLES_E2E_HOOKS: '1' } };
 const CHATGPT_PASTE_PROMPT = 'Complete login in your browser, or paste the final redirect URL here:';
 
 test('host input box renders in the chat webview, accepts a masked value, and an abort closes it', async ({ home, launch }) => {
-  const desktop = await launch();
+  const desktop = await launch(HOOKS);
   const { app } = desktop;
   const tab = await activeChat(app);
   await expect(chatInput(tab)).toBeVisible();
 
-  // Set Explore API Key is a real DialogService.inputBox caller with a password prompt.
-  await clickMenu(app, 'damocles.setExploreApiKey');
-  const dialog = tab.getByRole('dialog', { name: 'Enter your OpenRouter API key for Explore agents' });
+  // Main's DialogService.inputBox, the path every host prompt takes, asking for a masked value.
+  await askHostPassword(app, KEY_PROMPT);
+  const dialog = tab.getByRole('dialog', { name: KEY_PROMPT });
   await expect(dialog).toBeVisible();
   const input = dialog.getByRole('textbox');
   await expect(input).toBeFocused();
@@ -24,7 +26,7 @@ test('host input box renders in the chat webview, accepts a masked value, and an
   await input.fill(SECRET);
   await input.press('Enter');
   await expect(dialog).toBeHidden();
-  await expect(popupToasts(await popupPage(app)).filter({ hasText: 'Damocles: OpenRouter API key saved' })).toBeVisible();
+  expect(await hostPromptAnswer(app)).toBe(SECRET);
 
   // The ChatGPT sign-in asks for the pasted redirect URL; signing out aborts the flow, which withdraws the prompt.
   await app.evaluate(({ shell: electronShell }) => {
@@ -45,18 +47,20 @@ test('host input box renders in the chat webview, accepts a masked value, and an
   }
 });
 
-test('with the settings modal open, a host prompt renders in it, takes a masked key, and the key reaches no log', async ({ home, launch }) => {
-  const desktop = await launch();
+test('with the settings modal open, a host prompt renders in it, takes a masked key that is stored as a secret, and the key reaches no log', async ({ home, launch }) => {
+  const desktop = await launch(HOOKS);
   const { app } = desktop;
   const tab = await activeChat(app);
   await expect(chatInput(tab)).toBeVisible();
   const overlay = await openSettingsModal(app, 'accounts');
+  await waitForSettingsState(overlay);
 
-  // The modal is attached to the selected chat, so the chat's host prompt is redirected into it.
-  await clickMenu(app, 'damocles.setExploreApiKey');
-  const dialog = overlay.getByRole('dialog', { name: 'Enter your OpenRouter API key for Explore agents' });
+  // The modal is attached to the selected chat, so the chat's host prompt is redirected into it. The answer is stored as the
+  // OpenRouter key, which core reads back to pick the memory judge.
+  await askHostPassword(app, KEY_PROMPT, PROVIDER_SECRET_KEYS.openrouter);
+  const dialog = overlay.getByRole('dialog', { name: KEY_PROMPT });
   await expect(dialog).toBeVisible();
-  await expect(tab.getByRole('dialog', { name: 'Enter your OpenRouter API key for Explore agents' })).toHaveCount(0);
+  await expect(tab.getByRole('dialog', { name: KEY_PROMPT })).toHaveCount(0);
   const input = dialog.getByRole('textbox');
   await expect(input).toBeFocused();
   await expect(input).toHaveAttribute('type', 'password');
@@ -64,7 +68,9 @@ test('with the settings modal open, a host prompt renders in it, takes a masked 
   await input.press('Enter');
   await expect(dialog).toBeHidden();
   await expect(settingsModal(overlay)).toBeVisible();
-  await expect(popupToasts(await popupPage(app)).filter({ hasText: 'Damocles: OpenRouter API key saved' })).toBeVisible();
+  expect(await hostPromptAnswer(app)).toBe(SECRET);
+  await settingsRow(overlay, 'account-typesafe').getByRole('button', { name: /Add key|Replace key/ }).click();
+  await expect(overlay.getByTestId('memory-judge')).toHaveText('Memory judge: Jev (OpenRouter)');
 
   // A sink writes a line on a later turn of main's event loop, so the logs are read once the app has quit.
   await desktop.close();

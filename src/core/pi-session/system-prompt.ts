@@ -31,6 +31,7 @@ export function getKnowledgeCutoff(model: string): string | null {
   if (m.includes("claude-opus-4-8")) return "January 2026";
   if (m.includes("claude-sonnet-5-5")) return "June 2026";
   if (m.includes("claude-sonnet-5")) return "January 2026";
+  if (m.includes("claude-haiku-5-5")) return "June 2026";
   if (m.includes("claude-haiku-4")) return "February 2025";
   if (m.includes("claude-opus-4") || m.includes("claude-sonnet-4")) return "January 2025";
   if (m.startsWith("gpt-6-astra")) return "April 2026";
@@ -51,6 +52,7 @@ function getModelDisplayName(model: string): string | null {
   if (m.includes("claude-sonnet-5-5")) return "Sonnet 5.5";
   if (m.includes("claude-sonnet-5")) return "Sonnet 5";
   if (m.includes("claude-sonnet-4-5")) return "Sonnet 4.5";
+  if (m.includes("claude-haiku-5-5")) return "Haiku 5.5";
   if (m.includes("claude-haiku-4-5")) return "Haiku 4.5";
   if (m.includes("claude-haiku-4")) return "Haiku 4";
   if (m.startsWith("gpt-6-astra")) return "GPT-6 Astra";

@@ -70,7 +70,7 @@ const CONFLICT_SCHEMA = {
 
 /**
  * Owns the memory fact graph: edge primitives, version-lineage maintenance, and judged conflict
- * resolution (Jev first, the LLM when Jev is undecided or unavailable). Candidate selection and the
+ * resolution (the classifier first, the LLM when it is undecided or unavailable). Candidate selection and the
  * verdicts run outside the write queue; every invariant
  * re-check plus its dependent mutations run inside one synchronous {@link MemoryWriteQueue.run}
  * callback so concurrent operations never interleave a read-modify-write.
@@ -151,8 +151,8 @@ export class FactGraphManager {
   }
 
   /**
-   * Asks whether NEW contradicts the candidate: Jev first when a classifier is configured, the LLM when
-   * Jev is undecided or unavailable. Three-valued: `true`, `false`, or `null` (judge outage). The null
+   * Asks whether NEW contradicts the candidate: the classifier first when the Memory judge has one, the LLM when
+   * it is undecided or unavailable. Three-valued: `true`, `false`, or `null` (judge outage). The null
    * case is load-bearing: a transient outage must stay distinct from a definite "no" so the caller can
    * defer and re-check later — never coerce it to false.
    */
@@ -201,7 +201,7 @@ export class FactGraphManager {
     }
 
     return this.writeQueue.run(() => {
-      // The judging window ran outside the lock (up to 5×(15s Jev + 45s LLM)). Re-read newRow: a racing edit/forget
+      // The judging window ran outside the lock (up to 5×(15s classifier + 45s LLM)). Re-read newRow: a racing edit/forget
       // may have demoted it, and blindly re-marking is_latest=1 below would resurrect a co-latest head.
       const live = this.getRow(newRow.id);
       if (!live || live.is_latest !== 1 || live.forgotten !== 0) return { superseded: [] };

@@ -1,6 +1,6 @@
 import { ref, computed } from "vue";
 import { defineStore } from "pinia";
-import type { ChatMessage, ToolCall, QueuedMessage } from "@shared/types/session";
+import type { ChatMessage, ToolAbandonReason, ToolCall, QueuedMessage } from "@shared/types/session";
 import type { ContentBlock, ImageBlock, UserContentBlock } from "@shared/types/content";
 import type { TerminalAttachmentInfo } from "@shared/types/terminal-attachment";
 import { replacesToolStatus, resolveCancelledStatus, TERMINAL_TOOL_STATUSES } from "./tool-cancelled-status";
@@ -12,6 +12,7 @@ export interface ToolStatusEntry {
   feedback?: string;
   durationMs?: number;
   imageCount?: number;
+  abandonReason?: ToolAbandonReason;
 }
 
 function generateId(): string {
@@ -240,7 +241,7 @@ export const useStreamingStore = defineStore("streaming", () => {
   function updateToolStatus(
     toolUseId: string,
     status: ToolCall["status"],
-    options?: { result?: string; errorMessage?: string; feedback?: string; durationMs?: number; imageCount?: number }
+    options?: Omit<ToolStatusEntry, "status">
   ): void {
     flushReplayQueue();
     for (const [i, msg] of messages.value.entries()) {
@@ -266,6 +267,7 @@ export const useStreamingStore = defineStore("streaming", () => {
         ...(options?.feedback !== undefined && { feedback: options.feedback }),
         ...(options?.durationMs !== undefined && { durationMs: options.durationMs }),
         ...(options?.imageCount !== undefined && { imageCount: options.imageCount }),
+        ...(options?.abandonReason !== undefined && { abandonReason: options.abandonReason }),
       };
       const newMessages = [...messages.value];
       newMessages[i] = { ...msg, toolCalls: updatedToolCalls };
@@ -336,6 +338,7 @@ export const useStreamingStore = defineStore("streaming", () => {
       ...(cachedMetadata !== undefined && { metadata: cachedMetadata }),
       ...(cachedStatus?.durationMs !== undefined && { durationMs: cachedStatus.durationMs }),
       ...(cachedStatus?.imageCount !== undefined && { imageCount: cachedStatus.imageCount }),
+      ...(cachedStatus?.abandonReason !== undefined && { abandonReason: cachedStatus.abandonReason }),
     };
 
     if (cachedStatus) {
@@ -408,6 +411,7 @@ export const useStreamingStore = defineStore("streaming", () => {
           ...(cached?.feedback !== undefined && { feedback: cached.feedback }),
           ...(cached?.durationMs !== undefined && { durationMs: cached.durationMs }),
           ...(cached?.imageCount !== undefined && { imageCount: cached.imageCount }),
+          ...(cached?.abandonReason !== undefined && { abandonReason: cached.abandonReason }),
           ...(cachedMetadata !== undefined && { metadata: cachedMetadata }),
         };
       });
@@ -495,6 +499,14 @@ export const useStreamingStore = defineStore("streaming", () => {
     messages.value = messages.value.slice(0, index);
     streamingMessageId.value = null;
     return content;
+  }
+
+  function removeAssistantMessage(sdkMessageId: string): void {
+    flushReplayQueue();
+    const removed = messages.value.find((m) => m.role === "assistant" && m.sdkMessageId === sdkMessageId);
+    if (!removed) return;
+    messages.value = messages.value.filter((m) => m !== removed);
+    if (streamingMessageId.value === removed.id) streamingMessageId.value = null;
   }
 
   function removeMessageByCorrelationId(correlationId: string): string | null {
@@ -735,6 +747,7 @@ export const useStreamingStore = defineStore("streaming", () => {
     flushReplayQueue,
     truncateFromSdkMessageId,
     removeMessageByCorrelationId,
+    removeAssistantMessage,
     assignSdkIdByCorrelationId,
     assignSdkIdToFlushedMessage,
     addQueuedMessage,

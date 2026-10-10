@@ -63,7 +63,7 @@ describe('sdkAnthropicModels', () => {
   it('excludes piProvider (StepFun/DeepSeek) entries — the SDK harness is Anthropic-only', () => {
     const models = sdkAnthropicModels();
     expect(models.every((m) => !m.piProvider)).toBe(true);
-    expect(models.some((m) => m.value === 'step-3.7-flash')).toBe(false);
+    expect(models.some((m) => m.value === 'step-5-preview')).toBe(false);
     expect(models.some((m) => m.value === 'deepseek-v4-pro')).toBe(false);
   });
 });
@@ -164,7 +164,7 @@ describe('modelValueOfPiModel, the model value a recorded pi model names', () =>
     expect(modelValueOfPiModel('openai', 'gpt-6.1-sol')).toBe('gpt-6.1-sol');
     expect(modelValueOfPiModel('openai-codex', 'gpt-6-luna')).toBe('gpt-6-luna');
     expect(modelValueOfPiModel('deepseek', 'deepseek-v4-pro')).toBe('deepseek-v4-pro');
-    expect(modelValueOfPiModel('stepfun', 'step-3.7-flash')).toBe('step-3.7-flash');
+    expect(modelValueOfPiModel('stepfun', 'step-5-preview')).toBe('step-5-preview');
     const openai = { codex: true, chatgpt: true, apiKey: true } as never;
     const all = registry(DEFAULT_MODELS.flatMap((info): Array<[string, string]> => (info.backend === 'openai' ? [['openai', info.openaiModelId ?? info.value]] : [[info.piProvider ?? 'anthropic', info.value]])));
     for (const info of DEFAULT_MODELS) {
@@ -181,9 +181,9 @@ describe('modelValueOfPiModel, the model value a recorded pi model names', () =>
 });
 
 describe('resolvePiModel — piProvider routing (StepFun/DeepSeek)', () => {
-  it('routes step-3.7-flash to the stepfun provider, authed per hasConfiguredAuth', () => {
-    const reg = registry([['stepfun', 'step-3.7-flash', 'anthropic-messages']]);
-    const res = resolvePiModel('step-3.7-flash', reg, { apiKey: false, chatgpt: false, codex: false });
+  it('routes step-5-preview to the stepfun provider, authed per hasConfiguredAuth', () => {
+    const reg = registry([['stepfun', 'step-5-preview', 'anthropic-messages']]);
+    const res = resolvePiModel('step-5-preview', reg, { apiKey: false, chatgpt: false, codex: false });
     expect(res.model?.provider).toBe('stepfun');
     expect(res.authed).toBe(true);
     expect(res.authRequired).toBeUndefined();
@@ -203,17 +203,47 @@ describe('resolvePiModel — piProvider routing (StepFun/DeepSeek)', () => {
 
   it('returns {} for a piProvider value missing from the registry (StepFun pre-key)', () => {
     const reg = registry([]);
-    expect(resolvePiModel('step-3.7-flash', reg, { apiKey: false, chatgpt: false, codex: false })).toEqual({});
+    expect(resolvePiModel('step-5-preview', reg, { apiKey: false, chatgpt: false, codex: false })).toEqual({});
   });
 });
 
-describe('DEFAULT_MODELS — step-3.7-flash effort catalog (Slice 2)', () => {
-  const step = DEFAULT_MODELS.find((m) => m.value === 'step-3.7-flash');
+describe('DEFAULT_MODELS — step-5-preview effort catalog (Slice 2)', () => {
+  const step = DEFAULT_MODELS.find((m) => m.value === 'step-5-preview');
 
   it('advertises low|medium|high adaptive-thinking effort', () => {
     expect(step?.supportsAdaptiveThinking).toBe(true);
     expect(step?.supportsEffort).toBe(true);
     expect(step?.supportedEffortLevels).toEqual(['low', 'medium', 'high']);
+  });
+
+  // StepFun cannot disable thinking, so the switch would do nothing.
+  it('always thinks, so the disable-thinking switch is hidden', () => {
+    expect(step?.thinkingAlwaysOn).toBe(true);
+  });
+});
+
+describe('DEFAULT_MODELS: claude-haiku-5-5 effort catalog agrees with the installed pi catalog', () => {
+  const anthropicJsonUrl = new URL('../../../../node_modules/@earendil-works/pi-ai/dist/providers/data/anthropic.json', import.meta.url);
+  const haiku = readChatCatalog<unknown>(fileURLToPath(anthropicJsonUrl))['anthropic-messages']?.['claude-haiku-5-5'] as Model<'anthropic-messages'> | undefined;
+  const info = DEFAULT_MODELS.find((m) => m.value === 'claude-haiku-5-5');
+
+  it('declares pi levels plus ultracode, with no catalog default effort', () => {
+    expect(haiku).toBeDefined();
+    expect(info?.supportedEffortLevels).toEqual([...getSupportedThinkingLevels(haiku!).filter((level) => level !== 'minimal'), 'ultracode']);
+    expect(info?.defaultEffort).toBeUndefined();
+    expect(info?.contextWindow).toBe(haiku?.contextWindow);
+  });
+});
+
+describe('DEFAULT_MODELS: deepseek-flash effort catalog agrees with the installed pi catalog', () => {
+  const deepseekJsonUrl = new URL('../../../../node_modules/@earendil-works/pi-ai/dist/providers/data/deepseek.json', import.meta.url);
+  const flash = readChatCatalog<unknown>(fileURLToPath(deepseekJsonUrl))['openai-completions']?.['deepseek-flash'] as Model<Api> | undefined;
+
+  it('offers every level pi supports except off', () => {
+    expect(flash).toBeDefined();
+    const info = DEFAULT_MODELS.find((m) => m.value === 'deepseek-flash');
+    expect(info?.displayName).toBe('DeepSeek V4.1 Flash');
+    expect(info?.supportedEffortLevels).toEqual(getSupportedThinkingLevels(flash!).filter((level) => level !== 'off'));
   });
 });
 
@@ -443,7 +473,7 @@ describe('no model Damocles offers carries a server-side fallback list', () => {
 describe('providerDisplayName', () => {
   it('maps each backend/piProvider to its display name', () => {
     expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'gpt-6.1-sol'))).toBe('OpenAI');
-    expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'step-3.7-flash'))).toBe('StepFun');
+    expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'step-5-preview'))).toBe('StepFun');
     expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'deepseek-v4-pro'))).toBe('DeepSeek');
     expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'claude-opus-5-5'))).toBe('Anthropic');
     expect(providerDisplayName(undefined)).toBe('Anthropic');
@@ -456,11 +486,11 @@ describe('isDollarBilled', () => {
   it('treats metered DeepSeek as dollar-billed regardless of apiKeySource label', () => {
     // apiKeySource for a piProvider model is the provider id ('deepseek'), not a first-party label.
     expect(isDollarBilled(find('deepseek-v4-pro'), 'deepseek')).toBe(true);
-    expect(isDollarBilled(find('deepseek-v4-flash'), 'deepseek')).toBe(true);
+    expect(isDollarBilled(find('deepseek-flash'), 'deepseek')).toBe(true);
   });
 
   it('treats flat-fee StepFun as NOT dollar-billed', () => {
-    expect(isDollarBilled(find('step-3.7-flash'), 'stepfun')).toBe(false);
+    expect(isDollarBilled(find('step-5-preview'), 'stepfun')).toBe(false);
   });
 
   it('classifies first-party credentials by their source label', () => {

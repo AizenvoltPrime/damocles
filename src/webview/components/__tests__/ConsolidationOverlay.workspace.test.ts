@@ -49,6 +49,24 @@ describe('ConsolidationOverlay extracted workspace', () => {
 describe('ConsolidationOverlay failure footer', () => {
   afterEach(() => { i18n.global.locale.value = 'en'; });
 
+  it('words an extraction failure reason in the UI language', () => {
+    i18n.global.locale.value = 'el';
+    useConsolidationStore().setResult({
+      ranAt: Date.now(),
+      trigger: 'manual',
+      status: 'failed',
+      extracted: [],
+      maintenance: { promoted: 0, decayed: 0, pruned: 0 },
+      candidatesReviewed: 0,
+      failure: { kind: 'error', reason: 'rejected', phase: 'extract' },
+    });
+    mounted.push(mount(ConsolidationOverlay, { global: { plugins: [i18n], stubs: { MarkdownRenderer: true } }, attachTo: document.body }));
+
+    const reason = i18n.global.t('consolidation.stepper.reason.rejected');
+    expect(document.body.textContent ?? '').toContain(i18n.global.t('consolidation.failure.extract', { reason }));
+    expect(document.body.textContent ?? '').not.toContain(i18n.global.t('consolidation.failure.generic'));
+  });
+
   it('names the failed phase in the UI language', () => {
     i18n.global.locale.value = 'el';
     useConsolidationStore().setResult({
@@ -58,7 +76,7 @@ describe('ConsolidationOverlay failure footer', () => {
       extracted: [],
       maintenance: { promoted: 0, decayed: 0, pruned: 0 },
       candidatesReviewed: 0,
-      failure: { kind: 'error', detail: 'boom', phase: 'extract' },
+        failure: { kind: 'error', detail: 'boom', phase: 'extract' },
     });
     mounted.push(mount(ConsolidationOverlay, { global: { plugins: [i18n], stubs: { MarkdownRenderer: true } }, attachTo: document.body }));
 

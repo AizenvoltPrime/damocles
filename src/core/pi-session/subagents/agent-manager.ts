@@ -36,9 +36,9 @@ import { preloadSkills } from './skill-loader';
 import { resolveAgentToolset } from './agent-toolset';
 import {
   agentResultTextOnBranch,
+  canResumeSubagent,
   deliveredBackgroundResults,
   findAgentFile,
-  isResumableSubagentStatus,
   latestSubagentInvocations,
   readAgentFile,
   segmentForInvocation,
@@ -60,7 +60,7 @@ import { DAMOCLES_AGENT_LAUNCH_ENTRY, DAMOCLES_AGENT_SEGMENT_ENTRY, DAMOCLES_AGE
 import { createSubagentExtensionFactory } from './subagent-extension-factory';
 import { SubagentStreamBridge, buildAgentResultJson } from './subagent-stream-bridge';
 import { runSubagent } from './subagent-runner';
-import { getStatusNote } from './status-note';
+import { getStatusNote, recordOutcomeText } from './status-note';
 import { addUsage, getLifetimeTotal } from './usage';
 import { PLAN_AGENT_NAME, type AgentConfig, type AgentRecord, type PendingSteer, type SubagentType, type ThinkingLevel } from './types';
 import { extractImages } from '../branch-text';
@@ -259,7 +259,7 @@ function notResumableError(id: string, state: Pick<SubagentLatestState, 'status'
   if (state.status === 'stopped' && state.stopReason === 'reset') {
     return new Error(`Subagent "${id}" was stopped when its conversation was cleared and cannot be resumed.`);
   }
-  return new Error(`Subagent "${id}" finished with status "${state.status}"; only interrupted agents can be resumed.`);
+  return new Error(`Subagent "${id}" finished with status "${state.status}"; only interrupted or failed agents can be resumed.`);
 }
 
 function unknownResumeError(id: string): Error {
@@ -403,7 +403,7 @@ export class AgentManager {
       const state = subagentLatestState(index, agentId, file, this.liveStatus(agentId));
       if (!state) throw unknownResumeError(agentId);
       if (state.status === 'running' || state.status === 'queued') throw stillActiveError(agentId, state.status);
-      if (!isResumableSubagentStatus(state)) throw notResumableError(agentId, state);
+      if (!canResumeSubagent(state)) throw notResumableError(agentId, state);
       let launch: SubagentLaunchData;
       if (file) {
         if (file.launch.kind !== 'subagent') throw unknownResumeError(agentId);
@@ -725,8 +725,8 @@ export class AgentManager {
     // subagents never clobber one another or the primary/main tab.
     //
     // ONE call for customTools AND the MCP snapshot. They used to be derived independently, which let
-    // an `mcp__*` name reach `tools:` with no matching definition — pi filters the registry by the
-    // frozen `_allowedToolNames` and drops the mismatch with no error, no warning and no log. A single
+    // an `mcp__*` name reach `tools:` with no matching definition — pi registers a name only from a
+    // definition and drops the mismatch with no error, no warning and no log. A single
     // call is what makes the two structurally incapable of disagreeing. Runs AFTER the prompt: nothing
     // in the prompt depends on MCP, while `extras.compassBlock` above is gated on `toolset`.
     const { customTools, mcp } = this.engine.buildAgentToolset({
@@ -784,8 +784,8 @@ export class AgentManager {
         systemPrompt: prepared.systemPrompt,
         ...(reopenPath === null && resolved.model ? { model: resolved.model } : {}),
         ...(reopenPath === null && resolved.thinkingLevel ? { thinkingLevel: resolved.thinkingLevel } : {}),
-        // `mcp.names` MUST be here: pi freezes `options.tools` into `_allowedToolNames` and filters the
-        // registry by it, so an MCP definition whose name is missing is dropped silently. It is also
+        // `mcp.names` MUST be here: an MCP definition whose name is missing is unregistered when `tools:`
+        // names any `mcp__` entry and otherwise registered but never activatable, both silently. It is also
         // where `createSubagentSession` reads this agent's MCP set back from, for the deferred baseline.
         tools: prepared.eligibleToolNames,
         customTools: prepared.customTools,
@@ -853,8 +853,9 @@ export class AgentManager {
     });
 
     if (record.status !== 'stopped') {
-      record.status = result.aborted ? 'aborted' : result.steered ? 'steered' : 'completed';
+      record.status = result.aborted ? 'aborted' : result.error !== undefined ? 'error' : result.steered ? 'steered' : 'completed';
     }
+    if (record.status === 'error') record.error = result.error;
     record.result = result.responseText;
     record.session = result.session;
     record.completedAt ??= Date.now();
@@ -883,7 +884,7 @@ export class AgentManager {
       record.bridgeUnsub = undefined;
     }
     const durationMs = (record.completedAt ?? Date.now()) - record.startedAt;
-    const responseText = (record.result ?? record.error ?? '') + getStatusNote(record.status, record.stopReason, record.id);
+    const responseText = recordOutcomeText(record);
     const isError = record.status === 'error';
     this.recordStatus(record, responseText);
     const resultJson = buildAgentResultJson({
@@ -1090,7 +1091,7 @@ export class AgentManager {
    */
   clear(): void {
     for (const record of this.agents.values()) {
-      this.recordStatus(record, (record.result ?? record.error ?? '') + getStatusNote(record.status, record.stopReason, record.id));
+      this.recordStatus(record, recordOutcomeText(record));
     }
     this.agents.clear();
     this.bridges.clear();
@@ -1110,7 +1111,7 @@ export class AgentManager {
     this.doneResolvers.clear();
     for (const record of this.agents.values()) {
       // Written now: a window reload may never run the aborted agents' completion path.
-      this.recordStatus(record, (record.result ?? record.error ?? '') + getStatusNote(record.status, record.stopReason, record.id));
+      this.recordStatus(record, recordOutcomeText(record));
       if (record.session) {
         this.engine.forgetSession(record.session);
         record.session = undefined;

@@ -64,7 +64,8 @@ vi.mock('node:fs', async (importOriginal) => {
 
 import * as fs from 'node:fs';
 import type { FileWatcher } from '../../../platform/file-watcher';
-import { DesktopFileWatcherFactory, REOPEN_FIRST_MS, SHALLOW_COALESCE_MS } from '../platform/file-watcher-factory';
+import { createInProcessTreeHost, REOPEN_FIRST_MS, SHALLOW_COALESCE_MS } from '../../watch-worker/fs-watch-tree';
+import { DesktopFileWatcherFactory } from '../platform/file-watcher-factory';
 
 let dir: string;
 let factory: DesktopFileWatcherFactory;
@@ -112,7 +113,9 @@ async function live(watcher: FileWatcher, root = dir): Promise<void> {
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-watch-win-'));
   lines = [];
-  factory = new DesktopFileWatcherFactory(noFolders, (line) => lines.push(line));
+  const log = (line: string): number => lines.push(line);
+  // The tree runs on this thread, where the node:fs mock above reaches it.
+  factory = new DesktopFileWatcherFactory(noFolders, log, createInProcessTreeHost(log));
   H.dropping = false;
   H.gate = undefined;
   H.recursive.length = 0;

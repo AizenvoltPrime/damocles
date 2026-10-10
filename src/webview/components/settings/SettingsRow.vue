@@ -111,6 +111,7 @@ const labelId = computed(() => `settings-row-label-${props.id}`);
           :query="page.query"
         />
       </div>
+      <slot name="note" />
       <div aria-live="polite">
         <Transition name="sm-fade">
           <p

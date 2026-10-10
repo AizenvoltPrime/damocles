@@ -153,4 +153,15 @@ describe('ChatGPT sign-in messages reaching the settings store', () => {
     expect(ctx.stores.uiStore.showSettingsModal).toBe(true);
     expect(ctx.stores.uiStore.settingsTarget).toEqual({ section: 'accounts', account: 'openai' });
   });
+
+  it('openaiAuthRequired opens the OpenAI sign-in and leaves the refused pick to core', () => {
+    const ctx = openaiContext();
+    const before = { ...ctx.stores.settingsStore.$state };
+
+    dispatch({ type: 'openaiAuthRequired', modelValue: 'gpt-6.1-sol' }, ctx);
+
+    expect(ctx.stores.uiStore.showSettingsModal).toBe(true);
+    expect(ctx.stores.uiStore.settingsTarget).toEqual({ section: 'accounts', account: 'openai' });
+    expect(ctx.stores.settingsStore.$state).toEqual(before);
+  });
 });

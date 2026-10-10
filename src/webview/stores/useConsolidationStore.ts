@@ -30,11 +30,13 @@ function freshPhaseMeta(): Record<ConsolidationPhaseId, PhaseMeta> {
 /**
  * Drives the memory-consolidation header pill + overlay: the live pending count, the preview of
  * turns queued for the next pass, a phase state machine for the live stepper, determinate persist
- * progress, and the last pass's terminal result.
+ * progress, and the last run's terminal result.
  */
 export const useConsolidationStore = defineStore('consolidation', () => {
   const isOverlayOpen = ref(false);
   const pendingCount = ref(0);
+  /** Turns set aside after repeated failed answers; read from the store, never from a pass result. */
+  const setAsideCount = ref(0);
   const pendingCandidates = ref<PendingConsolidationCandidate[]>([]);
   const lastResult = ref<ConsolidationResult | null>(null);
 
@@ -43,7 +45,7 @@ export const useConsolidationStore = defineStore('consolidation', () => {
   const phaseMeta = ref<Record<ConsolidationPhaseId, PhaseMeta>>(freshPhaseMeta());
   const persistProgress = ref<{ done: number; total: number }>({ done: 0, total: 0 });
 
-  /** Running = a pass is mid-flight (between Claim and the terminal result). Derived so existing
+  /** Running = a run is mid-flight (from its first Claim to its terminal result). Derived so existing
    *  `isRunning` consumers keep working without a separate flag to desync. */
   const isRunning = computed(() => phase.value !== 'idle' && phase.value !== 'done' && phase.value !== 'failed');
 
@@ -54,8 +56,9 @@ export const useConsolidationStore = defineStore('consolidation', () => {
     isOverlayOpen.value = false;
   }
 
-  function setPendingCount(count: number): void {
+  function setPendingCount(count: number, setAside: number): void {
     pendingCount.value = count;
+    setAsideCount.value = setAside;
   }
   function setPreview(candidates: PendingConsolidationCandidate[]): void {
     pendingCandidates.value = candidates;
@@ -113,6 +116,8 @@ export const useConsolidationStore = defineStore('consolidation', () => {
   }
 
   function applyProgress(event: ConsolidationPhaseEvent): void {
+    // Claim is the first event of every pass, and a run's later pass stays running, so its claim restarts the stepper.
+    if (event.phase === 'claim') startRun();
     phaseStatus.value = { ...phaseStatus.value, [event.phase]: event.status };
     if (event.meta) phaseMeta.value = { ...phaseMeta.value, [event.phase]: event.meta };
     if (event.status === 'active') phase.value = event.phase;
@@ -129,6 +134,7 @@ export const useConsolidationStore = defineStore('consolidation', () => {
   function $reset(): void {
     isOverlayOpen.value = false;
     pendingCount.value = 0;
+    setAsideCount.value = 0;
     pendingCandidates.value = [];
     lastResult.value = null;
     phase.value = 'idle';
@@ -140,6 +146,7 @@ export const useConsolidationStore = defineStore('consolidation', () => {
   return {
     isOverlayOpen,
     pendingCount,
+    setAsideCount,
     pendingCandidates,
     lastResult,
     phase,

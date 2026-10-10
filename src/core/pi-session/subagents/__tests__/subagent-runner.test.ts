@@ -32,6 +32,7 @@ function makeSession() {
 
   return {
     session: session as unknown as AgentSession,
+    emit: (event: unknown) => cbs.forEach((fn) => fn(event)),
     emitTurnEnd: () => cbs.forEach((fn) => fn({ type: 'turn_end' })),
     emitAgentStart: () => cbs.forEach((fn) => fn({ type: 'agent_start' })),
     finishPrompt: () => resolvePrompt(),
@@ -151,6 +152,51 @@ describe('runSubagent turn-limit enforcement', () => {
 
     f.finishPrompt();
     await p;
+  });
+});
+
+describe('runSubagent provider failures', () => {
+  const ended = (stopReason: string, errorMessage?: string) => ({
+    type: 'message_end',
+    message: { role: 'assistant', content: [], stopReason, ...(errorMessage ? { errorMessage } : {}) },
+  });
+
+  // pi reports a failed call only on its assistant message_end, and prompt() resolves normally after it.
+  it('reports the error the run ended on', async () => {
+    const f = makeSession();
+    const p = runSubagent({ createSession: async () => f.session, prompt: 'go' });
+    await vi.waitFor(() => expect(f.promptCount()).toBe(1));
+
+    f.emit(ended('error', '400 invalid_request_error'));
+    f.finishPrompt();
+    expect((await p).error).toBe('400 invalid_request_error');
+  });
+
+  // pi's auto-retry re-runs the failed call before prompt() resolves, so only the run's last call decides.
+  it('reports no error when pi retried the failed call into an answer', async () => {
+    const f = makeSession();
+    const p = runSubagent({ createSession: async () => f.session, prompt: 'go' });
+    await vi.waitFor(() => expect(f.promptCount()).toBe(1));
+
+    f.emit(ended('error', '529 overloaded_error'));
+    f.emit({ type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: '529 overloaded_error' });
+    f.emit(ended('stop'));
+    f.finishPrompt();
+    expect(await p).not.toHaveProperty('error');
+  });
+
+  // A reopened agent's session already holds its earlier runs, whose answers are not this run's output.
+  it("reports only this run's text as its output", async () => {
+    const f = makeSession();
+    const messages = (f.session as unknown as { messages: unknown[] }).messages;
+    messages.push({ role: 'assistant', content: [{ type: 'text', text: 'the earlier run answered' }] });
+    const p = runSubagent({ createSession: async () => f.session, prompt: 'go on' });
+    await vi.waitFor(() => expect(f.promptCount()).toBe(1));
+
+    messages.push({ role: 'assistant', content: [], stopReason: 'error', errorMessage: '529 overloaded_error' });
+    f.emit(ended('error', '529 overloaded_error'));
+    f.finishPrompt();
+    expect((await p).responseText).toBe('');
   });
 });
 

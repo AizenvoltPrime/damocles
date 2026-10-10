@@ -26,6 +26,7 @@ import * as fsp from 'node:fs/promises';
 import { buildSubagentTools } from '../../tools/subagent-tools';
 import { backgroundResultsDetails, SUBAGENT_RESULTS_CUSTOM_TYPE } from '../background-results';
 import { SubagentStreamBridge } from '../subagent-stream-bridge';
+import { recordResultText } from '../status-note';
 import { DAMOCLES_AGENT_STATUS_ENTRY } from '../../session-store/constants';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
 import { ShellCancelStore } from '../../tools/shell-cancel-registry';
@@ -123,6 +124,7 @@ function makeEngine(): { engine: SubagentEngine; gates: Gate[] } {
         abort: async () => {},
         dispose: () => {},
         sessionId: 'sid',
+        agent: {},
         sessionManager: {
           appendCustomEntry: (customType: string, data: unknown) => void customEntries.push({ customType, data }),
           getSessionFile: () => `/store/${customEntries.length}.jsonl`,
@@ -351,6 +353,54 @@ describe('AgentManager concurrency', () => {
     expect(rec.status).toBe('error');
     expect(rec.error).toContain('Unknown or disabled');
     expect(gates).toHaveLength(0);
+    mgr.dispose();
+  });
+
+  // pi reports a failed model call only on the assistant message_end; prompt() itself resolves.
+  it('a run whose last model call failed settles as an error carrying the provider message', async () => {
+    const { engine } = makeEngine();
+    const create = engine.createSession;
+    engine.createSession = async (opts) => {
+      const session = (await create(opts)) as unknown as { subscribe: unknown; prompt: unknown };
+      const listeners: Array<(e: unknown) => void> = [];
+      session.subscribe = (l: (e: unknown) => void) => { listeners.push(l); return () => {}; };
+      session.prompt = async () => {
+        const message = { role: 'assistant', content: [], stopReason: 'error', errorMessage: '400 invalid_request_error' };
+        for (const l of listeners) l({ type: 'message_end', message });
+      };
+      return session as unknown as AgentSession;
+    };
+    const mgr = new AgentManager(engine, 2);
+    const rec = await mgr.spawnAndWait({ ...spec(0), runInBackground: false });
+    expect(rec.status).toBe('error');
+    expect(rec.error).toBe('400 invalid_request_error');
+    mgr.dispose();
+  });
+
+  // A dropped connection ends the call with what it streamed; pi's retries ran out before prompt() resolved.
+  it('a failed run tells the parent its error, what it wrote before failing, and how to resume it', async () => {
+    const { engine } = makeEngine();
+    const create = engine.createSession;
+    engine.createSession = async (opts) => {
+      const session = (await create(opts)) as unknown as { subscribe: unknown; prompt: unknown };
+      const listeners: Array<(e: unknown) => void> = [];
+      session.subscribe = (l: (e: unknown) => void) => { listeners.push(l); return () => {}; };
+      session.prompt = async () => {
+        const message = { role: 'assistant', content: [{ type: 'text', text: 'Found three call sites' }], stopReason: 'error', errorMessage: '529 overloaded_error' };
+        for (const l of listeners) l({ type: 'message_start', message });
+        for (const l of listeners) l({ type: 'message_update', message, assistantMessageEvent: { type: 'text_delta', delta: 'Found three call sites' } });
+        for (const l of listeners) l({ type: 'message_end', message });
+      };
+      return session as unknown as AgentSession;
+    };
+    const mgr = new AgentManager(engine, 2);
+    const rec = await mgr.spawnAndWait({ ...spec(0), runInBackground: false });
+
+    const text = recordResultText(rec);
+    expect(text).toContain('529 overloaded_error');
+    expect(text).toContain('Partial output:\nFound three call sites');
+    expect(text).toContain(`Agent({resume:"${rec.id}"})`);
+    expect(backgroundResultsDetails([rec]).agents[0]?.result).toBe(text);
     mgr.dispose();
   });
 
@@ -766,6 +816,7 @@ describe('AgentManager thinkingLevel precedence', () => {
         abort: async () => {},
         dispose: () => {},
         sessionId: 'sid',
+        agent: {},
         sessionManager: { appendCustomEntry: () => 'e', getSessionFile: () => '/store/x.jsonl', getEntries: () => statsAsEntries(session) },
       };
       return session as unknown as AgentSession;
@@ -1941,9 +1992,8 @@ describe('AgentManager resume', () => {
   });
 
   it.each([
-    ['completed', undefined, `Subagent "${AGENT}" finished with status "completed"; only interrupted agents can be resumed.`],
-    ['error', undefined, `Subagent "${AGENT}" finished with status "error"; only interrupted agents can be resumed.`],
-    ['aborted', undefined, `Subagent "${AGENT}" finished with status "aborted"; only interrupted agents can be resumed.`],
+    ['completed', undefined, `Subagent "${AGENT}" finished with status "completed"; only interrupted or failed agents can be resumed.`],
+    ['aborted', undefined, `Subagent "${AGENT}" finished with status "aborted"; only interrupted or failed agents can be resumed.`],
     ['stopped', 'reset', `Subagent "${AGENT}" was stopped when its conversation was cleared and cannot be resumed.`],
     ['stopped', 'budget', `Subagent "${AGENT}" was stopped by the budget limit and cannot be resumed.`],
   ])('an agent whose file says %s (%s) cannot be resumed', async (status, stopReason, error) => {
@@ -1954,6 +2004,18 @@ describe('AgentManager resume', () => {
 
     await expect(mgr.resume(resumeReq('tc-r'))).rejects.toThrow(error);
     expect(invocations).toEqual([]);
+  });
+
+  it('an agent that failed reopens its file, as its result told the parent it could', async () => {
+    const { engine, dir } = resumeEngine();
+    const file = writeAgentFile(dir, { status: { status: 'error' } });
+    spawnOnBranch(spawnArgs, { agentId: AGENT, status: 'error' });
+    const mgr = new AgentManager(engine);
+
+    await expect(mgr.resume(resumeReq('tc-r'))).resolves.toMatchObject({ status: 'running' });
+    await settle();
+    expect(sessionOpts.map((o) => o.store)).toEqual([{ kind: 'reopen', path: file, agentId: AGENT }]);
+    mgr.dispose();
   });
 
   it('an agent whose type is gone cannot be resumed', async () => {
@@ -2343,7 +2405,7 @@ describe('AgentManager resume', () => {
     [
       'a finished agent',
       (dir) => (writeAgentFile(dir, { status: { status: 'completed' } }), spawnOnBranch(spawnArgs)),
-      `Subagent "${AGENT}" finished with status "completed"; only interrupted agents can be resumed.`,
+      `Subagent "${AGENT}" finished with status "completed"; only interrupted or failed agents can be resumed.`,
     ],
     [
       'a budget-stopped agent',
@@ -2451,7 +2513,7 @@ describe('AgentManager resume', () => {
     const mgr = new AgentManager(engine);
 
     await expect(mgr.resume(resumeReq('tc-r2'))).rejects.toMatchObject({
-      message: `Subagent "${AGENT}" finished with status "completed"; only interrupted agents can be resumed.`,
+      message: `Subagent "${AGENT}" finished with status "completed"; only interrupted or failed agents can be resumed.`,
     });
   });
 
@@ -2462,7 +2524,13 @@ describe('AgentManager resume', () => {
     const create = engine.createSession;
     engine.createSession = async (opts) => {
       const session = await create(opts);
-      (session as unknown as { messages: unknown[] }).messages = [{ role: 'assistant', content: [{ type: 'text', text: 'fixed the bug' }] }];
+      // pi appends the run's messages while prompt() runs.
+      const fake = session as unknown as { messages: unknown[]; prompt: (text: string) => Promise<void> };
+      const prompt = fake.prompt;
+      fake.prompt = async (text) => {
+        await prompt(text);
+        fake.messages.push({ role: 'assistant', content: [{ type: 'text', text: 'fixed the bug' }] });
+      };
       return session;
     };
     const mgr = new AgentManager(engine);

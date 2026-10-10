@@ -7,7 +7,7 @@ import { writeJsonConfig } from "../../config/json-config-write";
 import { parseSettingsText } from "../../config/settings-file";
 import { t } from "../../l10n";
 import type { PermissionUpdate, PermissionRuleValue, PermissionUpdateDestination } from "../../../shared/types/permissions";
-import { DEFAULT_MODELS, DEFAULT_CONTEXT_WINDOW, thinkingDisableApplies } from "../../../shared/types/constants";
+import { DEFAULT_MODELS, DEFAULT_CONTEXT_WINDOW, TEAM_EFFORT_LEVELS, thinkingDisableApplies } from "../../../shared/types/constants";
 import type { EffortLevel } from "../../../shared/types/settings";
 
 /** The permission arrays a rule may be filed under; also the guard against a hostile `behavior`. */
@@ -39,12 +39,19 @@ export function coerceEffortForModel(model: string, effort: EffortLevel | null):
 }
 
 /**
- * The catalog effort for a model the user has set no effort for, validated the same way a stored value
- * is so a catalog typo cannot ship a level the model does not advertise. `null` when the model has no
- * catalog default, which leaves the level unset and lets pi apply its own.
+ * The effort a model runs at when the user has set none: its catalog default, validated like a stored value
+ * so a catalog typo cannot ship a level the model does not advertise. Without one it is the level an unset
+ * effort runs at (`effortToThinkingLevel` sends `medium`, which pi clamps up to the next level the model lists),
+ * so the panel shows what runs. `null` only for a model without effort levels.
  */
 export function defaultEffortForModel(model: string): EffortLevel | null {
-  return coerceEffortForModel(model, DEFAULT_MODELS.find(m => m.value === model)?.defaultEffort ?? null);
+  const info = DEFAULT_MODELS.find(m => m.value === model);
+  const levels = info?.supportedEffortLevels ?? [];
+  const fromMedium = TEAM_EFFORT_LEVELS.slice(TEAM_EFFORT_LEVELS.indexOf('medium'));
+  return coerceEffortForModel(model, info?.defaultEffort ?? null)
+    ?? fromMedium.find(level => levels.includes(level))
+    ?? levels.at(-1)
+    ?? null;
 }
 
 export function thinkingDisableAppliesToModel(model: string): boolean {

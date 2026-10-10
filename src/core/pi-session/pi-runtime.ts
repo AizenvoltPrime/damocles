@@ -1,11 +1,11 @@
 import type { ModelRuntime, PackageManager, PackageSource, SettingsManager } from '@earendil-works/pi-coding-agent';
-import type { Model, Api, AuthInteraction, ClassifierAnswer, ClassifierApi, ClassifierModel, ClassifierQuestion, JsonObject } from '@earendil-works/pi-ai';
+import type { Api, AuthInteraction, ClassifierAnswer, ClassifierApi, ClassifierModel, ClassifierQuestion, JsonObject, Model, ModelThinkingLevel } from '@earendil-works/pi-ai';
 import { existsSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { log } from '../logger';
 import { timed } from '../perf';
-import { initPiLoader, getPiCodingAgent, type PiCodingAgentModule } from './pi-loader';
+import { initPiLoader, getPiCodingAgent, loadPiAi, loadedPiAi, type PiCodingAgentModule } from './pi-loader';
 import { cacheWarmingSetting, ensurePiAgentDir, PI_AGENT_DIR } from './agent-dir';
 import { CONTEXT_FILE_CANDIDATES } from './context-files';
 import { assetSources } from '../asset-sources';
@@ -14,16 +14,37 @@ import { McpClientManager } from './mcp/mcp-client-manager';
 import { createMcpAuthProviderFactory, shutdownOAuth } from './mcp/mcp-auth-flow';
 import { removeSavedMcpOutputs } from './mcp/content';
 import type { NoticeMemory } from './mcp/tool-name-migration';
-import { resolvePiModel, piSupportedModels, PI_SMALL_FAST_ANTHROPIC, PI_SMALL_FAST_OPENAI } from './pi-models';
+import { piSupportedModels } from './pi-models';
 import { piModelDollarBilled } from './account-billing';
-import { CUSTOM_PROVIDER_DEFS, syncCustomProviders, resolveExploreSectionModel, exploreThinkingLevel, type SecretResolver } from './custom-providers';
+import { CUSTOM_PROVIDER_DEFS, syncCustomProviders, type SecretResolver } from './custom-providers';
+import {
+  resolveAutomaticModel,
+  resolveBackgroundModel,
+  resolvePickedModel,
+  subCallLevel,
+  subCallReasoning,
+  type StructuredSubCallPurpose,
+  type SubCallModel,
+} from './subcall-model';
 import { describeAuthError, isCredentialSyncError } from './describe-error';
 import { isAbortError } from './web-access/util';
-import { runStructuredCompletion, type PiCompleteFn, type StructuredCompletionRequest } from './structured-completion';
+import { CREDENTIAL_REFUSED, isPiCredentialError, runStructuredCompletion, UNREACHABLE, type CredentialRefused, type PiCompleteFn, type StructuredCompletionRequest, type StructuredCompletionResult } from './structured-completion';
 import { appendSubCallUsage, type SubCallPurpose } from '../usage-stats/subcall-ledger';
-import { CLASSIFIER_MODELS, classifierFailureCause, httpStatusOf, isInputRefusal, memoryJudgeOf, pickClassifierModel, type ClassifierModelRef } from './classifier-model';
+import { httpStatusOf } from './http-status';
+import {
+  CLASSIFIER_MODELS,
+  classifierCredential,
+  classifierFailureCause,
+  classifierModelOf,
+  isInputRefusal,
+  memoryJudgeOf,
+  pickClassifierModel,
+  type ClassifierModelRef,
+} from './classifier-model';
 import { CLASSIFIER_PROBE_AFTER_MS, createClassifierBreakers, credentialRejectionOf, type ClassifierOutcome } from './classifier-breaker';
-import type { ClassifierProvider, MemoryJudge } from '../../shared/types/settings';
+import type { ClassifierCredential, ClassifierProvider, EffortLevel, MemoryJudge, MemoryJudgeUnavailable } from '../../shared/types/settings';
+import { MEMORY_JUDGE_EFFORT_SETTING, MEMORY_JUDGE_SETTING, forcedClassifierOf, isKnownMemoryJudgeChoice } from '../../shared/memory-judge';
+import { migrateLegacyModelValue } from '../../shared/types/constants';
 import {
   LEGACY_SUBSCRIPTION_REPOS,
   SUBSCRIPTION_SOURCE,
@@ -37,10 +58,11 @@ import {
   OPENAI_API_KEY_SECRET,
   OPENAI_API_PROVIDER,
   OPENAI_CODEX_PROVIDER,
-  OPENAI_PREFER_API_KEY_STATE,
   openaiAuthStatus,
   openaiRuntimeKeyWanted,
   readOpenAIAuthFromDisk,
+  readPreferOpenAIApiKey,
+  type OpenAIAuthInputs,
   type OpenAIAuthStatus,
 } from './openai-auth';
 import { syncOpenAIRuntimeKey } from './openai-runtime-key';
@@ -53,7 +75,7 @@ import { withQueuePolicy } from './queue-policy';
 import { platform } from '../platform-host';
 import type { Platform } from '../../platform/platform';
 import type { Disposable } from '../../platform/disposable';
-import type { FileWatcher } from '../../platform/file-watcher';
+import type { FileWatcher, FileWatcherFactory } from '../../platform/file-watcher';
 import { IMAGE_SETTINGS_SECTION } from './tools/image-tool-specs';
 import { fetchSubscriptionUsage } from './subscription-usage';
 import { UsageMonitor, type UsageThresholdCrossing } from './usage-thresholds';
@@ -75,6 +97,19 @@ function notifyMemoryJudgeListeners(): void {
   for (const listener of memoryJudgeListeners) listener();
 }
 const authFileListeners = new Set<() => void>();
+function notifyAuthFileListeners(): void {
+  for (const listener of [...authFileListeners]) listener();
+}
+
+/** A debounced watch on one agent dir's auth.json, shared by every holder. */
+interface AuthFileWatch {
+  watcher: FileWatcher;
+  holders: number;
+  debounce: NodeJS.Timeout | null;
+}
+
+/** Sub-calls slower than this are logged even when they succeed. */
+const SLOW_SUB_CALL_MS = 10_000;
 const usageThresholdListeners = new Set<(crossing: UsageThresholdCrossing) => void>();
 
 /** An `AuthInteraction` that non-interactively answers every prompt with a fixed key — used to drive
@@ -83,7 +118,7 @@ function keyInteraction(key: string): AuthInteraction {
   return { prompt: async () => key, notify: () => {} };
 }
 
-/** One Jev request. Untrusted text (memories, prompts) goes only in `state`; `questions` are built from
+/** One classifier request. Untrusted text (memories, prompts) goes only in `state`; `questions` are built from
  *  constants in code, the same data-position rule `runStructuredCompletion` keeps. */
 export interface ClassificationRequest {
   state: JsonObject;
@@ -174,6 +209,15 @@ export interface LiveSessionMutator extends LiveSessionMetaSource {
 }
 
 /**
+ * The one answer to "what do merge and rerank run on" (`damocles.memory.judge*`). `fallback` is the model a
+ * classifier judge hands an undecided or failed question to: Automatic's small model, none for a chosen classifier.
+ */
+export type MemoryJudgeResolution =
+  | { kind: 'classifier'; ref: ClassifierModelRef; model: ClassifierModel<ClassifierApi>; fallback: SubCallModel | null }
+  | { kind: 'model'; model: Model<Api>; effort?: EffortLevel }
+  | { kind: 'none'; forced?: { choice: string; reason: MemoryJudgeUnavailable } };
+
+/**
  * The single per-process owner of pi's runtime (blocker B1).
  *
  * pi's API/OAuth provider registries are module-level process-global singletons, and one Node process
@@ -215,8 +259,8 @@ export class PiRuntime {
   /** Watchers on the user-scope skill/command roots and the global instructions file. */
   private readonly _userWatchers: FileWatcher[] = [];
   private _userDebounce: NodeJS.Timeout | null = null;
-  private _authWatcher: FileWatcher | null = null;
-  private _authDebounce: NodeJS.Timeout | null = null;
+  /** This runtime's hold on the shared auth.json watch; set once init has applied the OpenAI key, so changes route here. */
+  private _authWatch: Disposable | null = null;
   /** OpenAI credential changes, the key migration and every runtime-key sync run one at a time on this
    *  chain, so a sync reads the state it applies and no sign-in lands between the migration's check and delete. */
   private _openaiCredentialSync: Promise<void> = Promise.resolve();
@@ -224,6 +268,9 @@ export class PiRuntime {
   private _openaiKeyPresent = false;
   /** Set once init's first OpenAI key sync has run; before that `_openaiKeyPresent` has not been read. */
   private _openaiStatusReady = false;
+  /** The prefer-API-key value the last runtime key sync applied; null before the first. */
+  private _appliedPreferApiKey: boolean | null = null;
+  private _preferResyncPending = false;
   private _secretsListener: Disposable | null = null;
   /** Granting trust admits a folder's project layer, which needs a reload to reach its loader. */
   private _trustListener: Disposable | null = null;
@@ -231,8 +278,8 @@ export class PiRuntime {
   private _imageSettingsListener: Disposable | null = null;
   /** `damocles.mcp.toolExposure` decides which MCP tools are eligible, active and on the ToolSearch menu. */
   private _toolExposureListener: Disposable | null = null;
-  /** `damocles.explore.*` picks the sub-call model, which the memory judge status names. */
-  private _exploreSettingsListener: Disposable | null = null;
+  /** `damocles.memory.judge` and `.judgeEffort` pick the memory judge, which the judge status names. */
+  private _memoryJudgeSettingsListener: Disposable | null = null;
   /** Set once a custom-provider sync has applied the stored keys, which `hasConfiguredAuth` reads. */
   private _customProvidersSynced = false;
   /** Read once from the host-installed accessor: this process singleton has no owner to inject it. */
@@ -287,6 +334,66 @@ export class PiRuntime {
   /** Whether the singleton has been created. */
   static get exists(): boolean {
     return PiRuntime._instance !== null;
+  }
+
+  /** One watch per watcher factory and agent dir, so the pre-runtime holder and the runtime never watch auth.json twice. */
+  private static readonly _authFileWatches = new WeakMap<FileWatcherFactory, Map<string, AuthFileWatch>>();
+
+  /**
+   * Watch auth.json from activation, before any runtime exists. A sign-in in another app or the pi CLI lands only
+   * there: until the runtime has taken the watch over, a change notifies judge and auth-file listeners directly.
+   * Does not create the singleton.
+   */
+  static watchAuthFile(): Disposable {
+    return PiRuntime._holdAuthFileWatch(platform().fileWatchers, PI_AGENT_DIR);
+  }
+
+  private static _holdAuthFileWatch(factory: FileWatcherFactory, agentDir: string): Disposable {
+    let byDir = PiRuntime._authFileWatches.get(factory);
+    if (!byDir) {
+      byDir = new Map();
+      PiRuntime._authFileWatches.set(factory, byDir);
+    }
+    const watches = byDir;
+    let watch = watches.get(agentDir);
+    if (!watch) {
+      const created: AuthFileWatch = { watcher: factory.watch(agentDir, 'auth.json'), holders: 0, debounce: null };
+      const onChange = (): void => {
+        if (created.debounce) clearTimeout(created.debounce);
+        created.debounce = setTimeout(() => {
+          created.debounce = null;
+          PiRuntime._authFileChanged(agentDir);
+        }, AUTH_REPUBLISH_DEBOUNCE_MS);
+      };
+      created.watcher.onDidCreate(onChange);
+      created.watcher.onDidChange(onChange);
+      created.watcher.onDidDelete(onChange);
+      watches.set(agentDir, created);
+      watch = created;
+    }
+    const held = watch;
+    held.holders++;
+    let released = false;
+    return {
+      dispose: () => {
+        if (released) return;
+        released = true;
+        if (--held.holders > 0) return;
+        if (held.debounce) clearTimeout(held.debounce);
+        held.watcher.dispose();
+        watches.delete(agentDir);
+      },
+    };
+  }
+
+  private static _authFileChanged(agentDir: string): void {
+    const runtime = PiRuntime._instance;
+    if (runtime?._authWatch && runtime._agentDir === agentDir) {
+      void runtime._resyncOpenAIAndRepublish('auth.json change').then(notifyAuthFileListeners);
+      return;
+    }
+    notifyMemoryJudgeListeners();
+    notifyAuthFileListeners();
   }
 
   /** Fires after auth.json changed outside a sign-in Damocles ran and the account state was republished. Subscribing does not create the singleton. */
@@ -552,27 +659,17 @@ export class PiRuntime {
    * only in that file.
    */
   private _setupAuthWatcher(): void {
-    const onChange = (): void => {
-      if (this._authDebounce) clearTimeout(this._authDebounce);
-      this._authDebounce = setTimeout(() => {
-        this._authDebounce = null;
-        void this._resyncOpenAIAndRepublish('auth.json change').then(() => {
-          for (const listener of [...authFileListeners]) listener();
-        });
-      }, AUTH_REPUBLISH_DEBOUNCE_MS);
-    };
-    const watcher = this._platform.fileWatchers.watch(this._agentDir, 'auth.json');
-    watcher.onDidCreate(onChange);
-    watcher.onDidChange(onChange);
-    watcher.onDidDelete(onChange);
-    this._authWatcher = watcher;
+    this._authWatch?.dispose();
+    this._authWatch = PiRuntime._holdAuthFileWatch(this._platform.fileWatchers, this._agentDir);
   }
 
   /**
    * Republishes before the sync, which can wait behind a pending ChatGPT sign-in on the credential chain, and
    * again after it. A failed sync is logged and the account state still republishes, so it shows the state the sync left.
+   * `credentialChanged` resets the OpenAI breaker only once the sync has settled: a request claimed before then
+   * may carry the old key, and the reset makes its outcome stale.
    */
-  private async _resyncOpenAIAndRepublish(reason: string): Promise<void> {
+  private async _resyncOpenAIAndRepublish(reason: string, credentialChanged = false): Promise<void> {
     this.usage.credentialsChanged();
     this._publishAccountInfoToSessions();
     try {
@@ -580,6 +677,7 @@ export class PiRuntime {
     } catch (err) {
       log('[PiRuntime] OpenAI runtime key sync after %s failed: %s', reason, describeAuthError(err));
     }
+    if (credentialChanged) this._openaiCredentialChanged();
     this._publishAccountInfoToSessions();
   }
 
@@ -618,7 +716,7 @@ export class PiRuntime {
     this._secretsListener?.dispose();
     // Fires for a key changed in another window too, so that window's change reaches this runtime and its breakers.
     this._secretsListener = this._platform.secrets.onDidChange((key) => {
-      if (key === OPENAI_API_KEY_SECRET) void this._resyncOpenAIAndRepublish('a key secret change');
+      if (key === OPENAI_API_KEY_SECRET) void this._resyncOpenAIAndRepublish('a key secret change', true);
       else if (CUSTOM_PROVIDER_DEFS.some((def) => def.secretKey === key)) void this.syncCustomProviders((k) => this._platform.secrets.get(k));
     });
     // Before the auth.json watcher and before init resolves, which every OpenAI sign-in awaits.
@@ -666,7 +764,10 @@ export class PiRuntime {
     this._toolExposureListener = this._platform.settings.onDidChange(MCP_TOOL_EXPOSURE_SETTING, () => {
       for (const folder of this.folders()) folder.refreshActiveTools();
     });
-    this._exploreSettingsListener = this._platform.settings.onDidChange('damocles.explore', notifyMemoryJudgeListeners);
+    // A section listener, because `damocles.memory.judgeEffort` is not under `damocles.memory.judge`.
+    this._memoryJudgeSettingsListener = this._platform.settings.onDidChange('damocles.memory', (change) => {
+      if (change.affects(MEMORY_JUDGE_SETTING) || change.affects(MEMORY_JUDGE_EFFORT_SETTING)) notifyMemoryJudgeListeners();
+    });
     log('[PiRuntime] initialized (agentDir=%s)', this._agentDir);
   }
 
@@ -682,8 +783,8 @@ export class PiRuntime {
   }
 
   /**
-   * Register/authenticate the native custom providers (StepFun/OpenRouter/Gemini) on the shared registry
-   * from the `damocles.explore.apiKey.*` secrets (Phase 5, US-018.8). Idempotent and fail-soft: called on
+   * Register/authenticate the key-backed providers (StepFun/DeepSeek/OpenRouter/TypeSafe) on the shared registry
+   * from each one's `CUSTOM_PROVIDER_DEFS` secret (Phase 5, US-018.8). Idempotent and fail-soft: called on
    * session start and on secret change so subagents can reach those models by explicit id (no loopback
    * proxy). No-op when the runtime is not yet initialized.
    *
@@ -844,33 +945,60 @@ export class PiRuntime {
   async getChatGPTAccessToken(): Promise<string | undefined> {
     await this.init();
     const status = this.getOpenAIAuthStatus();
-    if (!status.chatgpt || openaiRuntimeKeyWanted(status, this._preferOpenAIApiKey())) return undefined;
+    if (!status.chatgpt || openaiRuntimeKeyWanted(status, this.preferOpenAIApiKey())) return undefined;
     const resolved = await this._modelRuntime!.getAuth(OPENAI_API_PROVIDER);
     return resolved?.source === 'OAuth' ? resolved.auth.apiKey : undefined;
   }
 
-  private _preferOpenAIApiKey(): boolean {
-    return this._platform.state.workspace.get<boolean>(OPENAI_PREFER_API_KEY_STATE, false);
+  /**
+   * The prefer-API-key toggle. It is global state, which another VS Code window can change with no event, so a read
+   * that differs from what the last runtime key sync applied re-applies it here and republishes.
+   */
+  preferOpenAIApiKey(): boolean {
+    const prefer = readPreferOpenAIApiKey(this._platform.state);
+    if (this._appliedPreferApiKey !== null && prefer !== this._appliedPreferApiKey && !this._preferResyncPending) {
+      this._preferResyncPending = true;
+      void this._resyncOpenAIAndRepublish('a prefer-API-key change in another window', true).finally(() => {
+        this._preferResyncPending = false;
+      });
+    }
+    return prefer;
   }
 
   /** Runs on `_openaiCredentialSync`. */
   private async _syncOpenAIRuntimeKeyNow(): Promise<void> {
     if (!this._modelRuntime) throw new Error('PiRuntime: runtime not initialized');
+    const preferApiKey = readPreferOpenAIApiKey(this._platform.state);
     await syncOpenAIRuntimeKey({
       modelRuntime: this._modelRuntime,
       secrets: this._platform.secrets,
       agentDir: this._agentDir,
-      preferApiKey: this._preferOpenAIApiKey(),
+      preferApiKey,
       onKeyPresence: (present) => {
         this._openaiKeyPresent = present;
       },
     });
+    this._appliedPreferApiKey = preferApiKey;
   }
 
   /** Re-apply the OpenAI runtime key from the secret, auth.json and the prefer toggle. */
   async syncOpenAIRuntimeKey(): Promise<void> {
     await this.init();
     await this._withOpenAICredentialSync(() => this._syncOpenAIRuntimeKeyNow());
+  }
+
+  /** The user changed which OpenAI credential pi sends, so a refusal of the old one no longer stands. A token refresh is not such a change. */
+  private _openaiCredentialChanged(): void {
+    this._classifierBreakers.reset(OPENAI_API_PROVIDER);
+  }
+
+  /** Apply the prefer-API-key toggle, which switches the `openai` request credential even when the sync fails. */
+  async applyOpenAIPreferApiKey(): Promise<void> {
+    try {
+      await this.syncOpenAIRuntimeKey();
+    } finally {
+      this._openaiCredentialChanged();
+    }
   }
 
   /**
@@ -895,6 +1023,7 @@ export class PiRuntime {
       }
       await this._syncOpenAIRuntimeKeyNow();
     });
+    this._openaiCredentialChanged();
     return this.getOpenAIAuthStatus();
   }
 
@@ -910,14 +1039,15 @@ export class PiRuntime {
       if (readOpenAIAuthFromDisk(this._agentDir).storedApiKey) await this._modelRuntime!.logout(OPENAI_API_PROVIDER);
       await this._syncOpenAIRuntimeKeyNow();
     });
+    this._openaiCredentialChanged();
     log('[PiRuntime] openai api key cleared');
     return this.getOpenAIAuthStatus();
   }
 
   /**
    * Sign in with ChatGPT on pi's `openai` provider. pi races its 127.0.0.1:1455 callback against a
-   * `manual_code` paste-the-redirect-URL prompt. The device id comes from the user settings. On success
-   * the legacy Codex grant is removed.
+   * `manual_code` paste-the-redirect-URL prompt, and fails before opening the browser when 1455 is taken. The
+   * device id comes from the user settings. On success the legacy Codex grant is removed.
    */
   async signInChatGPT(interaction: AuthInteraction): Promise<OpenAIAuthStatus> {
     await this.init();
@@ -926,7 +1056,10 @@ export class PiRuntime {
       this._resyncOpenAIAfter(async () => {
         const modelRuntime = this._modelRuntime!;
         try {
-          await modelRuntime.login(OPENAI_API_PROVIDER, 'oauth', interaction, { getDeviceId: () => settings.getOrCreateDeviceId() });
+          await modelRuntime.login(OPENAI_API_PROVIDER, 'oauth', interaction, {
+            getDeviceId: () => settings.getOrCreateDeviceId(),
+            agentName: 'Damocles',
+          });
         } catch (err) {
           if (!isCredentialSyncError(err)) throw err;
           log('[PiRuntime] chatgpt sign-in is stored, but pi could not resynchronize its model snapshot: %s', describeAuthError(err));
@@ -940,6 +1073,7 @@ export class PiRuntime {
         }
       }),
     );
+    this._openaiCredentialChanged();
     return this.getOpenAIAuthStatus();
   }
 
@@ -952,6 +1086,7 @@ export class PiRuntime {
         log('[PiRuntime] chatgpt signed out');
       }),
     );
+    this._openaiCredentialChanged();
     return this.getOpenAIAuthStatus();
   }
 
@@ -1290,128 +1425,189 @@ export class PiRuntime {
   }
 
   /**
-   * Resolve the small/fast model for internal sub-calls (query expansion, rerank, memory
-   * consolidation extraction + profile summaries). Prefers the Settings → Explore section model when
-   * the user configured one (the same `damocles.explore.*` config the Explore subagent uses). Memory
-   * work uses the explore MODEL but a fixed `medium` effort (injected in `runStructuredCompletion`),
-   * NOT the user's Explore effort setting. Falls back to a Haiku-class model
-   * when Anthropic is authed, else a mini-class model on an authed OpenAI path. `null` when nothing is
-   * configured, so callers fail soft. Routed through `resolvePiModel`, so the fallback lands on the
-   * canonical provider — never a gateway/reseller duplicate.
-   *
-   * Also `null` until a folder runtime exists: subscription plugin providers are flushed into the model
-   * runtime when the first folder's services are created.
+   * The Background model (`resolveBackgroundModel`) and its explicit effort. `null` until a folder runtime exists:
+   * subscription plugin providers are flushed into the model runtime when the first folder's services are created.
    */
-  private _resolveSmallFastModel(): Model<Api> | null {
+  private _resolveBackgroundModel(): SubCallModel | null {
     const registry = this._modelRuntime;
     if (!registry || this._folders.size === 0) return null;
-    const explore = resolveExploreSectionModel(registry, this._platform.settings);
-    // The user's Explore effort setting intentionally does NOT apply to background memory sub-calls;
-    // those run at a fixed medium (injected in runStructuredCompletion). Consume the model only.
-    // An Explore model with no credential is no model at all, never a fallback to another provider.
-    if (explore) return registry.hasConfiguredAuth(explore.model.provider) ? explore.model : null;
-    const openai = this.getOpenAIAuthStatus();
-    const preferApiKey = this._preferOpenAIApiKey();
-    const anthropic = resolvePiModel(PI_SMALL_FAST_ANTHROPIC, registry, openai, preferApiKey);
-    if (anthropic.model && anthropic.authed) return anthropic.model;
-    const openaiModel = resolvePiModel(PI_SMALL_FAST_OPENAI, registry, openai, preferApiKey);
-    if (openaiModel.model && openaiModel.authed) return openaiModel.model;
-    return null;
+    return resolveBackgroundModel(registry, this._platform.settings, this.getOpenAIAuthStatus(), this.preferOpenAIApiKey());
   }
 
-  /** Whether a small/fast sub-call model is currently authed (lets callers tell no-auth from a transient miss). */
-  hasAuthedSubCallModel(): boolean {
-    return this._resolveSmallFastModel() !== null;
+  /** The one place a structured sub-call's model is chosen by purpose: the judging jobs follow the Memory judge, the rest the Background model. */
+  private subCallModelFor(purpose: StructuredSubCallPurpose): SubCallModel | null {
+    if (purpose !== 'memory-merge' && purpose !== 'memory-rerank') return this._resolveBackgroundModel();
+    const judge = this.resolveMemoryJudge();
+    if (judge.kind === 'classifier') return judge.fallback;
+    if (judge.kind === 'none') return null;
+    return judge.effort === undefined ? { model: judge.model } : { model: judge.model, effort: judge.effort };
+  }
+
+  /** Whether a sub-call of `purpose` has a signed-in model (lets callers tell no-auth from a transient miss). */
+  hasAuthedSubCallModel(purpose: StructuredSubCallPurpose): boolean {
+    return this.subCallModelFor(purpose) !== null;
   }
 
   /**
-   * The model {@link runStructuredCompletion} would use now, with its API rates in USD per million tokens
-   * and whether its credential bills dollars. `null` when no sub-call model is configured.
+   * The model a memory audit sub-call would use now, with its API rates in USD per million tokens,
+   * whether its credential bills dollars, and the level it thinks at (unclamped until pi-ai has loaded).
+   * `null` when no sub-call model is configured.
    */
-  describeSubCallModel(): { provider: string; id: string; inputPerMTok: number; outputPerMTok: number; dollarBilled: boolean } | null {
-    const model = this._resolveSmallFastModel();
-    if (!model) return null;
+  describeSubCallModel(): { provider: string; id: string; inputPerMTok: number; outputPerMTok: number; dollarBilled: boolean; effort: ModelThinkingLevel } | null {
+    const choice = this.subCallModelFor('memory-audit');
+    if (!choice) return null;
+    const { model } = choice;
+    const level = subCallLevel('memory-audit', choice.effort);
+    const clamp = loadedPiAi()?.clampThinkingLevel;
+    const effort = clamp ? clamp(model, level) : model.reasoning ? level : 'off';
     // The API key and ChatGPT share `openai`, so the provider alone does not name the credential; the rule does.
     const dollarBilled = piModelDollarBilled(model, {
       supportedModels: piSupportedModels(),
       claudeAuthMode: this.getClaudeAuthStatus().mode,
       openai: this.getOpenAIAuthStatus(),
-      preferApiKey: this._preferOpenAIApiKey(),
+      preferApiKey: this.preferOpenAIApiKey(),
       registry: this._modelRuntime ?? undefined,
     });
-    return { provider: model.provider, id: model.id, inputPerMTok: model.cost.input, outputPerMTok: model.cost.output, dollarBilled };
+    return { provider: model.provider, id: model.id, inputPerMTok: model.cost.input, outputPerMTok: model.cost.output, dollarBilled, effort };
   }
 
   /**
-   * Run a one-shot structured-output completion on the small/fast model of the active provider.
-   * Used by memory's internal sub-calls (query expansion, rerank, extraction). Resolves to
-   * `null` when no provider is authed or the completion fails, so memory degrades gracefully.
+   * Run a one-shot structured-output completion on the model `subCallModelFor` picks for its purpose.
+   * Used by titles and memory's internal sub-calls (query expansion, rerank, extraction). Resolves to
+   * `unreachable` when no provider is authed or the model never saw the request (cause `credential` when
+   * the credential is missing or refused), `rejected` when the
+   * provider refused the request as sent, and `unanswered` when the model replied without a valid
+   * result, so memory degrades gracefully.
    * Inference runs through `ModelRuntime.completeSimple`, which resolves the request credential
    * (OAuth bearer token or API key, incl. refresh) and provider headers itself.
    */
-  async runStructuredCompletion<T>(req: StructuredCompletionRequest): Promise<T | null> {
+  async runStructuredCompletion<T>(req: StructuredCompletionRequest): Promise<StructuredCompletionResult<T>> {
     // Only run once a session's folder runtime is live. We do NOT boot pi here — sub-calls happen
     // during/after a session, so a folder exists in practice; this keeps background memory tasks
     // fail-soft (and never spins up pi from a test). Fully guarded.
     try {
       const modelRuntime = this._modelRuntime;
-      const model = this._resolveSmallFastModel();
-      if (!modelRuntime || !model) return null;
+      const choice = this.subCallModelFor(req.purpose);
+      if (!modelRuntime || !choice) return UNREACHABLE;
+      const { model } = choice;
       // Fail soft when the model's provider has no configured credential (mirrors the old "no API key"
       // guard) — completeSimple would otherwise error trying to resolve auth.
       if (!modelRuntime.hasConfiguredAuth(model.provider)) {
         log('[PiRuntime] runStructuredCompletion: no configured credential for provider %s', model.provider);
-        return null;
+        return CREDENTIAL_REFUSED;
       }
-      // pi thinking level for the fixed background `medium` — only a catalog custom-provider model
-      // (step-3.7-flash today) yields one; Haiku/mini fallbacks yield undefined and pass no `reasoning`.
-      // `off` maps to "no reasoning", so it is likewise not forwarded (also narrows the pi-agent-core
-      // ThinkingLevel to the pi-ai one `completeSimple` accepts, which has no `off`).
-      const reasoning = exploreThinkingLevel(model, 'medium');
+      // Without the clamp no level can be sent, and a request with none runs Claude 5.x at high effort.
+      const piAi = await loadPiAi();
+      if (!piAi) {
+        log('[PiRuntime] runStructuredCompletion: pi-ai unavailable, sub-call %s skipped', req.purpose);
+        return UNREACHABLE;
+      }
+      const reasoning = subCallReasoning(piAi.clampThinkingLevel, model, subCallLevel(req.purpose, choice.effort));
       const complete: PiCompleteFn = async (m, c, o) => {
-        const message = await modelRuntime.completeSimple(m, c, {
-          ...o,
-          ...(reasoning && reasoning !== 'off' ? { reasoning } : {}),
-        });
+        const startedAt = performance.now();
+        const message = await modelRuntime.completeSimple(m, c, { ...o, ...(reasoning ? { reasoning } : {}) });
+        const elapsedMs = Math.round(performance.now() - startedAt);
+        if (elapsedMs >= SLOW_SUB_CALL_MS || message.stopReason === 'error' || message.stopReason === 'aborted') {
+          log('[PiRuntime] sub-call %s on %s/%s at %s ended with %s in %dms', req.purpose, m.provider, m.id, reasoning ?? 'off', message.stopReason, elapsedMs);
+        }
         // Billed whatever the stop reason; a throw carries no usage to record.
         appendSubCallUsage(message, req.purpose, req.attribution);
         return message;
       };
-      return await runStructuredCompletion<T>(complete, model, req);
+      // pi resolves the credential exactly as completeSimple did; only its error code is read, never its text.
+      const credentialRefused: CredentialRefused = async () => {
+        try {
+          return (await modelRuntime.getAuth(model, req.abortSignal ? { signal: req.abortSignal } : {})) === undefined;
+        } catch (err) {
+          return isPiCredentialError(err);
+        }
+      };
+      return await runStructuredCompletion<T>(complete, model, req, piAi.isRetryableAssistantError, credentialRefused);
     } catch (err) {
       log('[PiRuntime] runStructuredCompletion failed: %s', describeAuthError(err));
-      return null;
+      return UNREACHABLE;
     }
   }
 
-  /** The first classifier in preference order whose provider has credentials and passes `admits`. */
-  private _pickClassifier(
-    admits: (provider: ClassifierProvider) => boolean,
-  ): { ref: ClassifierModelRef; model: ClassifierModel<ClassifierApi> } | null {
-    const registry = this._modelRuntime;
-    if (!registry) return null;
-    const ref = pickClassifierModel((provider) => registry.hasConfiguredAuth(provider) && admits(provider));
-    const model = ref ? registry.getModelOfType('classifier', ref.provider, ref.id) : undefined;
-    return ref && model ? { ref, model } : null;
+  /** The OpenAI inputs of one judge resolution, read once: the status reads auth.json synchronously, retrying with sleeps. */
+  private _openaiAuthInputs(): OpenAIAuthInputs {
+    return { status: this.getOpenAIAuthStatus(), preferApiKey: this.preferOpenAIApiKey() };
   }
 
-  /** Whether the memory judges may send their next request to Jev. */
-  hasClassifier(): boolean {
-    return this._pickClassifier((provider) => this._classifierBreakers.admits(provider)) !== null;
+  /** Whether `provider`'s credential can serve a classifier: OpenAI only while its request credential is the API key. */
+  private _classifierCredential(provider: ClassifierProvider, openai: OpenAIAuthInputs): ClassifierCredential {
+    const registry = this._modelRuntime;
+    if (!registry) return 'no-key';
+    return classifierCredential(provider, (p) => registry.hasConfiguredAuth(p), openai);
+  }
+
+  /** Each classifier provider's credential, for the Memory judge choices. */
+  classifierCredentials(): Record<ClassifierProvider, ClassifierCredential> {
+    const openai = this._openaiAuthInputs();
+    return Object.fromEntries(CLASSIFIER_MODELS.map(({ provider }) => [provider, this._classifierCredential(provider, openai)])) as Record<ClassifierProvider, ClassifierCredential>;
   }
 
   /**
-   * The model the memory judges run on, for the settings status line. A refused provider reads as refused
-   * until an answer or a credential change clears it, even while a probe is allowed.
+   * The Memory judge, through `damocles.memory.judge*` (user settings only). Automatic is the first classifier whose
+   * credential serves it, whose breaker `isOpen` does not report and whose model is in the catalog, else Automatic's small model. A chosen classifier
+   * or model that cannot run gives `none`, never another judge. Models need a folder runtime, as the Background model does.
+   */
+  private _resolveMemoryJudge(isOpen: (provider: ClassifierProvider) => boolean, openai: OpenAIAuthInputs): MemoryJudgeResolution {
+    const registry = this._modelRuntime;
+    const settings = this._platform.settings;
+    const choice = migrateLegacyModelValue(settings.get<string>(MEMORY_JUDGE_SETTING, ''));
+    if (!isKnownMemoryJudgeChoice(choice)) return { kind: 'none', forced: { choice, reason: 'unrecognized' } };
+    const models = this._folders.size > 0 ? registry : null;
+    const classifierOf = (ref: ClassifierModelRef) => registry?.getModelOfType('classifier', ref.provider, ref.id);
+    if (choice === '') {
+      const automatic = models ? resolveAutomaticModel(models, openai.status, openai.preferApiKey) : null;
+      const ref = pickClassifierModel(
+        (candidate) => this._classifierCredential(candidate.provider, openai) === 'ok' && !isOpen(candidate.provider) && classifierOf(candidate) !== undefined,
+      );
+      const model = ref ? classifierOf(ref) : undefined;
+      if (ref && model) return { kind: 'classifier', ref, model, fallback: automatic };
+      return automatic ? { kind: 'model', ...automatic } : { kind: 'none' };
+    }
+    const forcedProvider = forcedClassifierOf(choice);
+    if (forcedProvider) {
+      const credential = this._classifierCredential(forcedProvider, openai);
+      if (credential !== 'ok') return { kind: 'none', forced: { choice, reason: credential } };
+      if (isOpen(forcedProvider)) return { kind: 'none', forced: { choice, reason: 'rejected' } };
+      const ref = classifierModelOf(forcedProvider);
+      const model = classifierOf(ref);
+      return model ? { kind: 'classifier', ref, model, fallback: null } : { kind: 'none', forced: { choice, reason: 'not-in-catalog' } };
+    }
+    const picked = models ? resolvePickedModel(choice, settings.get<string>(MEMORY_JUDGE_EFFORT_SETTING, ''), models, openai.status, openai.preferApiKey) : null;
+    return picked ? { kind: 'model', ...picked } : { kind: 'none', forced: { choice, reason: 'signed-out' } };
+  }
+
+  /** The Memory judge the next merge or rerank runs on; a breaker past its cooldown admits its probe. */
+  resolveMemoryJudge(): MemoryJudgeResolution {
+    return this._resolveMemoryJudge((provider) => !this._classifierBreakers.admits(provider), this._openaiAuthInputs());
+  }
+
+  /** Whether the memory judges may send their next request to a classifier. */
+  hasClassifier(): boolean {
+    return this.resolveMemoryJudge().kind === 'classifier';
+  }
+
+  /**
+   * The judge the next merge or rerank runs on, for the settings status line: the same resolution, so a provider due
+   * for its probe is named as the judge, and the fallback while the probe is in flight. `rejected` lists every other
+   * configured provider whose refusal stands.
    */
   describeMemoryJudge(): MemoryJudge {
-    const registry = this._modelRuntime;
+    const openai = this._openaiAuthInputs();
+    const judge = this._resolveMemoryJudge((provider) => !this._classifierBreakers.admits(provider), openai);
+    const judgedBy = judge.kind === 'classifier' ? judge.ref.provider : undefined;
     const rejected = CLASSIFIER_MODELS.flatMap(({ provider }) => {
-      const reason = registry?.hasConfiguredAuth(provider) ? this._classifierBreakers.rejection(provider) : undefined;
+      if (provider === judgedBy || this._classifierCredential(provider, openai) !== 'ok') return [];
+      const reason = this._classifierBreakers.rejection(provider);
       return reason ? [{ via: provider, reason }] : [];
     });
-    const picked = this._pickClassifier((provider) => this._classifierBreakers.rejection(provider) === undefined);
-    return memoryJudgeOf(picked?.ref ?? null, picked ? null : this._resolveSmallFastModel(), rejected);
+    if (judge.kind === 'classifier') return memoryJudgeOf(judge.ref, null, rejected);
+    if (judge.kind === 'model') return memoryJudgeOf(null, judge.model, rejected);
+    return memoryJudgeOf(null, null, rejected, judge.forced);
   }
 
   /**
@@ -1428,14 +1624,14 @@ export class PiRuntime {
   }
 
   /**
-   * One Jev classification through `ModelRuntime.classify()`. Resolves to the answers, or `null` when no
-   * classifier is usable, the request did not stop normally, or an answer is missing; never throws.
+   * One classification on the Memory judge's classifier through `ModelRuntime.classify()`. Resolves to the answers,
+   * or `null` when the judge is no classifier, the request did not stop normally, or an answer is missing; never throws.
    * Appends a ledger line whenever the service reported usage, including for a failed request.
    */
   async runClassification(req: ClassificationRequest): Promise<Record<string, ClassifierAnswer> | null> {
     const modelRuntime = this._modelRuntime;
-    const picked = this._pickClassifier((provider) => this._classifierBreakers.admits(provider));
-    if (!modelRuntime || !picked) return null;
+    const picked = this.resolveMemoryJudge();
+    if (!modelRuntime || picked.kind !== 'classifier') return null;
     // Claimed in the same tick as the pick, so a breaker past its cooldown hands out exactly one probe.
     const ticket = this._classifierBreakers.claim(picked.ref.provider);
     let outcome: ClassifierOutcome = { kind: 'failed' };
@@ -1522,12 +1718,9 @@ export class PiRuntime {
     }
     for (const watcher of this._userWatchers) watcher.dispose();
     this._userWatchers.length = 0;
-    if (this._authDebounce) {
-      clearTimeout(this._authDebounce);
-      this._authDebounce = null;
-    }
-    this._authWatcher?.dispose();
-    this._authWatcher = null;
+    this._authWatch?.dispose();
+    this._authWatch = null;
+    this._classifierBreakers.dispose();
     this._secretsListener?.dispose();
     this._secretsListener = null;
     this._trustListener?.dispose();
@@ -1536,8 +1729,8 @@ export class PiRuntime {
     this._imageSettingsListener = null;
     this._toolExposureListener?.dispose();
     this._toolExposureListener = null;
-    this._exploreSettingsListener?.dispose();
-    this._exploreSettingsListener = null;
+    this._memoryJudgeSettingsListener?.dispose();
+    this._memoryJudgeSettingsListener = null;
     this._modelRuntime = null;
     this._userSettings = null;
     this._initPromise = null;

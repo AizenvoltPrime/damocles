@@ -38,8 +38,16 @@ describe('convertHistoryTools', () => {
   });
 
   it('restores a call a Stop abandoned as abandoned, whatever result pi wrote while stopping', () => {
-    expect(convert({ ...CALL, stopped: true, result: 'Operation aborted', isError: true }).status).toBe('abandoned');
-    expect(convert({ ...CALL, stopped: true, result: 'done' }).status).toBe('abandoned');
+    expect(convert({ ...CALL, abandoned: 'stopped', result: 'Operation aborted', isError: true })).toMatchObject({ status: 'abandoned', abandonReason: 'stopped' });
+    expect(convert({ ...CALL, abandoned: 'stopped', result: 'done' })).toMatchObject({ status: 'abandoned', abandonReason: 'stopped' });
+  });
+
+  it('restores a call whose model call failed as abandoned for that reason', () => {
+    expect(convert({ ...CALL, abandoned: 'failed' })).toMatchObject({ status: 'abandoned', abandonReason: 'failed' });
+  });
+
+  it('gives no abandon reason to a call that ran', () => {
+    expect(convert({ ...CALL, result: 'done' })).not.toHaveProperty('abandonReason');
   });
 
   it('restores a recorded success as completed', () => {
@@ -78,6 +86,13 @@ describe('convertHistoryTools', () => {
     const call = convert({ ...CALL, result: 'partial output', metadata: { [CANCELLED_TOOL_DETAIL_KEY]: true } });
 
     expect(call.status).toBe('cancelled');
+  });
+
+  it('restores an error result an abort cut short as stopped, keeping its output', () => {
+    const call = convert({ ...CALL, result: 'Command aborted', isError: true, metadata: { [CANCELLED_TOOL_DETAIL_KEY]: true } });
+
+    expect(call.status).toBe('cancelled');
+    expect(call.result).toBe('Command aborted');
   });
 });
 

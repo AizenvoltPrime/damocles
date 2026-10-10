@@ -22,7 +22,7 @@ import {
   MAX_IMAGES_PER_MESSAGE,
   type ImageBlock,
 } from "../../shared/types/content";
-import { DEFAULT_CONTEXT_WINDOW, MODEL_SUBSTITUTES, migrateLegacyModelValue, migrateLegacyEffortValue, parseEffortLevel } from "../../shared/types/constants";
+import { DEFAULT_CONTEXT_WINDOW, DEFAULT_MODELS, MODEL_SUBSTITUTES, migrateLegacyModelValue, migrateLegacyEffortValue, parseEffortLevel } from "../../shared/types/constants";
 import { PLAN_MODE_TOOLS } from "../../shared/tool-names";
 import { log } from "../logger";
 import { t } from "../l10n";
@@ -50,7 +50,9 @@ import {
   effortToThinkingLevel,
   PI_EXCLUDED_TOOLS,
   PLAN_MODE_EXCLUDED_TOOLS,
+  type ModelResolution,
 } from "./pi-models";
+import type { OpenAIAuthStatus } from "./openai-auth";
 import { buildCustomTools } from "./tools";
 import { ShellCancelStore } from "./tools/shell-cancel-registry";
 import { createShellSessionJob } from "./tools/process-tree";
@@ -78,7 +80,8 @@ import {
 } from "./subagents";
 import type { AgentRegistry } from "./subagents/agent-types";
 import { AGENT_SCOPE_BY_SOURCE } from "./subagents/types";
-import { resolveCheapModelFor } from "./subagents/cheap-model";
+import { readExploreSetting, resolveCheapModelFor } from "./subagents/cheap-model";
+import { EXPLORE_MODEL_SETTING } from "../../shared/explore-settings";
 import { backgroundResultsDetails, formatBackgroundResults, SUBAGENT_RESULTS_CUSTOM_TYPE } from "./subagents/background-results";
 import { reconcileInterruptions } from "./interruption-notice";
 import { collectUndeliveredFromFiles, deliverUndeliveredResults, type UndeliveredFileResult } from "./undelivered-results";
@@ -91,7 +94,6 @@ import {
 } from "./agent-records";
 import { TeamPersistence } from "../team/persistence";
 import { teamPlanModeStatement } from "../team/prompts";
-import { resolveExploreSectionModel } from "./custom-providers";
 import type { CustomAgentInfo } from "../../shared/types/commands";
 import {
   ensurePiSessionDir,
@@ -297,6 +299,12 @@ export class PiSession implements ChatSession {
   private startPromise: Promise<void> | null = null;
   /** In-flight session replacement (reset/clear → newSession); a following sendMessage awaits it. */
   private resetPromise: Promise<void> | null = null;
+  /** The tail of the queued model switches (never rejects); a prompt and a session replacement wait for it. */
+  private modelSwitch: Promise<void> | null = null;
+  /** A model refused for want of OpenAI sign-in, applied when the next sign-in succeeds (`openaiSignInEnded`). */
+  private pendingOpenAIPick: string | null = null;
+  /** Bumped by every model request, prompt and conversation change, so a refusal they supersede arms no pick. */
+  private openaiPickEpoch = 0;
   /** In-flight abort (interrupt/cancel → session.abort() → waitForIdle); a following sendMessage awaits
    * it so a new turn never races a still-winding-down one ("Agent is already processing"). */
   private abortPromise: Promise<void> | null = null;
@@ -461,8 +469,6 @@ export class PiSession implements ChatSession {
       cwd: options.cwd,
       sessionId: () => this.runtime?.session.sessionId ?? "",
       modelValue: () => this.modelValue,
-      defaultModelValue: () => options.getDefaultModel?.() ?? this.modelValue,
-      contextWindow: () => this.contextWindowForCurrentModel(),
       supportedModels: () => this.supportedModelsCache,
       permissionMode: () => this.permissionMode,
       budgetLimit: () => this.budgetLimitForEnforcement(),
@@ -521,7 +527,7 @@ export class PiSession implements ChatSession {
     const pi = getPiCodingAgent();
     if (!pi) throw new Error("PiSession.start: pi runtime not initialized");
 
-    // Wire native custom providers (StepFun/DeepSeek/OpenRouter/Gemini) from secrets so subagents AND a
+    // Wire the key-backed providers (StepFun/DeepSeek/OpenRouter/TypeSafe) from secrets so subagents AND a
     // saved StepFun/DeepSeek default model can resolve (Phase 5, US-018.8). Deliberately still AWAITED
     // before resolveInitialModel: fire-and-forget would race the user's first prompt and route turn 1 to
     // the wrong provider. Safe to await because the sync is bounded, cancellable and fail-soft — and if
@@ -580,7 +586,7 @@ export class PiSession implements ChatSession {
         deliverUserNote: this.noteDeliveryForMain(() => bound.session),
         shellJob: this.shellJob,
       });
-      // No `tools:` on purpose. pi freezes `options.tools` into an `_allowedToolNames` filter; since the
+      // No `tools:` on purpose. pi turns `options.tools` into an allowlist filter; since the
       // factory runs before `setMcpServers`, a frozen list would permanently exclude later-registered
       // mcp__ tools (the first-connect bug). Omitting it admits every non-excluded tool into the registry;
       // the active set is governed by `applyActiveToolsForMode`. `excludeTools` still drops pi's `edit`.
@@ -654,8 +660,18 @@ export class PiSession implements ChatSession {
     // resolveInitialModel may have moved the model off the requested one, and the panel has had no
     // account state before this point.
     this.publishAccountInfo();
+    this.publishModel();
     // A resume that landed while the runtime was being built found no runtime to switch.
     if (this.resumeSessionId && this.resumeSessionId !== resumeTargetId) this.setResumeSession(this.resumeSessionId);
+  }
+
+  private subscribeEvents(session: AgentSession): void {
+    const adapterUnsubscribe = this.adapter.subscribe(session);
+    this.unpersistedImages.track(session);
+    this.unsubscribe = () => {
+      adapterUnsubscribe();
+      this.unpersistedImages.untrack(session);
+    };
   }
 
   /**
@@ -666,12 +682,7 @@ export class PiSession implements ChatSession {
   private bindSession(session: AgentSession): void {
     // A lease lost while start() or a resume switch was opening this session: nothing may append for it.
     this.muteIfLeaseLost(session);
-    const adapterUnsubscribe = this.adapter.subscribe(session);
-    this.unpersistedImages.track(session);
-    this.unsubscribe = () => {
-      adapterUnsubscribe();
-      this.unpersistedImages.untrack(session);
-    };
+    this.subscribeEvents(session);
     // Graceful budget stop (US-008): pi consults this once per model round-trip, so `end` finishes the
     // turn at the next boundary with the in-flight message and its tool results intact, unlike an
     // abort. Installed here because start() and setRebindSession both funnel through bindSession, and a
@@ -935,11 +946,12 @@ export class PiSession implements ChatSession {
   /**
    * pi resumes a session on the model and thinking level its file recorded (sdk.js createAgentSession), which Damocles
    * otherwise overrides by passing the panel's: a recorded model still curated and signed in becomes this panel's again,
-   * with its level. Anything else keeps the panel's model. Permission mode and YOLO are never restored.
+   * with its level. A retired recorded model continues on its `LEGACY_MODEL_MAP` successor. Anything else keeps the
+   * panel's model. Permission mode and YOLO are never restored.
    */
   private adoptRecordedSelection(branch: readonly SessionEntry[]): void {
     const recorded = recordedSelection(branch);
-    const value = recorded?.model ? modelValueOfPiModel(recorded.model.provider, recorded.model.modelId) : undefined;
+    const value = recorded?.model ? modelValueOfPiModel(recorded.model.provider, migrateLegacyModelValue(recorded.model.modelId)) : undefined;
     const piRuntime = PiRuntime.get();
     const registry = piRuntime.modelRuntime;
     if (value === undefined || !registry) return;
@@ -1049,6 +1061,8 @@ export class PiSession implements ChatSession {
       await pending;
       if (this.resetPromise === pending) this.resetPromise = null;
     }
+    // A model picked before this send is the one the turn runs on and the composer shows.
+    if (this.modelSwitch) await this.modelSwitch;
     // Likewise wait for an in-flight abort (interrupt/cancel) to fully wind the prior turn down before
     // starting a new one. ESC during a long tool (e.g. browser open) keeps pi streaming until the tool
     // returns; a sendMessage that arrived in that window would otherwise hit "Agent is already
@@ -1091,6 +1105,8 @@ export class PiSession implements ChatSession {
       this.returnUnsentMessage(correlationId, userBroadcast);
       return "unsent";
     }
+    // A turn run on the committed model means the user went on without the model that asked for sign-in.
+    this.dropPendingOpenAIPick();
     // Capture the session's first real user message for the deterministic plan path. The
     // branch doesn't yet hold this prompt when `before_agent_start` builds the plan-mode system prompt on
     // the first turn, so `getPlanFilePath` falls back to this. Prefer the user's ORIGINAL typed text
@@ -1830,11 +1846,13 @@ export class PiSession implements ChatSession {
    * than abort it mid-stream (pi's `compact()` would abort the current op first). The adapter translates
    * pi's `compaction_start`/`compaction_end` events into the existing webview compaction messages.
    */
-  async compact(instructions?: string): Promise<void> {
+  /** `onAccepted` runs once the compaction is accepted, before anything it reports; a refusal never calls it. */
+  async compact(instructions?: string, onAccepted?: () => void): Promise<void> {
     if (this.processingFlag || this.compacting) {
       this.emit({ type: "notification", message: t("Finish or stop the current turn before compacting."), notificationType: "warning" });
       return;
     }
+    onAccepted?.();
     // Hold `compacting` across the whole operation so a sendMessage arriving mid-compaction is rejected
     // with the normal "already in progress" notice instead of racing into pi's raw "Agent is already
     // processing" error on the shared session.
@@ -1941,6 +1959,7 @@ export class PiSession implements ChatSession {
 
   reset(): void {
     this.stopPromptBeforeRun();
+    this.dropPendingOpenAIPick();
     this.processingFlag = false;
     // The replacement session disposes the old one, which aborts whatever turn it was running.
     this.setTurnState("idle", { kind: "cancelled" });
@@ -1987,6 +2006,9 @@ export class PiSession implements ChatSession {
     // leave registeredSessionId on an intermediate session / double-register panels. Also chain off any
     // in-flight MCP reload so newSession() can't dispose the session under a live session.reload().
     const priorReload = this.mcpReloadPromise;
+    // Callers clear the webview with the reset, so the aborted turn's tail (partial answer, settle, usage) must not reach it or the zeroed meter.
+    this.unsubscribe?.();
+    this.unsubscribe = null;
     // The turn is stopped before the drain, so no tool runs after the reset, and its settle queues the
     // turn's finalize, which lands only while the old session is still installed.
     const checkpoints = this.checkpointService;
@@ -1995,10 +2017,14 @@ export class PiSession implements ChatSession {
     // session installed and still able to write. Swallowing that here would let a caller delete the
     // file out from under a live writer. The prior attempt is chained off for serialization only —
     // `.catch` before it so one failure doesn't poison every later reset.
+    // pi's setModel appends to the session it switches, so the replacement (and a delete after it) waits for it; the
+    // turn is stopped first, because a model_select hook pi awaits there can take a minute.
+    const modelSwitch = this.modelSwitch;
     const replacement = (this.resetPromise ?? Promise.resolve())
       .catch(() => undefined)
       .then(() => (priorReload ? priorReload.catch(() => undefined) : undefined))
       .then(() => runtime.session.abort())
+      .then(() => modelSwitch)
       .then(() => checkpoints?.drain(CHECKPOINT_DRAIN_MS))
       .then(() => runtime.newSession())
       .then(({ cancelled }) => {
@@ -2006,7 +2032,11 @@ export class PiSession implements ChatSession {
       });
     // Logging hangs off a SEPARATE handle, so the rejection stays observable to `whenReplaced()`
     // callers while never surfacing as an unhandled rejection when nobody awaits it.
-    replacement.catch((err) => log("[PiSession] reset newSession failed: %O", err));
+    replacement.catch((err) => {
+      log("[PiSession] reset newSession failed: %O", err);
+      // The old session stays installed and writable, so it reports to the webview again unless a later reset or a rebind took over.
+      if (this.resetPromise === replacement && this.unsubscribe === null && !this._disposed) this.subscribeEvents(runtime.session);
+    });
     this.resetPromise = replacement;
   }
 
@@ -2217,37 +2247,116 @@ export class PiSession implements ChatSession {
 
   // ---- model --------------------------------------------------------------
 
-  setModel(model?: string): void {
-    if (!model) return;
+  /**
+   * Switches run one at a time in request order, after any session replacement requested before them, and a
+   * prompt waits for them, so the last model picked is the one a turn runs on.
+   */
+  setModel(model?: string): Promise<void> {
+    if (!model) return Promise.resolve();
+    const epoch = this.dropPendingOpenAIPick();
+    const priorReset = this.resetPromise;
+    const switched = (this.modelSwitch ?? Promise.resolve())
+      .then(() => priorReset?.catch(() => undefined))
+      .then(() => this.switchModel(model, epoch))
+      .catch((err) => log("[PiSession] model switch failed: %O", err));
+    this.modelSwitch = switched;
+    void switched.finally(() => {
+      if (this.modelSwitch === switched) this.modelSwitch = null;
+    });
+    return switched;
+  }
+
+  /**
+   * The end of an OpenAI sign-in the user ran: a pick refused for want of it is applied once it succeeded and dropped
+   * otherwise, so no later credential change switches the chat.
+   */
+  openaiSignInEnded(signedIn: boolean): Promise<void> {
+    const pick = this.pendingOpenAIPick;
+    this.pendingOpenAIPick = null;
+    return signedIn && pick ? this.setModel(pick) : Promise.resolve();
+  }
+
+  /** Returns the epoch a refusal must still see to arm a pick. */
+  private dropPendingOpenAIPick(): number {
+    this.pendingOpenAIPick = null;
+    return ++this.openaiPickEpoch;
+  }
+
+  /** `modelValue` and `desiredModel` change only after pi adopted the model; every outcome publishes the committed one. */
+  private async switchModel(model: string, epoch: number): Promise<void> {
+    await this.ensureStarted().catch((err) => log("[PiSession] model switch found no session: %O", err));
+    const session = this.runtime?.session;
     const piRuntime = PiRuntime.get();
     const modelRuntime = piRuntime.modelRuntime;
-    if (!modelRuntime || !this.runtime) return;
-    const resolution = resolvePiModel(model, modelRuntime, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey());
-    if (resolution.authRequired) {
+    if (this._disposed) return;
+    if (!session || !modelRuntime) {
+      this.publishModel();
+      return;
+    }
+    const openaiAuth = piRuntime.getOpenAIAuthStatus();
+    const resolution = resolvePiModel(model, modelRuntime, openaiAuth, this.preferOpenAIApiKey());
+    const target = resolution.authed ? resolution.model : undefined;
+    if (!target) {
+      this.refuseModel(model, resolution, openaiAuth, epoch);
+      this.publishModel();
+      return;
+    }
+    // pi appends a model_change entry even for the model it already runs.
+    if (model === this.modelValue && session.model?.provider === target.provider && session.model.id === target.id) {
+      this.publishModel();
+      return;
+    }
+    // pi's setModel rejects when its own auth check fails, and has then not adopted the model.
+    const adopted = await session.setModel(target).then(
+      () => true,
+      (err: unknown) => {
+        log("[PiSession] pi refused model %s: %O", model, err);
+        return session.model?.provider === target.provider && session.model.id === target.id;
+      },
+    );
+    if (this._disposed) return;
+    // A replacement session was built from the previous `desiredModel`, so the switch is applied to it too.
+    if (adopted && this.runtime?.session !== session) return this.switchModel(model, epoch);
+    if (adopted) {
+      this.modelValue = model;
+      this.desiredModel = target;
+      // pi's setModel applied its own default level for the model, recorded in the session file.
+      session.setThinkingLevel(this.resolveThinkingLevel());
+      this.publishAccountInfo();
+    } else {
+      this.notifyModelRefused(t("Sign in to {0} to use {1}", providerDisplayName(this.getModelInfo(model)), this.modelDisplayName(model)));
+    }
+    this.publishModel();
+  }
+
+  private refuseModel(model: string, resolution: ModelResolution, openaiAuth: OpenAIAuthStatus, epoch: number): void {
+    // With a credential, a sign-in cannot help: the catalog it unlocks lacks the model.
+    if (resolution.authRequired && !(openaiAuth.chatgpt || openaiAuth.codex || openaiAuth.apiKey)) {
+      if (epoch === this.openaiPickEpoch) this.pendingOpenAIPick = model;
       this.emit({ type: "openaiAuthRequired", modelValue: model });
       return;
     }
-    if (!resolution.model) {
-      const info = this.getModelInfo(model);
-      if (info?.piProvider) {  // catalog-known custom provider, just not keyed (StepFun pre-key)
-        this.emit({ type: "notification", message: t("Sign in to {0} to use {1}", providerDisplayName(info), model), notificationType: "warning" });
-        return;
-      }
-      this.emit({ type: "notification", message: t("Model {0} is unavailable on the pi harness", model), notificationType: "error" });
+    const info = this.getModelInfo(model);
+    // A catalog model with a known provider is only missing its credential (StepFun pre-key, DeepSeek pre-key).
+    if (!resolution.authRequired && (resolution.model || info?.piProvider)) {
+      this.notifyModelRefused(t("Sign in to {0} to use {1}", providerDisplayName(info), this.modelDisplayName(model)));
       return;
     }
-    if (resolution.authed === false) {
-      const info = this.getModelInfo(model);
-      this.emit({ type: "notification", message: t("Sign in to {0} to use {1}", providerDisplayName(info), model), notificationType: "warning" });
-      return;
-    }
-    // Only commit the active model after the switch is known to succeed — every early return above
-    // leaves `modelValue` (and everything derived from it) pointing at the still-current model.
-    this.modelValue = model;
-    this.desiredModel = resolution.model;
-    // The account state is derived from the model, so it is stale until the new one is published.
-    this.publishAccountInfo();
-    void this.runtime.session.setModel(resolution.model).catch((err) => log("[PiSession] setModel failed: %O", err));
+    this.notifyModelRefused(t("Model {0} is unavailable on the pi harness", this.modelDisplayName(model)), "error");
+  }
+
+  /** A host notice rather than a chat toast, because the pick may come from a settings view laid over the chat. */
+  private notifyModelRefused(message: string, level: "warn" | "error" = "warn"): void {
+    void this.options.platform.notifications[level](message);
+  }
+
+  private modelDisplayName(model: string): string {
+    return this.getModelInfo(model)?.displayName ?? model;
+  }
+
+  /** The only report of the chat's model to the panel, which shows no model this session did not commit. */
+  private publishModel(): void {
+    if (!this._disposed && this.modelValue) this.options.onModelChange?.(this.modelValue);
   }
 
   async getSupportedModels(): Promise<ModelInfo[]> {
@@ -2372,6 +2481,10 @@ export class PiSession implements ChatSession {
     return this.processingFlag;
   }
 
+  get turnRunning(): boolean {
+    return this.turnState === "running";
+  }
+
   get currentPromptIndex(): number {
     if (this.inFlightPromptIndex !== null) return this.inFlightPromptIndex;
     const session = this.runtime?.session;
@@ -2412,6 +2525,7 @@ export class PiSession implements ChatSession {
     if (sessionId && this.runtime && this.currentSessionId !== sessionId) {
       // Synchronous, so a send made after this call is not taken for the prompt the switch replaces.
       this.stopPromptBeforeRun();
+      this.dropPendingOpenAIPick();
       // Nothing queued in this conversation may reach the next one, and the transcript its echoes stood in is replaced.
       this.returnQueue(this.runtime.session);
       this.injectedNotes = [];
@@ -3188,7 +3302,7 @@ export class PiSession implements ChatSession {
     // The boundary event carries no per-turn message list, so both predicates read the session
     // projection. `turnHasNonErrorExitPlanModeResult` scopes itself to the current turn; `lastAssistant`
     // does not need to, because every run reaching this boundary has appended an assistant message, a
-    // synthetic one even on hard failure (`agent.js:364-380` in pi-agent-core 0.99.2), so the last one is always this turn's.
+    // synthetic one even on hard failure (`agent.js:364-380` in pi-agent-core 1.1.0), so the last one is always this turn's.
     const messages = event.context.contextMessages;
     if (turnHasNonErrorExitPlanModeResult(messages)) return undefined;
     if (lastAssistant(messages)?.stopReason !== "stop") return undefined;
@@ -3255,8 +3369,8 @@ export class PiSession implements ChatSession {
   }
 
   /**
-   * Resolve a spawn's model. Precedence: the agent template's `model:` > (Explore subagent only) the
-   * Settings → Explore section selection (`damocles.explore.*`) / provider-matched cheap model >
+   * Resolve a spawn's model. Precedence: the agent template's `model:` > (Explore subagent only)
+   * `damocles.explore.model` / provider-matched cheap model >
    * inherit the panel's session model. The spawning LLM has NO say — there is no `model` param on the
    * `Agent` tool — so a subagent runs on the session model unless a template declares otherwise.
    * `enabledModels` scope is enforced (out-of-scope → fail soft).
@@ -3310,17 +3424,28 @@ export class PiSession implements ChatSession {
       return { model, modelLabel: label(model), ...billed(model), ...thinking };
     }
 
-    // 2. The Explore subagent only: the Settings → Explore section selection (provider + model, shared
-    //    with the explore UI), else the provider-matched cheap model of the panel's main model. Plan and
-    //    general-purpose are NOT lightweight — they fall through to inherit the panel's main model (step 3).
+    // 2. The Explore subagent only: `damocles.explore.model`, else the provider-matched cheap model of the
+    //    panel's main model. Plan and general-purpose fall through to inherit the panel's main model (step 3).
+    //    Without a level the agent runs at pi's last persisted default, so both paths pass one; pi clamps it per model.
+    //    A template's own `thinking:` still wins.
     if (agentConfig.name.toLowerCase() === "explore") {
-      const explore = resolveExploreSectionModel(registry, this.options.platform.settings);
-      if (explore && !scopeError(explore.model)) {
-        const { model, thinkingLevel } = explore;
-        return { model, modelLabel: label(model), ...billed(model), ...(thinkingLevel ? { thinkingLevel } : {}) };
+      const explore = readExploreSetting(this.options.platform.settings);
+      if (explore.model !== "") {
+        // A picked model never falls back to another one.
+        const picked = resolvePiModel(explore.model, registry, openai, preferApiKey);
+        const info = DEFAULT_MODELS.find((m) => m.value === explore.model);
+        // A key provider's model is registered only once its key is stored, so a missing one there means signed out.
+        if (!info || (!picked.model && !info.piProvider)) return { error: `\`${EXPLORE_MODEL_SETTING}\` is "${explore.model}", which is not a model Damocles offers. Choose another Explore model in Settings.` };
+        if (!picked.model || !picked.authed) {
+          return { error: `\`${EXPLORE_MODEL_SETTING}\` is ${info.displayName}, but ${providerDisplayName(info)} is not signed in. Sign in to ${providerDisplayName(info)}, or choose another Explore model in Settings.` };
+        }
+        const err = scopeError(picked.model);
+        if (err) return { error: `\`${EXPLORE_MODEL_SETTING}\` is ${info.displayName}, but ${err[0]!.toLowerCase()}${err.slice(1)}` };
+        const thinkingLevel = agentConfig.thinking ?? effortToThinkingLevel({ thinkingDisabled: false, effort: explore.effort });
+        return { model: picked.model, modelLabel: label(picked.model), ...billed(picked.model), thinkingLevel };
       }
       const cheap = resolveCheapModelFor(this.modelValue, registry, openai, preferApiKey);
-      if (cheap.model && !scopeError(cheap.model)) return { model: cheap.model, modelLabel: label(cheap.model), ...billed(cheap.model) };
+      if (cheap.model && !scopeError(cheap.model)) return { model: cheap.model, modelLabel: label(cheap.model), ...billed(cheap.model), thinkingLevel: agentConfig.thinking ?? "medium" };
     }
 
     // 3. Inherit the panel's session model — the default for every agent without a template `model:`.
@@ -4291,7 +4416,7 @@ export class PiSession implements ChatSession {
    * bounded: enforcement fires at `message_end`, which pi emits BEFORE it executes the message's tool
    * calls, so those tools still run — including an `Agent`/`create_team` call that spawns agents this
    * `abortAll()` never saw. Auto-compaction does not add to that: pi reaches `prepareNextTurn` only at
-   * the top of the next inner-loop iteration (`@earendil-works/pi-agent-core@^0.99.2`,
+   * the top of the next inner-loop iteration (`@earendil-works/pi-agent-core@^1.1.0`,
    * `agent-loop.ts:185-189`), and a decider answering `{ action: 'end' }` returns from the loop at
    * `:286-291` before it. So the bound is the tool calls of the message that tripped the limit and
    * nothing else.
@@ -4305,7 +4430,7 @@ export class PiSession implements ChatSession {
     this.subagentManager?.abortAll("budget");
     // A queued steer would force one more billed round trip past the limit: the loop itself ends the run
     // without polling, but `_runBeforeSettleBoundary` continues on `hasQueuedMessages()`
-    // (`agent-session.ts:1833` in pi 0.99.2) whatever the decider answered. `queueInput` and the cancel-note delivery
+    // (`agent-session.ts:1906` in pi 1.1.0) whatever the decider answered. `queueInput` and the cancel-note delivery
     // refuse new ones from here on. Restoring a held note would let that continuation drain it and bill
     // past the limit, so its echo is corrected instead of honoured.
     this.withdrawQueue(

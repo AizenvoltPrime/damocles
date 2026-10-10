@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { DatabaseSync } from 'node:sqlite';
-import { InMemoryModelsStore, type Api, type ClassifierApi, type ClassifierModel, type Model } from '@earendil-works/pi-ai';
+import { InMemoryModelsStore, isRetryableAssistantError, type Api, type ClassifierApi, type ClassifierModel, type Model } from '@earendil-works/pi-ai';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { createDatabaseWrapper } from '../database';
 import { CONTRADICTION_THRESHOLDS, contradictionRequest } from '../classifier-judges';
@@ -95,7 +95,7 @@ describe.skipIf(!ENABLED)('Jev memory judges against the real store', () => {
     expect(fs.existsSync(STORE), `no memory store at ${STORE}`).toBe(true);
     const authDir = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-jev-auth-'));
     const runtime = await ModelRuntime.create({ authPath: path.join(authDir, 'auth.json'), modelsPath: null, modelsStore: new InMemoryModelsStore(), allowModelNetwork: false });
-    const ref = pickClassifierModel((p) => runtime.hasConfiguredAuth(p));
+    const ref = pickClassifierModel((ref) => runtime.hasConfiguredAuth(ref.provider));
     expect(ref, 'set TYPESAFE_API_KEY or OPENROUTER_API_KEY').not.toBeNull();
     const jev = runtime.getModelOfType('classifier', ref!.provider, ref!.id) as ClassifierModel<ClassifierApi>;
     const { db, dir } = copyStore();
@@ -144,7 +144,7 @@ describe.skipIf(!ENABLED)('Jev memory judges against the real store', () => {
     const runner = (withJev: boolean): MemorySubCallRunner => ({
       async run<T>(req: MemorySubCallRequest) {
         if (!llm) return { value: null, failure: 'no-model' as const };
-        const value = await runStructuredCompletion<T>((m, c, o) => runtime.completeSimple(m, c, o), llm, {
+        const result = await runStructuredCompletion<T>((m, c, o) => runtime.completeSimple(m, c, o), llm, {
           systemPrompt: req.systemPrompt,
           userMessage: req.prompt,
           outputToolName: 'submit_result',
@@ -152,8 +152,8 @@ describe.skipIf(!ENABLED)('Jev memory judges against the real store', () => {
           schema: req.schema,
           purpose: 'memory-rerank',
           timeoutMs: 30_000,
-        });
-        return value === null ? { value: null, failure: 'transient' as const } : { value };
+        }, isRetryableAssistantError);
+        return result.kind === 'answered' ? { value: result.value } : { value: null, failure: result.kind };
       },
       hasClassifier: () => withJev,
       classify,

@@ -34,6 +34,7 @@ vi.mock('@parcel/watcher', () => ({
   },
 }));
 
+import { createInProcessTreeHost } from '../../watch-worker/fs-watch-tree';
 import { DesktopFileWatcherFactory } from '../platform/file-watcher-factory';
 
 let dir: string;
@@ -64,7 +65,7 @@ function closing(): { readonly settled: () => boolean; readonly done: Promise<vo
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-watch-close-'));
-  factory = new DesktopFileWatcherFactory(noFolders, () => undefined);
+  factory = new DesktopFileWatcherFactory(noFolders, () => undefined, createInProcessTreeHost(() => undefined));
   H.subscribes.length = 0;
   H.unsubscribes.length = 0;
 });

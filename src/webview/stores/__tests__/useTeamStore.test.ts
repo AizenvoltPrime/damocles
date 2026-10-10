@@ -282,6 +282,18 @@ describe('useTeamStore.handleAgentDataLoaded', () => {
     expect(call.metadata).toEqual({ [CANCELLED_TOOL_DETAIL_KEY]: true });
   });
 
+  it('restores an error result an abort cut short as cancelled with its output, as the live card shows it', () => {
+    const store = useTeamStore();
+    store.handleAgentDataLoaded(AGENT, [
+      persisted('assistant', toolUse('tc-1', 'Bash', { command: 'sleep 20' })),
+      persisted('toolResult', { type: 'tool_result', tool_use_id: 'tc-1', content: 'Command aborted', is_error: true, metadata: { [CANCELLED_TOOL_DETAIL_KEY]: true } }),
+    ]);
+
+    const call = toolCallById(store, AGENT, 'tc-1');
+    expect(call.status).toBe('cancelled');
+    expect(call.result).toBe('Command aborted');
+  });
+
   it('marks a call with no persisted result unrecorded instead of claiming it succeeded', () => {
     // Every team log written before results were persisted lands here, as does a team killed mid-call.
     const store = useTeamStore();
@@ -647,6 +659,23 @@ describe('useTeamStore.handleAgentStatusUpdate across attempts', () => {
     expect(effort()).toBe('medium');
   });
 
+  it('takes the result a settle sends, keeps it across updates without one, and drops it when the attempt advances', () => {
+    const store = useTeamStore();
+    seedRunningAgent(store);
+    const result = () => store.teams[TEAM]?.agents[0]?.result;
+    const failure = '529 overloaded_error\n\nPartial output:\nhalf done';
+
+    store.handleAgentStatusUpdate(TEAM, AGENT, 'failed', undefined, undefined, undefined, undefined, undefined, undefined, { activeMs: 1, runningSince: null }, failure);
+    expect(result()).toBe(failure);
+    store.handleAgentStatusUpdate(TEAM, AGENT, 'running');
+    expect(result()).toBe(failure);
+    store.handleAgentStatusUpdate(TEAM, AGENT, 'cancelled', undefined, undefined, undefined, undefined, undefined, undefined, undefined, null);
+    expect(result()).toBeNull();
+    store.handleAgentStatusUpdate(TEAM, AGENT, 'completed', undefined, undefined, undefined, undefined, undefined, undefined, undefined, 'done');
+    store.handleAgentStatusUpdate(TEAM, AGENT, 'running', undefined, undefined, 'opus', false, 1);
+    expect(result()).toBeNull();
+  });
+
   it('applies the extension stopwatch after the attempt reset, and never stamps a time of its own', () => {
     const store = useTeamStore();
     seedRunningAgent(store);
@@ -665,5 +694,111 @@ describe('useTeamStore.handleAgentStatusUpdate across attempts', () => {
     } finally {
       now.mockRestore();
     }
+  });
+});
+
+describe('useTeamStore failed model calls', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('restores a persisted error as the error message the live card showed, and keeps one copy when both exist', () => {
+    const store = useTeamStore();
+    store.handleAgentAssistant(AGENT, 'live-1', [{ type: 'text', text: 'Now I will' }], 1);
+    store.handleAgentError(AGENT, '529 overloaded_error');
+
+    store.handleAgentDataLoaded(AGENT, [
+      userTurn('do the task'),
+      { id: 'e-2', role: 'assistant', content: [{ type: 'text', text: 'Now I will' }] },
+      { id: 'e-2:error', role: 'error', content: [{ type: 'text', text: '529 overloaded_error' }] },
+    ]);
+
+    expect((store.agentMessages[AGENT] ?? []).map((m) => [m.role, m.content])).toEqual([
+      ['user', 'do the task'],
+      ['assistant', 'Now I will'],
+      ['error', '529 overloaded_error'],
+    ]);
+  });
+
+  // A failed call's tool calls never ran (pi's agent-loop.js:143-152), and the host marks their blocks so.
+  it('shows the tool calls of a failed call as not executed, live and reloaded, as one message', () => {
+    const store = useTeamStore();
+    const failedTurn: TeamAgentContentBlock[] = [{ type: 'text', text: 'Now I will' }, { type: 'tool_use', id: 'tc-failed', name: 'Read', input: { file_path: '/a.ts' }, abandoned: 'failed' }];
+    store.handleAgentAssistant(AGENT, 'live-1', failedTurn, 1);
+    expect(toolCallById(store, AGENT, 'tc-failed')).toMatchObject({ status: 'abandoned', abandonReason: 'failed' });
+
+    store.handleAgentDataLoaded(AGENT, [userTurn('do the task'), { id: 'e-2', role: 'assistant', content: failedTurn }]);
+
+    expect((store.agentMessages[AGENT] ?? []).map((m) => m.role)).toEqual(['user', 'assistant']);
+    expect(toolCallById(store, AGENT, 'tc-failed').status).toBe('abandoned');
+    const reloaded = useTeamStore();
+    reloaded.$reset();
+    reloaded.handleAgentDataLoaded(AGENT, [{ id: 'e-2', role: 'assistant', content: failedTurn }]);
+    expect(toolCallById(reloaded, AGENT, 'tc-failed')).toMatchObject({ status: 'abandoned', abandonReason: 'failed' });
+  });
+
+  it('shows the tool calls of an aborted call as not executed because the turn stopped, live and reloaded', () => {
+    const store = useTeamStore();
+    const abortedTurn: TeamAgentContentBlock[] = [{ type: 'tool_use', id: 'tc-aborted', name: 'Read', input: { file_path: '/a.ts' }, abandoned: 'stopped' }];
+    store.handleAgentAssistant(AGENT, 'live-1', abortedTurn, 1);
+    expect(toolCallById(store, AGENT, 'tc-aborted')).toMatchObject({ status: 'abandoned', abandonReason: 'stopped' });
+
+    const reloaded = useTeamStore();
+    reloaded.$reset();
+    reloaded.handleAgentDataLoaded(AGENT, [{ id: 'e-2', role: 'assistant', content: abortedTurn }]);
+    expect(toolCallById(reloaded, AGENT, 'tc-aborted')).toMatchObject({ status: 'abandoned', abandonReason: 'stopped' });
+  });
+
+  // The runner re-seals a batch an abort cut short under its message id, with the blocks a reload builds.
+  it('applies a re-sealed batch in place, keeping recorded outcomes, and keeps one copy when its reload arrives', () => {
+    const store = useTeamStore();
+    const call = (id: string): Extract<TeamAgentContentBlock, { type: 'tool_use' }> => ({ type: 'tool_use', id, name: 'Read', input: { file_path: `/${id}.ts` } });
+    const batch: TeamAgentContentBlock[] = [{ type: 'text', text: 'Reading' }, call('tc-ran'), call('tc-skipped')];
+    const resealed: TeamAgentContentBlock[] = [{ type: 'text', text: 'Reading' }, call('tc-ran'), { ...call('tc-skipped'), abandoned: 'stopped' }];
+    store.handleAgentAssistant(AGENT, 'live-1', batch, 1);
+    store.handleAgentToolResult(AGENT, 'tc-ran', 'Operation aborted', true);
+
+    store.handleAgentAssistant(AGENT, 'live-1', resealed, 2);
+
+    expect((store.agentMessages[AGENT] ?? []).map((m) => m.id)).toEqual(['live-1']);
+    expect(toolCallById(store, AGENT, 'tc-ran')).toMatchObject({ status: 'failed', result: 'Operation aborted' });
+    expect(toolCallById(store, AGENT, 'tc-skipped')).toMatchObject({ status: 'abandoned', abandonReason: 'stopped' });
+
+    store.handleAgentDataLoaded(AGENT, [
+      userTurn('do the task'),
+      { id: 'e-2', role: 'assistant', content: resealed },
+      { id: 'e-3', role: 'toolResult', content: [{ type: 'tool_result', tool_use_id: 'tc-ran', content: 'Operation aborted', is_error: true }] },
+    ]);
+
+    expect((store.agentMessages[AGENT] ?? []).map((m) => m.role)).toEqual(['user', 'assistant']);
+    expect(toolCallById(store, AGENT, 'tc-skipped')).toMatchObject({ status: 'abandoned', abandonReason: 'stopped' });
+  });
+
+  it('a retracted message goes with the streaming text of the call that wrote it', () => {
+    const store = useTeamStore();
+    store.handleAgentAssistant(AGENT, 'kept', [{ type: 'text', text: 'earlier' }], 1);
+    store.handleAgentStreamDelta(AGENT, 'text', 'Let me');
+
+    store.retractAgentMessage(AGENT, 'never-sealed');
+
+    expect(store.agentStreaming[AGENT]).toBeUndefined();
+    expect((store.agentMessages[AGENT] ?? []).map((m) => m.id)).toEqual(['kept']);
+  });
+
+  it('ends a retry wait when the agent leaves running', () => {
+    const store = useTeamStore();
+    store.restoreTeamFromHistory({
+      teamId: 'team-1', toolUseId: 'toolu_team', title: 'Team', status: 'running', phase: 'working',
+      agents: [{
+        agentId: AGENT, name: 'worker', role: 'specialist', specialization: '', model: '', profileId: null, attempt: 0,
+        status: 'running', activeMs: 0, runningSince: 1, toolCount: 0, lastToolName: null, totalInputTokens: 0,
+        totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0, dollarBilled: true, effort: null,
+        progressSummary: null, result: null, logFilePath: null,
+      }],
+      messages: [], scratchpad: [], result: null, startTime: 1, endTime: null, totalToolCount: 0, runs: [],
+    });
+    store.setAgentRetry(AGENT, { attempt: 2, maxAttempts: 3 });
+
+    store.handleAgentStatusUpdate('team-1', AGENT, 'failed');
+
+    expect(store.agentRetry[AGENT]).toBeUndefined();
   });
 });

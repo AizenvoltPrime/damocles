@@ -268,6 +268,14 @@ export class NotifierHost implements ToastSink {
       this.takePointer(this.showing);
     });
     this.on(contents, OVERLAY_CHANNELS.toastsLeave, () => this.deps.leave());
+    // A reload by any route commits a new document that shows no toast until main replays them once it has loaded.
+    contents.on('did-navigate', () => {
+      if (this.popup !== popup || !this.loaded) return;
+      this.loaded = false;
+      this.area = { width: 0, height: 0, parts: [] };
+      this.pointerOver = false;
+      this.place();
+    });
     contents.on('did-finish-load', () => {
       this.loaded = true;
       this.pointerOver = false;

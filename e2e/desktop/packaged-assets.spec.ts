@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { asarFiles, readAsarHeader } from '../../scripts/asar-archive.mjs';
 import { DESKTOP_FONT_FILES, DESKTOP_FONT_LICENSES } from '../../src/desktop/main/desktop-fonts';
 import { logBeforeQuit, mainLog } from './support/app';
-import { quickPick } from './support/editor';
+import { filesRow, quickPick } from './support/editor';
 import { activeChat, expect, test } from './support/fixtures';
 import { REPO_ROOT, seedStubModel, writeUserSettings, type HermeticHome } from './support/hermetic';
 import { chatRequests, startOpenAIStub } from './support/openai-stub';
@@ -256,6 +256,24 @@ test('Quick Open lists and scores the project\'s files in the build\'s worker th
   await expect(quickPick(overlay)).toHaveCount(0);
   await desktop.close();
   expect(logBeforeQuit(home)).not.toContain('[quick-open]');
+});
+
+test('the watch worker loads from the build and a file created under the project reaches the Files tree', async ({ home, launch }) => {
+  test.skip(process.platform !== 'win32', 'only Windows runs its recursive watches on the watch worker');
+  seedTrustedProject(home);
+  fs.writeFileSync(path.join(home.project, 'present.txt'), 'x');
+  const desktop = await launch();
+  const shell = await shellPage(desktop.app);
+  await expect(filesRow(shell, 'present.txt')).toBeVisible({ timeout: 30_000 });
+  // The worker's first scan records without reporting whatever it lists, so a fresh name is written until one is reported.
+  const probes = shell.locator('[data-testid="files-row"][data-tree-path^="watch-probe-"]');
+  let attempt = 0;
+  await expect.poll(async () => {
+    fs.writeFileSync(path.join(home.project, `watch-probe-${attempt++}.txt`), 'x');
+    return probes.count();
+  }, { timeout: 60_000, intervals: [1_000] }).toBeGreaterThan(0);
+  await desktop.close();
+  expect(logBeforeQuit(home)).not.toContain('[watcher] the watch worker');
 });
 
 test('the pty host loads node-pty from the build and a shell echoes into the terminal', async ({ home, launch }) => {

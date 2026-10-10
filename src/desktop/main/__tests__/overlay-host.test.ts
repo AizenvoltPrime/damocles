@@ -263,15 +263,38 @@ describe('overlay requests', () => {
     void question;
   });
 
-  it('hides and rejects the open request when the overlay crashes, then reloads it', async () => {
+  it('hides and rejects the open request when the overlay crashes, then reloads it and holds a new request for it', async () => {
     loaded();
     const answer = host.request(MENU, returnFocus as never);
     view().webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 1 });
     await expect(answer).rejects.toThrow('stopped');
     expect(host.mode).toBe('hidden');
-    await expect(host.request(MENU, undefined)).rejects.toThrow('not available');
     expect(view().webContents.loadURL).toHaveBeenCalledTimes(2);
     expect(view().webContents.loadURL).toHaveBeenLastCalledWith(OVERLAY_PAGE_URL);
+    const next = host.request(MENU, undefined);
+    expect(host.mode).toBe('hidden');
+    view().webContents.emit('did-finish-load');
+    expect(host.mode).toBe('full');
+    emit(OVERLAY_CHANNELS.answer, own(), lastRequestId(), { kind: 'dismissed' });
+    await expect(next).resolves.toEqual({ kind: 'dismissed' });
+  });
+
+  it('keeps a held request through a crash it reloads from, and rejects it once a page that keeps crashing is left dead', async () => {
+    loaded();
+    const crash = (): void => {
+      view().webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 1 });
+    };
+    crash();
+    let error: Error | undefined;
+    host.request(MENU, undefined).catch((err: Error) => (error = err));
+    crash();
+    crash();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(error).toBeUndefined();
+    crash();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(error?.message).toBe('The overlay page stopped');
+    await expect(host.request(MENU, undefined)).rejects.toThrow('not available');
   });
 
   it('refuses a request while the page is not loaded', async () => {
@@ -292,6 +315,139 @@ describe('overlay requests', () => {
     await expect(host.whenLoaded()).resolves.toBeUndefined();
     void host.request(MENU, undefined);
     expect(host.mode).toBe('full');
+  });
+});
+
+// A reload by any route (DevTools, Ctrl+R, Chromium itself) commits a new document that holds none of the old page's popups.
+describe('overlay page reload', () => {
+  function reloadCommits(): void {
+    view().webContents.emit('did-navigate', {}, OVERLAY_PAGE_URL, 200, 'OK');
+  }
+
+  function sentRequests(): number {
+    return view().webContents.send.mock.calls.filter(([channel]) => channel === OVERLAY_CHANNELS.request).length;
+  }
+
+  function outcome(promise: Promise<unknown>): { value?: unknown; error?: Error } {
+    const result: { value?: unknown; error?: Error } = {};
+    promise.then((value) => (result.value = value), (err: Error) => (result.error = err));
+    return result;
+  }
+
+  it('rejects the requests open when the page reloads, as a crash does, and hides the overlay', async () => {
+    loaded();
+    const shown = vi.fn();
+    const settings = outcome(host.request(SETTINGS, returnFocus as never, shown));
+    emit(OVERLAY_CHANNELS.ack, own(), lastRequestId());
+    const question = outcome(host.request(QUESTION, undefined));
+    reloadCommits();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settings.error?.message).toBe('The overlay page reloaded');
+    expect(question.error?.message).toBe('The overlay page reloaded');
+    expect(host.mode).toBe('hidden');
+    expect(returnFocus.focus).toHaveBeenCalledTimes(1);
+    expect(shown).not.toHaveBeenCalled();
+    expect(lines).toContain('[overlay] the page reloaded');
+  });
+
+  it('holds a request made while the reloaded page loads and delivers it once the page has loaded', async () => {
+    loaded();
+    reloadCommits();
+    const answer = outcome(host.request(SETTINGS, returnFocus as never));
+    await vi.advanceTimersByTimeAsync(OVERLAY_ACK_TIMEOUT_MS * 3);
+    expect(sentRequests()).toBe(0);
+    expect(host.mode).toBe('hidden');
+    expect(answer).toEqual({});
+
+    view().webContents.emit('did-finish-load');
+    expect(sentRequests()).toBe(1);
+    expect(host.mode).toBe('full');
+    emit(OVERLAY_CHANNELS.ack, own(), lastRequestId());
+    emit(OVERLAY_CHANNELS.answer, own(), lastRequestId(), { kind: 'settings', closed: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(answer.value).toEqual({ kind: 'settings', closed: true });
+    expect(lines.filter((line) => line.includes('did not acknowledge'))).toEqual([]);
+  });
+
+  it('tells a caller waiting for the page only once the reloaded page has loaded', async () => {
+    loaded();
+    reloadCommits();
+    let ready = false;
+    const waiting = host.whenLoaded().then(() => {
+      ready = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ready).toBe(false);
+    view().webContents.emit('did-finish-load');
+    await waiting;
+    expect(ready).toBe(true);
+  });
+
+  it('keeps one held popup as it keeps one open: a later request dismisses an earlier one, a message dialog stays', async () => {
+    loaded();
+    reloadCommits();
+    const menu = outcome(host.request(MENU, returnFocus as never));
+    const question = outcome(host.request(QUESTION, undefined));
+    const settings = outcome(host.request(SETTINGS, undefined));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(menu.value).toEqual({ kind: 'dismissed' });
+    expect(sentRequests()).toBe(0);
+
+    view().webContents.emit('did-finish-load');
+    const sent = view().webContents.send.mock.calls.filter(([channel]) => channel === OVERLAY_CHANNELS.request).map(([, payload]) => (payload as { request: OverlayRequest }).request.kind);
+    expect(sent).toEqual(['message', 'settings']);
+    expect(host.isOpen('message')).toBe(true);
+    expect(host.isOpen('settings')).toBe(true);
+    void question;
+    void settings;
+  });
+
+  it('settles a held request its kind\'s dismissal or the window closing ends, and never sends it', async () => {
+    loaded();
+    reloadCommits();
+    const settings = outcome(host.request(SETTINGS, undefined));
+    host.dismiss('settings');
+    const question = outcome(host.request(QUESTION, undefined));
+    host.dispose();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settings.value).toEqual({ kind: 'dismissed' });
+    expect(question.error?.message).toBe('The window closed');
+    expect(sentRequests()).toBe(0);
+  });
+
+  it('rejects a held request when the page fails to load, but not for a load another navigation aborted', async () => {
+    loaded();
+    reloadCommits();
+    const aborted = outcome(host.request(MENU, undefined));
+    view().webContents.emit('did-fail-load', {}, -3, 'ERR_ABORTED', OVERLAY_PAGE_URL, true);
+    view().webContents.emit('did-fail-load', {}, -6, 'ERR_FILE_NOT_FOUND', 'app://damocles/desktop-shell/assets/x.png', false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(aborted).toEqual({});
+    view().webContents.emit('did-fail-load', {}, -6, 'ERR_FILE_NOT_FOUND', OVERLAY_PAGE_URL, true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(aborted.error?.message).toBe('The overlay page did not load');
+    await expect(host.request(MENU, undefined)).rejects.toThrow('not available');
+  });
+
+  it('drops the images it asked the old page to draw and asks again once the reloaded page has loaded', async () => {
+    const art: RasterArt = { width: 16, height: 16, scale: 1, ops: [{ kind: 'svg', svg: '<svg xmlns="http://www.w3.org/2000/svg"/>' }] };
+    loaded();
+    expect(redraws).toBe(1);
+    const pending = host.rasterize(art);
+    reloadCommits();
+    await expect(pending).resolves.toBeUndefined();
+    await expect(host.rasterize(art)).resolves.toBeUndefined();
+    view().webContents.emit('did-finish-load');
+    expect(redraws).toBe(2);
+  });
+
+  it('sends nothing to the page between the reload committing and the page loading', () => {
+    loaded();
+    reloadCommits();
+    view().webContents.send.mockClear();
+    host.stateChanged();
+    host.send(OVERLAY_CHANNELS.settingsTarget, {});
+    expect(view().webContents.send).not.toHaveBeenCalled();
   });
 });
 
@@ -360,14 +516,30 @@ describe('overlay focus', () => {
 });
 
 describe('overlay acknowledgement', () => {
-  it('reports a popup shown once the overlay acknowledges it, once, and never one it could not show', async () => {
+  // A cold or starved renderer can take longer than the deadline to render a popup it has already received.
+  it('keeps a request the page acknowledged open while it renders, however long that takes, and reports it shown only once rendered', async () => {
     loaded();
     const shown = vi.fn();
-    const answer = host.request(MENU, undefined, shown);
+    const answer = host.request(SETTINGS, returnFocus as never, shown);
+    emit(OVERLAY_CHANNELS.ack, own(), lastRequestId());
+    vi.advanceTimersByTime(OVERLAY_ACK_TIMEOUT_MS * 5);
+    expect(host.isOpen('settings')).toBe(true);
+    expect(host.mode).toBe('full');
     expect(shown).not.toHaveBeenCalled();
-    emit(OVERLAY_CHANNELS.ack, own(), lastRequestId());
-    emit(OVERLAY_CHANNELS.ack, own(), lastRequestId());
+    emit(OVERLAY_CHANNELS.shown, own(), lastRequestId());
+    emit(OVERLAY_CHANNELS.shown, own(), lastRequestId());
     expect(shown).toHaveBeenCalledTimes(1);
+    emit(OVERLAY_CHANNELS.answer, own(), lastRequestId(), { kind: 'settings', closed: true });
+    await expect(answer).resolves.toEqual({ kind: 'settings', closed: true });
+    expect(lines.filter((line) => line.includes('did not acknowledge'))).toEqual([]);
+  });
+
+  it('never reports a popup shown that the page did not acknowledge first, or that missed its deadline', async () => {
+    loaded();
+    const early = vi.fn();
+    const answer = host.request(MENU, undefined, early);
+    emit(OVERLAY_CHANNELS.shown, own(), lastRequestId());
+    expect(early).not.toHaveBeenCalled();
     emit(OVERLAY_CHANNELS.answer, own(), lastRequestId(), { kind: 'dismissed' });
     await answer;
 
@@ -377,29 +549,34 @@ describe('overlay acknowledgement', () => {
     vi.advanceTimersByTime(OVERLAY_ACK_TIMEOUT_MS);
     await settled;
     emit(OVERLAY_CHANNELS.ack, own(), lastRequestId());
+    emit(OVERLAY_CHANNELS.shown, own(), lastRequestId());
     expect(missed).not.toHaveBeenCalled();
   });
 
-  it('logs how long the first request after each page load took to acknowledge, and no later one', async () => {
+  it('logs how long the first popup shown after each page load took to acknowledge and to render, and no later one', async () => {
     loaded();
     const first = host.request(SETTINGS, undefined);
-    vi.advanceTimersByTime(750);
+    vi.advanceTimersByTime(5);
     emit(OVERLAY_CHANNELS.ack, own(), lastRequestId());
+    vi.advanceTimersByTime(2995);
+    emit(OVERLAY_CHANNELS.shown, own(), lastRequestId());
     emit(OVERLAY_CHANNELS.answer, own(), lastRequestId(), { kind: 'settings', closed: true });
     await first;
     const second = host.request(MENU, undefined);
     emit(OVERLAY_CHANNELS.ack, own(), lastRequestId());
+    emit(OVERLAY_CHANNELS.shown, own(), lastRequestId());
     emit(OVERLAY_CHANNELS.answer, own(), lastRequestId(), { kind: 'dismissed' });
     await second;
     loaded();
     const reloaded = host.request(MENU, undefined);
-    vi.advanceTimersByTime(40);
     emit(OVERLAY_CHANNELS.ack, own(), lastRequestId());
+    vi.advanceTimersByTime(40);
+    emit(OVERLAY_CHANNELS.shown, own(), lastRequestId());
     emit(OVERLAY_CHANNELS.answer, own(), lastRequestId(), { kind: 'dismissed' });
     await reloaded;
     expect(lines.filter((line) => line.includes('acknowledged'))).toEqual([
-      `[overlay] the first request since the page loaded (settings) was acknowledged in 750 ms of ${OVERLAY_ACK_TIMEOUT_MS}`,
-      `[overlay] the first request since the page loaded (menu) was acknowledged in 40 ms of ${OVERLAY_ACK_TIMEOUT_MS}`,
+      `[overlay] the first request since the page loaded (settings) was acknowledged in 5 ms of ${OVERLAY_ACK_TIMEOUT_MS} and shown in 3000 ms`,
+      `[overlay] the first request since the page loaded (menu) was acknowledged in 0 ms of ${OVERLAY_ACK_TIMEOUT_MS} and shown in 40 ms`,
     ]);
   });
 
@@ -409,6 +586,7 @@ describe('overlay acknowledgement', () => {
     const answer = host.request(QUESTION, returnFocus as never, shown);
     stallMain(OVERLAY_ACK_TIMEOUT_MS + 1000);
     emit(OVERLAY_CHANNELS.ack, own(), lastRequestId());
+    emit(OVERLAY_CHANNELS.shown, own(), lastRequestId());
     expect(shown).toHaveBeenCalledTimes(1);
     vi.advanceTimersByTime(OVERLAY_ACK_TIMEOUT_MS * 10);
     expect(host.isOpen('message')).toBe(true);

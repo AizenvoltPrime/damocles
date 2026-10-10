@@ -86,12 +86,35 @@ describe('placement', () => {
 });
 
 describe('overlay requests', () => {
-  it('acknowledges a request once rendered and answers the chosen menu item', async () => {
+  // Main's deadline counts only to the acknowledgement, so a slow first render must not delay it.
+  it('acknowledges a request as it arrives, before rendering it, and reports it shown once rendered', async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    api.request('r1', MENU);
+    expect(api.ack).toHaveBeenCalledWith('r1');
+    expect(wrapper.find('[role="menu"]').exists()).toBe(false);
+    expect(api.shown).not.toHaveBeenCalled();
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[role="menu"]').exists()).toBe(true);
+    expect(api.shown).toHaveBeenCalledWith('r1');
+  });
+
+  it('never reports a request shown that main withdrew before it rendered', async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    api.request('r1', MENU);
+    api.cancel('r1');
+    await wrapper.vm.$nextTick();
+    expect(api.ack).toHaveBeenCalledWith('r1');
+    expect(api.shown).not.toHaveBeenCalled();
+  });
+
+  it('answers the chosen menu item', async () => {
     const wrapper = mountOverlay();
     await flushPromises();
     await open(wrapper, 'r1', MENU);
 
-    expect(api.ack).toHaveBeenCalledWith('r1');
+    expect(api.shown).toHaveBeenCalledWith('r1');
     const menu = wrapper.get('[role="menu"]');
     expect(menu.attributes('aria-label')).toBe('Actions for Fix login');
     expect(menu.findAll('[role="menuitem"]').map((item) => item.text())).toEqual(['Open', 'Rename session', 'Remove tag', 'Delete session']);

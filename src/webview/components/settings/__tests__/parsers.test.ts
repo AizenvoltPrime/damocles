@@ -1,17 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { parseBudgetUsd, parseNonEmpty, parseRetentionDays, parseTaskBudget, parseThinkingTokens } from '../parsers';
+import { parseBudgetUsd, parseRetentionDays, parseTaskBudget } from '../parsers';
 
 const t = (key: string, named?: Record<string, unknown>): string => (named ? `${key} ${JSON.stringify(named)}` : key);
 
 describe('settings input parsers', () => {
-  it('take thinking tokens from 1000 to 63999 only', () => {
-    expect(parseThinkingTokens('1000', t)).toEqual({ ok: true, value: 1000 });
-    expect(parseThinkingTokens(' 63999 ', t)).toEqual({ ok: true, value: 63999 });
-    for (const raw of ['999', '64000', '1e4', '2000.5', '-1000', '']) {
-      expect(parseThinkingTokens(raw, t)).toEqual({ ok: false, error: t('settingsModal.invalid.integerRange', { min: 1000, max: 63999 }) });
-    }
-  });
-
   it('keep checkpoints 0 (forever) to 3650 days', () => {
     expect(parseRetentionDays('0', t)).toEqual({ ok: true, value: 0 });
     expect(parseRetentionDays('3650', t)).toEqual({ ok: true, value: 3650 });
@@ -35,10 +27,5 @@ describe('settings input parsers', () => {
     for (const raw of ['0', '1.5', '-3']) {
       expect(parseTaskBudget(raw, t)).toEqual({ ok: false, error: 'settingsModal.invalid.positiveInteger' });
     }
-  });
-
-  it('trim a required value and refuse a blank one', () => {
-    expect(parseNonEmpty('  key  ', t)).toEqual({ ok: true, value: 'key' });
-    expect(parseNonEmpty('   ', t)).toEqual({ ok: false, error: 'settingsModal.invalid.required' });
   });
 });

@@ -6,8 +6,10 @@ import type { ChatMessage, ToolCall } from '@shared/types/session';
 import { isImageBlock, type ContentBlock, type ImageBlock } from '@shared/types/content';
 import { effortBadgeLabelKey } from '@shared/effort-badge';
 import { agentCacheHitRate, agentTotalTokens } from '@shared/usage-accounting';
-import { Bot, ClipboardList, Compass, Database, FileText, Gauge, Loader, LoaderCircle, Receipt, SearchCheck, Send, Square, Timer, Wrench, Zap } from 'lucide-vue-next';
+import { Bot, CircleAlert, ClipboardList, Compass, Database, FileText, Gauge, Loader, LoaderCircle, Receipt, SearchCheck, Send, Square, Timer, Wrench, Zap } from 'lucide-vue-next';
 import ToolCallCard from './ToolCallCard.vue';
+import TranscriptNotice from './TranscriptNotice.vue';
+import ErrorMessageText from './ErrorMessageText.vue';
 import ThinkingIndicator from './ThinkingIndicator.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import OverlayShell from './OverlayShell.vue';
@@ -31,7 +33,7 @@ import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
 import { ownEntry } from '@/utils/ownEntry';
 import { imageBlockToDataUrl } from '@/utils/imageUtils';
 import { cacheHitPercent } from '@/utils/cacheHitPercent';
-import { subagentHeading } from '@/stores/useSubagentStore';
+import { subagentHeading, subagentStatusLine, subagentToolCount } from '@/stores/useSubagentStore';
 
 const { t, locale } = useI18n();
 const { postMessage } = usePlatformBridge();
@@ -95,6 +97,7 @@ const agentIcon = computed((): Component => {
 
 const chip = computed(() => agentStatusChip(props.subagent.status));
 const isRunning = computed(() => props.subagent.status === 'running');
+const workingLine = computed(() => subagentStatusLine(props.subagent, t) ?? t('overlays.agent.working'));
 
 const statusBadge = computed(() => ({ label: t(chip.value.labelKey), class: chip.value.color, pulse: chip.value.live }));
 
@@ -122,10 +125,7 @@ const resultContent = computed(() =>
 );
 const hasResult = computed(() => Boolean(resultContent.value));
 
-const toolCount = computed(() => {
-  if (props.subagent.result?.totalToolUseCount) return props.subagent.result.totalToolUseCount;
-  return props.subagent.messages.reduce((count, message) => count + (message.toolCalls?.length ?? 0), props.subagent.toolCalls.length);
-});
+const toolCount = computed(() => subagentToolCount(props.subagent));
 
 // The extension resolves the authoritative display label (custom providers included), so it is matched
 // to a listed model only for its logo and otherwise shown verbatim.
@@ -341,6 +341,18 @@ function userMessageText(message: ChatMessage): string {
               />
             </div>
           </div>
+          <TranscriptNotice
+            v-else-if="message.role === 'error'"
+            tone="danger"
+            :icon="CircleAlert"
+            :title="t('common.error')"
+            data-testid="agent-error"
+          >
+            <ErrorMessageText
+              class="text-12.5 wrap-break-word whitespace-pre-wrap text-(--d-text)"
+              :text="message.content"
+            />
+          </TranscriptNotice>
           <template v-else-if="message.contentBlocks?.length">
             <template
               v-for="(block, blockIndex) in message.contentBlocks"
@@ -400,10 +412,10 @@ function userMessageText(message: ChatMessage): string {
             class="size-3.5 d-spinning flex-none text-(--d-accent)"
             aria-hidden="true"
           />
-          <span class="d-glint min-w-0 truncate italic text-(--d-muted)">{{ subagent.progressSummary || t('overlays.agent.working') }}<span
+          <span class="d-glint min-w-0 truncate italic text-(--d-muted)">{{ workingLine }}<span
             class="d-glint-window text-(--d-text)"
             aria-hidden="true"
-          ><span>{{ subagent.progressSummary || t('overlays.agent.working') }}</span></span></span>
+          ><span>{{ workingLine }}</span></span></span>
           <span class="flex-1" />
           <span class="font-mono text-11 text-(--d-faint)">{{ formatElapsed(elapsedSeconds * 1000) }}</span>
         </div>

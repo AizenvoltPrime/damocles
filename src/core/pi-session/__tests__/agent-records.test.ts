@@ -31,6 +31,7 @@ import {
   DAMOCLES_AGENT_LAUNCH_ENTRY,
   DAMOCLES_AGENT_SEGMENT_ENTRY,
   DAMOCLES_AGENT_STATUS_ENTRY,
+  DAMOCLES_TURN_STOPPED_ENTRY,
 } from '../session-store/constants';
 import { SUBAGENT_RESULTS_CUSTOM_TYPE } from '../subagents/background-results';
 
@@ -394,5 +395,81 @@ describe('agent-records — layout', () => {
     expect(subagentsDir('/sessions', 'sess-1')).toBe(path.join('/sessions', 'sess-1', 'subagents'));
     expect(() => subagentsDir('/sessions', '../escape')).toThrow();
     expect(teamMemberSessionId('m1', 2)).toBe('m1.a2');
+  });
+});
+
+describe('agent-records: a call pi re-ran', () => {
+  const failed = (errorMessage: string) =>
+    ({ ...(assistant('half') as object), stopReason: 'error', errorMessage }) as unknown as Parameters<SessionManager['appendMessage']>[0];
+
+  it('drops a message pi omitted from context with a null context_edit, keeping its spend', async () => {
+    const dir = tempDir();
+    const file = writeAgentSession(dir, 'agent-r', 'agent-r', (sm) => {
+      sm.appendMessage(user('task'));
+      // `_prepareRetry` omits the failed attempt before re-running it (`agent-session.js:3048`).
+      const retried = sm.appendMessage(failed('529 overloaded_error'));
+      sm.appendContextEdit(retried, null);
+      sm.appendMessage(assistant('done'));
+    });
+
+    const read = (await readAgentFile(file))!;
+    expect(read.messages.map((m) => [m.role, m['stopReason']])).toEqual([['user', undefined], ['assistant', 'stop']]);
+    expect(read.segments[0]!.usage.totalInputTokens).toBe(2);
+  });
+
+  it('keeps a message whose latest context_edit restores it', async () => {
+    const dir = tempDir();
+    const file = writeAgentSession(dir, 'agent-k', 'agent-k', (sm) => {
+      sm.appendMessage(user('task'));
+      const kept = sm.appendMessage(failed('400 invalid_request_error'));
+      sm.appendContextEdit(kept, null);
+      sm.appendContextEdit(kept, { content: [{ type: 'text', text: 'restored' }] });
+    });
+
+    const read = (await readAgentFile(file))!;
+    expect(read.messages.map((m) => m['errorMessage'])).toEqual([undefined, '400 invalid_request_error']);
+  });
+});
+
+describe('agent-records: calls an aborted run settled before they ran', () => {
+  it('collects the tool calls every turn-stopped entry names, and ignores a malformed one', async () => {
+    const dir = tempDir();
+    const file = writeAgentSession(dir, 'agent-s', 'agent-s', (sm) => {
+      sm.appendMessage(user('task'));
+      sm.appendCustomEntry(DAMOCLES_TURN_STOPPED_ENTRY, { toolCallIds: ['t1'], entryIds: [] });
+      sm.appendCustomEntry(DAMOCLES_TURN_STOPPED_ENTRY, { toolCallIds: ['t2'], entryIds: [] });
+      sm.appendCustomEntry(DAMOCLES_TURN_STOPPED_ENTRY, { toolCallIds: 't3' });
+    });
+
+    expect([...(await readAgentFile(file))!.stoppedToolCallIds]).toEqual(['t1', 't2']);
+  });
+});
+
+describe('agent-records: a Stop\'s wind-down errors', () => {
+  const failed = (errorMessage: string) =>
+    ({ ...(assistant('') as object), content: [], stopReason: 'error', errorMessage }) as unknown as Parameters<SessionManager['appendMessage']>[0];
+
+  it('collects the messages the turn-stopped entries name as wind-down errors, and no other', async () => {
+    const dir = tempDir();
+    const file = writeAgentSession(dir, 'agent-w', 'agent-w', (sm) => {
+      sm.appendMessage(user('task'));
+      sm.appendMessage(failed('529 overloaded_error'));
+      const windDown = sm.appendMessage(failed('This operation was aborted'));
+      sm.appendCustomEntry(DAMOCLES_TURN_STOPPED_ENTRY, { toolCallIds: [], entryIds: [windDown] });
+      sm.appendCustomEntry(DAMOCLES_TURN_STOPPED_ENTRY, { toolCallIds: [], entryIds: 'x' });
+    });
+
+    const read = (await readAgentFile(file))!;
+    expect([...read.windDownMessages].map((m) => m['errorMessage'])).toEqual(['This operation was aborted']);
+  });
+
+  it('collects none from a file written before the record existed', async () => {
+    const dir = tempDir();
+    const file = writeAgentSession(dir, 'agent-o', 'agent-o', (sm) => {
+      sm.appendMessage(user('task'));
+      sm.appendMessage(failed('This operation was aborted'));
+    });
+
+    expect((await readAgentFile(file))!.windDownMessages.size).toBe(0);
   });
 });

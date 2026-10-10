@@ -30,7 +30,7 @@ export const REPORTED_FUSES = ['LoadBrowserProcessSpecificV8Snapshot', 'WasmTrap
 
 const PUBLISH = { provider: 'github', owner: 'AizenvoltPrime', repo: 'damocles' };
 // The scripts main runs in another process or thread: the worker threads, the shell sentinel, the formatter host and the pty host.
-const WORKERS = ['compass-worker.js', 'usage-stats-worker.js', 'quick-open-worker.js', 'sentinel.js', 'formatter-host.js', 'pty-host.js'];
+const WORKERS = ['compass-worker.js', 'usage-stats-worker.js', 'quick-open-worker.js', 'watch-worker.js', 'sentinel.js', 'formatter-host.js', 'pty-host.js'];
 // The license notices electron-builder.yml ships inside app.asar (files) and beside it (extraResources).
 const PACKED_NOTICES = ['LICENSE', 'THIRD-PARTY-NOTICES.md'];
 const RESOURCE_NOTICES = ['monaco-editor-ThirdPartyNotices.txt'];

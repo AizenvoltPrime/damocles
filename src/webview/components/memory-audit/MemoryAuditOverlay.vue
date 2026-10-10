@@ -16,6 +16,7 @@ import { useCostLabel } from '@/composables/useCostLabel';
 import { formatTokenCount } from '@/composables/useTeamFormatting';
 import { folderName } from '@/lib/folder-name';
 import type { MemoryAuditAction, MemoryAuditProposalStatus, MemoryAuditProposalView } from '@shared/types/memory-audit';
+import { effortBadgeLabelKey } from '@shared/effort-badge';
 
 const emit = defineEmits<{ (e: 'close'): void }>();
 
@@ -298,6 +299,13 @@ function confirmRevert(): void {
               {{ estimate.model ? `${estimate.model.provider}/${estimate.model.id}` : t('memoryAudit.estimate.noModelShort') }}
             </span>
           </div>
+          <p
+            v-if="estimate.model && estimate.model.effort !== estimate.fittedEffort"
+            class="text-xs text-(--d-muted)"
+            data-estimate="effort-caveat"
+          >
+            {{ t('memoryAudit.estimate.effortCaveat', { fitted: t(effortBadgeLabelKey(estimate.fittedEffort)), effort: t(effortBadgeLabelKey(estimate.model.effort)) }) }}
+          </p>
           <p v-if="estimate.model === null" class="text-xs text-(--d-warning)" data-audit-no-model>
             {{ t('memoryAudit.estimate.noModel') }}
           </p>

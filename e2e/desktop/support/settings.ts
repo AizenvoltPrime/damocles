@@ -22,6 +22,19 @@ export async function openSettingsModal(app: ElectronApplication, section?: Sett
   return overlay;
 }
 
+/**
+ * Waits on the Accounts page until core has answered the modal's state request. The modal starts from reset stores whose
+ * defaults look like real answers; core posts the Memory judge status after the settings and every account but OpenRouter,
+ * and only that post fills the TypeSafe row's judge line. Leaves the row collapsed.
+ */
+export async function waitForSettingsState(overlay: Page): Promise<void> {
+  const toggle = settingsRow(overlay, 'account-typesafe').getByRole('button', { name: /Add key|Replace key/ });
+  await toggle.click();
+  await expect(overlay.getByTestId('memory-judge')).toBeVisible();
+  await toggle.click();
+  await expect(overlay.getByTestId('memory-judge')).toHaveCount(0);
+}
+
 /** Closes the modal with its close button and waits until the exit has played and the modal is gone. */
 export async function closeSettingsModal(overlay: Page): Promise<void> {
   await overlay.getByRole('button', { name: 'Close (Esc)' }).first().click();

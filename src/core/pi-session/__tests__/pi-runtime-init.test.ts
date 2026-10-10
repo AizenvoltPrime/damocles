@@ -230,7 +230,7 @@ describe('PiRuntime.init lifecycle', () => {
     await vi.waitFor(() => expect(H.modelRuntime.setRuntimeApiKey).toHaveBeenCalledWith('typesafe', 'ts-from-another-window', expect.anything()));
   });
 
-  it('tells memory-judge listeners when a folder starts, a provider sync ends, the account republishes or an Explore setting changes', async () => {
+  it('tells memory-judge listeners when a folder starts, a provider sync ends, the account republishes or a Memory judge setting changes', async () => {
     const changes = vi.fn();
     const stop = PiRuntime.onMemoryJudgeChange(changes);
     const runtime = PiRuntime.get('/agent');
@@ -242,10 +242,16 @@ describe('PiRuntime.init lifecycle', () => {
     await runtime.syncCustomProviders(async () => undefined);
     expect(changes).toHaveBeenCalledTimes(2);
     expect(runtime.memoryJudgeKnown).toBe(true);
-    await fake.settings.update('damocles.explore.provider', 'gemini', 'user');
+    await fake.settings.update('damocles.memory.judge', 'step-5-preview', 'user');
     expect(changes).toHaveBeenCalledTimes(3);
-    PiRuntime.notifyMemoryJudgeChange();
+    await fake.settings.update('damocles.memory.judgeEffort', 'high', 'user');
     expect(changes).toHaveBeenCalledTimes(4);
+    // The Background model never chooses the judge.
+    await fake.settings.update('damocles.background.model', 'step-5-preview', 'user');
+    await fake.settings.update('damocles.memory.enabled', false, 'user');
+    expect(changes).toHaveBeenCalledTimes(4);
+    PiRuntime.notifyMemoryJudgeChange();
+    expect(changes).toHaveBeenCalledTimes(5);
     stop();
   });
 
@@ -614,5 +620,47 @@ describe('PiRuntime.init lifecycle', () => {
 
     await PiRuntime.disposeInstance();
     expect(fake.fileWatchers.watchers.find((w) => w.glob === 'auth.json')?.disposed).toBe(true);
+  });
+
+  // Activation watches auth.json before pi starts; the runtime takes that watch over instead of adding its own.
+  it('shares the activation auth.json watch, routes its changes through the runtime, and hands it back on dispose', async () => {
+    const authWatchers = () => fake.fileWatchers.watchers.filter((w) => w.glob === 'auth.json' && !w.disposed);
+    const activation = PiRuntime.watchAuthFile();
+    const judgeChanges = vi.fn();
+    const stopJudge = PiRuntime.onMemoryJudgeChange(judgeChanges);
+    expect(PiRuntime.exists).toBe(false);
+    expect(authWatchers()).toHaveLength(1);
+
+    vi.useFakeTimers();
+    try {
+      watcherFor('/fake/agent', 'auth.json').fireChange(path.join('/fake/agent', 'auth.json'));
+      await vi.advanceTimersByTimeAsync(150);
+      expect(judgeChanges).toHaveBeenCalledTimes(1);
+      expect(PiRuntime.exists).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const runtime = PiRuntime.get();
+    await runtime.init();
+    expect(authWatchers()).toHaveLength(1);
+    const session = { publishAccountInfo: vi.fn() };
+    runtime.registerSessionMutator('s1', session as never);
+    H.modelRuntime.removeRuntimeApiKey.mockClear();
+    vi.useFakeTimers();
+    try {
+      watcherFor('/fake/agent', 'auth.json').fireChange(path.join('/fake/agent', 'auth.json'));
+      await vi.advanceTimersByTimeAsync(150);
+      expect(session.publishAccountInfo).toHaveBeenCalledTimes(2);
+      expect(H.modelRuntime.removeRuntimeApiKey).toHaveBeenCalledWith('openai');
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await PiRuntime.disposeInstance();
+    expect(authWatchers()).toHaveLength(1);
+    activation.dispose();
+    expect(authWatchers()).toHaveLength(0);
+    stopJudge();
   });
 });

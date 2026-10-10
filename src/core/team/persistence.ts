@@ -361,7 +361,7 @@ export class TeamPersistence implements TeamPersistenceWriter {
         const file = await readAgentFile(filePath);
         if (!file) continue;
         // Entry ids are unique only within one file, and the card keys its messages by id.
-        for (const message of memberHistoryMessages(file.messages, file.entryIds)) history.push({ ...message, id: `${index}:${message.id}` });
+        for (const message of memberHistoryMessages(file.messages, file.entryIds, file.stoppedToolCallIds, file.windDownMessages)) history.push({ ...message, id: `${index}:${message.id}` });
       }
       return history;
     } catch (err) {

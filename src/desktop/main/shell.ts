@@ -995,6 +995,11 @@ export class ShellHost {
       this.appMenuGrant.clear();
       this.actions.gestures.blurred();
     });
+    // A reload by any route commits a new document, which refetches what it shows once it has loaded.
+    contents.on('did-navigate', () => {
+      this.loaded = false;
+      this.projectKeysFrom = [];
+    });
     contents.on('did-finish-load', () => {
       this.loaded = true;
       this.actions.terminal.setInputFocused(false);

@@ -382,6 +382,25 @@ describe('desktop popup window (D52)', () => {
     expect(win().webContents.send.mock.calls.filter(([channel]) => channel === OVERLAY_CHANNELS.chime)).toHaveLength(2);
   });
 
+  // A reload by any route commits a new document that shows nothing until main replays the toasts to it.
+  it('hides and stops taking popups when its page reloads, then replays the toasts and the held sound once it has loaded', () => {
+    host.sink();
+    win().webContents.emit('did-finish-load');
+    win().webContents.ipc.emit(OVERLAY_CHANNELS.toastArea, own(), AREA);
+    expect(win().visible).toBe(true);
+    win().webContents.emit('did-navigate', {}, NOTIFIER_PAGE_URL, 200, 'OK');
+    expect(win().visible).toBe(false);
+    expect(host.sink()).toBeUndefined();
+    win().webContents.send.mockClear();
+    host.chime('attention');
+    expect(win().webContents.send).not.toHaveBeenCalled();
+    pending = [TOAST];
+    win().webContents.emit('did-finish-load');
+    expect(win().webContents.send).toHaveBeenCalledWith(OVERLAY_CHANNELS.toast, TOAST);
+    expect(win().webContents.send).toHaveBeenCalledWith(OVERLAY_CHANNELS.chime, 'attention');
+    expect(host.sink()).toBe(host);
+  });
+
   it('plays the most urgent tone of the popups that arrived before its page loaded', () => {
     host.sink();
     host.chime('warning');

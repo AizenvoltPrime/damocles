@@ -23,7 +23,7 @@ export interface SettingsFolder {
   readonly personalPath?: string;
 }
 
-// Keys are full dotted keys ('damocles.explore.provider'). A read or write for one chat passes that chat's folder; one
+// Keys are full dotted keys ('damocles.explore.model'). A read or write for one chat passes that chat's folder; one
 // with no folder is window-level and uses the selected project (desktop) or the workspace (VS Code).
 export interface SettingsStore {
   // an object value is merged key by key across the default, user, project and local layers, as VS Code does

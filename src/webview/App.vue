@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, defineAsyncComponent, nextTick, provide, watch } from "vue";
+import { ref, computed, defineAsyncComponent, nextTick, provide } from "vue";
 import { useI18n } from "vue-i18n";
 import { toast } from "vue-sonner";
 import { initLocaleMessaging } from "@/i18n";
@@ -142,6 +142,7 @@ const {
   selectedRewindItem,
   rewindMetadataLoading,
   authFailureMessage,
+  retryStatus,
 } = storeToRefs(uiStore);
 
 const settingsStore = useSettingsStore();
@@ -404,26 +405,28 @@ function tryInterceptStats(content: string | UserContentBlock[]): boolean {
   return true;
 }
 
-function handleSendMessage(content: string | UserContentBlock[], includeIdeContext: boolean, terminalAttachmentIds: string[]) {
+// The webview's own slash commands; the send and queue paths both call this, so they act the same mid-turn.
+function tryInterceptLocalCommand(content: string | UserContentBlock[]): boolean {
   if (typeof content === "string") {
     const trimmed = content.trim();
     if (trimmed === "/rewind" || trimmed.startsWith("/rewind ")) {
       openRewindFlow();
-      return;
+      return true;
     }
     if (trimmed === "/clear") {
       postMessage({ type: "clearSession" });
-      return;
+      return true;
     }
     if (trimmed === "/context") {
       handleOpenContextUsage();
-      return;
+      return true;
     }
   }
+  return tryInterceptUsage(content) || tryInterceptStats(content) || tryDispatchBtw(content);
+}
 
-  if (tryInterceptUsage(content)) return;
-  if (tryInterceptStats(content)) return;
-  if (tryDispatchBtw(content)) return;
+function handleSendMessage(content: string | UserContentBlock[], includeIdeContext: boolean, terminalAttachmentIds: string[]) {
+  if (tryInterceptLocalCommand(content)) return;
 
   postMessage({ type: "sendMessage", content, includeIdeContext, ...(terminalAttachmentIds.length > 0 ? { terminalAttachmentIds } : {}) });
   followTranscript();
@@ -431,9 +434,7 @@ function handleSendMessage(content: string | UserContentBlock[], includeIdeConte
 }
 
 function handleQueueMessage(content: string | UserContentBlock[]) {
-  if (tryInterceptUsage(content)) return;
-  if (tryInterceptStats(content)) return;
-  if (tryDispatchBtw(content)) return;
+  if (tryInterceptLocalCommand(content)) return;
   postMessage({ type: "queueMessage", content });
   followTranscript();
 }
@@ -519,20 +520,6 @@ const handleOpenSettings = useOpenSettings();
 function handleInvokeSignIn() {
   handleOpenSettings("accounts");
 }
-
-// A model that needed OpenAI sign-in is switched to once any OpenAI credential exists.
-watch(
-  () => ({
-    pending: settingsStore.pendingOpenAIModel,
-    ready: settingsStore.openaiAuthStatus.chatgpt.signedIn || settingsStore.openaiAuthStatus.codex.signedIn || settingsStore.openaiAuthStatus.apikey.configured,
-  }),
-  ({ pending, ready }) => {
-    if (!pending || !ready) return;
-    settingsStore.setModelState(pending, settingsStore.defaultModel);
-    postMessage({ type: "setActiveModel", model: pending });
-    settingsStore.setPendingOpenAIModel(null);
-  },
-);
 
 function handleOpenSessionLog() {
   postMessage({ type: "openSessionLog" });
@@ -926,6 +913,12 @@ const HEADER_ACTIONS: Record<HeaderAction, () => void> = {
 
 const isEmptyConversation = computed(() => messageListRef.value?.isEmpty === true);
 
+const statusOverride = computed(() => {
+  if (contextWarning.value?.autoCompactTriggered) return t('context.autoCompacting');
+  if (retryStatus.value) return t('status.retrying', { attempt: retryStatus.value.attempt, max: retryStatus.value.maxAttempts });
+  return undefined;
+});
+
 // A suggestion sends at once, as the reference's chips do, without touching the draft.
 function handleSuggestion(prompt: string) {
   chatInputRef.value?.sendPrompt(prompt);
@@ -1108,7 +1101,7 @@ function handleSuggestion(prompt: string) {
           :is-processing="isProcessing"
           :awaiting-user-action="isAwaitingUserAction"
           :current-tool-name="currentRunningTool ?? undefined"
-          :status-override="contextWarning?.autoCompactTriggered ? t('context.autoCompacting') : undefined"
+          :status-override="statusOverride"
           :active-hooks="uiStore.activeHooks"
         />
 

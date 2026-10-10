@@ -1,8 +1,8 @@
 {
   "name": "damocles",
   "displayName": "Damocles",
-  "description": "A VS Code extension that embeds an AI coding agent (Claude and GPT and other models) in your editor, powered by the Pi agent runtime.",
-  "version": "3.5.0",
+  "description": "An AI coding agent that runs as a standalone desktop app for Windows, macOS and Linux, and as a VS Code extension. Chat with Claude, GPT and other models, approve diffs, rewind checkpoints, and use persistent memory, subagents, teams and MCP, powered by the Pi agent runtime.",
+  "version": "3.6.0",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -153,11 +153,6 @@
         "title": "Search Entities",
         "category": "Compass",
         "icon": "$(search)"
-      },
-      {
-        "command": "damocles.setExploreApiKey",
-        "title": "%command.setExploreApiKey.title%",
-        "category": "Damocles"
       }
     ],
     "menus": {
@@ -255,17 +250,6 @@
           "default": null,
           "minimum": 1,
           "description": "%configuration.taskBudget.description%"
-        },
-        "damocles.maxThinkingTokens": {
-          "scope": "resource",
-          "type": [
-            "number",
-            "null"
-          ],
-          "default": null,
-          "minimum": 1000,
-          "maximum": 63999,
-          "description": "%configuration.maxThinkingTokens.description%"
         },
         "damocles.thinkingDisabled": {
           "scope": "resource",
@@ -534,26 +518,26 @@
             "claude-fable-5-1",
             "claude-opus-5-5",
             "claude-sonnet-5-5",
-            "claude-haiku-4-5-20251001",
+            "claude-haiku-5-5",
             "gpt-6-astra",
             "gpt-6.1-sol",
             "gpt-6-luna",
-            "step-3.7-flash",
+            "step-5-preview",
             "deepseek-v4-pro",
-            "deepseek-v4-flash"
+            "deepseek-flash"
           ],
           "enumItemLabels": [
             "%configuration.team.modelDefault%",
             "Fable 5.1",
             "Opus 5.5",
             "Sonnet 5.5",
-            "Haiku 4.5",
+            "Haiku 5.5",
             "GPT-6 Astra",
             "GPT-6.1 Sol",
             "GPT-6 Luna",
-            "Step 3.7 Flash",
+            "Step 5 Preview",
             "DeepSeek V4 Pro",
-            "DeepSeek V4 Flash"
+            "DeepSeek V4.1 Flash"
           ],
           "default": "",
           "description": "%configuration.team.leadModel.description%"
@@ -590,26 +574,26 @@
             "claude-fable-5-1",
             "claude-opus-5-5",
             "claude-sonnet-5-5",
-            "claude-haiku-4-5-20251001",
+            "claude-haiku-5-5",
             "gpt-6-astra",
             "gpt-6.1-sol",
             "gpt-6-luna",
-            "step-3.7-flash",
+            "step-5-preview",
             "deepseek-v4-pro",
-            "deepseek-v4-flash"
+            "deepseek-flash"
           ],
           "enumItemLabels": [
             "%configuration.team.modelDefault%",
             "Fable 5.1",
             "Opus 5.5",
             "Sonnet 5.5",
-            "Haiku 4.5",
+            "Haiku 5.5",
             "GPT-6 Astra",
             "GPT-6.1 Sol",
             "GPT-6 Luna",
-            "Step 3.7 Flash",
+            "Step 5 Preview",
             "DeepSeek V4 Pro",
-            "DeepSeek V4 Flash"
+            "DeepSeek V4.1 Flash"
           ],
           "default": "",
           "description": "%configuration.team.implementorModel.description%"
@@ -646,26 +630,26 @@
             "claude-fable-5-1",
             "claude-opus-5-5",
             "claude-sonnet-5-5",
-            "claude-haiku-4-5-20251001",
+            "claude-haiku-5-5",
             "gpt-6-astra",
             "gpt-6.1-sol",
             "gpt-6-luna",
-            "step-3.7-flash",
+            "step-5-preview",
             "deepseek-v4-pro",
-            "deepseek-v4-flash"
+            "deepseek-flash"
           ],
           "enumItemLabels": [
             "%configuration.team.modelDefault%",
             "Fable 5.1",
             "Opus 5.5",
             "Sonnet 5.5",
-            "Haiku 4.5",
+            "Haiku 5.5",
             "GPT-6 Astra",
             "GPT-6.1 Sol",
             "GPT-6 Luna",
-            "Step 3.7 Flash",
+            "Step 5 Preview",
             "DeepSeek V4 Pro",
-            "DeepSeek V4 Flash"
+            "DeepSeek V4.1 Flash"
           ],
           "default": "",
           "description": "%configuration.team.reviewerModel.description%"
@@ -948,45 +932,179 @@
           "maximum": 16,
           "description": "Maximum number of background subagents that run concurrently. Excess spawns queue and drain as slots free."
         },
-        "damocles.explore.enabled": {
-          "type": "boolean",
-          "default": false,
-          "description": "Intercept Explore subagent calls and redirect to alternative model"
-        },
-        "damocles.explore.provider": {
+        "damocles.explore.model": {
+          "scope": "application",
           "type": "string",
           "enum": [
-            "openrouter",
-            "gemini",
-            "stepfun"
+            "",
+            "claude-fable-5-1",
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+            "gpt-6-astra",
+            "gpt-6.1-sol",
+            "gpt-6-luna",
+            "step-5-preview",
+            "deepseek-v4-pro",
+            "deepseek-flash"
           ],
-          "default": "openrouter",
-          "description": "API provider: 'openrouter' for OpenRouter.ai, 'gemini' for Google Gemini API direct, 'stepfun' for StepFun Step Plan"
-        },
-        "damocles.explore.modelByProvider": {
-          "type": "object",
-          "default": {},
-          "additionalProperties": {
-            "type": "string"
-          },
-          "description": "Per-provider model override for explore agents. Keys: 'openrouter', 'gemini', 'stepfun'. Unset keys use defaults: openrouter→deepseek/deepseek-v4-flash, gemini→gemini-3-flash-preview, stepfun→step-3.7-flash"
+          "enumItemLabels": [
+            "%configuration.explore.modelDefault%",
+            "Fable 5.1",
+            "Opus 5.5",
+            "Sonnet 5.5",
+            "Haiku 5.5",
+            "GPT-6 Astra",
+            "GPT-6.1 Sol",
+            "GPT-6 Luna",
+            "Step 5 Preview",
+            "DeepSeek V4 Pro",
+            "DeepSeek V4.1 Flash"
+          ],
+          "default": "",
+          "description": "%configuration.explore.model.description%"
         },
         "damocles.explore.effort": {
+          "scope": "application",
           "type": "string",
           "enum": [
             "",
             "low",
             "medium",
-            "high"
+            "high",
+            "xhigh",
+            "max",
+            "ultracode"
           ],
           "enumItemLabels": [
-            "Model default",
-            "Low",
-            "Medium",
-            "High"
+            "%configuration.explore.effortDefault%",
+            "%configuration.team.effortLow%",
+            "%configuration.team.effortMedium%",
+            "%configuration.team.effortHigh%",
+            "%configuration.team.effortXhigh%",
+            "%configuration.team.effortMax%",
+            "%configuration.team.effortUltracode%"
           ],
           "default": "",
-          "description": "Reasoning effort for the Explore subagent. Applies only when the selected Explore model supports the level (currently StepFun step-3.7-flash). Leave empty for the model default. Background memory sub-calls are unaffected (they run at a fixed medium)."
+          "description": "%configuration.explore.effort.description%"
+        },
+        "damocles.background.model": {
+          "scope": "application",
+          "type": "string",
+          "enum": [
+            "",
+            "claude-fable-5-1",
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+            "gpt-6-astra",
+            "gpt-6.1-sol",
+            "gpt-6-luna",
+            "step-5-preview",
+            "deepseek-v4-pro",
+            "deepseek-flash"
+          ],
+          "enumItemLabels": [
+            "%configuration.background.modelAutomatic%",
+            "Fable 5.1",
+            "Opus 5.5",
+            "Sonnet 5.5",
+            "Haiku 5.5",
+            "GPT-6 Astra",
+            "GPT-6.1 Sol",
+            "GPT-6 Luna",
+            "Step 5 Preview",
+            "DeepSeek V4 Pro",
+            "DeepSeek V4.1 Flash"
+          ],
+          "default": "",
+          "description": "%configuration.background.model.description%"
+        },
+        "damocles.background.effort": {
+          "scope": "application",
+          "type": "string",
+          "enum": [
+            "",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultracode"
+          ],
+          "enumItemLabels": [
+            "%configuration.background.effortPerJob%",
+            "%configuration.team.effortLow%",
+            "%configuration.team.effortMedium%",
+            "%configuration.team.effortHigh%",
+            "%configuration.team.effortXhigh%",
+            "%configuration.team.effortMax%",
+            "%configuration.team.effortUltracode%"
+          ],
+          "default": "",
+          "description": "%configuration.background.effort.description%"
+        },
+        "damocles.memory.judge": {
+          "scope": "application",
+          "type": "string",
+          "enum": [
+            "",
+            "jev-typesafe",
+            "jev-openrouter",
+            "gpt-6-luna-classifier",
+            "claude-fable-5-1",
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+            "gpt-6-astra",
+            "gpt-6.1-sol",
+            "gpt-6-luna",
+            "step-5-preview",
+            "deepseek-v4-pro",
+            "deepseek-flash"
+          ],
+          "enumItemLabels": [
+            "%configuration.background.modelAutomatic%",
+            "Jev (TypeSafe)",
+            "Jev (OpenRouter)",
+            "GPT-6 Luna (Decisions API)",
+            "Fable 5.1",
+            "Opus 5.5",
+            "Sonnet 5.5",
+            "Haiku 5.5",
+            "GPT-6 Astra",
+            "GPT-6.1 Sol",
+            "GPT-6 Luna",
+            "Step 5 Preview",
+            "DeepSeek V4 Pro",
+            "DeepSeek V4.1 Flash"
+          ],
+          "default": "",
+          "description": "%configuration.memory.judge.description%"
+        },
+        "damocles.memory.judgeEffort": {
+          "scope": "application",
+          "type": "string",
+          "enum": [
+            "",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultracode"
+          ],
+          "enumItemLabels": [
+            "%configuration.background.effortPerJob%",
+            "%configuration.team.effortLow%",
+            "%configuration.team.effortMedium%",
+            "%configuration.team.effortHigh%",
+            "%configuration.team.effortXhigh%",
+            "%configuration.team.effortMax%",
+            "%configuration.team.effortUltracode%"
+          ],
+          "default": "",
+          "description": "%configuration.memory.judgeEffort.description%"
         }
       }
     }
@@ -1032,11 +1150,11 @@
     "sync:profiles": "node scripts/sync-agent-profiles.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "^0.99.2",
-    "@earendil-works/pi-ai": "^0.99.2",
-    "@earendil-works/pi-coding-agent": "^0.99.2",
-    "@earendil-works/pi-mcp": "^0.99.2",
-    "@earendil-works/pi-tui": "^0.99.2",
+    "@earendil-works/pi-agent-core": "^1.1.0",
+    "@earendil-works/pi-ai": "^1.1.0",
+    "@earendil-works/pi-coding-agent": "^1.1.0",
+    "@earendil-works/pi-mcp": "^1.1.0",
+    "@earendil-works/pi-tui": "^1.1.0",
     "@parcel/watcher": "^2.6.0",
     "@vscode/ripgrep": "^1.18.0",
     "electron-updater": "6.8.9",

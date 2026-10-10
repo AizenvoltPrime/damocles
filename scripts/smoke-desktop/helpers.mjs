@@ -144,9 +144,11 @@ export function createHelpers(getApp, dir) {
   /** Selects the loaded chat shown in the page with `url`. */
   async function goTo(url) {
     const s = await shell();
-    for (const project of (await state()).projects) {
-      const list = await s.evaluate((k) => window.damoclesShell.listChats(k), project.key);
-      for (const chat of list.chats.filter((c) => c.loaded)) {
+    const current = await state();
+    for (const project of current.projects) {
+      // A list names the state revision its project key came from; null means the project left main's list since.
+      const list = await s.evaluate(([k, r]) => window.damoclesShell.listChats(k, r), [project.key, current.revision]);
+      for (const chat of (list?.chats ?? []).filter((c) => c.loaded)) {
         const p = await findChat(chat.id);
         if (p?.url() === url) {
           await s.evaluate((id) => window.damoclesShell.selectChat(id), chat.id);

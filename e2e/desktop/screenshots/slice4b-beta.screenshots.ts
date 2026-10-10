@@ -2,7 +2,7 @@ import type { Page } from '@playwright/test';
 import { expect, test } from '../support/fixtures';
 import { seedStubModel } from '../support/hermetic';
 import { startOpenAIStub } from '../support/openai-stub';
-import { hostMessage, openProjectChat, settled, shoot, shootReferences } from '../support/screenshots';
+import { openProjectChat, settled, shoot, shootReferences } from '../support/screenshots';
 import { setContentSize } from '../support/settings';
 import { chatInput, hostMessages, recordHostMessages, sendAndAwaitEcho } from '../support/ui';
 
@@ -328,19 +328,13 @@ test('restyled cards and overlays without a reference counterpart', async ({ hom
     await shootReferences(app, testInfo, [{ name: 'card-specials', setup: referenceScrollTo('rateLimit|express-rate-limit') }]);
 
     const now = Date.now();
-    await hostMessage(app, tab, { type: 'exploreStarted', toolUseId: 'k-explore', model: 'Stub model', prompt: 'Find the auth tests', description: 'Find the auth tests and how they run', startTime: now - 18_000 });
-    await withStores(tab, "store('streaming').addMessage(arg);", {
-      role: 'assistant', content: '', timestamp: now,
-      contentBlocks: [{ type: 'tool_use', id: 'k-explore', name: 'Agent', input: { description: 'Find the auth tests and how they run', subagent_type: 'Explore' } }],
-      toolCalls: [{ id: 'k-explore', name: 'Agent', input: { description: 'Find the auth tests and how they run', subagent_type: 'Explore' }, status: 'running' }],
-    });
     await withStores(tab, "store('streaming').addMessage(arg);", specialCards(now));
     await expect(tab.getByTestId('skill-tool-card')).toBeVisible();
     const scrollTo = (testId: string) => async (): Promise<void> => {
       await tab.getByTestId(testId).first().evaluate((el) => el.scrollIntoView({ block: 'start' }));
       await settled(tab);
     };
-    await shoot(app, tab, testInfo, 'card-specials', scrollTo('explore-card'));
+    await shoot(app, tab, testInfo, 'card-specials', scrollTo('skill-tool-card'));
     await shoot(app, tab, testInfo, 'card-specials-2', scrollTo('form-tool-card'));
 
     await tab.mouse.click(450, 260);

@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
-import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, AutoCompactConfig, CacheWarmingMode, ContextWarningLevel, PanelThinkingState, MemoryJudge, ImageGenerationSettings } from '@shared/types/settings';
+import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, AutoCompactConfig, CacheWarmingMode, ContextWarningLevel, PanelThinkingState, MemoryJudge, ClassifierProvider, ClassifierCredential, ImageGenerationSettings } from '@shared/types/settings';
 import type { McpConfigError, McpRenamedToolRuleNotice, McpServerStatusInfo, McpToolExposureScope, McpWriteErrorInfo } from '@shared/types/mcp';
 import type { ToolsSnapshot } from '@shared/types/tools';
 import type { VoiceConfig } from '@shared/types/voice';
@@ -56,6 +56,9 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
   pinnedHeaderHidden: false,
   checkpointRetentionDays: 30,
   team: { leadModel: '', leadEffort: null, implementorModel: '', implementorEffort: null, reviewerModel: '', reviewerEffort: null },
+  background: { model: '', effort: null },
+  judge: { choice: '', effort: null },
+  explore: { model: '', effort: null },
 };
 
 export interface BudgetWarningState {
@@ -134,16 +137,11 @@ export const useSettingsStore = defineStore('settings', () => {
   const defaultThinkingModel = ref<string>("");
   const voiceConfig = ref<VoiceConfig>({ ...INITIAL_VOICE_CONFIG });
   const voiceHasApiKey = ref(false);
-  const exploreHasApiKey = ref(false);
-  const exploreProvider = ref('openrouter');
-  const exploreModel = ref('');
-  const exploreEffort = ref('');
   const authStatus = ref<{ isAuthenticating: boolean; error?: string } | null>(null);
   const openaiAuthStatus = ref<OpenAIAuthStatusView>(signedOutOpenAIStatus());
   const openaiPreferApiKey = ref(false);
   const openaiChatGPTAuthInFlight = ref(false);
   const openaiChatGPTAuthError = ref<string | null>(null);
-  const pendingOpenAIModel = ref<string | null>(null);
   const claudeAuthMode = ref<"none" | "apikey" | "allowance" | "extra">("none");
   const claudeAuthBusy = ref(false);
   const claudeAuthError = ref<string | null>(null);
@@ -153,6 +151,8 @@ export const useSettingsStore = defineStore('settings', () => {
   const typesafeConfigured = ref(false);
   const openrouterConfigured = ref(false);
   const memoryJudge = ref<MemoryJudge | null>(null);
+  // Null until the host's first `typesafeAuthStatusChanged`.
+  const classifierCredentials = ref<Record<ClassifierProvider, ClassifierCredential> | null>(null);
   // Null until the host's first `imageGenerationSettings`, which waits for the pi runtime.
   const imageGeneration = ref<ImageGenerationSettings | null>(null);
   const workspaceFolders = ref<WorkspaceFolderInfo[]>([]);
@@ -374,6 +374,14 @@ export const useSettingsStore = defineStore('settings', () => {
     currentSettings.value.team = team;
   }
 
+  function setBackgroundSettings(background: ExtensionSettings['background']) {
+    currentSettings.value.background = background;
+  }
+
+  function setJudgeSettings(judge: ExtensionSettings['judge']) {
+    currentSettings.value.judge = judge;
+  }
+
   function setCheckpointRetentionDays(days: number) {
     currentSettings.value.checkpointRetentionDays = days;
   }
@@ -388,14 +396,8 @@ export const useSettingsStore = defineStore('settings', () => {
     voiceHasApiKey.value = hasApiKey;
   }
 
-  function setExploreHasApiKey(hasKey: boolean) {
-    exploreHasApiKey.value = hasKey;
-  }
-
-  function setExploreConfig(provider: string, model: string, effort: string) {
-    exploreProvider.value = provider;
-    exploreModel.value = model;
-    exploreEffort.value = effort;
+  function setExploreSettings(explore: ExtensionSettings['explore']) {
+    currentSettings.value.explore = explore;
   }
 
   function setAuthStatus(status: { isAuthenticating: boolean; error?: string } | null) {
@@ -441,9 +443,10 @@ export const useSettingsStore = defineStore('settings', () => {
     deepseekConfigured.value = configured;
   }
 
-  function setTypesafeStatus(configured: boolean, judge: MemoryJudge) {
+  function setTypesafeStatus(configured: boolean, judge: MemoryJudge, credentials: Record<ClassifierProvider, ClassifierCredential>) {
     typesafeConfigured.value = configured;
     memoryJudge.value = judge;
+    classifierCredentials.value = credentials;
   }
 
   function setOpenrouterConfigured(configured: boolean) {
@@ -465,10 +468,6 @@ export const useSettingsStore = defineStore('settings', () => {
     if (workspaceFolderSwitchPending.value || folderKey === panelWorkspaceFolderKey.value) return;
     workspaceFolderSwitchPending.value = true;
     postMessage({ type: 'setPanelWorkspaceFolder', folderKey });
-  }
-
-  function setPendingOpenAIModel(model: string | null) {
-    pendingOpenAIModel.value = model;
   }
 
   function $reset() {
@@ -497,10 +496,6 @@ export const useSettingsStore = defineStore('settings', () => {
     defaultThinkingModel.value = "";
     voiceConfig.value = { ...INITIAL_VOICE_CONFIG };
     voiceHasApiKey.value = false;
-    exploreHasApiKey.value = false;
-    exploreProvider.value = 'openrouter';
-    exploreModel.value = '';
-    exploreEffort.value = '';
     authStatus.value = null;
     openaiAuthStatus.value = signedOutOpenAIStatus();
     openaiPreferApiKey.value = false;
@@ -515,8 +510,8 @@ export const useSettingsStore = defineStore('settings', () => {
     typesafeConfigured.value = false;
     openrouterConfigured.value = false;
     memoryJudge.value = null;
+    classifierCredentials.value = null;
     imageGeneration.value = null;
-    pendingOpenAIModel.value = null;
     workspaceFolders.value = [];
     panelWorkspaceFolderKey.value = "";
     defaultWorkspaceFolderKey.value = "";
@@ -588,16 +583,13 @@ export const useSettingsStore = defineStore('settings', () => {
     setCacheWarmingMode,
     setCheckpointRetentionDays,
     setTeamSettings,
+    setBackgroundSettings,
+    setJudgeSettings,
     setModelState,
     voiceConfig,
     voiceHasApiKey,
     setVoiceConfig,
-    exploreHasApiKey,
-    exploreProvider,
-    exploreModel,
-    exploreEffort,
-    setExploreHasApiKey,
-    setExploreConfig,
+    setExploreSettings,
     authStatus,
     setAuthStatus,
     openaiAuthStatus,
@@ -614,12 +606,12 @@ export const useSettingsStore = defineStore('settings', () => {
     setDeepseekConfigured,
     typesafeConfigured,
     memoryJudge,
+    classifierCredentials,
     setTypesafeStatus,
     openrouterConfigured,
     setOpenrouterConfigured,
     imageGeneration,
     setImageGeneration,
-    pendingOpenAIModel,
     setOpenAIAuthStatus,
     setChatGPTAuthInFlight,
     setChatGPTAuthError,
@@ -627,7 +619,6 @@ export const useSettingsStore = defineStore('settings', () => {
     setClaudeAuthBusy,
     setClaudeAuthError,
     setClaudeSignInWaiting,
-    setPendingOpenAIModel,
     workspaceFolders,
     panelWorkspaceFolderKey,
     defaultWorkspaceFolderKey,

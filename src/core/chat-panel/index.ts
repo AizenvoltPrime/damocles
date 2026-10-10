@@ -21,11 +21,12 @@ import { OPENAI_KEY_MOVED_MARKER_PATH, SUBCALL_USAGE_LEDGER_PATH, USAGE_INDEX_DB
 import { showOpenAIKeyMovedNotice } from "../pi-session/openai-key-migration";
 import { PI_AGENT_DIR } from "../pi-session/agent-dir";
 import { readClaudeAuthFromDisk } from "../pi-session/subscription";
-import { OPENAI_PREFER_API_KEY_STATE } from "../pi-session/openai-auth";
+import { OPENAI_API_KEY_SECRET, readPreferOpenAIApiKey } from "../pi-session/openai-auth";
+import { MEMORY_JUDGE_EFFORT_SETTING, MEMORY_JUDGE_SETTING } from "../../shared/memory-judge";
 import { PiRuntime } from "../pi-session/pi-runtime";
 import { typesafeAuthStatus } from "./settings-manager/managers/explore-manager";
 import { TYPESAFE_SECRET_KEY } from "../pi-session/custom-providers";
-import { EXPLORE_SECRET_KEYS } from "../pi-session/explore-providers";
+import { PROVIDER_SECRET_KEYS } from "../pi-session/explore-providers";
 import { setSessionMetaCacheVersion } from "../pi-session/session-store";
 import { WorkspaceFolderRegistry } from "../workspace-folders/folder-registry";
 import type { FolderTarget } from "../workspace-folders/folder-registry";
@@ -132,11 +133,16 @@ export class ChatPanelProvider {
       this.panelManager.broadcast({ type: "claudeAuthStatusChanged", mode: readClaudeAuthFromDisk(PI_AGENT_DIR).mode });
     });
     this.subscriptions.push({ dispose: stopAuthUpdates });
+    // Before pi starts, the judge and the Anthropic row read auth.json directly; the runtime shares this watch once it exists.
+    this.subscriptions.push(PiRuntime.watchAuthFile());
     const stopUsageThresholds = PiRuntime.onUsageThreshold((crossing) => this.panelManager.usageThresholdCrossed(crossing));
     this.subscriptions.push({ dispose: stopUsageThresholds });
-    // Before pi starts, the status is read from these secrets alone, so their changes are an input too.
+    // Before pi starts, the status is read from these secrets and the judge setting alone, so their changes are an input too.
     this.subscriptions.push(platform.secrets.onDidChange((key) => {
-      if (key === TYPESAFE_SECRET_KEY || key === EXPLORE_SECRET_KEYS.openrouter) this.broadcastMemoryJudge();
+      if (key === TYPESAFE_SECRET_KEY || key === PROVIDER_SECRET_KEYS.openrouter || key === OPENAI_API_KEY_SECRET) this.broadcastMemoryJudge();
+    }));
+    this.subscriptions.push(platform.settings.onDidChange("damocles.memory", (change) => {
+      if (change.affects(MEMORY_JUDGE_SETTING) || change.affects(MEMORY_JUDGE_EFFORT_SETTING)) this.broadcastMemoryJudge();
     }));
     this.memoryService.setFallbackWorkspace(() => this.folderRegistry.defaultTarget().fsPath);
     this.memoryService.setWorkspaceRoots(this.folderRegistry.targets().map((t) => t.fsPath));
@@ -187,18 +193,17 @@ export class ChatPanelProvider {
       getMcpConfigLoaded: () => this.settingsManager.getMcpConfigLoaded(),
       loadMcpConfig: () => this.settingsManager.loadMcpConfig(),
       getActiveModelForPanel: (panelId) => this.settingsManager.getActiveModelForPanel(panelId),
-      getDefaultModel: () => this.settingsManager.getDefaultModel(),
-      getPreferOpenAIApiKey: () => this.platform.state.workspace.get<boolean>(OPENAI_PREFER_API_KEY_STATE, false),
+      getPreferOpenAIApiKey: () => (PiRuntime.exists ? PiRuntime.get().preferOpenAIApiKey() : readPreferOpenAIApiKey(this.platform.state)),
       resolveThinkingForPanel: (panelId, model, folder) => {
         const settings = this.platform.settings;
         return {
           thinkingDisabled: this.settingsManager.resolveThinkingDisabled(panelId, model, settings, folder),
           effort: this.settingsManager.resolveThinkingEffort(panelId, model, settings, folder),
-          maxThinkingTokens: this.settingsManager.resolveMaxThinkingTokens(panelId, model, settings, folder),
         };
       },
       restoreRecordedSelection: (host, panelId, folder, model, thinkingLevel) =>
         this.settingsManager.restoreRecordedSelection(host, panelId, folder, model, thinkingLevel),
+      adoptSessionModel: (host, panelId, folder, model) => this.settingsManager.adoptSessionModel(host, panelId, folder, model),
       postMessage,
       setupSessionWatcher: (folderKey) => this.storageManager.setupSessionWatcher(folderKey),
       addOrUpdateSession: (sessionId, folderKey) => this.storageManager.addOrUpdateSession(sessionId, folderKey),

@@ -9,6 +9,7 @@ import {
   OPENAI_PREFER_API_KEY_STATE,
   openaiAuthStatus,
   readOpenAIAuthFromDisk,
+  readPreferOpenAIApiKey,
   type OpenAIAuthStatus,
 } from "../../../pi-session/openai-auth";
 import { describeAuthError } from "../../../pi-session/describe-error";
@@ -90,14 +91,14 @@ export async function openaiAuthStatusMessage(platform: Platform): Promise<Extra
   return {
     type: "openaiAuthStatusChanged",
     status: toSnapshot(await readStatus(platform)),
-    preferApiKey: platform.state.workspace.get<boolean>(OPENAI_PREFER_API_KEY_STATE, false),
+    preferApiKey: readPreferOpenAIApiKey(platform.state),
   };
 }
 
 /**
  * Webview-driven OpenAI auth (API key secret, Sign in with ChatGPT, legacy Codex sign-out) backed by
  * `PiRuntime`. pi owns the grants in auth.json, the loopback OAuth callback server, PKCE and token
- * refresh; the key lives in the host secret store. The prefer-api-key precedence is a workspaceState flag.
+ * refresh; the key lives in the host secret store. The prefer-api-key precedence is a global-state flag.
  */
 export function createOpenAIHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { postMessage, getPanels, platform } = deps;
@@ -117,6 +118,11 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
   async function broadcastAuthStatus(): Promise<void> {
     broadcast(await openaiAuthStatusMessage(platform));
     republishAccountInfo(getPanels);
+  }
+
+  /** Each chat applies or drops a model pick that asked for this sign-in; only a ChatGPT sign-in or a key save ends one. */
+  function endSignIn(signedIn: boolean): void {
+    for (const [, instance] of getPanels()) void instance.session.openaiSignInEnded(signedIn);
   }
 
   /**
@@ -170,6 +176,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
       } catch (err) {
         log("[OpenAIHandlers] Failed to persist API key: %s", describeAuthError(err));
         await broadcastAuthStatus();
+        endSignIn(false);
         postMessage(ctx.host, {
           type: "setOpenAIApiKeyAck",
           requestId: msg.requestId,
@@ -180,6 +187,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
       }
 
       await broadcastAuthStatus();
+      endSignIn(true);
 
       if (probe.status === "ok") {
         postMessage(ctx.host, {
@@ -227,8 +235,8 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
       if (msg.type !== "setOpenAIPreferApiKey") return;
       signInAbort?.abort();
       try {
-        await platform.state.workspace.update(OPENAI_PREFER_API_KEY_STATE, msg.preferApiKey);
-        await runtime().syncOpenAIRuntimeKey();
+        await platform.state.global.update(OPENAI_PREFER_API_KEY_STATE, msg.preferApiKey);
+        await runtime().applyOpenAIPreferApiKey();
       } catch (err) {
         log("[OpenAIHandlers] Failed to apply the API key preference: %s", describeAuthError(err));
         await broadcastAuthStatus();
@@ -262,8 +270,10 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
       signInAbort = abort;
       broadcast({ type: "openaiChatGPTAuthStarted" });
 
+      let signedIn = false;
       try {
         await runtime().signInChatGPT(buildChatGPTInteraction(abort.signal));
+        signedIn = true;
         broadcast({ type: "openaiChatGPTAuthCompleted" });
       } catch (err) {
         // pi rethrows a flow abort as its own "Login cancelled", so the signal is checked as well as the sentinel.
@@ -278,6 +288,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
         signInAbort = null;
         // A failed sign-in may still have changed auth.json, so the status is restated either way.
         await broadcastAuthStatus();
+        endSignIn(signedIn);
       }
     },
 

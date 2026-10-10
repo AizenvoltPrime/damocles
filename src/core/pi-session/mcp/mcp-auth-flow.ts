@@ -15,12 +15,11 @@ import {
   createAuthorizationCodeProvider,
   createClientCredentialsAuthProvider,
   createOAuthFetch,
-  discoverAuthorizationServer,
+  discoverOAuthServer,
   isSecureEndpoint,
   knownClient,
   mergeScopes,
   requestClientCredentialsToken,
-  stepUpScope,
 } from './mcp-oauth-provider';
 import { flattenServerText } from './utils';
 import { failureForLog } from './connect-failure';
@@ -194,9 +193,19 @@ function withOverrides(provider: McpOAuthProvider, overrides: Partial<OAuthClien
   };
 }
 
-/** `provider` with its discovery pinned, so the code exchange reaches the authorization server the `iss` check accepted. */
+/** `provider` with its discovery pinned, so the code exchange reaches the authorization server the redirect was built for. */
 function withDiscovery(provider: McpOAuthProvider, discovery: OAuthDiscoveryState): OAuthClientProvider {
   return withOverrides(provider, { discoveryState: () => discovery });
+}
+
+/**
+ * RFC 9207 for a sign-in whose discovery found no authorization server metadata, which pi-mcp does not check.
+ * With no metadata there is no issuer string to compare exactly: the URL is `authorization_servers[0]` or the server
+ * origin as parsed by `URL`, which appends a slash, so one trailing slash is ignored, as pi-mcp's issuer validation does.
+ */
+function assertIssuerWithoutMetadata(oauth: McpOAuthModule, authorizationServerUrl: string, iss: string): void {
+  const trim = (value: string): string => (value.endsWith('/') ? value.slice(0, -1) : value);
+  if (trim(iss) !== trim(authorizationServerUrl)) throw new oauth.OAuthIssuerMismatchError(authorizationServerUrl, iss);
 }
 
 /** The authorization_code sign-in: refresh when that suffices, else the browser flow on the loopback callback. */
@@ -233,8 +242,6 @@ async function signInWithBrowser(oauth: McpOAuthModule, id: McpAuthIdentity, con
     // Every sign-in gets a fresh state and verifier. A registered client cannot use another redirect URI, and its tokens belong to it.
     const next = { ...stored, oauthState };
     delete next.codeVerifier;
-    // pi-mcp's flow uses cached discovery instead of discovering, which is how a configured metadata document applies.
-    if (config.authServerMetadataUrl !== undefined) next.discovery = await discoverAuthorizationServer(oauth, id.serverUrl, config);
     if (config.clientId === undefined && !(registeredUris ?? []).includes(redirectUrl)) {
       delete next.clientInformation;
       delete next.tokens;
@@ -253,18 +260,24 @@ async function signInWithBrowser(oauth: McpOAuthModule, id: McpAuthIdentity, con
       },
     });
     // A server asking for more scope gets it on top of the configured scope and the scope granted so far.
-    const scope = mergeScopes(config.scope, stepUp ? stepUpScope(stored.tokens?.scope, challenge?.scope) : challenge?.scope);
+    const scope = mergeScopes(config.scope, stepUp ? oauth.stepUpScope(stored.tokens?.scope, challenge?.scope) : challenge?.scope);
     const flow: OAuthFlowOptions = {
       serverUrl: id.serverUrl,
       fetch: createOAuthFetch(oauth),
       ...(challenge?.resourceMetadataUrl ? { resourceMetadataUrl: challenge.resourceMetadataUrl } : {}),
+      ...(config.authServerMetadataUrl !== undefined ? { authorizationServerMetadataUrl: new URL(config.authServerMetadataUrl) } : {}),
       ...(scope !== undefined ? { scope } : {}),
     };
     // A refresh keeps the granted scope, so a step-up goes straight to the browser.
     if ((await oauth.authorizeMcp(provider, { ...flow, skipRefresh: stepUp })) === 'AUTHORIZED') return;
-    // The authorization server this redirect was built for; the callback wait can outlive the stored copy.
-    const discovery = await provider.discoveryState();
-    if (!discovery) throw new Error('OAuth discovery state was lost before the browser redirect');
+    // Discovered state is pinned because the callback wait can outlive the stored copy; pi-mcp re-reads a configured metadata document instead.
+    let exchangeProvider: OAuthClientProvider = provider;
+    let pinned: OAuthDiscoveryState | undefined;
+    if (config.authServerMetadataUrl === undefined) {
+      pinned = await provider.discoveryState();
+      if (!pinned) throw new Error('OAuth discovery state was lost before the browser redirect');
+      exchangeProvider = withDiscovery(provider, pinned);
+    }
     if (!authorizationUrl) throw new Error('OAuth flow did not produce an authorization URL');
     const url = authorizationUrl.href;
     assertSafeAuthorizationUrl(oauth, url);
@@ -284,12 +297,9 @@ async function signInWithBrowser(oauth: McpOAuthModule, id: McpAuthIdentity, con
     if ((await getOAuthState(id)) !== oauthState) {
       throw new Error('OAuth flow superseded by a concurrent authentication for the same server');
     }
-    // RFC 9207. pi-mcp 0.99.2's authorizeMcp does not check `iss`; the exchange below uses the same captured discovery.
-    const metadata = discovery.authorizationServerMetadata;
-    if (metadata && (iss !== undefined || metadata['authorization_response_iss_parameter_supported'] === true) && iss !== metadata.issuer) {
-      throw new oauth.OAuthIssuerMismatchError(metadata.issuer, iss ?? 'none');
-    }
-    await oauth.authorizeMcp(withDiscovery(provider, discovery), { ...flow, authorizationCode: code });
+    if (iss !== undefined && pinned && !pinned.authorizationServerMetadata) assertIssuerWithoutMetadata(oauth, pinned.authorizationServerUrl, iss);
+    // pi-mcp checks `iss` against the exchange's authorization server metadata (RFC 9207) before it sends the code.
+    await oauth.authorizeMcp(exchangeProvider, { ...flow, authorizationCode: code, ...(iss !== undefined ? { iss } : {}) });
   } finally {
     if (activeSignIns.get(key) === oauthState) activeSignIns.delete(key);
     cancelPendingCallback(oauthState);
@@ -366,7 +376,7 @@ async function revokeTokens(
   const tokens = (await getAuthEntry(id))?.tokens;
   if (!tokens?.accessToken) return;
   const config = extractOAuthConfig(definition);
-  const info = await discoverAuthorizationServer(oauth, definition.url, config);
+  const info = await discoverOAuthServer(oauth, definition.url, config);
   const metadata = info.authorizationServerMetadata;
   const endpoint = metadata?.['revocation_endpoint'];
   if (typeof endpoint !== 'string') return;
@@ -431,6 +441,9 @@ export function createMcpAuthProviderFactory(
           if (!client) throw new oauth.McpOAuthAuthorizationRequiredError();
           return client;
         },
+        // adaptOAuthProvider takes no metadata URL and refreshes at the provider's discovery, so a configured
+        // document is read inside each refresh flow, which concurrent 401s share.
+        ...(config.authServerMetadataUrl !== undefined ? { discoveryState: () => discoverOAuthServer(oauth, url, config) } : {}),
       }),
     );
     const oauthFetch = createOAuthFetch(oauth);
@@ -446,9 +459,6 @@ export function createMcpAuthProviderFactory(
         if (!tokens?.refresh_token) throw new oauth.McpOAuthAuthorizationRequiredError();
         // A refresh token without its client (absent, or its secret expired) would make pi-mcp register a new one.
         if (config.clientId === undefined && !(await provider.clientInformation())) throw new oauth.McpOAuthAuthorizationRequiredError();
-        if (config.authServerMetadataUrl !== undefined && !(await provider.discoveryState())) {
-          await store.save({ ...(await store.load()), discovery: await discoverAuthorizationServer(oauth, url, config) });
-        }
         await adapted.onUnauthorized?.({ ...context, fetch: oauthFetch });
       },
     };

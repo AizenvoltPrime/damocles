@@ -94,8 +94,6 @@ describe('requestSettingsState', () => {
       sendAvailableModels: vi.fn(async () => {}),
       sendStepfunAuthStatus: vi.fn(async () => {}),
       sendDeepseekAuthStatus: vi.fn(async () => {}),
-      sendExploreConfig: vi.fn(),
-      sendExploreKeyStatus: vi.fn(async () => {}),
       sendMcpStatus: vi.fn(async () => {}),
       sendImageGenerationSettings: vi.fn(),
       sendVoiceConfig: vi.fn(async () => {}),
@@ -140,8 +138,7 @@ describe('requestSettingsState', () => {
     for (const send of [
       settingsManager.sendStepfunAuthStatus,
       settingsManager.sendDeepseekAuthStatus,
-      settingsManager.sendExploreConfig,
-      settingsManager.sendExploreKeyStatus,
+      settingsManager.sendCurrentSettings,
       settingsManager.sendAvailableModels,
       settingsManager.sendMcpStatus,
       settingsManager.sendImageGenerationSettings,

@@ -71,8 +71,8 @@ const eligibleOf = (...descriptors: McpToolDescriptor[]) => new Set(descriptors.
 
 describe('buildNestedMcpToolset — the frozen per-spawn snapshot', () => {
   it('`names` and `tools` are SET-EQUAL and in the same order (§8: a mismatch is dropped silently)', () => {
-    // Not containment. pi freezes `options.tools` into `_allowedToolNames` and filters the REGISTRY by
-    // it: a definition whose name is missing from `tools:` is discarded with no error, and a name with
+    // Not containment. pi turns `options.tools` into its allowlist: a definition whose name is missing
+    // from `tools:` is unregistered or never activatable, with no error, and a name with
     // no definition is ignored by `setActiveToolsByName` with no error. Either direction of divergence
     // is invisible at runtime, so the only guard is equality asserted in both directions here.
     const { manager } = fakeManager([GIT_STATUS, GIT_COMMIT, CTX_QUERY]);

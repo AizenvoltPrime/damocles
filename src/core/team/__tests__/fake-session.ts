@@ -11,6 +11,12 @@ export interface FakeSessionOptions {
   /** Per-`prompt()` behavior: emit assistant text, then resolve at the turn boundary. */
   onPrompt: (text: string, fake: FakeSession) => void;
   isStreaming?: boolean;
+  /**
+   * The event that resolves an in-flight `prompt()`. Real pi resolves it after `agent_settled`
+   * (`_emitAgentSettled` in the `finally` of `_runAgentPrompt`, `agent-session.js:1412` in pi 1.1.0), so a
+   * test of pi's retries, which run inside `prompt()`, settles there. Defaults to `turn_end`.
+   */
+  settleOn?: 'turn_end' | 'agent_settled';
 }
 
 type Listener = (event: unknown) => void;
@@ -51,6 +57,7 @@ export class FakeSession {
   aborted = false;
   private listeners = new Set<Listener>();
   private readonly onPrompt: FakeSessionOptions['onPrompt'];
+  private readonly settleOn: NonNullable<FakeSessionOptions['settleOn']>;
   /** Resolves the in-flight `prompt()` — mirrors real pi (prompt resolves at the turn boundary). */
   private pendingTurn: (() => void) | null = null;
   /** Deterministic prompt-count waiters — resolve `whenPrompted(n)` when the nth prompt lands. */
@@ -58,6 +65,7 @@ export class FakeSession {
 
   constructor(opts: FakeSessionOptions) {
     this.onPrompt = opts.onPrompt;
+    this.settleOn = opts.settleOn ?? 'turn_end';
     this.isStreaming = opts.isStreaming ?? false;
   }
 
@@ -73,7 +81,7 @@ export class FakeSession {
   }
 
   emit(event: unknown): void {
-    if ((event as { type?: string }).type === 'turn_end' && this.pendingTurn) {
+    if ((event as { type?: string }).type === this.settleOn && this.pendingTurn) {
       const resolve = this.pendingTurn;
       this.pendingTurn = null;
       resolve();
@@ -81,6 +89,7 @@ export class FakeSession {
     for (const l of this.listeners) l(event);
     // Real pi persists a message after its listeners ran, and only then does the session file count its tokens and cost.
     const message = (event as { type?: string; message?: { role?: string; usage?: FakeMessageUsage } }).message;
+    if ((event as { type?: string }).type === 'message_end' && message) this.branch.push({ type: 'message', id: `m${this.branch.length}`, message });
     if ((event as { type?: string }).type === 'message_end' && message?.role === 'assistant' && message.usage) {
       for (const key of ['input', 'output', 'cacheRead', 'cacheWrite'] as const) this.tokens[key] += message.usage[key] ?? 0;
       this.cost += message.usage.cost?.total ?? 0;
@@ -119,7 +128,7 @@ export class FakeSession {
   }
 
   /**
-   * Mirrors a real run starting: pi marks the session streaming (`agent-session.js:1326` in pi 0.99.2) and then emits
+   * Mirrors a real run starting: pi marks the session streaming (`agent-session.js:1388` in pi 1.1.0) and then emits
    * `agent_start` (`agent-loop.js:50`). Opt-in, since most tests model a held turn as not streaming.
    */
   startStreaming(): void {
@@ -170,6 +179,8 @@ export class FakeSession {
 
   /** Custom entries appended through `sessionManager`, in order. */
   readonly customEntries: Array<{ customType: string; data: unknown }> = [];
+  /** The session's branch: each message pi persisted at its `message_end`, and what a test appends. */
+  readonly branch: unknown[] = [];
   sessionFile: string | undefined = undefined;
   readonly sessionManager = {
     appendCustomEntry: (customType: string, data: unknown): string => {
@@ -177,6 +188,7 @@ export class FakeSession {
       return `entry-${this.customEntries.length}`;
     },
     getSessionFile: (): string | undefined => this.sessionFile,
+    getBranch: (): unknown[] => this.branch,
     // One `usage` entry carrying the running totals sums to what pi's file would.
     getEntries: (): unknown[] => [{ type: 'usage', usage: { ...this.tokens, cost: { total: this.cost } } }],
   };

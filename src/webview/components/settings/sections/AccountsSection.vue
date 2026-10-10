@@ -3,8 +3,9 @@ import { computed, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
 import type { SettingsAccountId } from '@shared/settings-sections';
-import { exploreSupportedEffortLevels } from '@shared/types/constants';
-import { usePlatformBridge } from '@/composables/usePlatformBridge';
+import { DEFAULT_MODELS } from '@shared/types/constants';
+import { MEMORY_JUDGE_CLASSIFIERS } from '@shared/memory-judge';
+import { modelVendor, type ModelVendor } from '@/composables/useModelIdentity';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import ClaudeAuthPanel from '@/components/ClaudeAuthPanel.vue';
 import OpenAIAuthPanel from '@/components/OpenAIAuthPanel.vue';
@@ -12,10 +13,9 @@ import CustomProviderAuthPanel from '@/components/CustomProviderAuthPanel.vue';
 import SettingsRow from '../SettingsRow.vue';
 import SettingAccount from '../controls/SettingAccount.vue';
 import SettingSelect from '../controls/SettingSelect.vue';
-import SettingInput from '../controls/SettingInput.vue';
-import SettingButton from '../controls/SettingButton.vue';
-import { parseNonEmpty } from '../parsers';
-import { useSettingWrite } from '../settings-writes';
+import { useMemoryJudgeNames } from '../memory-judge-names';
+import { useModelEffortPair } from '../model-effort-pair';
+import { modelOptions, UNSET_OPTION } from '../model-options';
 import { useSettingsPage, useSettingsTarget } from '../settings-view';
 
 const { t } = useI18n();
@@ -31,13 +31,10 @@ const {
   stepfunConfigured,
   openrouterConfigured,
   typesafeConfigured,
-  exploreProvider,
-  exploreModel,
-  exploreEffort,
-  exploreHasApiKey,
+  classifierCredentials,
+  memoryJudge,
+  currentSettings,
 } = storeToRefs(settingsStore);
-const { postMessage } = usePlatformBridge();
-const write = useSettingWrite();
 
 const expanded = ref<SettingsAccountId | null>(null);
 
@@ -58,6 +55,14 @@ interface AccountView {
   action: string;
 }
 
+// Whether each model vendor has a credential; the account rows and the model choices both read this one answer.
+const vendorSignedIn = computed<Record<ModelVendor, boolean>>(() => ({
+  anthropic: claudeAuthMode.value !== 'none',
+  openai: openaiAuthStatus.value.chatgpt.signedIn || openaiAuthStatus.value.codex.signedIn || openaiAuthStatus.value.apikey.configured,
+  deepseek: deepseekConfigured.value,
+  stepfun: stepfunConfigured.value,
+}));
+
 const keyAccount = (provider: 'deepseek' | 'stepfun' | 'openrouter' | 'typesafe', configured: boolean): AccountView => ({
   provider,
   id: `account-${provider}`,
@@ -68,12 +73,12 @@ const keyAccount = (provider: 'deepseek' | 'stepfun' | 'openrouter' | 'typesafe'
 
 const accounts = computed<AccountView[]>(() => {
   const openaiSignedIn = openaiAuthStatus.value.chatgpt.signedIn || openaiAuthStatus.value.codex.signedIn;
-  const openaiConfigured = openaiSignedIn || openaiAuthStatus.value.apikey.configured;
+  const openaiConfigured = vendorSignedIn.value.openai;
   return [
     {
       provider: 'anthropic',
       id: 'account-anthropic',
-      state: claudeAuthBusy.value ? 'busy' : claudeAuthMode.value === 'none' ? 'off' : 'ok',
+      state: claudeAuthBusy.value ? 'busy' : vendorSignedIn.value.anthropic ? 'ok' : 'off',
       status: claudeAuthBusy.value
         ? t('settingsModal.account.signingIn')
         : claudeAuthMode.value === 'none' ? t('settingsModal.account.notSetUp') : t(`claudeAuth.status.${claudeAuthMode.value}`),
@@ -92,74 +97,66 @@ const accounts = computed<AccountView[]>(() => {
             : t('settingsModal.account.notSetUp'),
       action: openaiConfigured ? t('settingsModal.account.manage') : t('settingsModal.account.signIn'),
     },
-    keyAccount('deepseek', deepseekConfigured.value),
-    keyAccount('stepfun', stepfunConfigured.value),
+    keyAccount('deepseek', vendorSignedIn.value.deepseek),
+    keyAccount('stepfun', vendorSignedIn.value.stepfun),
     keyAccount('openrouter', openrouterConfigured.value),
     keyAccount('typesafe', typesafeConfigured.value),
   ];
 });
 
-const providerChoices = computed(() => [
-  { value: 'default', label: t('settings.explore.providerDefault') },
-  { value: 'openrouter', label: 'OpenRouter' },
-  { value: 'gemini', label: 'Google Gemini' },
-  { value: 'stepfun', label: 'StepFun' },
-]);
-const thirdParty = computed(() => exploreProvider.value !== 'default');
-// StepFun's key is managed by its account row, which shares the secret.
-const needsKey = computed(() => thirdParty.value && exploreProvider.value !== 'stepfun');
-const effortLevels = computed(() => exploreSupportedEffortLevels(exploreProvider.value, exploreModel.value));
-const effortChoices = computed(() => [
-  { value: 'default', label: t('settings.explore.effortDefault') },
-  ...effortLevels.value.map((level) => ({ value: level as string, label: t(`settingsModal.effort.${level}`) })),
-]);
-const exploreDescription = computed(() => {
-  switch (exploreProvider.value) {
-    case 'default': return t('settings.explore.descriptionDefault');
-    case 'gemini': return t('settings.explore.descriptionGemini');
-    case 'stepfun': return t('settings.explore.descriptionStepfun');
-    default: return t('settings.explore.descriptionOpenrouter');
-  }
+// The host resolves these settings against the whole catalog, not the chat's model list.
+const catalogChoices = computed(() => modelOptions(DEFAULT_MODELS, (model) => (vendorSignedIn.value[modelVendor(model)] ? undefined : t('settings.modelNotSignedIn'))));
+
+const explore = useModelEffortPair({
+  read: () => currentSettings.value.explore,
+  store: (next) => settingsStore.setExploreSettings(next),
+  modelKey: 'damocles.explore.model',
+  effortKey: 'damocles.explore.effort',
+  modelMessage: (model) => ({ type: 'setExploreModel', model }),
+  effortMessage: (effort) => ({ type: 'setExploreEffort', effort }),
+  effortUnsetLabel: () => t('settings.explore.effortDefault'),
 });
-const keyPlaceholder = computed(() => (exploreProvider.value === 'gemini' ? t('settings.explore.apiKeyPlaceholderGemini') : t('settings.explore.apiKeyPlaceholderOpenrouter')));
+const exploreModelChoices = computed(() => [{ value: UNSET_OPTION, label: t('settings.explore.modelDefault') }, ...catalogChoices.value]);
 
-interface ExploreConfig {
-  provider: string;
-  model: string;
-  effort: string;
-}
+const background = useModelEffortPair({
+  read: () => currentSettings.value.background,
+  store: (next) => settingsStore.setBackgroundSettings(next),
+  modelKey: 'damocles.background.model',
+  effortKey: 'damocles.background.effort',
+  modelMessage: (model) => ({ type: 'setBackgroundModel', model }),
+  effortMessage: (effort) => ({ type: 'setBackgroundEffort', effort }),
+  effortUnsetLabel: () => t('settings.background.effortPerJob'),
+});
+const backgroundModelChoices = computed(() => [{ value: UNSET_OPTION, label: t('settings.background.modelAutomatic') }, ...catalogChoices.value]);
 
-function setExploreField(field: keyof ExploreConfig, value: string, key: string, message: Parameters<typeof write>[1]): void {
-  const current = (): ExploreConfig => ({ provider: exploreProvider.value, model: exploreModel.value, effort: exploreEffort.value });
-  const store = (config: ExploreConfig): void => settingsStore.setExploreConfig(config.provider, config.model, config.effort);
-  const before = current()[field];
-  // The revert puts back only this field, so it never undoes another Explore row's write.
-  write(key, message, {
-    apply: () => store({ ...current(), [field]: value }),
-    revert: () => store({ ...current(), [field]: before }),
-  });
-}
-
-function setProvider(provider: string): void {
-  setExploreField('provider', provider, 'damocles.explore.provider', { type: 'setExploreProvider', provider });
-}
-
-function setModel(model: string): void {
-  setExploreField('model', model, 'damocles.explore.modelByProvider', { type: 'setExploreModel', model });
-}
-
-function setEffort(value: string): void {
-  const effort = value === 'default' ? '' : value;
-  setExploreField('effort', effort, 'damocles.explore.effort', { type: 'setExploreEffort', effort });
-}
-
-const exploreKey = ref('');
-function saveExploreKey(): void {
-  const apiKey = exploreKey.value.trim();
-  if (!apiKey) return;
-  postMessage({ type: 'setExploreApiKey', apiKey });
-  exploreKey.value = '';
-}
+const judge = useModelEffortPair({
+  read: () => ({ model: currentSettings.value.judge.choice, effort: currentSettings.value.judge.effort }),
+  store: ({ model, effort }) => settingsStore.setJudgeSettings({ choice: model, effort }),
+  modelKey: 'damocles.memory.judge',
+  effortKey: 'damocles.memory.judgeEffort',
+  modelMessage: (choice) => ({ type: 'setMemoryJudge', judge: choice }),
+  effortMessage: (effort) => ({ type: 'setMemoryJudgeEffort', effort }),
+  effortUnsetLabel: () => t('settings.background.effortPerJob'),
+});
+const { classifierName, judgeText } = useMemoryJudgeNames();
+// A classifier whose key is missing stays listed, disabled with the reason, so the choice is discoverable.
+const judgeChoices = computed(() => [
+  { value: UNSET_OPTION, label: t('settings.memoryJudge.automatic') },
+  ...MEMORY_JUDGE_CLASSIFIERS.map(({ choice, provider }) => {
+    const credential = classifierCredentials.value?.[provider] ?? 'ok';
+    return {
+      value: choice,
+      label: classifierName(provider),
+      ...(credential === 'ok' ? {} : { disabled: true, hint: t(`settings.memoryJudge.unavailable.${credential}`) }),
+    };
+  }),
+  ...catalogChoices.value,
+]);
+// The host's reason the chosen judge cannot run, shown where the choice is made.
+const judgeWarning = computed(() => {
+  const status = memoryJudge.value;
+  return status?.kind === 'none' && status.forced ? t('typesafe.memoryJudge.label', { judge: judgeText(status) }) : '';
+});
 </script>
 
 <template>
@@ -199,69 +196,65 @@ function saveExploreKey(): void {
   >
     {{ t('settingsModal.groups.explore') }}
   </div>
-  <SettingsRow
-    id="damocles.explore.provider"
-    :description="exploreDescription"
-  >
+  <SettingsRow id="damocles.explore.model">
     <SettingSelect
-      :model-value="exploreProvider"
-      :options="providerChoices"
-      :label="t('settingsModal.rows.exploreProvider.label')"
-      @update:model-value="setProvider"
-    />
-  </SettingsRow>
-  <SettingsRow
-    v-if="thirdParty"
-    id="damocles.explore.modelByProvider"
-  >
-    <SettingInput
-      :model-value="exploreModel"
-      :parse="(raw) => parseNonEmpty(raw, t)"
+      :model-value="explore.modelValue.value"
+      :options="exploreModelChoices"
       :label="t('settingsModal.rows.exploreModel.label')"
-      :placeholder="t('settings.explore.modelPlaceholder')"
-      wide
-      @commit="setModel"
+      @update:model-value="explore.setModel"
     />
-  </SettingsRow>
-  <SettingsRow
-    v-if="thirdParty && effortLevels.length > 0"
-    id="damocles.explore.effort"
-  >
     <SettingSelect
-      :model-value="effortChoices.some((choice) => choice.value === exploreEffort) ? exploreEffort : 'default'"
-      :options="effortChoices"
+      v-if="explore.effortChoices.value.length > 0"
+      :model-value="explore.effortValue.value"
+      :options="explore.effortChoices.value"
       :label="t('settingsModal.rows.exploreEffort.label')"
-      @update:model-value="setEffort"
+      @update:model-value="explore.setEffort"
     />
   </SettingsRow>
-  <SettingsRow
-    v-if="needsKey"
-    id="explore-api-key"
-    :description="exploreHasApiKey ? t('settings.explore.keyStored') : t('settings.explore.noKey')"
+
+  <div
+    v-if="!page.query"
+    class="sm-group-head"
   >
-    <div class="sm-input sm-input-wide">
-      <input
-        v-model="exploreKey"
-        type="password"
-        autocomplete="new-password"
-        spellcheck="false"
-        :aria-label="t('settingsModal.rows.exploreApiKey.label')"
-        :placeholder="keyPlaceholder"
-        @keydown.enter.prevent="saveExploreKey"
+    {{ t('settingsModal.groups.background') }}
+  </div>
+  <SettingsRow id="damocles.background.model">
+    <SettingSelect
+      :model-value="background.modelValue.value"
+      :options="backgroundModelChoices"
+      :label="t('settingsModal.rows.backgroundModel.label')"
+      @update:model-value="background.setModel"
+    />
+    <SettingSelect
+      v-if="background.effortChoices.value.length > 0"
+      :model-value="background.effortValue.value"
+      :options="background.effortChoices.value"
+      :label="t('settingsModal.rows.backgroundEffort.label')"
+      @update:model-value="background.setEffort"
+    />
+  </SettingsRow>
+  <SettingsRow id="damocles.memory.judge">
+    <template #note>
+      <p
+        role="status"
+        data-testid="memory-judge-warning"
+        :class="{ 'sm-feedback sm-feedback-warning': judgeWarning }"
       >
-    </div>
-    <SettingButton
-      :disabled="!exploreKey.trim()"
-      @click="saveExploreKey"
-    >
-      {{ t('common.save') }}
-    </SettingButton>
-    <SettingButton
-      v-if="exploreHasApiKey"
-      variant="danger"
-      @click="postMessage({ type: 'deleteExploreApiKey' })"
-    >
-      {{ t('settings.explore.deleteKey') }}
-    </SettingButton>
+        {{ judgeWarning }}
+      </p>
+    </template>
+    <SettingSelect
+      :model-value="judge.modelValue.value"
+      :options="judgeChoices"
+      :label="t('settingsModal.rows.memoryJudge.label')"
+      @update:model-value="judge.setModel"
+    />
+    <SettingSelect
+      v-if="judge.effortChoices.value.length > 0"
+      :model-value="judge.effortValue.value"
+      :options="judge.effortChoices.value"
+      :label="t('settingsModal.rows.memoryJudgeEffort.label')"
+      @update:model-value="judge.setEffort"
+    />
   </SettingsRow>
 </template>

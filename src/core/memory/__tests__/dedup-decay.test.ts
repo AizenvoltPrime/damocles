@@ -438,7 +438,7 @@ describe('dedup-decay', () => {
 
     const nullRunner: MemorySubCallRunner = {
       async run<T>(_req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> {
-        return { value: null, failure: 'transient' };
+        return { value: null, failure: 'unreachable' };
       },
     };
 

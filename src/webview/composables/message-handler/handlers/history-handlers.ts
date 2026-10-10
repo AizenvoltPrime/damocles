@@ -4,7 +4,6 @@ import type { ExtensionToWebviewMessage } from "@shared/types/messages";
 import type { HandlerRegistry } from "../types";
 import { convertHistoryTools, toUserContentBlocks } from "../utils";
 import { TOOL_AGENT, TEAM_CREATE_TOOL, TEAM_RESUME_TOOL } from "@shared/tool-names";
-import { useExploreStore } from "@/stores/useExploreStore";
 import { isImageBlock } from "@shared/types/content";
 import { countReplayItem } from "@/utils/perf";
 import { buildMessage, buildSteerChip, buildUserMessage } from "@/stores/useStreamingStore";
@@ -45,7 +44,7 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
 
       if (msg.tools) {
         for (const tool of msg.tools) {
-          if (tool.name === TOOL_AGENT && !useExploreStore().hasExplore(tool.id)) {
+          if (tool.name === TOOL_AGENT) {
             subagentStore.restoreSubagentFromHistory(tool);
           }
           if (tool.name === TEAM_CREATE_TOOL) {

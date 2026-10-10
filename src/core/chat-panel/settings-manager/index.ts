@@ -304,10 +304,6 @@ export class SettingsManager {
     this.modelManager.sendModelForPanel(host, panelId);
   }
 
-  async handleSetDefaultMaxThinkingTokens(tokens: number | null, folder: FolderTarget): Promise<SettingWrite> {
-    return this.configManager.handleSetDefaultMaxThinkingTokens(tokens, settingsFolderOf(folder));
-  }
-
   async handleSetDefaultThinkingDisabled(disabled: boolean, folder: FolderTarget): Promise<SettingWrite> {
     return this.configManager.handleSetDefaultThinkingDisabled(disabled, settingsFolderOf(folder));
   }
@@ -328,6 +324,22 @@ export class SettingsManager {
     return this.configManager.handleSetTeamRoleEffort(role, effort, settingsFolderOf(folder));
   }
 
+  async handleSetBackgroundModel(model: string): Promise<SettingWrite> {
+    return this.serializeSettingWrite(() => this.configManager.handleSetBackgroundModel(model));
+  }
+
+  async handleSetBackgroundEffort(effort: EffortLevel | null): Promise<SettingWrite> {
+    return this.serializeSettingWrite(() => this.configManager.handleSetBackgroundEffort(effort));
+  }
+
+  async handleSetMemoryJudge(choice: string): Promise<SettingWrite> {
+    return this.serializeSettingWrite(() => this.configManager.handleSetMemoryJudge(choice));
+  }
+
+  async handleSetMemoryJudgeEffort(effort: EffortLevel | null): Promise<SettingWrite> {
+    return this.serializeSettingWrite(() => this.configManager.handleSetMemoryJudgeEffort(effort));
+  }
+
   cleanupPanelThinking(panelId: string): void {
     this.thinkingManager.cleanupPanelThinking(panelId);
   }
@@ -344,10 +356,6 @@ export class SettingsManager {
     return this.thinkingManager.resolveEffort(panelId, model, settings, folder);
   }
 
-  resolveMaxThinkingTokens(panelId: string, model: string, settings: SettingsStore, folder: SettingsFolder | undefined): number | null {
-    return this.thinkingManager.resolveMaxTokens(panelId, model, settings, folder);
-  }
-
   handleSetPanelThinkingDisabled(panelId: string, disabled: boolean): void {
     this.thinkingManager.setPanelDisabled(panelId, disabled);
   }
@@ -356,14 +364,15 @@ export class SettingsManager {
     this.thinkingManager.setPanelEffort(panelId, model, effort);
   }
 
-  handleSetPanelMaxThinkingTokens(panelId: string, model: string, tokens: number | null): void {
-    this.thinkingManager.setPanelMaxTokens(panelId, model, tokens);
-  }
-
   /** A resumed conversation continues on the model and pi thinking level its session file recorded, which become the panel's. */
   restoreRecordedSelection(host: PanelHost, panelId: string, folder: FolderTarget, model: string, thinkingLevel: string | undefined): void {
-    this.modelManager.setActiveModelForPanel(panelId, model);
     if (thinkingLevel !== undefined) this.thinkingManager.restoreRecordedLevel(panelId, model, thinkingLevel);
+    this.adoptSessionModel(host, panelId, folder, model);
+  }
+
+  /** The panel's model is the one its session committed; nothing else writes it once the session exists. */
+  adoptSessionModel(host: PanelHost, panelId: string, folder: FolderTarget, model: string): void {
+    this.modelManager.setActiveModelForPanel(panelId, model);
     this.sendModelForPanel(host, panelId);
     this.sendThinkingForPanel(host, panelId, folder);
   }
@@ -486,36 +495,12 @@ export class SettingsManager {
     return this.voiceManager.setDiagnostics(diagnostics);
   }
 
-  async storeExploreApiKey(apiKey: string): Promise<void> {
-    return this.exploreManager.storeApiKey(apiKey);
-  }
-
-  async deleteExploreApiKey(): Promise<void> {
-    return this.exploreManager.deleteApiKey();
-  }
-
-  async sendExploreKeyStatus(host: PanelHost): Promise<void> {
-    return this.exploreManager.sendExploreKeyStatus(host);
-  }
-
-  async setExploreProvider(provider: string): Promise<SettingWrite> {
-    return this.exploreManager.setProvider(provider);
-  }
-
   async setExploreModel(model: string): Promise<SettingWrite> {
     return this.serializeSettingWrite(() => this.exploreManager.setModel(model));
   }
 
-  async setExploreEffort(effort: string): Promise<SettingWrite> {
-    return this.exploreManager.setEffort(effort);
-  }
-
-  sendExploreConfig(host: PanelHost): void {
-    this.exploreManager.sendExploreConfig(host);
-  }
-
-  selectedExploreProvider(): string {
-    return this.exploreManager.selectedExploreProvider();
+  async setExploreEffort(effort: EffortLevel | null): Promise<SettingWrite> {
+    return this.serializeSettingWrite(() => this.exploreManager.setEffort(effort));
   }
 
   async storeStepfunApiKey(key: string): Promise<void> {

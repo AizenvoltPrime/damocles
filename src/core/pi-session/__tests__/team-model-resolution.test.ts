@@ -223,7 +223,7 @@ describe('resolveRoleModel — effort → thinkingLevel coercion', () => {
   it('(f2) supported effort maps directly (high → high on deepseek)', () => {
     const d = deps({
       registry: mockRegistry({ anthropicAuthed: false, openaiResolves: false, deepseekResolves: true }),
-      activeModel: 'deepseek-v4-flash',
+      activeModel: 'deepseek-flash',
       roleSettings: roles({ implementor: { model: 'deepseek-v4-pro', effort: 'high' } }),
     });
     const res = resolveRoleModel('implementor', d);
@@ -231,7 +231,7 @@ describe('resolveRoleModel — effort → thinkingLevel coercion', () => {
     expect(res.thinkingLevel).toBe('high');
   });
 
-  // Slice 2: step-3.7-flash advertises supportedEffortLevels ['low','medium','high']. Supported levels
+  // Slice 2: step-5-preview advertises supportedEffortLevels ['low','medium','high']. Supported levels
   // pass through to the matching thinkingLevel; levels above the cap (xhigh/max/ultracode) coerce away.
   it.each([
     ['low', 'low'],
@@ -240,11 +240,11 @@ describe('resolveRoleModel — effort → thinkingLevel coercion', () => {
   ] as const)('(g) StepFun slot + %s effort → thinkingLevel %s', (effort, thinkingLevel) => {
     const d = deps({
       registry: mockRegistry({ anthropicAuthed: false, openaiResolves: false, stepfunResolves: true }),
-      activeModel: 'step-3.7-flash',
-      roleSettings: roles({ implementor: { model: 'step-3.7-flash', effort } }),
+      activeModel: 'step-5-preview',
+      roleSettings: roles({ implementor: { model: 'step-5-preview', effort } }),
     });
     const res = resolveRoleModel('implementor', d);
-    expect(res.model?.id).toBe('step-3.7-flash');
+    expect(res.model?.id).toBe('step-5-preview');
     expect(res.thinkingLevel).toBe(thinkingLevel);
   });
 
@@ -253,11 +253,11 @@ describe('resolveRoleModel — effort → thinkingLevel coercion', () => {
     (effort) => {
       const d = deps({
         registry: mockRegistry({ anthropicAuthed: false, openaiResolves: false, stepfunResolves: true }),
-        activeModel: 'step-3.7-flash',
-        roleSettings: roles({ implementor: { model: 'step-3.7-flash', effort } }),
+        activeModel: 'step-5-preview',
+        roleSettings: roles({ implementor: { model: 'step-5-preview', effort } }),
       });
       const res = resolveRoleModel('implementor', d);
-      expect(res.model?.id).toBe('step-3.7-flash');
+      expect(res.model?.id).toBe('step-5-preview');
       expect(res.thinkingLevel).toBeUndefined();
     },
   );
@@ -295,10 +295,10 @@ describe('resolveRoleModel dollar billing', () => {
     const d = deps({
       registry: mockRegistry({ anthropicAuthed: true, openaiResolves: false, stepfunResolves: true }),
       claudeAuthMode: 'apikey',
-      roleSettings: roles({ reviewer: { model: 'step-3.7-flash', effort: null } }),
+      roleSettings: roles({ reviewer: { model: 'step-5-preview', effort: null } }),
     });
     const res = resolveRoleModel('reviewer', d);
-    expect(res.model?.id).toBe('step-3.7-flash');
+    expect(res.model?.id).toBe('step-5-preview');
     expect(res.dollarBilled).toBe(false);
   });
 

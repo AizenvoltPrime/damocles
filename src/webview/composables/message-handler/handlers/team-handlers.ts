@@ -10,7 +10,7 @@ export function createTeamHandlers(): Partial<HandlerRegistry> {
       useTeamStore().handleTeamPhaseUpdate(msg.teamId, msg.phase);
     },
     teamAgentStatusUpdate: (msg) => {
-      useTeamStore().handleAgentStatusUpdate(msg.teamId, msg.agentId, msg.status, msg.progressSummary, msg.logFilePath, msg.model, msg.dollarBilled, msg.attempt, msg.effort, msg.stopwatch);
+      useTeamStore().handleAgentStatusUpdate(msg.teamId, msg.agentId, msg.status, msg.progressSummary, msg.logFilePath, msg.model, msg.dollarBilled, msg.attempt, msg.effort, msg.stopwatch, msg.result);
     },
     teamAgentUsageUpdate: (msg) => {
       useTeamStore().handleAgentUsageUpdate(msg.teamId, msg.agentId, {

@@ -315,7 +315,7 @@ export class RetrievalManager {
     return { clause: ` AND ${clauses.join(' AND ')}`, params };
   }
 
-  /** Jev when a classifier is configured, else (or when Jev fails) the LLM in the time left, else BM25 order. */
+  /** The classifier when the Memory judge has one, else (or when it fails) the LLM in the time left, else BM25 order. */
   private async rerank(query: string, candidates: CandidateRow[]): Promise<RankedCandidate[]> {
     const runner = this.runner!;
     let llmTimeoutMs = SEARCH_RERANK_TIMEOUT_MS;

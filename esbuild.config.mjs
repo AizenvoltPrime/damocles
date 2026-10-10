@@ -170,11 +170,19 @@ const quickOpenWorkerOptions = {
   outfile: 'dist/quick-open-worker.js',
 };
 
+/** @type {esbuild.BuildOptions} */
+const watchWorkerOptions = {
+  ...formatterHostOptions,
+  entryPoints: ['src/desktop/watch-worker/index.ts'],
+  outfile: 'dist/watch-worker.js',
+};
+
 async function buildDesktop() {
   await Promise.all([
     esbuild.build(formatterHostOptions),
     esbuild.build(ptyHostOptions),
     esbuild.build(quickOpenWorkerOptions),
+    esbuild.build(watchWorkerOptions),
     esbuild.build(desktopMainOptions),
     esbuild.build(desktopPreloadOptions),
     esbuild.build(desktopShellPreloadOptions),

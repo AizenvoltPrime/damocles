@@ -35,7 +35,7 @@ function makeAgent(name: string, role: TeamAgent['role']): TeamAgent {
     toolCallCount: 0, carriedToolCallCount: 0, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0,
     cacheCreationTokens: 0, costUsd: 0,
     carriedUsage: { totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 },
-    dollarBilled: true, effort: null, finalResponse: null, error: null, logFilePath: null,
+    dollarBilled: true, effort: null, finalResponse: null, result: null, error: null, logFilePath: null,
   };
 }
 

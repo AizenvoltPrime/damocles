@@ -11,7 +11,7 @@ const { pendingCount, isRunning, lastResult, isOverlayOpen } = storeToRefs(store
 
 defineEmits<{ (e: 'click'): void }>();
 
-// A failed pass releases its turns back to the queue, so the failure takes the dot's place while it lasts.
+// A failed run releases its turns back to the queue, so the failure takes the dot's place while it lasts.
 const failed = computed(() => !isOverlayOpen.value && !isRunning.value && lastResult.value?.status === 'failed');
 
 const label = computed(() => {

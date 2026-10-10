@@ -78,7 +78,7 @@ export function panelSession(emitted: ExtensionToWebviewMessage[]): PiSession {
     platform: createFakePlatform(),
     permissionHandler: { getPermissionMode: () => 'default', setPendingPromptsListener: () => {}, setPromptOwnerResolver: () => {}, pendingPrompts: () => [] } as unknown as PermissionHandler,
     onMessage: (message: ExtensionToWebviewMessage) => emitted.push(message),
-    resolveThinking: () => ({ thinkingDisabled: true, effort: null, maxThinkingTokens: null }),
+    resolveThinking: () => ({ thinkingDisabled: true, effort: null }),
   } as unknown as SessionOptions;
   return new PiSession(options);
 }

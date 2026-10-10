@@ -277,9 +277,10 @@ export interface ChatMessage {
 }
 
 /**
- * Marks a tool result the user stopped mid-run. Set by the shell cancel wrapper on the result's
- * `details`, which is persisted and re-read on reload, so a reloaded transcript still shows the
- * cancelled state instead of a success. The extension is the only writer.
+ * Marks a tool result stopped mid-run. Set on the result's `details`, which is persisted and re-read on
+ * reload, so a reloaded transcript still shows the cancelled state instead of a success or a failure.
+ * The extension is the only writer: the shell cancel wrapper, and `stopped-tool-result.ts` for an error
+ * result that ended while its run was aborted.
  */
 export const CANCELLED_TOOL_DETAIL_KEY = "damoclesCancelled";
 
@@ -294,6 +295,9 @@ export const CANCEL_NOTE_DETAIL_KEY = "damoclesCancelNote";
  * core on the result's `details` and on the plan approval request. A call recorded without one has no version.
  */
 export const PLAN_VERSION_DETAIL_KEY = "planVersion";
+
+/** Why a call never ran to an outcome: its turn was stopped, or the model call that named it failed. */
+export type ToolAbandonReason = "stopped" | "failed";
 
 export interface ToolCall {
   id: string;
@@ -320,6 +324,8 @@ export interface ToolCall {
   cancelRequested?: boolean;
   /** Success results only; the images load on demand. */
   imageCount?: number;
+  /** Set with status `abandoned`. */
+  abandonReason?: ToolAbandonReason;
 }
 
 /** Where a tool call's result is stored. */

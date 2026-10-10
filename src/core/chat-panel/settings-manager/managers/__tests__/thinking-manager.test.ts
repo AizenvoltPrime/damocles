@@ -5,22 +5,20 @@ import type { EffortLevel } from "../../../../../shared/types/settings";
 function makeConfig(overrides: {
   thinkingDisabled?: boolean;
   effortByModel?: Record<string, EffortLevel | null>;
-  maxThinkingTokens?: number | null;
 }): { get: <T>(key: string, defaultValue?: T) => T } {
   return {
     get: <T>(key: string, defaultValue?: T): T => {
       if (key === "damocles.thinkingDisabled") return (overrides.thinkingDisabled ?? defaultValue) as T;
       if (key === "damocles.effortByModel") return (overrides.effortByModel ?? defaultValue ?? {}) as T;
-      if (key === "damocles.maxThinkingTokens") return (overrides.maxThinkingTokens ?? defaultValue ?? null) as T;
       return defaultValue as T;
     },
   };
 }
 
 const SONNET = "claude-sonnet-5-5";
-// Opus 5.5 is a catalog `thinkingAlwaysOn` + `defaultEffort: high` entry; Step 3.7 Flash has neither.
+// Opus 5.5 is a catalog `thinkingAlwaysOn` + `defaultEffort: high` entry; DeepSeek V4.1 Flash has neither.
 const OPUS = "claude-opus-5-5";
-const TOGGLE = "step-3.7-flash";
+const TOGGLE = "deepseek-flash";
 const GPT = "gpt-6.1-sol";
 
 describe("ThinkingManager", () => {
@@ -50,9 +48,9 @@ describe("ThinkingManager", () => {
       expect(manager.resolveDisabled("panel-A", TOGGLE, config as never, undefined)).toBe(true);
       expect(manager.resolveEffort("panel-A", TOGGLE, config as never, undefined)).toBe("high");
       const disabledByDefault = makeConfig({ thinkingDisabled: true });
-      manager.restoreRecordedLevel("panel-B", TOGGLE, "medium");
+      manager.restoreRecordedLevel("panel-B", TOGGLE, "low");
       expect(manager.resolveDisabled("panel-B", TOGGLE, disabledByDefault as never, undefined)).toBe(false);
-      expect(manager.resolveEffort("panel-B", TOGGLE, disabledByDefault as never, undefined)).toBe("medium");
+      expect(manager.resolveEffort("panel-B", TOGGLE, disabledByDefault as never, undefined)).toBe("low");
       manager.restoreRecordedLevel("panel-C", GPT, "off");
       expect(manager.resolveDisabled("panel-C", GPT, disabledByDefault as never, undefined)).toBe(false);
     });
@@ -90,9 +88,10 @@ describe("ThinkingManager", () => {
   });
 
   describe("resolveEffort", () => {
-    it("returns null when neither panel nor workspace has a value and the model has no catalog default", () => {
+    it("returns the level an unset effort runs at when neither panel nor workspace has a value and the model has no catalog default", () => {
       const config = makeConfig({});
-      expect(manager.resolveEffort("panel-A", TOGGLE, config as never, undefined)).toBeNull();
+      expect(manager.resolveEffort("panel-A", TOGGLE, config as never, undefined)).toBe("high");
+      expect(manager.resolveEffort("panel-A", GPT, config as never, undefined)).toBe("medium");
     });
 
     it("falls back to the model's catalog defaultEffort when nothing is stored", () => {
@@ -126,32 +125,29 @@ describe("ThinkingManager", () => {
       expect(manager.resolveEffort("panel-A", OPUS, config as never, undefined)).toBe("high");
     });
 
-    it("returns null when stored value is no longer in supportedEffortLevels (capability regression)", () => {
+    it("ignores a stored value no longer in supportedEffortLevels (capability regression)", () => {
       const config = makeConfig({ effortByModel: { [TOGGLE]: "fake-level" as EffortLevel } });
-      expect(manager.resolveEffort("panel-A", TOGGLE, config as never, undefined)).toBeNull();
+      expect(manager.resolveEffort("panel-A", TOGGLE, config as never, undefined)).toBe("high");
     });
 
     it("returns null for unknown models", () => {
       const config = makeConfig({ effortByModel: { "unknown-model": "high" } });
       expect(manager.resolveEffort("panel-A", "unknown-model", config as never, undefined)).toBeNull();
     });
-  });
 
-  describe("resolveMaxTokens", () => {
-    it("returns workspace default when no per-panel override", () => {
-      const config = makeConfig({ maxThinkingTokens: 32000 });
-      expect(manager.resolveMaxTokens("panel-A", SONNET, config as never, undefined)).toBe(32000);
+    // A settings file the startup migrations never visit still holds entries under retired ids.
+    it("reads an entry stored under a retired id that maps to the model, renamed before the clamp", () => {
+      const config = makeConfig({
+        effortByModel: { "deepseek-v4-flash": "xhigh", "claude-haiku-4-5-20251001": "low", "step-3.7-flash": "none" },
+      });
+      expect(manager.resolveEffort("panel-A", "deepseek-flash", config as never, undefined)).toBe("max");
+      expect(manager.resolveEffort("panel-A", "claude-haiku-5-5", config as never, undefined)).toBe("low");
+      expect(manager.resolveEffort("panel-A", "step-5-preview", config as never, undefined)).toBe("low");
     });
 
-    it("per-(panel, model) override beats workspace default", () => {
-      const config = makeConfig({ maxThinkingTokens: 32000 });
-      manager.setPanelMaxTokens("panel-A", SONNET, 16000);
-      expect(manager.resolveMaxTokens("panel-A", SONNET, config as never, undefined)).toBe(16000);
-    });
-
-    it("returns null when nothing configured", () => {
-      const config = makeConfig({});
-      expect(manager.resolveMaxTokens("panel-A", SONNET, config as never, undefined)).toBeNull();
+    it("prefers the model's own entry over one stored under a retired id", () => {
+      const config = makeConfig({ effortByModel: { "step-3.7-flash": "high", "step-5-preview": "medium" } });
+      expect(manager.resolveEffort("panel-A", "step-5-preview", config as never, undefined)).toBe("medium");
     });
   });
 
@@ -171,30 +167,18 @@ describe("ThinkingManager", () => {
     });
   });
 
-  describe("setPanelMaxTokens", () => {
-    it("null clears the entry and falls through to workspace default", () => {
-      const config = makeConfig({ maxThinkingTokens: 32000 });
-      manager.setPanelMaxTokens("panel-A", SONNET, 16000);
-      expect(manager.resolveMaxTokens("panel-A", SONNET, config as never, undefined)).toBe(16000);
-      manager.setPanelMaxTokens("panel-A", SONNET, null);
-      expect(manager.resolveMaxTokens("panel-A", SONNET, config as never, undefined)).toBe(32000);
-    });
-  });
-
   describe("copyPanelStateTo (US-002 panel cloning)", () => {
-    it("copies disabled, effort matrix, and max-tokens matrix to the target panel", () => {
+    it("copies disabled and the effort matrix to the target panel", () => {
       const config = makeConfig({});
       manager.setPanelDisabled("panel-A", true);
       manager.setPanelEffort("panel-A", SONNET, "max");
       manager.setPanelEffort("panel-A", OPUS, "high");
-      manager.setPanelMaxTokens("panel-A", SONNET, 24000);
 
       manager.copyPanelStateTo("panel-A", "panel-B");
 
       expect(manager.resolveDisabled("panel-B", TOGGLE, config as never, undefined)).toBe(true);
       expect(manager.resolveEffort("panel-B", SONNET, config as never, undefined)).toBe("max");
       expect(manager.resolveEffort("panel-B", OPUS, config as never, undefined)).toBe("high");
-      expect(manager.resolveMaxTokens("panel-B", SONNET, config as never, undefined)).toBe(24000);
     });
 
     it("clone is independent — mutating the source after copy does not affect the target", () => {
@@ -210,14 +194,12 @@ describe("ThinkingManager", () => {
     it("removes all per-panel state", () => {
       const config = makeConfig({ thinkingDisabled: false });
       manager.setPanelDisabled("panel-A", true);
-      manager.setPanelEffort("panel-A", TOGGLE, "high");
-      manager.setPanelMaxTokens("panel-A", TOGGLE, 16000);
+      manager.setPanelEffort("panel-A", TOGGLE, "low");
 
       manager.cleanupPanelThinking("panel-A");
 
       expect(manager.resolveDisabled("panel-A", TOGGLE, config as never, undefined)).toBe(false);
-      expect(manager.resolveEffort("panel-A", TOGGLE, config as never, undefined)).toBeNull();
-      expect(manager.resolveMaxTokens("panel-A", TOGGLE, config as never, undefined)).toBeNull();
+      expect(manager.resolveEffort("panel-A", TOGGLE, config as never, undefined)).toBe("high");
     });
   });
 
@@ -227,7 +209,6 @@ describe("ThinkingManager", () => {
       const config = makeConfig({
         thinkingDisabled: false,
         effortByModel: { [SONNET]: "low", [OPUS]: "max" },
-        maxThinkingTokens: 32000,
       });
       manager.setPanelEffort("panel-A", SONNET, "high");
 
@@ -235,9 +216,9 @@ describe("ThinkingManager", () => {
 
       expect(postMessage).toHaveBeenCalledWith(host, {
         type: "panelThinkingUpdate",
-        panel: { thinkingDisabled: false, effort: "high", maxThinkingTokens: 32000 },
+        panel: { thinkingDisabled: false, effort: "high" },
         panelModel: SONNET,
-        defaults: { thinkingDisabled: false, effort: "max", maxThinkingTokens: 32000 },
+        defaults: { thinkingDisabled: false, effort: "max" },
         defaultsModel: OPUS,
       });
     });
@@ -248,12 +229,22 @@ describe("ThinkingManager", () => {
 
       manager.sendThinkingForPanel(host, "panel-A", SONNET, OPUS, config as never, undefined);
       expect(postMessage).toHaveBeenLastCalledWith(host, expect.objectContaining({
-        defaults: { thinkingDisabled: false, effort: "high", maxThinkingTokens: null },
+        defaults: { thinkingDisabled: false, effort: "high" },
       }));
 
       manager.sendThinkingForPanel(host, "panel-A", OPUS, TOGGLE, config as never, undefined);
       expect(postMessage).toHaveBeenLastCalledWith(host, expect.objectContaining({
-        defaults: { thinkingDisabled: true, effort: null, maxThinkingTokens: null },
+        defaults: { thinkingDisabled: true, effort: "high" },
+      }));
+    });
+
+    it("defaults column reads an entry stored under a retired id of the default model", () => {
+      const host = { webview: { postMessage: vi.fn() } } as never;
+      const config = makeConfig({ effortByModel: { "claude-haiku-4-5-20251001": "low" } });
+
+      manager.sendThinkingForPanel(host, "panel-A", SONNET, "claude-haiku-5-5", config as never, undefined);
+      expect(postMessage).toHaveBeenLastCalledWith(host, expect.objectContaining({
+        defaults: expect.objectContaining({ effort: "low" }),
       }));
     });
 

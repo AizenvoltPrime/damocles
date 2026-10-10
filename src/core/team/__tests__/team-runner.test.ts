@@ -35,6 +35,7 @@ function makeAgent(partial: Partial<TeamAgent> & { name: string; role: TeamAgent
     dollarBilled: true,
     effort: null,
     finalResponse: null,
+    result: null,
     error: null,
     logFilePath: null,
     ...partial,
@@ -3365,5 +3366,62 @@ describe('TeamRunner re-review on landing (rule A)', () => {
     expect(h.agents.get('appsec')!.status).toBe('failed');
     h.runner.redispatchSpecialist('appsec', 'review the backend for security defects again', undefined, 'reviewer');
     expect(coverageOf(h).owesReReview('appsec')).toBe(false);
+  });
+});
+
+describe('TeamRunner provider failures', () => {
+  const settle = async (): Promise<void> => { await Promise.resolve(); await Promise.resolve(); };
+  const FAILED = { ...DONE_RESULT, status: 'failed' as const, error: '529 overloaded_error', finalResponse: '529 overloaded_error\n\nPartial output:\nhalf done' };
+
+  it('records a specialist failed with the provider error and tells the lead how to re-run it', async () => {
+    const h = makeRedispatchHarness(['A']);
+    h.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    const agentId = h.agents.get('A')!.agentId;
+    h.runs.get('A')!.resolve({ ...FAILED, agentId });
+    await settle();
+
+    expect(h.agents.get('A')).toMatchObject({ status: 'failed', error: '529 overloaded_error', finalResponse: FAILED.finalResponse });
+    expect(h.teamEntries.filter((e) => e['type'] === 'agent-completed' && e['name'] === 'A').map((e) => [e['status'], e['result']]))
+      .toEqual([['failed', FAILED.finalResponse]]);
+    expect(h.statusUpdates.filter((u) => u.agentId === agentId).at(-1)).toMatchObject({ status: 'failed' });
+    expect(h.sentToLead).toEqual([
+      'Specialist "A" failed: 529 overloaded_error. Read their scratchpad section for findings, and re-run it with team_redispatch_specialist if its work is still needed.',
+    ]);
+  });
+
+  it("reports a failed specialist's result in the card state until a redispatch starts a new attempt", async () => {
+    const h = makeRedispatchHarness(['A']);
+    h.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    h.runs.get('A')!.resolve({ ...FAILED, agentId: h.agents.get('A')!.agentId });
+    await settle();
+    const card = (): string | null => h.runner.getTeamState().agents.find((a) => a.name === 'A')!.result;
+
+    expect(card()).toBe(FAILED.finalResponse);
+    h.runner.redispatchSpecialist('A', 'retry the task with a fresh attempt');
+    expect(card()).toBeNull();
+  });
+
+  it('keeps the old note for a failure that carries no error', async () => {
+    const h = makeRedispatchHarness(['A']);
+    h.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    h.runs.get('A')!.resolve({ ...DONE_RESULT, agentId: h.agents.get('A')!.agentId, status: 'failed', finalResponse: 'Failed to start: no model' });
+    await settle();
+
+    expect(h.sentToLead).toEqual(['Specialist "A" failed. Read their scratchpad section for findings.']);
+  });
+
+  it('a lead that fails ends the team with the partial results, its failure among them', async () => {
+    const h = makeRedispatchHarness(['A']);
+    let completion: string | null = null;
+    (h.runner as unknown as { completionResolve: (r: string) => void }).completionResolve = (r) => { completion = r; };
+    const lead = Object.assign(h.agents.get('Lead')!, { status: 'running', activeMs: 0, runningSince: Date.now() });
+    (h.runner as unknown as { launchLead: (agent: TeamAgent, launch: unknown) => void })
+      .launchLead(lead, { kind: 'fresh', resolution: { modelLabel: 'lead-model' }, prompt: 'begin', redeliver: [] });
+    h.runs.get('Lead')!.resolve({ ...FAILED, agentId: lead.agentId });
+    await settle();
+
+    expect(h.agents.get('Lead')).toMatchObject({ status: 'failed', error: '529 overloaded_error' });
+    expect(completion).toContain('## Partial Team Results');
+    expect(completion).toContain(`### Lead (lead, failed)\n${FAILED.finalResponse}`);
   });
 });

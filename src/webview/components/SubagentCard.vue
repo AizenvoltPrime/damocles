@@ -12,7 +12,7 @@ import { useBackgroundTaskStore } from '@/stores/useBackgroundTaskStore';
 import { effortBadgeLabelKey } from '@shared/effort-badge';
 import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
 import { ownEntry } from '@/utils/ownEntry';
-import { subagentHeading } from '@/stores/useSubagentStore';
+import { subagentHeading, subagentStatusLine, subagentToolCount } from '@/stores/useSubagentStore';
 
 const { t } = useI18n();
 const { postMessage } = usePlatformBridge();
@@ -31,6 +31,7 @@ defineEmits<{
 const hasTemplate = computed(() => Boolean(props.subagent.templatePath));
 
 const heading = computed(() => subagentHeading(props.subagent, t));
+const statusLine = computed(() => subagentStatusLine(props.subagent, t));
 
 function openTemplate(): void {
   if (props.subagent.templatePath) {
@@ -82,18 +83,7 @@ const agentIcon = computed((): Component => {
   return (type !== undefined ? ownEntry(AGENT_TYPE_ICONS, type) : undefined) ?? Bot;
 });
 
-const toolCount = computed(() => {
-  if (props.subagent.result?.totalToolUseCount) {
-    return props.subagent.result.totalToolUseCount;
-  }
-  let count = props.subagent.toolCalls.length;
-  for (const message of props.subagent.messages) {
-    if (message.toolCalls) {
-      count += message.toolCalls.length;
-    }
-  }
-  return count;
-});
+const toolCount = computed(() => subagentToolCount(props.subagent));
 
 const cardClass = computed(() => {
   switch (props.subagent.status) {
@@ -222,10 +212,11 @@ function stop(): void {
     </div>
 
     <div
-      v-if="subagent.status === 'running' && subagent.progressSummary"
+      v-if="subagent.status === 'running' && statusLine"
       class="-mt-0.5 mr-3 mb-2 ml-12.5 truncate text-xs text-(--d-accent) italic"
+      data-testid="subagent-status-line"
     >
-      {{ subagent.progressSummary }}
+      {{ statusLine }}
     </div>
 
     <div

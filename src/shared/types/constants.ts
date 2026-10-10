@@ -14,7 +14,6 @@ export const FEEDBACK_MARKER = "The user provided the following reason for the r
  * "denied"; only the attribution differs.
  */
 export const POLICY_BLOCK_MARKER = "Blocked by Damocles policy:";
-export const DEFAULT_THINKING_TOKENS = 63999;
 
 /**
  * Prompt-cache TTL (ms): idle gaps at or beyond this are worth mentioning as the likely cause of a
@@ -74,10 +73,14 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     thinkingAlwaysOn: true,
   },
   {
-    value: "claude-haiku-4-5-20251001",
-    displayName: "Haiku 4.5",
+    value: "claude-haiku-5-5",
+    displayName: "Haiku 5.5",
     description: "Fastest model",
-    contextWindow: 200_000,
+    contextWindow: 1_000_000,
+    supportsAdaptiveThinking: true,
+    supportsEffort: true,
+    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
+    thinkingAlwaysOn: true,
   },
   {
     value: "gpt-6-astra",
@@ -121,13 +124,14 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     openaiReasoningEffort: "medium",
   },
   {
-    value: "step-3.7-flash",
-    displayName: "Step 3.7 Flash",
+    value: "step-5-preview",
+    displayName: "Step 5 Preview",
     description: "StepFun reasoning model (step-plan subscription)",
-    contextWindow: 256_000,
+    contextWindow: 1_000_000,
     supportsAdaptiveThinking: true,
     supportsEffort: true,
     supportedEffortLevels: ['low', 'medium', 'high'],
+    thinkingAlwaysOn: true,
     piProvider: "stepfun",
     flatFee: true,
   },
@@ -142,13 +146,13 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     piProvider: "deepseek",
   },
   {
-    value: "deepseek-v4-flash",
-    displayName: "DeepSeek V4 Flash",
+    value: "deepseek-flash",
+    displayName: "DeepSeek V4.1 Flash",
     description: "Fast, cost-efficient DeepSeek reasoning model",
     contextWindow: 1_000_000,
     supportsAdaptiveThinking: true,
     supportsEffort: true,
-    supportedEffortLevels: ['high', 'max'],
+    supportedEffortLevels: ['low', 'high', 'max'],
     piProvider: "deepseek",
   },
 ];
@@ -172,6 +176,9 @@ export const LEGACY_MODEL_MAP: Record<string, string> = {
   'claude-opus-5': 'claude-opus-5-5',
   'claude-opus-4-8': 'claude-opus-5-5',
   'claude-sonnet-5': 'claude-sonnet-5-5',
+  'claude-haiku-4-5-20251001': 'claude-haiku-5-5',
+  'deepseek-v4-flash': 'deepseek-flash',
+  'step-3.7-flash': 'step-5-preview',
 };
 
 /** Whether the disable-thinking switch has any effect on this model. OpenAI models are driven by effort
@@ -194,12 +201,13 @@ export function migrateLegacyModelValue(value: string): string {
  * previously `{"high":"high","xhigh":"max"}`), so `xhigh` no longer exists for DeepSeek. A stored
  * `effortByModel: { "deepseek-v4-pro": "xhigh" }` would otherwise be coerced to null and silently
  * downgraded to `medium`, so it must be value-migrated to `max` (an upward rename, matching pi's own
- * direction) at activation. Keyed by model id → { oldLevel: newLevel }. Extend this as future pi
+ * direction) at activation. Keyed by current catalog id → { oldLevel: newLevel }; an entry stored under
+ * a retired id takes its successor's renames before the re-key clamps it. Extend this as future pi
  * metadata renames land.
  */
 export const LEGACY_EFFORT_VALUE_MAP: Record<string, Partial<Record<EffortLevel, EffortLevel>>> = {
   'deepseek-v4-pro': { xhigh: 'max' },
-  'deepseek-v4-flash': { xhigh: 'max' },
+  'deepseek-flash': { xhigh: 'max' },
 };
 
 /** The full `EffortLevel` union as a runtime array — the single source of truth for validating stored
@@ -232,20 +240,45 @@ export function parseCacheWarmingMode(value: unknown): CacheWarmingMode {
   return (CACHE_WARMING_MODES as readonly unknown[]).includes(value) ? (value as CacheWarmingMode) : DEFAULT_CACHE_WARMING;
 }
 
-/** The reasoning-effort levels the Explore-section selection advertises, resolved by the same catalog
- *  double-match the subagent resolver (`exploreThinkingLevel`) and the settings UI use: a `DEFAULT_MODELS`
- *  entry whose `value` is the effective model id AND whose `piProvider` is the Explore provider. Empty for
- *  providers/models with no catalog effort levels (OpenRouter/Gemini free-text ids, effort-less models).
- *  Single source of truth so the settings write path, the config broadcast, and the webview Select can
- *  never advertise different levels. */
-export function exploreSupportedEffortLevels(provider: string, modelValue: string): readonly EffortLevel[] {
-  return DEFAULT_MODELS.find((m) => m.value === modelValue && m.piProvider === provider)?.supportedEffortLevels ?? [];
-}
-
 /** Apply a model's pi-metadata effort rename (e.g. DeepSeek `xhigh → max` in pi 0.80.6) to a stored
  *  effort. Returns the effort unchanged when the model has no rename or the value is not renamed. Mirrors
  *  the write-back migration in `migrateLegacyModelSetting` as read-side defense-in-depth for team slots. */
 export function migrateLegacyEffortValue(model: string, effort: EffortLevel): EffortLevel {
   const renames = Object.hasOwn(LEGACY_EFFORT_VALUE_MAP, model) ? LEGACY_EFFORT_VALUE_MAP[model] : undefined;
   return renames?.[effort] ?? effort;
+}
+
+/** A stored effort setting that `model` supports after its pi rename; `null` for unset, no model or an unsupported level. */
+export function supportedStoredEffort(model: string, stored: string): EffortLevel | null {
+  const parsed = parseEffortLevel(stored);
+  if (parsed === null || model === '') return null;
+  const effort = migrateLegacyEffortValue(model, parsed);
+  return DEFAULT_MODELS.find((m) => m.value === model)?.supportedEffortLevels?.includes(effort) ? effort : null;
+}
+
+/**
+ * An effort stored under a retired id, carried to its successor `model`: renamed before the clamp, which would otherwise
+ * lower a renamed level to the successor's lowest. An unsupported level clamps up to the successor's lowest.
+ */
+export function carryRetiredEffort(model: string, stored: EffortLevel | null): EffortLevel | null {
+  if (stored === null) return null;
+  const effort = migrateLegacyEffortValue(model, stored);
+  const supported = DEFAULT_MODELS.find((m) => m.value === model)?.supportedEffortLevels;
+  if (!supported || supported.includes(effort)) return effort;
+  return supported[0] ?? effort;
+}
+
+/** The ids `effortByModel` may hold `model`'s entry under: its own, then every retired id that maps to it. */
+export function effortByModelIds(model: string): string[] {
+  return [model, ...Object.keys(LEGACY_MODEL_MAP).filter((id) => LEGACY_MODEL_MAP[id] === model)];
+}
+
+/**
+ * `model`'s entry in an `effortByModel` map: its own, else the first entry stored under a retired id of it, carried as the
+ * startup migration does. A file the migration never visits keeps those entries.
+ */
+export function effortByModelEntry(map: Readonly<Record<string, EffortLevel | null>>, model: string): EffortLevel | null {
+  if (Object.hasOwn(map, model)) return map[model] ?? null;
+  const retired = Object.keys(map).find((id) => Object.hasOwn(LEGACY_MODEL_MAP, id) && LEGACY_MODEL_MAP[id] === model);
+  return retired === undefined ? null : carryRetiredEffort(model, map[retired] ?? null);
 }

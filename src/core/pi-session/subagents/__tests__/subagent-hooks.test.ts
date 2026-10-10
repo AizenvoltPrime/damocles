@@ -154,7 +154,8 @@ describe('subagent hooks (US-008)', () => {
       deferrableToolNames: [],
     })(pi as never);
     expect(handlers.has('tool_call')).toBe(true);
-    expect(handlers.has('tool_result')).toBe(false);
+    // The one `tool_result` handler is the stopped-result marker, which every nested session needs.
+    expect(handlers.get('tool_result')).toHaveLength(1);
     expect(handlers.has('agent_end')).toBe(false);
     expect(handlers.has('agent_settled')).toBe(false);
   });
@@ -206,6 +207,7 @@ describe('subagent context image pruning', () => {
     context: { contextEntries, contextMessages: [], llmMessages: [], pendingMessages: [], canContinue: true },
     outcome: 'completed',
     turnIndex: 0,
+    message: { role: 'assistant', content: [], stopReason: 'toolUse' },
     toolResults: [],
     messageEntryId: 'a1',
     toolResultEntryIds: [],

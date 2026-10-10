@@ -39,8 +39,6 @@ export interface SessionOptions {
   onAssistantTextFinal?: (text: string) => void;
   mcpScope?: McpScope;
   model?: string;
-  /** The workspace default model ("Default for new panels"), distinct from this panel's active model. */
-  getDefaultModel?: () => string;
   memoryService?: MemoryService;
   browserService?: BrowserService;
   /** The chat panel this session runs in; its agents' browser pages belong to it. */
@@ -53,10 +51,11 @@ export interface SessionOptions {
   resolveThinking: (model: string) => {
     thinkingDisabled: boolean;
     effort: EffortLevel | null;
-    maxThinkingTokens: number | null;
   };
   /** A resumed conversation continues on the model value and pi thinking level its session file recorded. */
   onRecordedSelection?: (model: string, thinkingLevel: string | undefined) => void;
+  /** The chat's committed model, reported once the session has started and after every switch attempt, refused ones included. */
+  onModelChange?: (model: string) => void;
   /** Whether to prefer the OpenAI API key over a ChatGPT or Codex sign-in when both are configured. */
   getPreferOpenAIApiKey?: () => boolean;
   secrets?: SecretsStore;

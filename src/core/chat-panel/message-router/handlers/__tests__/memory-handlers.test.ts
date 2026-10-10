@@ -324,6 +324,31 @@ describe("createMemoryHandlers — reads follow the panel folder", () => {
   });
 });
 
+describe("requestConsolidationPreview", () => {
+  it("sends the stored set-aside count on open, with no pass result to carry it", async () => {
+    const sent: ExtensionToWebviewMessage[] = [];
+    const memoryService = {
+      isEnabled: true,
+      ensureInitialized: vi.fn(async () => {}),
+      getPendingCandidates: vi.fn(() => []),
+      getPendingCount: vi.fn(() => 4),
+      getSetAsideCount: vi.fn(() => 2),
+      getLastConsolidationResult: vi.fn(() => null),
+      getConsolidationActivity: vi.fn(() => ({ running: false, phaseEvents: [] })),
+    };
+    const deps = {
+      postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => { sent.push(message); },
+      memoryService,
+    } as unknown as HandlerDependencies;
+    const ctx = { host: { id: "panel-1" } } as unknown as HandlerContext;
+
+    await createMemoryHandlers(deps).requestConsolidationPreview!({ type: "requestConsolidationPreview" }, ctx);
+
+    expect(sent.find((m) => m.type === "consolidationPendingCount")).toEqual({ type: "consolidationPendingCount", count: 4, setAside: 2 });
+    expect(sent.some((m) => m.type === "consolidationResult")).toBe(false);
+  });
+});
+
 describe("MEMORY_MESSAGE_SOURCES (H2 router-fallback routing)", () => {
   it("covers exactly the registered handler message types", () => {
     const handlerKeys = new Set(Object.keys(createMemoryHandlers({} as unknown as HandlerDependencies)));
@@ -338,7 +363,7 @@ describe("MEMORY_MESSAGE_SOURCES (H2 router-fallback routing)", () => {
   });
 
   it("tags consolidation triggers so a thrown handler settles the run stepper", () => {
-    for (const t of ["requestConsolidationPreview", "triggerConsolidation"]) {
+    for (const t of ["requestConsolidationPreview", "triggerConsolidation", "retrySetAsideTurns"]) {
       expect(MEMORY_MESSAGE_SOURCES.get(t)).toBe("consolidation");
     }
   });

@@ -2,7 +2,7 @@
 import { computed } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
-import { DEFAULT_THINKING_TOKENS, thinkingDisableApplies } from '@shared/types/constants';
+import { thinkingDisableApplies } from '@shared/types/constants';
 import type { EffortLevel, PermissionMode } from '@shared/types/settings';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useSettingsStore } from '@/stores/useSettingsStore';
@@ -11,9 +11,7 @@ import SettingsRow from '../SettingsRow.vue';
 import SettingSelect from '../controls/SettingSelect.vue';
 import SettingSeg from '../controls/SettingSeg.vue';
 import SettingSwitch from '../controls/SettingSwitch.vue';
-import SettingInput from '../controls/SettingInput.vue';
 import { effortOptions, modelOptions, permissionOptions } from '../model-options';
-import { parseThinkingTokens } from '../parsers';
 import { useSettingWrite } from '../settings-writes';
 
 const { t } = useI18n();
@@ -60,16 +58,6 @@ function setDefaultEffort(effort: EffortLevel): void {
   const model = thinkingModelValue.value;
   write('damocles.effortByModel', { type: 'setDefaultEffort', effort, model }, {
     apply: () => settingsStore.setDefaultThinking({ ...state, effort }, model),
-    revert: () => settingsStore.setDefaultThinking(state, model),
-  });
-}
-
-function setDefaultThinkingTokens(tokens: number): void {
-  const state = defaultThinking.value;
-  if (!state) return;
-  const model = thinkingModelValue.value;
-  write('damocles.maxThinkingTokens', { type: 'setDefaultMaxThinkingTokens', tokens }, {
-    apply: () => settingsStore.setDefaultThinking({ ...state, maxThinkingTokens: tokens }, model),
     revert: () => settingsStore.setDefaultThinking(state, model),
   });
 }
@@ -142,19 +130,6 @@ function setIdeContext(enabled: boolean): void {
       :options="effortOptions(effortLevels, t)"
       :label="t('settingsModal.rows.defaultEffort.label')"
       @update:model-value="setDefaultEffort"
-    />
-  </SettingsRow>
-  <SettingsRow
-    v-else-if="defaultThinking && thinkingOn && !adaptive"
-    id="damocles.maxThinkingTokens"
-  >
-    <SettingInput
-      :model-value="String(defaultThinking.maxThinkingTokens ?? DEFAULT_THINKING_TOKENS)"
-      :parse="(raw) => parseThinkingTokens(raw, t)"
-      :label="t('settingsModal.rows.defaultThinkingTokens.label')"
-      :suffix="t('common.tokens')"
-      inputmode="numeric"
-      @commit="setDefaultThinkingTokens"
     />
   </SettingsRow>
   <SettingsRow

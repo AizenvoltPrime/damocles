@@ -32,6 +32,8 @@ export interface SubagentState {
   messagesSealed: boolean;
   lastAssistantMessage?: string;
   progressSummary?: string;
+  /** Set while pi waits out the backoff before re-sending the agent's failed model call. */
+  retry?: { attempt: number; maxAttempts: number };
   isBackground?: boolean;
   /** Set on a resume call's card. `loaded` turns true once the agent's own details replace the id. */
   resume?: { agentId: string; loaded: boolean };

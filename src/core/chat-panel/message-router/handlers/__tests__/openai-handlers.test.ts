@@ -107,15 +107,17 @@ function makeDeps(sent: ExtensionToWebviewMessage[], platform: FakePlatform): {
   deps: HandlerDependencies;
   ctx: HandlerContext;
   publishAccountInfo: ReturnType<typeof vi.fn>;
+  openaiSignInEnded: ReturnType<typeof vi.fn>;
 } {
   const host = { id: "panel-1" } as unknown as HandlerContext["host"];
   const publishAccountInfo = vi.fn();
+  const openaiSignInEnded = vi.fn(async () => undefined);
   const deps = {
     postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => { sent.push(message); },
-    getPanels: () => new Map([["panel-1", { host, session: { publishAccountInfo } }]]) as unknown as Map<string, never>,
+    getPanels: () => new Map([["panel-1", { host, session: { publishAccountInfo, openaiSignInEnded } }]]) as unknown as Map<string, never>,
     platform,
   } as unknown as HandlerDependencies;
-  return { deps, ctx: { host, folder: { fsPath: "/work" } } as unknown as HandlerContext, publishAccountInfo };
+  return { deps, ctx: { host, folder: { fsPath: "/work" } } as unknown as HandlerContext, publishAccountInfo, openaiSignInEnded };
 }
 
 /** Every string any message posted to the webview carries, to prove no key reaches it. */
@@ -129,6 +131,7 @@ describe("createOpenAIHandlers", () => {
   let handlers: ReturnType<typeof createOpenAIHandlers>;
   let ctx: HandlerContext;
   let publishAccountInfo: ReturnType<typeof vi.fn>;
+  let openaiSignInEnded: ReturnType<typeof vi.fn>;
   let platform: FakePlatform;
 
   beforeEach(() => {
@@ -142,6 +145,7 @@ describe("createOpenAIHandlers", () => {
     handlers = createOpenAIHandlers(built.deps);
     ctx = built.ctx;
     publishAccountInfo = built.publishAccountInfo;
+    openaiSignInEnded = built.openaiSignInEnded;
   });
 
   afterEach(async () => {
@@ -217,8 +221,8 @@ describe("createOpenAIHandlers", () => {
       },
       getPanels: () =>
         new Map([
-          ["panel-1", { host: ctx.host, session: { publishAccountInfo } }],
-          ["panel-2", { host: otherHost, session: { publishAccountInfo } }],
+          ["panel-1", { host: ctx.host, session: { publishAccountInfo, openaiSignInEnded } }],
+          ["panel-2", { host: otherHost, session: { publishAccountInfo, openaiSignInEnded } }],
         ]) as unknown as Map<string, never>,
       platform,
     } as unknown as HandlerDependencies;
@@ -468,6 +472,57 @@ describe("createOpenAIHandlers", () => {
    * The account state is derived from the OpenAI credential state and the prefer-API-key flag. Nothing
    * republishes it on its own, so each mutation here has to ask every panel's session to publish.
    */
+  /** A chat holds a model pick that asked for OpenAI sign-in until the next sign-in outcome tells it to apply or drop it. */
+  describe("the end of an OpenAI sign-in reaching every chat", () => {
+    it("a completed ChatGPT sign-in tells each chat it is signed in, after the status it reads is current", async () => {
+      openaiSignInEnded.mockImplementationOnce(async () => {
+        expect(PiRuntime.get().getOpenAIAuthStatus().chatgpt).toBe(true);
+      });
+
+      await handlers.startChatGPTOAuth!({ type: "startChatGPTOAuth" }, ctx);
+
+      expect(openaiSignInEnded).toHaveBeenCalledExactlyOnceWith(true);
+    });
+
+    it("a cancelled ChatGPT sign-in tells each chat it ended without a credential", async () => {
+      mock.modelRuntime.login.mockImplementationOnce(
+        async (_provider: string, _type: string, interaction: AuthInteractionLike) => {
+          await interaction.prompt({ type: "manual_code", message: "Paste the redirect URL" });
+          return { provider: "openai" };
+        },
+      );
+
+      await handlers.startChatGPTOAuth!({ type: "startChatGPTOAuth" }, ctx);
+
+      expect(openaiSignInEnded).toHaveBeenCalledExactlyOnceWith(false);
+    });
+
+    it("a failed ChatGPT sign-in tells each chat it ended without a credential", async () => {
+      mock.modelRuntime.login.mockRejectedValueOnce(new Error("token exchange failed"));
+
+      await handlers.startChatGPTOAuth!({ type: "startChatGPTOAuth" }, ctx);
+
+      expect(openaiSignInEnded).toHaveBeenCalledExactlyOnceWith(false);
+    });
+
+    it("a saved API key tells each chat it is signed in; a key the probe rejected ends nothing", async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => ({ status: 401, json: async () => null })));
+      await handlers.setOpenAIApiKey!({ type: "setOpenAIApiKey", key: "sk-bad", requestId: "r1" }, ctx);
+      expect(openaiSignInEnded).not.toHaveBeenCalled();
+
+      vi.stubGlobal("fetch", vi.fn(async () => ({ status: 200, json: async () => ({ data: [] }) })));
+      await handlers.setOpenAIApiKey!({ type: "setOpenAIApiKey", key: "sk-good", requestId: "r2" }, ctx);
+      expect(openaiSignInEnded).toHaveBeenCalledExactlyOnceWith(true);
+    });
+
+    it("a sign-out or a key clear resolves no pick", async () => {
+      await handlers.clearOpenAIApiKey!({ type: "clearOpenAIApiKey", requestId: "r3" }, ctx);
+      await handlers.signOutChatGPT!({ type: "signOutChatGPT" }, ctx);
+      await handlers.setOpenAIPreferApiKey!({ type: "setOpenAIPreferApiKey", preferApiKey: true, requestId: "r4" }, ctx);
+      expect(openaiSignInEnded).not.toHaveBeenCalled();
+    });
+  });
+
   describe("account state republication", () => {
     it("setOpenAIPreferApiKey republishes to every panel", async () => {
       await handlers.setOpenAIPreferApiKey!({ type: "setOpenAIPreferApiKey", preferApiKey: true, requestId: "r4" }, ctx);

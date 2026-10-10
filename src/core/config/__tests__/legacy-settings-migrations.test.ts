@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { DEFAULT_MODELS, LEGACY_MODEL_MAP, migrateLegacyModelValue } from '../../../shared/types/constants';
-import { migrateLegacyEffortSetting, migrateLegacyModelSetting, runLegacySettingsMigrations } from '../legacy-settings-migrations';
+import { migrateExploreSettings, migrateLegacyEffortSetting, migrateLegacyModelSetting, removeMaxThinkingTokensSetting, runLegacySettingsMigrations } from '../legacy-settings-migrations';
 import type { SettingsScope, SettingsStore } from '../../../platform/settings-store';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
+import { installLogSink } from '../../logger';
 
 /**
  * Migration coverage for retired model ids.
@@ -88,11 +89,17 @@ describe('migrateLegacyModelValue', () => {
     expect(migrateLegacyModelValue('claude-opus-5')).toBe('claude-opus-5-5');
     expect(migrateLegacyModelValue('claude-opus-4-8')).toBe('claude-opus-5-5');
     expect(migrateLegacyModelValue('claude-sonnet-5')).toBe('claude-sonnet-5-5');
+    expect(migrateLegacyModelValue('claude-haiku-4-5-20251001')).toBe('claude-haiku-5-5');
   });
 
-  it('covers exactly the twelve retired ids and nothing else', () => {
+  it('maps the retired DeepSeek and StepFun ids to their successors', () => {
+    expect(migrateLegacyModelValue('deepseek-v4-flash')).toBe('deepseek-flash');
+    expect(migrateLegacyModelValue('step-3.7-flash')).toBe('step-5-preview');
+  });
+
+  it('covers exactly the fifteen retired ids and nothing else', () => {
     expect(Object.keys(LEGACY_MODEL_MAP).sort()).toEqual(
-      ['claude-fable-5', 'claude-opus-4-8', 'claude-opus-5', 'claude-sonnet-5', 'gpt-5.2', 'gpt-5.3-codex', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-6-sol'],
+      ['claude-fable-5', 'claude-haiku-4-5-20251001', 'claude-opus-4-8', 'claude-opus-5', 'claude-sonnet-5', 'deepseek-v4-flash', 'gpt-5.2', 'gpt-5.3-codex', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-6-sol', 'step-3.7-flash'],
     );
   });
 
@@ -343,7 +350,7 @@ describe('migrateLegacyModelSetting â€” DeepSeek effort-value migration (xhigh â
     const { settings, updates } = stub({
       effortByModel: {
         global: { 'deepseek-v4-pro': 'xhigh' },
-        workspace: { 'deepseek-v4-flash': 'xhigh' },
+        workspace: { 'deepseek-flash': 'xhigh' },
       },
     });
     await migrateLegacyModelSetting(settings);
@@ -351,7 +358,21 @@ describe('migrateLegacyModelSetting â€” DeepSeek effort-value migration (xhigh â
     const effortUpdates = updates.filter((u) => u.key === 'effortByModel');
     expect(effortUpdates).toEqual([
       { key: 'effortByModel', value: { 'deepseek-v4-pro': 'max' }, target: G },
-      { key: 'effortByModel', value: { 'deepseek-v4-flash': 'max' }, target: W },
+      { key: 'effortByModel', value: { 'deepseek-flash': 'max' }, target: W },
+    ]);
+  });
+
+  // DeepSeek V4.1 Flash offers low|high|max, so clamping xhigh before the rename would land on low.
+  it('renames a retired deepseek-v4-flash xhigh to max before re-keying it to deepseek-flash', async () => {
+    const { settings, updates } = stub({
+      model: { global: 'deepseek-v4-flash' },
+      effortByModel: { global: { 'deepseek-v4-flash': 'xhigh' } },
+    });
+    await migrateLegacyModelSetting(settings);
+
+    expect(updates).toEqual([
+      { key: 'model', value: 'deepseek-flash', target: G },
+      { key: 'effortByModel', value: { 'deepseek-flash': 'max' }, target: G },
     ]);
   });
 
@@ -363,7 +384,7 @@ describe('migrateLegacyModelSetting â€” DeepSeek effort-value migration (xhigh â
   });
 
   it('is idempotent: an already-migrated DeepSeek max entry is not rewritten', async () => {
-    const { settings, updates } = stub({ effortByModel: { global: { 'deepseek-v4-flash': 'max' } } });
+    const { settings, updates } = stub({ effortByModel: { global: { 'deepseek-flash': 'max' } } });
     await migrateLegacyModelSetting(settings);
 
     expect(updates.some((u) => u.key === 'effortByModel')).toBe(false);
@@ -450,6 +471,214 @@ describe('migrateLegacyModelSetting: Fable 5 to Fable 5.1', () => {
   });
 });
 
+describe('migrateLegacyModelSetting: Haiku 4.5 and Step 3.7 Flash successors', () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it('rewrites stored Haiku 4.5 selections in damocles.model and the team roles to Haiku 5.5', async () => {
+    const { settings, updates } = stub({
+      model: { global: 'claude-haiku-4-5-20251001' },
+      team: { 'team.implementorModel': { workspace: 'claude-haiku-4-5-20251001' } },
+      effortByModel: { global: { 'claude-haiku-4-5-20251001': 'high' } },
+    });
+    await migrateLegacyModelSetting(settings);
+
+    expect(updates).toEqual([
+      { key: 'model', value: 'claude-haiku-5-5', target: G },
+      { key: 'effortByModel', value: { 'claude-haiku-5-5': 'high' }, target: G },
+      { key: 'team.implementorModel', value: 'claude-haiku-5-5', target: W },
+    ]);
+  });
+
+  it('moves a stored step-3.7-flash selection and its effort entry to step-5-preview', async () => {
+    const { settings, updates } = stub({
+      model: { global: 'step-3.7-flash' },
+      team: { 'team.reviewerModel': { global: 'step-3.7-flash' } },
+      effortByModel: { global: { 'step-3.7-flash': 'medium' } },
+    });
+    await migrateLegacyModelSetting(settings);
+
+    expect(updates).toEqual([
+      { key: 'model', value: 'step-5-preview', target: G },
+      { key: 'team.reviewerModel', value: 'step-5-preview', target: G },
+      { key: 'effortByModel', value: { 'step-5-preview': 'medium' }, target: G },
+    ]);
+  });
+
+  it('rewrites a retired id stored in damocles.background.model', async () => {
+    const { settings, updates } = stub({ team: { 'background.model': { global: 'claude-haiku-4-5-20251001' } } });
+    await migrateLegacyModelSetting(settings);
+
+    expect(updates).toEqual([{ key: 'background.model', value: 'claude-haiku-5-5', target: G }]);
+  });
+
+  it('rewrites a retired id stored in damocles.memory.judge and leaves a classifier choice alone', async () => {
+    const { settings, updates } = stub({ team: { 'memory.judge': { global: 'claude-haiku-4-5-20251001', workspace: 'jev-typesafe' } } });
+    await migrateLegacyModelSetting(settings);
+
+    expect(updates).toEqual([{ key: 'memory.judge', value: 'claude-haiku-5-5', target: G }]);
+  });
+
+  it('rewrites a retired id stored in damocles.explore.model', async () => {
+    const { settings, updates } = stub({ team: { 'explore.model': { workspace: 'step-3.7-flash' } } });
+    await migrateLegacyModelSetting(settings);
+
+    expect(updates).toEqual([{ key: 'explore.model', value: 'step-5-preview', target: W }]);
+  });
+});
+
+describe('migrateExploreSettings', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const keyed = async (): Promise<boolean> => true;
+  const unkeyed = async (): Promise<boolean> => false;
+  const retired = ['enabled', 'provider', 'modelByProvider'];
+
+  it('moves an enabled StepFun Explore at High to Step 5 Preview at High, and removes the retired keys', async () => {
+    const { settings } = createFakePlatform({
+      settings: { user: { 'damocles.explore.enabled': true, 'damocles.explore.provider': 'stepfun', 'damocles.explore.modelByProvider': { stepfun: 'step-3.7-flash' }, 'damocles.explore.effort': 'high' } },
+    });
+    await migrateExploreSettings(settings, keyed);
+
+    expect(settings.inspect('damocles.explore.model')).toStrictEqual({ userValue: 'step-5-preview' });
+    expect(settings.inspect('damocles.explore.effort')).toStrictEqual({ userValue: 'high' });
+    for (const key of retired) expect(settings.inspect(`damocles.explore.${key}`)).toStrictEqual({});
+  });
+
+  it.each([
+    ['Gemini', { 'damocles.explore.enabled': true, 'damocles.explore.provider': 'gemini' }],
+    ['OpenRouter', { 'damocles.explore.enabled': true, 'damocles.explore.provider': 'openrouter', 'damocles.explore.modelByProvider': { openrouter: 'x/y' } }],
+    ['a disabled StepFun', { 'damocles.explore.enabled': false, 'damocles.explore.provider': 'stepfun' }],
+    ['an enabled Explore with the default provider, OpenRouter', { 'damocles.explore.enabled': true }],
+  ])('moves %s to Default, which takes no effort, without asking for the StepFun key', async (_name, user) => {
+    const { settings } = createFakePlatform({ settings: { user: { ...user, 'damocles.explore.effort': 'high' } } });
+    const stepfunKeyStored = vi.fn(keyed);
+    await migrateExploreSettings(settings, stepfunKeyStored);
+
+    expect(stepfunKeyStored).not.toHaveBeenCalled();
+    expect(settings.inspect('damocles.explore.model')).toStrictEqual({});
+    expect(settings.inspect('damocles.explore.effort')).toStrictEqual({});
+    for (const key of retired) expect(settings.inspect(`damocles.explore.${key}`)).toStrictEqual({});
+  });
+
+  // Before the move an unkeyed StepFun Explore ran on Default, so Step 5 Preview would turn every spawn into an error.
+  it('moves an enabled StepFun Explore with no StepFun key stored to Default', async () => {
+    const { settings } = createFakePlatform({ settings: { user: { 'damocles.explore.enabled': true, 'damocles.explore.provider': 'stepfun', 'damocles.explore.effort': 'low' } } });
+    await migrateExploreSettings(settings, unkeyed);
+
+    expect(settings.inspect('damocles.explore.model')).toStrictEqual({});
+    expect(settings.inspect('damocles.explore.effort')).toStrictEqual({});
+    for (const key of retired) expect(settings.inspect(`damocles.explore.${key}`)).toStrictEqual({});
+  });
+
+  it('leaves every setting for a later launch when the key store does not answer', async () => {
+    const { settings } = createFakePlatform({ settings: { user: { 'damocles.explore.enabled': true, 'damocles.explore.provider': 'stepfun', 'damocles.explore.effort': 'low' } } });
+    const update = vi.spyOn(settings, 'update');
+    await migrateExploreSettings(settings, async () => undefined);
+
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a project that only repeats enabled', { 'damocles.explore.enabled': true }, undefined],
+    ['a project that turns Explore off', { 'damocles.explore.enabled': false }, undefined],
+    ['a project with another provider', { 'damocles.explore.provider': 'gemini' }, { 'damocles.explore.modelByProvider': { stepfun: 'step-3.7-flash' } }],
+  ])("keeps the user's StepFun choice in user settings over %s, and removes the retired keys from every file", async (_name, project, local) => {
+    const { settings } = createFakePlatform({
+      settings: { user: { 'damocles.explore.enabled': true, 'damocles.explore.provider': 'stepfun' }, project, ...(local ? { local } : {}) },
+    });
+    await migrateExploreSettings(settings, keyed);
+
+    expect(settings.inspect('damocles.explore.model')).toStrictEqual({ userValue: 'step-5-preview' });
+    for (const key of retired) expect(settings.inspect(`damocles.explore.${key}`)).toStrictEqual({});
+  });
+
+  it("drops a project's StepFun choice, which the user-only Explore model cannot carry", async () => {
+    const { settings } = createFakePlatform({
+      settings: { user: { 'damocles.explore.provider': 'stepfun' }, project: { 'damocles.explore.enabled': true, 'damocles.explore.provider': 'stepfun' } },
+    });
+    await migrateExploreSettings(settings, keyed);
+
+    expect(settings.inspect('damocles.explore.model')).toStrictEqual({});
+    for (const key of retired) expect(settings.inspect(`damocles.explore.${key}`)).toStrictEqual({});
+  });
+
+  it('keeps an Explore model already set in user settings and only removes the retired keys', async () => {
+    const { settings } = createFakePlatform({
+      settings: { user: { 'damocles.explore.model': 'claude-sonnet-5-5', 'damocles.explore.effort': 'xhigh', 'damocles.explore.enabled': true, 'damocles.explore.provider': 'stepfun' } },
+    });
+    await migrateExploreSettings(settings, keyed);
+
+    expect(settings.inspect('damocles.explore.model')).toStrictEqual({ userValue: 'claude-sonnet-5-5' });
+    expect(settings.inspect('damocles.explore.effort')).toStrictEqual({ userValue: 'xhigh' });
+    expect(settings.inspect('damocles.explore.enabled')).toStrictEqual({});
+  });
+
+  it('keeps the effort and the retired keys when the model cannot be written, so the next launch moves them again', async () => {
+    const { settings } = createFakePlatform({ settings: { user: { 'damocles.explore.enabled': true, 'damocles.explore.provider': 'stepfun', 'damocles.explore.effort': 'max' } } });
+    const update = settings.update.bind(settings);
+    vi.spyOn(settings, 'update').mockImplementation((key, value, scope) => (key === 'damocles.explore.model' ? Promise.reject(new Error('read-only')) : update(key, value, scope)));
+    await expect(migrateExploreSettings(settings, keyed)).resolves.toBeUndefined();
+
+    expect(settings.inspect('damocles.explore.effort')).toStrictEqual({ userValue: 'max' });
+    expect(settings.inspect('damocles.explore.enabled')).toStrictEqual({ userValue: true });
+    expect(settings.inspect('damocles.explore.provider')).toStrictEqual({ userValue: 'stepfun' });
+  });
+
+  it('still removes the retired keys from the other files when one refuses the write', async () => {
+    const { settings } = createFakePlatform({
+      settings: { user: { 'damocles.explore.enabled': true }, project: { 'damocles.explore.provider': 'stepfun' }, local: { 'damocles.explore.enabled': false } },
+    });
+    const update = settings.update.bind(settings);
+    vi.spyOn(settings, 'update').mockImplementation((key, value, scope) => (scope === 'project' ? Promise.reject(new Error('untrusted')) : update(key, value, scope)));
+    await expect(migrateExploreSettings(settings, keyed)).resolves.toBeUndefined();
+
+    expect(settings.inspect('damocles.explore.enabled')).toStrictEqual({});
+    expect(settings.inspect('damocles.explore.provider')).toStrictEqual({ projectValue: 'stepfun' });
+  });
+
+  it('is a no-op on a second run', async () => {
+    const { settings } = createFakePlatform({ settings: { user: { 'damocles.explore.enabled': true, 'damocles.explore.provider': 'stepfun', 'damocles.explore.effort': 'low' } } });
+    await migrateExploreSettings(settings, keyed);
+    const update = vi.spyOn(settings, 'update');
+    await migrateExploreSettings(settings, keyed);
+
+    expect(update).not.toHaveBeenCalled();
+    expect(settings.inspect('damocles.explore.model')).toStrictEqual({ userValue: 'step-5-preview' });
+    expect(settings.inspect('damocles.explore.effort')).toStrictEqual({ userValue: 'low' });
+  });
+
+  it('runs as part of the startup migrations', async () => {
+    const { settings } = createFakePlatform({ settings: { user: { 'damocles.explore.enabled': true, 'damocles.explore.provider': 'stepfun' } } });
+    await runLegacySettingsMigrations(settings, keyed);
+
+    expect(settings.inspect('damocles.explore.model')).toStrictEqual({ userValue: 'step-5-preview' });
+  });
+});
+
+describe('removeMaxThinkingTokensSetting', () => {
+  it('removes a stored damocles.maxThinkingTokens at every scope that holds one', async () => {
+    const { settings } = createFakePlatform({
+      settings: {
+        user: { 'damocles.maxThinkingTokens': 32000 },
+        project: { 'damocles.maxThinkingTokens': 8000 },
+        local: { 'damocles.maxThinkingTokens': 1000 },
+      },
+    });
+    await removeMaxThinkingTokensSetting(settings);
+
+    expect(settings.inspect('damocles.maxThinkingTokens')).toStrictEqual({});
+  });
+
+  it('writes nothing when no scope holds the setting', async () => {
+    const { settings } = createFakePlatform({ settings: { user: { 'damocles.model': 'claude-haiku-5-5' } } });
+    const update = vi.spyOn(settings, 'update');
+    await removeMaxThinkingTokensSetting(settings);
+
+    expect(update).not.toHaveBeenCalled();
+  });
+});
+
 describe('migrateLegacyEffortSetting', () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.restoreAllMocks());
@@ -482,13 +711,50 @@ describe('migrateLegacyEffortSetting', () => {
 });
 
 describe('runLegacySettingsMigrations', () => {
+  const logLines: string[] = [];
+  beforeEach(() => {
+    logLines.length = 0;
+    installLogSink({ appendLine: (line: string) => void logLines.push(line), show: () => {}, dispose: () => {} });
+  });
   afterEach(() => vi.restoreAllMocks());
+
+  const keyed = async (): Promise<boolean> => true;
 
   it('resolves when a scope refuses the write, so startup goes on', async () => {
     const { settings } = createFakePlatform({ settings: { project: { 'damocles.model': 'gpt-5.5' } } });
     const update = vi.spyOn(settings, 'update').mockRejectedValue(new Error('read-only scope'));
 
-    await expect(runLegacySettingsMigrations(settings)).resolves.toBeUndefined();
+    await expect(runLegacySettingsMigrations(settings, keyed)).resolves.toBeUndefined();
     expect(update).toHaveBeenCalledWith('damocles.model', 'gpt-6.1-sol', 'project');
+  });
+
+  it('runs every later migration when one fails, and logs the failure', async () => {
+    const { settings } = createFakePlatform({
+      settings: { user: { 'damocles.effort': 'high', 'damocles.maxThinkingTokens': 1000, 'damocles.explore.enabled': true, 'damocles.explore.provider': 'stepfun' } },
+    });
+    const update = settings.update.bind(settings);
+    vi.spyOn(settings, 'update').mockImplementation((key, value, scope) => (key === 'damocles.effortByModel' ? Promise.reject(new Error('file has errors')) : update(key, value, scope)));
+    await runLegacySettingsMigrations(settings, keyed);
+
+    expect(settings.inspect('damocles.maxThinkingTokens')).toStrictEqual({});
+    expect(settings.inspect('damocles.explore.model')).toStrictEqual({ userValue: 'step-5-preview' });
+    expect(logLines.join('\n')).toContain('file has errors');
+  });
+
+  it('migrates the other scopes when one refuses the write, and logs that scope', async () => {
+    const { settings } = createFakePlatform({
+      settings: {
+        user: { 'damocles.maxThinkingTokens': 32000 },
+        project: { 'damocles.maxThinkingTokens': 8000, 'damocles.model': 'gpt-5.5' },
+        local: { 'damocles.maxThinkingTokens': 1000, 'damocles.model': 'gpt-5.5' },
+      },
+    });
+    const update = settings.update.bind(settings);
+    vi.spyOn(settings, 'update').mockImplementation((key, value, scope) => (scope === 'project' ? Promise.reject(new Error('untrusted folder')) : update(key, value, scope)));
+    await runLegacySettingsMigrations(settings, keyed);
+
+    expect(settings.inspect('damocles.maxThinkingTokens')).toStrictEqual({ projectValue: 8000 });
+    expect(settings.inspect('damocles.model')).toStrictEqual({ projectValue: 'gpt-5.5', localValue: 'gpt-6.1-sol' });
+    expect(logLines.join('\n')).toMatch(/scope=project.*untrusted folder/);
   });
 });

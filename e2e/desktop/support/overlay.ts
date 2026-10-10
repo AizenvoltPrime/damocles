@@ -1,7 +1,7 @@
 import { expect, type ElectronApplication, type Locator, type Page } from '@playwright/test';
 import { OVERLAY_URL, overlayPage } from './shell';
 
-/** The overlay page once it has loaded: main asks a question in the OS message box while the page still loads (D41). */
+/** The overlay page once it has loaded: main holds a request made while the page loads and sends it then. */
 export async function readyOverlay(app: ElectronApplication): Promise<Page> {
   const overlay = await overlayPage(app);
   await overlay.waitForFunction(() => window.damoclesOverlay !== undefined && document.readyState === 'complete');

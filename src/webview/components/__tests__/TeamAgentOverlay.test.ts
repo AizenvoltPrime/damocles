@@ -271,3 +271,22 @@ describe('the team agent overlay meta chips', () => {
     expect(wrapper.get('[data-part="cost"]').text()).toBe('$1.50');
   });
 });
+
+describe('a failed model call in the team agent overlay', () => {
+  it('shows the error the transcript holds as an error notice', () => {
+    const wrapper = openWith([{ id: 'e1', role: 'error', content: '529 overloaded_error', timestamp: 1 }]);
+
+    const notice = wrapper.get('[data-testid="agent-error"]');
+    expect(notice.text()).toContain(i18n.global.t('common.error'));
+    expect(notice.text()).toContain('529 overloaded_error');
+  });
+
+  it('names the retry on the working line while pi waits to re-send the call', () => {
+    const wrapper = openWith([]);
+    useTeamStore().setAgentRetry(AGENT_ID, { attempt: 2, maxAttempts: 3 });
+
+    return nextTick().then(() => {
+      expect(wrapper.get('[data-testid="agent-working"]').text()).toContain(i18n.global.t('status.retrying', { attempt: 2, max: 3 }));
+    });
+  });
+});

@@ -37,6 +37,8 @@ export function getStatusNote(status: string, stopReason: AgentStopReason | unde
         default:
           return ' (STOPPED before completion; output is partial and the task was not finished)';
       }
+    case 'error':
+      return ` (FAILED before completion. ${resume})`;
     case 'aborted':
       return ' (aborted — hit the turn limit before completion; output may be incomplete)';
     case 'steered':
@@ -46,8 +48,20 @@ export function getStatusNote(status: string, stopReason: AgentStopReason | unde
   }
 }
 
-/** The final-result text the parent model sees for a finished record, with its status note. */
+/** A failed run's outcome: its error, then the text it wrote before failing. Team agents report the same shape. */
+export function failureOutcomeText(error: string, partial: string | null | undefined): string {
+  return error + (partial ? `\n\nPartial output:\n${partial}` : '');
+}
+
+/** A finished record's outcome with its status note: a failed run's error, then the text it wrote before failing. */
+export function recordOutcomeText(record: AgentRecord): string {
+  const base = record.status === 'error'
+    ? failureOutcomeText(record.error ?? 'Subagent failed', record.result)
+    : record.result ?? '';
+  return base + getStatusNote(record.status, record.stopReason, record.id);
+}
+
+/** The final-result text the parent model sees for a finished record. */
 export function recordResultText(record: AgentRecord): string {
-  const base = record.status === 'error' ? record.error ?? 'Subagent failed' : record.result ?? '';
-  return formatUserSteerPrefix(record.userSteers) + base + getStatusNote(record.status, record.stopReason, record.id);
+  return formatUserSteerPrefix(record.userSteers) + recordOutcomeText(record);
 }

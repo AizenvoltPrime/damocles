@@ -2,23 +2,26 @@
 import { computed, ref, watch, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { storeToRefs } from 'pinia';
-import { ChevronRight, CircleCheck, CircleDashed, CircleX, KeyRound, LoaderCircle, Play, Repeat, RotateCcw, Sparkles } from 'lucide-vue-next';
+import { ChevronRight, CircleAlert, CircleCheck, CircleDashed, CircleX, KeyRound, ListRestart, LoaderCircle, Play, Repeat, RotateCcw, Sparkles } from 'lucide-vue-next';
 import OverlayShell from './OverlayShell.vue';
 import OverlayHeaderAction from './OverlayHeaderAction.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import ConsolidationStepper from './ConsolidationStepper.vue';
+import { consolidationReasonKey } from './consolidation-reasons';
+import { Button } from '@/components/ui/button';
 import { useConsolidationStore } from '@/stores/useConsolidationStore';
 import { useRelativeTime } from '@/composables/useRelativeTime';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useOpenSettings } from '@/composables/useOpenSettings';
 import { folderName } from '@/lib/folder-name';
 import type { ConsolidationPersistOutcome } from '@shared/types/consolidation';
+import { MAX_FAILED_ANSWERS } from '@shared/consolidation';
 
 const emit = defineEmits<{ (e: 'close'): void }>();
 const { t, te } = useI18n();
 
 const store = useConsolidationStore();
-const { pendingCandidates, isRunning, lastResult, phase, phaseMeta, persistProgress } =
+const { pendingCandidates, isRunning, lastResult, phase, phaseMeta, persistProgress, setAsideCount: storedSetAside } =
   storeToRefs(store);
 const { postMessage } = usePlatformBridge();
 const openSettings = useOpenSettings();
@@ -31,6 +34,12 @@ function triggerNow(): void {
 
 function signIn(): void {
   openSettings('accounts');
+}
+
+const setAsideCount = computed(() => (isRunning.value ? 0 : storedSetAside.value));
+
+function retrySetAside(): void {
+  postMessage({ type: 'retrySetAsideTurns' });
 }
 
 const statusBadge = computed(() =>
@@ -99,7 +108,10 @@ const failureMessage = computed(() => {
   const f = lastResult.value?.failure;
   if (!f) return '';
   const key = FAILURE_COPY_KEYS[f.kind];
-  return key ? t(key) : f.detail ?? t('consolidation.failure.generic');
+  if (key) return t(key);
+  const reasonKey = f.reason ? consolidationReasonKey(f.reason) : undefined;
+  if (reasonKey) return t('consolidation.failure.extract', { reason: t(reasonKey) });
+  return f.detail ?? t('consolidation.failure.generic');
 });
 
 const failureFooter = computed(() => {
@@ -119,11 +131,18 @@ const triggerChip = computed(() => {
 
 const isFailed = computed(() => !isRunning.value && lastResult.value?.status === 'failed');
 
+const offersSignIn = computed(() => {
+  const f = lastResult.value?.failure;
+  return f?.kind === 'no-model' || f?.reason === 'credential';
+});
+
 const stripText = computed(() => {
   if (isRunning.value) return runningText.value;
   const r = lastResult.value;
   if (!r) return `${t('consolidation.noRunYet')} ${t('consolidation.noRunHintBefore')} ${t('consolidation.runNow')} ${t('consolidation.noRunHintAfter')}`;
-  if (r.status === 'failed') return failureMessage.value;
+  if (r.status === 'failed') {
+    return r.extracted.length > 0 ? [t('consolidation.extracted', { n: r.extracted.length }), failureMessage.value].join(' · ') : failureMessage.value;
+  }
   if (r.status === 'empty') return t('consolidation.nothingNew', r.candidatesReviewed);
   return [t('consolidation.extracted', { n: r.extracted.length }), ...rollup.value].join(' · ');
 });
@@ -240,7 +259,7 @@ function toggleQueue(): void {
           class="flex w-full justify-end gap-2 pt-1"
         >
           <button
-            v-if="lastResult?.failure?.kind === 'no-model'"
+            v-if="offersSignIn"
             type="button"
             class="d-press flex h-7 items-center gap-1.5 rounded-lg border border-(--d-border2) px-2.5 transition-colors hover:bg-(--d-hover)"
             @click="signIn"
@@ -262,6 +281,34 @@ function toggleQueue(): void {
             />{{ t('consolidation.retryNow') }}
           </button>
         </div>
+      </div>
+
+      <div
+        v-if="setAsideCount > 0"
+        class="flex flex-wrap items-center gap-2 rounded-10 border border-[color-mix(in_srgb,var(--d-warning)_35%,var(--d-border))] bg-(--d-card) px-3 py-2 text-xs text-(--d-muted)"
+        data-testid="consolidation-set-aside"
+      >
+        <CircleAlert
+          class="size-3.25 flex-none text-(--d-warning)"
+          aria-hidden="true"
+        />
+        <span
+          class="min-w-0 flex-1 text-pretty"
+          role="status"
+        >{{ t('consolidation.setAside.summary', { n: setAsideCount, attempts: MAX_FAILED_ANSWERS }, setAsideCount) }}</span>
+        <Button
+          variant="outline"
+          size="sm"
+          class="h-7 gap-1.5 px-2.5 text-xs"
+          :title="t('consolidation.setAside.returnToQueueTitle')"
+          data-testid="consolidation-set-aside-retry"
+          @click="retrySetAside"
+        >
+          <ListRestart
+            class="size-3.25"
+            aria-hidden="true"
+          />{{ t('consolidation.setAside.returnToQueue') }}
+        </Button>
       </div>
 
       <div class="grid grid-cols-[repeat(auto-fit,minmax(16.25rem,1fr))] gap-3.5">
@@ -315,7 +362,7 @@ function toggleQueue(): void {
 
         <section class="flex min-w-0 flex-col gap-1.5">
           <h3 class="text-11 font-semibold tracking-[.07em] text-(--d-faint) uppercase">
-            {{ lastResult ? t('overlays.consolidation.lastPass', { n: lastResult.extracted.length }) : t('overlays.consolidation.noPass') }}
+            {{ lastResult ? t('overlays.consolidation.lastRun', { n: lastResult.extracted.length }) : t('overlays.consolidation.noRun') }}
           </h3>
           <p
             v-if="!lastResult || lastResult.extracted.length === 0"
@@ -329,6 +376,7 @@ function toggleQueue(): void {
             :key="`${m.kind}:${m.scope}:${m.content}`"
             class="d-arrive flex flex-col gap-1.25 rounded-10 border border-(--d-border) bg-(--d-card) px-2.75 py-2.25"
             :style="{ animationDelay: `${Math.min(index, 8) * 30}ms` }"
+            data-testid="consolidation-extracted"
           >
             <div class="flex min-w-0 items-center gap-1.5 text-10.5">
               <span class="rounded-5 bg-(--d-accent-soft) px-1.5 leading-4.25 font-semibold text-(--d-accent-text)">{{ te(`memory.kind.${m.kind}`) ? t(`memory.kind.${m.kind}`) : m.kind }}</span>

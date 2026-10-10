@@ -44,6 +44,7 @@ function makeAgent(partial: Partial<TeamAgent> & { name: string; role: TeamAgent
     dollarBilled: true,
     effort: null,
     finalResponse: null,
+    result: null,
     error: null,
     logFilePath: null,
     ...partial,

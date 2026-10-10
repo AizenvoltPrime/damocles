@@ -107,6 +107,26 @@ describe("createClaudeAuthHandlers", () => {
     publishAccountInfo = built.publishAccountInfo;
   });
 
+  it("a sign-in question Damocles cannot answer fails the sign-in with a message instead of hanging", async () => {
+    H.runtime.signInSubscription.mockImplementationOnce(async (_cwd, _useAllowance, interaction: AuthInteractionLike) => {
+      await interaction.prompt({
+        type: "select",
+        message: "Select an organization:",
+        options: [{ id: "org-a", label: "A" }, { id: "org-b", label: "B" }],
+      });
+      return { mode: "allowance" };
+    });
+
+    await handlers.claudeSignIn!({ type: "claudeSignIn", useAllowance: true }, ctx);
+
+    expect(sent).toEqual([
+      { type: "claudeAuthBusy", busy: true },
+      { type: "claudeAuthError", error: 'Sign-in asked a question Damocles cannot answer: "Select an organization:"' },
+      { type: "claudeAuthBusy", busy: false },
+    ]);
+    expect(platform.dialogs.inputBoxCalls).toHaveLength(0);
+  });
+
   it("claudeSignIn drives busy → status → not-busy on success", async () => {
     await handlers.claudeSignIn!({ type: "claudeSignIn", useAllowance: true }, ctx);
 

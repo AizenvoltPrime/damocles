@@ -1,11 +1,11 @@
-import { onMounted, onUnmounted, ref, type Ref } from 'vue';
+import { onMounted, onUnmounted, ref, watch, type Ref } from 'vue';
 import { i18n } from '@/i18n';
 import { formatDateTime } from '@/utils/clock';
 
 /**
  * Auto-ticking relative-time label ("just now", "3m ago") for a timestamp. One shared interval per
- * mounted consumer updates a reactive string without forcing a parent re-render; pair with an
- * absolute-time `title` for hover precision.
+ * mounted consumer updates a reactive string without forcing a parent re-render, and a new timestamp
+ * relabels at once; pair with an absolute-time `title` for hover precision.
  */
 export function useRelativeTime(getTimestamp: () => number | null, intervalMs = 30_000): {
   relative: Ref<string>;
@@ -38,6 +38,7 @@ export function useRelativeTime(getTimestamp: () => number | null, intervalMs = 
     absolute.value = formatDateTime(ts, i18n.global.locale.value, { seconds: true });
   }
 
+  watch(getTimestamp, update);
   onMounted(() => {
     update();
     interval = setInterval(update, intervalMs);

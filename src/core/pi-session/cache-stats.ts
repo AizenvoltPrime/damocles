@@ -1,4 +1,4 @@
-// Ported from pi-coding-agent `dist/core/cache-stats.js` @0.99.2, which does not export it; keep in sync
+// Ported from pi-coding-agent `dist/core/cache-stats.js` @1.1.0, which does not export it; keep in sync
 // on pi upgrades. Damocles ports only the live-notice path: `detectMiss`, `asPreviousRequest` and the
 // baseline walk of `scan` (compaction/branch_summary reset, `cache_warm` usage entry as the new
 // baseline, assistant message as the new baseline). Two intentional divergences a re-sync must keep:

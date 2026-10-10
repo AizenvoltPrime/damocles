@@ -24,7 +24,14 @@ import {
   type AuditRunFailure,
   type AuditRunOutcome,
 } from './audit';
-import { runConsolidation, mergePendingConsolidation, type ConsolidationReason } from './consolidation';
+import {
+  runConsolidation,
+  mergePendingConsolidation,
+  accumulateRunResult,
+  countSetAsideCandidates,
+  retrySetAsideCandidates,
+  type PendingConsolidationRequest,
+} from './consolidation';
 import { attributeFilesToWorkspace, listKnownWorkspaces } from './workspaces';
 import type {
   ConsolidationResult,
@@ -125,7 +132,7 @@ export class MemoryService {
   private pendingTurnCandidates: TurnCandidate[] = [];
   private consolidating = false;
   private consolidationInFlight: Promise<void> | null = null;
-  private pendingConsolidation: { reason: ConsolidationReason; sessionId?: string; forceExtract?: boolean } | null = null;
+  private pendingConsolidation: PendingConsolidationRequest | null = null;
   private extractionPausedNotified = false;
   private consolidationBroadcast: ((msg: ExtensionToWebviewMessage) => void) | null = null;
   private lastConsolidationResult: ConsolidationResult | null = null;
@@ -141,7 +148,7 @@ export class MemoryService {
   private fallbackWorkspace: () => string = homeDirectory;
   /** Guards the stale-injection-DB sweep so repeated init calls don't re-sweep. */
   private staleSweepDone = false;
-  /** Consecutive failed/released passes; drives the idle-timer backoff. Reset to 0 on any non-failed pass. */
+  /** Consecutive failed passes, counted per pass rather than per run; drives the idle-timer backoff. Reset to 0 on any non-failed pass. */
   private consecutiveConsolidationFailures = 0;
   /** Upper bound (1h) on the exponential idle-timer backoff. */
   private readonly IDLE_BACKOFF_MAX_MS = 60 * 60 * 1000;
@@ -183,13 +190,13 @@ export class MemoryService {
     this.consolidationBroadcast = broadcast;
   }
 
-  /** The conversation turns currently queued for the next consolidation pass (global, unconsumed). */
+  /** The conversation turns currently queued for the next consolidation pass (global, unconsumed, not set aside). */
   getPendingCandidates(): PendingConsolidationCandidate[] {
     if (!this.db) return [];
     const rows = this.db
       .prepare(
         `SELECT id, session_id, user_text, assistant_text, created_at
-           FROM memory_candidates WHERE consumed = 0 ORDER BY created_at`,
+           FROM memory_candidates WHERE consumed = 0 AND set_aside_at IS NULL ORDER BY created_at`,
       )
       .all() as Array<{ id: string; session_id: string | null; user_text: string; assistant_text: string; created_at: number }>;
     return rows.map(r => ({
@@ -201,7 +208,7 @@ export class MemoryService {
     }));
   }
 
-  /** The most recent pass's extracted memories, replayed when a panel reopens the consolidation overlay. */
+  /** The most recent run's result, replayed when a panel reopens the consolidation overlay. */
   getLastConsolidationResult(): ConsolidationResult | null {
     return this.lastConsolidationResult;
   }
@@ -209,8 +216,36 @@ export class MemoryService {
   /** Count of turns queued for the next consolidation pass — drives the header pill badge. */
   getPendingCount(): number {
     if (!this.db) return 0;
-    const row = this.db.prepare('SELECT COUNT(*) AS n FROM memory_candidates WHERE consumed = 0').get() as { n: number };
+    const row = this.db
+      .prepare('SELECT COUNT(*) AS n FROM memory_candidates WHERE consumed = 0 AND set_aside_at IS NULL')
+      .get() as { n: number };
     return row.n;
+  }
+
+  /** Queued turns a later pass of the run could still claim: the pending ones the run has not declined. */
+  private claimableInRunCount(declinedInRun: ReadonlySet<string>): number {
+    if (!this.db) return 0;
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM memory_candidates
+          WHERE consumed = 0 AND set_aside_at IS NULL AND id NOT IN (SELECT value FROM json_each(?))`,
+      )
+      .get(JSON.stringify([...declinedInRun])) as { n: number };
+    return row.n;
+  }
+
+  /** Turns set aside after repeated failed answers, waiting for the user's Retry. */
+  getSetAsideCount(): number {
+    return this.db ? countSetAsideCandidates(this.db) : 0;
+  }
+
+  /** Returns every set-aside turn to the queue with a fresh attempt count and publishes the new counts. */
+  async retrySetAsideTurns(): Promise<void> {
+    await this.ensureInitialized();
+    if (!this.db || !this.writeQueue) return;
+    const returned = await retrySetAsideCandidates(this.db, this.writeQueue);
+    this.broadcastPendingCount();
+    if (returned > 0) this.armIdleTimer();
   }
 
   /** User-initiated global consolidation pass; forces extraction even if auto-extract is off. */
@@ -244,13 +279,21 @@ export class MemoryService {
     this.consolidationBroadcast?.({ type: 'consolidationResult', result });
   }
 
-  /** Live consolidation activity for overlay-open replay: running flag + every phase event so far. */
+  /** Publishes a run's result, then the counts, then running:false; the panel needs the result first. */
+  private endRun(result: ConsolidationResult | null): void {
+    if (result) this.emitTerminalResult(result);
+    this.broadcastPendingCount();
+    this.consolidationBroadcast?.({ type: 'consolidationRunning', running: false });
+  }
+
+  /** Live consolidation activity for overlay-open replay: running flag + every phase event of the current pass so far. */
   getConsolidationActivity(): { running: boolean; phaseEvents: ConsolidationPhaseEvent[] } {
     return { running: this.consolidating, phaseEvents: [...this.currentPhaseEvents] };
   }
 
+  /** Read from the store at send time, so the last publication follows the last write whatever ran between. */
   private broadcastPendingCount(): void {
-    this.consolidationBroadcast?.({ type: 'consolidationPendingCount', count: this.getPendingCount() });
+    this.consolidationBroadcast?.({ type: 'consolidationPendingCount', count: this.getPendingCount(), setAside: this.getSetAsideCount() });
   }
 
   get isEnabled(): boolean {
@@ -992,16 +1035,21 @@ export class MemoryService {
     return Math.min(this.IDLE_BACKOFF_MAX_MS, flooredBase * 2 ** failures);
   }
 
-  private runConsolidation(opts: { reason: ConsolidationReason; sessionId?: string; forceExtract?: boolean }): Promise<void> {
+  private runConsolidation(opts: PendingConsolidationRequest): Promise<void> {
     const manual = opts.forceExtract === true;
 
-    // The handler already guards isEnabled and shows memoryError, so stay silent here.
-    if (!this.isEnabled) return Promise.resolve();
+    // The handler already guards isEnabled and shows memoryError, so stay silent here, except to end a
+    // run whose earlier passes the panel still shows as running.
+    if (!this.isEnabled) {
+      if (opts.runSoFar) this.endRun(opts.runSoFar);
+      return Promise.resolve();
+    }
 
     // Not initialized: a manual run surfaces a visible failed/unavailable result; background passes
     // stay silent and retry on the next idle timer.
     if (!this.db || !this.writeQueue || !this.runner || !this.factGraph || !this.profileManager) {
-      if (manual) this.emitTerminalResult(this.buildUnavailableResult('manual'));
+      if (opts.runSoFar) this.endRun(accumulateRunResult(opts.runSoFar, this.buildUnavailableResult('manual')));
+      else if (manual) this.emitTerminalResult(this.buildUnavailableResult('manual'));
       return Promise.resolve();
     }
     if (this.consolidating) {
@@ -1009,6 +1057,8 @@ export class MemoryService {
         reason: opts.reason,
         ...(opts.sessionId !== undefined ? { sessionId: opts.sessionId } : {}),
         ...(opts.forceExtract !== undefined ? { forceExtract: opts.forceExtract } : {}),
+        ...(opts.declinedInRun !== undefined ? { declinedInRun: opts.declinedInRun } : {}),
+        ...(opts.runSoFar !== undefined ? { runSoFar: opts.runSoFar } : {}),
       });
       return this.consolidationInFlight ?? Promise.resolve();
     }
@@ -1019,16 +1069,21 @@ export class MemoryService {
     const factGraph = this.factGraph;
     const profileManager = this.profileManager;
     const trigger: ConsolidationTrigger = manual ? 'manual' : 'auto';
+    // A request without one starts a run; a later pass of a manual run carries the run's set.
+    const declinedInRun = opts.declinedInRun ?? new Set<string>();
     this.consolidating = true;
     this.currentPhaseEvents = [];
 
-    this.consolidationBroadcast?.({ type: 'consolidationRunning', running: true });
+    // The panel shows a run as running from its first pass to its result; a later pass only restarts the stepper.
+    if (!opts.runSoFar) this.consolidationBroadcast?.({ type: 'consolidationRunning', running: true });
 
     const work = (async () => {
+      let runResult: ConsolidationResult | null = null;
+      let runContinues = false;
       try {
         // runConsolidation is total (returns a terminal result, never throws). This wrapper owns the
-        // lifecycle: it broadcasts the phase stream + result before flipping running:false so the two
-        // channels cannot desync.
+        // lifecycle: it broadcasts the phase stream + the run's result before flipping running:false so
+        // the two channels cannot desync.
         const result = await runConsolidation({
           db,
           writeQueue,
@@ -1044,6 +1099,7 @@ export class MemoryService {
           nonProjectFolders: () => [homeDirectory()],
           autoExtractEnabled: manual || this.autoExtractEnabled,
           trigger,
+          declinedInRun,
           // Skip the pass if the service disposed between scheduling and execution, so it never
           // touches the DB after teardown.
           isDisposed: () => this.disposed,
@@ -1062,7 +1118,7 @@ export class MemoryService {
             this.consolidationBroadcast?.({ type: 'consolidationProgress', event });
           },
         });
-        this.emitTerminalResult(result);
+        runResult = accumulateRunResult(opts.runSoFar, result);
 
         // A `failed` terminal means the batch was released back to consumed=0. Bump the failure
         // counter and re-arm the idle timer (which reads it for backoff) so the batch re-enters a
@@ -1074,11 +1130,17 @@ export class MemoryService {
           } else {
             this.consecutiveConsolidationFailures = 0;
             // A pass claims one folder's turns; other folders' (or over-budget) turns need another pass,
-            // which a manual run takes now and a background run leaves to the idle timer.
-            if (result.candidatesReviewed > 0 && this.getPendingCount() > 0) {
-              if (manual) {
-                this.pendingConsolidation = mergePendingConsolidation(this.pendingConsolidation, { reason: 'manual', forceExtract: true });
-              } else {
+            // which a manual run takes now, within the same run, and a background run leaves to the idle timer.
+            if (result.candidatesReviewed > 0) {
+              if (manual && this.claimableInRunCount(declinedInRun) > 0) {
+                this.pendingConsolidation = mergePendingConsolidation(this.pendingConsolidation, {
+                  reason: 'manual',
+                  forceExtract: true,
+                  declinedInRun,
+                  runSoFar: runResult,
+                });
+                runContinues = true;
+              } else if (!manual && this.getPendingCount() > 0) {
                 this.armIdleTimer();
               }
             }
@@ -1088,8 +1150,8 @@ export class MemoryService {
         this.consolidating = false;
         this.consolidationInFlight = null;
         this.currentPhaseEvents = [];
-        this.broadcastPendingCount();
-        this.consolidationBroadcast?.({ type: 'consolidationRunning', running: false });
+        if (runContinues) this.broadcastPendingCount();
+        else this.endRun(runResult);
       }
 
       const pending = this.pendingConsolidation;

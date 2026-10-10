@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 import type { ContentBlock } from '@shared/types/content';
 import { CANCELLED_TOOL_DETAIL_KEY, type ToolCall } from '@shared/types/session';
-import { subagentHeading, useSubagentStore } from '../useSubagentStore';
+import { subagentHeading, subagentToolCount, useSubagentStore } from '../useSubagentStore';
 import { i18n } from '@/i18n';
 import { defined } from '@/__tests__/helpers';
 
@@ -13,6 +13,20 @@ function nestedTool(store: ReturnType<typeof useSubagentStore>, agentId: string,
   const nested = agent.messages.flatMap(m => m.toolCalls ?? []).find(t => t.id === toolId);
   return defined(nested, toolId);
 }
+
+describe('subagentToolCount', () => {
+  const call = (id: string, status: ToolCall['status']): ToolCall => ({ id, name: 'Read', input: {}, status }) as ToolCall;
+
+  it('counts only calls that ran while the agent runs, never an abandoned one', () => {
+    const subagent = { toolCalls: [call('a', 'running'), call('b', 'abandoned')], messages: [{ toolCalls: [call('c', 'completed'), call('d', 'abandoned')] }] };
+    expect(subagentToolCount(subagent as Parameters<typeof subagentToolCount>[0])).toBe(2);
+  });
+
+  it('takes the recorded count once the agent ends, zero included', () => {
+    const subagent = { result: { totalToolUseCount: 0 }, toolCalls: [call('a', 'abandoned')], messages: [] };
+    expect(subagentToolCount(subagent as unknown as Parameters<typeof subagentToolCount>[0])).toBe(0);
+  });
+});
 
 describe('useSubagentStore.registerAgentTool', () => {
   beforeEach(() => setActivePinia(createPinia()));
@@ -150,22 +164,22 @@ describe('useSubagentStore effort', () => {
     const store = useSubagentStore();
     store.registerAgentTool('toolu_live', { subagent_type: 'Explore', description: 'find' });
     // The bridge sends the model at spawn, then the pair once the session exists.
-    store.updateSubagentModel('toolu_live', 'Haiku 4.5');
+    store.updateSubagentModel('toolu_live', 'Haiku 5.5');
     expect(defined(store.subagents['toolu_live'], 'live').effort).toBeUndefined();
-    store.updateSubagentModel('toolu_live', 'Haiku 4.5', 'medium');
+    store.updateSubagentModel('toolu_live', 'Haiku 5.5', 'medium');
 
     store.restoreSubagentFromHistory({
       id: 'toolu_reload',
       name: 'Agent',
       input: { subagent_type: 'Explore', description: 'find', prompt: 'p' },
       agentStatus: 'completed',
-      agentModel: 'Haiku 4.5',
+      agentModel: 'Haiku 5.5',
       agentEffort: 'medium',
     });
 
     const live = defined(store.subagents['toolu_live'], 'live');
     const reloaded = defined(store.subagents['toolu_reload'], 'reloaded');
-    expect([live.model, live.effort]).toEqual(['Haiku 4.5', 'medium']);
+    expect([live.model, live.effort]).toEqual(['Haiku 5.5', 'medium']);
     expect([reloaded.model, reloaded.effort]).toEqual([live.model, live.effort]);
   });
 
@@ -177,15 +191,15 @@ describe('useSubagentStore effort', () => {
     expect(defined(store.subagents['toolu_bare'], 'bare').model).toBeUndefined();
 
     store.registerAgentTool('toolu_named', { subagent_type: 'Explore', description: 'find' });
-    store.updateSubagentModel('toolu_named', 'Haiku 4.5');
+    store.updateSubagentModel('toolu_named', 'Haiku 5.5');
     store.updateSubagentModel('toolu_named', undefined, 'low');
     const named = defined(store.subagents['toolu_named'], 'named');
-    expect([named.model, named.effort]).toEqual(['Haiku 4.5', 'low']);
+    expect([named.model, named.effort]).toEqual(['Haiku 5.5', 'low']);
   });
 
   it('restores no effort from a record that predates it', () => {
     const store = useSubagentStore();
-    store.restoreSubagentFromHistory({ id: 'toolu_old', name: 'Agent', input: { subagent_type: 'Explore', description: 'd', prompt: 'p' }, agentModel: 'Haiku 4.5' });
+    store.restoreSubagentFromHistory({ id: 'toolu_old', name: 'Agent', input: { subagent_type: 'Explore', description: 'd', prompt: 'p' }, agentModel: 'Haiku 5.5' });
     expect(defined(store.subagents['toolu_old'], 'old')).not.toHaveProperty('effort');
   });
 });
@@ -238,10 +252,11 @@ describe('useSubagentStore nested tool status', () => {
     store.updateSubagentToolLiveOutput('nested-1', 'half a line', false);
     expect(store.markSubagentToolCancelRequested('nested-1')).toBe(true);
 
-    expect(store.updateSubagentToolStatus('nested-1', 'abandoned')).toBe(true);
+    expect(store.updateSubagentToolStatus('nested-1', 'abandoned', undefined, undefined, undefined, undefined, 'stopped')).toBe(true);
 
     const tool = nestedTool(store, 'agent-1', 'nested-1');
     expect(tool.status).toBe('abandoned');
+    expect(tool.abandonReason).toBe('stopped');
     expect(tool.cancelRequested).toBeUndefined();
     expect(tool.liveOutput).toBeUndefined();
   });
@@ -329,6 +344,24 @@ describe('useSubagentStore sealed transcript rehydration', () => {
     expect(nestedTool(store, 'toolu_1', 'nested-1').status).toBe('unrecorded');
   });
 
+  // The host marks the tool calls of a failed model call, which pi never ran (agent-loop.js:143-152).
+  it('reads a nested call of a failed model call as not executed, sealed or reloaded', () => {
+    const store = useSubagentStore();
+    const failedCall = [
+      { role: 'assistant' as const, contentBlocks: [{ type: 'tool_use' as const, id: 'never-ran', name: 'Bash', input: { command: 'ls' }, abandoned: 'failed' as const }] },
+      { role: 'error' as const, contentBlocks: [{ type: 'text' as const, text: 'terminated' }] },
+    ];
+    store.restoreSubagentFromHistory({
+      id: 'toolu_f', name: 'Agent', input: { subagent_type: 'Explore', description: 'find', prompt: 'p' },
+      agentStatus: 'error', agentResultText: 'terminated', agentMessages: failedCall,
+    });
+    store.registerAgentTool('agent-1', { subagent_type: 'Explore', description: 'find' });
+    store.replaceSubagentMessages('agent-1', failedCall);
+
+    expect(nestedTool(store, 'toolu_f', 'never-ran')).toMatchObject({ status: 'abandoned', abandonReason: 'failed' });
+    expect(nestedTool(store, 'agent-1', 'never-ran')).toMatchObject({ status: 'abandoned', abandonReason: 'failed' });
+  });
+
   it('still reads a recorded result as completed and a recorded error as failed', () => {
     const store = useSubagentStore();
     store.restoreSubagentFromHistory({
@@ -348,6 +381,27 @@ describe('useSubagentStore sealed transcript rehydration', () => {
 
     expect(nestedTool(store, 'toolu_2', 'ok-1').status).toBe('completed');
     expect(nestedTool(store, 'toolu_2', 'bad-1').status).toBe('failed');
+  });
+
+  it("keeps a nested call's recorded execution time on replay", () => {
+    const store = useSubagentStore();
+    store.restoreSubagentFromHistory({
+      id: 'toolu_3',
+      name: 'Agent',
+      input: { subagent_type: 'Explore', description: 'find', prompt: 'p' },
+      agentStatus: 'completed',
+      agentResultText: 'done',
+      agentMessages: [{
+        role: 'assistant',
+        contentBlocks: [
+          { type: 'tool_use', id: 'timed-1', name: 'Bash', input: {}, result: 'output', durationMs: 1234 },
+          { type: 'tool_use', id: 'old-1', name: 'Bash', input: {}, result: 'output' },
+        ],
+      }],
+    });
+
+    expect(nestedTool(store, 'toolu_3', 'timed-1').durationMs).toBe(1234);
+    expect(nestedTool(store, 'toolu_3', 'old-1')).not.toHaveProperty('durationMs');
   });
 
   it('resolves a tool still marked running when the sealing snapshot arrives', () => {
@@ -595,5 +649,67 @@ describe('useSubagentStore resume cards', () => {
     const restored = defined(store.subagents['tc-r'], 'tc-r');
     expect(restored.status).toBe('failed');
     expect(restored.result).toBeUndefined();
+  });
+});
+
+describe('useSubagentStore failed model calls', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('seals an error entry as the error message the live card showed', () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('tc-f', { subagent_type: 'Explore', description: 'find', prompt: 'p' });
+    store.addSubagentError('tc-f', '529 overloaded_error');
+
+    store.replaceSubagentMessages('tc-f', [
+      { role: 'user', contentBlocks: [{ type: 'text', text: 'p' }] },
+      { role: 'assistant', contentBlocks: [{ type: 'text', text: 'Now I will' }] },
+      { role: 'error', contentBlocks: [{ type: 'text', text: '529 overloaded_error' }] },
+    ]);
+
+    expect(defined(store.subagents['tc-f'], 'tc-f').messages.map((m) => [m.role, m.content])).toEqual([
+      ['assistant', ''],
+      ['error', '529 overloaded_error'],
+    ]);
+  });
+
+  it('never takes a reloaded error as the agent\'s result text', () => {
+    const store = useSubagentStore();
+    store.restoreSubagentFromHistory({
+      id: 'tc-r',
+      name: 'Agent',
+      input: { description: 'find', prompt: 'p', subagent_type: 'Explore' },
+      agentStatus: 'error',
+      agentResultText: '',
+      agentMessages: [
+        { role: 'assistant', contentBlocks: [{ type: 'text', text: 'found half' }] },
+        { role: 'error', contentBlocks: [{ type: 'text', text: '529 overloaded_error' }] },
+      ],
+    });
+
+    const card = defined(store.subagents['tc-r'], 'tc-r');
+    expect(card.result?.content).toBe('found half');
+    expect(card.messages.map((m) => m.role)).toEqual(['assistant', 'error']);
+  });
+
+  it('a retracted message goes with its streaming text, and only from the card that holds it', () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('tc-s', { description: 'find', prompt: 'p' });
+    store.updateSubagentStreaming('tc-s', 'a:1', { content: 'Let me' });
+    store.retractSubagentMessage('tc-s', 'a:1');
+    expect(store.getSubagentStreaming('tc-s')).toBeUndefined();
+
+    store.addMessageToSubagent('tc-s', { id: 'x', sdkMessageId: 'a:2', role: 'assistant', content: 'kept', timestamp: 1 });
+    store.retractSubagentMessage('tc-s', 'a:9');
+    expect(defined(store.subagents['tc-s'], 'tc-s').messages.map((m) => m.content)).toEqual(['kept']);
+  });
+
+  it('ends a retry wait when the card ends', () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('tc-w', { description: 'find', prompt: 'p' });
+    store.setSubagentRetry('tc-w', { attempt: 1, maxAttempts: 3 });
+
+    store.failSubagent('tc-w');
+
+    expect(defined(store.subagents['tc-w'], 'tc-w').retry).toBeUndefined();
   });
 });

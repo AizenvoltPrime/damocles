@@ -121,8 +121,10 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
     if (compactMatch) {
       const instructions = compactMatch[1]?.trim() ?? "";
       const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      postMessage(ctx.host, stampUserMessage(ctx, originalTextContent, { correlationId }));
-      await ctx.session.compact(instructions.length > 0 ? instructions : undefined);
+      // A refused compaction says why itself, and leaves no echo of the command it refused.
+      await ctx.session.compact(instructions.length > 0 ? instructions : undefined, () => {
+        postMessage(ctx.host, stampUserMessage(ctx, originalTextContent, { correlationId }));
+      });
       return { kind: "handled" };
     }
 
@@ -181,9 +183,9 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
 
       const intercept = await tryInterceptLocal(originalTextContent, ctx);
       if (intercept.kind === "handled") {
-        // Handled locally with no turn, so the optimistically-armed spinner has no lifecycle event to
-        // clear it. Disarm it here — the extension owns whether a turn started.
-        postMessage(ctx.host, { type: "processing", isProcessing: false });
+        // Handled locally with no turn, so the optimistically-armed spinner has no lifecycle event to clear it.
+        // A turn already running owns the spinner: the composer's Compact now sends here mid-turn.
+        if (!ctx.session.turnRunning) postMessage(ctx.host, { type: "processing", isProcessing: false });
         return;
       }
 

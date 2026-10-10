@@ -504,8 +504,8 @@ describe('Explore/Plan prompts state how to load the deferred web and browser gr
   });
 
   it('EXPLORE_TOOL_NAMES still lists the web names — deferral narrows the ACTIVE set, not the allowlist', () => {
-    // A name dropped from `tools:` can never come back: pi freezes `options.tools` into
-    // `_allowedToolNames` and `setActiveToolsByName` silently ignores unknown names. Remove these
+    // A name dropped from `tools:` can never come back: pi turns `options.tools` into
+    // its allowlist and `setActiveToolsByName` silently ignores unknown names. Remove these
     // because "the prompt says they aren't loaded" and ToolSearch becomes a permanent no-op.
     //
     // Both loops iterate DERIVED constants, so an emptied `WEB_SPECS` or browser catalog would leave

@@ -25,6 +25,7 @@ import {
   DAMOCLES_AGENT_STATUS_ENTRY,
 } from './session-store/constants';
 import { SUBAGENT_RESULTS_CUSTOM_TYPE } from './subagents/background-results';
+import { turnStoppedEntryIds, turnStoppedToolCallIds } from './session-store/turn-stopped';
 import { TOOL_AGENT, TOOL_GET_SUBAGENT_RESULT } from '../../shared/tool-names';
 import type { AgentRecord } from './subagents/types';
 import { addAgentUsage, agentUsageOf, emptyAgentUsage, usageOfEntry, type AgentUsageTotals } from '../../shared/usage-accounting';
@@ -439,6 +440,10 @@ export interface AgentFile {
   messages: PersistedAgentMessage[];
   /** Each message's pi session entry id. Unique within this file only. */
   entryIds: ReadonlyMap<PersistedAgentMessage, string>;
+  /** The calls an aborted run settled before they ran (`registerAbortSettledCallRecord`). */
+  stoppedToolCallIds: ReadonlySet<string>;
+  /** The error stops an aborted run wrote as its wind-down (`registerWindDownErrorRecord`). */
+  windDownMessages: ReadonlySet<PersistedAgentMessage>;
 }
 
 async function requirePi(): Promise<PiCodingAgentModule> {
@@ -458,15 +463,37 @@ function entryTimestamp(entry: Record<string, unknown>): number | undefined {
   return Number.isFinite(ms) ? ms : undefined;
 }
 
-/** Split parsed agent-file entries into segments. Returns null when there is no valid launch entry. */
+/**
+ * Entries pi took out of model context: a call it re-ran (auto-retry or overflow recovery,
+ * `_omitRecoveryAttempt`), whose transcript card the live view withdrew. The latest edit of a target wins.
+ */
+function omittedEntryIds(entries: readonly unknown[]): Set<unknown> {
+  const omitted = new Set<unknown>();
+  for (const entry of entries) {
+    if (!isRecord(entry) || entry['type'] !== 'context_edit') continue;
+    if (entry['replacement'] === null) omitted.add(entry['targetId']);
+    else omitted.delete(entry['targetId']);
+  }
+  return omitted;
+}
+
+/**
+ * Split parsed agent-file entries into segments. Returns null when there is no valid launch entry. A
+ * segment's messages leave out those pi omitted from context, and its usage still counts them.
+ */
 export function parseAgentEntries(path: string, entries: readonly unknown[]): AgentFile | null {
   let launch: AgentLaunchData | undefined;
   const segments: AgentFileSegment[] = [];
   let current: AgentFileSegment | undefined;
   const entryIds = new Map<PersistedAgentMessage, string>();
+  const stoppedToolCallIds = new Set<string>();
+  const windDownEntryIds = new Set<string>();
+  const omitted = omittedEntryIds(entries);
   // Agent sessions never branch, so file order is the branch.
   for (const entry of entries) {
     if (!isRecord(entry) || entry['type'] === 'session') continue;
+    for (const id of turnStoppedToolCallIds(entry)) stoppedToolCallIds.add(id);
+    for (const id of turnStoppedEntryIds(entry)) windDownEntryIds.add(id);
     const ts = entryTimestamp(entry);
     if (entry['type'] === 'custom') {
       const data = entry['data'];
@@ -489,7 +516,7 @@ export function parseAgentEntries(path: string, entries: readonly unknown[]): Ag
       } else if (entry['customType'] === DAMOCLES_AGENT_STATUS_ENTRY && current && isAgentStatusData(data)) {
         current.status = data;
       }
-    } else if (entry['type'] === 'message' && current && isPersistedMessage(entry['message'])) {
+    } else if (entry['type'] === 'message' && current && isPersistedMessage(entry['message']) && !omitted.has(entry['id'])) {
       current.messages.push(entry['message']);
       if (typeof entry['id'] === 'string') entryIds.set(entry['message'], entry['id']);
     }
@@ -510,6 +537,8 @@ export function parseAgentEntries(path: string, entries: readonly unknown[]): Ag
     ...(last?.status ? { status: last.status } : {}),
     messages: segments.flatMap((s) => s.messages),
     entryIds,
+    stoppedToolCallIds,
+    windDownMessages: new Set([...entryIds].flatMap(([message, id]) => (windDownEntryIds.has(id) ? [message] : []))),
   };
 }
 
@@ -741,4 +770,9 @@ export function subagentLatestState(
 export function isResumableSubagentStatus(state: Pick<SubagentLatestState, 'status' | 'stopReason'>): boolean {
   if (state.status === 'interrupted') return true;
   return state.status === 'stopped' && (state.stopReason === 'user' || state.stopReason === 'shutdown');
+}
+
+/** What `Agent({resume})` accepts: an interrupted agent, or a failed one, whose result already named the resume call. */
+export function canResumeSubagent(state: Pick<SubagentLatestState, 'status' | 'stopReason'>): boolean {
+  return state.status === 'error' || isResumableSubagentStatus(state);
 }

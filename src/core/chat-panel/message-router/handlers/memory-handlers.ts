@@ -28,6 +28,7 @@ export const MEMORY_MESSAGE_SOURCES: ReadonlyMap<string, "panel" | "consolidatio
   ["setProfileSection", "panel"],
   ["requestConsolidationPreview", "consolidation"],
   ["triggerConsolidation", "consolidation"],
+  ["retrySetAsideTurns", "consolidation"],
   ["requestMemoryAudit", "audit"],
   ["requestMemoryAuditSummary", "audit"],
   ["startMemoryAudit", "audit"],
@@ -359,7 +360,11 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
 
       await deps.memoryService.ensureInitialized();
       postMessage(ctx.host, { type: "consolidationPreview", candidates: deps.memoryService.getPendingCandidates() });
-      postMessage(ctx.host, { type: "consolidationPendingCount", count: deps.memoryService.getPendingCount() });
+      postMessage(ctx.host, {
+        type: "consolidationPendingCount",
+        count: deps.memoryService.getPendingCount(),
+        setAside: deps.memoryService.getSetAsideCount(),
+      });
       const lastResult = deps.memoryService.getLastConsolidationResult();
       if (lastResult) postMessage(ctx.host, { type: "consolidationResult", result: lastResult });
 
@@ -383,6 +388,18 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       }
 
       await deps.memoryService.triggerConsolidation();
+      postMessage(ctx.host, { type: "consolidationPreview", candidates: deps.memoryService.getPendingCandidates() });
+    },
+
+    retrySetAsideTurns: async (msg, ctx) => {
+      if (msg.type !== "retrySetAsideTurns") return;
+
+      if (!deps.memoryService?.isEnabled) {
+        postMessage(ctx.host, { type: "memoryError", source: "consolidation", message: "Memory system is not available" });
+        return;
+      }
+
+      await deps.memoryService.retrySetAsideTurns();
       postMessage(ctx.host, { type: "consolidationPreview", candidates: deps.memoryService.getPendingCandidates() });
     },
 

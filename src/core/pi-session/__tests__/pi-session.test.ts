@@ -134,8 +134,8 @@ const H = vi.hoisted(() => {
 
   function makeServices() {
     // pi's settings manager has a field asymmetry this fake reproduces on purpose: `applyOverrides`
-    // writes the effective `settings` object (dist/core/settings-manager.js:366 in pi 0.99.2) while
-    // `setCacheWarmingMode`/`getCacheWarmingMode` write and read `globalSettings` (:679-687). A mode
+    // writes the effective `settings` object (dist/core/settings-manager.js:390 in pi 1.1.0) while
+    // `setCacheWarmingMode`/`getCacheWarmingMode` write and read `globalSettings` (:703-711). A mode
     // routed through `applyOverrides` is therefore invisible to the getter pi's CacheWarmer calls.
     const globalSettings: { cacheWarming?: string } = {};
     let effectiveSettings: Record<string, unknown> = {};
@@ -446,7 +446,7 @@ function makeOptions(messages: ExtensionToWebviewMessage[], extra?: Partial<Sess
     permissionHandler: { getPermissionMode: () => 'default', setPermissionRequiredNotifier: () => {}, setPlanContentResolver: () => {}, setPendingPromptsListener: () => {}, setPromptOwnerResolver: () => {}, pendingPrompts: () => [] } as unknown as SessionOptions['permissionHandler'],
     onMessage: (m) => messages.push(m),
     model: 'claude-opus-5-5',
-    resolveThinking: () => ({ thinkingDisabled: false, effort: null, maxThinkingTokens: null }),
+    resolveThinking: () => ({ thinkingDisabled: false, effort: null }),
     ...extra,
   };
 }
@@ -1347,7 +1347,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     // synchronous methods
     s.getPlanFilePath();
     s.getModelInfo(); s.setResumeSession(null); s.queueInput('hi'); s.cancel(); s.reset(); s.clear();
-    s.setModel('claude-opus-5-5'); s.setMcpServers({ userUnion: {}, userVisible: [], folder: {} });
+    s.setMcpServers({ userUnion: {}, userVisible: [], folder: {} });
     s.setMcpStatusListener(() => {}); s.refreshActiveTools(); s.getToolStatus();
     s.seedCheckpoints([]); s.getAccumulatedCost();
     s.disableThinkingForNextQuery(); s.restoreThinkingConfig(); s.cancelBtw('b');
@@ -1355,7 +1355,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
 
     // async methods
     await Promise.all([
-      s.setPermissionMode('default'), s.getSupportedModels(), s.getSupportedCommands(),
+      s.setPermissionMode('default'), s.setModel('claude-opus-5-5'), s.getSupportedModels(), s.getSupportedCommands(),
       s.getMcpServerStatus(), s.reconnectMcpServerLive('m'),
       s.getMemoryInjection(0),
       s.requestContextUsage(), s.cancelAutoCompact(), s.interrupt(),
@@ -1749,24 +1749,6 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     (session as unknown as { adapter: { observedAgentRun: () => boolean } }).adapter.observedAgentRun = () => true;
   }
 
-  it('session-start modelUpdate carries the workspace default from getDefaultModel, distinct from the active model', async () => {
-    // defaultModel must come from getDefaultModel(), not the active panel model. Use a distinct sentinel
-    // default so the assertion holds even though resolveInitialModel keeps activeModel on the authed model.
-    const messages: ExtensionToWebviewMessage[] = [];
-    const opts = makeOptions(messages);
-    opts.getDefaultModel = () => 'workspace-default-model';
-    const session = new PiSession(opts);
-    await session.initializeEarly();
-    forceAgentRun(session);
-
-    await session.sendMessage('hi', undefined, 'corr', { content: 'hi' });
-
-    const modelUpdate = messages.find((m) => m.type === 'modelUpdate');
-    expect(modelUpdate).toMatchObject({ type: 'modelUpdate', defaultModel: 'workspace-default-model' });
-    expect((modelUpdate as { activeModel: string }).activeModel).not.toBe('workspace-default-model');
-    await session.dispose();
-  });
-
   it('enqueues one memory candidate per real turn with the right shape', async () => {
     const opts = makeOptions([]);
     const memory = memorySpy();
@@ -1943,7 +1925,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
       const panel: PanelGateContext = { ...gate, memoryService: memory as never, postMessage: (m) => emitted.push(m) };
       const branch = (live.sessionManager.getBranch as () => SessionEntry[])();
       await buildAgentStartResult(
-        { type: 'before_agent_start', prompt: 'steered', systemPrompt: '', systemPromptOptions: { selectedTools: [], toolSnippets: {}, toolGuidelines: {}, promptGuidelines: [], appendSystemPrompt: '', sections: {}, cwd: '/cwd', contextFiles: [], skills: [] } },
+        { type: 'before_agent_start', prompt: 'steered', systemPrompt: '', systemPromptOptions: { selectedTools: [], hiddenTools: [], toolSnippets: {}, toolGuidelines: {}, promptGuidelines: [], appendSystemPrompt: '', sections: {}, cwd: '/cwd', contextFiles: [], skills: [] } },
         panel,
         live.sessionId as string,
         { getBranch: () => branch, buildSessionProjection: () => ({ messages: [] }) } as unknown as ProjectionReader,
@@ -2052,12 +2034,14 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     (H.getLastSession()!.compact as ReturnType<typeof vi.fn>).mockImplementationOnce(() => new Promise<void>((resolve) => (finish = resolve)));
 
     let running: Promise<void> | undefined;
+    const accepted: string[] = [];
     try {
-      running = session.compact();
-      await session.compact();
+      running = session.compact(undefined, () => accepted.push('first'));
+      await session.compact(undefined, () => accepted.push('second'));
     } finally {
       t.mockRestore();
     }
+    expect(accepted).toEqual(['first']);
 
     const notice = messages.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'notification' }> => m.type === 'notification');
     expect(notice?.notificationType).toBe('warning');
@@ -3000,8 +2984,9 @@ describe('PiSession plan-mode force-continue (WI-3)', () => {
 
     const draft = (await fireBeforeSettle(evt([assistant('stop')]))) as { content: string; details: unknown };
 
-    expect(draft.details).toEqual({ agents: [{ agentId: 'agent-1', toolCallId: 'tc-1', status: 'error', result: 'model unavailable' }] });
-    expect(draft.content).not.toContain('agent-1');
+    expect(draft.details).toEqual({ agents: [{ agentId: 'agent-1', toolCallId: 'tc-1', status: 'error', result: 'model unavailable (FAILED before completion. Resume it with Agent({resume:"agent-1"}) if the user asks to continue.)' }] });
+    // The agent id reaches the model only inside the resume call its result names.
+    expect(draft.content).not.toContain('agentId');
     expect(draft.content).not.toContain('tc-1');
     await session.dispose();
   });
@@ -3071,16 +3056,129 @@ describe('PiSession — subagent model resolution', () => {
   // Without an explicit level pi uses the default it last persisted, which differs between machines.
   it("carries the panel's resolved effort along with the inherited model", async () => {
     const session = new PiSession(makeOptions([], {
-      resolveThinking: () => ({ thinkingDisabled: false, effort: 'xhigh', maxThinkingTokens: null }),
+      resolveThinking: () => ({ thinkingDisabled: false, effort: 'xhigh' }),
     }));
     await session.initializeEarly();
     expect(resolve(session, { name: 'Game Designer', description: 'd' }).thinkingLevel).toBe('xhigh');
     await session.dispose();
   });
 
+  // Without a level pi would run Haiku 5.5 at whatever default it last persisted.
+  it('runs Explore Default from an Anthropic chat on Haiku 5.5 at medium', async () => {
+    const runtime = H.getServices().modelRuntime;
+    const lookup = runtime.getModel;
+    const haiku = { id: 'claude-haiku-5-5', name: 'Haiku', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 1_000_000 };
+    runtime.getModel = (provider: string, id: string) => (provider === 'anthropic' && id === haiku.id ? haiku : lookup(provider, id)) as never;
+    try {
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      const res = resolve(session, { name: 'Explore', description: 'd' });
+      expect(res.model).toMatchObject({ id: 'claude-haiku-5-5', provider: 'anthropic' });
+      expect(res.thinkingLevel).toBe('medium');
+      await session.dispose();
+    } finally {
+      runtime.getModel = lookup;
+    }
+  });
+
+  /** Run `fn` with `models` added to the fake registry, restoring the lookup afterwards (the services object outlives this block). */
+  async function withModels<T>(models: readonly { id: string; provider: string }[], fn: () => Promise<T>): Promise<T> {
+    const runtime = H.getServices().modelRuntime;
+    const lookup = runtime.getModel;
+    runtime.getModel = (provider: string, id: string) =>
+      (models.find((m) => m.provider === provider && m.id === id) ?? lookup(provider, id)) as never;
+    try {
+      return await fn();
+    } finally {
+      runtime.getModel = lookup;
+    }
+  }
+  const model = (provider: string, id: string) => ({ id, name: id, api: 'anthropic-messages', provider, contextWindow: 1_000_000 });
+
+  it('runs Explore Default from an OpenAI chat on GPT-6 Luna at medium', async () => {
+    await withModels([model('openai', 'gpt-6.1-sol'), model('openai', 'gpt-6-luna')], async () => {
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      vi.spyOn(PiRuntime.get('/fake/agent'), 'getOpenAIAuthStatus').mockReturnValue({ apiKey: true, chatgpt: false, codex: false });
+      await session.setModel('gpt-6.1-sol');
+      const res = resolve(session, { name: 'Explore', description: 'd' });
+      expect(res.model).toMatchObject({ id: 'gpt-6-luna', provider: 'openai' });
+      expect(res.thinkingLevel).toBe('medium');
+      await session.dispose();
+    });
+  });
+
+  it("runs Explore Default from a DeepSeek chat on that provider's own small model at medium", async () => {
+    await withModels([model('deepseek', 'deepseek-v4-pro'), model('deepseek', 'deepseek-flash')], async () => {
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      await session.setModel('deepseek-v4-pro');
+      const res = resolve(session, { name: 'Explore', description: 'd' });
+      expect(res.model).toMatchObject({ id: 'deepseek-flash', provider: 'deepseek' });
+      expect(res.thinkingLevel).toBe('medium');
+      await session.dispose();
+    });
+  });
+
+  it('runs Explore on a picked model at its effort, and at medium when none is set', async () => {
+    await withModels([model('anthropic', 'claude-sonnet-5-5')], async () => {
+      await testPlatform.settings.update('damocles.explore.model', 'claude-sonnet-5-5', 'user');
+      await testPlatform.settings.update('damocles.explore.effort', 'high', 'user');
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      const res = resolve(session, { name: 'Explore', description: 'd' });
+      expect(res.error).toBeUndefined();
+      expect(res.model).toMatchObject({ id: 'claude-sonnet-5-5', provider: 'anthropic' });
+      expect(res.thinkingLevel).toBe('high');
+      await testPlatform.settings.update('damocles.explore.effort', undefined, 'user');
+      expect(resolve(session, { name: 'Explore', description: 'd' }).thinkingLevel).toBe('medium');
+      // Only Explore reads the setting.
+      expect(resolve(session, { name: 'Game Designer', description: 'd' }).model).toMatchObject({ id: 'claude-opus-5-5' });
+      await session.dispose();
+    });
+  });
+
+  it('fails an Explore spawn on a picked model whose provider is signed out, naming the setting, never falling back', async () => {
+    await withModels([model('anthropic', 'claude-sonnet-5-5')], async () => {
+      await testPlatform.settings.update('damocles.explore.model', 'claude-sonnet-5-5', 'user');
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      const res = await withoutAuth(() => resolve(session, { name: 'Explore', description: 'd' }));
+      expect(res.model).toBeUndefined();
+      expect(res.error).toContain('`damocles.explore.model`');
+      expect(res.error).toContain('Sign in to Anthropic');
+      await session.dispose();
+    });
+  });
+
+  // StepFun's model is registered only once its key is stored, so before that it resolves to nothing at all.
+  it('fails an Explore spawn on Step 5 Preview with no StepFun key as signed out, naming the setting', async () => {
+    await testPlatform.settings.update('damocles.explore.model', 'step-5-preview', 'user');
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const res = resolve(session, { name: 'Explore', description: 'd' });
+    expect(res.model).toBeUndefined();
+    expect(res.error).toContain('`damocles.explore.model`');
+    expect(res.error).toContain('Sign in to StepFun');
+    await session.dispose();
+  });
+
+  it("runs Explore at its template's own thinking field, on Default and on a picked model", async () => {
+    const haiku = model('anthropic', 'claude-haiku-5-5');
+    await withModels([haiku, model('anthropic', 'claude-sonnet-5-5')], async () => {
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      expect(resolve(session, { name: 'Explore', description: 'd', thinking: 'low' })).toMatchObject({ model: { id: 'claude-haiku-5-5' }, thinkingLevel: 'low' });
+      await testPlatform.settings.update('damocles.explore.model', 'claude-sonnet-5-5', 'user');
+      await testPlatform.settings.update('damocles.explore.effort', 'high', 'user');
+      expect(resolve(session, { name: 'Explore', description: 'd', thinking: 'low' })).toMatchObject({ model: { id: 'claude-sonnet-5-5' }, thinkingLevel: 'low' });
+      await session.dispose();
+    });
+  });
+
   it("lets a template's own thinking field beat the panel effort", async () => {
     const session = new PiSession(makeOptions([], {
-      resolveThinking: () => ({ thinkingDisabled: false, effort: 'xhigh', maxThinkingTokens: null }),
+      resolveThinking: () => ({ thinkingDisabled: false, effort: 'xhigh' }),
     }));
     await session.initializeEarly();
     expect(resolve(session, { name: 'Game Designer', description: 'd', thinking: 'low' }).thinkingLevel).toBe('low');
@@ -5278,7 +5376,9 @@ describe('PiSession — the on-disk invariant, against a REAL pi SessionManager'
 
     const { messages } = reconstructMessages(realPi.SessionManager.open(file, dir).getBranch());
     const tool = messages.flatMap((m) => (m.kind === 'assistant' ? m.tools : [])).find((t) => t.id === 'tc-1');
-    expect(tool).toMatchObject({ stopped: true, isError: true });
+    // pi settled the call before execute, so it carries no durationMs and the live card showed no result either.
+    expect(tool).toMatchObject({ abandoned: 'stopped' });
+    expect(tool).not.toHaveProperty('result');
     expect(messages.filter((m) => m.kind === 'error')).toEqual([{ kind: 'error', content: 'An earlier failure' }]);
     await session.dispose();
   });
@@ -5384,7 +5484,7 @@ describe('PiSession — the on-disk invariant, against a REAL pi SessionManager'
       expect(messages.filter((m) => m.type === 'processing' && !m.isProcessing).length).toBeGreaterThan(0);
       // The Stop path ran, so a reload in the other window shows the cut-off call as stopped.
       const { messages: replayed } = reconstructMessages(realPi.SessionManager.open(file, dir).getBranch());
-      expect(replayed.flatMap((m) => (m.kind === 'assistant' ? m.tools : [])).find((t) => t.id === 'tc-1')).toMatchObject({ stopped: true });
+      expect(replayed.flatMap((m) => (m.kind === 'assistant' ? m.tools : [])).find((t) => t.id === 'tc-1')).toMatchObject({ abandoned: 'stopped' });
       const released = fsSync.readFileSync(file, 'utf8');
       await new Promise((r) => setTimeout(r, 0));
       expect(fsSync.readFileSync(file, 'utf8')).toBe(released);
@@ -5799,6 +5899,45 @@ describe('PiSession teardown order: the turn stops before anything is let go', (
     await session.whenReplaced();
 
     expect(order).toEqual(['abort', 'drain', 'newSession']);
+    await session.dispose();
+  });
+
+  // A /clear sent mid-turn: the cleared webview must not receive the aborted turn's partial answer or settle.
+  it('reset forwards nothing the replaced session emits while its aborted turn winds down', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    live.abort.mockImplementation(async () => {
+      H.fireEvent({ type: 'message_start', message: { role: 'assistant', content: [] } });
+      H.fireEvent({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'stale partial' }], stopReason: 'aborted' } });
+      H.fireEvent({ type: 'agent_settled' });
+    });
+
+    session.reset();
+    const from = messages.length;
+    await session.whenReplaced();
+
+    const after = messages.slice(from).map((m) => m.type);
+    for (const type of ['assistant', 'sessionCancelled', 'sessionUsage']) expect(after).not.toContain(type);
+    await session.dispose();
+  });
+
+  it('a replacement that fails leaves the old session still reporting to the webview', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const runtime = (session as unknown as { runtime: { newSession: () => Promise<{ cancelled: boolean }> } }).runtime;
+    runtime.newSession = async () => ({ cancelled: true });
+
+    session.reset();
+    await expect(session.whenReplaced()).rejects.toThrow();
+    await new Promise((r) => setTimeout(r, 0));
+    const from = messages.length;
+    H.fireEvent({ type: 'message_start', message: { role: 'assistant', content: [] } });
+    H.fireEvent({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'still live' }], stopReason: 'stop' } });
+
+    expect(messages.slice(from).map((m) => m.type)).toContain('assistant');
     await session.dispose();
   });
 
@@ -7295,17 +7434,17 @@ describe('PiSession custom-provider fallback warning', () => {
   }
 
   it('names the NOT-WIRED provider and both models by display name, and offers Reload Window', async () => {
-    const { session, warn } = startWith('deepseek-v4-flash', { wired: [], notWired: ['deepseek'], timedOut: true });
+    const { session, warn } = startWith('deepseek-flash', { wired: [], notWired: ['deepseek'], timedOut: true });
     await session.initializeEarly();
     await settle();
 
     expect(warn).toHaveBeenCalledTimes(1);
     const [message, action] = warn.mock.calls[0] as [string, string];
-    // Display names, never the raw pi ids the user has never seen (`deepseek` / `deepseek-v4-flash`).
+    // Display names, never the raw pi ids the user has never seen (`deepseek` / `deepseek-flash`).
     expect(message).toContain('DeepSeek');
-    expect(message).toContain('DeepSeek V4 Flash');
+    expect(message).toContain('DeepSeek V4.1 Flash');
     expect(message).toContain('Opus 5.5');
-    expect(message).not.toContain('deepseek-v4-flash');
+    expect(message).not.toContain('deepseek-flash');
     expect(action).toBe('Reload Window');
     await session.dispose();
   });
@@ -7314,7 +7453,7 @@ describe('PiSession custom-provider fallback warning', () => {
     // The whole point of the notWired contract: a deleted key deauthenticates the provider, so it is in
     // neither list. Testing `!wired.includes(provider)` here diagnosed a timeout and offered a reload
     // that cannot possibly help.
-    const { session, warn } = startWith('deepseek-v4-flash', { wired: ['stepfun'], notWired: [], timedOut: true });
+    const { session, warn } = startWith('deepseek-flash', { wired: ['stepfun'], notWired: [], timedOut: true });
     await session.initializeEarly();
     await settle();
 
@@ -7324,10 +7463,10 @@ describe('PiSession custom-provider fallback warning', () => {
 
   it('says nothing when the requested model still resolved despite the timeout', async () => {
     H.getServices().modelRuntime.getModel = (provider: string, id: string) =>
-      (provider === 'deepseek' && id === 'deepseek-v4-flash'
-        ? { id, name: 'DeepSeek V4 Flash', api: 'anthropic-messages', provider, contextWindow: 1_000_000 }
+      (provider === 'deepseek' && id === 'deepseek-flash'
+        ? { id, name: 'DeepSeek V4.1 Flash', api: 'anthropic-messages', provider, contextWindow: 1_000_000 }
         : undefined) as never;
-    const { session, warn } = startWith('deepseek-v4-flash', { wired: [], notWired: ['deepseek'], timedOut: true });
+    const { session, warn } = startWith('deepseek-flash', { wired: [], notWired: ['deepseek'], timedOut: true });
     await session.initializeEarly();
     await settle();
 
@@ -7348,7 +7487,7 @@ describe('PiSession custom-provider fallback warning', () => {
     // `resolveInitialModel` found nothing authed, so `modelValue` still equals the requested value. The
     // old "did the model change?" guard read that as "nothing to report".
     H.getServices().modelRuntime.hasConfiguredAuth = () => false;
-    const { session, warn } = startWith('deepseek-v4-flash', { wired: [], notWired: ['deepseek'], timedOut: true });
+    const { session, warn } = startWith('deepseek-flash', { wired: [], notWired: ['deepseek'], timedOut: true });
     await session.initializeEarly();
     await settle();
 
@@ -7358,8 +7497,8 @@ describe('PiSession custom-provider fallback warning', () => {
   });
 
   it('shows ONE modal per PiRuntime, not one per open panel', async () => {
-    const { session, warn } = startWith('deepseek-v4-flash', { wired: [], notWired: ['deepseek'], timedOut: true });
-    const second = new PiSession(makeOptions([], { model: 'deepseek-v4-flash', secrets: FAKE_SECRETS }));
+    const { session, warn } = startWith('deepseek-flash', { wired: [], notWired: ['deepseek'], timedOut: true });
+    const second = new PiSession(makeOptions([], { model: 'deepseek-flash', secrets: FAKE_SECRETS }));
     await session.initializeEarly();
     await second.initializeEarly();
     await settle();
@@ -7372,7 +7511,7 @@ describe('PiSession custom-provider fallback warning', () => {
   it('"Reload Window" reloads the window', async () => {
     stubSync({ wired: [], notWired: ['deepseek'], timedOut: true });
     vi.spyOn(testPlatform.notifications, 'warn').mockResolvedValue('Reload Window' as never);
-    const session = new PiSession(makeOptions([], { model: 'deepseek-v4-flash', secrets: FAKE_SECRETS }));
+    const session = new PiSession(makeOptions([], { model: 'deepseek-flash', secrets: FAKE_SECRETS }));
 
     await session.initializeEarly();
     await settle();
@@ -7392,7 +7531,7 @@ describe('PiSession custom-provider fallback warning', () => {
     const unhandled: unknown[] = [];
     const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
     process.on('unhandledRejection', onUnhandled);
-    const session = new PiSession(makeOptions([], { model: 'deepseek-v4-flash', secrets: FAKE_SECRETS }));
+    const session = new PiSession(makeOptions([], { model: 'deepseek-flash', secrets: FAKE_SECRETS }));
 
     try {
       await session.initializeEarly();
@@ -7413,7 +7552,7 @@ describe('PiSession custom-provider fallback warning', () => {
     const messages: ExtensionToWebviewMessage[] = [];
     stubSync({ wired: [], notWired: [], timedOut: true });
     const warn = vi.spyOn(testPlatform.notifications, 'warn');
-    const session = new PiSession(makeOptions(messages, { model: 'deepseek-v4-flash', secrets: FAKE_SECRETS }));
+    const session = new PiSession(makeOptions(messages, { model: 'deepseek-flash', secrets: FAKE_SECRETS }));
 
     await session.initializeEarly();
     await settle();
@@ -7425,7 +7564,7 @@ describe('PiSession custom-provider fallback warning', () => {
   });
 
   it('start() survives a sync that reports nothing wired and no timeout', async () => {
-    const { session, warn } = startWith('deepseek-v4-flash', { wired: [], notWired: [], timedOut: false });
+    const { session, warn } = startWith('deepseek-flash', { wired: [], notWired: [], timedOut: false });
     await session.initializeEarly();
     await settle();
 
@@ -7779,7 +7918,7 @@ describe('PiSession account state publication', () => {
     vi.spyOn(runtime, 'getOpenAIAuthStatus').mockReturnValue({ apiKey: true, chatgpt: false, codex: false });
     registerOpenAIModel();
 
-    session.setModel('gpt-6.1-sol');
+    await session.setModel('gpt-6.1-sol');
 
     // The panel model was a subscription-billed Claude one; the switch target is metered by the key.
     expect(published(messages)).toEqual({ model: 'gpt-6.1-sol', dollarBilled: true });
@@ -7792,7 +7931,7 @@ describe('PiSession account state publication', () => {
     await session.initializeEarly();
     const before = messages.filter((m) => m.type === 'accountInfo').length;
 
-    session.setModel('gpt-6.1-sol'); // no OpenAI credential and no registry entry
+    await session.setModel('gpt-6.1-sol'); // no OpenAI credential and no registry entry
 
     expect(session.currentModel).toBe('claude-opus-5-5');
     expect(messages.filter((m) => m.type === 'accountInfo')).toHaveLength(before);
@@ -7820,7 +7959,7 @@ describe('PiSession account state publication', () => {
     const runtime = PiRuntime.get('/fake/agent');
     vi.spyOn(runtime, 'getOpenAIAuthStatus').mockReturnValue({ apiKey: true, chatgpt: false, codex: true });
     registerOpenAIModel(true);
-    session.setModel('gpt-6.1-sol');
+    await session.setModel('gpt-6.1-sol');
     expect(published(messages)).toEqual({ model: 'gpt-6.1-sol', dollarBilled: false });
 
     preferApiKey = true;
@@ -7838,7 +7977,7 @@ describe('PiSession account state publication', () => {
     vi.spyOn(runtime, 'getOpenAIAuthStatus').mockReturnValue({ apiKey: true, chatgpt: false, codex: true });
     registerOpenAIModel();
 
-    session.setModel('gpt-6.1-sol');
+    await session.setModel('gpt-6.1-sol');
 
     expect(published(messages)).toEqual({ model: 'gpt-6.1-sol', dollarBilled: true });
     await session.dispose();
@@ -7853,7 +7992,7 @@ describe('PiSession account state publication', () => {
     vi.spyOn(runtime, 'getOpenAIAuthStatus').mockReturnValue({ apiKey: true, chatgpt: true, codex: false });
     const signIn = vi.spyOn(runtime, 'signInChatGPT');
     registerOpenAIModel();
-    session.setModel('gpt-6.1-sol');
+    await session.setModel('gpt-6.1-sol');
     expect(session.currentModel).toBe('gpt-6.1-sol');
     expect(published(messages)).toEqual({ model: 'gpt-6.1-sol', dollarBilled: false });
 
@@ -7881,8 +8020,442 @@ describe('PiSession account state publication', () => {
 
     vi.spyOn(runtime, 'getOpenAIAuthStatus').mockReturnValue({ apiKey: true, chatgpt: false, codex: false });
     registerOpenAIModel();
-    session.setModel('gpt-6.1-sol');
+    await session.setModel('gpt-6.1-sol');
     expect(published(messages)).toEqual(expectedFor(session));
+    await session.dispose();
+  });
+});
+
+describe('the chat model is what pi adopted, published after every switch attempt', () => {
+  const SONNET = { id: 'claude-sonnet-5-5', name: 'Sonnet', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 1_000_000 };
+  const HAIKU = { id: 'claude-haiku-5-5', name: 'Haiku', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 200_000 };
+
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.resetServices();
+    vi.restoreAllMocks();
+    const opus = H.getServices().modelRuntime.getModel;
+    H.getServices().modelRuntime.getModel = (provider: string, id: string) =>
+      (provider === 'anthropic' ? [SONNET, HAIKU].find((m) => m.id === id) ?? opus(provider, id) : opus(provider, id)) as never;
+  });
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+  });
+
+  async function started(messages: ExtensionToWebviewMessage[] = [], extra?: Partial<SessionOptions>) {
+    const reported: string[] = [];
+    const session = new PiSession(makeOptions(messages, { onModelChange: (model) => reported.push(model), ...extra }));
+    await session.initializeEarly();
+    const piSetModel = H.getLastSession()!.setModel as ReturnType<typeof vi.fn>;
+    return { session, reported, piSetModel };
+  }
+
+  function deferred(): { promise: Promise<void>; resolve: () => void; reject: (err: Error) => void } {
+    let resolve!: () => void;
+    let reject!: (err: Error) => void;
+    const promise = new Promise<void>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  }
+
+  const accountModel = (messages: ExtensionToWebviewMessage[]) =>
+    messages.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'accountInfo' }> => m.type === 'accountInfo').at(-1)?.data.model;
+
+  it('reports the model start settled on, which is not the requested one when that is signed out', async () => {
+    const { session, reported } = await started([], { model: 'step-5-preview' });
+    expect(session.currentModel).not.toBe('step-5-preview');
+    expect(reported.at(-1)).toBe(session.currentModel);
+    await session.dispose();
+  });
+
+  it('refuses OpenAI with no credential, keeps the committed model and publishes it, and asks for sign-in', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session, reported, piSetModel } = await started(messages);
+    reported.length = 0;
+
+    await session.setModel('gpt-6.1-sol');
+
+    expect(piSetModel).not.toHaveBeenCalled();
+    expect(session.currentModel).toBe('claude-opus-5-5');
+    expect(reported).toEqual(['claude-opus-5-5']);
+    expect(messages.some((m) => m.type === 'openaiAuthRequired')).toBe(true);
+    await session.dispose();
+  });
+
+  it('refuses a keyless custom provider with a host notice naming the model, which shows over any settings view', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session, reported, piSetModel } = await started(messages);
+    reported.length = 0;
+
+    await session.setModel('step-5-preview');
+
+    expect(piSetModel).not.toHaveBeenCalled();
+    expect(session.currentModel).toBe('claude-opus-5-5');
+    expect(reported).toEqual(['claude-opus-5-5']);
+    expect(testPlatform.notifications.calls).toContainEqual(expect.objectContaining({ level: 'warn', message: 'Sign in to StepFun to use Step 5 Preview' }));
+    expect(messages.some((m) => m.type === 'notification')).toBe(false);
+    await session.dispose();
+  });
+
+  it('commits a switch only once pi adopted it, and publishes it', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session, reported, piSetModel } = await started(messages);
+    reported.length = 0;
+    const gate = deferred();
+    piSetModel.mockReturnValueOnce(gate.promise);
+
+    const switching = session.setModel('claude-sonnet-5-5');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(session.currentModel).toBe('claude-opus-5-5');
+    expect(reported).toEqual([]);
+
+    gate.resolve();
+    await switching;
+    expect(piSetModel).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 'claude-sonnet-5-5' }));
+    expect(session.currentModel).toBe('claude-sonnet-5-5');
+    expect(reported).toEqual(['claude-sonnet-5-5']);
+    expect(accountModel(messages)).toBe('claude-sonnet-5-5');
+    await session.dispose();
+  });
+
+  it('keeps the committed model when pi refuses the switch, publishes it and warns', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session, reported, piSetModel } = await started(messages);
+    reported.length = 0;
+    piSetModel.mockRejectedValueOnce(new Error('No API key for anthropic/claude-sonnet-5-5'));
+
+    await session.setModel('claude-sonnet-5-5');
+
+    expect(session.currentModel).toBe('claude-opus-5-5');
+    expect(reported).toEqual(['claude-opus-5-5']);
+    expect(accountModel(messages)).toBe('claude-opus-5-5');
+    expect(testPlatform.notifications.calls).toContainEqual(expect.objectContaining({ level: 'warn', message: 'Sign in to Anthropic to use Sonnet 5.5' }));
+    await session.dispose();
+  });
+
+  it('commits a switch pi rejected after it had already adopted the target', async () => {
+    const { session, reported, piSetModel } = await started();
+    reported.length = 0;
+    const live = H.getLastSession()! as unknown as { model?: { provider: string; id: string } };
+    piSetModel.mockImplementationOnce(async (target: { provider: string; id: string }) => {
+      live.model = target;
+      throw new Error('model_select hook failed');
+    });
+
+    await session.setModel('claude-sonnet-5-5');
+
+    expect(session.currentModel).toBe('claude-sonnet-5-5');
+    expect(reported).toEqual(['claude-sonnet-5-5']);
+    expect(testPlatform.notifications.calls).toEqual([]);
+    await session.dispose();
+  });
+
+  it('applies the panel thinking level once pi adopted the model, over the level pi chose for it', async () => {
+    const { session, piSetModel } = await started([], {
+      resolveThinking: (model) => ({ thinkingDisabled: false, effort: model === 'claude-sonnet-5-5' ? 'low' : 'high' }),
+    });
+    const live = H.getLastSession()!;
+    const setThinkingLevel = live.setThinkingLevel as ReturnType<typeof vi.fn>;
+    setThinkingLevel.mockClear();
+
+    await session.setModel('claude-sonnet-5-5');
+
+    expect(setThinkingLevel).toHaveBeenLastCalledWith('low');
+    expect(setThinkingLevel.mock.invocationCallOrder.at(-1)!).toBeGreaterThan(piSetModel.mock.invocationCallOrder.at(-1)!);
+    await session.dispose();
+  });
+
+  it('applies a switch again to a session replaced while pi applied it', async () => {
+    const { session, reported, piSetModel } = await started();
+    reported.length = 0;
+    const gate = deferred();
+    piSetModel.mockReturnValueOnce(gate.promise);
+
+    const switching = session.setModel('claude-sonnet-5-5');
+    await vi.waitFor(() => expect(piSetModel).toHaveBeenCalledTimes(1));
+    const runtime = (session as unknown as { runtime: { newSession: () => Promise<unknown> } }).runtime;
+    await runtime.newSession();
+    const replacement = H.getLastSession()!;
+    gate.resolve();
+    await switching;
+
+    expect(replacement.setModel).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 'claude-sonnet-5-5' }));
+    expect(session.currentModel).toBe('claude-sonnet-5-5');
+    expect(reported).toEqual(['claude-sonnet-5-5']);
+    await session.dispose();
+  });
+
+  it('stops the turn at once on a clear, and replaces the session only after the queued switch appended', async () => {
+    const { session, piSetModel } = await started();
+    const live = H.getLastSession()!;
+    const order: string[] = [];
+    const gate = deferred();
+    piSetModel.mockImplementationOnce(async () => { await gate.promise; order.push('setModel'); });
+    (live.abort as ReturnType<typeof vi.fn>).mockImplementation(async () => { order.push('abort'); });
+    const runtime = (session as unknown as { runtime: { newSession: () => Promise<{ cancelled: boolean }> } }).runtime;
+    const newSession = runtime.newSession.bind(runtime);
+    runtime.newSession = async () => { order.push('newSession'); return newSession(); };
+
+    const switching = session.setModel('claude-sonnet-5-5');
+    session.clear();
+    await vi.waitFor(() => expect(order).toEqual(['abort']));
+
+    gate.resolve();
+    await Promise.all([switching, session.whenReplaced()]);
+    expect(order).toEqual(['abort', 'setModel', 'newSession']);
+    await session.dispose();
+  });
+
+  it('detaches from a deleted session only after the queued switch appended to it, stopping the turn first', async () => {
+    const { session, piSetModel } = await started();
+    const live = H.getLastSession()!;
+    const order: string[] = [];
+    const gate = deferred();
+    piSetModel.mockImplementationOnce(async () => { await gate.promise; order.push('setModel'); });
+    (live.abort as ReturnType<typeof vi.fn>).mockImplementation(async () => { order.push('abort'); });
+    let detached = false;
+
+    void session.setModel('claude-sonnet-5-5');
+    const detaching = session.detachFromDeletedSession().then(() => { detached = true; });
+    await vi.waitFor(() => expect(order).toEqual(['abort']));
+    expect(detached).toBe(false);
+
+    gate.resolve();
+    await detaching;
+    expect(order).toEqual(['abort', 'setModel']);
+    expect(H.getLastSession()).not.toBe(live);
+    await session.dispose();
+  });
+
+  it('applies a switch requested after a clear to the replacement session', async () => {
+    const { session, piSetModel } = await started();
+    const runtime = (session as unknown as { runtime: { newSession: () => Promise<{ cancelled: boolean }> } }).runtime;
+    const newSession = runtime.newSession.bind(runtime);
+    const gate = deferred();
+    runtime.newSession = async () => { await gate.promise; return newSession(); };
+
+    session.clear();
+    const switching = session.setModel('claude-sonnet-5-5');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(piSetModel).not.toHaveBeenCalled();
+
+    gate.resolve();
+    await switching;
+    expect(piSetModel).not.toHaveBeenCalled();
+    expect(H.getLastSession()!.setModel).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 'claude-sonnet-5-5' }));
+    expect(session.currentModel).toBe('claude-sonnet-5-5');
+    await session.dispose();
+  });
+
+  it('publishes nothing for a switch the panel was disposed during', async () => {
+    const { session, reported, piSetModel } = await started();
+    reported.length = 0;
+    const gate = deferred();
+    piSetModel.mockReturnValueOnce(gate.promise);
+
+    const switching = session.setModel('claude-sonnet-5-5');
+    await vi.waitFor(() => expect(piSetModel).toHaveBeenCalledTimes(1));
+    const disposing = session.dispose();
+    gate.resolve();
+    await Promise.all([switching, disposing]);
+
+    expect(reported).toEqual([]);
+    expect(session.currentModel).toBe('claude-opus-5-5');
+  });
+
+  it('applies rapid switches in order, so the last one picked is the one committed', async () => {
+    const { session, reported, piSetModel } = await started();
+    reported.length = 0;
+    const slow = deferred();
+    piSetModel.mockReturnValueOnce(slow.promise);
+
+    const first = session.setModel('claude-sonnet-5-5');
+    const second = session.setModel('claude-haiku-5-5');
+    const refused = session.setModel('step-5-preview');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(piSetModel).toHaveBeenCalledTimes(1);
+
+    slow.resolve();
+    await Promise.all([first, second, refused]);
+    expect(piSetModel.mock.calls.map(([model]) => (model as { id: string }).id)).toEqual(['claude-sonnet-5-5', 'claude-haiku-5-5']);
+    expect(session.currentModel).toBe('claude-haiku-5-5');
+    expect(reported).toEqual(['claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-haiku-5-5']);
+    await session.dispose();
+  });
+
+  it('starts a prompt sent during a switch only after pi adopted the model', async () => {
+    const { session, piSetModel } = await started();
+    const live = H.getLastSession()!;
+    const order: string[] = [];
+    const gate = deferred();
+    piSetModel.mockImplementationOnce(async () => { await gate.promise; order.push('setModel'); });
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => { order.push('prompt'); });
+
+    const switching = session.setModel('claude-sonnet-5-5');
+    const sending = session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(order).toEqual([]);
+
+    gate.resolve();
+    await Promise.all([switching, sending]);
+    expect(order).toEqual(['setModel', 'prompt']);
+    await session.dispose();
+  });
+
+  it('switches to a model whose sign-in the first attempt asked for, once signed in', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session, reported } = await started(messages);
+    await session.setModel('gpt-6.1-sol');
+    expect(messages.some((m) => m.type === 'openaiAuthRequired')).toBe(true);
+
+    vi.spyOn(PiRuntime.get('/fake/agent'), 'getOpenAIAuthStatus').mockReturnValue({ apiKey: true, chatgpt: false, codex: false });
+    const anthropic = H.getServices().modelRuntime.getModel;
+    H.getServices().modelRuntime.getModel = (provider: string, id: string) =>
+      (provider === 'openai' && id === 'gpt-6.1-sol' ? { id, name: 'GPT-6.1 Sol', api: 'anthropic-messages', provider, contextWindow: 272_000 } : anthropic(provider, id)) as never;
+    await session.setModel('gpt-6.1-sol');
+
+    expect(session.currentModel).toBe('gpt-6.1-sol');
+    expect(reported.at(-1)).toBe('gpt-6.1-sol');
+    await session.dispose();
+  });
+});
+
+describe('a model pick that asked for OpenAI sign-in', () => {
+  const SONNET = { id: 'claude-sonnet-5-5', name: 'Sonnet', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 1_000_000 };
+  const OPUS = { id: 'claude-opus-5-5', provider: 'anthropic' };
+
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.resetServices();
+    vi.restoreAllMocks();
+    const opus = H.getServices().modelRuntime.getModel;
+    H.getServices().modelRuntime.getModel = (provider: string, id: string) =>
+      (provider === 'anthropic' && id === SONNET.id ? SONNET : opus(provider, id)) as never;
+  });
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+  });
+
+  async function refusedGptPick(messages: ExtensionToWebviewMessage[] = []) {
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const live = H.getLastSession()! as unknown as { model?: { provider: string; id: string }; setModel: ReturnType<typeof vi.fn> };
+    live.model = OPUS;
+    await session.setModel('gpt-6.1-sol');
+    expect(messages.filter((m) => m.type === 'openaiAuthRequired')).toHaveLength(1);
+    return { session, live };
+  }
+
+  /** What the sign-in leaves behind: an OpenAI credential, under which pi's catalog serves GPT-6.1 Sol. */
+  function signedIn(catalogServesGpt = true): void {
+    vi.spyOn(PiRuntime.get('/fake/agent'), 'getOpenAIAuthStatus').mockReturnValue({ apiKey: false, chatgpt: true, codex: false });
+    if (!catalogServesGpt) return;
+    const anthropic = H.getServices().modelRuntime.getModel;
+    H.getServices().modelRuntime.getModel = (provider: string, id: string) =>
+      (provider === 'openai' && id === 'gpt-6.1-sol' ? { id, name: 'GPT-6.1 Sol', api: 'anthropic-messages', provider, contextWindow: 272_000 } : anthropic(provider, id)) as never;
+  }
+
+  it('is applied once the sign-in it asked for completes', async () => {
+    const { session } = await refusedGptPick();
+    signedIn();
+
+    await session.openaiSignInEnded(true);
+
+    expect(session.currentModel).toBe('gpt-6.1-sol');
+    await session.dispose();
+  });
+
+  it('is dropped when that sign-in ends without a credential, so a later one does not apply it', async () => {
+    const { session, live } = await refusedGptPick();
+    await session.openaiSignInEnded(false);
+    signedIn();
+
+    await session.openaiSignInEnded(true);
+
+    expect(live.setModel).not.toHaveBeenCalled();
+    expect(session.currentModel).toBe('claude-opus-5-5');
+    await session.dispose();
+  });
+
+  it('is dropped by a later pick of another model', async () => {
+    const { session } = await refusedGptPick();
+    await session.setModel('claude-sonnet-5-5');
+    signedIn();
+
+    await session.openaiSignInEnded(true);
+
+    expect(session.currentModel).toBe('claude-sonnet-5-5');
+    await session.dispose();
+  });
+
+  it('is dropped by a later pick of the current model, which pi does not apply again', async () => {
+    const reported: string[] = [];
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages, { onModelChange: (model) => reported.push(model) }));
+    await session.initializeEarly();
+    const live = H.getLastSession()! as unknown as { model?: { provider: string; id: string }; setModel: ReturnType<typeof vi.fn> };
+    live.model = OPUS;
+    await session.setModel('gpt-6.1-sol');
+    reported.length = 0;
+
+    await session.setModel('claude-opus-5-5');
+    signedIn();
+    await session.openaiSignInEnded(true);
+
+    expect(live.setModel).not.toHaveBeenCalled();
+    expect(reported).toEqual(['claude-opus-5-5']);
+    expect(session.currentModel).toBe('claude-opus-5-5');
+    await session.dispose();
+  });
+
+  it('is not armed by a refusal that a later pick already superseded', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const refused = session.setModel('gpt-6.1-sol');
+    const later = session.setModel('claude-sonnet-5-5');
+    await Promise.all([refused, later]);
+    signedIn();
+
+    await session.openaiSignInEnded(true);
+
+    expect(session.currentModel).toBe('claude-sonnet-5-5');
+    await session.dispose();
+  });
+
+  it('is dropped by a clear', async () => {
+    const { session } = await refusedGptPick();
+    session.clear();
+    await session.whenReplaced();
+    signedIn();
+
+    await session.openaiSignInEnded(true);
+
+    expect(session.currentModel).toBe('claude-opus-5-5');
+    await session.dispose();
+  });
+
+  it('is dropped by a prompt sent on the committed model', async () => {
+    const { session } = await refusedGptPick();
+    await session.sendMessage('carry on', undefined, 'c1', { content: 'carry on' });
+    signedIn();
+
+    await session.openaiSignInEnded(true);
+
+    expect(session.currentModel).toBe('claude-opus-5-5');
+    await session.dispose();
+  });
+
+  it('is refused with a notice, never a second sign-in request, when the credential still does not serve the model', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session, live } = await refusedGptPick(messages);
+    signedIn(false);
+
+    await session.openaiSignInEnded(true);
+    await session.setModel('gpt-6.1-sol');
+
+    expect(messages.filter((m) => m.type === 'openaiAuthRequired')).toHaveLength(1);
+    expect(testPlatform.notifications.calls.filter((call) => call.message.includes('GPT-6.1 Sol'))).toHaveLength(2);
+    expect(live.setModel).not.toHaveBeenCalled();
+    expect(session.currentModel).toBe('claude-opus-5-5');
     await session.dispose();
   });
 });
@@ -8164,7 +8737,7 @@ describe('PiSession: the first prompt waits for servers with Always-loaded tools
   type FakeSession = NonNullable<ReturnType<typeof H.getLastSession>>;
 
   /**
-   * pi 0.99.2's `prompt()` for a run it opens: the `before_agent_start` handlers run (the Damocles one
+   * pi 1.1.0's `prompt()` for a run it opens: the `before_agent_start` handlers run (the Damocles one
    * holds on the panel's wait), then `preflightResult('started')` is called synchronously and a throw
    * from it rejects `prompt()`, then `_runAgentPrompt` resets the abort flag and the agent loop calls
    * the provider with no abort check before the first request. `abort()` before the run is a no-op,
@@ -8532,6 +9105,25 @@ describe('a resumed conversation continues on the model and thinking level its f
     const session = new PiSession(makeOptions([], { onRecordedSelection: restored }));
     await session.initializeEarly();
     expect(restored).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it.each([
+    ['anthropic', 'claude-haiku-4-5-20251001', 'claude-haiku-5-5'],
+    ['anthropic', 'claude-opus-4-8', 'claude-opus-5-5'],
+    ['stepfun', 'step-3.7-flash', 'step-5-preview'],
+  ])('continues a conversation recorded on retired %s/%s on its successor %s', async (provider, retiredId, successor) => {
+    const successors = [
+      { id: 'claude-haiku-5-5', name: 'Haiku', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 1_000_000 },
+      { id: 'step-5-preview', name: 'Step', api: 'anthropic-messages', provider: 'stepfun', contextWindow: 1_000_000 },
+    ];
+    const lookup = H.getServices().modelRuntime.getModel;
+    H.getServices().modelRuntime.getModel = (p: string, id: string) => (successors.find((m) => m.provider === p && m.id === id) ?? lookup(p, id)) as never;
+
+    const { session, restored, createdOn, modelValue } = await restore(recorded(provider, retiredId, 'low'));
+    expect(createdOn).toBe(successor);
+    expect(modelValue).toBe(successor);
+    expect(restored).toHaveBeenCalledExactlyOnceWith(successor, 'low');
     await session.dispose();
   });
 });

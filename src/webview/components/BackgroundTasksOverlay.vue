@@ -8,7 +8,7 @@ import type { SubagentState } from '@shared/types/subagents';
 import OverlayShell from './OverlayShell.vue';
 import AgentUsageStats from './AgentUsageStats.vue';
 import { useBackgroundTaskStore } from '@/stores/useBackgroundTaskStore';
-import { useSubagentStore } from '@/stores/useSubagentStore';
+import { subagentStatusLine, subagentToolCount, useSubagentStore } from '@/stores/useSubagentStore';
 import { useSubagentStop } from '@/composables/useSubagentStop';
 import { useModelIdentity } from '@/composables/useModelIdentity';
 import { agentStatusChip, formatElapsed } from '@/composables/useTeamFormatting';
@@ -55,8 +55,8 @@ function duration(subagent: SubagentState): string {
   return formatElapsed((subagent.endTime ?? now.value.getTime()) - subagent.startTime);
 }
 
-function toolCount(subagent: SubagentState): number {
-  return subagent.result?.totalToolUseCount ?? subagent.messages.reduce((count, message) => count + (message.toolCalls?.length ?? 0), subagent.toolCalls.length);
+function statusLine(subagent: SubagentState): string | undefined {
+  return subagentStatusLine(subagent, t);
 }
 </script>
 
@@ -134,7 +134,7 @@ function toolCount(subagent: SubagentState): number {
               <span>·</span>
               <span class="font-mono">{{ duration(subagent) }}</span>
               <span>·</span>
-              <span>{{ t('subagentDisplay.tools', { n: toolCount(subagent) }, toolCount(subagent)) }}</span>
+              <span>{{ t('subagentDisplay.tools', { n: subagentToolCount(subagent) }, subagentToolCount(subagent)) }}</span>
               <AgentUsageStats
                 v-if="subagent.usage"
                 :usage="subagent.usage"
@@ -145,9 +145,9 @@ function toolCount(subagent: SubagentState): number {
               />
             </span>
             <span
-              v-if="status === 'running' && subagent.progressSummary"
+              v-if="status === 'running' && statusLine(subagent)"
               class="truncate text-11.5 text-(--d-accent) italic"
-            >{{ subagent.progressSummary }}</span>
+            >{{ statusLine(subagent) }}</span>
           </span>
           <span
             class="flex flex-none items-center gap-1.25 rounded-full bg-[color-mix(in_srgb,var(--tone,currentColor)_14%,transparent)] px-2 py-0.5 text-11 font-medium @max-[34.9375rem]/overlay:p-1"

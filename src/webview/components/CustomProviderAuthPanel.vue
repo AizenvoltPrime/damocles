@@ -6,6 +6,7 @@ import { useSettingsStore } from "@/stores/useSettingsStore";
 import { usePlatformBridge } from "@/composables/usePlatformBridge";
 import { Eye, EyeOff, Trash2 } from "lucide-vue-next";
 import SettingButton from "@/components/settings/controls/SettingButton.vue";
+import { useMemoryJudgeNames } from "@/components/settings/memory-judge-names";
 import type { ExtensionToWebviewMessage } from "@shared/types/messages";
 
 // Single key-field auth panel shared by the custom (non-first-party) providers. The provider id doubles
@@ -31,13 +32,11 @@ const configured = computed(() => ({
   openrouter: openrouterConfigured.value,
 })[props.provider]);
 
+const { classifierName, judgeText } = useMemoryJudgeNames();
+
 const memoryJudgeText = computed(() => {
   const judge = memoryJudge.value;
-  if (props.provider !== "typesafe" || !judge) return null;
-  if (judge.kind === "jev") return judge.via === "typesafe" ? t("typesafe.memoryJudge.jevTypesafe") : t("typesafe.memoryJudge.jevOpenrouter");
-  if (judge.kind === "model") return t("typesafe.memoryJudge.model", { model: judge.model });
-  if (judge.kind === "unknown") return t("typesafe.memoryJudge.unknown");
-  return t("typesafe.memoryJudge.none");
+  return props.provider === "typesafe" && judge ? judgeText(judge) : null;
 });
 
 const rejectedJudgeLines = computed(() => {
@@ -46,7 +45,7 @@ const rejectedJudgeLines = computed(() => {
   return judge.rejected.map(({ via, reason }) => ({
     via,
     text: t("typesafe.memoryJudge.rejected", {
-      provider: via === "typesafe" ? t("typesafe.memoryJudge.jevTypesafe") : t("typesafe.memoryJudge.jevOpenrouter"),
+      provider: classifierName(via),
       reason: t(`typesafe.memoryJudge.rejection.${reason}`),
     }),
   }));
@@ -208,6 +207,7 @@ const messageClass = computed(() => {
         v-if="inlineMessage"
         class="sm-hint"
         :class="messageClass"
+        :role="inlineMessage.kind === 'error' ? 'alert' : 'status'"
       >
         {{ inlineMessage.text }}
       </p>

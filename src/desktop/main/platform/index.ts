@@ -1,4 +1,5 @@
 import * as path from 'node:path';
+import { Worker } from 'node:worker_threads';
 import type { BrowserWindow } from 'electron';
 import type { Platform } from '../../../platform/platform';
 import type { LogSinkFactory } from '../../../platform/log-sink';
@@ -13,7 +14,7 @@ import type { ProjectList } from '../projects';
 import type { TrustStore } from '../trust-store';
 import type { PanelViews } from '../views';
 import { createDesktopAppInfo } from './app-info';
-import { createDesktopAppPaths, type DesktopLayout } from './app-paths';
+import { createDesktopAppPaths, watchWorkerPath, type DesktopLayout } from './app-paths';
 import { desktopHostCapabilities } from './capabilities';
 import { createDesktopClipboardService } from './clipboard-service';
 import { createDesktopDialogService } from './dialog-service';
@@ -28,6 +29,7 @@ import { createDesktopSecretsStore } from './secrets-store';
 import { DesktopSettingsStore, type ChatFolders } from './settings-store';
 import { createDesktopShellService } from './shell-service';
 import { createDesktopTrustService } from './trust-service';
+import { createWorkerTreeHost } from './watch-worker-host';
 import { createDesktopWindowService } from './window-service';
 import { createDesktopWorkspaceFolders } from './workspace-folders';
 
@@ -73,10 +75,11 @@ export interface DesktopPlatform extends Platform {
 // Built once per app run; a host reload rebuilds the core services on top of the same platform.
 export function createDesktopPlatform(deps: DesktopPlatformDeps): DesktopPlatform {
   const workspaceFolders = createDesktopWorkspaceFolders(deps.projects);
-  const fileWatchers = new DesktopFileWatcherFactory(workspaceFolders, deps.log);
+  const paths = createDesktopAppPaths(deps.layout);
+  const windowsTree = createWorkerTreeHost(() => new Worker(watchWorkerPath(paths)), deps.log);
+  const fileWatchers = new DesktopFileWatcherFactory(workspaceFolders, deps.log, windowsTree);
   const shell = createDesktopShellService(deps.log);
   const trust = createDesktopTrustService(deps.trust);
-  const paths = createDesktopAppPaths(deps.layout);
   const { state, notifications } = deps;
   const secrets = createDesktopSecretsStore(deps.userDataDir, notifications, deps.localization.t, deps.log);
   const settings = new DesktopSettingsStore({

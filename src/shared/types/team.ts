@@ -1,4 +1,5 @@
 import type { ImageBlock } from './content';
+import type { ToolAbandonReason } from './session';
 import type { AgentUsageTotals } from '../usage-accounting';
 import type { EffortBadgeLevel } from '../effort-badge';
 
@@ -60,14 +61,16 @@ export type TeamAgentContentBlock =
   | { type: 'text'; text: string }
   | { type: 'thinking'; thinking: string }
   | ImageBlock
-  | { type: 'tool_use'; id: string; name: string; input: unknown }
+  // `abandoned`: its model call failed or was aborted, or an abort skipped it in its batch, so pi never ran it.
+  | { type: 'tool_use'; id: string; name: string; input: unknown; abandoned?: ToolAbandonReason }
   // `metadata` holds the normalized result details, the only place the user-cancelled marker is recorded.
   | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean; imageCount?: number; metadata?: Record<string, unknown> };
 
 /** One persisted member message. `id` comes from its pi session entry; a live message never carries it. */
 export interface TeamAgentHistoryMessage {
   id: string;
-  role: 'user' | 'assistant' | 'toolResult';
+  /** `error` carries a failed model call's error as one text block. */
+  role: 'user' | 'assistant' | 'toolResult' | 'error';
   content: TeamAgentContentBlock[];
 }
 

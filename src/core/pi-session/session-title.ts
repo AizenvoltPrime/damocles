@@ -1,4 +1,5 @@
-import type { StructuredCompletionRequest } from './structured-completion';
+import { structuredValue, type StructuredCompletionRequest, type StructuredCompletionResult } from './structured-completion';
+import type { StructuredSubCallPurpose } from './subcall-model';
 import type { SubCallAttribution } from '../usage-stats/subcall-ledger';
 
 /**
@@ -26,8 +27,8 @@ export const TITLE_SCHEMA: Record<string, unknown> = {
 
 /** The narrow runtime surface the title sub-call needs; the concrete `PiRuntime` satisfies it. */
 export interface TitleRuntime {
-  hasAuthedSubCallModel(): boolean;
-  runStructuredCompletion<T>(req: StructuredCompletionRequest): Promise<T | null>;
+  hasAuthedSubCallModel(purpose: StructuredSubCallPurpose): boolean;
+  runStructuredCompletion<T>(req: StructuredCompletionRequest): Promise<StructuredCompletionResult<T>>;
 }
 
 /**
@@ -36,7 +37,7 @@ export interface TitleRuntime {
  * Fails soft at the call site (fire-and-forget); this core does not catch (its caller wraps it).
  */
 export async function generateSessionTitle(exchange: string, runtime: TitleRuntime, attribution: SubCallAttribution): Promise<string | null> {
-  if (!runtime.hasAuthedSubCallModel()) return null;
+  if (!runtime.hasAuthedSubCallModel('session-title')) return null;
   const result = await runtime.runStructuredCompletion<{ title?: string }>({
     systemPrompt: TITLE_SYSTEM_PROMPT,
     userMessage: exchange,
@@ -47,5 +48,5 @@ export async function generateSessionTitle(exchange: string, runtime: TitleRunti
     attribution,
     timeoutMs: 15_000,
   });
-  return result?.title?.trim() || null;
+  return structuredValue(result)?.title?.trim() || null;
 }

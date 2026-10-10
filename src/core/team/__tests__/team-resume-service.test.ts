@@ -499,6 +499,7 @@ describe('the runs of a team', () => {
   const work = (tools: number, tokens: number, cost: number, end: boolean): Behaviour => (_t, s) => {
     const content = Array.from({ length: tools }, (_, i) => ({ type: 'toolCall', id: `tool-${i}`, name: 'read', arguments: {} }));
     s.emit({ type: 'message_end', message: { role: 'assistant', content, usage: { input: tokens, output: 1, cacheRead: tokens * 10, cacheWrite: 2, cost: { total: cost } } } });
+    for (const call of content) s.emit({ type: 'tool_execution_start', toolCallId: call.id, toolName: call.name, args: {} });
     if (end) s.emit({ type: 'turn_end' });
   };
 

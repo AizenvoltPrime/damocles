@@ -3,7 +3,7 @@ import type { HandlerRegistry } from "../types";
 export function createConsolidationHandlers(): Partial<HandlerRegistry> {
   return {
     consolidationPendingCount: (msg, ctx) => {
-      ctx.stores.consolidationStore.setPendingCount(msg.count);
+      ctx.stores.consolidationStore.setPendingCount(msg.count, msg.setAside);
     },
 
     consolidationPreview: (msg, ctx) => {

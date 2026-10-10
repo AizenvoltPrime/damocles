@@ -908,6 +908,7 @@ describe('TeamRunner.resume tool count', () => {
   const callTools = (n: number): Behaviour => (_t, s) => {
     const content = Array.from({ length: n }, (_, i) => ({ type: 'toolCall', id: `tc-${s.prompts.length}-${i}`, name: 'read', arguments: {} }));
     s.emit({ type: 'message_end', message: { role: 'assistant', content } });
+    for (const call of content) s.emit({ type: 'tool_execution_start', toolCallId: call.id, toolName: call.name, args: {} });
   };
 
   it("adds the resumed run's tool calls to the attempt's earlier ones, live, in the log and after a reload", async () => {
@@ -950,10 +951,15 @@ describe('TeamRunner.resume tool count', () => {
     const run = h.runner.run();
     const lead = await opened(h, 'Lead');
     await vi.waitFor(() => expect(h.agent('Lead').totalInputTokens).toBe(10));
-    // The in-flight request reports its usage and tool call only as the abort ends it, after the checkpoint.
+    // The in-flight request reports its usage and tool calls only as the abort ends it, after the checkpoint,
+    // and the abort cuts its batch after the first call.
     const abort = lead.abort.bind(lead);
     lead.abort = async () => {
-      lead.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'toolCall', id: 'late', name: 'read', arguments: {} }], usage: { input: 7, output: 4, cacheRead: 0, cacheWrite: 0, cost: { total: 2 } } } });
+      const calls = ['late', 'late-skipped'].map((id) => ({ type: 'toolCall', id, name: 'read', arguments: {} }));
+      lead.emit({ type: 'message_end', message: { role: 'assistant', content: calls, stopReason: 'toolUse', usage: { input: 7, output: 4, cacheRead: 0, cacheWrite: 0, cost: { total: 2 } } } });
+      lead.emit({ type: 'tool_execution_start', toolCallId: 'late', toolName: 'read', args: {} });
+      lead.emit({ type: 'tool_execution_end', toolCallId: 'late', toolName: 'read', result: { content: [{ type: 'text', text: 'Operation aborted' }], details: {} }, isError: true });
+      lead.emit({ type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'aborted', errorMessage: 'Request was aborted' } });
       await abort();
     };
     h.runner.cancel('user');
@@ -1353,6 +1359,62 @@ describe('a member card reads the same live and after a reload', () => {
     const reloaded = (await persistenceOf(h).loadTeamState(h.teamId))!.agents.find((a) => a.name === name);
     expect(reloaded).toMatchObject(card);
     expect(logEntries(h).filter((e) => e['type'] === 'agent-completed' && e['name'] === name)).toHaveLength(1);
+  });
+
+  function lastResultUpdate(h: Harness, agentId: string): Extract<ExtensionToWebviewMessage, { type: 'teamAgentStatusUpdate' }> | undefined {
+    return h.webview.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'teamAgentStatusUpdate' }> =>
+      m.type === 'teamAgentStatusUpdate' && m.agentId === agentId && m.result !== undefined).at(-1);
+  }
+
+  it.each([
+    ['completed', { status: 'completed', finalResponse: 'A found the bug' }],
+    ['failed', { status: 'failed', error: '529 overloaded_error', finalResponse: '529 overloaded_error\n\nPartial output:\nhalf done' }],
+    ['cancelled', { status: 'cancelled', finalResponse: null }],
+  ] as const)('a %s member is sent, as it settles, the result its reload shows', async (_status, outcome) => {
+    const h = makeTeam({ cwd: newCwd('settled-result'), teamId: crypto.randomUUID(), specialists: ['A'], behave: {} });
+    const runs = holdRuns(h);
+    const done = h.runner.run();
+    h.runner.startSpecialist('A', 'task for A, described in full');
+    runs.get('A')!.resolve({ ...RUN_RESULT, ...outcome, agentId: h.agent('A').agentId });
+    await microtasks();
+    const settled = lastResultUpdate(h, h.agent('A').agentId);
+    runs.get('Lead')!.resolve({ ...RUN_RESULT, finalResponse: 'the synthesis', agentId: h.agent('Lead').agentId });
+    await done;
+
+    const reloaded = (await persistenceOf(h).loadTeamState(h.teamId))!.agents;
+    expect(settled?.result).toBe(outcome.finalResponse);
+    expect(reloaded.find((a) => a.name === 'A')!.result).toBe(outcome.finalResponse);
+    expect(lastResultUpdate(h, h.agent('Lead').agentId)?.result).toBe('the synthesis');
+    expect(reloaded.find((a) => a.name === 'Lead')!.result).toBe('the synthesis');
+  });
+
+  it('a resumed team announces each member with the result its reload shows', async () => {
+    const cwd = newCwd('resumed-result');
+    const teamId = crypto.randomUUID();
+    const h = makeTeam({ cwd, teamId, specialists: ['A'], behave: {} });
+    const runs = holdRuns(h);
+    const done = h.runner.run();
+    h.runner.startSpecialist('A', 'task for A, described in full');
+    runs.get('A')!.resolve({ ...RUN_RESULT, finalResponse: 'A found the bug', agentId: h.agent('A').agentId });
+    await microtasks();
+    h.runner.cancel('user');
+    runs.get('Lead')!.resolve({ ...RUN_RESULT, status: 'cancelled', agentId: h.agent('Lead').agentId });
+    await done;
+    const persistence = persistenceOf(h);
+    expect((await persistence.loadTeamState(teamId))!.agents.find((a) => a.name === 'A')!.result).toBe('A found the bug');
+
+    const after = makeTeam({ cwd, teamId, specialists: ['A'], behave: {} });
+    const afterRuns = holdRuns(after);
+    after.runner.restore(await persistence.readEventLog(teamId), (await checkpointOf(persistence, teamId))!, new Map());
+    const resumed = after.runner.resume('tc-resume');
+    await vi.waitFor(() => expect(after.webview.some((m) => m.type === 'teamStarted')).toBe(true));
+
+    const started = after.webview.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'teamStarted' }> => m.type === 'teamStarted')!;
+    expect(started.team.agents.find((a) => a.name === 'A')!.result).toBe('A found the bug');
+    after.runner.cancel('user');
+    await vi.waitFor(() => expect(afterRuns.has('Lead')).toBe(true));
+    afterRuns.get('Lead')!.resolve({ ...RUN_RESULT, status: 'cancelled', agentId: after.agent('Lead').agentId });
+    await resumed;
   });
 
   it('a member the drain timeout forced terminal reloads with the status the finalize sent', async () => {

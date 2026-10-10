@@ -45,8 +45,6 @@ function liveSessionUsage(file: string, sessionDir: string): ExtensionToWebviewM
     cwd: '/cwd',
     sessionId: () => 'SID',
     modelValue: () => 'claude-sonnet-4-5',
-    defaultModelValue: () => 'claude-sonnet-4-5',
-    contextWindow: () => 200_000,
     supportedModels: () => [],
     permissionMode: () => 'default',
     budgetLimit: () => null,

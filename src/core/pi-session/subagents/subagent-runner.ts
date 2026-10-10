@@ -39,6 +39,8 @@ export interface RunResult {
   aborted: boolean;
   /** True if steered to wrap up (hit soft turn limit) but finished in time. */
   steered: boolean;
+  /** The provider error the run's last model call ended on; pi has finished retrying it by then. */
+  error?: string;
 }
 
 const DEFAULT_GRACE_TURNS = 5;
@@ -71,9 +73,9 @@ function collectResponseText(session: AgentSession): { getText: () => string; un
   return { getText: () => text, unsubscribe };
 }
 
-/** Get the last assistant text from the completed session history. */
-function getLastAssistantText(session: AgentSession): string {
-  for (let i = session.messages.length - 1; i >= 0; i--) {
+/** The last assistant text in the session history from index `from` on, so a reopened session's earlier runs are skipped. */
+function getLastAssistantText(session: AgentSession, from: number): string {
+  for (let i = session.messages.length - 1; i >= from; i--) {
     const msg = session.messages[i] as { role?: string; content?: unknown } | undefined;
     if (!msg || msg.role !== 'assistant') continue;
     const text = extractText(msg.content).trim();
@@ -102,6 +104,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<RunResul
   let turnCount = 0;
   let softLimitReached = false;
   let aborted = false;
+  let error: string | undefined;
 
   const unsub = session.subscribe((event: AgentSessionEvent) => {
     // An abort during prompt()'s preflight preceded the run it was meant to stop, so repeat it now.
@@ -122,6 +125,8 @@ export async function runSubagent(options: RunSubagentOptions): Promise<RunResul
     if (event.type === 'tool_execution_start') options.onToolActivity?.({ type: 'start', toolName: event.toolName });
     if (event.type === 'tool_execution_end') options.onToolActivity?.({ type: 'end', toolName: event.toolName });
     if (event.type === 'message_end' && event.message.role === 'assistant') {
+      // pi reports a failed model call only here, and a retry that answers replaces it.
+      error = event.message.stopReason === 'error' ? event.message.errorMessage ?? 'Unknown error' : undefined;
       const usage = (event.message as { usage?: { input?: number; output?: number; cacheWrite?: number } }).usage;
       if (usage) {
         options.onAssistantUsage?.({ input: usage.input ?? 0, output: usage.output ?? 0, cacheWrite: usage.cacheWrite ?? 0 });
@@ -131,6 +136,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<RunResul
 
   const collector = collectResponseText(session);
   const cleanupAbort = forwardAbortSignal(session, options.signal);
+  const runStart = session.messages.length;
 
   try {
     await session.prompt(options.prompt);
@@ -140,10 +146,10 @@ export async function runSubagent(options: RunSubagentOptions): Promise<RunResul
     cleanupAbort();
   }
 
-  const responseText = collector.getText().trim() || getLastAssistantText(session);
+  const responseText = collector.getText().trim() || getLastAssistantText(session, runStart);
   // A hard abort after the grace window sets both flags; report only `aborted` so the pair can't
   // contradict (the soft-limit steer is subsumed by the abort).
-  return { responseText, session, aborted, steered: softLimitReached && !aborted };
+  return { responseText, session, aborted, steered: softLimitReached && !aborted, ...(error !== undefined ? { error } : {}) };
 }
 
 /** Send a steering message to a running subagent. */

@@ -8,7 +8,7 @@ import type { MemoryAuditStatePayload, MemoryAuditSummary } from "../../../../..
 const STATE: MemoryAuditStatePayload = {
   run: null,
   proposals: [],
-  estimate: { memoryCount: 0, profileCount: 0, batchCount: 0, inputTokens: 0, outputTokens: 0, model: null, unpriced: false, costUsd: null },
+  estimate: { memoryCount: 0, profileCount: 0, batchCount: 0, inputTokens: 0, outputTokens: 0, fittedEffort: 'low', model: null, unpriced: false, costUsd: null },
   hasAnyRun: false,
   eligibleCount: 0,
   startEndsLatestRun: false,

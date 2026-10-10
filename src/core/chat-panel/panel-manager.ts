@@ -539,8 +539,7 @@ export class PanelManager {
         void this.sendCurrentSettings(host, permissionHandler, current.folder);
         if (
           e.affects("damocles.thinkingDisabled") ||
-          e.affects("damocles.effortByModel") ||
-          e.affects("damocles.maxThinkingTokens")
+          e.affects("damocles.effortByModel")
         ) {
           this.sendThinkingForPanel(host, panelId, current.folder);
         }

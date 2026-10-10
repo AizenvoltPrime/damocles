@@ -18,7 +18,8 @@ export interface AgentStreamingState {
 
 export interface AgentChatMessage {
   id: string;
-  role: 'user' | 'assistant';
+  /** `error` is a failed model call pi did not re-run; its text is the provider's message. */
+  role: 'user' | 'assistant' | 'error';
   content: string;
   thinking?: string;
   toolCalls?: ToolCall[];
@@ -28,17 +29,19 @@ export interface AgentChatMessage {
   timestamp: number;
 }
 
+type PersistedToolUse = Extract<TeamAgentContentBlock, { type: 'tool_use' }>;
 type PersistedToolResult = Extract<TeamAgentContentBlock, { type: 'tool_result' }>;
 
 /**
  * The terminal status a reloaded card carries, derived the same way the live path derives it. A call
- * with no persisted result never recorded an outcome, so it reads as `unrecorded` rather than claiming
- * one; `pending` and `running` are pre-terminal and put a spinner and a Stop control on a tool long gone.
+ * of a failed or aborted model call never ran; any other call with no persisted result never recorded an outcome,
+ * so it reads as `unrecorded` rather than claiming one; `pending` and `running` are pre-terminal and put
+ * a spinner and a Stop control on a tool long gone.
  */
-function restoredToolStatus(result: PersistedToolResult | undefined): ToolCall['status'] {
+function restoredToolStatus(call: PersistedToolUse, result: PersistedToolResult | undefined): ToolCall['status'] {
+  if (call.abandoned) return 'abandoned';
   if (!result) return 'unrecorded';
-  if (result.is_error === true) return 'failed';
-  return resolveCancelledStatus('completed', result.metadata);
+  return resolveCancelledStatus(result.is_error === true ? 'failed' : 'completed', result.metadata);
 }
 
 /**
@@ -87,6 +90,8 @@ export const useTeamStore = defineStore('team', () => {
 
   const agentMessages = ref<Record<string, AgentChatMessage[]>>({});
   const agentStreaming = ref<Record<string, AgentStreamingState>>({});
+  // Agents whose failed model call pi waits to re-send, by agentId.
+  const agentRetry = ref<Record<string, { attempt: number; maxAttempts: number }>>({});
   const agentHistoryLoaded = ref<ReadonlySet<string>>(new Set());
   const selectedAgentId = ref<string | null>(null);
   const isAgentOverlayOpen = ref(false);
@@ -225,7 +230,7 @@ export const useTeamStore = defineStore('team', () => {
   // A specialist's billing flag is only known once its role model resolves at spawn, which is after the
   // team list was sent, so an absent field here keeps the agent's current value rather than resetting it.
   // Agent times come only from the extension's stopwatch, never from this clock.
-  function handleAgentStatusUpdate(teamId: string, agentId: string, status: TeamAgentStatus, progressSummary?: string, logFilePath?: string | null, model?: string, dollarBilled?: boolean, attempt?: number, effort?: EffortBadgeLevel | null, stopwatch?: Stopwatch): void {
+  function handleAgentStatusUpdate(teamId: string, agentId: string, status: TeamAgentStatus, progressSummary?: string, logFilePath?: string | null, model?: string, dollarBilled?: boolean, attempt?: number, effort?: EffortBadgeLevel | null, stopwatch?: Stopwatch, result?: string | null): void {
     const team = teams.value[teamId];
     if (!team) return;
     // Dropped, not left stale, because a resumed or redispatched member can return to the status it was stopped in.
@@ -251,12 +256,14 @@ export const useTeamStore = defineStore('team', () => {
         ...(model ? { model } : {}),
         ...(dollarBilled !== undefined ? { dollarBilled } : {}),
         ...(effort !== undefined ? { effort } : {}),
+        ...(result !== undefined ? { result } : {}),
         ...relaunched,
         ...(stopwatch ? { activeMs: stopwatch.activeMs, runningSince: stopwatch.runningSince } : {}),
       };
     });
     const totalToolCount = agents.reduce((sum, a) => sum + a.toolCount, 0);
     teams.value = { ...teams.value, [teamId]: { ...team, agents, totalToolCount } };
+    if (status !== 'running') setAgentRetry(agentId, null);
   }
 
   function handleAgentUsageUpdate(teamId: string, agentId: string, usage: AgentUsageTotals): void {
@@ -360,11 +367,14 @@ export const useTeamStore = defineStore('team', () => {
     const textContent = content.filter(b => b.type === 'text').map(b => (b as { text: string }).text).join('');
     const thinkingContent = content.filter(b => b.type === 'thinking').map(b => (b as { thinking: string }).thinking).join('\n\n');
     const toolCalls: ToolCall[] = content
-      .filter(b => b.type === 'tool_use')
-      .map(b => {
-        const t = b as { id: string; name: string; input: unknown };
-        return { id: t.id, name: t.name, input: typeof t.input === 'object' && t.input !== null ? t.input as Record<string, unknown> : {}, status: 'running' as const };
-      });
+      .filter((b): b is PersistedToolUse => b.type === 'tool_use')
+      .map(t => ({
+        id: t.id,
+        name: t.name,
+        input: typeof t.input === 'object' && t.input !== null ? t.input as Record<string, unknown> : {},
+        status: t.abandoned ? 'abandoned' as const : 'running' as const,
+        ...(t.abandoned && { abandonReason: t.abandoned }),
+      }));
 
     const msg: AgentChatMessage = {
       id: messageId,
@@ -377,10 +387,60 @@ export const useTeamStore = defineStore('team', () => {
     };
 
     const current = agentMessages.value[agentId] ?? [];
+    // A re-seal of a sealed message replaces its blocks in place; an outcome a call already recorded outranks it.
+    const sealedAt = current.findIndex(m => m.id === messageId);
+    const earlier = current[sealedAt];
+    if (earlier) {
+      const resealed: AgentChatMessage = {
+        ...earlier,
+        contentBlocks: content,
+        ...(toolCalls.length > 0 ? {
+          toolCalls: toolCalls.map(t => {
+            const recorded = earlier.toolCalls?.find(e => e.id === t.id);
+            return recorded && (TERMINAL_TOOL_STATUSES.has(recorded.status) || !TERMINAL_TOOL_STATUSES.has(t.status)) ? recorded : t;
+          }),
+        } : {}),
+      };
+      agentMessages.value = { ...agentMessages.value, [agentId]: current.map((m, i) => (i === sealedAt ? resealed : m)) };
+      return;
+    }
     agentMessages.value = { ...agentMessages.value, [agentId]: [...current, msg] };
 
     const { [agentId]: _, ...rest } = agentStreaming.value;
     agentStreaming.value = rest;
+  }
+
+  /** Whether any team holds this agent, so a message naming it as its owner has a transcript to reach. */
+  function hasAgent(agentId: string): boolean {
+    return Object.values(teams.value).some(t => t.agents.some(a => a.agentId === agentId));
+  }
+
+  /** A failed model call pi will not re-run. Its streamed text, if it sealed none, ends with it. */
+  function handleAgentError(agentId: string, message: string): void {
+    const { [agentId]: _, ...rest } = agentStreaming.value;
+    agentStreaming.value = rest;
+    const msg: AgentChatMessage = { id: crypto.randomUUID(), role: 'error', content: message, timestamp: Date.now() };
+    agentMessages.value = { ...agentMessages.value, [agentId]: [...(agentMessages.value[agentId] ?? []), msg] };
+  }
+
+  /** A failed call pi re-runs: what it sealed under `messageId` and what it streamed go, as a reload omits them. */
+  function retractAgentMessage(agentId: string, messageId: string): void {
+    const { [agentId]: _, ...rest } = agentStreaming.value;
+    agentStreaming.value = rest;
+    const current = agentMessages.value[agentId];
+    if (!current?.some(m => m.id === messageId)) return;
+    agentMessages.value = { ...agentMessages.value, [agentId]: current.filter(m => m.id !== messageId) };
+  }
+
+  /** The retry wait of a running agent; null ends it. */
+  function setAgentRetry(agentId: string, retry: { attempt: number; maxAttempts: number } | null): void {
+    if (retry) {
+      agentRetry.value = { ...agentRetry.value, [agentId]: retry };
+      return;
+    }
+    if (!(agentId in agentRetry.value)) return;
+    const { [agentId]: _, ...rest } = agentRetry.value;
+    agentRetry.value = rest;
   }
 
   function handleAgentUserMessage(agentId: string, content: string, timestamp: number, images?: ImageBlock[]): void {
@@ -500,15 +560,15 @@ export const useTeamStore = defineStore('team', () => {
         const textContent = turn.filter(b => b.type === 'text').map(b => (b as { text: string }).text).join('');
         const thinkingContent = turn.filter(b => b.type === 'thinking').map(b => (b as { thinking: string }).thinking).join('\n\n');
         const toolCalls: ToolCall[] = turn
-          .filter(b => b.type === 'tool_use')
-          .map(b => {
-            const t = b as { id: string; name: string; input: unknown };
+          .filter((b): b is PersistedToolUse => b.type === 'tool_use')
+          .map(t => {
             const result = results.get(t.id);
             return {
               id: t.id,
               name: t.name,
               input: typeof t.input === 'object' && t.input !== null ? t.input as Record<string, unknown> : {},
-              status: restoredToolStatus(result),
+              status: restoredToolStatus(t, result),
+              ...(t.abandoned && { abandonReason: t.abandoned }),
               ...(result ? { result: result.content, isError: result.is_error === true } : {}),
               ...(result?.imageCount !== undefined ? { imageCount: result.imageCount } : {}),
               ...(result?.metadata ? { metadata: result.metadata } : {}),
@@ -523,6 +583,10 @@ export const useTeamStore = defineStore('team', () => {
           contentBlocks: turn,
           timestamp: Date.now(),
         });
+      } else if (role === 'error') {
+        // No contentBlocks, the same shape `handleAgentError` builds, so the merge key matches the live copy.
+        const text = turn.filter(b => b.type === 'text').map(b => (b as { text: string }).text).join('');
+        messages.push({ id, role: 'error', content: text, timestamp: Date.now() });
       } else if (role === 'user') {
         // No contentBlocks, the same shape `handleAgentUserMessage` builds, so the merge key matches the live copy.
         const userText = turn.filter(b => b.type === 'text').map(b => (b as { text: string }).text).join('');
@@ -571,6 +635,7 @@ export const useTeamStore = defineStore('team', () => {
     activeTab.value = 'agents';
     agentMessages.value = {};
     agentStreaming.value = {};
+    agentRetry.value = {};
     agentHistoryLoaded.value = new Set();
     selectedAgentId.value = null;
     isAgentOverlayOpen.value = false;
@@ -592,6 +657,7 @@ export const useTeamStore = defineStore('team', () => {
     hasResult,
     agentMessages,
     agentStreaming,
+    agentRetry,
     selectedAgentId,
     isAgentOverlayOpen,
     selectedAgent,
@@ -621,6 +687,10 @@ export const useTeamStore = defineStore('team', () => {
     handleAgentStreamDelta,
     handleAgentAssistant,
     handleAgentUserMessage,
+    hasAgent,
+    handleAgentError,
+    retractAgentMessage,
+    setAgentRetry,
     handleAgentToolResult,
     handleAgentToolProgress,
     markAgentToolCancelRequested,

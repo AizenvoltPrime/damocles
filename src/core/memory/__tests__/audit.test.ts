@@ -116,7 +116,7 @@ function promptIds(req: MemorySubCallRequest): string[] {
 /** A runner that grades each memory from `grades` (missing ids omitted) and rewrites profiles to `profile`. */
 function scriptedRunner(grades: Record<string, Grade>, profile?: { static: string; dynamic: string }): SubCallSpy {
   return subCallSpy((async (req: MemorySubCallRequest) => {
-    if (req.systemPrompt === PROFILE_SYSTEM_PROMPT) return { value: profile ?? null, ...(profile ? {} : { failure: 'transient' }) };
+    if (req.systemPrompt === PROFILE_SYSTEM_PROMPT) return { value: profile ?? null, ...(profile ? {} : { failure: 'unreachable' }) };
     const out = promptIds(req)
       .filter(id => grades[id])
       .map(id => ({ id, reason: 'r', ...grades[id] }));
@@ -176,7 +176,11 @@ describe('memory quality audit', () => {
     it('adds the audit tables and the (run_id, status) index onto a v4 database, keeping its rows', () => {
       const v4 = createDatabaseWrapper(new DatabaseSync(':memory:'));
       runMigrations(v4);
-      v4.exec('DROP TABLE memory_audit_proposals; DROP TABLE memory_audit_runs; DELETE FROM schema_version WHERE version = 5');
+      v4.exec(
+        'DROP TABLE memory_audit_proposals; DROP TABLE memory_audit_runs; DROP INDEX idx_candidates_set_aside; DROP INDEX idx_candidates_claimable; ' +
+          'ALTER TABLE memory_candidates DROP COLUMN set_aside_at; ALTER TABLE memory_candidates DROP COLUMN failed_attempts; ' +
+          'DELETE FROM schema_version WHERE version >= 5',
+      );
       const kept = seed(v4, { content: 'survives the migration' });
       runMigrations(v4);
       expect(row(v4, kept).content).toBe('survives the migration');
@@ -184,7 +188,7 @@ describe('memory quality audit', () => {
       expect(tables).toEqual(['memory_audit_proposals', 'memory_audit_runs']);
       const idx = (v4.prepare("PRAGMA index_info('idx_audit_proposals_run_status')").all() as Array<{ name: string }>).map(c => c.name);
       expect(idx).toEqual(['run_id', 'status']);
-      expect((v4.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v).toBe(5);
+      expect((v4.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v).toBe(7);
       v4.close();
     });
   });
@@ -220,7 +224,7 @@ describe('memory quality audit', () => {
   });
 
   describe('estimate', () => {
-    const model: MemoryAuditModel = { provider: 'anthropic', id: 'haiku', inputPerMTok: 1, outputPerMTok: 5, dollarBilled: false };
+    const model: MemoryAuditModel = { provider: 'anthropic', id: 'haiku', inputPerMTok: 1, outputPerMTok: 5, dollarBilled: false, effort: 'high' };
 
     it('prices exactly the calls a run makes, over eligible rows only', async () => {
       seed(db, { kind: 'fact' });
@@ -237,7 +241,7 @@ describe('memory quality audit', () => {
       const runner = scriptedRunner({}, { static: 'likes tea', dynamic: '' });
       await audit(runner);
       const calls = runner.mock.calls.map(([req]) => req);
-      expect(est).toMatchObject({ memoryCount: 4, profileCount: 1, batchCount: calls.length - 1, unpriced: false });
+      expect(est).toMatchObject({ memoryCount: 4, profileCount: 1, batchCount: calls.length - 1, unpriced: false, fittedEffort: 'low' });
       expect(est.inputTokens).toBe(calls.reduce((sum, req) => sum + estimateCallInputTokens(req.systemPrompt, req.schema, req.prompt), 0));
       expect(est.outputTokens).toBe(
         AUDIT_OUTPUT_TOKENS_PER_MEMORY * 4 + AUDIT_OUTPUT_TOKENS_PER_BATCH * est.batchCount + AUDIT_PROFILE_OUTPUT_TOKENS,
@@ -327,7 +331,7 @@ describe('memory quality audit', () => {
         const ids = promptIds(req);
         if (ids.includes(a)) {
           factCalls += 1;
-          return factCalls === 1 ? { value: null, failure: 'transient' } : { value: { grades: [{ id: a, verdict: 'forget', reason: 'r' }] } };
+          return factCalls === 1 ? { value: null, failure: 'unreachable' } : { value: { grades: [{ id: a, verdict: 'forget', reason: 'r' }] } };
         }
         return { value: 'not a grade object' };
       }) as SubCallImpl);
@@ -351,7 +355,7 @@ describe('memory quality audit', () => {
     it('fails a run in which every call failed', async () => {
       seed(db);
       await profileManager.setProfileSection('global', '', 'static', 'likes tea');
-      const runner = subCallSpy((async () => ({ value: null, failure: 'transient' })) as SubCallImpl);
+      const runner = subCallSpy((async () => ({ value: null, failure: 'unreachable' })) as SubCallImpl);
       const d = deps(runner);
       const plan = (await beginAuditRun(d))!;
       expect(await runAudit(d, plan, new AbortController().signal, () => {})).toEqual({ status: 'failed', failure: 'all-failed' });

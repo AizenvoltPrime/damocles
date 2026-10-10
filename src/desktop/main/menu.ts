@@ -176,7 +176,6 @@ export interface MenuActions {
   // a blank page in the selected chat, as an editor tab whose address field takes focus
   newBrowserPage(): void;
   toggleBrowserDevTools(): void;
-  setExploreApiKey(): void;
   showLog(): void;
   // Settings › About
   about(): void;
@@ -278,7 +277,6 @@ export function installApplicationMenu(
       ...CHAT_FEATURE_IDS.map(item),
       { type: 'separator' },
       item(MENU_IDS.togglePromptNavigator),
-      item(MENU_IDS.setExploreApiKey),
       { type: 'separator' },
       item(MENU_IDS.showLog),
     ],

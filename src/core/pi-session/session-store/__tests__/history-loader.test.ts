@@ -23,6 +23,7 @@ vi.mock('../../pi-loader', async () => {
       },
       parseSessionEntries: real.parseSessionEntries,
     })),
+    loadPiAi: vi.fn(async () => import('@earendil-works/pi-ai')),
   };
 });
 vi.mock('../reading', () => ({ resolvePiSessionFile: vi.fn(async () => '/fake/session.jsonl') }));
@@ -49,6 +50,7 @@ import {
   DAMOCLES_AGENT_STATUS_ENTRY,
   DAMOCLES_ORIGINAL_INPUT_ENTRY,
   DAMOCLES_STEER_ENTRY,
+  DAMOCLES_TURN_STOPPED_ENTRY,
 } from '../constants';
 import { FORK_AT_SECOND_PROMPT, FORK_PROMPT_COUNT, STORED_CONVERSATION, STORED_PROMPT_COUNT, withPrompt } from './prompt-index-fixtures';
 
@@ -248,6 +250,217 @@ describe('reconstructMessages — steer chip (Slice 3)', () => {
 
     const emptyAgentId = reconstructMessages([userMsg('u1', 'hi'), steerEntry('', 'msg', { data: { agentId: '', message: 'msg' } })]);
     expect(emptyAgentId.messages.map((m) => m.kind)).toEqual(['user']);
+  });
+});
+
+describe('reconstructMessages — failed model calls', () => {
+  const failed = (id: string, errorMessage: string): SessionEntry =>
+    ({ id, type: 'message', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage } }) as unknown as SessionEntry;
+  /** pi's `_omitRecoveryAttempt` (agent-session.js:836): a null-replacement edit taking a retried or overflow-recovered call out of model context. */
+  const omitted = (targetId: string): SessionEntry =>
+    ({ id: `edit-${targetId}`, type: 'context_edit', targetId, replacement: null }) as unknown as SessionEntry;
+  const errors = (branch: SessionEntry[]) =>
+    reconstructMessages(branch).messages.filter((m) => m.kind === 'error').map((m) => (m as { content: string }).content);
+
+  it('shows a call pi re-ran as nothing and the answer that replaced it, as the live view does', () => {
+    const branch = [userMsg('u1', 'hi'), failed('a1', '529 overloaded'), omitted('a1'), assistantMsg('a2', 'the answer')];
+    expect(errors(branch)).toEqual([]);
+    expect(reconstructMessages(branch).messages.map((m) => m.kind)).toEqual(['user', 'assistant']);
+  });
+
+  it('shows only the final failure of a call whose retries ran out', () => {
+    const branch = [
+      userMsg('u1', 'hi'),
+      failed('a1', '529 (1)'), omitted('a1'),
+      failed('a2', '529 (2)'), omitted('a2'),
+      failed('a3', '529 (3)'), omitted('a3'),
+      failed('a4', '529 (4)'),
+    ];
+    expect(errors(branch)).toEqual(['529 (4)']);
+  });
+
+  it('shows a failure that pi did not re-run', () => {
+    expect(errors([userMsg('u1', 'hi'), failed('a1', '400 invalid request')])).toEqual(['400 invalid request']);
+  });
+
+  // The live adapter names an error stop pi recorded without a message `Unknown error` (pi-stream-adapter.ts holdFailure).
+  it('shows the card of a failure pi recorded with no message, as the live view does', () => {
+    const silent = { id: 'a1', type: 'message', message: { role: 'assistant', content: [], stopReason: 'error' } } as unknown as SessionEntry;
+    expect(errors([userMsg('u1', 'hi'), silent])).toEqual(['Unknown error']);
+  });
+
+  /** A call that streamed before it failed: pi keeps the partial content on the error stop (agent-loop.js:286-319). */
+  const failedWith = (id: string, content: unknown[], errorMessage: string): SessionEntry =>
+    ({ id, type: 'message', message: { role: 'assistant', content, stopReason: 'error', errorMessage } }) as unknown as SessionEntry;
+  const PARTIAL = [
+    { type: 'thinking', thinking: 'Let me look' },
+    { type: 'text', text: 'Reading the file' },
+    { type: 'toolCall', id: 'never-ran', name: 'read', arguments: { path: '/a.ts' } },
+  ];
+
+  // The live adapter seals the partial message at its message_end and shows the card once pi moves past the call.
+  it('replays what a failed call pi kept in context streamed, then its card, as the live view shows them', () => {
+    const { messages } = reconstructMessages([userMsg('u1', 'hi'), failedWith('a1', PARTIAL, 'terminated')]);
+
+    expect(messages.map((m) => m.kind)).toEqual(['user', 'assistant', 'error']);
+    expect(messages[1]).toMatchObject({ kind: 'assistant', content: 'Reading the file', thinking: 'Let me look' });
+    expect(messages[2]).toEqual({ kind: 'error', content: 'terminated' });
+  });
+
+  // pi returns from the turn before executing any tool of an errored message (agent-loop.js:143-152), so the call never ran.
+  it('replays the tool calls of a failed call as not executed, never as an outcome that was not recorded', () => {
+    const { messages } = reconstructMessages([userMsg('u1', 'hi'), failedWith('a1', PARTIAL, 'terminated')]);
+
+    const tools = messages.flatMap((m) => (m.kind === 'assistant' ? m.tools : []));
+    expect(tools).toEqual([expect.objectContaining({ id: 'never-ran', abandoned: 'failed' })]);
+    expect(tools[0]).not.toHaveProperty('result');
+  });
+
+  // pi returns before executing the tools of an aborted message too (agent-loop.js:143), and records the message (agent-session.js:764).
+  it('replays the tool calls of an aborted call as not executed because the turn stopped, with no Stop record', () => {
+    const aborted = { id: 'a1', type: 'message', message: { role: 'assistant', content: PARTIAL, stopReason: 'aborted', errorMessage: 'Request was aborted' } } as unknown as SessionEntry;
+    const { messages } = reconstructMessages([userMsg('u1', 'hi'), aborted]);
+
+    expect(messages.map((m) => m.kind)).toEqual(['user', 'assistant']);
+    expect(messages.flatMap((m) => (m.kind === 'assistant' ? m.tools : []))).toEqual([expect.objectContaining({ id: 'never-ran', abandoned: 'stopped' })]);
+  });
+
+  // A failure after a Stop is its wind-down: the live view abandoned the call's cards at the Stop (markAborted).
+  it('replays the tool calls of a Stop wind-down error as stopped, not failed', () => {
+    const stop = { id: 'st1', type: 'custom', customType: DAMOCLES_TURN_STOPPED_ENTRY, data: { toolCallIds: [], entryIds: ['a1'] } } as unknown as SessionEntry;
+    const { messages } = reconstructMessages([userMsg('u1', 'hi'), failedWith('a1', PARTIAL, 'terminated'), stop]);
+
+    expect(messages.flatMap((m) => (m.kind === 'assistant' ? m.tools : []))).toEqual([expect.objectContaining({ id: 'never-ran', abandoned: 'stopped' })]);
+  });
+
+  // The live adapter took back what an omitted call streamed (`assistantRetracted` at agent_end{willRetry} or the overflow compaction_start).
+  it('replays nothing a call pi re-ran streamed, as the live view took it back', () => {
+    const OVERFLOW = 'prompt is too long: 210000 tokens > 200000 maximum';
+    const isOverflow = (message: { errorMessage?: string }): boolean => message.errorMessage === OVERFLOW;
+    const retried = reconstructMessages([userMsg('u1', 'hi'), failedWith('a1', PARTIAL, '529 overloaded'), omitted('a1'), assistantMsg('a2', 'the answer')]);
+    const overflowed = reconstructMessages([userMsg('u1', 'hi'), failedWith('a1', PARTIAL, OVERFLOW), omitted('a1')], undefined, isOverflow);
+
+    expect(retried.messages.map((m) => m.kind)).toEqual(['user', 'assistant']);
+    expect(retried.messages[1]).toMatchObject({ content: 'the answer' });
+    expect(overflowed.messages.map((m) => m.kind)).toEqual(['user', 'error']);
+  });
+
+  it('a later edit that restores the call to model context shows its failure again', () => {
+    const restored = { id: 'edit-2', type: 'context_edit', targetId: 'a1', replacement: { content: [{ type: 'text', text: 'x' }] } } as unknown as SessionEntry;
+    expect(errors([userMsg('u1', 'hi'), failed('a1', '529 overloaded'), omitted('a1'), restored])).toEqual(['529 overloaded']);
+  });
+
+  describe('an overflow pi took out of context to recover it', () => {
+    const OVERFLOW = 'prompt is too long: 210000 tokens > 200000 maximum';
+    const isOverflow = (message: { errorMessage?: string }): boolean => message.errorMessage === OVERFLOW;
+    const kinds = (branch: SessionEntry[]) => reconstructMessages(branch, undefined, isOverflow).messages.map((m) => m.kind);
+
+    // _checkCompaction omits it (agent-session.js:2405-2406); _runAutoCompaction returns before compacting (:2465-2472) or its compaction throws (:2559-2581).
+    it('shows its card when no compaction followed, as the live view does', () => {
+      expect(reconstructMessages([userMsg('u1', 'hi'), failed('a1', OVERFLOW), omitted('a1')], undefined, isOverflow).messages
+        .filter((m) => m.kind === 'error')).toEqual([{ kind: 'error', content: OVERFLOW }]);
+    });
+
+    // A recovered overflow is followed by the compaction (:2533) and the re-run call.
+    it('shows the compaction and the re-run answer, not the overflow', () => {
+      expect(kinds([userMsg('u1', 'hi'), failed('a1', OVERFLOW), omitted('a1'), compactionEntry('c1', 'sum'), assistantMsg('a2', 'the answer')]))
+        .toEqual(['compaction', 'assistant']);
+    });
+
+    it('still hides a call pi retried, which is never an overflow', () => {
+      expect(kinds([userMsg('u1', 'hi'), failed('a1', '529 overloaded'), omitted('a1')])).toEqual(['user']);
+    });
+  });
+
+  describe('calls an abort skipped in a tool batch', () => {
+    // pi finalizes the call it was running and starts none after it (agent-loop.js:402-404 sequential, :429-431 and
+    // :449-451 parallel), persists only the finalized calls' results (:398-399, :453-458), and the next model call,
+    // made under the aborted signal, ends aborted and is persisted (:141-152, agent-session.js:764); a request setup the signal rejects first ends it on an error stop instead (pi-ai lazy.js:41-44).
+    const call = (id: string) => ({ type: 'toolCall', id, name: 'read', arguments: { path: `/${id}.ts` } });
+    const batch = (id: string, ...ids: string[]) =>
+      ({ id, type: 'message', message: { role: 'assistant', content: ids.map(call), stopReason: 'toolUse' } }) as unknown as SessionEntry;
+    const result = (id: string, toolCallId: string) =>
+      ({ id, type: 'message', message: { role: 'toolResult', toolCallId, content: [{ type: 'text', text: 'Operation aborted' }], isError: true } }) as unknown as SessionEntry;
+    const abortedCall = (id: string) =>
+      ({ id, type: 'message', message: { role: 'assistant', content: [], stopReason: 'aborted', errorMessage: 'Request was aborted' } }) as unknown as SessionEntry;
+    const toolsOf = (branch: SessionEntry[]) => reconstructMessages(branch).messages.flatMap((m) => (m.kind === 'assistant' ? m.tools : []));
+
+    it('replays them as not executed because the turn stopped when an aborted call follows', () => {
+      const tools = toolsOf([userMsg('u1', 'go'), batch('a1', 'ran', 's1', 's2'), result('r1', 'ran'), abortedCall('a2')]);
+
+      expect(tools.map((t) => [t.id, t.abandoned])).toEqual([['ran', undefined], ['s1', 'stopped'], ['s2', 'stopped']]);
+      expect(tools[0]).toMatchObject({ isError: true });
+    });
+
+    // pi drains the steering queue into the transcript before that call (agent-loop.js:186, :116-121).
+    // The wind-down record (`registerWindDownErrorRecord`) names the error whatever aborted the run, a Stop or not.
+    it('replays them as stopped, with no card, when a wind-down error the record names follows', () => {
+      const windDown = { id: 'a2', type: 'message', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'This operation was aborted' } } as unknown as SessionEntry;
+      const record = { id: 'st1', type: 'custom', customType: DAMOCLES_TURN_STOPPED_ENTRY, data: { toolCallIds: [], entryIds: ['a2'] } } as unknown as SessionEntry;
+      const branch = [userMsg('u1', 'go'), batch('a1', 'ran', 's1'), result('r1', 'ran'), windDown, record];
+
+      expect(toolsOf(branch).map((t) => [t.id, t.abandoned])).toEqual([['ran', undefined], ['s1', 'stopped']]);
+      expect(reconstructMessages(branch).messages.filter((m) => m.kind === 'error')).toEqual([]);
+    });
+
+    it('replays them so when pi delivered a steer before the aborted call', () => {
+      const tools = toolsOf([userMsg('u1', 'go'), batch('a1', 'ran', 's1'), result('r1', 'ran'), userMsg('u2', 'also c.ts'), abortedCall('a2')]);
+
+      expect(tools.map((t) => [t.id, t.abandoned])).toEqual([['ran', undefined], ['s1', 'stopped']]);
+    });
+
+    it('leaves a call with no result unrecorded when no aborted call follows', () => {
+      const tools = toolsOf([userMsg('u1', 'go'), batch('a1', 'ran', 's1'), result('r1', 'ran')]);
+
+      expect(tools.find((t) => t.id === 's1')).not.toHaveProperty('abandoned');
+    });
+
+    // A cut batch always holds the result of the call pi was running, so a message with none is not one.
+    it('leaves calls none of which has a result unrecorded even when an aborted call follows', () => {
+      const tools = toolsOf([userMsg('u1', 'go'), batch('a1', 'x1', 'x2'), userMsg('u2', 'next'), abortedCall('a2')]);
+
+      expect(tools.map((t) => t.abandoned)).toEqual([undefined, undefined]);
+    });
+  });
+
+  // The live adapter shows the late tool_execution_end of a call pi executed, and drops one pi settled before execute.
+  describe('a call a Stop cut short', () => {
+    const call = (command: string) => ({ id: 'a1', type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', id: 'slow', name: 'bash', arguments: { command } }] } }) as unknown as SessionEntry;
+    const stop = { id: 'st1', type: 'custom', customType: DAMOCLES_TURN_STOPPED_ENTRY, data: { toolCallIds: ['slow'], entryIds: [] } } as unknown as SessionEntry;
+    const toolOf = (branch: SessionEntry[]) => reconstructMessages(branch).messages.flatMap((m) => (m.kind === 'assistant' ? m.tools : []))[0];
+
+    it('replays a call pi executed with the result and time pi recorded for it', () => {
+      const result = { id: 'r1', type: 'message', message: { role: 'toolResult', toolCallId: 'slow', content: [{ type: 'text', text: 'Command aborted' }], details: { damoclesCancelled: true }, isError: true, durationMs: 4321 } } as unknown as SessionEntry;
+
+      const tool = toolOf([userMsg('u1', 'go'), call('sleep 20'), result, stop]);
+      expect(tool).toEqual({ id: 'slow', name: 'Bash', input: { command: 'sleep 20' }, result: 'Command aborted', isError: true, metadata: { damoclesCancelled: true }, durationMs: 4321 });
+    });
+
+    it('replays a call pi never executed as abandoned, without the result pi wrote while stopping', () => {
+      const result = { id: 'r1', type: 'message', message: { role: 'toolResult', toolCallId: 'slow', content: [{ type: 'text', text: 'Operation aborted' }], details: {}, isError: true } } as unknown as SessionEntry;
+
+      const tool = toolOf([userMsg('u1', 'go'), call('rm -rf build'), result, stop]);
+      expect(tool).toEqual({ id: 'slow', name: 'Bash', input: { command: 'rm -rf build' }, abandoned: 'stopped' });
+    });
+  });
+});
+
+describe('loadPiSessionHistory — failed model calls', () => {
+  beforeEach(() => {
+    hoisted.branch = [];
+  });
+
+  it("judges an omitted call with pi-ai's overflow test, so an unrecovered overflow replays its card", async () => {
+    const overflow = 'prompt is too long: 210000 tokens > 200000 maximum';
+    hoisted.branch = [
+      userMsg('u1', 'hi'),
+      { id: 'a1', type: 'message', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: overflow } } as unknown as SessionEntry,
+      { id: 'edit-a1', type: 'context_edit', targetId: 'a1', replacement: null } as unknown as SessionEntry,
+    ];
+    const posts: ExtensionToWebviewMessage[] = [];
+    await loadPiSessionHistory('/cwd', 'sess-overflow', (m) => posts.push(m));
+
+    expect(posts.filter((p) => p.type === 'errorReplay')).toEqual([{ type: 'errorReplay', content: overflow }]);
   });
 });
 
@@ -669,6 +882,66 @@ describe('loadPiSessionHistory — subagent cards from invocation entries and ag
     expect(JSON.stringify(tool)).not.toContain('NESTEDPNG');
   });
 
+  // The nested extension records a call the abort settled at the gate (agent-loop.js:500-504) before pi writes its result.
+  it('replays a nested call its aborted run settled before it ran as not executed, as the live card showed it', async () => {
+    writeAgentFile('agent-1', 'agent-1', [
+      { type: 'message', id: 'm1', parentId: 'l1', timestamp: ts(2), message: { role: 'user', content: 'look around' } },
+      { type: 'message', id: 'm2', parentId: 'm1', timestamp: ts(3), message: { role: 'assistant', content: [{ type: 'toolCall', id: 'n1', name: 'bash', arguments: { command: 'rm -rf build' } }], stopReason: 'toolUse' } },
+      { type: 'custom', id: 's1', parentId: 'm2', timestamp: ts(4), customType: DAMOCLES_TURN_STOPPED_ENTRY, data: { toolCallIds: ['n1'], entryIds: [] } },
+      { type: 'message', id: 'm3', parentId: 's1', timestamp: ts(4), message: { role: 'toolResult', toolCallId: 'n1', content: [{ type: 'text', text: 'Operation aborted' }], details: {}, isError: true } },
+    ]);
+    hoisted.branch = [userMsg('u1', 'explore it'), agentCall('a1', 'tc1'), invocation('agent-1', 'tc1')];
+
+    const [tool] = await replayedAgentTools();
+    const nested = tool!.agentMessages!.flatMap((m) => m.contentBlocks).find((b) => b.type === 'tool_use');
+    expect(nested).toEqual({ type: 'tool_use', id: 'n1', name: 'Bash', input: { command: 'rm -rf build' }, abandoned: 'stopped' });
+  });
+
+  // The nested extension records an error stop that ended under the aborted signal (`registerWindDownErrorRecord`).
+  it('replays no error card for a nested wind-down error the record names, and keeps one it does not name', async () => {
+    writeAgentFile('agent-1', 'agent-1', [
+      { type: 'message', id: 'm1', parentId: 'l1', timestamp: ts(2), message: { role: 'user', content: 'look around' } },
+      { type: 'message', id: 'm2', parentId: 'm1', timestamp: ts(3), message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: '529 overloaded_error' } },
+      { type: 'message', id: 'm3', parentId: 'm2', timestamp: ts(4), message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'This operation was aborted' } },
+      { type: 'custom', id: 's1', parentId: 'm3', timestamp: ts(4), customType: DAMOCLES_TURN_STOPPED_ENTRY, data: { toolCallIds: [], entryIds: ['m3'] } },
+    ]);
+    hoisted.branch = [userMsg('u1', 'explore it'), agentCall('a1', 'tc1'), invocation('agent-1', 'tc1')];
+
+    const [tool] = await replayedAgentTools();
+    expect(tool!.agentMessages!.filter((m) => m.role === 'error')).toEqual([{ role: 'error', contentBlocks: [{ type: 'text', text: '529 overloaded_error' }] }]);
+  });
+
+  it("replays each tool's recorded execution time, main and nested, and none for a result recorded without one", async () => {
+    writeAgentFile('agent-1', 'agent-1', [
+      { type: 'message', id: 'm1', parentId: 'l1', timestamp: ts(2), message: { role: 'user', content: 'look around' } },
+      {
+        type: 'message',
+        id: 'm2',
+        parentId: 'm1',
+        timestamp: ts(3),
+        message: { role: 'assistant', content: [{ type: 'toolCall', id: 'n1', name: 'read', arguments: { path: 'a.ts' } }] },
+      },
+      { type: 'message', id: 'm3', parentId: 'm2', timestamp: ts(4), message: { role: 'toolResult', toolCallId: 'n1', content: [{ type: 'text', text: 'body' }], durationMs: 42 } },
+    ]);
+    const timedCall = { id: 'a0', type: 'message', message: { role: 'assistant', content: [
+      { type: 'toolCall', id: 'timed', name: 'bash', arguments: { command: 'ls' } },
+      { type: 'toolCall', id: 'old', name: 'bash', arguments: { command: 'pwd' } },
+    ] } } as unknown as SessionEntry;
+    const timedResult = { id: 'r0', type: 'message', message: { role: 'toolResult', toolCallId: 'timed', content: [{ type: 'text', text: 'a' }], isError: false, durationMs: 1234 } } as unknown as SessionEntry;
+    const oldResult = { id: 'r00', type: 'message', message: { role: 'toolResult', toolCallId: 'old', content: [{ type: 'text', text: '/' }], isError: false } } as unknown as SessionEntry;
+    const branch = [userMsg('u1', 'explore it'), timedCall, timedResult, oldResult, agentCall('a1', 'tc1'), invocation('agent-1', 'tc1')];
+    hoisted.branch = branch;
+
+    const { messages } = reconstructMessages(branch);
+    const mainTools = messages.flatMap((m) => (m.kind === 'assistant' ? m.tools : []));
+    expect(mainTools.find((t) => t.id === 'timed')).toMatchObject({ durationMs: 1234 });
+    expect(mainTools.find((t) => t.id === 'old')).not.toHaveProperty('durationMs');
+
+    const [tool] = await replayedAgentTools();
+    const nested = tool!.agentMessages!.flatMap((m) => m.contentBlocks).find((b) => b.type === 'tool_use');
+    expect(nested).toMatchObject({ id: 'n1', durationMs: 42 });
+  });
+
   it('rebuilds a card from its invocation entry and the agent’s pi session file', async () => {
     writeAgentFile('agent-1', 'agent-1', [
       { type: 'message', id: 'm1', parentId: 'l1', timestamp: ts(2), message: { role: 'user', content: 'look around' } },
@@ -703,6 +976,26 @@ describe('loadPiSessionHistory — subagent cards from invocation entries and ag
     });
     expect(tool!.agentMessages!.map((m) => m.role)).toEqual(['user', 'assistant', 'assistant']);
     expect(tool!.agentMessages![1]!.contentBlocks[0]).toMatchObject({ type: 'tool_use', id: 'n1', result: 'body' });
+  });
+
+  it('replays a call pi retried as nothing and a call that failed for good with its error, as the live card showed them', async () => {
+    const failed = (text: string, errorMessage: string) => ({ role: 'assistant', content: [{ type: 'text', text }], stopReason: 'error', errorMessage });
+    writeAgentFile('agent-1', 'agent-1', [
+      { type: 'message', id: 'm1', parentId: 'l1', timestamp: ts(2), message: { role: 'user', content: 'look around' } },
+      { type: 'message', id: 'm2', parentId: 'm1', timestamp: ts(3), message: failed('Let me', '529 overloaded_error') },
+      // `_prepareRetry` omits the attempt it re-runs (`agent-session.js:3048`).
+      { type: 'context_edit', id: 'c1', parentId: 'm2', timestamp: ts(3), targetId: 'm2', replacement: null },
+      { type: 'message', id: 'm3', parentId: 'c1', timestamp: ts(4), message: failed('Now I will', '400 invalid_request_error') },
+      { type: 'custom', id: 's1', parentId: 'm3', timestamp: ts(5), customType: DAMOCLES_AGENT_STATUS_ENTRY, data: { status: 'error', result: '400 invalid_request_error' } },
+    ]);
+    hoisted.branch = [userMsg('u1', 'explore it'), agentCall('a1', 'tc1'), invocation('agent-1', 'tc1')];
+
+    const [tool] = await replayedAgentTools();
+    expect(tool!.agentMessages).toEqual([
+      { role: 'user', contentBlocks: [{ type: 'text', text: 'look around' }] },
+      { role: 'assistant', contentBlocks: [{ type: 'text', text: 'Now I will' }] },
+      { role: 'error', contentBlocks: [{ type: 'text', text: '400 invalid_request_error' }] },
+    ]);
   });
 
   it('a background agent that failed before its task was committed takes its error from the injection details', async () => {

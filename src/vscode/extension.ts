@@ -13,8 +13,11 @@ import { createVoiceStatusBarItem } from "./voice/status-bar";
 import { setupAutoDisable } from "../core/voice/auto-disable";
 import { PiRuntime } from "../core/pi-session/pi-runtime";
 import { setMcpSecretStorage } from "../core/pi-session/mcp/mcp-auth";
-import { setExploreApiKey } from "../core/pi-session/explore-api-key";
 import { runLegacySettingsMigrations } from "../core/config/legacy-settings-migrations";
+import { movePreferApiKeyToGlobalState } from "../core/pi-session/openai-auth";
+import { deleteRetiredSecrets } from "../core/config/retired-secrets";
+import { providerKeyStored } from "../core/pi-session/custom-providers";
+import { PROVIDER_SECRET_KEYS } from "../core/pi-session/explore-providers";
 import { runCheckpointMaintenance } from "../core/pi-session/checkpoints";
 import { isNavigableUrl } from "../core/browser/net-guard";
 
@@ -50,7 +53,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     showLog(true);
   }
 
-  await runLegacySettingsMigrations(platform.settings);
+  await runLegacySettingsMigrations(platform.settings, () => providerKeyStored((key) => platform.secrets.get(key), PROVIDER_SECRET_KEYS.stepfun));
+  await movePreferApiKeyToGlobalState(platform.state);
+  // SecretStorage can wedge indefinitely, and nothing below needs the deletion done.
+  void deleteRetiredSecrets(platform.secrets);
   // Back MCP OAuth credential storage with the OS keychain; set before any MCP server connects.
   setMcpSecretStorage(platform.secrets);
 
@@ -166,10 +172,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("damocles.togglePromptNavigator", () => {
       chatPanelProvider?.getPanelManager().postToActivePanel({ type: "togglePromptNavigator" });
     })
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand("damocles.setExploreApiKey", () => setExploreApiKey(platform))
   );
 
   const MAINTENANCE_INTERVAL_MS = 24 * 60 * 60 * 1000;

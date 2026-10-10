@@ -71,12 +71,12 @@ describe('the generated .vscodeignore allowlist', () => {
   // The desktop app's runtime and its editor, fonts, test and packaging tooling never ship in the VSIX.
   it('carries no desktop-only package', () => {
     expect(DESKTOP_ONLY_PACKAGES).toEqual(expect.arrayContaining([
-      'electron', '@parcel/watcher', 'electron-updater', 'node-pty', 'undici', 'monaco-editor', '@playwright/test', 'electron-builder', '@electron/fuses',
+      'electron', '@parcel/watcher', 'electron-updater', 'node-pty', 'monaco-editor', '@playwright/test', 'electron-builder', '@electron/fuses',
       '@fontsource-variable/geist', '@fontsource-variable/geist-mono', '@fontsource-variable/inter',
     ]));
     const shipped = block.map((line) => line.slice('!node_modules/'.length).replace(/\/\*\*$/, ''));
     expect(desktopOnlyIn(shipped)).toEqual([]);
-    expect(desktopOnlyIn(['zod', 'electron', 'undici', 'node-pty', '@xterm/xterm', '@xterm/addon-fit'])).toEqual(['@xterm/addon-fit', '@xterm/xterm', 'electron', 'node-pty', 'undici']);
+    expect(desktopOnlyIn(['zod', 'electron', 'undici', 'node-pty', '@xterm/xterm', '@xterm/addon-fit'])).toEqual(['@xterm/addon-fit', '@xterm/xterm', 'electron', 'node-pty']);
   });
 });
 
@@ -90,7 +90,7 @@ describe('vsixExclusionProblems', () => {
 
   it('names every desktop-only category', () => {
     expect(DESKTOP_EXCLUDE_RULES).toEqual(expect.arrayContaining([
-      'dist/webview/assets/monaco-*', 'dist/desktop/**', 'dist/desktop-shell/**', 'dist/formatter-host.js', 'dist/pty-host.js', 'dist/quick-open-worker.js', 'dist-desktop/**', 'dist/e2e*/**',
+      'dist/webview/assets/monaco-*', 'dist/desktop/**', 'dist/desktop-shell/**', 'dist/formatter-host.js', 'dist/pty-host.js', 'dist/quick-open-worker.js', 'dist/watch-worker.js', 'dist-desktop/**', 'dist/e2e*/**',
       'e2e/**', 'playwright.desktop.config.ts', 'electron-builder.yml', 'build/**', '**/*.log',
     ]));
   });
@@ -122,6 +122,7 @@ describe('forbiddenVsixEntries', () => {
       'extension/dist/formatter-host.js',
       'extension/dist/pty-host.js',
       'extension/dist/quick-open-worker.js',
+      'extension/dist/watch-worker.js',
       'extension/dist/e2e/second-process.cjs',
       'extension/dist/e2e-results/.last-run.json',
       'extension/dist-desktop/win-unpacked/Damocles.exe',
@@ -154,7 +155,8 @@ describe('forbiddenVsixEntries', () => {
       'extension/resources/icon.png',
       'extension/python/damocles_voice_sidecar/pyproject.toml',
       'extension/node_modules/@vscode/ripgrep-win32-x64/bin/rg.exe',
-      'extension/node_modules/@earendil-works/pi-coding-agent/node_modules/undici/index.js',
+      'extension/node_modules/@earendil-works/pi-coding-agent/node_modules/node-pty/package.json',
+      'extension/node_modules/undici/index.js',
       'extension/node_modules/debug/src/index.js',
       'extension/node_modules/electron-to-chromium/package.json',
       'extension/l10n/bundle.l10n.json',

@@ -116,14 +116,15 @@ function onKeydown(event: KeyboardEvent): void {
 const stops: Array<() => void> = [];
 onMounted(async () => {
   stops.push(props.api.onRequest((id, request) => {
+    // Sent before the render, which can outlast main's deadline on a cold or busy renderer; the deadline proves only that this page answers.
+    props.api.ack(id);
     if (request.kind === 'quickOpen') {
       paletteCommands = undefined;
       quickOpenScope = request.scope;
     }
     open.value = [...open.value, { id, request }];
-    // The acknowledgement tells main the request is on screen, so it goes out once Vue has rendered it.
     void nextTick(() => {
-      if (open.value.some((entry) => entry.id === id)) props.api.ack(id);
+      if (open.value.some((entry) => entry.id === id)) props.api.shown(id);
     });
   }));
   stops.push(props.api.onCancel((id) => void close(id)));

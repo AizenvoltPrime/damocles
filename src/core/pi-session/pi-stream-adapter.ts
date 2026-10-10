@@ -1,7 +1,8 @@
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import type { AssistantMessage, AssistantMessageEvent } from '@earendil-works/pi-ai';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
-import type { ResultMessage } from '../../shared/types/session';
+import type { ResultMessage, ToolAbandonReason } from '../../shared/types/session';
+import { CANCELLED_TOOL_DETAIL_KEY } from '../../shared/types/session';
 import type { ContentBlock } from '../../shared/types/content';
 import type { ModelInfo } from '../../shared/types/settings';
 import { TOOL_READ, TOOL_GREP, TOOL_GLOB, TOOL_LS, LIVE_OUTPUT_TOOLS } from '../../shared/tool-names';
@@ -15,6 +16,9 @@ import { usageOfEntry } from '../../shared/usage-accounting';
 import { publishedEffort, type EffortBadgeLevel } from '../../shared/effort-badge';
 import { sessionUsageMessage } from './session-usage';
 import { contextSnapshotOf, emptyContextSnapshot, type ContextSnapshot } from './context-snapshot';
+import { failedCallError } from './nested-call-failures';
+import { skippedToolCalls } from './abandoned-tool-calls';
+import { windDownRecorded } from './session-store/turn-stopped';
 
 /** A message as pi emits and persists it; the mid-stream marker matches entries to deliveries by its identity. */
 type PiMessage = Extract<AgentSessionEvent, { type: 'message_end' }>['message'];
@@ -24,9 +28,6 @@ export interface PiStreamAdapterDeps {
   cwd: string;
   sessionId: () => string;
   modelValue: () => string;
-  /** The workspace default model ("Default for new panels") — distinct from the active panel model. */
-  defaultModelValue: () => string;
-  contextWindow: () => number;
   supportedModels: () => ModelInfo[];
   permissionMode: () => string;
   /** The hard dollar budget to enforce, or `null` when no dollar enforcement applies (US-008). */
@@ -74,6 +75,8 @@ interface ToolRecord {
   streamed: boolean;
   /** The pi tool name, kept so a still-running tool can be abandoned (with its webview name) on abort. */
   name: string;
+  /** pi emitted `tool_execution_start`, so it will end the call itself. */
+  started: boolean;
 }
 
 /** Detect auth-shaped error text so the webview can show the renewal banner rather than a raw error. */
@@ -188,6 +191,14 @@ export class PiStreamAdapter {
   private _turnSeq = 0;
   private _assistantSeq = 0;
   private _aborted = false;
+  /** This turn's settled cards: a Stop and the call it aborted both name the same calls, and each card settles once. */
+  private readonly _abandoned = new Set<string>();
+  /** The tool calls of the turn's latest assistant message, and every call of the turn pi reported a result for. */
+  private _batch: Array<{ id: string; name: string }> = [];
+  /** An error stop no Stop preceded, decided at its `turn_end` by the wind-down record (`decideErrorStop`), with the
+   *  calls of the batch before it pi left without a result. */
+  private _undecidedError: { message: AssistantMessage; skipped: Array<{ id: string; name: string }>; shownId: string | undefined } | null = null;
+  private readonly _answered = new Set<string>();
   private _currentAssistantId: string | null = null;
   private _streamingText = '';
   /** Ordered content blocks (text + tool_use) committed for the current assistant message, so the
@@ -207,6 +218,11 @@ export class PiStreamAdapter {
   private _budgetExceededEmitted = false;
   /** The error the turn's latest assistant message ended on; a retry that succeeds clears it. */
   private _lastAssistantError: string | null = null;
+  /** A failed call's card, held until pi either re-runs the call (no card) or moves past it (see `holdFailure`).
+   *  `shownId` is the webview id of what the call streamed, which a re-run takes back. */
+  private _pendingFailure: { message: string; provider: string | undefined; shownId: string | undefined } | null = null;
+  /** pi is waiting out a retry backoff; the retried call's assistant `message_start` ends the wait. */
+  private _retrying = false;
   /** The current turn's correlation id, held until the real pi user entry id is known (FR-3). */
   private _pendingCorrelationId: string | undefined;
   /** Whether this turn's `userMessageIdAssigned` (with the pi entry id) has been emitted yet. */
@@ -319,6 +335,8 @@ export class PiStreamAdapter {
     // returns before this, so a still-over-limit session never reaches here and cannot re-emit.
     this._budgetExceededEmitted = false;
     this._lastAssistantError = null;
+    this._pendingFailure = null;
+    this._retrying = false;
     this._streamingText = '';
     this._streamingBlocks = [];
     this._committedTextLength = 0;
@@ -326,6 +344,10 @@ export class PiStreamAdapter {
     this._thinkingStart = null;
     this._thinkingDuration = null;
     this._tools.clear();
+    this._abandoned.clear();
+    this._batch = [];
+    this._answered.clear();
+    this._undecidedError = null;
     // A tool that reached neither tool_execution_end nor markAborted (a session replaced under it, or a
     // turn settled without an agent run) can still hold a frame; emitting it now would repaint a card the
     // webview has already terminalized. Clearing after `_tools` also keeps a held thunk from reading an
@@ -429,23 +451,28 @@ export class PiStreamAdapter {
   }
 
   /**
-   * Mark the turn aborted and give every still-running tool card a terminal state. pi's `abort()` stops
-   * the agent but a long in-flight tool (e.g. BrowserOpen) may not emit `tool_execution_end` promptly —
-   * without this its card would spin forever. We emit `toolAbandoned` for each running tool; the
-   * `_aborted` guard in `onToolEnd` then suppresses any late completion so it cannot resurrect the card.
-   * `_aborted` also tells `onSettled` to skip the `done`/`stopInfo`, so a cancelled turn never gets a
-   * completed result stacked on top of it. Returns the abandoned call ids for the turn-stopped record.
+   * Mark the turn aborted. A call pi has not started gets no end from pi, so its card is abandoned now. A
+   * started call keeps running until pi ends it under the aborted signal: `onToolEnd` shows the result of
+   * one pi executed and abandons one it settled before `execute`, and `onSettled` abandons any whose end
+   * never came. `_aborted` also tells `onSettled` to skip the `done`/`stopInfo`, so a cancelled turn never
+   * gets a completed result stacked on top of it. Returns every call in flight, for the turn-stopped record.
    */
   markAborted(): string[] {
     this._aborted = true;
-    const abandoned = [...this._tools.keys()];
-    for (const [toolCallId, rec] of this._tools) {
-      // An aborted tool may never emit tool_execution_end, so this is the only cancel on that path.
-      this._outputCoalescer.cancel(toolCallId);
-      this.emit({ type: 'toolAbandoned', toolUseId: toolCallId, toolName: mapPiToolName(rec.name), parentToolUseId: null });
+    const inFlight = [...this._tools.keys()];
+    for (const [toolCallId, rec] of [...this._tools]) {
+      if (!rec.started) this.abandonTool(toolCallId, rec.name, 'stopped');
     }
-    this._tools.clear();
-    return abandoned;
+    return inFlight;
+  }
+
+  private abandonTool(toolCallId: string, piName: string, reason: ToolAbandonReason): void {
+    this._tools.delete(toolCallId);
+    if (this._abandoned.has(toolCallId)) return;
+    this._abandoned.add(toolCallId);
+    // An aborted tool may never emit tool_execution_end, so this is the only cancel on that path.
+    this._outputCoalescer.cancel(toolCallId);
+    this.emit({ type: 'toolAbandoned', toolUseId: toolCallId, toolName: mapPiToolName(piName), parentToolUseId: null, reason });
   }
 
   private emit(m: ExtensionToWebviewMessage): void {
@@ -483,7 +510,6 @@ export class PiStreamAdapter {
     });
     const models = this.deps.supportedModels();
     this.emit({ type: 'availableModels', models });
-    this.emit({ type: 'modelUpdate', activeModel: model, defaultModel: this.deps.defaultModelValue(), contextWindowSize: this.deps.contextWindow() });
   }
 
   private handle(session: AgentSession, event: AgentSessionEvent): void {
@@ -494,10 +520,14 @@ export class PiStreamAdapter {
         // messages — notably the `before_agent_start` context-injection custom message
         // (CONTEXT_INJECTION_CUSTOM_TYPE, US-005) — are intentionally not rendered: they are model
         // context, not a visible chat bubble.
+        this.showPendingFailure();
         // The first message_start after pi stored the turn's prompt emits its entry id, once per turn.
         this.emitUserMessageIdOnce();
         this.resolveMidStreamMarkers(session, event.message.role);
-        if (event.message.role === 'assistant') this.startAssistantMessage();
+        if (event.message.role === 'assistant') {
+          this.endRetryWait();
+          this.startAssistantMessage();
+        }
         break;
       case 'message_update':
         this.handleAssistantEvent(event.assistantMessageEvent);
@@ -512,12 +542,29 @@ export class PiStreamAdapter {
           });
         }
         if (event.message.role === 'assistant') {
-          this._lastAssistantError = event.message.stopReason === 'error' ? event.message.errorMessage ?? 'Unknown error' : null;
-          this.emitAssistantMessage(event.message.content, publishedEffort(event.message.thinkingLevel, session.model?.reasoning));
+          const { stopReason } = event.message;
+          this._lastAssistantError = stopReason === 'error' ? failedCallError(event.message.errorMessage) : null;
+          const shown = this.emitAssistantMessage(event.message.content, publishedEffort(event.message.thinkingLevel, session.model?.reasoning));
           this.emitContextSnapshot(contextSnapshotOf(event.message));
           this.logRawStopReason(event.message);
           this.maybeEmitCacheMissNotice(session, event.message);
           this.maybeEmitThinkingDroppedNotice(session, event.message);
+          // pi reports a failed or aborted model call only here: its agent loop emits no message_update for the stream's error event.
+          if (stopReason === 'aborted') {
+            for (const call of skippedToolCalls(this._batch, (id) => this._answered.has(id))) this.abandonTool(call.id, call.name, 'stopped');
+            this.abandonToolCalls(event.message.content, 'stopped');
+            this.onAssistantAborted();
+          } else if (stopReason === 'error') {
+            this._agentRunObserved = true;
+            // A failure after a Stop is its wind-down, and the Stop is why the call's tools never ran.
+            if (this._aborted) {
+              this.abandonToolCalls(event.message.content, 'stopped');
+            } else {
+              const skipped = skippedToolCalls(this._batch, (id) => this._answered.has(id));
+              this._undecidedError = { message: event.message, skipped, shownId: shown ? this._currentAssistantId ?? undefined : undefined };
+            }
+          }
+          this._batch = event.message.content.flatMap((block) => (block.type === 'toolCall' ? [{ id: block.id, name: block.name }] : []));
         } else if (event.message.role === 'user' && !this._aborted) {
           // pi emits this for a run's opening prompt too, which the session reports as its own only
           // when a cancel note opened the run. Collapse the queued chips now, and if a real batch or a
@@ -528,7 +575,7 @@ export class PiStreamAdapter {
       case 'tool_execution_start': {
         const args = (event.args ?? {}) as Record<string, unknown>;
         this.ensureToolStreaming(event.toolCallId, event.toolName, args);
-        this._tools.set(event.toolCallId, { startedAt: Date.now(), streamed: true, name: event.toolName });
+        this._tools.set(event.toolCallId, { startedAt: Date.now(), streamed: true, name: event.toolName, started: true });
         // pi emits this before `beforeToolCall`, where the gate runs, so the card shows running while the
         // gate decides; a prompt moves it to awaiting approval, and the gate reports it running again.
         this.emit({
@@ -564,11 +611,29 @@ export class PiStreamAdapter {
       case 'tool_execution_end':
         // Cancel before anything else: a pending partial landing after toolCompleted would resurrect stale output.
         this._outputCoalescer.cancel(event.toolCallId);
-        this.onToolEnd(event.toolCallId, event.toolName, event.result, event.isError);
+        this._answered.add(event.toolCallId);
+        this.onToolEnd(event.toolCallId, event.toolName, event.result, event.isError, event.durationMs);
+        break;
+      // pi emits it after every error stop (`agent-loop.js:141-152`, `agent.js:375-378` in pi-agent-core 1.1.0).
+      case 'turn_end':
+        this.decideErrorStop(session);
+        break;
+      // A run that ended on a failure pi will retry: its own backoff events follow.
+      case 'agent_end':
+        if (event.willRetry) this.withdrawFailure();
+        break;
+      case 'auto_retry_start':
+        this._retrying = true;
+        this.emit({ type: 'statusUpdate', status: 'retrying', attempt: event.attempt, maxAttempts: event.maxAttempts });
+        break;
+      // Reached with the wait still open only when the retry was cancelled or never re-sent the call.
+      case 'auto_retry_end':
+        this.endRetryWait();
         break;
       // pi emits `agent_end` once per run segment, so a boundary continuation or an internal retry
       // produces several of them for one logical turn. `agent_settled` fires once, after the last one.
       case 'agent_settled':
+        this.showPendingFailure();
         this.onSettled(session);
         break;
       // The cache warmer writes its `usage` entries while the session is idle, so no settle follows them.
@@ -582,6 +647,9 @@ export class PiStreamAdapter {
         // `threshold` (the configured percentage was crossed) and `overflow` (pi hit the context ceiling
         // mid-run) are different events, so the trigger reaches the webview as pi reports it.
         const trigger = event.reason;
+        // An overflow compaction after a failed call is pi's recovery of that call; its compaction_end reports how it went.
+        if (trigger === 'overflow') this.withdrawFailure();
+        else this.showPendingFailure();
         this.emit({ type: 'preCompact', trigger });
         this.emit({ type: 'statusUpdate', status: 'compacting' });
         if (trigger !== 'manual') {
@@ -591,6 +659,9 @@ export class PiStreamAdapter {
       }
       case 'compaction_end': {
         const trigger = event.reason;
+        // pi's report that it could not recover the overflowed call explains that call's failure, so it replaces the card.
+        if (trigger === 'overflow' && event.errorMessage && !event.aborted) this._pendingFailure = null;
+        else this.showPendingFailure();
         if (event.aborted) {
           // An abort clears both banners, so without this the user sees compaction start, stop, and
           // learns nothing. `errorMessage` is optional on the event, `willRetry` is not.
@@ -672,9 +743,6 @@ export class PiStreamAdapter {
       case 'toolcall_end':
         this.ensureToolStreaming(ame.toolCall.id, ame.toolCall.name, ame.toolCall.arguments);
         break;
-      case 'error':
-        this.onAssistantError(ame.reason, ame.error.errorMessage ?? 'Unknown error');
-        break;
       default:
         break;
     }
@@ -696,7 +764,7 @@ export class PiStreamAdapter {
   private ensureToolStreaming(toolCallId: string, piName: string, args: Record<string, unknown>): void {
     const existing = this._tools.get(toolCallId);
     if (existing?.streamed) return;
-    this._tools.set(toolCallId, { startedAt: existing?.startedAt ?? Date.now(), streamed: true, name: piName });
+    this._tools.set(toolCallId, { startedAt: existing?.startedAt ?? Date.now(), streamed: true, name: piName, started: existing?.started ?? false });
 
     // Commit the streamed text that precedes this tool call as an ordered text block, then the tool_use
     // block, and ship the full ordered `contentBlocks`. Without this the message has no contentBlocks
@@ -720,26 +788,27 @@ export class PiStreamAdapter {
     });
   }
 
-  private onToolEnd(toolCallId: string, piName: string, result: unknown, isError: boolean): void {
-    // After an abort the tool was already abandoned in `markAborted`; a late completion would override
-    // that terminal state (abandoned/completed share merge priority), so drop it.
-    if (this._aborted) {
-      this._tools.delete(toolCallId);
+  /** `durationMs` is pi's measured `execute()` time: absent when the call never ran (blocked, denied, unknown tool). */
+  private onToolEnd(toolCallId: string, piName: string, result: unknown, isError: boolean, durationMs: number | undefined): void {
+    // A Stop's late end of a call pi settled before `execute` shows it not executed, as the turn-stopped record replays it.
+    if (this._aborted && durationMs === undefined) {
+      this.abandonTool(toolCallId, piName, 'stopped');
       return;
     }
-    const durationMs = this.elapsed(toolCallId) * 1000;
-    const toolName = mapPiToolName(piName);
     this._tools.delete(toolCallId);
+    const toolName = mapPiToolName(piName);
     const details = (result as { details?: unknown } | undefined)?.details;
     const metadata = details && typeof details === 'object' ? normalizeToolDetails(details as Record<string, unknown>) : undefined;
-    if (isError) {
-      this.emit({ type: 'toolFailed', toolUseId: toolCallId, toolName, error: joinResultText(result) || 'Tool failed', durationMs });
+    const duration = durationMs === undefined ? {} : { durationMs };
+    // A stopped call lands as completed, and its marker alone tells the card apart from a success.
+    if (isError && metadata?.[CANCELLED_TOOL_DETAIL_KEY] !== true) {
+      this.emit({ type: 'toolFailed', toolUseId: toolCallId, toolName, error: joinResultText(result) || 'Tool failed', ...duration });
       // An error result keeps the details a tool returned with it (a thrown error's are empty), and a reload shows them.
       if (metadata && Object.keys(metadata).length > 0) this.emit({ type: 'toolMetadata', toolUseId: toolCallId, metadata });
       return;
     }
     const imageCount = resultImageCount(result);
-    this.emit({ type: 'toolCompleted', toolUseId: toolCallId, toolName, result: joinResultText(result), durationMs, ...(imageCount > 0 ? { imageCount } : {}) });
+    this.emit({ type: 'toolCompleted', toolUseId: toolCallId, toolName, result: joinResultText(result), ...duration, ...(imageCount > 0 ? { imageCount } : {}) });
     if (metadata) this.emit({ type: 'toolMetadata', toolUseId: toolCallId, metadata });
   }
 
@@ -749,12 +818,13 @@ export class PiStreamAdapter {
    * `contentBlocks`/`flattenContentBlocks` render path instead of the partial-only fallback — which
    * is why a streamed answer (notably from thinking-heavy models) now renders its text reliably. The
    * webview filters thinking out of `contentBlocks` and reads it via the streamed `thinking` buffer.
+   * Returns whether the message has anything to show.
    */
   private emitAssistantMessage(
     content: ReadonlyArray<{ type: string; text?: string; thinking?: string; thinkingSignature?: string; id?: string; name?: string; arguments?: Record<string, unknown> }> | undefined,
     effort?: EffortBadgeLevel,
-  ): void {
-    if (!content) return;
+  ): boolean {
+    if (!content) return false;
     const blocks: ContentBlock[] = [];
     for (const c of content) {
       if (c.type === 'text' && c.text) {
@@ -765,7 +835,7 @@ export class PiStreamAdapter {
         blocks.push({ type: 'tool_use', id: c.id, name: mapPiToolName(c.name), input: normalizeToolInput(c.name, c.arguments ?? {}) });
       }
     }
-    if (blocks.length === 0) return;
+    if (blocks.length === 0) return false;
     this.emit({
       type: 'assistant',
       data: {
@@ -781,6 +851,7 @@ export class PiStreamAdapter {
         session_id: this.deps.sessionId(),
       },
     });
+    return true;
   }
 
   /** The context meter's last-request snapshot. Billing totals travel only in `sessionUsage`. */
@@ -891,8 +962,8 @@ export class PiStreamAdapter {
    * that ran an agent, so every path out of a run — completion, abort, provider error, budget stop —
    * ends here exactly once. A host-initiated abort lowers it a second time from `PiSession.beginAbort`,
    * which is harmless because the webview handler is idempotent, and the branch below stays because a
-   * stream-originated abort reaches no such host path. The card that explains WHY (cancelled/error/auth)
-   * is emitted where it is detected; only the lifecycle transition belongs here.
+   * stream-originated abort reaches no such host path. A failure's card is shown before this, by
+   * `showPendingFailure`; only the lifecycle transition belongs here.
    */
   private onSettled(session: AgentSession): void {
     this._agentRunObserved = true;
@@ -902,6 +973,7 @@ export class PiStreamAdapter {
     this._accumulatedCost += Math.max(0, ownCost - this._lastCumulativeCost);
     this._lastCumulativeCost = ownCost;
     if (this._aborted) {
+      for (const [toolCallId, rec] of [...this._tools]) this.abandonTool(toolCallId, rec.name, 'stopped');
       this.lowerSpinner({ kind: 'cancelled' });
       return;
     }
@@ -965,31 +1037,83 @@ export class PiStreamAdapter {
     }
   }
 
-  /**
-   * Terminal assistant error. Model refusals arrive here too: pi collapses an Anthropic
-   * `stop_reason:'refusal'` into `stopReason:'error'` + `errorMessage`, so a refusal is just an
-   * `error` reason whose message is the refusal explanation. It surfaces through the unified `error`
-   * path as a calm inline notice (no refusal-specific card, no text-matching) — US-023. The only edge
-   * is a refusal whose text trips the auth heuristic (e.g. mentions "oauth"); that is the documented
-   * low-risk corner of the pre-existing `isAuthError` heuristic, not a refusal-specific behavior.
-   *
-   * Emits the explanatory card only. This fires per assistant message, and pi decides whether to retry
-   * the message after emitting it, so settling here would flash idle in the middle of a retry.
-   */
-  private onAssistantError(reason: 'aborted' | 'error', message: string): void {
+  /** An aborted model call. A host Stop already announced the cancel; a stream-originated abort did not. */
+  private onAssistantAborted(): void {
     this._agentRunObserved = true;
-    if (reason === 'aborted') {
-      if (!this._aborted) {
-        this._aborted = true;
-        this.emit({ type: 'sessionCancelled' });
-      }
-    } else if (this._aborted) {
-      // A Stop's wind-down error; the turn-stopped record hides it on reload too.
+    if (this._aborted) return;
+    this._aborted = true;
+    this.emit({ type: 'sessionCancelled' });
+  }
+
+  /**
+   * Decide an error stop no Stop preceded, from the record a reload reads: `registerWindDownErrorRecord` names it at
+   * its `turn_end` boundary when the run was aborted then, whoever aborted it, and pi commits that record before this
+   * `turn_end` (`agent-session.js:515`, `:636-641` in pi-coding-agent 1.1.0). A named stop is the abort's wind-down,
+   * handled as an aborted stop; any other is a failure.
+   */
+  private decideErrorStop(session: AgentSession): void {
+    const pending = this._undecidedError;
+    if (!pending) return;
+    this._undecidedError = null;
+    const { message } = pending;
+    if (windDownRecorded(session.sessionManager.getBranch(), message)) {
+      for (const call of pending.skipped) this.abandonTool(call.id, call.name, 'stopped');
+      this.abandonToolCalls(message.content, 'stopped');
+      this.onAssistantAborted();
       return;
-    } else if (isAuthError(message)) {
-      this.emit({ type: 'authFailure', message });
+    }
+    this.abandonToolCalls(message.content, 'failed');
+    this.holdFailure(failedCallError(message.errorMessage), message.provider, pending.shownId);
+  }
+
+  /**
+   * A failed model call. pi decides whether to re-run it only after its `message_end`, so the card waits
+   * for that decision: `agent_end.willRetry` (auto-retry) or an overflow `compaction_start` (overflow
+   * recovery) withdraws it (`withdrawFailure`), and the next thing pi does instead shows it
+   * (`showPendingFailure`). Both recoveries omit the call from model context, which is how a reload
+   * tells them apart (`history-loader.ts`). Settling here would also flash idle in the middle of a retry.
+   */
+  private holdFailure(message: string, provider: string | undefined, shownId: string | undefined): void {
+    this._pendingFailure = { message, provider, shownId };
+  }
+
+  /**
+   * pi ends a turn whose call failed or was aborted before it executes any tool that call named
+   * (agent-loop.js), so its cards settle now. A re-run takes them back with the call's message (`withdrawFailure`).
+   */
+  private abandonToolCalls(content: AssistantMessage['content'], reason: ToolAbandonReason): void {
+    for (const block of content) {
+      if (block.type === 'toolCall') this.abandonTool(block.id, block.name, reason);
+    }
+  }
+
+  /** pi re-runs the held call: it shows no card, and what it streamed goes, as a reload omits it. */
+  private withdrawFailure(): void {
+    const shownId = this._pendingFailure?.shownId;
+    this._pendingFailure = null;
+    if (shownId) this.emit({ type: 'assistantRetracted', messageId: shownId });
+  }
+
+  /** pi sends nothing when a retry backoff ends, so the status holds until the retried call starts or the retry ends. */
+  private endRetryWait(): void {
+    if (!this._retrying) return;
+    this._retrying = false;
+    this.emit({ type: 'statusUpdate', status: 'ready' });
+  }
+
+  /**
+   * Show the held failure's card. A refusal arrives as an `error` stop whose message is the refusal
+   * text, so it shows as a plain error card (US-023). The sign-in banner names Claude, so only an
+   * Anthropic rejection raises it; `isAuthError` can also match a refusal that mentions "oauth".
+   */
+  private showPendingFailure(): void {
+    const failure = this._pendingFailure;
+    if (!failure) return;
+    this._pendingFailure = null;
+    if (failure.provider === 'anthropic' && isAuthError(failure.message)) {
+      this.emit({ type: 'authFailure', message: failure.message });
     } else {
-      this.emit({ type: 'error', message });
+      this.emit({ type: 'error', message: failure.message });
     }
   }
 

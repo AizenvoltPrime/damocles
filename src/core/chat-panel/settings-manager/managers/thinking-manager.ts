@@ -8,15 +8,14 @@ import {
   defaultEffortForModel,
   thinkingDisableAppliesToModel,
 } from "../utils";
-import { DEFAULT_MODELS } from "../../../../shared/types/constants";
+import { DEFAULT_MODELS, effortByModelEntry } from "../../../../shared/types/constants";
 import { effortToPiThinking } from "../../../pi-session/pi-models";
 
 /**
  * ThinkingManager owns per-panel reasoning controls (disabled toggle, effort
- * level, max thinking tokens). Each per-panel value layers above the workspace
- * defaults exposed via `damocles.thinkingDisabled`, `damocles.effortByModel`,
- * and `damocles.maxThinkingTokens`. Effort and max-tokens are keyed per-(panel,
- * model) so switching models inside a panel preserves prior intent.
+ * level). Each per-panel value layers above the workspace defaults exposed via
+ * `damocles.thinkingDisabled` and `damocles.effortByModel`. Effort is keyed
+ * per-(panel, model) so switching models inside a panel preserves prior intent.
  *
  * Per-panel state is in-memory only; a resumed conversation takes the level its
  * session file recorded (restoreRecordedLevel), else the workspace defaults apply.
@@ -24,7 +23,6 @@ import { effortToPiThinking } from "../../../pi-session/pi-models";
 export class ThinkingManager {
   private readonly perPanelDisabled: Map<string, boolean> = new Map();
   private readonly perPanelEffortByModel: Map<string, Record<string, EffortLevel | null>> = new Map();
-  private readonly perPanelMaxTokensByModel: Map<string, Record<string, number | null>> = new Map();
   private readonly postMessage: PostMessageFn;
 
   constructor(postMessage: PostMessageFn) {
@@ -35,7 +33,6 @@ export class ThinkingManager {
   cleanupPanelThinking(panelId: string): void {
     this.perPanelDisabled.delete(panelId);
     this.perPanelEffortByModel.delete(panelId);
-    this.perPanelMaxTokensByModel.delete(panelId);
   }
 
   /**
@@ -51,10 +48,6 @@ export class ThinkingManager {
     const sourceEffort = this.perPanelEffortByModel.get(sourcePanelId);
     if (sourceEffort) {
       this.perPanelEffortByModel.set(targetPanelId, { ...sourceEffort });
-    }
-    const sourceMaxTokens = this.perPanelMaxTokensByModel.get(sourcePanelId);
-    if (sourceMaxTokens) {
-      this.perPanelMaxTokensByModel.set(targetPanelId, { ...sourceMaxTokens });
     }
   }
 
@@ -75,7 +68,7 @@ export class ThinkingManager {
 
   /**
    * Resolve effort with the per-(panel, model) override layered above
-   * `damocles.effortByModel[model]`, then the model's catalog `defaultEffort`.
+   * the model's `damocles.effortByModel` entry (`effortByModelEntry`), then the model's catalog `defaultEffort`.
    * Capability regressions (a stored value no longer in the model's
    * `supportedEffortLevels`) resolve to null so they never leak into SDK
    * options. The catalog default is resolved per request and never written
@@ -88,17 +81,7 @@ export class ThinkingManager {
       return coerceEffortForModel(model, panelOverride) ?? defaultEffortForModel(model);
     }
     const defaults = settings.get<Record<string, EffortLevel | null>>("damocles.effortByModel", {}, folder) ?? {};
-    return coerceEffortForModel(model, defaults[model] ?? null) ?? defaultEffortForModel(model);
-  }
-
-  /** Resolve max thinking tokens with the per-(panel, model) override above the workspace default. */
-  resolveMaxTokens(panelId: string, model: string, settings: SettingsStore, folder: SettingsFolder | undefined): number | null {
-    const panelMap = this.perPanelMaxTokensByModel.get(panelId);
-    const panelOverride = panelMap?.[model];
-    if (panelOverride !== undefined) {
-      return panelOverride;
-    }
-    return settings.get<number | null>("damocles.maxThinkingTokens", null, folder);
+    return coerceEffortForModel(model, effortByModelEntry(defaults, model)) ?? defaultEffortForModel(model);
   }
 
   /** Set the per-panel disabled override. */
@@ -135,20 +118,6 @@ export class ThinkingManager {
     if (effort) this.setPanelEffort(panelId, model, effort);
   }
 
-  /** Set the per-(panel, model) max-tokens override. `null` clears the override. */
-  setPanelMaxTokens(panelId: string, model: string, tokens: number | null): void {
-    let panelMap = this.perPanelMaxTokensByModel.get(panelId);
-    if (!panelMap) {
-      panelMap = {};
-      this.perPanelMaxTokensByModel.set(panelId, panelMap);
-    }
-    if (tokens === null) {
-      delete panelMap[model];
-    } else {
-      panelMap[model] = tokens;
-    }
-  }
-
   /**
    * Broadcast resolved thinking values for the panel's currently-active model
    * plus the workspace defaults keyed by the workspace default model. The
@@ -167,7 +136,6 @@ export class ThinkingManager {
     const panel: PanelThinkingState = {
       thinkingDisabled: this.resolveDisabled(panelId, activeModel, settings, folder),
       effort: this.resolveEffort(panelId, activeModel, settings, folder),
-      maxThinkingTokens: this.resolveMaxTokens(panelId, activeModel, settings, folder),
     };
     // The defaults column reads the workspace scope directly rather than through the panel resolvers,
     // so both the disable gate and the catalog default must be applied again here or the column
@@ -178,9 +146,8 @@ export class ThinkingManager {
         : false,
       effort: coerceEffortForModel(
         defaultModel,
-        (settings.get<Record<string, EffortLevel | null>>("damocles.effortByModel", {}, folder) ?? {})[defaultModel] ?? null,
+        effortByModelEntry(settings.get<Record<string, EffortLevel | null>>("damocles.effortByModel", {}, folder) ?? {}, defaultModel),
       ) ?? defaultEffortForModel(defaultModel),
-      maxThinkingTokens: settings.get<number | null>("damocles.maxThinkingTokens", null, folder),
     };
     this.postMessage(host, {
       type: "panelThinkingUpdate",

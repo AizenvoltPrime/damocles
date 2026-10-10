@@ -9,21 +9,12 @@ import { installFakePlatform } from "../../../../../__mocks__/fake-platform";
 import { PiRuntime } from "../../../../pi-session/pi-runtime";
 
 /** The TypeSafe and OpenRouter key handlers: what they store, what they acknowledge, and what they leave alone. */
-function setup(opts: { exploreProvider?: string; exploreEnabled?: boolean } = {}) {
-  const platform = installFakePlatform({
-    settings: {
-      user: {
-        ...(opts.exploreProvider ? { "damocles.explore.provider": opts.exploreProvider } : {}),
-        ...(opts.exploreEnabled !== undefined ? { "damocles.explore.enabled": opts.exploreEnabled } : {}),
-      },
-    },
-  });
+function setup(user: Record<string, unknown> = {}) {
+  const platform = installFakePlatform({ settings: { user } });
   const posted: ExtensionToWebviewMessage[] = [];
   const host = {};
   const session = { getToolStatus: () => ({}) };
   const settingsManager = {
-    selectedExploreProvider: vi.fn(() => opts.exploreProvider ?? "openrouter"),
-    sendExploreKeyStatus: vi.fn(async () => {}),
     sendImageGenerationSettings: vi.fn(),
   };
   const deps = {
@@ -76,24 +67,21 @@ describe("TypeSafe key handlers", () => {
 });
 
 describe("OpenRouter key handlers", () => {
-  it("stores the key without switching the Explore provider or enabling Explore", async () => {
-    const { platform, posted, send, settingsManager } = setup({ exploreProvider: "gemini", exploreEnabled: false });
+  it("stores the key under its stored name for image generation and Jev, and leaves the Explore model alone", async () => {
+    const { platform, posted, send, settingsManager } = setup({ "damocles.explore.model": "claude-sonnet-5-5" });
     await send({ type: "setOpenrouterApiKey", key: " sk-or-1 ", requestId: "r1" });
 
     expect(await platform.secrets.get("damocles.explore.apiKey.openrouter")).toBe("sk-or-1");
-    expect(platform.settings.get("damocles.explore.provider", "")).toBe("gemini");
-    expect(platform.settings.get("damocles.explore.enabled", true)).toBe(false);
+    expect(platform.settings.get("damocles.explore.model", "")).toBe("claude-sonnet-5-5");
     expect(posted).toContainEqual({ type: "setOpenrouterApiKeyAck", requestId: "r1", ok: true });
     expect(posted).toContainEqual({ type: "openrouterAuthStatusChanged", configured: true });
     expect(settingsManager.sendImageGenerationSettings).toHaveBeenCalled();
-    expect(settingsManager.sendExploreKeyStatus).not.toHaveBeenCalled();
     expect(JSON.stringify(posted)).not.toContain("sk-or-1");
   });
 
-  it("keeps the Explore key indicator in step when Explore uses OpenRouter, and clears", async () => {
-    const { platform, posted, send, settingsManager } = setup({ exploreProvider: "openrouter", exploreEnabled: true });
+  it("clears the key and reports OpenRouter signed out", async () => {
+    const { platform, posted, send } = setup();
     await send({ type: "setOpenrouterApiKey", key: "sk-or-1", requestId: "r1" });
-    expect(settingsManager.sendExploreKeyStatus).toHaveBeenCalled();
 
     await send({ type: "clearOpenrouterApiKey", requestId: "r2" });
     expect(await platform.secrets.get("damocles.explore.apiKey.openrouter")).toBeUndefined();

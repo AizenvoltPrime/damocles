@@ -40,16 +40,16 @@ describe('cheapModelValueForProvider', () => {
 
   it('returns the provider cheap-model id when the main value is that provider cheap model', () => {
     const reg: ModelLookup = { getModel: () => undefined, hasConfiguredAuth: () => false };
-    expect(cheapModelValueForProvider('step-3.7-flash', reg)).toBe('step-3.7-flash');
+    expect(cheapModelValueForProvider('step-5-preview', reg)).toBe('step-5-preview');
   });
 
-  it('maps both DeepSeek main models to the DeepSeek cheap model (deepseek-v4-flash)', () => {
+  it('maps both DeepSeek main models to the DeepSeek cheap model (deepseek-flash)', () => {
     const reg: ModelLookup = {
       getModel: (provider, id) =>
         provider === 'deepseek' ? ({ provider, id, name: id, contextWindow: 1_000_000 } as unknown as Model<Api>) : undefined,
       hasConfiguredAuth: () => true,
     };
-    expect(cheapModelValueForProvider('deepseek-v4-pro', reg)).toBe('deepseek-v4-flash');
-    expect(cheapModelValueForProvider('deepseek-v4-flash', reg)).toBe('deepseek-v4-flash');
+    expect(cheapModelValueForProvider('deepseek-v4-pro', reg)).toBe('deepseek-flash');
+    expect(cheapModelValueForProvider('deepseek-flash', reg)).toBe('deepseek-flash');
   });
 });

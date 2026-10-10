@@ -46,19 +46,39 @@ export interface ClassifierBreakers {
   reset(provider: string): void;
   /** The last refusal of `provider`'s credential, until an answer or a reset clears it. */
   rejection(provider: string): ClassifierRejection | undefined;
-  /** Fires when any provider's rejection appears, changes or clears. */
+  /** Fires when any provider's rejection appears, changes or clears, and whenever `admits` changes: a cooldown ends, a probe starts or fails. */
   onChange(listener: () => void): () => void;
+  /** Cancels every cooldown timer. */
+  dispose(): void;
 }
 
-/** Per-provider circuit breakers for the Jev classifier; see "Memory judges on Jev" in docs/invariants.md. */
-export function createClassifierBreakers(now: () => number = () => performance.now()): ClassifierBreakers {
+/** Runs `run` after `ms` and returns its cancel; the default never keeps the process alive. */
+export type ScheduleTimer = (run: () => void, ms: number) => () => void;
+
+const unrefTimer: ScheduleTimer = (run, ms) => {
+  const timer = setTimeout(run, ms);
+  timer.unref?.();
+  return () => clearTimeout(timer);
+};
+
+/** Per-provider circuit breakers for the memory-judge classifiers; see "Memory judges" in docs/invariants.md. */
+export function createClassifierBreakers(now: () => number = () => performance.now(), schedule: ScheduleTimer = unrefTimer): ClassifierBreakers {
   const open = new Map<string, OpenBreaker>();
+  const cooldowns = new Map<string, () => void>();
   const generations = new Map<string, number>();
   const listeners = new Set<() => void>();
   const notify = (): void => {
     for (const listener of listeners) listener();
   };
   const generationOf = (provider: string): number => generations.get(provider) ?? 0;
+  const cancelCooldown = (provider: string): void => {
+    cooldowns.get(provider)?.();
+    cooldowns.delete(provider);
+  };
+  const close = (provider: string): boolean => {
+    cancelCooldown(provider);
+    return open.delete(provider);
+  };
 
   return {
     admits(provider) {
@@ -68,7 +88,10 @@ export function createClassifierBreakers(now: () => number = () => performance.n
 
     claim(provider) {
       const breaker = open.get(provider) ?? null;
-      if (breaker) breaker.probing = true;
+      if (breaker && !breaker.probing) {
+        breaker.probing = true;
+        notify();
+      }
       return { provider, generation: generationOf(provider), probes: breaker };
     },
 
@@ -79,20 +102,26 @@ export function createClassifierBreakers(now: () => number = () => performance.n
       if (breaker && ticket.probes !== breaker) return;
       if (outcome.kind === 'answered') {
         if (!breaker) return;
-        open.delete(ticket.provider);
+        close(ticket.provider);
         notify();
       } else if (outcome.kind === 'rejected') {
+        cancelCooldown(ticket.provider);
         open.set(ticket.provider, { reason: outcome.reason, openedAt: now(), probing: false });
+        cooldowns.set(ticket.provider, schedule(() => {
+          cooldowns.delete(ticket.provider);
+          notify();
+        }, CLASSIFIER_PROBE_AFTER_MS));
         if (breaker?.reason !== outcome.reason) notify();
       } else if (breaker) {
         // A transient failure says nothing about the credential: the next request probes again.
         breaker.probing = false;
+        notify();
       }
     },
 
     reset(provider) {
       generations.set(provider, generationOf(provider) + 1);
-      if (open.delete(provider)) notify();
+      if (close(provider)) notify();
     },
 
     rejection(provider) {
@@ -104,6 +133,10 @@ export function createClassifierBreakers(now: () => number = () => performance.n
       return () => {
         listeners.delete(listener);
       };
+    },
+
+    dispose() {
+      for (const provider of [...cooldowns.keys()]) cancelCooldown(provider);
     },
   };
 }

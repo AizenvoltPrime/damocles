@@ -238,7 +238,7 @@ async function startPanel(extra: Partial<SessionOptions> = {}): Promise<{
     permissionHandler,
     onMessage: (m) => messages.push(m),
     model: 'claude-opus-4-8',
-    resolveThinking: () => ({ thinkingDisabled: false, effort: null, maxThinkingTokens: null }),
+    resolveThinking: () => ({ thinkingDisabled: false, effort: null }),
     ...extra,
   };
   const session = new PiSession(options);

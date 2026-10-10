@@ -809,6 +809,15 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
     });
   });
 
+  describe('with Haiku 5.5 selected', () => {
+    it('reports the Haiku 5.5 identity and its June 2026 cutoff, not the Haiku 4.5 ones', () => {
+      const prompt = buildSystemPrompt({ ...baseOptions, model: 'claude-haiku-5-5', compassEnabled: false });
+      expect(prompt).toContain('You are powered by the model named Haiku 5.5. The exact model ID is claude-haiku-5-5.');
+      expect(prompt).toContain('Assistant knowledge cutoff is June 2026.');
+      expect(prompt).not.toContain('February 2025');
+    });
+  });
+
   // Same reason as the retired Opus ids: these only migrate where `migrateLegacyModelValue` runs.
   describe('with a retired Sonnet 5 or GPT-6 Sol id', () => {
     it.each([

@@ -286,6 +286,7 @@ const messageClass = computed(() => {
         v-if="inlineMessage"
         class="sm-hint"
         :class="messageClass"
+        :role="inlineMessage.kind === 'error' ? 'alert' : 'status'"
       >
         {{ inlineMessage.text }}
       </p>

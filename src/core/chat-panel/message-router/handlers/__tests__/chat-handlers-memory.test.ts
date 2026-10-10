@@ -80,8 +80,48 @@ describe("chat /compact echo", () => {
   // A compaction commits no user entry, so a prompt index on its echo would name another prompt's record.
   it("echoes /compact as an injected row, never as a prompt", async () => {
     const h = makeHarness({});
-    Object.assign(h.ctx.session, { compact: vi.fn(async () => {}) });
+    Object.assign(h.ctx.session, { compact: vi.fn(async (_instructions?: string, onAccepted?: () => void) => { onAccepted?.(); }) });
     await send(h, "/compact keep the API notes");
     expect(h.sent.find((m) => m.type === "userMessage")).toMatchObject({ content: "/compact keep the API notes", isInjected: true, isCommandEcho: true, promptIndex: 0 });
+  });
+
+  it("echoes an accepted /compact ahead of what the compaction reports", async () => {
+    const h = makeHarness({});
+    Object.assign(h.ctx.session, {
+      compact: vi.fn(async (instructions?: string, onAccepted?: () => void) => {
+        onAccepted?.();
+        h.sent.push({ type: "preCompact", trigger: "manual" });
+        expect(instructions).toBe("keep the API notes");
+      }),
+    });
+    await send(h, "/compact keep the API notes");
+    expect(h.sent.map((m) => m.type)).toEqual(["userMessage", "preCompact", "processing"]);
+  });
+
+  // The composer's Compact now item sends /compact on the send path while a turn runs; that turn owns the spinner.
+  it("leaves the running turn's spinner alone when a command it handles locally arrives mid-turn", async () => {
+    const h = makeHarness({});
+    Object.assign(h.ctx.session, { turnRunning: true, compact: vi.fn(async () => {}) });
+    await send(h, "/compact");
+    await send(h, "/memories");
+    expect(h.sent.some((m) => m.type === "processing")).toBe(false);
+  });
+
+  it("disarms the send path's spinner for a command it handles locally while no turn runs", async () => {
+    const h = makeHarness({});
+    Object.assign(h.ctx.session, { turnRunning: false });
+    await send(h, "/memories");
+    expect(h.sent).toContainEqual({ type: "processing", isProcessing: false });
+  });
+
+  // The session refuses a compaction while a turn or another compaction runs, with its own notice.
+  it.each(["sendMessage", "queueMessage"] as const)("leaves no echo for a /compact the session refuses (%s)", async (type) => {
+    const h = makeHarness({});
+    const compact = vi.fn(async () => { h.sent.push({ type: "notification", message: "Finish or stop the current turn before compacting.", notificationType: "warning" }); });
+    Object.assign(h.ctx.session, { compact });
+    await h.handlers[type]!({ type, content: "/compact" }, h.ctx);
+    expect(compact).toHaveBeenCalledTimes(1);
+    expect(h.sent.some((m) => m.type === "userMessage")).toBe(false);
+    expect(h.sent.filter((m) => m.type === "notification")).toHaveLength(1);
   });
 });

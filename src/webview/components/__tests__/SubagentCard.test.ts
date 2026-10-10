@@ -140,3 +140,16 @@ describe('a subagent card’s usage', () => {
     expect(restored.replace(/\d+s/, '')).toBe(live.replace(/\d+s/, ''));
   });
 });
+
+describe('the subagent card status line', () => {
+  it('names the retry while pi waits to re-send a failed call, and the progress summary otherwise', () => {
+    const mountWith = (over: Partial<SubagentState>) => mount(SubagentCard, {
+      props: { subagent: { ...subagent('Explore'), progressSummary: 'reading files', ...over } },
+      global: { plugins: [i18n], stubs: { MarkdownRenderer: true } },
+    });
+
+    expect(mountWith({ retry: { attempt: 2, maxAttempts: 3 } }).get('[data-testid="subagent-status-line"]').text())
+      .toBe(i18n.global.t('status.retrying', { attempt: 2, max: 3 }));
+    expect(mountWith({}).get('[data-testid="subagent-status-line"]').text()).toBe('reading files');
+  });
+});

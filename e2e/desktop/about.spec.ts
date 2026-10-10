@@ -1,9 +1,11 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Locator, Page } from '@playwright/test';
+import { OVERLAY_ACK_TIMEOUT_MS } from '../../src/desktop/preload/overlay-channels';
+import { logBeforeQuit } from './support/app';
 import { activeChat, expect, test } from './support/fixtures';
 import { REPO_ROOT } from './support/hermetic';
-import { menuItem, overlayMenu } from './support/overlay';
+import { menuItem, overlayMenu, overlayViewState } from './support/overlay';
 import { closeSettingsModal, setContentSize, settingsModal, settingsNav } from './support/settings';
 import { overlayPage, popupPage, popupToasts, shellPage } from './support/shell';
 import { chatInput, clickMenu } from './support/ui';
@@ -107,6 +109,34 @@ test.describe('Settings › About', () => {
     await link.click();
     await expect.poll(() => openedExternally(app)).toEqual([LINKED.url]);
     await expect(settingsModal(overlay)).toBeVisible();
+  });
+
+  test('a first render slower than the acknowledgement deadline still opens About, and main answers its reads', async ({ home, launch }) => {
+    const desktop = await launch();
+    const { app } = desktop;
+    await expect(chatInput(await activeChat(app))).toBeVisible();
+    const overlay = await overlayPage(app);
+    // The page's next render holds its main thread past main's deadline, as a cold or starved renderer's first render can.
+    await overlay.evaluate((blockMs) => {
+      const create = Document.prototype.createElement;
+      Document.prototype.createElement = function (this: Document, ...args: unknown[]) {
+        Document.prototype.createElement = create;
+        const end = performance.now() + blockMs;
+        while (performance.now() < end) { /* the render is slow */ }
+        return (create as (...a: unknown[]) => HTMLElement).apply(this, args);
+      } as typeof create;
+    }, OVERLAY_ACK_TIMEOUT_MS * 2);
+
+    await openAbout(app);
+    await expect(overlay.getByTestId('settings-row-about-version')).toContainText(`Damocles ${VERSION}`);
+    await expect(versionRow(overlay, VERSION)).toHaveAttribute('aria-expanded', 'true');
+    expect((await overlayViewState(app)).visible).toBe(true);
+    await closeSettingsModal(overlay);
+    await desktop.close();
+    const log = logBeforeQuit(home);
+    expect(log).not.toContain('did not acknowledge');
+    const shownMs = Number(/the first request since the page loaded \(settings\) was acknowledged in \d+ ms of \d+ and shown in (\d+) ms/.exec(log)?.[1]);
+    expect(shownMs).toBeGreaterThanOrEqual(OVERLAY_ACK_TIMEOUT_MS * 2);
   });
 
   test('Help › Release Notes opens What\'s new on the running version, and Copy version info fills the clipboard', async ({ clipboard, launch }) => {
