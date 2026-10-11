@@ -74,8 +74,7 @@ const CDP_ALLOWED_SET: ReadonlySet<string> = new Set<string>(CDP_ALLOWED_METHODS
  * excluded — `Runtime.enable` (and `Console.enable`) are the fingerprints Patchright exists to avoid,
  * and network errors are collected via Playwright page events, not a CDP Network domain.
  */
-const ENABLEABLE_DOMAINS = ['Page', 'DOM', 'CSS', 'Overlay', 'Accessibility'] as const;
-type EnableableDomain = (typeof ENABLEABLE_DOMAINS)[number];
+type EnableableDomain = 'Page' | 'DOM' | 'CSS' | 'Overlay' | 'Accessibility';
 
 export class PageController {
   private readonly page: Page;
@@ -110,14 +109,14 @@ export class PageController {
 
   /**
    * Enable a domain once per session before its first query. NEVER used for Runtime/Console/Network —
-   * `ENABLEABLE_DOMAINS` is the compile-time guard for that, and the `.enable` methods live in the
-   * allow-list. Idempotent: subsequent calls for an already-enabled domain are no-ops.
+   * the `satisfies` below makes a domain whose `.enable` is outside the allow-list a compile error, and
+   * `send()` rejects it at runtime. Idempotent: subsequent calls for an already-enabled domain are no-ops.
    */
   private async ensureDomain(domain: EnableableDomain): Promise<void> {
     if (this.enabledDomains.has(domain)) return;
     this.enabledDomains.add(domain);
     try {
-      await this.send(`${domain}.enable` as CdpAllowedMethod);
+      await this.send(`${domain}.enable` as const satisfies CdpAllowedMethod);
     } catch (err) {
       // A failed enable must not be silently treated as enabled — surface it so the caller's query
       // fails loudly rather than with a confusing "agent not enabled" downstream.
@@ -126,8 +125,8 @@ export class PageController {
     }
   }
 
-  // errorText is Chromium's net error (net::ERR_*) when the load failed.
-  async navigate(url: string): Promise<{ frameId: string; loaderId: string; errorText?: string }> {
+  // errorText is Chromium's net error (net::ERR_*) when the load failed; a download answers isDownload with net::ERR_ABORTED.
+  async navigate(url: string): Promise<{ frameId: string; loaderId: string; errorText?: string; isDownload?: boolean }> {
     return this.send('Page.navigate', { url });
   }
 

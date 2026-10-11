@@ -1137,14 +1137,16 @@ describe('AgentRunner finalResponse', () => {
 });
 
 /** Captures the undelivered-message taker the runner publishes, plus whether its teardown has run. */
-function undeliveredTaker(): { take: () => UndeliveredMessage[]; unbound: boolean; bind: AgentRunConfig['bindTakeUndelivered'] } {
-  const sink: { take: () => UndeliveredMessage[]; unbound: boolean; bind: AgentRunConfig['bindTakeUndelivered'] } = {
+function undeliveredTaker(): { take: () => UndeliveredMessage[]; peek: () => UndeliveredMessage[]; unbound: boolean; bind: AgentRunConfig['bindTakeUndelivered'] } {
+  const sink: { take: () => UndeliveredMessage[]; peek: () => UndeliveredMessage[]; unbound: boolean; bind: AgentRunConfig['bindTakeUndelivered'] } = {
     take: () => { throw new Error('the runner never published an undelivered-message taker'); },
+    peek: () => { throw new Error('the runner never published an undelivered-message peek'); },
     unbound: false,
     bind: () => () => undefined,
   };
-  sink.bind = (take) => {
+  sink.bind = (take, peek?: () => UndeliveredMessage[]) => {
     sink.take = take;
+    if (peek) sink.peek = peek;
     return () => { sink.unbound = true; };
   };
   return sink;
@@ -1337,14 +1339,14 @@ describe('AgentRunner redelivery and undelivered messages', () => {
     const run = new AgentRunner().startAgent(config);
     await fake.whenPrompted(1);
     // Not streaming and mid-turn, so the runner holds the message locally until the turn ends.
-    messageBus.send('Lead', 'worker', 'held by the runner');
+    const held = messageBus.send('Lead', 'worker', 'held by the runner');
     fake.holdSteeredMessage('held by pi as a steer');
     fake.holdFollowUpMessage('held by pi as a follow-up');
 
     expect(taker.take()).toEqual([
       { text: 'held by pi as a steer', echoed: true },
       { text: 'held by pi as a follow-up', echoed: true },
-      { text: '[Message from Lead]: held by the runner', echoed: false },
+      { text: '[Message from Lead]: held by the runner', echoed: false, ids: [held.messageId] },
     ]);
 
     abort.abort();
@@ -1495,10 +1497,12 @@ describe('AgentRunner image steers', () => {
     expect(m.sink.deliver(steer, [image])).toBe(true);
     await m.fake.whenPrompted(3);
 
-    expect(m.taker.take()).toEqual([
-      { text: steer, echoed: true },
-      { text: steer, echoed: true, images: [image] },
+    const taken = m.taker.take();
+    expect(taken).toEqual([
+      { text: steer, echoed: true, ids: [expect.any(String)] },
+      { text: steer, echoed: true, images: [image], ids: [expect.any(String)] },
     ]);
+    expect(new Set(taken.flatMap((u) => u.ids)).size).toBe(2);
     m.abort.abort();
     await m.run;
   });
@@ -1561,6 +1565,12 @@ function emitRetryBackoff(s: FakeSession, attempt: number): void {
 describe('AgentRunner provider failures', () => {
   const sentOf = (config: AgentRunConfig): ExtensionToWebviewMessage[] => vi.mocked(config.onMessage).mock.calls.map(([m]) => m);
 
+  it('ends an agent whose session never opens failed as a start failure, not a model call failure', async () => {
+    const result = await new AgentRunner().startAgent(baseConfig({}));
+
+    expect(result).toMatchObject({ status: 'failed', failure: { kind: 'start', message: 'no session' }, finalResponse: 'Failed to start: no session' });
+  });
+
   it('ends the agent failed with the provider message when its last call fails for good, without reconciling it', async () => {
     const fake = new FakeSession({
       settleOn: 'agent_settled',
@@ -1579,7 +1589,7 @@ describe('AgentRunner provider failures', () => {
     const result = await new AgentRunner().startAgent(config);
 
     expect(result.status).toBe('failed');
-    expect(result.error).toBe('529 overloaded_error');
+    expect(result.failure).toEqual({ kind: 'model', message: '529 overloaded_error' });
     expect(result.finalResponse).toBe('529 overloaded_error\n\nPartial output:\nfound the bug in parse()');
     expect(config.onReconcileBeforeEnd).not.toHaveBeenCalled();
     expect(broadcasts).toEqual(['Agent "worker" failed: 529 overloaded_error']);
@@ -1662,7 +1672,7 @@ describe('AgentRunner provider failures', () => {
 
     const result = await new AgentRunner().startAgent(config);
 
-    expect(result).toMatchObject({ status: 'failed', error: '529 second', finalResponse: '529 second' });
+    expect(result).toMatchObject({ status: 'failed', failure: { kind: 'model', message: '529 second' }, finalResponse: '529 second' });
     expect(sentOf(config).filter((m) => m.type === 'error')).toEqual([{ type: 'error', message: '529 second', parentToolUseId: 'a1' }]);
   });
 
@@ -1696,7 +1706,7 @@ describe('AgentRunner provider failures', () => {
     const result = await run;
 
     expect(fake.prompts).toEqual(['do the task', '[Message from Lead]: revise section 2']);
-    expect(result).toMatchObject({ status: 'failed', error: '503 upstream unavailable', finalResponse: '503 upstream unavailable\n\nPartial output:\nreported' });
+    expect(result).toMatchObject({ status: 'failed', failure: { kind: 'model', message: '503 upstream unavailable' }, finalResponse: '503 upstream unavailable\n\nPartial output:\nreported' });
   });
 
   it('reports a Stop that lands on a failing call as cancelled, never failed', async () => {
@@ -1862,6 +1872,57 @@ describe('AgentRunner reloaded transcript of a failed call', () => {
     expect(JSON.stringify(sealed.at(-1)!.content)).toBe(JSON.stringify(reloaded[0]!.content));
   });
 
+  // A cut batch whose terminal call ran makes the turn decider end the run, so pi makes no aborted call after it.
+  it('stops the calls an abort cut from a batch the turn decider ended, records them, and matches its reload', async () => {
+    const abort = new AbortController();
+    const batch = {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'Parking' }, { type: 'toolCall', id: 'tc-ran', name: 'team_standby', arguments: {} }, { type: 'toolCall', id: 'tc-skipped', name: 'read', arguments: { path: '/a.ts' } }],
+      stopReason: 'toolUse',
+    };
+    const ranResult = { role: 'toolResult', toolCallId: 'tc-ran', toolName: 'team_standby', content: [{ type: 'text', text: 'Standing by' }], isError: false, durationMs: 4 };
+    let decision: AgentTurnDecision | undefined;
+    const fake = new FakeSession({
+      settleOn: 'agent_settled',
+      onPrompt: (_t, s) => {
+        void (async () => {
+          s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
+          s.emit({ type: 'message_end', message: batch });
+          s.emit({ type: 'tool_execution_start', toolCallId: 'tc-ran', toolName: 'team_standby', args: {} });
+          abort.abort();
+          s.emit({ type: 'tool_execution_end', toolCallId: 'tc-ran', toolName: 'team_standby', result: ranResult, isError: false, durationMs: 4 });
+          s.emit({ type: 'message_start', message: ranResult });
+          s.emit({ type: 'message_end', message: ranResult });
+          const turn = { message: batch, toolResults: [ranResult], context: {}, newMessages: [] } as unknown as AgentTurnContext;
+          decision = (await s.agent.finishTurn?.(turn)) as AgentTurnDecision | undefined;
+          s.emit({ type: 'turn_end', message: batch, toolResults: [ranResult] });
+          s.emit({ type: 'agent_end', messages: [batch, ranResult] });
+          s.emit({ type: 'agent_settled', aborted: true });
+        })();
+      },
+    });
+    // Real pi's `prompt()` resolves at the settle that follows an abort, not at the abort.
+    fake.abort = async () => { fake.aborted = true; };
+    const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false, abortSignal: abort.signal });
+
+    const result = await new AgentRunner().startAgent(config);
+    const sealed = vi.mocked(config.onMessage).mock.calls.flatMap(([m]) => (m.type === 'teamAgentAssistant' ? [m] : []));
+
+    expect(decision).toEqual({ action: 'end' });
+    expect(result.status).toBe('cancelled');
+    expect(fake.customEntries).toEqual([{ customType: 'damocles-turn-stopped', data: { toolCallIds: ['tc-skipped'], entryIds: [] } }]);
+    const persisted = [batch, ranResult] as unknown as PersistedAgentMessage[];
+    const [reloaded] = memberHistoryMessages(persisted, new Map(persisted.map((m, i) => [m, `e${i}`])), new Set(['tc-skipped']));
+    expect(reloaded!.content).toEqual([
+      { type: 'text', text: 'Parking' },
+      { type: 'tool_use', id: 'tc-ran', name: 'team_standby', input: expect.anything() },
+      { type: 'tool_use', id: 'tc-skipped', name: 'Read', input: expect.anything(), abandoned: 'stopped' },
+    ]);
+    expect(sealed).toHaveLength(2);
+    expect(sealed[1]!.messageId).toBe(sealed[0]!.messageId);
+    expect(JSON.stringify(sealed[1]!.content)).toBe(JSON.stringify(reloaded!.content));
+  });
+
   it('shows the error of a failed call that streamed nothing', () => {
     const empty = { ...failed, content: [] } as unknown as PersistedAgentMessage;
     expect(memberHistoryMessages([empty], new Map([[empty, 'e8']]))).toEqual([
@@ -1972,5 +2033,291 @@ describe('AgentRunner wind-down error of a cancelled run', () => {
     expect(result.status).toBe('failed');
     const sent = vi.mocked(config.onMessage).mock.calls.map(([m]) => m);
     expect(sent.filter((m) => m.type === 'error')).toEqual([{ type: 'error', message: '529 overloaded_error', parentToolUseId: 'a1' }]);
+  });
+});
+
+describe('AgentRunner delivery records', () => {
+  const DELIVERED = 'damocles-team-delivered';
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  type Entry = { type: string; customType?: string; data?: { ids?: string[] }; message?: { role: string; content: Array<{ type: string; text?: string }> } };
+
+  /** The ids of the delivery record directly after the user message holding `text`, or null when no record follows it. */
+  function recordAfter(fake: FakeSession, text: string): string[] | null {
+    const branch = fake.branch as Entry[];
+    const at = branch.findIndex((e) => e.type === 'message' && e.message?.role === 'user' && e.message.content[0]?.text === text);
+    if (at === -1) throw new Error(`no user message "${text}" was persisted`);
+    const next = branch[at + 1];
+    return next?.type === 'custom' && next.customType === DELIVERED ? next.data?.ids ?? [] : null;
+  }
+
+  const records = (fake: FakeSession): unknown[] => fake.customEntries.filter((e) => e.customType === DELIVERED).map((e) => e.data);
+
+  it('records a message delivered as a new prompt once the member is idle, by its message id', async () => {
+    let alive = true;
+    const messageBus = new MessageBus('team-1');
+    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    let idle: (() => void) | null = null;
+    const nextIdle = (): Promise<void> => new Promise((r) => { idle = r; });
+    const config = baseConfig({ messageBus, createSession: async () => fake as never, keepAlive: () => alive, onTurnEnd: () => { idle?.(); idle = null; } });
+
+    const first = nextIdle();
+    const run = new AgentRunner().startAgent(config);
+    await first;
+    const second = nextIdle();
+    const sent = messageBus.send('peer', 'worker', 'here is some context');
+    await second;
+    alive = false;
+    messageBus.broadcast('system', 'wind down');
+    await run;
+
+    expect(recordAfter(fake, '[Message from peer]: here is some context')).toEqual([sent.messageId]);
+    expect(recordAfter(fake, 'do the task')).toBeNull();
+    expect(records(fake).filter((d) => (d as { ids: string[] }).ids.includes(sent.messageId))).toEqual([{ ids: [sent.messageId] }]);
+  });
+
+  it('records a message steered into a streaming turn right after pi persists it', async () => {
+    const opening: { end: (() => void) | null } = { end: null };
+    const fake = new FakeSession({
+      isStreaming: true,
+      onPrompt: (text, s) => { if (text === 'do the task') opening.end = () => s.emit({ type: 'turn_end' }); },
+    });
+    const messageBus = new MessageBus('team-1');
+    const config = baseConfig({ messageBus, createSession: async () => fake as never, keepAlive: () => false });
+
+    const run = new AgentRunner().startAgent(config);
+    await fake.whenPrompted(1);
+    const sent = messageBus.send('peer', 'worker', 'steer me');
+    await fake.whenPrompted(2);
+    opening.end!();
+    await run;
+
+    expect(fake.promptOptions[1]?.streamingBehavior).toBe('steer');
+    expect(recordAfter(fake, '[Message from peer]: steer me')).toEqual([sent.messageId]);
+    expect(records(fake)).toEqual([{ ids: [sent.messageId] }]);
+  });
+
+  it('records a message held during a turn and delivered as the follow-up prompt when the turn ends', async () => {
+    const opening: { end: (() => void) | null } = { end: null };
+    const fake = new FakeSession({
+      onPrompt: (text, s) => {
+        if (text === 'do the task') opening.end = () => s.emit({ type: 'turn_end' });
+        else s.emit({ type: 'turn_end' });
+      },
+    });
+    const messageBus = new MessageBus('team-1');
+    const config = baseConfig({ messageBus, createSession: async () => fake as never, keepAlive: () => false });
+
+    const run = new AgentRunner().startAgent(config);
+    await fake.whenPrompted(1);
+    const sent = messageBus.send('Lead', 'worker', 'after your turn');
+    opening.end!();
+    await run;
+
+    expect(fake.prompts).toEqual(['do the task', '[Message from Lead]: after your turn']);
+    expect(recordAfter(fake, '[Message from Lead]: after your turn')).toEqual([sent.messageId]);
+    expect(records(fake)).toEqual([{ ids: [sent.messageId] }]);
+  });
+
+  it('records an operator steer by the fresh id it was given when queued', async () => {
+    const opening: { end: (() => void) | null } = { end: null };
+    const fake = new FakeSession({
+      onPrompt: (text, s) => {
+        if (text === 'do the task') opening.end = () => s.emit({ type: 'turn_end' });
+        else s.emit({ type: 'turn_end' });
+      },
+    });
+    const sink = noteSink();
+    const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false, bindNoteDelivery: sink.bind });
+
+    const run = new AgentRunner().startAgent(config);
+    await fake.whenPrompted(1);
+    const steer = wrapSteerMessage('use the v2 schema');
+    expect(sink.deliver(steer)).toBe(true);
+    opening.end!();
+    await run;
+
+    const ids = recordAfter(fake, steer);
+    expect(ids).toHaveLength(1);
+    expect(ids![0]).toMatch(UUID);
+    expect(records(fake)).toEqual([{ ids }]);
+  });
+
+  it('records nothing for a redelivered message from a checkpoint written before ids', async () => {
+    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const config = baseConfig({
+      initial: { kind: 'prompt', text: 'continue' },
+      redeliver: [{ text: '[Message from Lead]: from a checkpoint written before ids', echoed: true }],
+      createSession: async () => fake as never,
+      keepAlive: () => false,
+    });
+
+    await new AgentRunner().startAgent(config);
+
+    expect(fake.prompts).toEqual(['continue', '[Message from Lead]: from a checkpoint written before ids']);
+    expect(recordAfter(fake, '[Message from Lead]: from a checkpoint written before ids')).toBeNull();
+    expect(records(fake)).toEqual([]);
+  });
+
+  it('peeks a steer pi has started but not yet persisted, and a pi follow-up, and nothing once pi persisted the steer', async () => {
+    const fake = new FakeSession({ isStreaming: true, onPrompt: () => undefined });
+    const messageBus = new MessageBus('team-1');
+    const taker = undeliveredTaker();
+    const abort = new AbortController();
+    const config = baseConfig({
+      messageBus, abortSignal: abort.signal, createSession: async () => fake as never, keepAlive: () => true, bindTakeUndelivered: taker.bind,
+    });
+    const run = new AgentRunner().startAgent(config);
+    await fake.whenPrompted(1);
+    const steered = '[Message from Lead]: in transit';
+    // pi has taken it off its queue at message_start and appends it only after message_end.
+    const inTransit: UndeliveredMessage[][] = [];
+    fake.subscribe((e) => {
+      const event = e as { type: string; message?: { role: string; content: Array<{ text?: string }> } };
+      if (event.type === 'message_start' && event.message?.role === 'user' && event.message.content[0]?.text === steered) inTransit.push(taker.peek());
+    });
+
+    const sent = messageBus.send('Lead', 'worker', 'in transit');
+    await fake.whenPrompted(2);
+    fake.holdFollowUpMessage('[Message from Lead]: a pi follow-up');
+
+    expect(inTransit).toEqual([[{ text: steered, echoed: true, ids: [sent.messageId] }]]);
+    expect(taker.peek()).toEqual([{ text: '[Message from Lead]: a pi follow-up', echoed: true }]);
+
+    abort.abort();
+    await run;
+  });
+
+  it('peeks the undelivered messages with their ids without taking them', async () => {
+    const opening: { end: (() => void) | null } = { end: null };
+    const fake = new FakeSession({
+      isStreaming: true,
+      onPrompt: (text, s) => { if (text === 'do the task') opening.end = () => s.emit({ type: 'turn_end' }); },
+    });
+    fake.holdSteers = true;
+    const messageBus = new MessageBus('team-1');
+    const taker = undeliveredTaker();
+    const abort = new AbortController();
+    const config = baseConfig({
+      messageBus, abortSignal: abort.signal, createSession: async () => fake as never, keepAlive: () => true, bindTakeUndelivered: taker.bind,
+    });
+
+    const run = new AgentRunner().startAgent(config);
+    await fake.whenPrompted(1);
+    const steered = messageBus.send('Lead', 'worker', 'steered into pi');
+    await fake.whenPrompted(2);
+    fake.isStreaming = false;
+    const held = messageBus.send('Lead', 'worker', 'held by the runner');
+    const expected = [
+      { text: '[Message from Lead]: steered into pi', echoed: true, ids: [steered.messageId] },
+      { text: '[Message from Lead]: held by the runner', echoed: false, ids: [held.messageId] },
+    ];
+
+    expect(taker.peek()).toEqual(expected);
+    expect(taker.peek()).toEqual(expected);
+    expect(fake.getSteeringMessages()).toEqual(['[Message from Lead]: steered into pi']);
+    expect(taker.take()).toEqual(expected);
+
+    abort.abort();
+    await run;
+  });
+
+  it('takes a delivery pi was handed but has neither queued nor committed, as the peek reads it', async () => {
+    const fake = new FakeSession({ onPrompt: () => undefined });
+    const prompt = fake.prompt.bind(fake);
+    let release: (() => void) | null = null;
+    // pi still resolving the prompt's model, before it starts or queues the message.
+    fake.prompt = (text, options) => (text.startsWith('[Message from')
+      ? new Promise<void>((resolve) => { release = resolve; })
+      : prompt(text, options));
+    const messageBus = new MessageBus('team-1');
+    const taker = undeliveredTaker();
+    const abort = new AbortController();
+    const config = baseConfig({
+      messageBus, abortSignal: abort.signal, initial: { kind: 'park' }, createSession: async () => fake as never,
+      keepAlive: () => true, bindTakeUndelivered: taker.bind,
+    });
+
+    const run = new AgentRunner().startAgent(config);
+    const sent = messageBus.send('Lead', 'worker', 'in transit');
+    await vi.waitFor(() => expect(release).not.toBeNull());
+    const expected = [{ text: '[Message from Lead]: in transit', echoed: true, ids: [sent.messageId] }];
+
+    expect(taker.peek()).toEqual(expected);
+    expect(taker.take()).toEqual(expected);
+
+    abort.abort();
+    release!();
+    await run;
+  });
+});
+
+describe('AgentRunner keeps every message a failed run did not deliver', () => {
+  it('a run whose session never opens keeps the messages it was to redeliver and those that arrived while it opened', async () => {
+    let fail!: (err: Error) => void;
+    const messageBus = new MessageBus('team-1');
+    const redeliver: UndeliveredMessage[] = [{ text: '[Message from Lead]: carried over', echoed: true, ids: ['m-carried'] }];
+    const config = baseConfig({ messageBus, redeliver, createSession: () => new Promise((_resolve, reject) => { fail = reject; }) });
+
+    const run = new AgentRunner().startAgent(config);
+    const sent = messageBus.send('Lead', 'worker', 'while opening');
+    fail(new Error('no model'));
+    const result = await run;
+
+    expect(result).toMatchObject({ status: 'failed', failure: { kind: 'start', message: 'no model' } });
+    expect(result.undelivered).toEqual([...redeliver, { text: '[Message from Lead]: while opening', echoed: false, ids: [sent.messageId] }]);
+  });
+
+  it('a wake prompt pi refuses before committing it stays undelivered in the failed result, echoed once', async () => {
+    const fake = new FakeSession({ onPrompt: () => undefined });
+    const prompt = fake.prompt.bind(fake);
+    fake.prompt = async (text, options) => {
+      if (text.startsWith('[Message from')) throw new Error('No API key for provider');
+      return prompt(text, options);
+    };
+    const messageBus = new MessageBus('team-1');
+    const config = baseConfig({ messageBus, initial: { kind: 'park' }, createSession: async () => fake as never, keepAlive: () => true });
+
+    const run = new AgentRunner().startAgent(config);
+    const sent = messageBus.send('Lead', 'worker', 'wake up');
+    const result = await run;
+
+    expect(result).toMatchObject({ status: 'failed', failure: { kind: 'run', message: 'No API key for provider' } });
+    expect(result.undelivered).toEqual([{ text: '[Message from Lead]: wake up', echoed: true, ids: [sent.messageId] }]);
+    const echoes = vi.mocked(config.onMessage).mock.calls.filter(([m]) => m.type === 'teamAgentUserMessage' && m.content === '[Message from Lead]: wake up');
+    expect(echoes).toHaveLength(1);
+  });
+
+  it('a steer pi refuses before queueing it is delivered as a prompt once the turn ends', async () => {
+    let refuse = true;
+    const opening: { end: (() => void) | null } = { end: null };
+    const fake = new FakeSession({
+      isStreaming: true,
+      onPrompt: (text, s) => {
+        if (text === 'do the task') opening.end = () => { s.isStreaming = false; s.emit({ type: 'turn_end' }); };
+        else s.emit({ type: 'turn_end' });
+      },
+    });
+    const prompt = fake.prompt.bind(fake);
+    fake.prompt = async (text, options) => {
+      if (options?.streamingBehavior === 'steer' && refuse) {
+        refuse = false;
+        throw new Error('refused');
+      }
+      return prompt(text, options);
+    };
+    const messageBus = new MessageBus('team-1');
+    const config = baseConfig({ messageBus, createSession: async () => fake as never, keepAlive: () => false });
+
+    const run = new AgentRunner().startAgent(config);
+    await fake.whenPrompted(1);
+    messageBus.send('Lead', 'worker', 'mid-turn');
+    await vi.waitFor(() => expect(refuse).toBe(false));
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    opening.end!();
+    await run;
+
+    expect(fake.prompts).toEqual(['do the task', '[Message from Lead]: mid-turn']);
+    const echoes = vi.mocked(config.onMessage).mock.calls.filter(([m]) => m.type === 'teamAgentUserMessage' && m.content === '[Message from Lead]: mid-turn');
+    expect(echoes).toHaveLength(1);
   });
 });

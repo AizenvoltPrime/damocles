@@ -5,7 +5,7 @@ import { getLanguageFromPath, type DiffLine, type FileDiff } from '@/utils/parse
 import { highlightDiffLines, type HighlightedDiffLine } from '@/utils/highlightDiff';
 import { codeHighlightTheme } from '@/composables/useShikiHighlighter';
 import { useSettingsStore } from '@/stores/useSettingsStore';
-import { escapeHtml } from '@/utils/stringUtils';
+import { escapeHtml } from '@shared/utils';
 
 const { t } = useI18n();
 const settingsStore = useSettingsStore();

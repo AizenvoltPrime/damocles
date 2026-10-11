@@ -7,6 +7,7 @@ import SettingSeg from '@/components/settings/controls/SettingSeg.vue';
 import SettingSwitch from '@/components/settings/controls/SettingSwitch.vue';
 import SettingButton from '@/components/settings/controls/SettingButton.vue';
 import { useSettingsPage } from '@/components/settings/settings-view';
+import { ran } from '../popup-answer';
 import { useDesktopPrefs } from './desktop-prefs';
 
 type Theme = 'dark' | 'light' | 'system';
@@ -26,18 +27,19 @@ const theme = computed<Theme>(() => {
 });
 
 const resetting = ref(false);
-const resetError = ref<string | null>(null);
-const resetDone = ref(false);
+const resetOutcome = ref<'done' | 'failed' | null>(null);
+const resetFeedback = computed(() => {
+  if (resetOutcome.value === 'done') return t('settingsHost.layoutRestored');
+  return resetOutcome.value === 'failed' ? t('settingsHost.layoutResetFailed') : undefined;
+});
 
 async function resetLayout(): Promise<void> {
   resetting.value = true;
-  resetError.value = null;
-  resetDone.value = false;
+  resetOutcome.value = null;
   try {
-    await prefs.api.resetLayout();
-    resetDone.value = true;
-  } catch (error) {
-    resetError.value = error instanceof Error ? error.message : String(error);
+    if (await ran(prefs.api.resetLayout())) resetOutcome.value = 'done';
+  } catch {
+    resetOutcome.value = 'failed';
   } finally {
     resetting.value = false;
   }
@@ -75,7 +77,7 @@ async function resetLayout(): Promise<void> {
   </SettingsRow>
   <SettingsRow
     id="restore-default-layout"
-    :description="resetError ?? (resetDone ? t('settingsHost.layoutRestored') : undefined)"
+    :description="resetFeedback"
   >
     <SettingButton
       :disabled="resetting"

@@ -30,7 +30,7 @@ const props = withDefaults(defineProps<{
   followKey?: string | undefined;
   /** The overlay holds unsent text, so a click on the scrim leaves it open; X and Escape still close it. */
   hasDraft?: boolean;
-}>(), { maxWidth: '51.25rem', fill: false, followKey: undefined, hasDraft: false });
+}>(), { maxWidth: '51.25rem', fill: false, hasDraft: false });
 
 const emit = defineEmits<{
   (e: 'close'): void;

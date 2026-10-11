@@ -426,7 +426,7 @@ a:hover {
   }
 }
 
-/* Desktop also sets data-reduced-motion from damocles.desktop.reduceMotion. */
+/* data-reduced-motion carries the host's setting: damocles.desktop.reduceMotion on desktop, workbench.reduceMotion in VS Code (utils/reducedMotion.ts). */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

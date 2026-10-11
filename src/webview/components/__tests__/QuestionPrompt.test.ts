@@ -49,4 +49,26 @@ describe('the question card', () => {
     expect(shown.get('p').attributes()).not.toHaveProperty('class');
     expect(shown.text()).toBe('Two columns');
   });
+
+  it('strips event handlers from a model-written preview', async () => {
+    const wrapper = questionCard([{ label: 'Grid', description: '', preview: '<img src=x onerror="alert(1)">' }]);
+
+    await wrapper.get('button[aria-pressed]').trigger('click');
+
+    const img = wrapper.get('[data-testid="question-option-preview"] img');
+    expect(img.attributes()).not.toHaveProperty('onerror');
+  });
+
+  it.each(['<form action="https://example.com">Send</form>', '<input value="Send">', '<button>Send</button>', '<textarea>Send</textarea>', '<select><option>Send</option></select>'])(
+    'shows a model-written preview without controls, so it cannot draw a working form or button (%s)',
+    async (control) => {
+      const wrapper = questionCard([{ label: 'Grid', description: '', preview: `<p>Two columns</p>${control}<p>End</p>` }]);
+
+      await wrapper.get('button[aria-pressed]').trigger('click');
+
+      const shown = wrapper.get('[data-testid="question-option-preview"]');
+      expect(shown.findAll('form, input, button, textarea, select')).toHaveLength(0);
+      expect(shown.findAll('p')).toHaveLength(2);
+    },
+  );
 });

@@ -439,7 +439,7 @@ describe('notification center', () => {
     expect(api.answer).not.toHaveBeenCalled();
   });
 
-  it('ignores main refusing Clear all and Do not disturb once the center has closed', async () => {
+  it('keeps main\'s state when Clear all or Do not disturb answers closed or fails, says which failed, and leaves no unhandled rejection', async () => {
     const unhandled: unknown[] = [];
     const record = (reason: unknown): void => {
       unhandled.push(reason);
@@ -448,28 +448,80 @@ describe('notification center', () => {
     try {
       api.center.state = { entries: [entry('n1', APPROVAL)], doNotDisturb: false, popupsOff: false };
       // Plain functions: a vi.fn would itself handle the promise it returns.
-      const refused: string[] = [];
+      const asked: string[] = [];
+      let fail = false;
+      const answer = async (): Promise<{ ok: false; reason: 'closed' }> => {
+        if (fail) throw new Error('the log could not be written');
+        return { ok: false, reason: 'closed' };
+      };
       api.clearNotifications = () => {
-        refused.push('clear');
-        return Promise.reject(new Error('the center is not open'));
+        asked.push('clear');
+        return answer();
       };
       api.setDoNotDisturb = (on: boolean) => {
-        refused.push(`dnd ${on}`);
-        return Promise.reject(new Error('the center is not open'));
+        asked.push(`dnd ${on}`);
+        return answer();
       };
       const wrapper = mountOverlay();
       await flushPromises();
       await open(wrapper, 'c1', CENTER);
       await flushPromises();
 
-      await wrapper.get('[data-testid="notification-clear"]').trigger('click');
-      await wrapper.get('[data-testid="notification-dnd"]').trigger('click');
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(refused).toEqual(['clear', 'dnd true']);
+      const failure = (): string | undefined => {
+        const notice = wrapper.find('[data-testid="notification-action-failed"]');
+        return notice.exists() ? notice.text() : undefined;
+      };
+      const settle = async (): Promise<void> => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        await flushPromises();
+      };
+      for (const failing of [false, true]) {
+        fail = failing;
+        await wrapper.get('[data-testid="notification-clear"]').trigger('click');
+        await settle();
+        expect(failure()).toBe(failing ? 'Damocles could not clear the notifications.' : undefined);
+        await wrapper.get('[data-testid="notification-dnd"]').trigger('click');
+        await settle();
+        expect(failure()).toBe(failing ? 'Damocles could not change Do not disturb.' : undefined);
+        expect(wrapper.findAll('[data-testid="notification-row"]')).toHaveLength(1);
+        expect(wrapper.get('[data-testid="notification-dnd"]').attributes('aria-checked')).toBe('false');
+      }
+      expect(wrapper.get('[data-testid="notification-action-failed"]').attributes('role')).toBe('alert');
+      expect(asked).toEqual(['clear', 'dnd true', 'clear', 'dnd true']);
       expect(unhandled).toEqual([]);
     } finally {
       process.off('unhandledRejection', record);
     }
+  });
+
+  it('says the notifications could not load, never that the log is empty, when its first read fails, until main pushes its state', async () => {
+    api.center.state = { entries: [entry('n1', APPROVAL)], doNotDisturb: false, popupsOff: false };
+    vi.mocked(api.getNotifications).mockRejectedValueOnce(new Error('the center could not be read'));
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'c1', CENTER);
+    await flushPromises();
+    expect(wrapper.find('[data-testid="notification-empty"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="notification-load-failed"]').text()).toBe('The notifications could not load.');
+    api.pushNotifications({ entries: [entry('n1', APPROVAL)], doNotDisturb: false, popupsOff: false });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="notification-load-failed"]').exists()).toBe(false);
+    expect(wrapper.findAll('[data-testid="notification-row"]')).toHaveLength(1);
+  });
+
+  it('shows an empty center, with no failure, when its first read answers closed', async () => {
+    api.center.state = { entries: [entry('n1', APPROVAL)], doNotDisturb: true, popupsOff: false };
+    vi.mocked(api.getNotifications).mockResolvedValueOnce({ ok: false, reason: 'closed' });
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'c1', CENTER);
+    await flushPromises();
+    expect(wrapper.findAll('[data-testid="notification-row"]')).toHaveLength(0);
+    expect(wrapper.get('[data-testid="notification-dnd"]').attributes('aria-checked')).toBe('false');
+    // A push is the newer state and still lands.
+    api.pushNotifications({ entries: [entry('n1', APPROVAL)], doNotDisturb: true, popupsOff: false });
+    await flushPromises();
+    expect(wrapper.findAll('[data-testid="notification-row"]')).toHaveLength(1);
   });
 
   it('colours a row\'s lead in its tone\'s text shade, which keeps AA on the hovered or focused row (D48), and names a rate limit\'s full window (D55)', async () => {

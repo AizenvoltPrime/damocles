@@ -85,7 +85,7 @@ function itemOf(relativePath: string): { label: string; description: string } {
 
 /**
  * Quick Open's file lists and scoring, which run in a worker thread so a large project never blocks the main process (VS Code
- * runs them in its search process). Main relays each query, checks the worker's reply as untrusted data, and answers empty
+ * runs them in its search process). Main relays each query, checks the worker's reply as untrusted data, and answers failed
  * when the worker fails or goes silent while a query waits, starting a fresh worker for the next query.
  */
 export class QuickOpenIndex {
@@ -166,7 +166,7 @@ export class QuickOpenIndex {
     } catch (err) {
       if (id !== undefined) this.pending.delete(id);
       this.deps.log(`[quick-open] a query failed: ${err instanceof Error ? err.message : String(err)}`);
-      return base;
+      return { ...base, failed: true };
     }
   }
 
@@ -291,7 +291,7 @@ export class QuickOpenIndex {
     this.stop();
   }
 
-  // Every query waiting on the worker answers empty, its ripgreps are killed, and the next query starts a fresh worker.
+  // Every query waiting on the worker answers failed, its ripgreps are killed, and the next query starts a fresh worker.
   private stop(): void {
     this.cancelSilence?.();
     this.cancelSilence = undefined;
@@ -302,12 +302,12 @@ export class QuickOpenIndex {
     worker?.terminate().catch((err: unknown) => this.deps.log(`[quick-open] stopping the worker failed: ${err instanceof Error ? err.message : String(err)}`));
     const waiting = [...this.pending.values()];
     this.pending.clear();
-    for (const pending of waiting) pending.resolve(pending.base);
+    for (const pending of waiting) pending.resolve({ ...pending.base, failed: true });
   }
 }
 
 export interface QuickOpenOverlay {
-  handle(channel: string, handler: (...args: unknown[]) => unknown): void;
+  handleWhileOpen<T>(channel: string, isOpen: () => boolean, handler: (...args: unknown[]) => T | Promise<T>): void;
   isOpen(kind: OverlayRequest['kind']): boolean;
   request(request: OverlayRequest, returnFocus: WebContents | undefined): Promise<OverlayAnswer>;
 }
@@ -353,13 +353,15 @@ export class QuickOpenPicker {
     this.context = context;
     this.commands = commands;
     this.log = log;
-    overlay.handle(OVERLAY_CHANNELS.commandsList, (raw) => {
-      if (!this.overlay.isOpen('quickOpen') || !this.captured) throw new Error('Quick Open is not open');
+    const quickOpenOpen = (): boolean => this.overlay.isOpen('quickOpen');
+    // The command list also needs the open request's captured context, which is gone once it answered.
+    overlay.handleWhileOpen(OVERLAY_CHANNELS.commandsList, () => quickOpenOpen() && this.captured !== undefined, (raw) => {
       if (typeof raw !== 'object' || raw === null || Array.isArray(raw) || Object.keys(raw).length > 0) throw new Error('Malformed command list request');
-      return this.commands.list(this.captured);
+      const context = this.captured;
+      if (context === undefined) throw new Error('Quick Open has no captured focus context');
+      return this.commands.list(context);
     });
-    overlay.handle(OVERLAY_CHANNELS.quickOpenQuery, async (raw) => {
-      if (!this.overlay.isOpen('quickOpen')) throw new Error('Quick Open is not open');
+    overlay.handleWhileOpen(OVERLAY_CHANNELS.quickOpenQuery, quickOpenOpen, async (raw) => {
       const value = typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? (raw as Record<string, unknown>) : undefined;
       const query = value && Object.hasOwn(value, 'query') ? value['query'] : undefined;
       const generation = value && Object.hasOwn(value, 'generation') ? value['generation'] : undefined;

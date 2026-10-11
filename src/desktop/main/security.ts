@@ -23,6 +23,14 @@ export function loadAppPage(contents: WebContents, url: string): Promise<void> {
   return contents.loadURL(url);
 }
 
+// net::ERR_ABORTED: another navigation replaced the one that failed, and that one loads instead.
+const ERR_ABORTED = -3;
+
+/** A did-fail-load that leaves the main frame without its page; Electron emits did-finish-load after it too (electron/electron#5128). */
+export function mainFrameLoadFailed(errorCode: number, isMainFrame: boolean): boolean {
+  return isMainFrame && errorCode !== ERR_ABORTED;
+}
+
 // The WebContents of registered panel views, the only ones that may hold a permission.
 const panelContents = new WeakSet<WebContents>();
 

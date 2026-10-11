@@ -4,7 +4,7 @@
  * source session's files are only read.
  */
 
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import type { PiCodingAgentModule } from './pi-loader';
@@ -86,11 +86,38 @@ async function cutEventLog(sourceFile: string, targetFile: string, forkPointMs: 
 }
 
 /**
- * The cancel times of the checkpoints taken at or before the fork point. The event log is cut at the
+ * The keys of the checkpoints of runs started at or before the fork point. The event log is cut at the
  * same point, so a checkpoint resumed after it is unused again in the fork.
  */
 async function checkpointsAtForkPoint(sourceDir: string, forkPointMs: number): Promise<number[]> {
-  return (await listTeamCheckpoints(sourceDir)).filter((cancelledAt) => cancelledAt <= forkPointMs);
+  return (await listTeamCheckpoints(sourceDir)).filter((key) => key <= forkPointMs);
+}
+
+/**
+ * Copy one checkpoint when its content was taken at or before the fork point: its `asOf`, or its key for a
+ * file written before `asOf`. A live checkpoint rewritten later holds state the cut log lacks. The bytes
+ * checked are the bytes written, since a live run may rewrite the source meanwhile. A file that is not JSON is
+ * judged by its key and copied as it is, so the fork reads it as the source does: as no checkpoint, which also
+ * keeps an older one from being offered.
+ */
+async function copyCheckpointAtForkPoint(sourceFile: string, targetFile: string, key: number, forkPointMs: number): Promise<void> {
+  const content = await readFile(sourceFile, 'utf8');
+  const asOf = asOfIn(content);
+  if (!((asOf ?? key) <= forkPointMs)) return;
+  await mkdir(dirname(targetFile), { recursive: true });
+  await writeFile(targetFile, content);
+}
+
+/** The `asOf` a checkpoint file records, or undefined when it records none or is not JSON. */
+function asOfIn(content: string): number | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return undefined;
+  }
+  const asOf = typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>)['asOf'] : undefined;
+  return typeof asOf === 'number' ? asOf : undefined;
 }
 
 /**
@@ -143,10 +170,12 @@ export async function copyForkAgentData(input: ForkAgentDataInput): Promise<Erro
       checkpoints = await checkpointsAtForkPoint(teamCheckpointsDir(sessionDir, sourceSessionId, teamId), forkPointMs);
     });
     for (const cancelledAt of checkpoints) {
-      await attempt(`team ${teamId} checkpoint ${cancelledAt}`, async () => {
-        await mkdir(teamCheckpointsDir(sessionDir, targetSessionId, teamId), { recursive: true });
-        await copyFile(teamCheckpointPath(sessionDir, sourceSessionId, teamId, cancelledAt), teamCheckpointPath(sessionDir, targetSessionId, teamId, cancelledAt));
-      });
+      await attempt(`team ${teamId} checkpoint ${cancelledAt}`, () => copyCheckpointAtForkPoint(
+        teamCheckpointPath(sessionDir, sourceSessionId, teamId, cancelledAt),
+        teamCheckpointPath(sessionDir, targetSessionId, teamId, cancelledAt),
+        cancelledAt,
+        forkPointMs,
+      ));
     }
   }
   return failures;

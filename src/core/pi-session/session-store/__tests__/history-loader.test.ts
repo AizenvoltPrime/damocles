@@ -48,6 +48,7 @@ import {
   DAMOCLES_AGENT_LAUNCH_ENTRY,
   DAMOCLES_AGENT_SEGMENT_ENTRY,
   DAMOCLES_AGENT_STATUS_ENTRY,
+  DAMOCLES_MID_STREAM_ENTRY,
   DAMOCLES_ORIGINAL_INPUT_ENTRY,
   DAMOCLES_STEER_ENTRY,
   DAMOCLES_TURN_STOPPED_ENTRY,
@@ -404,9 +405,17 @@ describe('reconstructMessages — failed model calls', () => {
     });
 
     it('replays them so when pi delivered a steer before the aborted call', () => {
-      const tools = toolsOf([userMsg('u1', 'go'), batch('a1', 'ran', 's1'), result('r1', 'ran'), userMsg('u2', 'also c.ts'), abortedCall('a2')]);
+      const midStream = { id: 'm1', type: 'custom', customType: DAMOCLES_MID_STREAM_ENTRY, data: { userEntryId: 'u2' } } as unknown as SessionEntry;
+      const tools = toolsOf([userMsg('u1', 'go'), batch('a1', 'ran', 's1'), result('r1', 'ran'), userMsg('u2', 'also c.ts'), midStream, abortedCall('a2')]);
 
       expect(tools.map((t) => [t.id, t.abandoned])).toEqual([['ran', undefined], ['s1', 'stopped']]);
+    });
+
+    // A prompt starts a run, so a batch a killed process orphaned is not the one a later run's abort cut.
+    it("leaves a batch an earlier run orphaned unrecorded when a later run's call is aborted", () => {
+      const tools = toolsOf([userMsg('u1', 'go'), batch('a1', 'r1', 's1', 's2'), result('res1', 'r1'), userMsg('u2', 'next'), abortedCall('a2')]);
+
+      expect(tools.map((t) => [t.id, t.abandoned])).toEqual([['r1', undefined], ['s1', undefined], ['s2', undefined]]);
     });
 
     it('leaves a call with no result unrecorded when no aborted call follows', () => {

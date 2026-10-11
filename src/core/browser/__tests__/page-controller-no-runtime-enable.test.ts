@@ -168,7 +168,6 @@ describe('PageController no-Runtime.enable invariant', () => {
     // Reach the private send() via a public method that would route a disallowed method only if the
     // allow-list were bypassed; here we assert the guard directly by attempting a raw enable through
     // the typed surface is impossible — instead verify the allow-list gate rejects unknown methods.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const send = (controller as any).send.bind(controller) as (m: string) => Promise<unknown>;
     await expect(send('Runtime.enable')).rejects.toThrow(/allow-list/);
     expect(session.sent).not.toContain('Runtime.enable');

@@ -8,6 +8,7 @@ import { agentDataRoot, isSafeAgentPathId, subagentsDir, teamsDir } from '../age
 import { ensurePiSessionDir } from './session-dir';
 import { resolvePiSessionFile, forgetSessionMetadata } from './reading';
 import { DAMOCLES_USER_RENAMED_ENTRY, DAMOCLES_TAG_ENTRY } from './constants';
+import { writeUnderSessionLease } from './session-lease';
 
 /**
  * Rename a stored pi session: append a `session_info` name plus the `damocles-user-renamed` marker
@@ -29,6 +30,47 @@ export async function renamePiSession(cwd: string, sessionId: string, newName: s
     log('[session-store] renamePiSession failed for %s: %O', sessionId, err);
     throw err;
   }
+}
+
+/** `applyLive`'s answer when the title is not for the file: a live holder took it, or the caller's runtime retired. */
+export type LiveTitleOutcome = 'live' | 'retired';
+
+/** What `titleStoredPiSession` did with the title; `held` when a panel of this process holds the session with no live holder. */
+export type StoredTitleOutcome = LiveTitleOutcome | 'titled' | 'named' | 'held' | 'leased' | 'missing';
+
+/**
+ * AI-title a stored pi session: `session_info` without the user-renamed marker, skipped when the file has a name.
+ * Written under the writer lease a delete holds across its detach and rm, after an existence check, so a deleted
+ * file is never recreated. `applyLive` runs in that same synchronous section; an answer leaves the file alone.
+ */
+export async function titleStoredPiSession(
+  cwd: string,
+  sessionId: string,
+  title: string,
+  applyLive: () => LiveTitleOutcome | null,
+): Promise<StoredTitleOutcome> {
+  const pi = await initPiLoader();
+  const filePath = pi ? await resolvePiSessionFile(cwd, sessionId) : null;
+  // No await from here to the lease, which `writeUnderSessionLease` takes before its first await: an await would let
+  // a delete detach and rm in between.
+  const live = applyLive();
+  if (live) return live;
+  if (!pi || !filePath) return 'missing';
+  let outcome: StoredTitleOutcome = 'titled';
+  const refusal = await writeUnderSessionLease(sessionId, async () => {
+    if (!fs.existsSync(filePath)) {
+      outcome = 'missing';
+      return;
+    }
+    const sm = pi.SessionManager.open(filePath, path.dirname(filePath));
+    if (sm.getSessionName()) {
+      outcome = 'named';
+      return;
+    }
+    sm.appendSessionInfo(title);
+  });
+  if (refusal) return refusal.kind === 'panel' ? 'held' : 'leased';
+  return outcome;
 }
 
 /**

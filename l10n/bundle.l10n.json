@@ -13,6 +13,7 @@
   "Open here": "Open here",
   "The other Damocles window did not close this conversation. Close it there, then open it here.": "The other Damocles window did not close this conversation. Close it there, then open it here.",
   "This conversation is being deleted or changed. Try again in a moment.": "This conversation is being deleted or changed. Try again in a moment.",
+  "This conversation is opening or closing in a panel. Try again in a moment.": "This conversation is opening or closing in a panel. Try again in a moment.",
   "This conversation could not be opened: {0}": "This conversation could not be opened: {0}",
   "This conversation's file could not be found. It may have been deleted.": "This conversation's file could not be found. It may have been deleted.",
   "The pi runtime is unavailable, so this conversation could not be loaded.": "The pi runtime is unavailable, so this conversation could not be loaded.",

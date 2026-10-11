@@ -6,6 +6,7 @@ import {
   bundledLanguages,
 } from 'shiki';
 import { perfSpan, resourceFields } from '@/utils/perf';
+import { ownEntry } from '@/utils/ownEntry';
 import { DAMOCLES_SHIKI_THEME, damoclesShikiTheme } from './damoclesShikiTheme';
 
 export type ExtendedLanguage = BundledLanguage | 'txt';
@@ -66,11 +67,11 @@ export function normalizeLanguage(language: string | undefined): ExtendedLanguag
 
   const normalized = language.toLowerCase();
 
-  if (normalized in bundledLanguages) {
+  if (Object.hasOwn(bundledLanguages, normalized)) {
     return normalized as BundledLanguage;
   }
 
-  const alias = languageAliases[normalized];
+  const alias = ownEntry(languageAliases, normalized);
   if (alias) return alias;
 
   if (language !== 'txt' && !warnedLanguages.has(language)) {

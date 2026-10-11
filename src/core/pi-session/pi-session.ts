@@ -92,7 +92,7 @@ import {
   subagentsDir,
   type AgentInvocationData,
 } from "./agent-records";
-import { TeamPersistence } from "../team/persistence";
+import { teamInterruptionCause } from "../team";
 import { teamPlanModeStatement } from "../team/prompts";
 import type { CustomAgentInfo } from "../../shared/types/commands";
 import {
@@ -114,6 +114,8 @@ import {
   storedTypedText,
   DAMOCLES_TERMINAL_ATTACHMENTS_ENTRY,
   nextPromptIndex,
+  titleStoredPiSession,
+  type LiveTitleOutcome,
 } from "./session-store";
 import { recordedSelection } from "./session-store/recorded-selection";
 import { acquireSessionLease, refreshSessionLeaseOwners, releaseSessionLease, sessionLeasesOf, type SessionLeaseHolder } from "./session-store/session-lease";
@@ -273,6 +275,30 @@ interface ListedNote {
   echoed: boolean;
 }
 
+/** A turn `stopTurn` ended: its session, the leaf when it stopped and the calls in flight then. */
+interface StoppedTurn {
+  readonly session: AgentSession | undefined;
+  readonly leafAtStop: string | null;
+  readonly abandoned: readonly string[];
+  /** Set once `endStoppedRun` started the run's abort. */
+  ending?: Promise<void>;
+}
+
+/** What ended a turn's run: the user's Stop (`interrupt`, `cancel`) or a resume switch away from it. */
+type StopOrigin = "interrupt" | "cancel" | "resume";
+
+/** A resume switch queued behind earlier replacements; `cancelled` once the panel let go of its target before it switched. */
+interface QueuedSwitch {
+  readonly sessionId: string;
+  cancelled: boolean;
+}
+
+/** The conversation and prompt a turn's memory candidate is filed under, read when the prompt starts. */
+interface MemoryCandidateKey {
+  readonly sessionId: string;
+  readonly promptIndex: number;
+}
+
 /** The process usage monitor and the subscription a chat's model bills. */
 interface SubscriptionUsage {
   readonly usage: UsageMonitor;
@@ -384,6 +410,10 @@ export class PiSession implements ChatSession {
   private resumeSessionId: string | null = null;
   /** Sessions whose lease another process took; this panel is detaching from them and never re-leases them. */
   private readonly lostLeases = new Set<string>();
+  /** Resume switches queued and not yet finished, each cancelled when the panel lets go of its target first. */
+  private readonly queuedSwitches = new Set<QueuedSwitch>();
+  /** Settles once the replacement pi is running (a reset's newSession or a resume switch) settles; a dispose waits for it before tearing the runtime down. */
+  private piReplacement: Promise<void> | null = null;
   /** The panel's `ready.panelToken`, named in the owner record of every lease this session holds. */
   private panelToken: string | null = null;
   /** The teardown `dispose()` started; a handover waits for it before letting the lease go. */
@@ -643,6 +673,8 @@ export class PiSession implements ChatSession {
       this.unsubscribe = null;
     });
     this.runtime.setRebindSession(async (session) => {
+      // The dispose under way disposes the session pi installed; nothing may register it.
+      if (this._disposed) return;
       this.bindSession(session);
       // No factory `tools:` means a replacement session starts with pi's bare default set — re-apply the
       // panel's real active set (mirrors start()), else reset/clear would strip every non-default tool.
@@ -827,12 +859,16 @@ export class PiSession implements ChatSession {
     if (!this._disposed) for (const id of [this.currentSessionId, this.resumeSessionId]) if (id) held.add(id);
     for (const id of sessionLeasesOf(this)) if (!held.has(id)) releaseSessionLease(id, this);
     for (const id of this.lostLeases) if (!held.has(id)) this.lostLeases.delete(id);
+    // A switch must not bind a session whose lease this panel let go of (a reset, another target, dispose).
+    for (const queued of this.queuedSwitches) if (!held.has(queued.sessionId)) queued.cancelled = true;
     for (const id of held) if (!this.lostLeases.has(id) && !acquireSessionLease(id, this)) this.onSessionLeaseLost(id);
   }
 
   onSessionLeaseLost(sessionId: string): void {
     if (!this.holdsSession(sessionId) || this.lostLeases.has(sessionId)) return;
     this.lostLeases.add(sessionId);
+    // Recorded on the switch itself: the detach below forgets the loss once its reset lets go of the session.
+    for (const queued of this.queuedSwitches) if (queued.sessionId === sessionId) queued.cancelled = true;
     const session = this.runtime?.session;
     if (session) this.muteIfLeaseLost(session);
     // A panel being disposed is already letting go of the session; a detach would re-register it.
@@ -1125,6 +1161,8 @@ export class PiSession implements ChatSession {
       // live index and every record keyed by it match what a reload shows.
       this.inFlightPromptIndex = nextPromptIndex(session.sessionManager.getBranch());
     }
+    // A clear can replace the session before the turn settles; the turn's memory candidate stays with this conversation.
+    const candidateKey: MemoryCandidateKey = { sessionId: session.sessionId, promptIndex: this.currentPromptIndex };
 
     if (userBroadcast && correlationId) {
       this.emit({
@@ -1214,7 +1252,7 @@ export class PiSession implements ChatSession {
       void this.maybeGenerateTitle();
       // Record the completed exchange as a memory extraction candidate so the consolidation passes have
       // something to extract from (and the idle timer arms). Symmetric with the harvesters above.
-      if (userBroadcast && entry) this.enqueueMemoryCandidate(session, entry.id);
+      if (userBroadcast && entry) this.enqueueMemoryCandidate(session, entry.id, candidateKey);
     } catch (err) {
       if (err instanceof StoppedBeforeRunError) {
         outcome = { kind: "cancelled" };
@@ -1328,19 +1366,21 @@ export class PiSession implements ChatSession {
   /** Append the hidden interruption notice when one is pending. Never throws. */
   private async reconcileInterruptionsIfPending(session: AgentSession): Promise<void> {
     if (!this.interruptionCheckPending) return;
+    // Cleared before collecting, so a request made while it runs is kept; a team it could not decide yet sets it again.
     this.interruptionCheckPending = false;
     try {
-      await reconcileInterruptions({
+      const { retry } = await reconcileInterruptions({
         branch: session.sessionManager.getBranch(),
         subagentDir: subagentsDir(ensurePiSessionDir(this.cwd), session.sessionId),
         liveSubagent: (id) => this.subagentManager?.liveStatus(id),
-        teamStop: (teamId) => new TeamPersistence(this.cwd, session.sessionId).resumableStop(teamId),
+        teamStop: (teamId) => teamInterruptionCause(this.cwd, session.sessionId, teamId),
         // A replaced session's file may already be deleted, and an append would recreate it header-less.
         send: async (message) => {
           if (this.runtime?.session !== session) return;
           await session.sendCustomMessage(message, { triggerTurn: false });
         },
       });
+      if (retry) this.interruptionCheckPending = true;
     } catch (err) {
       log("[PiSession] interruption notice failed: %O", err);
       this.emit({
@@ -1792,24 +1832,56 @@ export class PiSession implements ChatSession {
    * the user just stopped.
    */
   private beginAbort(origin: "interrupt" | "cancel"): Promise<void> {
+    const stopped = this.stopTurn();
+    this._budgetStopRequested = false;
+    this.stopAgentsAsUser();
+    this.withdrawQueue(stopped.session, t("Stopping the turn discarded your cancel note before the agent read it."));
+    // After the agents: a queued subagent the Stop completes posts its stop first, so the webview's cancel finds its card settled.
+    this.publishTurnStopped();
+    return this.endStoppedRun(stopped, origin);
+  }
+
+  /**
+   * End the running turn for the turn lifecycle, as a Stop does: refuse a prompt that has not opened its
+   * run, set the turn idle and abandon the calls pi has not started. The caller tells the webview through
+   * `publishTurnStopped`. Returns what the turn-stopped record needs once the run has settled.
+   */
+  private stopTurn(): StoppedTurn {
     this.stopPromptBeforeRun();
     this._aborting = true;
     this.processingFlag = false;
+    this.setTurnState("idle", { kind: "cancelled" });
+    const session = this.runtime?.session;
+    return { session, leafAtStop: session?.sessionManager.getLeafId() ?? null, abandoned: this.adapter.markAborted() };
+  }
+
+  /** Tell the webview a stopped turn is over. */
+  private publishTurnStopped(): void {
     // An abort during a long tool with no model stream open produces no aborted assistant event, so
     // this is the only thing that tells the webview the turn is over.
-    this.setTurnState("idle", { kind: "cancelled" });
-    this._budgetStopRequested = false;
-    const session = this.runtime?.session;
-    const leafAtStop = session?.sessionManager.getLeafId() ?? null;
-    const abandoned = this.adapter.markAborted();
+    this.emit({ type: "sessionCancelled" });
+    this.emit({ type: "processing", isProcessing: false });
+  }
+
+  /** Stop every agent as the user's Stop does. */
+  private stopAgentsAsUser(): void {
     // Abort-everything: ESC kills foreground AND background subagents (Phase 5, FR-12).
     this.subagentManager?.abortAll("user");
     this.interruptionCheckPending = true;
     // ESC during a team aborts it; its `create_team` tool then returns the partial synthesis (US-024d).
     this.options.teamService?.cancelActiveTeam("user");
-    this.withdrawQueue(session, t("Stopping the turn discarded your cancel note before the agent read it."));
-    this.emit({ type: "sessionCancelled" });
-    this.emit({ type: "processing", isProcessing: false });
+  }
+
+  /** Stop the agents as the user's Stop does, abort the run `stopTurn` ended, and record what it cut short. */
+  private abortStoppedTurn(stopped: StoppedTurn, origin: StopOrigin): Promise<void> {
+    this.stopAgentsAsUser();
+    return this.endStoppedRun(stopped, origin);
+  }
+
+  /** Abort the run `stopTurn` ended and, once it settled, record what the Stop cut short. Starts at most once per turn. */
+  private endStoppedRun(stopped: StoppedTurn, origin: StopOrigin): Promise<void> {
+    if (stopped.ending) return stopped.ending;
+    const { session, leafAtStop, abandoned } = stopped;
     const pending = (async () => {
       try {
         await session?.abort();
@@ -1820,6 +1892,7 @@ export class PiSession implements ChatSession {
       if (session && this.runtime?.session === session) session.clearQueue();
       if (session) this.persistTurnStopped(session.sessionId, leafAtStop, abandoned);
     })();
+    stopped.ending = pending;
     this.abortPromise = pending;
     void pending.finally(() => {
       if (this.abortPromise === pending) this.abortPromise = null;
@@ -2026,9 +2099,17 @@ export class PiSession implements ChatSession {
       .then(() => runtime.session.abort())
       .then(() => modelSwitch)
       .then(() => checkpoints?.drain(CHECKPOINT_DRAIN_MS))
-      .then(() => runtime.newSession())
-      .then(({ cancelled }) => {
-        if (cancelled) throw new Error("session replacement was cancelled");
+      .then(async () => {
+        // A dispose that began meanwhile tears the runtime down with the old session, so nothing is created on it.
+        if (this._disposed) return;
+        const replacing = runtime.newSession();
+        this.piReplacement = replacing.then(() => undefined, () => undefined);
+        try {
+          const { cancelled } = await replacing;
+          if (cancelled) throw new Error("session replacement was cancelled");
+        } finally {
+          this.piReplacement = null;
+        }
       });
     // Logging hangs off a SEPARATE handle, so the rejection stays observable to `whenReplaced()`
     // callers while never surfacing as an unhandled rejection when nobody awaits it.
@@ -2061,6 +2142,8 @@ export class PiSession implements ChatSession {
     this.returnQueue(this.runtime?.session);
     for (const returnUnsent of this.unacceptedSends) returnUnsent();
     this._disposed = true;
+    // Before any await, so no queued switch binds a session on the runtime this tears down.
+    for (const queued of this.queuedSwitches) queued.cancelled = true;
     // A prompt pi's input handlers still hold is refused when they release it, whether or not the runtime is still installed.
     this.stopPromptBeforeRun();
     // Closing the handle is what kills whatever this panel's shells left running: the job object's
@@ -2085,8 +2168,8 @@ export class PiSession implements ChatSession {
     this.turnSettledListener = null;
     this.uiContext.cancelAll();
     // Tear down any active team (aborts its agents + resolves the create_team tool) — the service is
-    // owned by the panel, so the panel disposes it.
-    this.options.teamService?.dispose();
+    // owned by the panel, so the panel disposes it. Awaited below, so its shutdown seal lands before the host exits.
+    const teamSealed = this.options.teamService?.dispose();
     // Tear down the subagent engine: abort + dispose all nested sessions; unsubscribe from the shared
     // folder registry (which is owned by FolderRuntime and shared across panels — never disposed here).
     this.subagentManager?.dispose();
@@ -2108,6 +2191,8 @@ export class PiSession implements ChatSession {
       }
       this.btwSessions.clear();
     }
+    // A replacement already inside pi installs its session on this runtime, which the teardown below must dispose.
+    if (this.piReplacement) await this.piReplacement;
     // Stopped while the panel is still registered, so a tool call the turn makes meanwhile reaches this
     // panel's gate instead of the unregistered fallback, and the turn's settle queues its finalize.
     try {
@@ -2117,6 +2202,7 @@ export class PiSession implements ChatSession {
     }
     // The last turn's record lands only while the runtime is still up and the service registered.
     await this.checkpointService?.drain(CHECKPOINT_DRAIN_MS);
+    await teamSealed;
     // Unregistered before the runtime is disposed, so no new hook can look the checkpoint service up; the
     // runtime emits `session_shutdown` to the extension runner, and a handler on that still needs a live
     // checkpoint service, so the service is only torn down after.
@@ -2524,42 +2610,67 @@ export class PiSession implements ChatSession {
     // resume target now. Chained onto resetPromise so a following sendMessage awaits the switch.
     if (sessionId && this.runtime && this.currentSessionId !== sessionId) {
       // Synchronous, so a send made after this call is not taken for the prompt the switch replaces.
-      this.stopPromptBeforeRun();
+      // Leaving a running turn is a Stop; the switch records it in the old file.
+      let stopped: StoppedTurn | null = null;
+      if (this.turnRunning) {
+        stopped = this.stopTurn();
+        this.publishTurnStopped();
+      } else {
+        this.stopPromptBeforeRun();
+      }
       this.dropPendingOpenAIPick();
       // Nothing queued in this conversation may reach the next one, and the transcript its echoes stood in is replaced.
       this.returnQueue(this.runtime.session);
       this.injectedNotes = [];
+      // The lease sync above already ran, so a lease refused there marks the switch here.
+      const target: QueuedSwitch = { sessionId, cancelled: this.lostLeases.has(sessionId) };
+      this.queuedSwitches.add(target);
       this.resetPromise = (this.resetPromise ?? Promise.resolve())
-        .then(() => this.switchToResumeTarget(sessionId))
+        .then(() => this.switchToResumeTarget(target, stopped))
         .then(() => undefined)
         .catch((err) => log("[PiSession] resume switch failed: %O", err));
     }
   }
 
-  /** Switch the live runtime to a stored session file (resume on an already-started panel). */
-  private async switchToResumeTarget(sessionId: string): Promise<void> {
-    const runtime = this.runtime;
-    if (!runtime) return;
-    const filePath = await resolvePiSessionFile(this.cwd, sessionId);
-    if (!filePath) {
-      log("[PiSession] resume target %s not found on disk", sessionId);
-      return;
-    }
-    // Opening can rewrite the file (a format migration); the detach the loss started resets this panel.
-    if (this.lostLeases.has(sessionId)) return;
-    await this.retireAgents(runtime.session);
-    // Before the switch: a switch that fails leaves the old session bound, and the retired agents are known only from their files.
-    this.interruptionCheckPending = true;
-    this.undeliveredScanPending = true;
-    const { cancelled } = await runtime.switchSession(filePath);
-    // The rebind callback re-subscribed the adapter + re-registered the panel; seed the meter from
-    // the now-current resumed session.
-    if (!cancelled) {
-      // The factory may have moved the panel onto the switched-in session's recorded model.
-      this.publishAccountInfo();
-      this.seedResumedUsage();
-      // The switched-in session reads the current tool set on build, so a deferred reload is moot.
-      this.mcpReloadPendingAfterTurn = false;
+  /**
+   * Switch the live runtime to a stored session file (resume on an already-started panel). `stopped`:
+   * the turn `setResumeSession` stopped, recorded in the old file once its run settled.
+   *
+   * The stopped run is aborted only once the target resolved, so its subagents and team stop as a
+   * `shutdown` only when the switch goes ahead; until then pi can still stream into it.
+   */
+  private async switchToResumeTarget(target: QueuedSwitch, stopped: StoppedTurn | null): Promise<void> {
+    const { sessionId } = target;
+    try {
+      const runtime = this.runtime;
+      if (!runtime) return;
+      const filePath = await resolvePiSessionFile(this.cwd, sessionId);
+      if (!filePath) log("[PiSession] resume target %s not found on disk", sessionId);
+      // Opening can rewrite the file (a format migration), so a target this panel let go of is never opened.
+      if (!filePath || target.cancelled) return;
+      await this.retireAgents(runtime.session, stopped);
+      // Before the switch: a switch that fails or is cancelled leaves the old session bound, and the retired agents are known only from their files.
+      this.interruptionCheckPending = true;
+      this.undeliveredScanPending = true;
+      // The panel can let go of the target while the retired agents settle.
+      if (target.cancelled) return;
+      const switching = runtime.switchSession(filePath);
+      this.piReplacement = switching.then(() => undefined, () => undefined);
+      const { cancelled } = await switching;
+      // The rebind callback re-subscribed the adapter + re-registered the panel, unless a dispose began meanwhile;
+      // seed the meter from the now-current resumed session.
+      if (!cancelled && !this._disposed) {
+        // The factory may have moved the panel onto the switched-in session's recorded model.
+        this.publishAccountInfo();
+        this.seedResumedUsage();
+        // The switched-in session reads the current tool set on build, so a deferred reload is moot.
+        this.mcpReloadPendingAfterTurn = false;
+      }
+    } finally {
+      this.piReplacement = null;
+      this.queuedSwitches.delete(target);
+      // The turn already reads stopped, so an exit before the retire aborted its run, a failure included, ends it as a Stop.
+      if (stopped && !stopped.ending) await this.abortStoppedTurn(stopped, "resume");
     }
   }
 
@@ -2567,9 +2678,10 @@ export class PiSession implements ChatSession {
    * Retire the bound session's subagents and team before another session is bound, as a panel close
    * does: the manager caches only the bound session's agents, and a team's events belong to the panel
    * showing its session. Subagents are killed and the team is cancelled as a `shutdown`, so each stays
-   * resumable or deliverable from its files at that session's next bind.
+   * resumable or deliverable from its files at that session's next bind. `stopped`: the turn a resume
+   * switch stopped, whose run this aborts and records in the old file while it is still bound.
    */
-  private async retireAgents(session: AgentSession): Promise<void> {
+  private async retireAgents(session: AgentSession, stopped: StoppedTurn | null): Promise<void> {
     this.retiringAgents = true;
     try {
       const mgr = this.subagentManager;
@@ -2577,7 +2689,7 @@ export class PiSession implements ChatSession {
       this.options.teamService?.cancelActiveTeam("shutdown");
       // Stopped before the wait, so the turn spawns nothing while the runs settle. Not raced against the
       // timeout: pi's switch awaits this same abort again before it tears the session down.
-      await session.abort();
+      await (stopped ? this.endStoppedRun(stopped, "resume") : session.abort());
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timedOut = new Promise<"timeout">((resolve) => {
         timer = setTimeout(() => resolve("timeout"), ABORTED_AGENTS_SETTLE_TIMEOUT_MS);
@@ -2603,7 +2715,7 @@ export class PiSession implements ChatSession {
    * Auto-generate an AI session title after the first assistant turn (US-012). Runs once, only when the
    * session is unnamed (a user `/rename` outranks it), on the small/fast model via
    * `runStructuredCompletion`. Fails soft — no auth/error/empty title leaves the session untitled and
-   * the turn unaffected. On success, refreshes the picker/header via the existing `onSessionPersisted`.
+   * the turn unaffected. The title belongs to the conversation it was generated for (`routeTitle`).
    */
   private async maybeGenerateTitle(): Promise<void> {
     if (this.titleGenerationAttempted) return;
@@ -2617,20 +2729,53 @@ export class PiSession implements ChatSession {
       const exchange = firstExchangeForTitle(session);
       if (!exchange) return;
 
-      const title = await generateSessionTitle(exchange, PiRuntime.get(), { cwd: this.cwd, sessionId: session.sessionId });
-      // Re-check the name: a user /rename may have landed during the async completion (it outranks).
-      if (!title || session.sessionManager.getSessionName()) return;
-      // The completion is an unbounded async window in which a reset/clear/delete can replace or
-      // dispose this session and rm its file. The captured manager still believes it flushed, so a
-      // write here lands as a bare appendFileSync PAST the rm and resurrects the file holding nothing
-      // but this one `session_info` line — a header-less file every reader then rejects forever.
-      if (this._disposed || this.runtime?.session !== session) return;
-      session.setSessionName(title.slice(0, 100));
-      const sid = this.currentSessionId;
-      if (sid) this.options.onSessionPersisted?.(sid);
+      const { sessionId } = session;
+      const cwd = this.cwd;
+      const title = await generateSessionTitle(exchange, PiRuntime.get(), { cwd, sessionId });
+      if (title) await this.routeTitle(cwd, sessionId, title.slice(0, 100));
     } catch (err) {
       log("[PiSession] title generation failed: %O", err);
     }
+  }
+
+  /**
+   * Title conversation `sessionId` wherever it is now: through the panel holding it live, else in its stored file.
+   * Never through a manager captured before the completion: a reset or delete may have replaced it and removed its file.
+   */
+  private async routeTitle(cwd: string, sessionId: string, title: string): Promise<void> {
+    // This panel closing on the conversation holds its lease until the teardown appended its last entry.
+    if (this._disposed && this.holdsSession(sessionId)) await this.disposal?.catch(() => undefined);
+    const runtime = PiRuntime.unlessRetired();
+    // Re-run inside the store's leased section; a runtime retired at shutdown writes nothing.
+    const applyLive = (): LiveTitleOutcome | null => {
+      if (!runtime || PiRuntime.unlessRetired() !== runtime) return "retired";
+      const holder = runtime.getSessionMutator(sessionId);
+      if (!holder) return null;
+      holder.applyAiTitle(sessionId, title);
+      return "live";
+    };
+    const outcome = applyLive() ?? (await titleStoredPiSession(cwd, sessionId, title, applyLive));
+    if (outcome === "titled") this.options.onSessionPersisted?.(sessionId);
+    else if (outcome !== "live" && outcome !== "named") log("[PiSession] AI title of session %s dropped: %s", sessionId, outcome);
+  }
+
+  /**
+   * Name live session `sessionId` with an AI title while it is bound here, its lease held and no name set.
+   * Reached through the runtime's mutator registry, which a closing panel leaves before its runtime tears down.
+   */
+  applyAiTitle(sessionId: string, title: string): boolean {
+    const session = this.runtime?.session;
+    if (session?.sessionId !== sessionId || this.lostLeases.has(sessionId)) {
+      log("[PiSession] AI title of session %s declined: %s", sessionId, this.lostLeases.has(sessionId) ? "its lease was lost" : "it is not bound here");
+      return false;
+    }
+    if (session.sessionManager.getSessionName()) {
+      log("[PiSession] AI title of session %s declined: it already has a name", sessionId);
+      return false;
+    }
+    session.setSessionName(title);
+    this.options.onSessionPersisted?.(sessionId);
+    return true;
   }
 
   /** The file this panel's live session persists to; undefined before a session exists. */
@@ -2745,7 +2890,7 @@ export class PiSession implements ChatSession {
    * candidate (fail-soft). No-op when no memory service is wired or the turn ran no agent. Service-side
    * gates (memory disabled / auto-extract off / disposed) live in enqueueTurnCandidate.
    */
-  private enqueueMemoryCandidate(session: AgentSession, userEntryId: string): void {
+  private enqueueMemoryCandidate(session: AgentSession, userEntryId: string, key: MemoryCandidateKey): void {
     const memory = this.options.memoryService;
     if (!memory) return;
     if (!this.adapter.observedAgentRun()) return; // extension command / no LLM run → not a real turn
@@ -2753,8 +2898,8 @@ export class PiSession implements ChatSession {
       const exchange = turnExchangeFrom(session, userEntryId, this.cwd);
       if (!exchange || !exchange.userText.trim()) return;
       memory.enqueueTurnCandidate({
-        sessionId: this.memorySessionId,
-        promptIndex: this.currentPromptIndex,
+        sessionId: key.sessionId,
+        promptIndex: key.promptIndex,
         userText: exchange.userText,
         assistantText: exchange.assistantText,
         files: exchange.files,
@@ -3554,12 +3699,6 @@ export class PiSession implements ChatSession {
   }
 
   /**
-   * Append a checkpoint record minted in the background. Only while this panel still holds `sessionId` as
-   * its live session: a delete, switch, lost lease or dispose first moves the runtime off it, so a late
-   * record never reaches a deleted file or another process's session. Lands at the leaf; readers match
-   * records by `userEntryId`, never by position.
-   */
-  /**
    * Record what a Stop cut short once the aborted run has settled, so a reload shows it as the live view
    * did. Same liveness rule as `persistCheckpointRecord`: never after a delete, switch or lost lease.
    */
@@ -3575,6 +3714,12 @@ export class PiSession implements ChatSession {
     }
   }
 
+  /**
+   * Append a checkpoint record minted in the background. Only while this panel still holds `sessionId` as
+   * its live session: a delete, switch, lost lease or dispose first moves the runtime off it, so a late
+   * record never reaches a deleted file or another process's session. Lands at the leaf; readers match
+   * records by `userEntryId`, never by position.
+   */
   private persistCheckpointRecord(sessionId: string, record: StoredCheckpointRecord): boolean {
     const session = this.runtime?.session;
     if (!session || session.sessionId !== sessionId || this.lostLeases.has(sessionId)) return false;

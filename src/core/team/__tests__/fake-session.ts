@@ -39,6 +39,12 @@ export interface FakePromptOptions {
   images?: ImageContent[];
 }
 
+/** The writes of pi's `SessionManager` a mirrored fake session repeats. */
+export interface FakeSessionMirror {
+  appendMessage: (message: unknown) => void;
+  appendCustomEntry: (customType: string, data: unknown) => void;
+}
+
 /** The tool-call blocks a turn's assistant message carries, in pi's raw `toolCall` shape. */
 export interface FakeToolCall {
   id: string;
@@ -89,7 +95,10 @@ export class FakeSession {
     for (const l of this.listeners) l(event);
     // Real pi persists a message after its listeners ran, and only then does the session file count its tokens and cost.
     const message = (event as { type?: string; message?: { role?: string; usage?: FakeMessageUsage } }).message;
-    if ((event as { type?: string }).type === 'message_end' && message) this.branch.push({ type: 'message', id: `m${this.branch.length}`, message });
+    if ((event as { type?: string }).type === 'message_end' && message) {
+      this.branch.push({ type: 'message', id: `m${this.branch.length}`, message });
+      this.mirror?.appendMessage(message);
+    }
     if ((event as { type?: string }).type === 'message_end' && message?.role === 'assistant' && message.usage) {
       for (const key of ['input', 'output', 'cacheRead', 'cacheWrite'] as const) this.tokens[key] += message.usage[key] ?? 0;
       this.cost += message.usage.cost?.total ?? 0;
@@ -116,6 +125,7 @@ export class FakeSession {
     }
     return new Promise<void>((resolve) => {
       this.pendingTurn = resolve;
+      this.emitUserMessage(text, options?.images);
       this.onPrompt(text, this);
     });
   }
@@ -124,7 +134,14 @@ export class FakeSession {
   private drainSteer(text: string, images: ImageContent[] | undefined): void {
     const index = this.queued.indexOf(text);
     if (index !== -1) this.queued.splice(index, 1);
-    this.emit({ type: 'message_start', message: { role: 'user', content: [{ type: 'text', text }, ...(images ?? [])] } });
+    this.emitUserMessage(text, images);
+  }
+
+  /** A user message as pi's loop runs it: `message_start`, then `message_end`, after whose listeners pi persists it. */
+  private emitUserMessage(text: string, images: ImageContent[] | undefined): void {
+    const message = { role: 'user', content: [{ type: 'text', text }, ...(images ?? [])] };
+    this.emit({ type: 'message_start', message });
+    this.emit({ type: 'message_end', message });
   }
 
   /**
@@ -150,7 +167,7 @@ export class FakeSession {
     if (this.drainOnAbort) {
       for (const text of this.queued.splice(0)) {
         this.drainedOnAbort.push(text);
-        this.emit({ type: 'message_start', message: { role: 'user', content: [{ type: 'text', text }] } });
+        this.emitUserMessage(text, undefined);
       }
     }
     const resolve = this.pendingTurn;
@@ -179,13 +196,18 @@ export class FakeSession {
 
   /** Custom entries appended through `sessionManager`, in order. */
   readonly customEntries: Array<{ customType: string; data: unknown }> = [];
-  /** The session's branch: each message pi persisted at its `message_end`, and what a test appends. */
+  /** The session's branch: each message pi persisted at its `message_end`, each custom entry, and what a test appends. */
   readonly branch: unknown[] = [];
+  /** A real session file that receives every entry this session persists, in the same order, so a test can read it back. */
+  mirror: FakeSessionMirror | null = null;
   sessionFile: string | undefined = undefined;
   readonly sessionManager = {
     appendCustomEntry: (customType: string, data: unknown): string => {
       this.customEntries.push({ customType, data });
-      return `entry-${this.customEntries.length}`;
+      const id = `entry-${this.customEntries.length}`;
+      this.branch.push({ type: 'custom', id, customType, data });
+      this.mirror?.appendCustomEntry(customType, data);
+      return id;
     },
     getSessionFile: (): string | undefined => this.sessionFile,
     getBranch: (): unknown[] => this.branch,

@@ -39,6 +39,9 @@ export const useConsolidationStore = defineStore('consolidation', () => {
   const setAsideCount = ref(0);
   const pendingCandidates = ref<PendingConsolidationCandidate[]>([]);
   const lastResult = ref<ConsolidationResult | null>(null);
+  /** The in-flight run's pass (from 1) and its result over the passes that ended; core sends both at each pass start. */
+  const runPass = ref<number | null>(null);
+  const runSoFar = ref<ConsolidationResult | null>(null);
 
   const phase = ref<ConsolidationUiPhase>('idle');
   const phaseStatus = ref<Record<ConsolidationPhaseId, StepperStatus>>(freshPhaseStatus());
@@ -78,11 +81,13 @@ export const useConsolidationStore = defineStore('consolidation', () => {
     phaseStatus.value = { ...freshPhaseStatus(), claim: 'active' };
   }
 
-  function setRunning(running: boolean): void {
+  function setRunning(running: boolean, pass?: number, soFar?: ConsolidationResult): void {
+    runPass.value = running ? (pass ?? null) : null;
+    runSoFar.value = running ? (soFar ?? null) : null;
     if (running) {
-      // Only reset the stepper when a pass is NOT already running. The backend replays
-      // `consolidationRunning:true` on every overlay (re)open; resetting unconditionally would blank
-      // the completed phases of an in-flight pass, leaving a half-empty stepper on mid-pass reopen.
+      // Only reset the stepper when a pass is NOT already running. Core sends `running: true` at every
+      // pass start of a run, whose `claim` event restarts the stepper itself, and replays it on every
+      // overlay (re)open, where a reset would blank the completed phases of the pass in flight.
       if (!isRunning.value) startRun();
     } else if (isRunning.value) {
       // ORDERING CONTRACT: the backend always sends the terminal `consolidationResult` BEFORE
@@ -109,6 +114,7 @@ export const useConsolidationStore = defineStore('consolidation', () => {
    */
   function abortRun(): void {
     if (!isRunning.value) return;
+    clearRun();
     phase.value = 'idle';
     phaseStatus.value = freshPhaseStatus();
     phaseMeta.value = freshPhaseMeta();
@@ -126,7 +132,13 @@ export const useConsolidationStore = defineStore('consolidation', () => {
     }
   }
 
+  function clearRun(): void {
+    runPass.value = null;
+    runSoFar.value = null;
+  }
+
   function setResult(result: ConsolidationResult): void {
+    clearRun();
     lastResult.value = result;
     phase.value = result.status === 'failed' ? 'failed' : 'done';
   }
@@ -137,6 +149,7 @@ export const useConsolidationStore = defineStore('consolidation', () => {
     setAsideCount.value = 0;
     pendingCandidates.value = [];
     lastResult.value = null;
+    clearRun();
     phase.value = 'idle';
     phaseStatus.value = freshPhaseStatus();
     phaseMeta.value = freshPhaseMeta();
@@ -149,6 +162,8 @@ export const useConsolidationStore = defineStore('consolidation', () => {
     setAsideCount,
     pendingCandidates,
     lastResult,
+    runPass,
+    runSoFar,
     phase,
     phaseStatus,
     phaseMeta,

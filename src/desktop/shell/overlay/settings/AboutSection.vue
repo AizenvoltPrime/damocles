@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onScopeDispose, ref, shallowRef, type Component } from 'vue';
+import { computed, onBeforeUnmount, onScopeDispose, ref, shallowRef, watch, type Component } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { ArrowDownToLine, Check, CircleAlert, Clock, Copy, ExternalLink, LoaderCircle, PowerOff, RefreshCw, RotateCw, ScrollText } from 'lucide-vue-next';
 import SettingsRow from '@/components/settings/SettingsRow.vue';
@@ -7,12 +7,14 @@ import SettingButton from '@/components/settings/controls/SettingButton.vue';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { formatClock, formatDateTime } from '@/utils/clock';
+import type { PopupAnswer } from '../../../preload/overlay-channels';
 import { canCheck, type UpdateSnapshot, type UpdateState, type VersionInfo } from '../../../preload/updates';
+import { answerOf, ran } from '../popup-answer';
 import { updateTone, type UpdateTone } from '../../update-view';
 import { useDesktopPrefs } from './desktop-prefs';
 import WhatsNew from './WhatsNew.vue';
 
-// How long Copy version info shows "Copied".
+// How long Copy version info shows "Copied" or "Copy failed".
 const COPIED_MS = 1600;
 // Product names, the same in every language.
 const APP_NAME = 'Damocles';
@@ -42,23 +44,33 @@ const { t, locale } = useI18n();
 const { api } = useDesktopPrefs();
 
 const info = shallowRef<VersionInfo | null>(null);
+const infoFailed = ref(false);
 const snapshot = shallowRef<UpdateSnapshot | null>(null);
+const statusFailed = ref(false);
 // Subscribed before the first read, so a change between the two is not lost; a push is always the newer state.
 onScopeDispose(api.onUpdate((next) => {
   snapshot.value = next;
 }));
-void api.getUpdate().then((first) => {
-  if (!snapshot.value) snapshot.value = first;
+void answerOf(api.getUpdate()).then((first) => {
+  if (!snapshot.value && first) snapshot.value = first;
+}, () => {
+  statusFailed.value = true;
 });
-void api.getVersionInfo().then((loaded) => {
-  info.value = loaded;
+void answerOf(api.getVersionInfo()).then((loaded) => {
+  if (loaded) info.value = loaded;
+}, () => {
+  infoFailed.value = true;
 });
 
 const state = computed(() => snapshot.value?.state ?? null);
-const title = computed(() => (info.value ? t('settingsHost.about.title', { app: APP_NAME, version: info.value.version }) : undefined));
-const platformLine = computed(() => (info.value
-  ? t('settingsHost.about.platformLine', { os: OS_NAMES[info.value.platform], arch: info.value.arch })
-  : undefined));
+const title = computed(() => {
+  if (info.value) return t('settingsHost.about.title', { app: APP_NAME, version: info.value.version });
+  return infoFailed.value ? APP_NAME : undefined;
+});
+const platformLine = computed(() => {
+  if (info.value) return t('settingsHost.about.platformLine', { os: OS_NAMES[info.value.platform], arch: info.value.arch });
+  return infoFailed.value ? t('settingsHost.about.versionUnavailable') : undefined;
+});
 
 const statusLabel = computed(() => {
   const current = state.value;
@@ -98,17 +110,37 @@ const pending = computed(() => {
   return current?.kind === 'ready' || current?.kind === 'restarting' || current?.kind === 'available' ? { version: current.version, notes: current.notes } : null;
 });
 
-const copied = ref(false);
+const copied = ref<'copied' | 'failed' | null>(null);
 let copiedTimer: ReturnType<typeof setTimeout> | undefined;
 async function copyInfo(): Promise<void> {
-  await api.copyVersionInfo();
-  copied.value = true;
+  let outcome: 'copied' | 'failed';
+  try {
+    if (!(await ran(api.copyVersionInfo()))) return;
+    outcome = 'copied';
+  } catch {
+    outcome = 'failed';
+  }
+  copied.value = outcome;
   clearTimeout(copiedTimer);
   copiedTimer = setTimeout(() => {
-    copied.value = false;
+    copied.value = null;
   }, COPIED_MS);
 }
 onBeforeUnmount(() => clearTimeout(copiedTimer));
+
+// The label key of the update action that last failed; a new state is news of its own, so it clears the notice.
+const failedAction = ref<string | null>(null);
+watch(() => state.value?.kind, () => {
+  failedAction.value = null;
+});
+async function runAction(labelKey: string, action: () => Promise<PopupAnswer<void>>): Promise<void> {
+  failedAction.value = null;
+  try {
+    await answerOf(action());
+  } catch {
+    failedAction.value = labelKey;
+  }
+}
 </script>
 
 <template>
@@ -153,16 +185,16 @@ onBeforeUnmount(() => clearTimeout(copiedTimer));
       @click="copyInfo"
     >
       <component
-        :is="copied ? Check : Copy"
+        :is="copied === 'copied' ? Check : copied === 'failed' ? CircleAlert : Copy"
         aria-hidden="true"
         class="size-3"
       />
-      <span aria-live="polite">{{ copied ? t('settingsHost.about.copied') : t('settingsHost.about.copy') }}</span>
+      <span aria-live="polite">{{ copied === 'copied' ? t('settingsHost.about.copied') : copied === 'failed' ? t('settingsHost.about.copyFailed') : t('settingsHost.about.copy') }}</span>
     </SettingButton>
     <SettingButton
       data-testid="about-check"
       :disabled="!state || !canCheck(state)"
-      @click="api.checkForUpdates()"
+      @click="runAction('settingsHost.about.check', () => api.checkForUpdates())"
     >
       <RefreshCw
         aria-hidden="true"
@@ -210,6 +242,13 @@ onBeforeUnmount(() => clearTimeout(copiedTimer));
                   {{ detail }}
                 </p>
               </Transition>
+              <p
+                v-if="failedAction"
+                class="about-detail text-(--d-danger-text)"
+                data-testid="about-action-failed"
+              >
+                {{ t('settingsHost.about.actionFailed', { action: t(failedAction) }) }}
+              </p>
             </div>
             <p
               v-if="state.kind !== 'disabled'"
@@ -223,7 +262,7 @@ onBeforeUnmount(() => clearTimeout(copiedTimer));
             <SettingButton
               v-if="state.kind === 'error'"
               data-testid="about-show-log"
-              @click="api.showUpdateLog()"
+              @click="runAction('settingsHost.about.showLog', () => api.showUpdateLog())"
             >
               <ScrollText
                 aria-hidden="true"
@@ -236,7 +275,7 @@ onBeforeUnmount(() => clearTimeout(copiedTimer));
               variant="primary"
               data-testid="about-restart"
               :disabled="state.kind === 'restarting'"
-              @click="api.restartToUpdate()"
+              @click="runAction('settingsHost.about.restart', () => api.restartToUpdate())"
             >
               <RotateCw
                 aria-hidden="true"
@@ -248,7 +287,7 @@ onBeforeUnmount(() => clearTimeout(copiedTimer));
               v-else-if="state.kind === 'available'"
               variant="primary"
               data-testid="about-release-page"
-              @click="api.openReleasePage()"
+              @click="runAction('settingsHost.about.openReleasePage', () => api.openReleasePage())"
             >
               <ExternalLink
                 aria-hidden="true"
@@ -258,6 +297,13 @@ onBeforeUnmount(() => clearTimeout(copiedTimer));
             </SettingButton>
           </div>
         </div>
+        <p
+          v-else-if="statusFailed"
+          class="about-detail"
+          data-testid="about-status-unavailable"
+        >
+          {{ t('settingsHost.about.statusUnavailable') }}
+        </p>
       </div>
     </template>
   </SettingsRow>

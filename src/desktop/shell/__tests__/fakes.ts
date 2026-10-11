@@ -1,6 +1,6 @@
 import { vi } from 'vitest';
 import { DEFAULT_GRID_LAYOUT, type DamoclesShellApi, type DropZonesPointer, type EditorCommand, type EditorDocumentChange, type EditorFlushRequest, type EditorReveal, type FileRef, type FilesChanged, type SearchCommandMessage, type SearchDone, type SearchEditorHighlights, type SearchFileUpdate, type SearchFocus, type SearchResultsBatch, type ShellSearchSettings, type ShellChat, type ShellChatList, type ShellEditorState, type ShellFocusPart, type ShellState } from '../../preload/shell-channels';
-import type { DamoclesOverlayApi, OverlayAnswer, PaletteCommand, OverlayPrefs, OverlayRasterRequest, OverlayRequest, OverlayState, OverlayToast, QuickOpenQuery, QuickOpenResponse } from '../../preload/overlay-channels';
+import type { DamoclesOverlayApi, OverlayAnswer, PaletteCommand, OverlayPrefs, OverlayRasterRequest, OverlayRequest, OverlayState, OverlayToast, PopupAnswer, QuickOpenQuery, QuickOpenResponse } from '../../preload/overlay-channels';
 import type { ChimeTone, NotificationCenterState } from '../../preload/notifications';
 import type { DamoclesTerminalApi, TerminalData, TerminalProfileReport, TerminalRunAction, TerminalState } from '../../preload/terminal-channels';
 import type { ReleaseIndex, UpdateSnapshot, VersionInfo } from '../../preload/updates';
@@ -344,6 +344,9 @@ export type FakeOverlayApi = DamoclesOverlayApi & {
 
 export const VERSION_INFO: VersionInfo = { version: '3.4.0', packaged: false, platform: 'win32', arch: 'x64', electron: '38.0.0', chromium: '140.0.0.0', node: '22.19.0' };
 
+// A popup-scoped channel's answer while its popup is open.
+export const opened = <T>(value: T): PopupAnswer<T> => ({ ok: true, value });
+
 export function fakeOverlayApi(): FakeOverlayApi {
   const requestListeners = new Set<(id: string, request: OverlayRequest) => void>();
   const cancelListeners = new Set<(id: string) => void>();
@@ -382,10 +385,10 @@ export function fakeOverlayApi(): FakeOverlayApi {
     onToastsFocus: vi.fn((listener) => { toastsFocusListeners.add(listener); return () => toastsFocusListeners.delete(listener); }),
     leaveToasts: vi.fn(),
     holdToast: vi.fn(),
-    getNotifications: vi.fn(async () => center.state),
+    getNotifications: vi.fn(async () => opened(center.state)),
     onNotifications: vi.fn((listener) => { notificationListeners.add(listener); return () => notificationListeners.delete(listener); }),
-    clearNotifications: vi.fn(async () => {}),
-    setDoNotDisturb: vi.fn(async () => {}),
+    clearNotifications: vi.fn(async () => opened(undefined)),
+    setDoNotDisturb: vi.fn(async () => opened(undefined)),
     onRasterize: vi.fn((listener) => { rasterizeListeners.add(listener); return () => rasterizeListeners.delete(listener); }),
     rasterized: vi.fn(),
     onChime: vi.fn((listener) => { chimeListeners.add(listener); return () => chimeListeners.delete(listener); }),
@@ -395,22 +398,22 @@ export function fakeOverlayApi(): FakeOverlayApi {
     onSettingsTarget: vi.fn((listener) => { targetListeners.add(listener); return () => targetListeners.delete(listener); }),
     getPrefs: vi.fn(async (): Promise<OverlayPrefs> => ({ values: { 'damocles.desktop.theme': 'system', 'damocles.desktop.language': 'system' }, languageAtLaunch: 'system' })),
     onPrefsChanged: vi.fn((listener) => { prefsListeners.add(listener); return () => prefsListeners.delete(listener); }),
-    setPref: vi.fn(async () => ({ ok: true as const, file: '/home/u/.damocles/settings.json' })),
-    relaunch: vi.fn(async () => {}),
-    resetLayout: vi.fn(async () => {}),
-    getUpdate: vi.fn(async () => DISABLED_UPDATE),
+    setPref: vi.fn(async () => opened({ ok: true as const, file: '/home/u/.damocles/settings.json' })),
+    relaunch: vi.fn(async () => opened(undefined)),
+    resetLayout: vi.fn(async () => opened(undefined)),
+    getUpdate: vi.fn(async () => opened(DISABLED_UPDATE)),
     onUpdate: vi.fn((listener) => { updateListeners.add(listener); return () => updateListeners.delete(listener); }),
-    checkForUpdates: vi.fn(async () => {}),
-    restartToUpdate: vi.fn(async () => {}),
-    showUpdateLog: vi.fn(async () => {}),
-    copyVersionInfo: vi.fn(async () => {}),
-    getVersionInfo: vi.fn(async () => VERSION_INFO),
-    openReleasePage: vi.fn(async () => {}),
-    getReleaseIndex: vi.fn(async () => releases.index),
-    getReleaseNotes: vi.fn(async (version: string) => ({ version, markdown: releases.notes[version] ?? '' })),
-    queryQuickOpen: vi.fn(async (query: QuickOpenQuery) => quickOpen.answer(query)),
-    listCommands: vi.fn(async () => commands.list),
-    getTerminalProfiles: vi.fn(async (): Promise<TerminalProfileReport> => terminalProfiles.report),
+    checkForUpdates: vi.fn(async () => opened(undefined)),
+    restartToUpdate: vi.fn(async () => opened(undefined)),
+    showUpdateLog: vi.fn(async () => opened(undefined)),
+    copyVersionInfo: vi.fn(async () => opened(undefined)),
+    getVersionInfo: vi.fn(async () => opened(VERSION_INFO)),
+    openReleasePage: vi.fn(async () => opened(undefined)),
+    getReleaseIndex: vi.fn(async () => opened(releases.index)),
+    getReleaseNotes: vi.fn(async (version: string) => opened({ version, markdown: releases.notes[version] ?? '' })),
+    queryQuickOpen: vi.fn(async (query: QuickOpenQuery) => opened(quickOpen.answer(query))),
+    listCommands: vi.fn(async () => opened(commands.list)),
+    getTerminalProfiles: vi.fn(async (): Promise<PopupAnswer<TerminalProfileReport>> => opened(terminalProfiles.report)),
     onTerminalProfiles: vi.fn(profilesChanged.listen),
     onDropZonesPointer: vi.fn(pointer.listen),
     request: (id, request) => { for (const l of requestListeners) l(id, request); },

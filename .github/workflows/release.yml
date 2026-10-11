@@ -254,6 +254,7 @@ jobs:
             appDir: dist-desktop/linux-arm64-unpacked
             executable: dist-desktop/linux-arm64-unpacked/damocles
     runs-on: ${{ matrix.runner }}
+    # npm ci and the builds, the suite step's limit, then the installers and uploads (docs/release.md "Time limits").
     timeout-minutes: 90
     defaults:
       run:
@@ -304,9 +305,13 @@ jobs:
           sudo chmod 4755 "${{ matrix.appDir }}/chrome-sandbox"
 
       - name: End-to-end suite against the packaged app
+        # Outlasts globalTimeout; fails only this step, so the e2e-report upload still runs (docs/release.md "Time limits").
+        timeout-minutes: 55
         env:
           DAMOCLES_E2E_PACKAGED_APP: ${{ github.workspace }}/${{ matrix.executable }}
+        # Test homes leave the Windows OS disk (docs/release.md "Desktop end-to-end suite").
         run: |
+          if [ "$RUNNER_OS" = Windows ]; then export TEMP="$RUNNER_TEMP" TMP="$RUNNER_TEMP"; fi
           if [ "$RUNNER_OS" = Linux ]; then
             xvfb-run -a npm run test:desktop:packaged
           else
@@ -365,7 +370,7 @@ jobs:
           if-no-files-found: error
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: failure()
+        if: ${{ !cancelled() }}
         with:
           name: e2e-report-${{ matrix.target }}
           path: |
@@ -411,7 +416,8 @@ jobs:
             os: linux
             shards: 2
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    # npm ci, the suite step's limit and the report upload (docs/release.md "Time limits").
+    timeout-minutes: 90
     defaults:
       run:
         shell: bash
@@ -449,9 +455,13 @@ jobs:
       # Linux: minimizing needs a window manager and the pane tests size the window to 1400x900. playwright.desktop.config.ts
       # sets the worker count per platform.
       - name: Desktop end-to-end suite (shard ${{ matrix.shard }} of ${{ matrix.shards }})
+        # Outlasts globalTimeout plus test:desktop's build; fails only this step, so the upload still runs (docs/release.md "Time limits").
+        timeout-minutes: 55
         env:
           SHARD: ${{ matrix.shard }}/${{ matrix.shards }}
+        # Test homes leave the Windows OS disk (docs/release.md "Desktop end-to-end suite").
         run: |
+          if [ "$RUNNER_OS" = Windows ]; then export TEMP="$RUNNER_TEMP" TMP="$RUNNER_TEMP"; fi
           if [ "$RUNNER_OS" = Linux ]; then
             xvfb-run -a -s '-screen 0 1920x1080x24' sh -c 'openbox & exec npm run test:desktop -- --shard="$SHARD"'
           else
@@ -459,7 +469,7 @@ jobs:
           fi
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: failure()
+        if: ${{ !cancelled() }}
         with:
           name: e2e-report-${{ matrix.target }}-${{ matrix.shard }}
           path: |

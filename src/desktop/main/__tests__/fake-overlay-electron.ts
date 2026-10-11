@@ -6,6 +6,7 @@ export function fakeOverlayElectron(webPreferences: unknown[] = []): Record<stri
   class FakeIpc extends EventEmitter {
     readonly handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
     handle(channel: string, handler: (event: unknown, ...args: unknown[]) => unknown): void {
+      if (this.handlers.has(channel)) throw new Error(`Attempted to register a second handler for '${channel}'`);
       this.handlers.set(channel, handler);
     }
     removeHandler(channel: string): void {
@@ -18,6 +19,8 @@ export function fakeOverlayElectron(webPreferences: unknown[] = []): Record<stri
     readonly mainFrame = { url: '', parent: null };
     hasFocus = false;
     crashed = false;
+    // 0 once the renderer process is gone, as Electron reports it
+    osProcessId = 4242;
     readonly focus = vi.fn(() => {
       this.hasFocus = true;
     });
@@ -32,6 +35,9 @@ export function fakeOverlayElectron(webPreferences: unknown[] = []): Record<stri
     }
     isCrashed(): boolean {
       return this.crashed;
+    }
+    getOSProcessId(): number {
+      return this.osProcessId;
     }
     isFocused(): boolean {
       return this.hasFocus;
@@ -83,6 +89,7 @@ export type FakeOverlayView = {
     ipc: EventEmitter & { handlers: Map<string, (event: unknown, ...args: unknown[]) => unknown> };
     hasFocus: boolean;
     crashed: boolean;
+    osProcessId: number;
     focus: ReturnType<typeof vi.fn>;
     send: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;

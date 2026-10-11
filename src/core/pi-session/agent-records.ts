@@ -6,7 +6,7 @@
  *   subagents/<ts>_<agentId>.jsonl                           pi session per subagent
  *   teams/<teamId>.jsonl                                     team event log
  *   teams/<teamId>/members/<ts>_<memberId>.a<attempt>.jsonl  pi session per member attempt
- *   teams/<teamId>/checkpoints/<cancelledAt>.json            team resume checkpoint, one per cancel
+ *   teams/<teamId>/checkpoints/<cancelledAt>.json            team resume checkpoint, one per run
  *
  * Everything read back from disk is untrusted and validated here before use.
  */
@@ -70,13 +70,13 @@ export function teamCheckpointsDir(sessionDir: string, parentSessionId: string, 
 
 const CHECKPOINT_FILE = /^(\d+)\.json$/;
 
-/** One checkpoint per cancel, named by its cancel time in epoch ms. */
+/** One checkpoint per run, named by the run's checkpoint key in epoch ms. */
 export function teamCheckpointPath(sessionDir: string, parentSessionId: string, teamId: string, cancelledAt: number): string {
   if (!Number.isSafeInteger(cancelledAt) || cancelledAt < 0) throw new Error(`Invalid checkpoint time ${cancelledAt}`);
   return join(teamCheckpointsDir(sessionDir, parentSessionId, teamId), `${cancelledAt}.json`);
 }
 
-/** The cancel times of the checkpoints in `dir`, oldest first; none when the folder does not exist. */
+/** The keys of the checkpoints in `dir`, oldest first; none when the folder does not exist. */
 export async function listTeamCheckpoints(dir: string): Promise<number[]> {
   let names: string[];
   try {

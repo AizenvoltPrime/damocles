@@ -132,6 +132,45 @@ test('every question renders as the overlay dialog: the trust question and a fol
   }
 });
 
+// reka holds the body's pointer-events at none while a select's list is open and through its exit animation.
+test('a question asked while a select\'s list is open takes the pointer from its first frame', async ({ home, launch }) => {
+  const stub = await startOpenAIStub();
+  try {
+    seedStubModel(home, stub.baseUrl);
+    const { app } = await launch({ env: { DAMOCLES_E2E_HOOKS: '1' } });
+    await expect(chatInput(await activeChat(app))).toBeVisible();
+    await forbidNativeBoxes(app);
+    const modal = await openSettingsModal(app, 'defaults');
+    await settingsRow(modal, 'damocles.model').getByRole('combobox').click();
+    await expect(modal.getByRole('listbox')).toBeVisible();
+    // Read in the task that inserts the dialog, before the list can react to the focus the dialog takes.
+    await modal.evaluate(() => {
+      const g = window as unknown as { __e2eFirstHit?: { bodyPointerEvents: string; hit: boolean } };
+      new MutationObserver((_records, observer) => {
+        const dialog = document.querySelector('[role="alertdialog"]');
+        if (!dialog) return;
+        observer.disconnect();
+        const box = dialog.getBoundingClientRect();
+        const hit = dialog.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+        g.__e2eFirstHit = { bodyPointerEvents: document.body.style.pointerEvents, hit };
+      }).observe(document.body, { childList: true, subtree: true });
+    });
+
+    await app.evaluate(() => {
+      const g = globalThis as unknown as { __damoclesE2e: { notifications: { warn(message: string, options: { modal: boolean }, ...actions: string[]): Promise<string | undefined> } }; __e2eAnswer?: Promise<string | undefined> };
+      g.__e2eAnswer = g.__damoclesE2e.notifications.warn('Proceed over the open list?', { modal: true }, 'Proceed');
+    });
+    const question = dialogIn(modal);
+    await expect(question).toBeVisible();
+    expect(await modal.evaluate(() => (window as unknown as { __e2eFirstHit?: unknown }).__e2eFirstHit)).toEqual({ bodyPointerEvents: 'none', hit: true });
+    await question.getByRole('button', { name: 'Proceed' }).click();
+    expect(await app.evaluate(() => (globalThis as unknown as { __e2eAnswer: Promise<string | undefined> }).__e2eAnswer)).toBe('Proceed');
+    expect(await nativeBoxes(app)).toEqual([]);
+  } finally {
+    await stub.close();
+  }
+});
+
 test('with the overlay crashed, the question falls back to the OS message box and its answer still reaches the caller', async ({ home, launch }) => {
   const desktop = await launch();
   const { app } = desktop;
@@ -153,7 +192,8 @@ test('with the overlay crashed, the question falls back to the OS message box an
   // Main reloads the crashed page; the test ends only once it has read its state, so closing never races that call.
   await expect.poll(() => app.evaluate(async ({ webContents }, url) => {
     const overlay = webContents.getAllWebContents().find((contents) => contents.getURL() === url);
-    if (!overlay || overlay.isCrashed() || overlay.isLoading()) return '';
+    // OverlayHost's liveness check: executeJavaScript on the dying renderer, which reads pid 0 before isCrashed(), never settles.
+    if (!overlay || overlay.isCrashed() || overlay.getOSProcessId() === 0 || overlay.isLoading()) return '';
     // Invokes are answered in order, so this one resolves after the page's own first read.
     return overlay.executeJavaScript('window.damoclesOverlay.getState().then((state) => state.locale)') as Promise<string>;
   }, OVERLAY_URL)).toBe('en');

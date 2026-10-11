@@ -63,20 +63,11 @@ export class OverlaySettings {
     });
     overlay.on(OVERLAY_CHANNELS.settingsSend, (raw) => this.receive(raw));
     overlay.handle(OVERLAY_CHANNELS.prefsGet, () => this.prefs());
-    overlay.handle(OVERLAY_CHANNELS.prefsSet, (raw) => {
-      if (!this.open) throw new Error('Desktop settings are written only by the open settings');
-      return this.setPref(raw);
-    });
-    overlay.handle(OVERLAY_CHANNELS.relaunch, () => {
-      if (!this.open) throw new Error('Restart is offered only by the open settings');
-      deps.relaunch();
-    });
-    overlay.handle(OVERLAY_CHANNELS.layoutReset, () => {
-      if (!this.open) throw new Error('Restore default layout is offered only by the open settings');
-      deps.resetLayout();
-    });
-    overlay.handle(OVERLAY_CHANNELS.terminalProfiles, (raw) => {
-      if (!this.open) throw new Error('Terminal profiles are listed only for the open settings');
+    const settingsOpen = (): boolean => this.open;
+    overlay.handleWhileOpen(OVERLAY_CHANNELS.prefsSet, settingsOpen, (raw) => this.setPref(raw));
+    overlay.handleWhileOpen(OVERLAY_CHANNELS.relaunch, settingsOpen, () => deps.relaunch());
+    overlay.handleWhileOpen(OVERLAY_CHANNELS.layoutReset, settingsOpen, () => deps.resetLayout());
+    overlay.handleWhileOpen(OVERLAY_CHANNELS.terminalProfiles, settingsOpen, (raw) => {
       if (typeof raw !== 'object' || raw === null || Array.isArray(raw) || Object.keys(raw).length > 0) throw new Error('Malformed terminal profiles request');
       return deps.terminalProfiles();
     });

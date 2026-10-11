@@ -323,6 +323,45 @@ export function sessionLeaseBlocker(sessionId: string): SessionLeaseBlocker | un
 }
 
 /**
+ * Whether a holder of this process other than its writer holds `sessionId`'s lease: a panel, whose leases equal
+ * the sessions it holds (`holdsSession`), a resume target it has not opened yet or a switch still in flight included.
+ */
+export function isSessionHeldByPanelHere(sessionId: string): boolean {
+  const lease = leases.get(sessionId);
+  return lease !== undefined && [...lease.holders].some((holder) => holder !== lease.writer);
+}
+
+/** Why a write outside a live panel was refused; `panel` when a panel of this process holds the session with no live session to write through. */
+export type SessionWriteRefusal = SessionLeaseBlocker | { readonly kind: 'panel' };
+
+/**
+ * Run `work`, which writes or removes stored session `sessionId`'s file with no panel of this process writing it
+ * live, while holding the session's lease as its writer: no other process writes it meanwhile, and no panel of
+ * this process claims it until `work` settles. Refused, without running `work`, when another process holds it,
+ * another write of this process is running on it, or a panel of this process holds it (`isSessionHeldByPanelHere`),
+ * which would make `work` a second writer. `joinPanels` is for a delete, which detaches those panels itself: it
+ * shares their lease, so the lease stays held while they detach.
+ */
+export async function writeUnderSessionLease(
+  sessionId: string,
+  work: () => Promise<void>,
+  options: { readonly joinPanels?: boolean } = {},
+): Promise<SessionWriteRefusal | undefined> {
+  // The write is short and awaited; a lease lost during it has no live session to detach.
+  const writer: SessionLeaseHolder = { onSessionLeaseLost: () => undefined };
+  const blocker: SessionWriteRefusal | undefined = sessionLeaseBlocker(sessionId)
+    ?? (!options.joinPanels && isSessionHeldByPanelHere(sessionId) ? { kind: 'panel' } : undefined);
+  if (blocker) return blocker;
+  if (!acquireSessionLease(sessionId, writer, { writer: true })) return { kind: 'other-process' };
+  try {
+    await work();
+    return undefined;
+  } finally {
+    releaseSessionLease(sessionId, writer);
+  }
+}
+
+/**
  * Take the cross-process write lease on stored session `sessionId` for `holder`, at once or not at all.
  * False when another process holds it, or when a `writer` of this process holds it and `holder` is new.
  * A process already holding it adds `holder` without touching the lock. A `writer` holder is the only one

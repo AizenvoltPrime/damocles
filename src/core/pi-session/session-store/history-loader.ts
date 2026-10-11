@@ -237,6 +237,8 @@ export function reconstructMessages(
 
     if (role === 'user') {
       const promptIndex = isPrompt(entry) ? promptCount++ : undefined;
+      // A prompt starts a run, and an abort cuts only its own run's batch.
+      if (promptIndex !== undefined) batch = [];
       const original = originalInputs.get(entry.id);
       const attachmentCount = attachmentCounts.get(entry.id) ?? 0;
       const content = original ?? userVisibleText(message?.content, attachmentCount);

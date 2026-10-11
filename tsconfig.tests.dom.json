@@ -19,6 +19,8 @@
     "src/core/pi-session/__tests__/nested-mcp-elicitation.test.ts",
     // Same reason: it drives the runner and feeds its webview messages to the real team store.
     "src/core/team/__tests__/redispatch-parity.test.ts",
+    // Same reason: it feeds the memory handler's overlay replay to the real consolidation store.
+    "src/core/chat-panel/message-router/handlers/__tests__/consolidation-replay-parity.test.ts",
     "src/__mocks__/**/*",
     "src/**/*.d.ts"
   ],

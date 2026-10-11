@@ -34,12 +34,20 @@ async function stylelintRules(dir: string, css: string): Promise<string[]> {
   return results.flatMap((result) => result.warnings.map((warning) => warning.rule));
 }
 
-// The stylelint globs of package.json's lint script.
-function stylelintGlobs(): string[] {
-  const script = (JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as { scripts: Record<string, string> }).scripts.lint ?? '';
-  const args = /stylelint((?:\s+"[^"]+")+)/.exec(script)?.[1] ?? '';
+// The quoted globs of a lint script's stylelint command, whatever flags sit among them.
+function stylelintGlobs(script: string): string[] {
+  const args = /stylelint\s([^&|;]*)/.exec(script)?.[1] ?? '';
   return [...args.matchAll(/"([^"]+)"/g)].map((match) => match[1]!);
 }
+
+const LINT_SCRIPT = (JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as { scripts: Record<string, string> }).scripts.lint ?? '';
+
+it('reads the stylelint globs past any flags, and finds some in the lint script', () => {
+  for (const flags of ['--max-warnings 0', '--max-warnings=0', '-q', '--formatter json', '--custom-syntax postcss-html --cache']) {
+    expect(stylelintGlobs(`eslint "src/**/*.ts" && stylelint ${flags} "a/**/*.css" "b/**/*.vue" && echo "done"`)).toEqual(['a/**/*.css', 'b/**/*.vue']);
+  }
+  expect(stylelintGlobs(LINT_SCRIPT).length).toBeGreaterThan(0);
+});
 
 it('probes the folders that hold the renderers\' components', () => {
   expect(FOLDERS).toEqual(expect.arrayContaining(['src/webview/components', 'src/desktop/shell/components', 'src/desktop/shell/terminal', 'src/desktop/shell/editor', 'src/desktop/shell/overlay']));
@@ -57,7 +65,7 @@ describe.each(FOLDERS)('rem lint in %s', (dir) => {
   }, 60_000);
 
   it("is covered by the lint script's stylelint globs", () => {
-    const files = new Set(globSync(stylelintGlobs(), { cwd: ROOT }).map((file) => file.replaceAll('\\', '/')));
+    const files = new Set(globSync(stylelintGlobs(LINT_SCRIPT), { cwd: ROOT }).map((file) => file.replaceAll('\\', '/')));
     const own = globSync(`${dir}/**/*.{vue,css}`, { cwd: ROOT }).map((file) => file.replaceAll('\\', '/')).filter((file) => !file.includes('/__tests__/'));
     expect(own.length).toBeGreaterThan(0);
     expect(own.filter((file) => !files.has(file))).toEqual([]);

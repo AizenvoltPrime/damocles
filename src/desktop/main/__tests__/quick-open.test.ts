@@ -10,17 +10,25 @@ import { build } from 'esbuild';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fuzzy from '../../../core/quick-open/fuzzy-match';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
-import { OVERLAY_CHANNELS, type OverlayAnswer, type OverlayRequest } from '../../preload/overlay-channels';
+import { OVERLAY_CHANNELS, type OverlayAnswer, type OverlayRequest, type PopupAnswer } from '../../preload/overlay-channels';
 import { createQuickOpenFileSearch } from '../../quick-open-worker/file-search';
 import { ripgrepFileArgs, type WorkerReply, type WorkerRequest } from '../../quick-open-worker/protocol';
 import type { Project } from '../documents/confine';
 import type { MenuState } from '../menu';
 import { QUICK_OPEN_WORKER_SILENCE_MS, QuickOpenIndex, QuickOpenPicker, type QuickOpenDeps, type QuickOpenWorker } from '../quick-open';
+import { fakeHandleWhileOpen } from './fake-popup-channels';
 
 vi.mock('../../../core/quick-open/fuzzy-match', async (importOriginal) => {
   const original = await importOriginal<typeof import('../../../core/quick-open/fuzzy-match')>();
   return { ...original, scoreItem: vi.fn(original.scoreItem) };
 });
+
+// The value of a popup channel's answer while Quick Open is open.
+async function openValue(answer: unknown): Promise<unknown> {
+  const answered = (await answer) as PopupAnswer<unknown>;
+  if (!answered.ok) throw new Error('answered closed');
+  return answered.value;
+}
 
 const CONTEXT: MenuState = { chat: true, editor: true, browser: false, page: false, focus: 'editor', updateCheck: false, project: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false } };
 
@@ -163,10 +171,10 @@ describe('Quick Open in its worker', () => {
     let open = false;
     const answers: unknown[] = [];
     const quickOpen = new QuickOpenPicker(
-      { handle: (channel, handler) => handlers.set(channel, handler), isOpen: () => open, request: async () => {
+      { handleWhileOpen: fakeHandleWhileOpen(handlers), isOpen: () => open, request: async () => {
         open = true;
         const query = handlers.get(OVERLAY_CHANNELS.quickOpenQuery)!;
-        answers.push(...await Promise.all([query({ query: 'a1', generation: 4 }), query({ query: 'a', generation: 5 })]));
+        answers.push(...await Promise.all([openValue(query({ query: 'a1', generation: 4 })), openValue(query({ query: 'a', generation: 5 }))]));
         open = false;
         return { kind: 'dismissed' };
       } },
@@ -181,7 +189,7 @@ describe('Quick Open in its worker', () => {
     expect(vi.mocked(fuzzy.scoreItem)).toHaveBeenCalledTimes(5);
   });
 
-  it('answers empty with the reason logged when the worker crashes, and starts a fresh worker for the next query', async () => {
+  it('answers failed with the reason logged when the worker crashes, and starts a fresh worker for the next query', async () => {
     touch(alpha, 'a.ts');
     const crashing = new (class extends EventEmitter implements QuickOpenWorker {
       terminated = false;
@@ -197,7 +205,7 @@ describe('Quick Open in its worker', () => {
     const quickOpen = index(() => workers.shift()!);
     const search = quickOpen.open();
     const context = { currentProjectKey: alpha.key, recent: [] };
-    expect(await quickOpen.query('a:3', context, { id: search, generation: 0 })).toEqual({ currentProjectKey: alpha.key, line: 3, mention: false, results: [] });
+    expect(await quickOpen.query('a:3', context, { id: search, generation: 0 })).toEqual({ currentProjectKey: alpha.key, line: 3, mention: false, results: [], failed: true });
     expect(logged).toEqual(['[quick-open] the worker failed: out of memory']);
     expect(crashing.terminated).toBe(true);
     expect((await quickOpen.query('a', context, { id: search, generation: 1 }))?.results.map((result) => result.relativePath)).toEqual(['a.ts']);
@@ -205,7 +213,7 @@ describe('Quick Open in its worker', () => {
     quickOpen.dispose();
   });
 
-  it('answers empty when the worker exits, fails a query or sends a reply outside the contract, and starts afresh each time', async () => {
+  it('answers failed when the worker exits, fails a query or sends a reply outside the contract, and starts afresh each time', async () => {
     touch(alpha, 'a.ts');
     const exiting = new InProcessWorker();
     exiting.postMessage = () => setImmediate(() => exiting.emit('exit', 1));
@@ -218,7 +226,7 @@ describe('Quick Open in its worker', () => {
     const search = quickOpen.open();
     const context = { currentProjectKey: alpha.key, recent: [] };
     for (let generation = 0; generation < 5; generation++) {
-      expect((await quickOpen.query('a', context, { id: search, generation }))?.results).toEqual([]);
+      expect(await quickOpen.query('a', context, { id: search, generation })).toMatchObject({ results: [], failed: true });
     }
     expect(logged).toEqual([
       '[quick-open] the worker exited with 1',
@@ -228,12 +236,14 @@ describe('Quick Open in its worker', () => {
       '[quick-open] the worker sent a malformed reply',
     ]);
     expect([exiting, failing, outside, escaping, oversized].every((worker) => worker.terminated)).toBe(true);
-    expect((await quickOpen.query('a', context, { id: search, generation: 5 }))?.results).toHaveLength(1);
+    const recovered = await quickOpen.query('a', context, { id: search, generation: 5 });
+    expect(recovered?.results).toHaveLength(1);
+    expect(recovered).not.toHaveProperty('failed');
     expect(started).toBe(6);
     quickOpen.dispose();
   });
 
-  it('terminates a worker that sends nothing while a query waits, answers the query empty and starts a fresh worker next', async () => {
+  it('terminates a worker that sends nothing while a query waits, answers the query failed and starts a fresh worker next', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     try {
       touch(alpha, 'a.ts');
@@ -253,8 +263,8 @@ describe('Quick Open in its worker', () => {
       expect(await settled(stuck)).toBe(false);
       vi.advanceTimersByTime(250);
 
-      expect(await stuck).toEqual({ currentProjectKey: alpha.key, line: 3, mention: false, results: [] });
-      expect(await typedOn).toEqual({ currentProjectKey: alpha.key, mention: false, results: [] });
+      expect(await stuck).toEqual({ currentProjectKey: alpha.key, line: 3, mention: false, results: [], failed: true });
+      expect(await typedOn).toEqual({ currentProjectKey: alpha.key, mention: false, results: [], failed: true });
       expect(logged).toEqual([`[quick-open] the worker sent nothing for ${QUICK_OPEN_WORKER_SILENCE_MS} ms while a query waited`]);
       expect(silent.terminated).toBe(true);
       expect((await quickOpen.query('a', context, { id: search, generation: 2 }))?.results.map((result) => result.relativePath)).toEqual(['a.ts']);
@@ -307,7 +317,7 @@ describe('Quick Open in its worker', () => {
       const failed = quickOpen.query('a', context, { id: search, generation: 0 });
       await turnsUntil(() => first.queries.length === 1);
       first.emit('error', new Error('out of memory'));
-      expect(await failed).toEqual({ currentProjectKey: alpha.key, mention: false, results: [] });
+      expect(await failed).toEqual({ currentProjectKey: alpha.key, mention: false, results: [], failed: true });
 
       vi.advanceTimersByTime(QUICK_OPEN_WORKER_SILENCE_MS / 2);
       const next = quickOpen.query('a', context, { id: search, generation: 1 });
@@ -316,7 +326,7 @@ describe('Quick Open in its worker', () => {
       expect(await settled(next)).toBe(false);
       vi.advanceTimersByTime(QUICK_OPEN_WORKER_SILENCE_MS / 2);
 
-      expect(await next).toEqual({ currentProjectKey: alpha.key, mention: false, results: [] });
+      expect(await next).toEqual({ currentProjectKey: alpha.key, mention: false, results: [], failed: true });
       expect(logged).toEqual(['[quick-open] the worker failed: out of memory', `[quick-open] the worker sent nothing for ${QUICK_OPEN_WORKER_SILENCE_MS} ms while a query waited`]);
       quickOpen.dispose();
     } finally {
@@ -443,7 +453,7 @@ describe('ripgrep listings main runs for the worker', () => {
       await turnsUntil(() => rgs.length === 1);
       const exited = once(rgs[0]!, 'exit');
       vi.advanceTimersByTime(QUICK_OPEN_WORKER_SILENCE_MS);
-      expect(await answer).toEqual({ currentProjectKey: alpha.key, mention: false, results: [] });
+      expect(await answer).toEqual({ currentProjectKey: alpha.key, mention: false, results: [], failed: true });
       await exited;
       expect(ended(rgs[0]!)).toBe(true);
       quickOpen.dispose();
@@ -545,7 +555,7 @@ describe('Quick Open picker', () => {
 
   function picker(state: ReturnType<typeof overlay>): QuickOpenPicker {
     return new QuickOpenPicker(
-      { handle: (channel, handler) => state.handlers.set(channel, handler), isOpen: () => state.open, request: (request) => state.request(request) },
+      { handleWhileOpen: fakeHandleWhileOpen(state.handlers), isOpen: () => state.open, request: (request) => state.request(request) },
       index(),
       () => ({ currentProjectKey: alpha.key, recent: [] }),
       { capture: () => CONTEXT, list: () => [] },
@@ -565,11 +575,11 @@ describe('Quick Open picker', () => {
     const listed: MenuState[] = [];
     let context: MenuState = CONTEXT;
     const quickOpen = new QuickOpenPicker(
-      { handle: (channel, handler) => state.handlers.set(channel, handler), isOpen: () => state.open, request: async (request) => {
+      { handleWhileOpen: fakeHandleWhileOpen(state.handlers), isOpen: () => state.open, request: async (request) => {
         context = { ...CONTEXT, focus: undefined };
         state.open = true;
-        listed.push(...(await state.handlers.get(OVERLAY_CHANNELS.commandsList)!({}) as MenuState[]));
-        expect(() => state.handlers.get(OVERLAY_CHANNELS.commandsList)!({ extra: 1 })).toThrow('Malformed');
+        listed.push(...(await openValue(state.handlers.get(OVERLAY_CHANNELS.commandsList)!({})) as MenuState[]));
+        await expect(Promise.resolve(state.handlers.get(OVERLAY_CHANNELS.commandsList)!({ extra: 1 }))).rejects.toThrow('Malformed');
         state.open = false;
         expect(request).toEqual({ kind: 'quickOpen', mode: 'commands' });
         return { kind: 'quickOpen', command: 'damocles.editor.save' };
@@ -579,9 +589,44 @@ describe('Quick Open picker', () => {
       { capture: () => context, list: (captured) => [captured as never] },
       () => undefined,
     );
-    expect(() => state.handlers.get(OVERLAY_CHANNELS.commandsList)!({})).toThrow('Quick Open is not open');
+    await expect(Promise.resolve(state.handlers.get(OVERLAY_CHANNELS.commandsList)!({}))).resolves.toEqual({ ok: false, reason: 'closed' });
     expect(await quickOpen.show(undefined, 'commands')).toEqual({ kind: 'command', id: 'damocles.editor.save', context: CONTEXT });
     expect(listed).toEqual([CONTEXT]);
+    // The overlay still reports quickOpen open, but the request's captured context is gone once it answered.
+    state.open = true;
+    await expect(Promise.resolve(state.handlers.get(OVERLAY_CHANNELS.commandsList)!({}))).resolves.toEqual({ ok: false, reason: 'closed' });
+  });
+
+  it('lists no commands for a request that answered between its host\'s open check and the handler', async () => {
+    const handlers = new Map<string, (...args: unknown[]) => unknown>();
+    let open = false;
+    let late: Promise<unknown> | undefined;
+    const lists: unknown[] = [];
+    // Runs the handler a turn after the open check, which OverlayHost happens not to do.
+    const checkThenRun = <T>(channel: string, isOpen: () => boolean, handler: (...args: unknown[]) => T | Promise<T>): void => {
+      handlers.set(channel, async (...args: unknown[]) => {
+        if (!isOpen()) return { ok: false, reason: 'closed' };
+        await new Promise((resolve) => setImmediate(resolve));
+        return { ok: true, value: await handler(...args) };
+      });
+    };
+    const quickOpen = new QuickOpenPicker(
+      { handleWhileOpen: checkThenRun, isOpen: () => open, request: async () => {
+        open = true;
+        late = Promise.resolve(handlers.get(OVERLAY_CHANNELS.commandsList)!({}));
+        return { kind: 'quickOpen', pick: null };
+      } },
+      index(),
+      () => ({ currentProjectKey: alpha.key, recent: [] }),
+      { capture: () => CONTEXT, list: (captured) => {
+        lists.push(captured);
+        return [];
+      } },
+      () => undefined,
+    );
+    expect(await quickOpen.show(undefined, 'commands')).toBeUndefined();
+    await expect(late).rejects.toThrow('no captured focus context');
+    expect(lists).toEqual([]);
   });
 
   it('limits a request scoped to a folder to that project folder\'s files, and a pick to one of them', async () => {
@@ -596,11 +641,11 @@ describe('Quick Open picker', () => {
     const queried: unknown[] = [];
     const quickOpenIndex = index();
     const quickOpen = new QuickOpenPicker(
-      { handle: (channel, handler) => handlers.set(channel, handler), isOpen: () => open, request: async (request) => {
+      { handleWhileOpen: fakeHandleWhileOpen(handlers), isOpen: () => open, request: async (request) => {
         expect(request).toEqual({ kind: 'quickOpen', mode: 'files', scope });
         open = true;
-        queried.push(await handlers.get(OVERLAY_CHANNELS.quickOpenQuery)!({ query: '', generation: 1 }));
-        queried.push(await handlers.get(OVERLAY_CHANNELS.quickOpenQuery)!({ query: 'users', generation: 2 }));
+        queried.push(await openValue(handlers.get(OVERLAY_CHANNELS.quickOpenQuery)!({ query: '', generation: 1 })));
+        queried.push(await openValue(handlers.get(OVERLAY_CHANNELS.quickOpenQuery)!({ query: 'users', generation: 2 })));
         open = false;
         return { kind: 'quickOpen', pick: { projectKey: beta.key, relativePath: 'src/routes/users.ts', mention: false } };
       } },
@@ -619,14 +664,14 @@ describe('Quick Open picker', () => {
     expect(all?.results.map((result) => result.projectName).sort()).toEqual(['alpha', 'beta']);
   });
 
-  it('answers queries only while Quick Open is open, within bounds', async () => {
+  it('answers queries only while Quick Open is open, within bounds, and closed as a value otherwise', async () => {
     const state = overlay({ kind: 'dismissed' });
     picker(state);
     const query = state.handlers.get(OVERLAY_CHANNELS.quickOpenQuery)!;
-    await expect(Promise.resolve(query({ query: 'a', generation: 1 }))).rejects.toThrow('Quick Open is not open');
+    await expect(Promise.resolve(query({ query: 'a', generation: 1 }))).resolves.toEqual({ ok: false, reason: 'closed' });
     state.open = true;
     await expect(Promise.resolve(query({ query: 'x'.repeat(513), generation: 1 }))).rejects.toThrow('Malformed Quick Open query');
     await expect(Promise.resolve(query({ query: 'a', generation: -1 }))).rejects.toThrow('Malformed Quick Open generation');
-    await expect(Promise.resolve(query({ query: 'a', generation: 7 }))).resolves.toMatchObject({ generation: 7 });
+    await expect(Promise.resolve(query({ query: 'a', generation: 7 }))).resolves.toMatchObject({ ok: true, value: { generation: 7 } });
   });
 });

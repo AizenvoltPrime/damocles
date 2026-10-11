@@ -232,6 +232,8 @@ for (const [action, act] of [
     const { app } = await launch({ require: HOLD_CHAT_PAGES });
     await expect.poll(() => heldChatPages(app)).toBe(1);
     const shell = await readyShell(app);
+    // The shell renders once its first state arrives, after its preload is ready; a key sent before then focuses nothing.
+    await expect(shell.getByTestId('app-menu')).toBeVisible();
     await expect.poll(() => shellFocused(app)).toBe(true);
     await act(app, shell);
     const userFocus = await shell.evaluate(() => document.activeElement?.outerHTML.slice(0, 200));

@@ -35,14 +35,20 @@ import {
 /** Why consolidation ran — drives candidate scoping and is purely diagnostic otherwise. */
 export type ConsolidationReason = 'switch' | 'idle' | 'start' | 'manual';
 
+/** Where a run stands at a pass start: the pass (from 1) and the run's result over its ended passes, absent on pass 1. */
+export interface ConsolidationRunPass {
+  pass: number;
+  runSoFar?: ConsolidationResult;
+}
+
 export interface PendingConsolidationRequest {
   reason: ConsolidationReason;
   sessionId?: string;
   forceExtract?: boolean;
   /** Set on a later pass of a run: the turns that run already declined (see {@link ConsolidationCtx.declinedInRun}). */
   declinedInRun?: Set<string>;
-  /** Set on a later pass of a manual run: the run's result over its earlier passes, folded with each pass's own. */
-  runSoFar?: ConsolidationResult;
+  /** Set on a later pass of a manual run: the pass this request runs and the run's result over its earlier passes. */
+  run?: Required<ConsolidationRunPass>;
 }
 
 /**
@@ -62,8 +68,8 @@ export function mergePendingConsolidation(
     ? { declinedInRun: new Set([...(existing.declinedInRun ?? []), ...(incoming.declinedInRun ?? [])]) }
     : {};
   // Only the pass that just ended queues a run's next pass, so at most one side carries a result so far.
-  const runSoFar = incoming.runSoFar ?? existing.runSoFar;
-  const run = runSoFar ? { runSoFar } : {};
+  const kept = incoming.run ?? existing.run;
+  const run = kept ? { run: kept } : {};
   if (existing.sessionId === incoming.sessionId) return { ...existing, ...force, ...declined, ...run };
   return { reason: 'idle', ...force, ...declined, ...run };
 }
@@ -691,11 +697,12 @@ interface AnsweredBatch {
 /** Why a call declined its turns: no valid result, a provider rejection of the request, or a hostile shape. */
 type DeclineCause = 'unanswered' | 'rejected' | 'invalid-shape';
 
-/** Why some claimed turns got no answer: a call that threw, no model, a refused credential, no reply, or a decline. */
+/** Why some claimed turns got no answer: a call that threw, no model, a refused credential or access, no reply, or a decline. */
 type ExtractFailure =
   | { kind: 'thrown'; detail: string }
   | { kind: 'no-model' }
   | { kind: 'credential' }
+  | { kind: 'forbidden' }
   | { kind: 'unreachable' }
   | { kind: 'declined'; cause: DeclineCause };
 
@@ -722,7 +729,7 @@ interface QueuedPart {
  *   call was answered this pass or the turn already holds a count. A run is a manual Run now with the passes
  *   it queues, or one automatic run; a later pass of the run never claims a turn the run declined. At
  *   {@link MAX_FAILED_ANSWERS}, so after three separate runs, it is set aside.
- * - No model, a refused credential, no reply or a throw releases every unsettled turn uncounted and stops.
+ * - No model, a refused credential or access, no reply or a throw releases every unsettled turn uncounted and stops.
  * `open` holds the claimed turns not yet released or set aside; this removes the ones it settles.
  */
 async function extractInHalves(
@@ -777,7 +784,8 @@ async function extractInHalves(
       continue;
     }
     if (extraction.value === null && extraction.failure !== 'unanswered' && extraction.failure !== 'rejected') {
-      round.failure = extraction.failure === 'no-model' || extraction.failure === 'credential' ? { kind: extraction.failure } : { kind: 'unreachable' };
+      const stop = extraction.failure;
+      round.failure = stop === 'no-model' || stop === 'credential' || stop === 'forbidden' ? { kind: stop } : { kind: 'unreachable' };
       await release([part, ...queue.splice(0)]);
       break;
     }
@@ -833,7 +841,7 @@ function pickProbe(queue: readonly QueuedPart[], random: () => number): ClaimedC
 function extractFailureOf(failure: ExtractFailure | null): ConsolidationFailure {
   if (failure?.kind === 'no-model') return { kind: 'no-model', phase: 'extract' };
   if (failure?.kind === 'thrown') return { kind: 'error', detail: failure.detail, phase: 'extract' };
-  const reason = failure?.kind === 'declined' ? failure.cause : failure?.kind === 'credential' ? 'credential' : 'unreachable';
+  const reason = failure?.kind === 'declined' ? failure.cause : failure?.kind === 'credential' || failure?.kind === 'forbidden' ? failure.kind : 'unreachable';
   return { kind: 'error', reason, phase: 'extract' };
 }
 

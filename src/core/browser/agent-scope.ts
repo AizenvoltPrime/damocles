@@ -44,7 +44,8 @@ export class BrowserAgentScope {
     return this.svc.getScopeCurrentUrl(this.id);
   }
 
-  open(url: string, signal?: AbortSignal): Promise<void> {
+  /** Resolves with the loaded document's HTTP status, when it had one; rejects when the page did not load. */
+  open(url: string, signal?: AbortSignal): Promise<number | undefined> {
     return this.svc.openForScope(this.id, url, signal);
   }
 
@@ -64,7 +65,8 @@ export class BrowserAgentScope {
     return this.svc.closeTab(this.id, index);
   }
 
-  openNewTab(url?: string): Promise<void> {
+  /** Resolves with the loaded document's HTTP status, when it had one; rejects when the page did not load. */
+  openNewTab(url?: string): Promise<number | undefined> {
     return this.svc.openNewTab(this.id, url);
   }
 

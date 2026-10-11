@@ -6,6 +6,7 @@ import type { TeamConfig, TeamAgent, AgentRunConfig, TeamRole, AgentMcpContext, 
 import type { ReviewCoverage } from '../review-coverage';
 import { type NestedMcpToolset } from '../../pi-session/tools/mcp-tools';
 import { teamAgentToolset, TEAM_BASE_TOOL_NAMES, TEAM_MCP_NAMES } from './team-mcp-fixture';
+import { stubCheckpointWriter } from './checkpoint-writer-stub';
 import type { Stopwatch } from '../../../shared/team-stopwatch';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 
@@ -90,7 +91,8 @@ function makeHarness(agents: TeamAgent[]): Harness {
   inject(target, 'messageBus', messageBus);
   inject(target, 'scratchpad', scratchpad);
   inject(target, 'agents', agentMap);
-  inject(target, 'persistence', { appendTeamEntry: () => undefined, flush: async () => undefined, writeCheckpoint: () => true });
+  inject(target, 'persistence', { appendTeamEntry: () => true, flush: async () => undefined });
+  inject(target, 'checkpointWriter', stubCheckpointWriter());
   const pendingStandby = inject(target, 'pendingStandby', new Set<string>());
   const confirmedComplete = inject(target, 'confirmedComplete', new Set<string>());
   const nudgeScheduled = inject(target, 'nudgeScheduled', new Set<string>());
@@ -321,7 +323,6 @@ describe('TeamRunner brief-conflict gate', () => {
     (h.runner as unknown as Record<string, unknown>)['persistence'] = {
       appendTeamEntry: (e: Record<string, unknown>) => entries.push(e),
       flush: async () => undefined,
-      writeCheckpoint: () => true,
     };
     return entries;
   }
@@ -594,7 +595,8 @@ function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<stri
   messageBus.subscribe((m) => { if (m.to === 'Lead') sentToLead.push(m.content); });
   target['messageBus'] = messageBus;
   target['scratchpad'] = new Scratchpad();
-  target['persistence'] = { appendTeamEntry: () => undefined, flush: async () => undefined, writeCheckpoint: () => true };
+  target['persistence'] = { appendTeamEntry: () => true, flush: async () => undefined };
+  target['checkpointWriter'] = stubCheckpointWriter();
   target['agentRunner'] = capturingAgentRunner(runs);
 
   const agentMap = target['agents'] as Map<string, TeamAgent>;
@@ -673,6 +675,28 @@ describe('TeamRunner — per-agent browser scope disposal (success-only auto-clo
       expect(updates.filter((m) => m.type === 'teamAgentStatusUpdate' && m.agentId === lead.agentId).at(-1)).toMatchObject({ status: 'cancelled' });
       // Every card reaches its final state before the team reads as complete.
       expect(webview.findIndex((m) => m === forcedA)).toBeLessThan(webview.findIndex((m) => m.type === 'teamCompleted'));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the finalize of a team whose lead failed forces its members cancelled and ends the team failed', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const { runner, webview } = makeWiringRunner(['A']);
+      const entries: Array<Record<string, unknown>> = [];
+      (runner as unknown as { persistence: { appendTeamEntry: (e: Record<string, unknown>) => void } }).persistence.appendTeamEntry = (e) => { entries.push(e); };
+      runner.startSpecialist('A', 'task for A that is descriptive enough');
+      await settle();
+      Object.assign(runner as unknown as Record<string, unknown>, { status: 'failed', leadFailure: { kind: 'model', message: '529 overloaded_error' } });
+      const finalize = (runner as unknown as { awaitCompletionAndFinalize: (p: Promise<string>) => Promise<unknown> })
+        .awaitCompletionAndFinalize(Promise.resolve('partial results'));
+      await vi.advanceTimersByTimeAsync(33_000);
+
+      expect(await finalize).toEqual({ status: 'failed', text: 'partial results', failure: { kind: 'model', message: '529 overloaded_error' }, resumable: false });
+      expect(agentOf(runner, 'A').status).toBe('cancelled');
+      expect(entries.find((e) => e['type'] === 'team-completed')).toMatchObject({ status: 'failed', agentResults: expect.arrayContaining([expect.objectContaining({ name: 'A', status: 'cancelled' })]) });
+      expect(webview.find((m) => m.type === 'teamCompleted')).toMatchObject({ status: 'failed' });
     } finally {
       vi.useRealTimers();
     }
@@ -1222,7 +1246,8 @@ function makeModelWiringRunner(
   const messageBus = new MessageBus('team-1');
   target['messageBus'] = messageBus;
   target['scratchpad'] = new Scratchpad();
-  target['persistence'] = { appendTeamEntry: () => undefined, flush: async () => undefined, writeCheckpoint: () => true };
+  target['persistence'] = { appendTeamEntry: () => true, flush: async () => undefined };
+  target['checkpointWriter'] = stubCheckpointWriter();
   const capturing = capturingAgentRunner(runs);
   target['agentRunner'] = {
     startAgent: (cfg: AgentRunConfig) => {
@@ -1368,10 +1393,10 @@ function makeRedispatchHarness(names: string[]): RedispatchHarness {
   target['messageBus'] = messageBus;
   target['scratchpad'] = new Scratchpad();
   target['persistence'] = {
-    appendTeamEntry: (e: Record<string, unknown>) => teamEntries.push(e),
+    appendTeamEntry: (e: Record<string, unknown>) => teamEntries.push(e) > 0,
     flush: async () => undefined,
-    writeCheckpoint: () => true,
   };
+  target['checkpointWriter'] = stubCheckpointWriter();
   target['agentRunner'] = capturingAgentRunner(runs);
 
   const agents = target['agents'] as Map<string, TeamAgent>;
@@ -3086,7 +3111,7 @@ describe('TeamRunner review coverage (revision-bound reviewer sign-offs)', () =>
     land(h, 'backend');
     review(h, { backend: 'changes_requested' });
     h.runner.dismissReview('appsec', 'backend', 'the finding is a style nit outside the brief');
-    const checkpoint = (h.runner as unknown as { buildCheckpoint: (at: number) => TeamCheckpoint }).buildCheckpoint(1);
+    const checkpoint = (h.runner as unknown as { liveCheckpoint: () => TeamCheckpoint }).liveCheckpoint();
     expect(checkpoint.review.coverage).toEqual({
       landed: [['backend', { attempt: 0, round: 0 }]],
       signoffs: [['appsec', [['backend', { stamp: { attempt: 0, round: 0 }, verdict: 'changes_requested' }]]]],
@@ -3354,7 +3379,7 @@ describe('TeamRunner re-review on landing (rule A)', () => {
     review(h, 'approve');
     revise(h);
     land(h);
-    const checkpoint = (h.runner as unknown as { buildCheckpoint: (at: number) => TeamCheckpoint }).buildCheckpoint(1);
+    const checkpoint = (h.runner as unknown as { liveCheckpoint: () => TeamCheckpoint }).liveCheckpoint();
     expect(checkpoint.review.coverage!.reReviewOwed).toEqual(['appsec']);
 
     const restored = makeRedispatchHarness(['backend', 'appsec']);
@@ -3371,7 +3396,7 @@ describe('TeamRunner re-review on landing (rule A)', () => {
 
 describe('TeamRunner provider failures', () => {
   const settle = async (): Promise<void> => { await Promise.resolve(); await Promise.resolve(); };
-  const FAILED = { ...DONE_RESULT, status: 'failed' as const, error: '529 overloaded_error', finalResponse: '529 overloaded_error\n\nPartial output:\nhalf done' };
+  const FAILED = { ...DONE_RESULT, status: 'failed' as const, failure: { kind: 'model' as const, message: '529 overloaded_error' }, finalResponse: '529 overloaded_error\n\nPartial output:\nhalf done' };
 
   it('records a specialist failed with the provider error and tells the lead how to re-run it', async () => {
     const h = makeRedispatchHarness(['A']);
@@ -3401,13 +3426,14 @@ describe('TeamRunner provider failures', () => {
     expect(card()).toBeNull();
   });
 
-  it('keeps the old note for a failure that carries no error', async () => {
+  it('tells the lead why a specialist failed to start, without offering a re-run that cannot fix it', async () => {
     const h = makeRedispatchHarness(['A']);
     h.runner.startSpecialist('A', 'task for A that is descriptive enough');
-    h.runs.get('A')!.resolve({ ...DONE_RESULT, agentId: h.agents.get('A')!.agentId, status: 'failed', finalResponse: 'Failed to start: no model' });
+    h.runs.get('A')!.resolve({ ...DONE_RESULT, agentId: h.agents.get('A')!.agentId, status: 'failed', failure: { kind: 'start', message: 'no model' }, finalResponse: 'Failed to start: no model' });
     await settle();
 
-    expect(h.sentToLead).toEqual(['Specialist "A" failed. Read their scratchpad section for findings.']);
+    expect(h.agents.get('A')).toMatchObject({ status: 'failed', error: 'no model' });
+    expect(h.sentToLead).toEqual(['Specialist "A" failed to start: no model. Read their scratchpad section for findings.']);
   });
 
   it('a lead that fails ends the team with the partial results, its failure among them', async () => {
@@ -3423,5 +3449,53 @@ describe('TeamRunner provider failures', () => {
     expect(h.agents.get('Lead')).toMatchObject({ status: 'failed', error: '529 overloaded_error' });
     expect(completion).toContain('## Partial Team Results');
     expect(completion).toContain(`### Lead (lead, failed)\n${FAILED.finalResponse}`);
+  });
+
+  it.each([
+    ['fails', (h: RedispatchHarness, agentId: string) => h.runs.get('Lead')!.resolve({ ...FAILED, agentId })],
+    ['throws', (h: RedispatchHarness) => h.runs.get('Lead')!.reject(new Error('crashed'))],
+  ])('a lead whose run %s checkpoints the team as failed before the abort, and a later stop changes nothing', async (_label, end) => {
+    const h = makeRedispatchHarness(['A']);
+    const written: TeamCheckpoint[] = [];
+    (h.runner as unknown as { checkpointWriter: unknown }).checkpointWriter = {
+      ...stubCheckpointWriter(),
+      seal: (build: () => TeamCheckpoint) => { const c = build(); written.push(c); return c; },
+    };
+    (h.runner as unknown as { completionResolve: (r: string) => void }).completionResolve = () => undefined;
+    h.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    const lead = Object.assign(h.agents.get('Lead')!, { status: 'running', activeMs: 0, runningSince: Date.now() });
+    (h.runner as unknown as { launchLead: (agent: TeamAgent, launch: unknown) => void })
+      .launchLead(lead, { kind: 'fresh', resolution: { modelLabel: 'lead-model' }, prompt: 'begin', redeliver: [] });
+    end(h, lead.agentId);
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+
+    expect(written.map((c) => c.stoppedBy)).toEqual(['failed']);
+    expect(written[0]!.members.find((m) => m.name === 'A')!.status).toBe('running');
+    expect(privateField<string>(h.runner, 'status')).toBe('failed');
+    expect(h.runner.cancel('user')).toBe(false);
+    expect(written).toHaveLength(1);
+  });
+
+  it('a specialist the lead failure aborted settles cancelled: its tabs stay open and the lead is not told it completed', async () => {
+    const { runner, runs, sentToLead, disposedScopes } = makeWiringRunner(['A']);
+    (runner as unknown as { checkpointWriter: unknown }).checkpointWriter = stubCheckpointWriter();
+    (runner as unknown as { completionResolve: (r: string) => void }).completionResolve = () => undefined;
+    const agents = (runner as unknown as { agents: Map<string, TeamAgent> }).agents;
+    runner.startSpecialist('A', 'task for A that is descriptive enough');
+    await settle();
+    const lead = Object.assign(agents.get('Lead')!, { status: 'running', activeMs: 0, runningSince: Date.now() });
+    (runner as unknown as { launchLead: (agent: TeamAgent, launch: unknown) => void })
+      .launchLead(lead, { kind: 'fresh', resolution: { modelLabel: 'lead-model' }, prompt: 'begin', redeliver: [] });
+    runs.get('Lead')!.resolve({ ...FAILED, agentId: lead.agentId });
+    await settle();
+
+    runs.get('A')!.resolve({ ...DONE_RESULT, agentId: agents.get('A')!.agentId, status: 'cancelled' });
+    await settle();
+
+    expect(agents.get('A')!.status).toBe('cancelled');
+    expect(disposedScopes.length).toBeGreaterThan(0);
+    expect(disposedScopes.filter(([, closeTabs]) => closeTabs)).toEqual([]);
+    expect(sentToLead.filter((m) => m.includes('completed'))).toEqual([]);
+    expect(sentToLead).toContain('Specialist "A" cancelled. Read their scratchpad section for findings.');
   });
 });

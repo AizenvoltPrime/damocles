@@ -6,7 +6,7 @@ import { isVersion, type ReleaseNotesSource } from './release-notes';
 import { versionInfoText, type UpdateService } from './updater';
 
 export interface AboutOverlay {
-  handle(channel: string, handler: (...args: unknown[]) => unknown): void;
+  handleWhileOpen<T>(channel: string, isOpen: () => boolean, handler: (...args: unknown[]) => T | Promise<T>): void;
   isOpen(kind: OverlayRequest['kind']): boolean;
 }
 
@@ -20,25 +20,23 @@ export interface AboutDeps {
   readonly openSettings: (target: SettingsTarget) => void;
 }
 
-/** Settings › About's channels, each refused unless the settings modal is open. */
+/** Settings › About's channels, each answering closed unless the settings modal is open. */
 export function handleAboutChannels(overlay: AboutOverlay, deps: AboutDeps): void {
-  const whileOpen = <A extends unknown[], R>(act: (...args: A) => R) => (...args: A): R => {
-    if (!overlay.isOpen('settings')) throw new Error('The settings are not open');
-    return act(...args);
-  };
+  const settingsOpen = (): boolean => overlay.isOpen('settings');
+  const whileSettingsOpen = <T>(channel: string, handler: (...args: unknown[]) => T | Promise<T>): void => overlay.handleWhileOpen(channel, settingsOpen, handler);
   const { updates, releaseNotes } = deps;
-  overlay.handle(OVERLAY_CHANNELS.updateGet, whileOpen(() => updates.snapshot()));
-  overlay.handle(OVERLAY_CHANNELS.updateCheck, whileOpen(() => updates.check('about')));
-  overlay.handle(OVERLAY_CHANNELS.updateRestart, whileOpen(() => updates.restart()));
-  overlay.handle(OVERLAY_CHANNELS.updateShowLog, whileOpen(() => deps.showLog()));
-  overlay.handle(OVERLAY_CHANNELS.updateCopyInfo, whileOpen(() => deps.clipboard.writeText(versionInfoText(deps.versionInfo()))));
-  overlay.handle(OVERLAY_CHANNELS.updateVersionInfo, whileOpen(() => deps.versionInfo()));
-  overlay.handle(OVERLAY_CHANNELS.updateOpenReleasePage, whileOpen(() => updates.openReleasePage()));
-  overlay.handle(OVERLAY_CHANNELS.releaseNotesIndex, whileOpen(() => releaseNotes.index()));
-  overlay.handle(OVERLAY_CHANNELS.releaseNotesGet, whileOpen(async (version: unknown) => {
+  whileSettingsOpen(OVERLAY_CHANNELS.updateGet, () => updates.snapshot());
+  whileSettingsOpen(OVERLAY_CHANNELS.updateCheck, () => updates.check('about'));
+  whileSettingsOpen(OVERLAY_CHANNELS.updateRestart, () => updates.restart());
+  whileSettingsOpen(OVERLAY_CHANNELS.updateShowLog, () => deps.showLog());
+  whileSettingsOpen(OVERLAY_CHANNELS.updateCopyInfo, () => deps.clipboard.writeText(versionInfoText(deps.versionInfo())));
+  whileSettingsOpen(OVERLAY_CHANNELS.updateVersionInfo, () => deps.versionInfo());
+  whileSettingsOpen(OVERLAY_CHANNELS.updateOpenReleasePage, () => updates.openReleasePage());
+  whileSettingsOpen(OVERLAY_CHANNELS.releaseNotesIndex, () => releaseNotes.index());
+  whileSettingsOpen(OVERLAY_CHANNELS.releaseNotesGet, async (version) => {
     if (!isVersion(version) || !(await releaseNotes.has(version))) throw new Error('Not a version of the release index');
     return releaseNotes.notes(version);
-  }));
+  });
 }
 
 /** The title-bar pill's action; restart, releasePage and releaseNotes are refused unless the update state offers them. */

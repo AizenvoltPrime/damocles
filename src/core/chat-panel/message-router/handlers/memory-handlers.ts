@@ -371,7 +371,12 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       // Replay live state so reopening the overlay mid-pass restores the running badge and every
       // phase's stepper status, not just the current one.
       const activity = deps.memoryService.getConsolidationActivity();
-      postMessage(ctx.host, { type: "consolidationRunning", running: activity.running });
+      postMessage(ctx.host, {
+        type: "consolidationRunning",
+        running: activity.running,
+        ...(activity.pass !== undefined ? { pass: activity.pass } : {}),
+        ...(activity.runSoFar ? { runSoFar: activity.runSoFar } : {}),
+      });
       if (activity.running) {
         for (const event of activity.phaseEvents) {
           postMessage(ctx.host, { type: "consolidationProgress", event });

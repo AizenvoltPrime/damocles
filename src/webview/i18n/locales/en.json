@@ -2066,6 +2066,7 @@
       "profiles": "Profiles"
     },
     "strip": {
+      "pass": "Pass {n}",
       "reviewing": "Reviewing queued turns…",
       "stillThinking": "Still thinking, extraction can take up to 20s",
       "reading": "Reading {n} turn… | Reading {n} turns…",
@@ -2131,6 +2132,7 @@
         "invalidShape": "the answer had an invalid shape",
         "unreachable": "the model could not be reached",
         "credential": "the model's sign-in or key was refused",
+        "forbidden": "the provider refused access to this model (its plan, region or permissions)",
         "noModel": "no model available"
       }
     }
@@ -2546,7 +2548,9 @@
       "subtitle": "Turns your conversations into durable memories",
       "lastRun": "Last run · extracted {n}",
       "noRun": "Last run",
-      "nothingExtracted": "The last run kept nothing new."
+      "nothingExtracted": "The last run kept nothing new.",
+      "thisRun": "This run · extracted {n}",
+      "thisRunEmpty": "This run has kept nothing new so far."
     },
     "navigator": {
       "title": "Prompt navigator",

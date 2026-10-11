@@ -122,6 +122,9 @@
     "listLabel": "Notifications, newest first",
     "unread": "Unread",
     "empty": "You’re all caught up",
+    "loadFailed": "The notifications could not load.",
+    "clearFailed": "Damocles could not clear the notifications.",
+    "doNotDisturbFailed": "Damocles could not change Do not disturb.",
     "footer": "Approvals, plans, questions and finished chats",
     "keyboardHelp": "Arrow keys move between notifications, Enter opens one.",
     "usage": "Usage",
@@ -426,8 +429,11 @@
     },
     "restoreDefaults": "Restore defaults",
     "layoutRestored": "The default layout is back.",
+    "layoutResetFailed": "Damocles could not restore the default layout.",
+    "prefWriteFailed": "Damocles could not save this setting.",
     "restartBanner": "Restart Damocles to switch the language. Your layout, chats and unsaved editors come back.",
     "restartNow": "Restart now",
+    "restartFailed": "Damocles could not restart. Quit and open it again to switch the language.",
     "later": "Later",
     "about": {
       "title": "{app} {version}",
@@ -464,7 +470,11 @@
       "restart": "Restart to update",
       "restarting": "Restarting",
       "openReleasePage": "Open release page",
-      "showLog": "Show log"
+      "showLog": "Show log",
+      "copyFailed": "Copy failed",
+      "versionUnavailable": "Version information is unavailable",
+      "statusUnavailable": "The update status is unavailable",
+      "actionFailed": "The action “{action}” did not work"
     },
     "whatsNew": {
       "listLabel": "Releases",
@@ -523,6 +533,7 @@
         "detected": "Detected shells",
         "problems": "Entries not loaded",
         "none": "No profiles of your own yet. Add one in settings.json.",
+        "loadFailed": "The terminal profiles could not load.",
         "noProblems": "Every profile entry is valid.",
         "hidden": "Hidden",
         "hiddenHint": "Set to null in settings.json, so it is not offered",
@@ -788,6 +799,7 @@
     "current": "{project} · current",
     "goToLine": "Enter opens the file at line {line}",
     "mention": "Enter mentions the file in the chat",
+    "loadFailed": "Damocles could not search the files.",
     "scopedLabel": "Go to a file in {scope}",
     "scopedPlaceholder": "Search files in this folder (append : to go to line, {'@'} to mention in chat)"
   },
@@ -908,7 +920,8 @@
     "placeholder": "Type the name of a command to run",
     "recent": "recently used",
     "other": "other commands",
-    "empty": "No matching commands"
+    "empty": "No matching commands",
+    "loadFailed": "The commands could not load."
   },
   "terminal": {
     "listLabel": "Terminals",

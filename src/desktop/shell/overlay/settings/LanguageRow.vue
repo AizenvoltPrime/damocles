@@ -5,6 +5,7 @@ import SettingsRow from '@/components/settings/SettingsRow.vue';
 import SettingSeg from '@/components/settings/controls/SettingSeg.vue';
 import { useSettingsBanner } from '@/components/settings/settings-view';
 import { useSettingWritesStore } from '@/components/settings/settings-writes';
+import { answerOf } from '../popup-answer';
 import { useDesktopPrefs } from './desktop-prefs';
 
 type Language = 'system' | 'en' | 'el';
@@ -26,6 +27,21 @@ const language = computed<Language>(() => {
   return value === 'en' || value === 'el' ? value : 'system';
 });
 
+function offerRestart(text: string): void {
+  banner.show({
+    testId: 'settings-restart-banner',
+    text,
+    actions: [
+      {
+        label: t('settingsHost.restartNow'),
+        primary: true,
+        run: () => void answerOf(prefs.api.relaunch()).catch(() => offerRestart(t('settingsHost.restartFailed'))),
+      },
+      { label: t('settingsHost.later'), run: () => banner.dismiss() },
+    ],
+  });
+}
+
 // Chromium fixes its UI locale at launch (D23), so a saved language other than the launch one offers a restart.
 watch(() => writes.latest([KEY]), (result, previous) => {
   if (result?.kind !== 'saved' || result.seq === previous?.seq) return;
@@ -33,14 +49,7 @@ watch(() => writes.latest([KEY]), (result, previous) => {
     banner.dismiss();
     return;
   }
-  banner.show({
-    testId: 'settings-restart-banner',
-    text: t('settingsHost.restartBanner'),
-    actions: [
-      { label: t('settingsHost.restartNow'), primary: true, run: () => void prefs.api.relaunch() },
-      { label: t('settingsHost.later'), run: () => banner.dismiss() },
-    ],
-  });
+  offerRestart(t('settingsHost.restartBanner'));
 });
 </script>
 

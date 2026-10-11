@@ -1,5 +1,4 @@
 // @vitest-environment happy-dom
-/* eslint-disable vue/one-component-per-file -- tests mount ad-hoc host components beside the real overlays */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mount, type VueWrapper } from '@vue/test-utils';
 import { defineComponent, h, markRaw, nextTick, ref, type Ref, type VNode } from 'vue';

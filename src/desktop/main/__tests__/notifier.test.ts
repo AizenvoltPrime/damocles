@@ -401,6 +401,37 @@ describe('desktop popup window (D52)', () => {
     expect(host.sink()).toBe(host);
   });
 
+  // Electron emits did-finish-load after a failed load too (electron/electron#5128).
+  it('replays nothing to a page that failed to load, hides and takes no popups until a page loads again', () => {
+    host.sink();
+    win().webContents.emit('did-finish-load');
+    win().webContents.ipc.emit(OVERLAY_CHANNELS.toastArea, own(), AREA);
+    expect(win().visible).toBe(true);
+    pending = [TOAST];
+    host.chime('attention');
+    win().webContents.send.mockClear();
+    win().webContents.emit('did-fail-load', {}, -6, 'ERR_FILE_NOT_FOUND', NOTIFIER_PAGE_URL, true);
+    win().webContents.emit('did-finish-load');
+    expect(win().visible).toBe(false);
+    expect(host.sink()).toBeUndefined();
+    host.chime('attention');
+    expect(win().webContents.send).not.toHaveBeenCalled();
+    expect(lines).toContain('[notifier] the page did not load (-6)');
+
+    win().webContents.emit('did-navigate', {}, NOTIFIER_PAGE_URL, 200, 'OK');
+    win().webContents.emit('did-finish-load');
+    expect(win().webContents.send).toHaveBeenCalledWith(OVERLAY_CHANNELS.toast, TOAST);
+    expect(host.sink()).toBe(host);
+  });
+
+  it('keeps its page for a load another navigation aborted or a subframe that failed', () => {
+    host.sink();
+    win().webContents.emit('did-finish-load');
+    win().webContents.emit('did-fail-load', {}, -3, 'ERR_ABORTED', NOTIFIER_PAGE_URL, true);
+    win().webContents.emit('did-fail-load', {}, -6, 'ERR_FILE_NOT_FOUND', 'app://damocles/desktop-shell/assets/x.png', false);
+    expect(host.sink()).toBe(host);
+  });
+
   it('plays the most urgent tone of the popups that arrived before its page loaded', () => {
     host.sink();
     host.chime('warning');

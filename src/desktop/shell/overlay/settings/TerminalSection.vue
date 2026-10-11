@@ -34,6 +34,7 @@ import {
   type TerminalConfirmOnKill,
   type TerminalMultiLinePasteWarning,
 } from '../../../main/desktop-configuration';
+import { answerOf } from '../popup-answer';
 import { useDesktopPrefs } from './desktop-prefs';
 import { integerSetting } from './integer-setting';
 import { EDIT_SETTINGS_FILE } from './settings-file-link';
@@ -48,18 +49,26 @@ const FIRST_DETECTED = '<first>';
 // Main's validated profiles, the detected names a null entry hides and the entries it refused; it pushes a new report
 // whenever it validates the setting again.
 const report = shallowRef<TerminalProfileReport>({ profiles: [], hidden: [], problems: [] });
+// the first read failed and main has pushed no report since
+const reportFailed = shallowRef(false);
 const profiles = computed(() => report.value.profiles);
 const userProfiles = computed(() => profiles.value.filter((profile) => profile.source === 'user'));
 const detectedProfiles = computed(() => profiles.value.filter((profile) => profile.source === 'detected'));
 let pushed = false;
 const stopReport = prefs.api.onTerminalProfiles((next) => {
   pushed = true;
+  reportFailed.value = false;
   report.value = next;
 });
 onBeforeUnmount(stopReport);
 onMounted(async () => {
-  const first = await prefs.api.getTerminalProfiles();
-  if (!pushed) report.value = first;
+  try {
+    const first = await answerOf(prefs.api.getTerminalProfiles());
+    if (!pushed && first) report.value = first;
+  } catch {
+    // Main pushes a report whenever it validates the profiles again, which replaces this.
+    if (!pushed) reportFailed.value = true;
+  }
 });
 
 // The value main read, else the declared default; main validated it against the declaration on write.
@@ -132,7 +141,20 @@ const parseFontFamily: InputParse<string> = (raw) => {
       {{ t('settingsHost.editInSettingsJson') }}
     </SettingButton>
     <template #expand>
+      <p
+        v-if="reportFailed"
+        role="alert"
+        data-testid="terminal-profiles-unavailable"
+        class="sm-row-block flex items-center gap-1.5 text-12 text-(--d-danger-text)"
+      >
+        <CircleAlert
+          aria-hidden="true"
+          class="size-3.5 shrink-0"
+        />
+        {{ t('settingsHost.terminal.profiles.loadFailed') }}
+      </p>
       <div
+        v-else
         class="sm-row-block flex flex-col gap-3"
         data-testid="terminal-profiles"
       >

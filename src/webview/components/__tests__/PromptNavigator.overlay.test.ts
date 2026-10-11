@@ -74,6 +74,15 @@ describe('PromptNavigator on the overlay frame', () => {
     expect(wrapper.get('[data-testid="prompt-navigator-status"]').text()).toBe('Could not copy the prompt');
   });
 
+  it.each(['', 'onerror'])('renders prompt text as text, never markup (query %j)', async (query) => {
+    useStreamingStore().messages.push(user('m3', '<img src=x onerror=alert(1)>', 2));
+    const wrapper = mountNavigator();
+    await wrapper.get('[data-testid="prompt-navigator-search"]').setValue(query);
+    expect(wrapper.find('[data-testid="prompt-navigator-row"] img').exists()).toBe(false);
+    expect(wrapper.text()).toContain('<img src=x onerror=alert(1)>');
+    expect(wrapper.findAll('[data-testid="prompt-navigator-row"] mark').map((mark) => mark.text())).toEqual(query ? [query] : []);
+  });
+
   it('disables rewind for a prompt with no checkpoint', () => {
     const wrapper = mountNavigator();
     const rows = wrapper.findAll('[data-testid="prompt-navigator-row"]');

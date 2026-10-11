@@ -1023,12 +1023,13 @@ export class PanelManager {
     // a deliberate widening so WebFetch can render inline images from extracted web pages. The tradeoff
     // is that any rendered markdown can load remote https images (a tracking/IP-leak vector); this is the
     // standard posture for chat webviews that render web content, and the web tools are opt-in.
+    // form-action does not fall back to default-src, so it is named; every form in the webview handles submit in script.
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${host.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' 'wasm-unsafe-eval'; font-src ${host.cspSource}; img-src ${host.cspSource} data: https:;${workerSrc}">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${host.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' 'wasm-unsafe-eval'; font-src ${host.cspSource}; img-src ${host.cspSource} data: https:; form-action 'none';${workerSrc}">
   <link href="${styleUri}" rel="stylesheet">${themeStyle}
   <title>Damocles</title>
 </head>

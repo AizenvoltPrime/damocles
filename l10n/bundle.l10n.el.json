@@ -13,6 +13,7 @@
   "Open here": "Άνοιγμα εδώ",
   "The other Damocles window did not close this conversation. Close it there, then open it here.": "Το άλλο παράθυρο του Damocles δεν έκλεισε αυτή τη συνομιλία. Κλείστε την εκεί και μετά ανοίξτε την εδώ.",
   "This conversation is being deleted or changed. Try again in a moment.": "Αυτή η συνομιλία διαγράφεται ή αλλάζει αυτή τη στιγμή. Δοκιμάστε ξανά σε λίγο.",
+  "This conversation is opening or closing in a panel. Try again in a moment.": "Αυτή η συνομιλία ανοίγει ή κλείνει σε ένα panel αυτή τη στιγμή. Δοκιμάστε ξανά σε λίγο.",
   "This conversation could not be opened: {0}": "Δεν ήταν δυνατό να ανοίξει αυτή η συνομιλία: {0}",
   "This conversation's file could not be found. It may have been deleted.": "Το αρχείο αυτής της συνομιλίας δεν βρέθηκε. Μπορεί να έχει διαγραφεί.",
   "The pi runtime is unavailable, so this conversation could not be loaded.": "Το runtime του pi δεν είναι διαθέσιμο, οπότε δεν ήταν δυνατό να φορτωθεί αυτή η συνομιλία.",

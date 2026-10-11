@@ -3,7 +3,7 @@ import type { Api, AssistantMessage, Context, Model, Tool } from '@earendil-work
 import type { TSchema } from 'typebox';
 import { log } from '../logger';
 import { describeAuthError } from './describe-error';
-import { httpStatusOf } from './http-status';
+import { httpStatusOf, isInputRefusal } from './http-status';
 import type { SubCallAttribution } from '../usage-stats/subcall-ledger';
 import type { StructuredSubCallPurpose } from './subcall-model';
 
@@ -52,28 +52,28 @@ export interface StructuredCompletionRequest {
  * How a structured sub-call ended. `unanswered`: the model saw the request and replied without a valid
  * result (a missing tool call, a non-object payload, or an error stop that used tokens or is a model's
  * content stop, which is where refusals land). `rejected`: the provider refused the request as sent
- * (HTTP 400, 413 or 422), for its size, its content or its shape.
- * `unreachable`: the model never saw the request or its reply was lost (thrown, aborted, timed out, any
- * other HTTP status, a transport, credential or quota failure, or no usable model), with cause
- * `credential` when the provider or pi refused the credential. Only `unanswered` and `rejected` may
- * count against the input; see "Memory consolidation" in docs/invariants.md.
+ * (HTTP 400, 413 or 422, or an OpenRouter 403 that names a content refusal), for its size, its content
+ * or its shape. `unreachable`: the model never saw the request or its reply was lost (thrown, aborted,
+ * timed out, any other HTTP status, a transport, credential or quota failure, or no usable model), with
+ * cause `credential` when the provider or pi refused the credential (HTTP 401, where signing in may
+ * help) and `forbidden` when the provider refused access whatever the credential (any other HTTP 403:
+ * plan, region or permission, RFC 9110). Only `unanswered` and `rejected` may count against the input;
+ * see "Memory consolidation" in docs/invariants.md.
  */
 export type StructuredCompletionResult<T> =
   | { kind: 'answered'; value: T }
   | { kind: 'unanswered' }
   | { kind: 'rejected' }
-  | { kind: 'unreachable'; cause?: 'credential' };
+  | { kind: 'unreachable'; cause?: 'credential' | 'forbidden' };
 
 export const UNREACHABLE: StructuredCompletionResult<never> = { kind: 'unreachable' };
 export const CREDENTIAL_REFUSED: StructuredCompletionResult<never> = { kind: 'unreachable', cause: 'credential' };
+const ACCESS_FORBIDDEN: StructuredCompletionResult<never> = { kind: 'unreachable', cause: 'forbidden' };
 const UNANSWERED: StructuredCompletionResult<never> = { kind: 'unanswered' };
 const REJECTED: StructuredCompletionResult<never> = { kind: 'rejected' };
 
 /** Statuses that refuse the request as sent rather than the credential, the account or the service. */
 const REQUEST_REJECTED_STATUSES: ReadonlySet<number> = new Set([400, 413, 422]);
-
-/** Statuses that refuse the credential. */
-const CREDENTIAL_REFUSED_STATUSES: ReadonlySet<number> = new Set([401, 403]);
 
 /**
  * Provider-native stop reasons (`AssistantMessage.rawStopReason`) for a model declining the content, which
@@ -117,10 +117,11 @@ export function isPiCredentialError(err: unknown): boolean {
   return code === 'auth' || code === 'oauth';
 }
 
-/** The HTTP status in pi-ai's `formatProviderError` text (`Label (529): …`) or a provider SDK's `529 …` / `529: …`. */
-function errorHttpStatus(errorMessage: string | undefined): number | undefined {
-  const sdkStatus = errorMessage ? /^(\d{3})[:\s]/.exec(errorMessage)?.[1] : undefined;
-  return httpStatusOf(errorMessage) ?? (sdkStatus === undefined ? undefined : Number(sdkStatus));
+function statusOutcome(status: number, errorMessage: string | undefined): StructuredCompletionResult<never> {
+  if (REQUEST_REJECTED_STATUSES.has(status)) return REJECTED;
+  if (status === 401) return CREDENTIAL_REFUSED;
+  if (status === 403) return isInputRefusal(errorMessage) ? REJECTED : ACCESS_FORBIDDEN;
+  return UNREACHABLE;
 }
 
 /**
@@ -134,10 +135,9 @@ async function classifyErrorStop(
   isRetryableError: IsRetryableError,
   credentialRefused: CredentialRefused | undefined,
 ): Promise<{ outcome: StructuredCompletionResult<never>; cause: string }> {
-  const status = errorHttpStatus(message.errorMessage);
+  const status = httpStatusOf(message.errorMessage);
   if (status !== undefined) {
-    const outcome = REQUEST_REJECTED_STATUSES.has(status) ? REJECTED : CREDENTIAL_REFUSED_STATUSES.has(status) ? CREDENTIAL_REFUSED : UNREACHABLE;
-    return { outcome, cause: `HTTP ${status}` };
+    return { outcome: statusOutcome(status, message.errorMessage), cause: `HTTP ${status}` };
   }
   if (isRetryableError(message)) return { outcome: UNREACHABLE, cause: 'transient' };
   if (!modelSawRequest(message)) {

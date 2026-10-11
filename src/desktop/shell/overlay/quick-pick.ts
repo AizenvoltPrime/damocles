@@ -38,6 +38,8 @@ export interface QuickPickModel {
   readonly hint?: string;
   // the item the list starts on instead of the first, such as a picker's current value
   readonly activeId?: string;
+  // why the list could not load, shown instead of the text for no matches
+  readonly failure?: string;
 }
 
 export interface Segment {

@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as lockfile from 'proper-lockfile';
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
 import { StorageManager, type StoredSessionsChange } from '../storage-manager';
 import { createSessionCatalog, MAX_SESSION_NAME_CHARS, MAX_SESSION_TAG_CHARS, type SessionCatalog } from '../session-catalog';
@@ -11,7 +11,7 @@ import type { FolderTarget } from '../../workspace-folders/folder-registry';
 import { ensurePiSessionDir } from '../../pi-session/session-store/session-dir';
 import { initPiLoader } from '../../pi-session/pi-loader';
 import { DAMOCLES_TAG_ENTRY, DAMOCLES_USER_RENAMED_ENTRY } from '../../pi-session/session-store/constants';
-import { SESSION_LEASE_DIR, sessionLeasePath } from '../../pi-session/session-store/session-lease';
+import { SESSION_LEASE_DIR, acquireSessionLease, releaseSessionLease, sessionLeasePath, type SessionLeaseHolder } from '../../pi-session/session-store/session-lease';
 import { deletePiSession, renamePiSession, tagPiSession } from '../../pi-session/session-store';
 import type { LiveSessionMutator } from '../../pi-session/pi-runtime';
 
@@ -79,6 +79,10 @@ async function liveChatOn(file: string, name = 'live'): Promise<LiveSessionMutat
       sm.appendCustomEntry(DAMOCLES_USER_RENAMED_ENTRY);
     },
     setActiveSessionTag: async (tag: string | null) => { sm.appendCustomEntry(DAMOCLES_TAG_ENTRY, { tag }); },
+    applyAiTitle: (_sessionId: string, title: string) => {
+      sm.appendSessionInfo(title);
+      return true;
+    },
     detachFromDeletedSession: async () => {
       await new Promise((r) => setTimeout(r, 0));
       H.order.push(`detach:${name}`);
@@ -88,6 +92,11 @@ async function liveChatOn(file: string, name = 'live'): Promise<LiveSessionMutat
     publishAccountInfo: () => undefined,
   };
 }
+
+// pi's one-time module load, paid here so no test's timeout measures it.
+beforeAll(async () => {
+  await initPiLoader();
+});
 
 let platform: FakePlatform;
 let panels: Map<string, HostInstance>;
@@ -170,6 +179,27 @@ describe('SessionCatalog rename and tag', () => {
     expect(written).toContain('"tag":"wip"');
     expect(await row(ID_NEW)).toMatchObject({ customTitle: 'Live work', tag: 'wip' });
     expect(changes).toEqual([{ projectKey: ALPHA.key }, { projectKey: ALPHA.key }]);
+  });
+
+  // A panel opening the conversation (a resume target not started yet, a switch in flight) holds its lease with no live session to write through.
+  it('a conversation a panel of this process holds with no live session: rename and tag refused and announced, while a delete still detaches it', async () => {
+    const opening: SessionLeaseHolder = { onSessionLeaseLost: () => undefined };
+    expect(acquireSessionLease(ID_OLD, opening)).toBe(true);
+    panels.set('p1', panelHolding('opening', ID_OLD));
+    const before = fs.readFileSync(oldFile, 'utf8');
+    try {
+      expect(await catalog.rename(ID_OLD, 'x')).toEqual({ ok: false, reason: 'leased' });
+      expect(await catalog.tag(ID_OLD, 'x')).toEqual({ ok: false, reason: 'leased' });
+      expect(fs.readFileSync(oldFile, 'utf8')).toBe(before);
+      expect(await catalog.delete(ID_OLD)).toEqual({ ok: true });
+    } finally {
+      releaseSessionLease(ID_OLD, opening);
+    }
+
+    expect(renamePiSession).not.toHaveBeenCalled();
+    expect(tagPiSession).not.toHaveBeenCalled();
+    expect(H.order).toEqual(['detach:opening', 'rm']);
+    expect(platform.notifications.calls.map((c) => c.message)).toEqual(Array(2).fill('This conversation is opening or closing in a panel. Try again in a moment.'));
   });
 
   it('removing a tag clears it from the file and the list', async () => {

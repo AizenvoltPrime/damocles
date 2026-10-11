@@ -3,7 +3,7 @@ import { platform } from '../platform-host';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import { TeamRunner } from './team-runner';
 import { TeamPersistence } from './persistence';
-import type { TeamConfig, AgentSpec, TeamPermissionMode, TeamEngine, ResolvedTeamModel, TeamRole, TeamRunResult, TeamEventLog, TeamStop } from './types';
+import type { AgentFailure, AgentFailureKind, TeamConfig, AgentSpec, TeamPermissionMode, TeamEngine, ResolvedTeamModel, TeamRole, TeamRunResult, TeamEventLog, TeamStop } from './types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { SteerTargetInfo } from '../../shared/types/subagents';
 import type { ImageBlock } from '../../shared/types/content';
@@ -11,6 +11,8 @@ import type { TeamState as WebviewTeamState } from '../../shared/types/team';
 import { agentInvocationsOnBranch, indexTeamMemberFiles, teamEventLogPath, teamMembersDir, type AgentInvocationData } from '../pi-session/agent-records';
 import { piSessionDir } from '../pi-session/session-store';
 import { formatTeamUserSteerPrefix } from '../../shared/steer';
+import { oneLine } from '../pi-session/untrusted-text';
+import type { InterruptionCause } from '../pi-session/interruption-notice';
 
 /** Team ids are exactly what `crypto.randomUUID()` returns; `isValidTeamId` checks that format. */
 export function newTeamId(): string {
@@ -39,15 +41,51 @@ export function teamCancelledHeader(teamId: string, stop: TeamStop, resumable: b
     : `(${cause}; results are partial. Its resume state was not saved, so it cannot be resumed.)\n\n`;
 }
 
+const LEAD_ERROR_MAX_CHARS = 300;
+
+const LEAD_FAILURE_CAUSE: Record<AgentFailureKind, string> = {
+  start: 'its lead agent failed to start',
+  model: "its lead agent's model call failed",
+  run: "its lead agent's run stopped on an error",
+};
+
+/**
+ * Heads the result of a team whose lead failed before any stop. The message is untrusted text, so it is flattened and
+ * capped. A lead that failed to start is not offered for a resume, which would fail to start it the same way.
+ */
+export function teamFailedHeader(teamId: string, failure: AgentFailure, resumable: boolean): string {
+  const detail = oneLine(failure.message, LEAD_ERROR_MAX_CHARS);
+  const cause = `TEAM FAILED before completion because ${LEAD_FAILURE_CAUSE[failure.kind]}${detail ? ` (${detail})` : ''}`;
+  if (failure.kind === 'start') return `(${cause}; results are partial.)\n\n`;
+  return resumable
+    ? `(${cause}; results are partial. Resume it with resume_team({team_id:"${teamId}"}) if the user asks to continue.)\n\n`
+    : `(${cause}; results are partial. Its resume state was not saved, so it cannot be resumed.)\n\n`;
+}
+
 // Keyed by event log path, across every panel of this window: a team whose run has not settled, draining
 // included, is still writing its files and must not get a second writer.
 const unsettledTeams = new Set<string>();
+
+/** Whether a run of the team, draining or still validating its resume included, holds its files in this process. */
+export function isTeamRunningHere(cwd: string, sessionId: string, teamId: string): boolean {
+  return unsettledTeams.has(teamEventLogPath(piSessionDir(cwd), sessionId, teamId));
+}
+
+/**
+ * The interruption notice's cause for a team. A live checkpoint of a team this process runs is no interruption: it
+ * reads 'running', which a later check decides, since a stop's seal may not have landed yet. A sealed cause is
+ * reported while the team still drains here.
+ */
+export async function teamInterruptionCause(cwd: string, sessionId: string, teamId: string): Promise<InterruptionCause | 'running' | null> {
+  const cause = await new TeamPersistence(cwd, sessionId).resumableStop(teamId);
+  return cause === 'interrupted' && isTeamRunningHere(cwd, sessionId, teamId) ? 'running' : cause;
+}
 
 /**
  * Per-panel team coordinator (US-024d). Constructed on the pi path by `session-manager.ts` and handed to
  * `PiSession` via `SessionOptions.teamService`; the `create_team` tool drives `createTeam`, which awaits
  * `TeamRunner.run()` and returns the synthesis as the tool result (BLOCKING contract). One team per panel
- * (the `activeTeamId` claim throws), and `resumeTeam` continues a cancelled one the same blocking way. PiSession supplies the pi-native engine + model resolvers via `deps`
+ * (the `activeTeamId` claim throws), and `resumeTeam` continues a stopped or failed one the same blocking way. PiSession supplies the pi-native engine + model resolvers via `deps`
  * — this module is provider-agnostic (no SDK, no Anthropic-only lead model).
  */
 export interface TeamServiceDeps {
@@ -77,11 +115,10 @@ export class TeamService {
   private activeRunner: TeamRunner | null = null;
   // Set with `activeRunner`, and alone while a resume validates: the claim that keeps a second team out.
   private activeTeamId: string | null = null;
-  // Identifies the resume holding the claim, so a resume that outlived a dispose never releases a newer claim.
-  private resumeClaim: object | null = null;
-  // Bumped by every cancel, so a resume that was validating when the user cancelled never launches.
-  private cancelEpoch = 0;
-  // Settles only after the team's drain and final event-log writes, so it is what a folder delete waits on.
+  // The resume holding the claim, so a resume that outlived a dispose never releases a newer claim. `stop` is the
+  // first stop that landed since the claim was taken, so a resume still validating never launches.
+  private resumeClaim: { stop: TeamStop | null } | null = null;
+  // Settles only after the team's drain and final event-log writes, or a resume's validation, so it is what a folder delete waits on.
   private lastRun: Promise<unknown> = Promise.resolve();
   private readonly deps: TeamServiceDeps;
   /** Called whenever `running` flips. Supplied by the owning PiSession's state publisher. */
@@ -178,7 +215,7 @@ export class TeamService {
   }
 
   /**
-   * Continue a team this conversation started and a cancel interrupted, blocking until its synthesis
+   * Continue a team this conversation started and a stop or lead failure interrupted, blocking until its synthesis
    * like `createTeam`. The id is claimed before the first await, so a parallel resume or create is
    * refused. Throws the validation errors verbatim.
    */
@@ -198,12 +235,28 @@ export class TeamService {
     }
     unsettledTeams.add(unsettledKey);
     this.setActiveTeam(teamId, null);
-    const claim = {};
+    const claim: { stop: TeamStop | null } = { stop: null };
     this.resumeClaim = claim;
-    const epoch = this.cancelEpoch;
+    const resumed = this.continueResume(teamId, sessionId, unsettledKey, claim, message, toolCallId);
+    this.lastRun = resumed;
+    return resumed;
+  }
+
+  /** The claimed part of `resumeTeam`: validation, the restored state's write, the launch and the wait for its synthesis. */
+  private async continueResume(
+    teamId: string,
+    sessionId: string,
+    unsettledKey: string,
+    claim: { stop: TeamStop | null },
+    message: string | undefined,
+    toolCallId: string,
+  ): Promise<string> {
+    // Read through a call, so a stop that lands during an await is seen.
+    const stopSoFar = (): TeamStop | null => claim.stop;
+    const stoppedBeforeStart = (): Error => new Error(`The resume of team "${teamId}" was stopped before it started; it can still be resumed.`);
     try {
       const persistence = new TeamPersistence(this.deps.cwd, sessionId);
-      const cannotResume = new Error(`Team "${teamId}" did not end in a user cancel (or its resume state is missing) and cannot be resumed; start a new team.`);
+      const cannotResume = new Error(`Team "${teamId}" has no resume state (a conversation clear stopped it, or its checkpoint is missing) and cannot be resumed; start a new team.`);
       let log: TeamEventLog;
       try {
         log = await persistence.readEventLog(teamId);
@@ -215,9 +268,12 @@ export class TeamService {
       const checkpoint = await persistence.resumableCheckpoint(log);
       if (!checkpoint) throw cannotResume;
       const files = await indexTeamMemberFiles(teamMembersDir(piSessionDir(this.deps.cwd), sessionId, teamId));
+      // A live checkpoint can trail the log, so a member's attempt is its latest spawn's when that is newer.
+      const spawnAttempts = new Map(log.spawns.map((s) => [s.agentId, s.attempt]));
       const sessionFiles = new Map<string, string>();
       for (const member of checkpoint.members) {
-        const path = files.get(member.agentId)?.find((f) => f.attempt === member.attempt)?.path;
+        const attempt = checkpoint.live ? Math.max(member.attempt, spawnAttempts.get(member.agentId) ?? member.attempt) : member.attempt;
+        const path = files.get(member.agentId)?.find((f) => f.attempt === attempt)?.path;
         if (path) sessionFiles.set(member.agentId, path);
       }
 
@@ -234,17 +290,25 @@ export class TeamService {
         engine: this.deps.buildEngine(),
       }, (msg) => this.deps.onMessage(msg));
       candidate.restore(log, checkpoint, sessionFiles);
+      await candidate.dropDeliveredMessages();
       for (const [agentId, path] of candidate.reopenedSessionFiles()) this.deps.assertResumableModel(path, agentId);
+      // Before the first write: the checkpoint it came from stays the newest, as resumable as before, and nothing
+      // under the session's folder is created after a delete removed it.
+      if (stopSoFar() !== null) throw stoppedBeforeStart();
+      if (!(await candidate.persistResumeCheckpoint())) {
+        throw new Error(`Team "${teamId}" cannot resume: its resume state could not be saved under the new run.`);
+      }
 
       // No await from here to the launch, so a cancel either stops the resume here or cancels the live team.
-      if (epoch !== this.cancelEpoch) {
-        throw new Error(`The resume of team "${teamId}" was stopped before it started; it can still be resumed.`);
+      const stop = stopSoFar();
+      if (stop !== null) {
+        // The restored state is the newest checkpoint now, so it carries the stop that cancelled the resume.
+        await candidate.sealUnlaunchedResume(stop);
+        throw stoppedBeforeStart();
       }
       this.deps.recordInvocation({ kind: 'team', id: teamId, toolCallId, resume: true });
       this.activeRunner = candidate;
-      const run = candidate.resume(toolCallId, message);
-      this.lastRun = run;
-      return this.formatResult(teamId, candidate, await run);
+      return this.formatResult(teamId, candidate, await candidate.resume(toolCallId, message));
     } finally {
       unsettledTeams.delete(unsettledKey);
       if (this.resumeClaim === claim) {
@@ -255,7 +319,9 @@ export class TeamService {
   }
 
   private formatResult(teamId: string, runner: TeamRunner, result: TeamRunResult): string {
-    const header = result.status === 'cancelled' ? teamCancelledHeader(teamId, result.stop, result.resumable) : '';
+    const header = result.status === 'cancelled' ? teamCancelledHeader(teamId, result.stop, result.resumable)
+      : result.status === 'failed' ? teamFailedHeader(teamId, result.failure, result.resumable)
+        : '';
     return header + formatTeamUserSteerPrefix(runner.getOperatorSteers()) + result.text;
   }
 
@@ -281,13 +347,14 @@ export class TeamService {
     return this.stopRunningTeam(teamId, 'user');
   }
 
-  /** The `cancel_team` tool's result. Throws when the team is not the one running here. */
-  cancelTeam(teamId: string): string {
+  /** The `cancel_team` tool's result. Rejects when the team is not the one running here. */
+  async cancelTeam(teamId: string): Promise<string> {
     if (this.activeTeamId !== teamId) throw new Error(`Team "${teamId}" is not running.`);
     const runner = this.activeRunner;
     if (!this.stopRunningTeam(teamId, 'parent')) return `Team "${teamId}" had already finished, so nothing was cancelled.`;
-    // With no runner the resume was still validating, so the checkpoint it read is unused.
-    return `${teamCancelledHeader(teamId, 'parent', runner?.hasCheckpoint() ?? true)}Team "${teamId}" cancelled.`;
+    // With no runner the resume was still validating, and it leaves the team as resumable as it found it.
+    const resumable = runner ? await runner.resumableCheckpointLanded() : true;
+    return `${teamCancelledHeader(teamId, 'parent', resumable)}Team "${teamId}" cancelled.`;
   }
 
   /**
@@ -304,15 +371,15 @@ export class TeamService {
   /**
    * True when it stopped an unfinished team, or a resume before it launched. The first stop of a run names
    * its cause. Every stop but 'reset' keeps the team resumable; a 'reset' stop discards the conversation
-   * that could resume it, so it writes no checkpoint.
+   * that could resume it, so its seal is one no resume accepts.
    */
   cancelActiveTeam(stop: TeamStop): boolean {
-    this.cancelEpoch++;
+    if (this.resumeClaim) this.resumeClaim.stop ??= stop;
     if (this.activeRunner) return this.activeRunner.cancel(stop);
     return this.activeTeamId !== null;
   }
 
-  /** Settles once the latest team run, cancelled or not, has finished writing its files. */
+  /** Settles once the latest team run, cancelled or not, or a resume still validating, has finished writing its files. */
   whenRunSettled(): Promise<void> {
     return this.lastRun.then(() => undefined, () => undefined);
   }
@@ -350,10 +417,16 @@ export class TeamService {
     }
   }
 
-  dispose(): void {
+  /**
+   * Stops the team as a 'shutdown' and resolves once its seal is on disk, or once a resume still validating has
+   * settled. VS Code's `deactivate` and desktop's quit await a panel's dispose, so the cause lands before the process exits.
+   */
+  async dispose(): Promise<void> {
+    const runner = this.activeRunner;
     this.cancelActiveTeam('shutdown');
     this.setActiveTeam(null, null);
     this.resumeClaim = null;
     this.pendingToolUseId = null;
+    await (runner ? runner.flushCheckpoint() : this.whenRunSettled());
   }
 }

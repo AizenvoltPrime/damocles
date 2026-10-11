@@ -8,7 +8,7 @@ import { remPx } from '@/composables/useRemPx';
 import { atRootFont, GRID_SASH_REM } from '../layout';
 import { clampSlotSize, COLUMN_MIN_PX, GRID_SLOTS, gridAreas, gridMinWidth, ROW_MIN_PX, slotMax, slotOf } from './layout-model';
 import { GRID_CONTEXT, type GridContext } from './grid-context';
-import { reducedMotion } from '../reduced-motion';
+import { prefersReducedMotion } from '@/utils/reducedMotion';
 import { LAYOUT_SETTLED_EVENT } from '../content-bounds';
 import Sash from './Sash.vue';
 import PaneGrip from './PaneGrip.vue';
@@ -96,7 +96,7 @@ function settleAfter(animations: readonly Animation[]): void {
 
 watch(() => grid.value.slots, (slots, previous) => {
   if (GRID_SLOTS.every((slot) => slots[slot] === previous[slot])) return;
-  const glide = !reducedMotion();
+  const glide = !prefersReducedMotion();
   const before = new Map([...paneElements].map(([pane, element]) => [pane, element.getBoundingClientRect()]));
   void nextTick(() => {
     const easing = getComputedStyle(document.documentElement).getPropertyValue('--ease-out').trim() || 'ease-out';
@@ -117,7 +117,7 @@ watch(() => grid.value.slots, (slots, previous) => {
 watch(() => grid.value.maximized, (maximized, previous) => {
   const pane = maximized ?? previous;
   const element = pane === null || pane === 'chat' ? undefined : paneElements.get(pane);
-  if (!element || reducedMotion()) return;
+  if (!element || prefersReducedMotion()) return;
   const from = element.getBoundingClientRect();
   void nextTick(() => {
     const to = element.getBoundingClientRect();

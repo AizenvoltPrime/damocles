@@ -34,12 +34,12 @@ export const OVERLAY_CHANNELS = {
   prefsSet: 'damocles:overlay:prefs:set',
   relaunch: 'damocles:overlay:app:relaunch',
   layoutReset: 'damocles:overlay:layout:reset',
-  // the notification center; refused unless the center is open
+  // the notification center; each answers closed unless the center is open
   notificationsGet: 'damocles:overlay:notifications:get',
   notificationsClear: 'damocles:overlay:notifications:clear',
   // boolean: Do not disturb on or off
   notificationsDnd: 'damocles:overlay:notifications:dnd',
-  // Settings › About; each is refused unless the settings modal is open
+  // Settings › About; each answers closed unless the settings modal is open
   updateGet: 'damocles:overlay:update:get',
   // a check from About, which posts no notice: the version card shows its result
   updateCheck: 'damocles:overlay:update:check',
@@ -52,11 +52,11 @@ export const OVERLAY_CHANNELS = {
   releaseNotesIndex: 'damocles:overlay:release-notes:index',
   // { version }: a version of the index
   releaseNotesGet: 'damocles:overlay:release-notes:get',
-  // QuickOpenQuery → QuickOpenResponse; refused unless a quickOpen request is open
+  // QuickOpenQuery → QuickOpenResponse; answers closed unless a quickOpen request is open
   quickOpenQuery: 'damocles:overlay:quick-open:query',
-  // {} → PaletteCommand[] for the focus context main captured when the quickOpen request opened; refused unless one is open
+  // {} → PaletteCommand[] for the focus context main captured when the quickOpen request opened; answers closed unless one is open
   commandsList: 'damocles:overlay:commands:list',
-  // {} → TerminalProfileReport for Settings › Terminal; refused unless the settings modal is open
+  // {} → TerminalProfileReport for Settings › Terminal; answers closed unless the settings modal is open
   terminalProfiles: 'damocles:overlay:terminal:profiles',
   // main → renderer
   // OverlayState after the UI language changed
@@ -342,6 +342,12 @@ export type OverlayAnswer =
   // null: dropped outside every zone, or Escape
   | { readonly kind: 'dropZones'; readonly slot: GridSlot | null };
 
+/**
+ * The answer of a channel scoped to one popup. A closed popup (or a disposed overlay) is an expected state its page can
+ * still ask in, so main answers it as a value; malformed input and real failures still reject.
+ */
+export type PopupAnswer<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly reason: 'closed' };
+
 export type QuickOpenMode = 'files' | 'commands';
 
 export interface QuickOpenScope {
@@ -411,6 +417,8 @@ export interface QuickOpenResponse {
   readonly mention: boolean;
   // recent files first, then per-project groups (empty query) or best score first
   readonly results: readonly QuickOpenResult[];
+  // the index could not answer (its worker failed or went silent), so the empty results are no search result
+  readonly failed?: true;
 }
 
 // A notification-center entry on screen; its id is the entry's.
@@ -479,11 +487,11 @@ export interface DamoclesOverlayApi {
   leaveToasts(): void;
   // the pointer or focus is on the toast (true) or left it (false)
   holdToast(id: string, held: boolean): void;
-  // refused unless the center is open
-  getNotifications(): Promise<NotificationCenterState>;
+  // getNotifications, clearNotifications and setDoNotDisturb answer closed unless the center is open
+  getNotifications(): Promise<PopupAnswer<NotificationCenterState>>;
   onNotifications(listener: (state: NotificationCenterState) => void): () => void;
-  clearNotifications(): Promise<void>;
-  setDoNotDisturb(on: boolean): Promise<void>;
+  clearNotifications(): Promise<PopupAnswer<void>>;
+  setDoNotDisturb(on: boolean): Promise<PopupAnswer<void>>;
   // main's art to draw; answer each request once through rasterized
   onRasterize(listener: (request: OverlayRasterRequest) => void): () => void;
   // the PNG of a rasterize request, or null when it could not be drawn
@@ -497,35 +505,36 @@ export interface DamoclesOverlayApi {
   onSettingsTarget(listener: (target: SettingsTarget) => void): () => void;
   getPrefs(): Promise<OverlayPrefs>;
   onPrefsChanged(listener: (prefs: OverlayPrefs) => void): () => void;
+  // setPref, relaunch and resetLayout answer closed unless the settings modal is open
   // writes a damocles.desktop.* setting to user settings
-  setPref(key: string, value: unknown): Promise<OverlayPrefWrite>;
+  setPref(key: string, value: unknown): Promise<PopupAnswer<OverlayPrefWrite>>;
   // restarts the app through its normal quit path
-  relaunch(): Promise<void>;
+  relaunch(): Promise<PopupAnswer<void>>;
   // window-layout.json back to the default layout, applied now
-  resetLayout(): Promise<void>;
-  // Settings › About, from here on; each is refused unless the settings modal is open
-  getUpdate(): Promise<UpdateSnapshot>;
+  resetLayout(): Promise<PopupAnswer<void>>;
+  // Settings › About, from here on; each answers closed unless the settings modal is open
+  getUpdate(): Promise<PopupAnswer<UpdateSnapshot>>;
   // pushed only while the settings modal is open; returns the unsubscribe
   onUpdate(listener: (snapshot: UpdateSnapshot) => void): () => void;
   // a no-op unless the state is idle, upToDate or error
-  checkForUpdates(): Promise<void>;
-  // refused unless the state is ready
-  restartToUpdate(): Promise<void>;
-  showUpdateLog(): Promise<void>;
+  checkForUpdates(): Promise<PopupAnswer<void>>;
+  // rejects unless the state is ready
+  restartToUpdate(): Promise<PopupAnswer<void>>;
+  showUpdateLog(): Promise<PopupAnswer<void>>;
   // main composes the text and writes it through ClipboardService
-  copyVersionInfo(): Promise<void>;
-  getVersionInfo(): Promise<VersionInfo>;
-  // macOS: refused unless the state is available
-  openReleasePage(): Promise<void>;
-  getReleaseIndex(): Promise<ReleaseIndex>;
-  // refused for a version not in the index
-  getReleaseNotes(version: string): Promise<ReleaseNotes>;
-  // refused unless a quickOpen request is open
-  queryQuickOpen(query: QuickOpenQuery): Promise<QuickOpenResponse>;
-  // refused unless a quickOpen request is open
-  listCommands(): Promise<PaletteCommand[]>;
-  // refused unless the settings modal is open
-  getTerminalProfiles(): Promise<TerminalProfileReport>;
+  copyVersionInfo(): Promise<PopupAnswer<void>>;
+  getVersionInfo(): Promise<PopupAnswer<VersionInfo>>;
+  // macOS: rejects unless the state is available
+  openReleasePage(): Promise<PopupAnswer<void>>;
+  getReleaseIndex(): Promise<PopupAnswer<ReleaseIndex>>;
+  // rejects a version not in the index
+  getReleaseNotes(version: string): Promise<PopupAnswer<ReleaseNotes>>;
+  // answers closed unless a quickOpen request is open
+  queryQuickOpen(query: QuickOpenQuery): Promise<PopupAnswer<QuickOpenResponse>>;
+  // answers closed unless a quickOpen request is open
+  listCommands(): Promise<PopupAnswer<PaletteCommand[]>>;
+  // answers closed unless the settings modal is open
+  getTerminalProfiles(): Promise<PopupAnswer<TerminalProfileReport>>;
   // returns the unsubscribe
   onTerminalProfiles(listener: (report: TerminalProfileReport) => void): () => void;
   // the shell's pane drag while a dropZones request is open; returns the unsubscribe

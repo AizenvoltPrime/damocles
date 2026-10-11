@@ -10,6 +10,7 @@ import { cacheWarmingSetting, ensurePiAgentDir, PI_AGENT_DIR } from './agent-dir
 import { CONTEXT_FILE_CANDIDATES } from './context-files';
 import { assetSources } from '../asset-sources';
 import { renamePiSession, type LiveSessionMetaSource } from './session-store';
+import { writeUnderSessionLease } from './session-store/session-lease';
 import { McpClientManager } from './mcp/mcp-client-manager';
 import { createMcpAuthProviderFactory, shutdownOAuth } from './mcp/mcp-auth-flow';
 import { removeSavedMcpOutputs } from './mcp/content';
@@ -30,13 +31,12 @@ import { describeAuthError, isCredentialSyncError } from './describe-error';
 import { isAbortError } from './web-access/util';
 import { CREDENTIAL_REFUSED, isPiCredentialError, runStructuredCompletion, UNREACHABLE, type CredentialRefused, type PiCompleteFn, type StructuredCompletionRequest, type StructuredCompletionResult } from './structured-completion';
 import { appendSubCallUsage, type SubCallPurpose } from '../usage-stats/subcall-ledger';
-import { httpStatusOf } from './http-status';
+import { httpStatusOf, isInputRefusal } from './http-status';
 import {
   CLASSIFIER_MODELS,
   classifierCredential,
   classifierFailureCause,
   classifierModelOf,
-  isInputRefusal,
   memoryJudgeOf,
   pickClassifierModel,
   type ClassifierModelRef,
@@ -202,6 +202,11 @@ function isInsideDir(file: string, dir: string): boolean {
 export interface LiveSessionMutator extends LiveSessionMetaSource {
   renameActiveSession(newName: string): Promise<void>;
   setActiveSessionTag(tag: string | null): Promise<void>;
+  /**
+   * Synchronous, so a caller's liveness check and the write share one tick. False, logged, when it writes nothing:
+   * `sessionId` is no longer bound there, its lease was lost, or it already has a name.
+   */
+  applyAiTitle(sessionId: string, title: string): boolean;
   /** Stop writing to the session because its file is being deleted; rejects if the panel could not
    *  let go, which must abort the delete rather than orphan a live writer on a removed path. */
   detachFromDeletedSession(): Promise<void>;
@@ -461,7 +466,8 @@ export class PiRuntime {
 
   /** Register/replace the live mutator for a panel's pi session (called on start + rebind). A panel
    *  that holds the session only as a not-yet-started resume or fork target has no entry here, so a
-   *  caller that must reach every holder has to union this with that panel's session. */
+   *  caller that must reach every holder has to union this with that panel's session, and a file write
+   *  outside a panel refuses while one holds it (`isSessionHeldByPanelHere`). */
   registerSessionMutator(sessionId: string, mutator: LiveSessionMutator): void {
     if (sessionId) this._sessionMutators.set(sessionId, mutator);
   }
@@ -475,6 +481,17 @@ export class PiRuntime {
   /** The live mutator for a session currently open in some panel, or undefined if none. */
   getSessionMutator(sessionId: string): LiveSessionMutator | undefined {
     return this._sessionMutators.get(sessionId);
+  }
+
+  /**
+   * A configured hook's `sessionTitle` rename of `sessionId`: through its live holder, else in its stored file under
+   * its lease, as the session list's rename. Rejects when the lease refuses the write.
+   */
+  async renameSession(sessionId: string, cwd: string, newName: string): Promise<void> {
+    const mutator = this.getSessionMutator(sessionId);
+    if (mutator) return mutator.renameActiveSession(newName);
+    const refusal = await writeUnderSessionLease(sessionId, () => renamePiSession(cwd, sessionId, newName));
+    if (refusal) throw new Error(`Session ${sessionId} was not renamed: its lease refused the write (${refusal.kind})`);
   }
 
   /** `getSessionMutator` without creating the runtime, which never exists before a panel has started pi. */
@@ -583,11 +600,7 @@ export class PiRuntime {
         return { path: file, names: names.filter((name): name is string => typeof name === 'string') };
       },
       toolExposureSetting: () => this._platform.settings.inspect<unknown>(MCP_TOOL_EXPOSURE_SETTING),
-      renameSession: async (sessionId, sessionCwd, newName) => {
-        const mutator = this.getSessionMutator(sessionId);
-        if (mutator) await mutator.renameActiveSession(newName);
-        else await renamePiSession(sessionCwd, sessionId, newName);
-      },
+      renameSession: (sessionId, sessionCwd, newName) => this.renameSession(sessionId, sessionCwd, newName),
       trust: this._platform.trust,
       fileWatchers: this._platform.fileWatchers,
     });

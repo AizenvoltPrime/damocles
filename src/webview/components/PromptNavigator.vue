@@ -199,10 +199,12 @@ const statusText = computed(() => statusOverride.value ?? t("promptNavigator.sta
             aria-hidden="true"
           >{{ prompt.promptIndex + 1 }}</span>
           <div class="relative z-2 min-w-0 flex-1">
+            <!-- eslint-disable vue/no-v-html -- buildHighlight escapes the text with escapeHtml -->
             <div
               class="line-clamp-2 text-pretty [&_mark]:rounded-sm [&_mark]:bg-(--d-accent-soft) [&_mark]:px-0.5 [&_mark]:text-(--d-accent-text)"
               v-html="buildHighlight(rowText(prompt), query)"
             />
+            <!-- eslint-enable vue/no-v-html -->
             <div
               class="mt-1.25 flex flex-wrap items-center gap-1.25 text-11"
               :class="index === activeIndex ? 'text-(--d-faint-text)' : 'text-(--d-faint)'"

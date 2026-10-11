@@ -15,7 +15,8 @@ import { createPointerMoveFilter } from '../pointer-moved';
 const props = defineProps<{
   label: string;
   placeholder: string;
-  load: (query: string) => Promise<QuickPickModel>;
+  // undefined keeps the rows shown, for a pick on its way out
+  load: (query: string) => Promise<QuickPickModel | undefined>;
   // the palette opens with ">" typed, as VS Code's Show All Commands does
   initialQuery?: string;
   emptyText?: string | undefined;
@@ -55,7 +56,7 @@ const activeDescendant = computed(() => (renderedActive.value >= 0 && activeRow.
 async function refresh(): Promise<void> {
   const asked = ++generation;
   const next = await props.load(query.value);
-  if (asked !== generation) return;
+  if (asked !== generation || !next) return;
   model.value = next;
   loaded.value = true;
   active.value = 0;
@@ -315,7 +316,15 @@ onMounted(() => {
       </div>
     </div>
     <p
-      v-if="loaded && rows.length === 0"
+      v-if="loaded && rows.length === 0 && model.failure"
+      role="alert"
+      data-testid="quick-pick-failed"
+      class="px-2 py-3 text-center text-12 text-(--d-danger-text)"
+    >
+      {{ model.failure }}
+    </p>
+    <p
+      v-else-if="loaded && rows.length === 0"
       data-testid="quick-pick-empty"
       class="px-2 py-3 text-center text-12 text-(--d-faint)"
     >

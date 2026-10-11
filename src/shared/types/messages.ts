@@ -646,7 +646,8 @@ export type ExtensionToWebviewMessage =
   | { type: "profileSectionError"; scope: "project" | "global"; section: "static" | "dynamic"; message: string }
   | { type: "consolidationPendingCount"; count: number; setAside: number }
   | { type: "consolidationPreview"; candidates: PendingConsolidationCandidate[] }
-  | { type: "consolidationRunning"; running: boolean }
+  // `pass` (from 1) and `runSoFar` (the run's result over its ended passes) ride only on `running: true`, sent at every pass start and on overlay-open replay.
+  | { type: "consolidationRunning"; running: boolean; pass?: number; runSoFar?: ConsolidationResult }
   | { type: "consolidationProgress"; event: ConsolidationPhaseEvent }
   | { type: "consolidationResult"; result: ConsolidationResult }
   | { type: "memoryAuditState"; state: MemoryAuditStatePayload }

@@ -347,6 +347,33 @@ describe("requestConsolidationPreview", () => {
     expect(sent.find((m) => m.type === "consolidationPendingCount")).toEqual({ type: "consolidationPendingCount", count: 4, setAside: 2 });
     expect(sent.some((m) => m.type === "consolidationResult")).toBe(false);
   });
+
+  it("replays the run's pass and its memories so far when the overlay opens mid-run", async () => {
+    const sent: ExtensionToWebviewMessage[] = [];
+    const runSoFar = {
+      ranAt: 1, trigger: "manual" as const, status: "extracted" as const, candidatesReviewed: 1,
+      extracted: [{ kind: "fact", scope: "project", content: "c", outcome: "inserted" as const }],
+      maintenance: { promoted: 0, decayed: 0, pruned: 0 },
+    };
+    const memoryService = {
+      isEnabled: true,
+      ensureInitialized: vi.fn(async () => {}),
+      getPendingCandidates: vi.fn(() => []),
+      getPendingCount: vi.fn(() => 1),
+      getSetAsideCount: vi.fn(() => 0),
+      getLastConsolidationResult: vi.fn(() => null),
+      getConsolidationActivity: vi.fn(() => ({ running: true, phaseEvents: [], pass: 2, runSoFar })),
+    };
+    const deps = {
+      postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => { sent.push(message); },
+      memoryService,
+    } as unknown as HandlerDependencies;
+    const ctx = { host: { id: "panel-1" } } as unknown as HandlerContext;
+
+    await createMemoryHandlers(deps).requestConsolidationPreview!({ type: "requestConsolidationPreview" }, ctx);
+
+    expect(sent.find((m) => m.type === "consolidationRunning")).toEqual({ type: "consolidationRunning", running: true, pass: 2, runSoFar });
+  });
 });
 
 describe("MEMORY_MESSAGE_SOURCES (H2 router-fallback routing)", () => {

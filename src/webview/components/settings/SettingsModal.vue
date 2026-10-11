@@ -34,6 +34,7 @@ import SettingsPage from './SettingsPage.vue';
 import SettingButton from './controls/SettingButton.vue';
 import { normalizeQuery, SETTINGS_ROWS, type HostSettings, type SettingsRowMeta, type SettingsSectionMeta } from './settings-rows';
 import { provideSettingsBanner, provideSettingsFiles, provideSettingsTarget, type SettingsBanner } from './settings-view';
+import { prefersReducedMotion } from '@/utils/reducedMotion';
 import './settings.css';
 
 /** How the footer reaches the full settings: the host's own Settings UI, or the chat's settings.json editor. */
@@ -140,10 +141,6 @@ function back(): void {
   void nextTick(() => root.value?.querySelector<HTMLElement>(`[data-testid="settings-nav-${active.value}"]`)?.focus());
 }
 
-function reducedMotion(): boolean {
-  return document.documentElement.hasAttribute('data-reduced-motion') || window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-}
-
 const scrim = shallowRef<HTMLElement | null>(null);
 const EXIT = { duration: 160, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'forwards' } as const;
 
@@ -152,7 +149,7 @@ async function close(): Promise<void> {
   if (leaving.value) return;
   leaving.value = true;
   const panel = root.value;
-  if (reducedMotion() || !panel) {
+  if (prefersReducedMotion() || !panel) {
     emit('closed');
     return;
   }

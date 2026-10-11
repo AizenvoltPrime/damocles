@@ -7,6 +7,7 @@ const REASON_KEYS: Readonly<Record<string, string>> = {
   'invalid-shape': 'consolidation.stepper.reason.invalidShape',
   unreachable: 'consolidation.stepper.reason.unreachable',
   credential: 'consolidation.stepper.reason.credential',
+  forbidden: 'consolidation.stepper.reason.forbidden',
   'no-model': 'consolidation.stepper.reason.noModel',
 };
 

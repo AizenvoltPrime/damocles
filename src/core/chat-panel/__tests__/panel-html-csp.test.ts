@@ -20,7 +20,7 @@ describe('chat panel CSP worker-src', () => {
     const host = Object.assign(makeFakeHost(), { cspSource: 'app://damocles', workerSrc: 'app://damocles' });
 
     expect(cspOf(harness.manager.getHtmlContent(host))).toBe(
-      "default-src 'none'; style-src app://damocles 'unsafe-inline'; script-src 'nonce-<nonce>' 'wasm-unsafe-eval'; font-src app://damocles; img-src app://damocles data: https:; worker-src app://damocles;",
+      "default-src 'none'; style-src app://damocles 'unsafe-inline'; script-src 'nonce-<nonce>' 'wasm-unsafe-eval'; font-src app://damocles; img-src app://damocles data: https:; form-action 'none'; worker-src app://damocles;",
     );
   });
 

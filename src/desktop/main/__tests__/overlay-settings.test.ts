@@ -12,10 +12,11 @@ vi.mock('../../../core/chat-panel/ide-context-manager', () => ({
 import { createHarness, folderEntry, type Harness } from '../../../core/chat-panel/__tests__/panel-manager-harness';
 import type { FakePanelHost } from '../../../__mocks__/fake-platform';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
-import { MAX_SETTINGS_MESSAGE_CHARS, OVERLAY_CHANNELS, type OverlayAnswer, type OverlayPrefs, type OverlayPrefWrite, type OverlayRequest } from '../../preload/overlay-channels';
+import { MAX_SETTINGS_MESSAGE_CHARS, OVERLAY_CHANNELS, type OverlayAnswer, type OverlayPrefs, type OverlayPrefWrite, type OverlayRequest, type PopupAnswer } from '../../preload/overlay-channels';
 import { OverlaySettings } from '../overlay-settings';
 import { WebviewPrompts } from '../../../core/chat-panel/webview-prompts';
 import type { OverlayHost } from '../overlay';
+import { fakeHandleWhileOpen } from './fake-popup-channels';
 
 const A = path.join(path.resolve(os.tmpdir(), 'overlay-settings-root'), 'alpha');
 const USER_FILE = '/home/me/.damocles/settings.json';
@@ -31,6 +32,7 @@ function fakeOverlay() {
   const overlay = {
     on: (channel: string, handler: (...args: unknown[]) => void) => { listeners.set(channel, handler); },
     handle: (channel: string, handler: (...args: unknown[]) => unknown) => { handlers.set(channel, handler); },
+    handleWhileOpen: fakeHandleWhileOpen(handlers),
     send: (channel: string, payload: unknown) => { sent.push({ channel, payload }); },
     request: (request: OverlayRequest) => {
       requests.push(request);
@@ -256,7 +258,11 @@ describe('OverlaySettings', () => {
     const { fake, settings, settingsPlatform } = await setup();
     void settings.show({});
     await tick();
-    const set = (key: unknown, value: unknown) => fake.invoke(OVERLAY_CHANNELS.prefsSet, { key, value }) as Promise<OverlayPrefWrite>;
+    const set = async (key: unknown, value: unknown): Promise<OverlayPrefWrite> => {
+      const answer = (await fake.invoke(OVERLAY_CHANNELS.prefsSet, { key, value })) as PopupAnswer<OverlayPrefWrite>;
+      if (!answer.ok) throw new Error('prefsSet answered closed');
+      return answer.value;
+    };
     for (const [key, value] of [
       ['damocles.desktop.language', 'de'],
       ['damocles.desktop.language', 1],
@@ -353,28 +359,32 @@ describe('OverlaySettings', () => {
     ]);
   });
 
-  it('restarts, restores the default layout and writes desktop settings only while the modal is open', async () => {
-    const { fake, settings, relaunch, resetLayout } = await setup();
-    expect(() => fake.invoke(OVERLAY_CHANNELS.prefsSet, { key: 'damocles.desktop.language', value: 'el' })).toThrow();
-    expect(() => fake.invoke(OVERLAY_CHANNELS.relaunch)).toThrow();
-    expect(() => fake.invoke(OVERLAY_CHANNELS.layoutReset)).toThrow();
+  it('restarts, restores the default layout and writes desktop settings only while the modal is open, answering closed as a value otherwise', async () => {
+    const { fake, settings, relaunch, resetLayout, settingsPlatform } = await setup();
+    const closed = { ok: false, reason: 'closed' };
+    await expect(fake.invoke(OVERLAY_CHANNELS.prefsSet, { key: 'damocles.desktop.language', value: 'el' })).resolves.toEqual(closed);
+    await expect(fake.invoke(OVERLAY_CHANNELS.relaunch)).resolves.toEqual(closed);
+    await expect(fake.invoke(OVERLAY_CHANNELS.layoutReset)).resolves.toEqual(closed);
+    expect(settingsPlatform.settings.inspect('damocles.desktop.language')?.userValue).toBeUndefined();
+    expect(relaunch).not.toHaveBeenCalled();
+    expect(resetLayout).not.toHaveBeenCalled();
     void settings.show({});
     await tick();
-    fake.invoke(OVERLAY_CHANNELS.relaunch);
-    fake.invoke(OVERLAY_CHANNELS.layoutReset);
+    await expect(fake.invoke(OVERLAY_CHANNELS.relaunch)).resolves.toEqual({ ok: true, value: undefined });
+    await expect(fake.invoke(OVERLAY_CHANNELS.layoutReset)).resolves.toEqual({ ok: true, value: undefined });
     expect(relaunch).toHaveBeenCalledOnce();
     expect(resetLayout).toHaveBeenCalledOnce();
   });
 
   it('lists the terminal profile report only while the modal is open, for an empty request only, and pushes it again only then', async () => {
     const { fake, settings } = await setup();
-    expect(() => fake.invoke(OVERLAY_CHANNELS.terminalProfiles, {})).toThrow();
+    await expect(fake.invoke(OVERLAY_CHANNELS.terminalProfiles, {})).resolves.toEqual({ ok: false, reason: 'closed' });
     settings.terminalProfilesChanged();
     expect(fake.sent.filter(({ channel }) => channel === OVERLAY_CHANNELS.terminalProfilesChanged)).toEqual([]);
     void settings.show({ section: 'terminal' });
     await tick();
-    expect(fake.invoke(OVERLAY_CHANNELS.terminalProfiles, {})).toEqual({ profiles: [{ id: 'pwsh', name: 'PowerShell', path: 'C:\\pwsh.exe', args: [], source: 'detected', icon: 'powershell', customIcon: null, color: null, isDefault: true }], hidden: ['Command Prompt'], problems: [{ name: 'Evil', reason: 'pathNotAllowed', detail: '\\\\server\\x.exe' }] });
-    expect(() => fake.invoke(OVERLAY_CHANNELS.terminalProfiles, { path: 'C:\\' })).toThrow();
+    await expect(fake.invoke(OVERLAY_CHANNELS.terminalProfiles, {})).resolves.toEqual({ ok: true, value: { profiles: [{ id: 'pwsh', name: 'PowerShell', path: 'C:\\pwsh.exe', args: [], source: 'detected', icon: 'powershell', customIcon: null, color: null, isDefault: true }], hidden: ['Command Prompt'], problems: [{ name: 'Evil', reason: 'pathNotAllowed', detail: '\\\\server\\x.exe' }] } });
+    await expect(fake.invoke(OVERLAY_CHANNELS.terminalProfiles, { path: 'C:\\' })).rejects.toThrow('Malformed terminal profiles request');
     settings.terminalProfilesChanged();
     expect(fake.sent.filter(({ channel }) => channel === OVERLAY_CHANNELS.terminalProfilesChanged)).toEqual([{ channel: OVERLAY_CHANNELS.terminalProfilesChanged, payload: { profiles: [{ id: 'pwsh', name: 'PowerShell', path: 'C:\\pwsh.exe', args: [], source: 'detected', icon: 'powershell', customIcon: null, color: null, isDefault: true }], hidden: ['Command Prompt'], problems: [{ name: 'Evil', reason: 'pathNotAllowed', detail: '\\\\server\\x.exe' }] } }]);
   });

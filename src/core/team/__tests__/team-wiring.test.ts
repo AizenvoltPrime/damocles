@@ -11,6 +11,7 @@ import { FakeSession } from './fake-session';
 import type { TeamAgent, TeamConfig, TeamRole } from '../types';
 import { type NestedMcpToolset } from '../../pi-session/tools/mcp-tools';
 import { teamAgentToolset, TEAM_BASE_TOOL_NAMES, TEAM_MCP_NAMES } from './team-mcp-fixture';
+import { stubCheckpointWriter } from './checkpoint-writer-stub';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { ImageBlock } from '../../../shared/types/content';
 import { teamEventLogPath, teamMembersDir } from '../../pi-session/agent-records';
@@ -127,10 +128,10 @@ function makeWiring(specialistNames: string[], overrides?: { cwd?: string }): Wi
   target['messageBus'] = messageBus;
   target['scratchpad'] = scratchpad;
   target['persistence'] = {
-    appendTeamEntry: (e: Record<string, unknown>) => { teamEntries.push(e); },
+    appendTeamEntry: (e: Record<string, unknown>) => { teamEntries.push(e); return true; },
     flush: async () => undefined,
-    writeCheckpoint: () => true,
   };
+  target['checkpointWriter'] = stubCheckpointWriter();
 
   const agentMap = target['agents'] as Map<string, TeamAgent>;
   for (const spec of config.agents) agentMap.set(spec.name, makeAgent(spec.name, spec.role));
@@ -665,8 +666,7 @@ describe('team wiring: a user note reaches the live run, or says it did not', ()
     expect(deliveredPrompts(u).join('\n')).not.toContain('sent through the bus');
 
     expect(deliverUserNote(w, 'user', 'sent through the seam')).toBe(true);
-    await u.whenPrompted(3);
-    expect(deliveredPrompts(u)).toContain('sent through the seam');
+    await vi.waitFor(() => expect(deliveredPrompts(u)).toContain('sent through the seam'));
     expect(echoesOf(w, 'sent through the seam')).toHaveLength(1);
   });
 
@@ -922,8 +922,8 @@ describe('team wiring: a team_standby call parks the specialist, which still wak
     const b = startStandbySpecialist(w, 'B');
     await until(() => b.stops.length > 0);
     // `until` returns at the first tick the stop lands, which is fewer hops than a delivery takes, so
-    // the assertions below need the full settle behind them to mean anything.
-    await w.settle();
+    // the assertions below wait for the nudge itself rather than a tick count.
+    await b.session.whenPrompted(2);
 
     expect(b.stops).toEqual([true]);
     // Its only peer already ended its turn, so B is stranded and the recovery nudge is the one prompt

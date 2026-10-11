@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import type { AssistantMessage, AssistantMessageEvent } from '@earendil-works/pi-ai';
-import type { AgentRunConfig, AgentResult, UndeliveredMessage } from './types';
+import type { AgentFailure, AgentRunConfig, AgentResult, TeamDeliveredData, TeamMessage, UndeliveredMessage } from './types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { ImageBlock } from '../../shared/types/content';
 import type { ToolAbandonReason } from '../../shared/types/session';
@@ -16,9 +16,17 @@ import { extractImages } from '../pi-session/branch-text';
 import { ToolOutputCoalescer } from '../pi-session/tool-output-coalescer';
 import { NestedCallFailures, failedCallError } from '../pi-session/nested-call-failures';
 import { abandonReasonOf } from '../pi-session/abandoned-tool-calls';
-import { turnStoppedToolCallIds, windDownRecorded } from '../pi-session/session-store/turn-stopped';
+import { turnStoppedToolCallIds, windDownRecorded, type TurnStoppedData } from '../pi-session/session-store/turn-stopped';
+import { DAMOCLES_TEAM_DELIVERED_ENTRY, DAMOCLES_TURN_STOPPED_ENTRY } from '../pi-session/session-store/constants';
 import { failureOutcomeText } from '../pi-session/subagents/status-note';
 import { assistantContentBlocks, skippedCallIds, toolResultBlock, type PiAssistantBlock } from './content-blocks';
+
+/** A delivery handed to pi: its text as pi matches it, and the images and delivery ids it carries. */
+interface HandedMessage {
+  text: string;
+  images?: ImageBlock[];
+  ids?: string[];
+}
 
 /** Messages queued for one run. `onArrival` is a no-op until the session is open to deliver them. */
 interface RunInbox {
@@ -27,9 +35,25 @@ interface RunInbox {
    * Every message steered into pi and not yet started, in order. pi's own steering queue keeps only
    * the text, so this is where a queued message's images survive a cancel.
    */
-  steeredIntoPi: Array<{ text: string; images?: ImageBlock[] }>;
+  steeredIntoPi: HandedMessage[];
+  /** Every delivery handed to pi, prompted or steered, whose user entry pi has not committed yet, in order. */
+  uncommitted: HandedMessage[];
   onArrival: () => void;
 }
+
+/** How a bus message reaches a member's run. */
+export function busMessageDelivery(msg: TeamMessage): UndeliveredMessage {
+  return { text: `[Message from ${msg.from}]: ${msg.content}`, echoed: false, ids: [msg.messageId] };
+}
+
+/** Removes and returns the first entry with `text`, the order pi delivers equal texts in. */
+function spliceText(list: HandedMessage[], text: string): HandedMessage | undefined {
+  const index = list.findIndex((m) => m.text === text);
+  return index === -1 ? undefined : list.splice(index, 1)[0];
+}
+
+const handedOf = (m: UndeliveredMessage): HandedMessage =>
+  ({ text: m.text, ...(m.images ? { images: m.images } : {}), ...(m.ids ? { ids: m.ids } : {}) });
 
 /** A user message's text as pi matches it against its steering queue: text parts joined with no separator. */
 function queueMatchText(content: string | ReadonlyArray<{ type: string; text?: string }>): string {
@@ -44,9 +68,8 @@ function queueMatchText(content: string | ReadonlyArray<{ type: string; text?: s
 function withSteeredImages(texts: readonly string[], steered: RunInbox['steeredIntoPi']): UndeliveredMessage[] {
   const unclaimed = [...steered];
   return texts.map((text) => {
-    const index = unclaimed.findIndex((s) => s.text === text);
-    const images = index === -1 ? undefined : unclaimed.splice(index, 1)[0]!.images;
-    return { text, echoed: true, ...(images ? { images } : {}) };
+    const claimed = spliceText(unclaimed, text);
+    return { text, echoed: true, ...(claimed?.images ? { images: claimed.images } : {}), ...(claimed?.ids ? { ids: claimed.ids } : {}) };
   });
 }
 
@@ -92,9 +115,10 @@ const TURN_ENDING_TOOLS = new Set(['team_standby', 'team_report_complete']);
  */
 export class AgentRunner {
   async startAgent(config: AgentRunConfig): Promise<AgentResult> {
-    const empty = (status: 'cancelled' | 'failed', finalResponse: string | null): AgentResult => ({
+    const empty = (status: 'cancelled' | 'failed', finalResponse: string | null, failure?: AgentFailure): AgentResult => ({
       agentId: config.agentId,
       status,
+      ...(failure ? { failure } : {}),
       finalResponse,
       toolCallCount: 0,
       totalInputTokens: 0,
@@ -107,7 +131,7 @@ export class AgentRunner {
     if (config.abortSignal.aborted) return empty('cancelled', null);
 
     // Subscribed before the session opens, so a message sent while it opens is queued, not lost.
-    const inbox: RunInbox = { pending: [...(config.redeliver ?? [])], steeredIntoPi: [], onArrival: () => undefined };
+    const inbox: RunInbox = { pending: [...(config.redeliver ?? [])], steeredIntoPi: [], uncommitted: [], onArrival: () => undefined };
     const accept = (message: UndeliveredMessage): void => {
       inbox.pending.push(message);
       inbox.onArrival();
@@ -116,7 +140,7 @@ export class AgentRunner {
       if (msg.from === config.name) return;
       if (msg.to !== config.name && msg.to !== null) return;
       if (config.shouldDeliverMessage && !config.shouldDeliverMessage({ from: msg.from, to: msg.to, ...(msg.kind ? { kind: msg.kind } : {}) })) return;
-      accept({ text: `[Message from ${msg.from}]: ${msg.content}`, echoed: false });
+      accept(busMessageDelivery(msg));
     });
     // A user note reaches the run here rather than through the bus, so no delivery filter, no self-name
     // filter and no post-teardown subscription can drop it without the caller finding out.
@@ -124,18 +148,34 @@ export class AgentRunner {
       if (config.abortSignal.aborted) return false;
       const withImages = images?.length ? { images } : {};
       this.emitUserMessage(config, text, images);
-      accept({ text, echoed: true, ...withImages });
+      accept({ text, echoed: true, ...withImages, ids: [crypto.randomUUID()] });
       return true;
     });
     let opened: AgentSession | null = null;
-    const unbindTakeUndelivered = config.bindTakeUndelivered(() => {
+    /**
+     * pi's queues hold text the runner already flushed and echoed, queued before the pending list. A delivery pi
+     * has not committed and does not queue is in transit and still owed; it stays in `uncommitted`, so a commit
+     * after the stop is still recorded and a resume drops it.
+     */
+    const undeliveredWith = (queued: readonly string[]): UndeliveredMessage[] => {
+      const inTransit = [...inbox.uncommitted];
+      for (const text of queued) spliceText(inTransit, text);
+      return [
+        ...inTransit.map((m) => ({ ...m, echoed: true })),
+        ...withSteeredImages(queued, inbox.steeredIntoPi),
+        ...inbox.pending.map((m) => ({ ...m })),
+      ];
+    };
+    const take = (): UndeliveredMessage[] => {
       // Taken, not read: an aborted tool call lets pi deliver its queue on the way out, and the caller then owns these.
       const queued = opened?.clearQueue();
-      const fromPi = queued ? withSteeredImages([...queued.steering, ...queued.followUp], inbox.steeredIntoPi) : [];
+      const taken = undeliveredWith(queued ? [...queued.steering, ...queued.followUp] : []);
       inbox.steeredIntoPi.length = 0;
-      // pi's queues hold text the runner already flushed and echoed, and it was queued before the pending list.
-      return [...fromPi, ...inbox.pending.map((m) => ({ ...m }))];
-    });
+      return taken;
+    };
+    const peek = (): UndeliveredMessage[] =>
+      undeliveredWith(opened ? [...opened.getSteeringMessages(), ...opened.getFollowUpMessages()] : []);
+    const unbindTakeUndelivered = config.bindTakeUndelivered(take, peek);
     const release = (): void => {
       unsubscribeBus();
       unbindNote();
@@ -146,10 +186,12 @@ export class AgentRunner {
     try {
       session = await config.createSession();
     } catch (err) {
+      // Read before its hooks go, as a failed run's queue is, so a failure checkpoint keeps what it was to deliver.
+      const undelivered = peek();
       release();
       const errMsg = err instanceof Error ? err.message : String(err);
       config.messageBus.broadcast('system', `Agent "${config.name}" failed to start: ${errMsg}`);
-      return empty('failed', `Failed to start: ${errMsg}`);
+      return { ...empty('failed', `Failed to start: ${errMsg}`, { kind: 'start', message: errMsg }), undelivered };
     }
     // The signal can already be aborted by the time createSession resolves — check up-front before wiring.
     if (config.abortSignal.aborted) {
@@ -175,7 +217,7 @@ export class AgentRunner {
       return parked ? { action: 'end' } : undefined;
     });
 
-    return this.runAgent(config, session, inbox, release);
+    return this.runAgent(config, session, inbox, release, peek);
   }
 
   private async runAgent(
@@ -183,13 +225,15 @@ export class AgentRunner {
     session: AgentSession,
     inbox: RunInbox,
     release: () => void,
+    peek: () => UndeliveredMessage[],
   ): Promise<AgentResult> {
     let toolCallCount = 0;
     let finalResponse: string | null = null;
     let status: 'completed' | 'failed' | 'cancelled' = 'completed';
     /** The error the latest model call ended on; a call pi retries is answered by a later one, which clears it. */
     let callError: string | undefined;
-    let failure: string | null = null;
+    let failure: AgentFailure | null = null;
+    let undelivered: UndeliveredMessage[] | undefined;
     const call: CurrentCall = { id: '', rendered: false, batch: null, stopped: new Set(), undecidedError: null };
     const failures = new NestedCallFailures({
       show: (message) => config.onMessage({ type: 'error', message, parentToolUseId: config.agentId }),
@@ -200,7 +244,7 @@ export class AgentRunner {
     // pi retries a failed call inside `prompt()`, so once it resolves the latest call's error is final.
     const endedOnFailure = (): boolean => {
       if (callError === undefined || config.abortSignal.aborted) return false;
-      failure = callError;
+      failure = { kind: 'model', message: callError };
       return true;
     };
     // A reopened session's stats include the spend of its earlier runs, which were already counted.
@@ -252,8 +296,12 @@ export class AgentRunner {
       // pi drops a started message from its steering queue by the same first-equal-text rule (agent-session.js, `_handleAgentEvent`).
       if (event.type === 'message_start' && event.message.role === 'user') {
         const text = queueMatchText(event.message.content);
-        const index = inbox.steeredIntoPi.findIndex((s) => s.text === text);
-        if (text && index !== -1) inbox.steeredIntoPi.splice(index, 1);
+        if (text) spliceText(inbox.steeredIntoPi, text);
+      }
+      if (event.type === 'message_end' && event.message.role === 'user') {
+        const ids = spliceText(inbox.uncommitted, queueMatchText(event.message.content))?.ids;
+        // pi appends the user message synchronously once listeners return, so the record lands right after it.
+        if (ids?.length) queueMicrotask(() => this.recordDelivered(config, session, ids));
       }
       failures.observe(event);
       this.handleSessionEvent(event, config, outputCoalescer, {
@@ -270,6 +318,8 @@ export class AgentRunner {
           if (error !== undefined && !windDown) failures.hold(error, shownId);
         },
       });
+      // Team tools change review state, summaries and cursors inside a call, so each of these may change the checkpoint.
+      if (event.type === 'tool_execution_end' || event.type === 'turn_end' || event.type === 'agent_end') config.onStateBoundary?.();
     });
 
     inbox.onArrival = () => {
@@ -279,7 +329,7 @@ export class AgentRunner {
       // `isStreaming === false` and re-prompted a still-active session — now correctly steers instead.
       if (session.isStreaming) {
         for (let next = takeNext(); next !== undefined; next = takeNext()) {
-          inbox.steeredIntoPi.push({ text: next.text, ...(next.images ? { images: next.images } : {}) });
+          inbox.steeredIntoPi.push(handedOf(next));
           void promptQueued(next, { streamingBehavior: 'steer' }).catch(() => {});
         }
       } else {
@@ -296,12 +346,24 @@ export class AgentRunner {
      * `[Message from X]:` prefix, and pi would otherwise dispatch a note beginning with `/` as an
      * extension command and return without ever prompting the agent.
      */
-    const promptQueued = (message: UndeliveredMessage, options?: { streamingBehavior: 'steer' }): Promise<void> =>
-      session.prompt(message.text, {
+    const promptQueued = (message: UndeliveredMessage, options?: { streamingBehavior: 'steer' }): Promise<void> => {
+      const handed = handedOf(message);
+      inbox.uncommitted.push(handed);
+      return session.prompt(message.text, {
         ...options,
         ...(message.images?.length ? { images: extractImages(message.images) } : {}),
         expandPromptTemplates: false,
+      }).catch((err: unknown) => {
+        const index = inbox.uncommitted.indexOf(handed);
+        // Still uncommitted: pi refused it before committing anything, so it goes back first in line, already echoed.
+        if (index !== -1) {
+          inbox.uncommitted.splice(index, 1);
+          if (options?.streamingBehavior === 'steer') spliceText(inbox.steeredIntoPi, message.text);
+          pendingMessages.unshift({ ...message, echoed: true });
+        }
+        throw err;
       });
+    };
 
     /**
      * Removes the next message to deliver, steers first, echoing it if the overlay has not seen it.
@@ -333,7 +395,9 @@ export class AgentRunner {
           // the one path where pi discards the turn decision. It is already echoed, hence `echoed: true`.
           if (session.pendingMessageCount > 0) {
             const queued = session.clearQueue();
-            pendingMessages.push(...withSteeredImages([...queued.steering, ...queued.followUp], inbox.steeredIntoPi));
+            const texts = [...queued.steering, ...queued.followUp];
+            for (const text of texts) spliceText(inbox.uncommitted, text);
+            pendingMessages.push(...withSteeredImages(texts, inbox.steeredIntoPi));
           }
           inbox.steeredIntoPi.length = 0;
           // One message opens the run; the rest of the queue joins it as steers on its `agent_start`.
@@ -347,6 +411,8 @@ export class AgentRunner {
             if (!config.keepAlive?.()) break;  // still nothing to wait for → genuinely done
           }
           config.onTurnEnd?.();
+          // The turn-end hooks park the member after pi's last event, so no event boundary covers them.
+          config.onStateBoundary?.();
         }
         // A parked run's first message goes through the wake below, so onKeepAliveResume sees it.
         parked = false;
@@ -359,26 +425,38 @@ export class AgentRunner {
         // (e.g. revision delivered) — but if keepAlive flipped false meanwhile, end rather than re-prompt.
         if (!config.keepAlive?.() && pendingMessages.length === 0) break;
         config.onKeepAliveResume?.();
+        config.onStateBoundary?.();
         const woken = takeNext();
         if (woken !== undefined) await promptQueued(woken);
       }
       if (config.abortSignal.aborted) status = 'cancelled';
     } catch (err) {
       if (config.abortSignal.aborted) status = 'cancelled';
-      else failure = err instanceof Error ? err.message : String(err);
+      else failure = { kind: 'run', message: err instanceof Error ? err.message : String(err) };
     } finally {
       waitResolve = null;
+      // A failed run's queue is read before its hooks go, so a failure checkpoint keeps it.
+      if (failure !== null && !config.abortSignal.aborted) undelivered = peek();
       release();
       unsubscribeSession();
       outputCoalescer.dispose();
       config.abortSignal.removeEventListener('abort', onAbort);
-      config.forgetSession(session);
+      try {
+        // A cut batch the turn decider ended has no aborted call after it to re-seal it (`endCall`).
+        const skipped = status === 'cancelled' && call.batch ? this.resealSkipped(call.batch, config) : [];
+        if (skipped.length > 0) {
+          const record: TurnStoppedData = { toolCallIds: skipped, entryIds: [] };
+          session.sessionManager.appendCustomEntry(DAMOCLES_TURN_STOPPED_ENTRY, record);
+        }
+      } finally {
+        config.forgetSession(session);
+      }
     }
     // Settle: picks up spend that raised no event, such as a cache warm between turns.
     publishUsage();
     if (failure !== null) {
       status = 'failed';
-      config.messageBus.broadcast('system', `Agent "${config.name}" failed: ${failure}`);
+      config.messageBus.broadcast('system', `Agent "${config.name}" failed: ${failure.message}`);
     }
 
     // The reported summary is the agent's own sign-off, so it outranks trailing assistant text, which
@@ -392,7 +470,7 @@ export class AgentRunner {
     }
 
     if (failure !== null) {
-      return { agentId: config.agentId, status, finalResponse: failureOutcomeText(failure, finalResponse), error: failure, toolCallCount, ...usage };
+      return { agentId: config.agentId, status, finalResponse: failureOutcomeText(failure.message, finalResponse), failure, ...(undelivered ? { undelivered } : {}), toolCallCount, ...usage };
     }
     return { agentId: config.agentId, status, finalResponse, toolCallCount, ...usage };
   }
@@ -559,11 +637,12 @@ export class AgentRunner {
     return true;
   }
 
-  /** Re-seal a batch the following aborted call cut short, once its skipped calls are known. */
-  private resealSkipped(batch: NonNullable<CurrentCall['batch']>, config: AgentRunConfig): void {
+  /** Re-seal a batch an abort cut short, once its skipped calls are known, and return their ids. */
+  private resealSkipped(batch: NonNullable<CurrentCall['batch']>, config: AgentRunConfig): string[] {
     const skipped = skippedCallIds(batch.content, (toolCallId) => batch.answered.has(toolCallId));
-    if (skipped.size === 0) return;
+    if (skipped.size === 0) return [];
     this.resealStopped(batch, new Set([...skipped, ...batch.unexecuted]), config);
+    return [...skipped];
   }
 
   /**
@@ -577,6 +656,16 @@ export class AgentRunner {
       content: assistantContentBlocks(batch.content, undefined, stopped),
       timestamp: Date.now(),
     });
+  }
+
+  /** An unrecorded delivery is only redelivered by a resume, so a failed append is logged, not thrown into pi's event path. */
+  private recordDelivered(config: AgentRunConfig, session: AgentSession, ids: string[]): void {
+    const record: TeamDeliveredData = { ids };
+    try {
+      session.sessionManager.appendCustomEntry(DAMOCLES_TEAM_DELIVERED_ENTRY, record);
+    } catch (err) {
+      console.error(`[AgentRunner] Recording the delivery of ${ids.join(', ')} to "${config.name}" failed:`, err);
+    }
   }
 
   private emitUserMessage(config: AgentRunConfig, content: string, images?: ImageBlock[]): void {

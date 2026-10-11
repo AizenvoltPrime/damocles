@@ -1,6 +1,6 @@
-import { execFileSync } from 'node:child_process';
 import type { Page, TestInfo } from '@playwright/test';
 import { expect, test } from '../support/fixtures';
+import { git } from '../support/git';
 import { seedStubModel } from '../support/hermetic';
 import { startOpenAIStub } from '../support/openai-stub';
 import { openProjectChat, saveScreenshot, setPageSize, settled, showTheme, THEMES, type Theme } from '../support/screenshots';
@@ -62,10 +62,8 @@ async function capture(tab: Page, testInfo: TestInfo, theme: Theme): Promise<voi
 
 test('chat panel header, empty state and composer popups in Dark and Light', async ({ home, launch }, testInfo) => {
   test.setTimeout(240_000);
-  const git = (...args: string[]): string =>
-    execFileSync('git', ['-c', 'user.name=e2e', '-c', 'user.email=e2e@example.com', '-c', 'commit.gpgsign=false', ...args], { cwd: home.project, encoding: 'utf8' }).trim();
-  git('init', '-q', '-b', 'main');
-  git('commit', '-q', '--allow-empty', '-m', 'init');
+  await git(home.project, 'init', '-q', '-b', 'main');
+  await git(home.project, 'commit', '-q', '--allow-empty', '-m', 'init');
   const stub = await startOpenAIStub();
   try {
     seedStubModel(home, stub.baseUrl);

@@ -1,8 +1,8 @@
-import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication, Page } from '@playwright/test';
 import { activeChat, expect, test } from './support/fixtures';
+import { git } from './support/git';
 import { seedStubModel } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { selectedProjectKey, shellState } from './support/shell';
@@ -287,15 +287,13 @@ test('the New button stays in place on hover, and enabled controls in the shell,
 });
 
 test("D42: the Projects list and the chat header show each project's branch from git's HEAD, trusted or not, and follow a checkout made outside the app", async ({ home, launch }) => {
-  const git = (cwd: string, ...args: string[]): string =>
-    execFileSync('git', ['-c', 'user.name=e2e', '-c', 'user.email=e2e@example.com', '-c', 'commit.gpgsign=false', ...args], { cwd, encoding: 'utf8' }).trim();
-  git(home.project, 'init', '-q', '-b', 'main');
-  git(home.project, 'commit', '-q', '--allow-empty', '-m', 'init');
+  await git(home.project, 'init', '-q', '-b', 'main');
+  await git(home.project, 'commit', '-q', '--allow-empty', '-m', 'init');
   // An untrusted project opened at a subfolder of its repository.
   const monorepo = path.join(home.root, 'p', 'mono');
   const subfolder = path.join(monorepo, 'packages', 'app');
   fs.mkdirSync(subfolder, { recursive: true });
-  git(monorepo, 'init', '-q', '-b', 'main');
+  await git(monorepo, 'init', '-q', '-b', 'main');
   const plain = path.join(home.root, 'p', 'plain');
   fs.mkdirSync(plain, { recursive: true });
 
@@ -325,12 +323,12 @@ test("D42: the Projects list and the chat header show each project's branch from
   await expect(headerBranch).toHaveText('main');
   await expect(headerBranch).toHaveAttribute('dir', 'ltr');
 
-  git(home.project, 'checkout', '-q', '-b', 'feature/x');
+  await git(home.project, 'checkout', '-q', '-b', 'feature/x');
   await expect(await branchLabel(home.project)).toHaveText('feature/x');
   await expect(headerBranch).toHaveText('feature/x');
 
-  git(home.project, 'checkout', '-q', '--detach');
-  const shortId = git(home.project, 'rev-parse', 'HEAD').slice(0, 7);
+  await git(home.project, 'checkout', '-q', '--detach');
+  const shortId = (await git(home.project, 'rev-parse', 'HEAD')).slice(0, 7);
   await expect(await branchLabel(home.project)).toHaveText(shortId);
   await expect(headerBranch).toHaveText(shortId);
 });

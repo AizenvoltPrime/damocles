@@ -1,7 +1,8 @@
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { promisify } from 'node:util';
 import { chromium, type Browser, type BrowserContext, type ElectronApplication, type Page } from '@playwright/test';
 
 /** Absolute path of a packaged Damocles executable; set, the suite drives that app instead of dist/desktop/main.js. Read only by the harness. */
@@ -13,6 +14,7 @@ const CONNECT_TIMEOUT_MS = 60_000;
 // the runner's macOS Keychain, whose modal prompt blocks the main thread.
 const CREDENTIAL_STORE_ARGS = ['--use-mock-keychain', '--password-store=basic'];
 const QUIT_TIMEOUT_MS = 30_000;
+const execFileAsync = promisify(execFile);
 
 // The packaged binary's enableNodeCliInspectArguments fuse is off, so Playwright's Electron driver (which attaches over --inspect) cannot reach its main process.
 const NO_MAIN_PROCESS =
@@ -43,10 +45,10 @@ export function withoutMainProcess(app: ElectronApplication): ElectronApplicatio
 const SAMPLE_LINES = 300;
 
 /** The main thread's call graph from macOS `sample`, which reads a child process without any permission prompt. */
-function mainThreadSample(pid: number): string {
+async function mainThreadSample(pid: number): Promise<string> {
   const file = path.join(os.tmpdir(), `damocles-quit-${pid}.sample.txt`);
   try {
-    execFileSync('sample', [String(pid), '2', '-file', file], { stdio: 'ignore', timeout: 90_000 });
+    await execFileAsync('sample', [String(pid), '2', '-file', file], { timeout: 90_000 });
     const lines = fs.readFileSync(file, 'utf8').split('\n');
     const start = lines.findIndex((line) => line.includes('com.apple.main-thread'));
     if (start < 0) return `\nsample found no main thread in:\n${lines.slice(0, SAMPLE_LINES).join('\n')}`;
@@ -124,7 +126,7 @@ class PackagedApplication {
     const outcome = await Promise.race([exited.then(() => 'exited' as const), timedOut]);
     clearTimeout(timer);
     if (outcome === 'timeout') {
-      const stack = process.platform === 'darwin' && this.proc.pid !== undefined ? mainThreadSample(this.proc.pid) : '';
+      const stack = process.platform === 'darwin' && this.proc.pid !== undefined ? await mainThreadSample(this.proc.pid) : '';
       this.proc.kill('SIGKILL');
       throw new Error(`the packaged app did not quit within ${QUIT_TIMEOUT_MS} ms of Browser.close; killed it${stack}`);
     }

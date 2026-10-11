@@ -3,6 +3,7 @@ import type { Model, Api } from '@earendil-works/pi-ai';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { MessageBus } from './message-bus';
 import type { Scratchpad } from './scratchpad';
+import type { CheckpointWriter } from './checkpoint-writer';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { TeamRunSummary } from '../../shared/types/team';
 import type { ImageBlock } from '../../shared/types/content';
@@ -223,6 +224,13 @@ export interface UndeliveredMessage {
   text: string;
   echoed: boolean;
   images?: ImageBlock[];
+  /** Delivery ids: a bus message's `messageId`, or a UUID minted when a steer or note was queued. Absent in checkpoints written before ids. */
+  ids?: string[];
+}
+
+/** The data of a member session's `damocles-team-delivered` entry: the delivery ids of the message pi just committed. */
+export interface TeamDeliveredData {
+  ids: string[];
 }
 
 /** A run's user-note sink: echoes the note and queues it for delivery, or returns false when the run cannot take it. */
@@ -252,12 +260,15 @@ export interface AgentRunConfig {
    */
   bindNoteDelivery: (deliver: NoteSink) => () => void;
   /**
-   * Publishes this run's undelivered-message taker and returns its teardown. The taker empties pi's
-   * steering and follow-up queues, since an abort landing in a tool call would otherwise let pi deliver
+   * Publishes this run's undelivered-message taker and peeker and returns their teardown. The taker empties
+   * pi's steering and follow-up queues, since an abort landing in a tool call would otherwise let pi deliver
    * them on the way out, and returns them ahead of the runner's pending queue. Call it only right
-   * before an abort: a live run never gets the taken messages back.
+   * before an abort: a live run never gets the taken messages back. The peeker reads the same messages,
+   * and any pi has not yet committed, without taking them, for a live checkpoint.
    */
-  bindTakeUndelivered: (take: () => UndeliveredMessage[]) => () => void;
+  bindTakeUndelivered: (take: () => UndeliveredMessage[], peek: () => UndeliveredMessage[]) => () => void;
+  /** Fired at each member `tool_execution_end`, `turn_end` and `agent_end`, where team state can have changed. */
+  onStateBoundary?: () => void;
   onMessage: (msg: ExtensionToWebviewMessage) => void;
   teamId: string;
   /**
@@ -293,11 +304,21 @@ export interface AgentRunConfig {
   onCost?: (deltaUsd: number) => void;
 }
 
+/** Why a run failed: its session never opened, its last model call failed once pi stopped retrying, or the run threw. */
+export type AgentFailureKind = 'start' | 'model' | 'run';
+
+/** `message` is provider or thrown text, untrusted. */
+export interface AgentFailure {
+  kind: AgentFailureKind;
+  message: string;
+}
+
 export interface AgentResult {
   agentId: string;
   status: 'completed' | 'failed' | 'cancelled';
-  /** A failed run's error: its last model call's, once pi stopped retrying it, or what the run threw. */
-  error?: string;
+  failure?: AgentFailure;
+  /** A failed run's messages it never delivered, read before its hooks were unbound. */
+  undelivered?: UndeliveredMessage[];
   finalResponse: string | null;
   toolCallCount: number;
   totalInputTokens: number;
@@ -308,9 +329,10 @@ export interface AgentResult {
 }
 
 export interface TeamPersistenceWriter {
-  appendTeamEntry(entry: Record<string, unknown>): void;
-  /** Synchronous; false when the write failed, which `flush()` then reports. */
-  writeCheckpoint(checkpoint: TeamCheckpoint): boolean;
+  /** False when the entry did not reach the log; the failure is collected for `flush()`. */
+  appendTeamEntry(entry: Record<string, unknown>): boolean;
+  /** The writer of the run checkpoint keyed `key`; its failures are collected for `flush()`. */
+  createCheckpointWriter(teamId: string, key: number, snapshot: () => TeamCheckpoint): CheckpointWriter;
   flush(): Promise<void>;
 }
 
@@ -320,11 +342,17 @@ export interface TeamPersistenceWriter {
  */
 export type TeamStop = 'user' | 'parent' | 'shutdown' | 'reset';
 export type TeamResumableStop = Exclude<TeamStop, 'reset'>;
+/** Why a checkpoint was written: a resumable stop, or a lead that failed before any stop. */
+export type TeamCheckpointCause = TeamResumableStop | 'failed';
 
+/**
+ * `resumable` is false when no content of the run's checkpoint reached disk, which covers a run that wrote none and
+ * a write that never landed, and for a 'reset' stop, whose seal no resume accepts.
+ */
 export type TeamRunResult =
   | { status: 'completed'; text: string }
-  /** `resumable` is false when the cancel wrote no checkpoint. */
-  | { status: 'cancelled'; text: string; stop: TeamStop; resumable: boolean };
+  | { status: 'cancelled'; text: string; stop: TeamStop; resumable: boolean }
+  | { status: 'failed'; text: string; failure: AgentFailure; resumable: boolean };
 
 /** Reader name to its per-section read versions. Entry arrays, because names are model-chosen. */
 export type ScratchpadCursors = Array<[reader: string, sections: Array<[section: string, version: number]>]>;
@@ -335,26 +363,40 @@ export interface TeamCheckpointMember {
   role: AgentRole;
   attempt: number;
   resumeCount: number;
-  /** Status before the cancel changed it. */
+  /** Status before the stop changed it. */
   status: TeamAgent['status'];
   undelivered: UndeliveredMessage[];
-  /** Cumulative totals once the cancel's drain settled the run; the resumed run's usage adds to them. */
+  /** Cumulative totals as of the snapshot, or once a stop's drain settled the run; the resumed run's usage adds to them. */
   usage: AgentUsageTotals;
-  /** The attempt's tool calls once the drain settled the run; the resumed run's calls add to them. */
+  /** The attempt's tool calls as of the snapshot, or once the drain settled the run; the resumed run's calls add to them. */
   toolCallCount: number;
 }
 
 /**
- * Coordination state no team event records, written at a cancel so `resume_team` can continue the team.
- * A `team-resumed` entry naming its `cancelledAt` marks it used.
+ * Coordination state no team event records, which `resume_team` continues the team from. Each run keeps one,
+ * rewritten live as the team changes and sealed at a stop or a lead failure. A `team-resumed` entry naming
+ * its `cancelledAt` marks it used.
  */
 export interface TeamCheckpoint {
   version: 1;
   teamId: string;
-  /** Epoch ms of the cancel; also the file name, and unique per team. */
+  /** The run's checkpoint key, epoch ms: also the file name, and unique per team. */
   cancelledAt: number;
-  /** Why the team stopped; absent from a checkpoint written before the cause was recorded. */
-  stoppedBy?: TeamResumableStop;
+  /** Why the team stopped; absent from a live checkpoint and from one written before the cause was recorded. 'reset' is never resumed. */
+  stoppedBy?: TeamCheckpointCause | 'reset';
+  /**
+   * How the lead's last run failed, when the state is the one its failure left: on every `stoppedBy: 'failed'` seal,
+   * and on the seal of a resume of one that a stop ended before it launched.
+   */
+  leadFailure?: AgentFailureKind;
+  /** Present until the run seals it, so a live checkpoint whose run is gone reads as interrupted. */
+  live?: true;
+  /** On a sealed checkpoint: its state is a crashed run's live snapshot, restored by a resume that a stop ended before it launched. */
+  interrupted?: true;
+  /** Epoch ms the content was taken; absent from a checkpoint written before live checkpoints. */
+  asOf?: number;
+  /** The `messageId` of the last bus message the undelivered lists account for; absent when none was sent. */
+  messagesThrough?: string;
   members: TeamCheckpointMember[];
   readerCursors: ScratchpadCursors;
   review: {
@@ -376,6 +418,9 @@ export interface TeamCheckpoint {
   // `attempt` is optional because checkpoints written before steers recorded it must still load.
   operatorSteers: Array<Omit<OperatorSteer, 'attempt'> & { attempt?: number }>;
 }
+
+/** A checkpoint a resume may continue from: never one a reset sealed. */
+export type ResumableCheckpoint = TeamCheckpoint & { stoppedBy?: TeamCheckpointCause };
 
 /** An implementor's landed work: its attempt and its revision-round count when it landed. */
 export interface ReviewStamp {
@@ -431,6 +476,8 @@ export interface TeamLogSpawn {
   profileId: string | null;
   attempt: number;
   timestamp: number;
+  /** How many `agent-message` entries the log holds before this spawn: its place among `TeamEventLog.messages`. */
+  messagesBefore: number;
   /** Specialists only. */
   kind?: SpecialistKind;
   /** A reviewer's declared implementors, the effective list for this attempt. Absent for an implementor. */

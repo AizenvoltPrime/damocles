@@ -159,6 +159,92 @@ describe('Settings › About', () => {
     expect($('[data-version-row]')).toBeNull();
   });
 
+  it('shows no failure and leaves no unhandled rejection when main answers closed, and asks for notes again on a later expand', async () => {
+    const unhandled: unknown[] = [];
+    const record = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', record);
+    try {
+      const closed = { ok: false, reason: 'closed' } as const;
+      vi.mocked(api.getVersionInfo).mockResolvedValueOnce(closed);
+      vi.mocked(api.getUpdate).mockResolvedValueOnce(closed);
+      vi.mocked(api.getReleaseNotes).mockResolvedValueOnce(closed);
+      vi.mocked(api.copyVersionInfo).mockResolvedValueOnce(closed);
+      await openAbout();
+      const card = testId('settings-row-about-version')!;
+      expect(card.textContent).not.toMatch(/undefined|unavailable|failed|did not work/i);
+      expect(testId('about-update-status')).toBeNull();
+      expect(notesOf('3.4.0')?.querySelector('[role="alert"]') ?? null).toBeNull();
+      testId('about-copy')!.click();
+      await flushPromises();
+      expect(testId('about-copy')!.textContent!.trim()).toBe('Copy version info');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandled).toEqual([]);
+
+      row('3.4.0').click();
+      await flushPromises();
+      row('3.4.0').click();
+      await flushPromises();
+      expect(notesOf('3.4.0')!.textContent).toContain('Pill.');
+      expect(vi.mocked(api.getReleaseNotes).mock.calls.map(([version]) => version)).toEqual(['3.4.0', '3.4.0']);
+    } finally {
+      process.off('unhandledRejection', record);
+    }
+  });
+
+  it('says the version information and the update status are unavailable when their reads fail', async () => {
+    vi.mocked(api.getVersionInfo).mockRejectedValueOnce(new Error('gone'));
+    vi.mocked(api.getUpdate).mockRejectedValueOnce(new Error('gone'));
+    await openAbout();
+    const card = testId('settings-row-about-version')!;
+    expect(card.textContent).toContain('Version information is unavailable');
+    expect(card.textContent).not.toContain('gone');
+    expect(testId('about-status-unavailable')!.textContent!.trim()).toBe('The update status is unavailable');
+    // A push is the newer state and replaces the notice.
+    api.pushUpdate({ state: { kind: 'idle' }, lastCheckedAt: null, platform: 'win32' });
+    await flushPromises();
+    expect(testId('about-status-unavailable')).toBeNull();
+    expect(testId('about-update-status')!.dataset.state).toBe('idle');
+  });
+
+  it('shows Copy failed for as long as Copied shows when the copy fails', async () => {
+    vi.mocked(api.copyVersionInfo).mockRejectedValueOnce(new Error('clipboard'));
+    await openAbout();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      testId('about-copy')!.click();
+      await flushPromises();
+      expect(testId('about-copy')!.textContent!.trim()).toBe('Copy failed');
+      vi.advanceTimersByTime(1599);
+      await flushPromises();
+      expect(testId('about-copy')!.textContent!.trim()).toBe('Copy failed');
+      vi.advanceTimersByTime(1);
+      await flushPromises();
+      expect(testId('about-copy')!.textContent!.trim()).toBe('Copy version info');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('announces in the polite live region that an update action did not work', async () => {
+    const action = async (state: UpdateSnapshot['state'], button: string, method: 'checkForUpdates' | 'restartToUpdate' | 'showUpdateLog' | 'openReleasePage', said: string): Promise<void> => {
+      api.pushUpdate({ state, lastCheckedAt: null, platform: 'darwin' });
+      await flushPromises();
+      vi.mocked(api[method]).mockRejectedValueOnce(new Error('no'));
+      testId(button)!.click();
+      await flushPromises();
+      const notice = testId('about-action-failed')!;
+      expect(notice.textContent!.trim()).toBe(said);
+      expect(notice.closest('[aria-live="polite"]')).not.toBeNull();
+    };
+    await openAbout();
+    await action({ kind: 'idle' }, 'about-check', 'checkForUpdates', 'The action “Check for updates” did not work');
+    await action({ kind: 'ready', version: '3.5.0', notes: '' }, 'about-restart', 'restartToUpdate', 'The action “Restart to update” did not work');
+    await action({ kind: 'error', reason: 'x' }, 'about-show-log', 'showUpdateLog', 'The action “Show log” did not work');
+    await action({ kind: 'available', version: '3.5.0', notes: '' }, 'about-release-page', 'openReleasePage', 'The action “Open release page” did not work');
+  });
+
   it('expands the release a request names', async () => {
     await openAbout('3.3.0');
     expect(row('3.3.0').getAttribute('aria-expanded')).toBe('true');

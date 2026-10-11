@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n';
 import { IconLoader, IconTerminal } from '@/components/icons';
 import type { SlashCommandItem } from '@shared/types/commands';
 import type { SteerTargetInfo } from '@shared/types/subagents';
-import { escapeHtml } from '@shared/utils';
+import { highlightFirstMatch } from '@/utils/highlightMatches';
 import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
 
 const { t } = useI18n();
@@ -81,20 +81,7 @@ onUnmounted(() => {
 });
 
 function highlightMatch(text: string): string {
-  const escaped = escapeHtml(text);
-  if (!props.query) return escaped;
-
-  const lowerText = text.toLowerCase();
-  const lowerQuery = props.query.toLowerCase();
-  const index = lowerText.indexOf(lowerQuery);
-
-  if (index === -1) return escaped;
-
-  const escapedBefore = escapeHtml(text.slice(0, index));
-  const escapedMatch = escapeHtml(text.slice(index, index + props.query.length));
-  const escapedAfter = escapeHtml(text.slice(index + props.query.length));
-
-  return `${escapedBefore}<span class="text-(--d-accent-text) font-bold">${escapedMatch}</span>${escapedAfter}`;
+  return highlightFirstMatch(text, props.query);
 }
 
 function isUntrusted(command: SlashCommandItem): boolean {
@@ -221,8 +208,12 @@ function agentStatusText(agent: SteerTargetInfo): string | null {
               v-else-if="commands.length === 0"
               class="px-3 py-4 text-center text-12.5 text-(--d-muted)"
             >
-              <div class="mb-1">{{ t('slashCommand.noMatches') }}</div>
-              <div class="text-xs opacity-70">{{ t('slashCommand.createHint') }}</div>
+              <div class="mb-1">
+                {{ t('slashCommand.noMatches') }}
+              </div>
+              <div class="text-xs opacity-70">
+                {{ t('slashCommand.createHint') }}
+              </div>
             </div>
 
             <!-- Command List -->
@@ -248,10 +239,12 @@ function agentStatusText(agent: SteerTargetInfo): string | null {
               <div class="flex-1 min-w-0 flex flex-col">
                 <div class="flex items-center gap-2">
                   <!-- Command name -->
+                  <!-- eslint-disable vue/no-v-html -- highlightMatch escapes the text with escapeHtml -->
                   <span
                     class="font-mono font-medium"
                     v-html="'/' + highlightMatch(cmd.name)"
                   />
+                  <!-- eslint-enable vue/no-v-html -->
                   <!-- Argument hint -->
                   <span
                     v-if="argumentHint(cmd)"

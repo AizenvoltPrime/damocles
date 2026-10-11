@@ -1,4 +1,4 @@
-import { spawnSync, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { _electron as electron, type ElectronApplication, type TestInfo } from '@playwright/test';
@@ -12,12 +12,35 @@ export const MAIN_SCRIPT = path.join(REPO_ROOT, 'dist', 'desktop', 'main.js');
 const QUIT_TIMEOUT_MS = 30_000;
 const KILLED_EXIT_TIMEOUT_MS = 10_000;
 const KILLED_EXIT_POLL_MS = 100;
+// killTree runs two of these (the table read, taskkill) after QUIT_TIMEOUT_MS; with the exit poll that stays inside the 120 s teardown.
+const RUN_TIMEOUT_MS = 15_000;
 
-// `root` and every process below it, from Windows' process table.
-function windowsProcessTree(root: number): number[] {
-  const table = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId)" }'], { windowsHide: true, encoding: 'utf8' }).stdout;
+interface RunResult {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+// Never a synchronous child process here: a lock holder refreshes its lock on this event loop (fair-lock.ts).
+export function run(command: string, args: string[], timeoutMs = RUN_TIMEOUT_MS): Promise<RunResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], timeout: timeoutMs });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', (d: string) => (stdout += d));
+    child.stderr.setEncoding('utf8').on('data', (d: string) => (stderr += d));
+    child.once('error', reject);
+    // `killed` is set only by spawn's timeout here.
+    child.once('close', (code) => (child.killed ? reject(new Error(`${command} did not finish within ${timeoutMs} ms`)) : resolve({ code, stdout, stderr })));
+  });
+}
+
+/** `root` and every process below it, from Windows' process table. */
+export async function windowsProcessTree(root: number): Promise<number[]> {
+  const table = await run('powershell', ['-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId)" }']);
+  if (table.code !== 0) throw new Error(`Get-CimInstance Win32_Process exited with code ${table.code}: ${table.stderr.trim()}`);
   const children = new Map<number, number[]>();
-  for (const line of table.split(/\r?\n/)) {
+  for (const line of table.stdout.split(/\r?\n/)) {
     const [pid, parent] = line.trim().split(' ').map(Number);
     if (pid === undefined || parent === undefined || !Number.isInteger(pid) || !Number.isInteger(parent)) continue;
     children.set(parent, [...(children.get(parent) ?? []), pid]);
@@ -36,17 +59,23 @@ function isAlive(pid: number): boolean {
   }
 }
 
+/** Kills `proc`'s tree and waits until it is gone; an unreadable Windows process table still kills the root's tree, then rejects. */
 // Playwright spawns a dev launch as a process group leader on POSIX; on Windows taskkill /T ends its Chromium children.
-async function killTree(proc: ChildProcess): Promise<void> {
+export async function killTree(proc: Pick<ChildProcess, 'pid' | 'exitCode' | 'signalCode'>): Promise<void> {
   const root = proc.pid;
   if (root === undefined || proc.exitCode !== null || proc.signalCode !== null) return;
-  const pids = process.platform === 'win32' ? windowsProcessTree(root) : [root];
-  if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(root), '/T', '/F'], { windowsHide: true });
+  const tree: { pids: number[]; error?: unknown } = process.platform === 'win32'
+    ? await windowsProcessTree(root).then((pids) => ({ pids }), (error: unknown) => ({ pids: [root], error }))
+    : { pids: [root] };
+  // Every pid read, since a root that exited meanwhile leaves /T nothing to walk from. taskkill's exit code is not trusted:
+  // the liveness poll below decides.
+  if (process.platform === 'win32') await run('taskkill', ['/F', '/T', ...tree.pids.flatMap((pid) => ['/PID', String(pid)])]);
   else process.kill(-root, 'SIGKILL');
   // A killed process ends after the kill returns, and Windows refuses to remove a folder a live process works in, so
   // home.dispose() would fail.
   const deadline = Date.now() + KILLED_EXIT_TIMEOUT_MS;
-  while (pids.some(isAlive) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, KILLED_EXIT_POLL_MS));
+  while (tree.pids.some(isAlive) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, KILLED_EXIT_POLL_MS));
+  if ('error' in tree) throw tree.error;
 }
 
 async function closeWithin(app: ElectronApplication, proc: ChildProcess, exit: Promise<void>): Promise<void> {
@@ -58,8 +87,8 @@ async function closeWithin(app: ElectronApplication, proc: ChildProcess, exit: P
   } finally {
     clearTimeout(timer);
   }
-  await killTree(proc);
-  throw new Error(`the app did not quit within ${QUIT_TIMEOUT_MS} ms of app.close(); killed it`);
+  const killFailure = await killTree(proc).then(() => '', (error: unknown) => `; reading its process tree failed: ${error instanceof Error ? error.message : String(error)}`);
+  throw new Error(`the app did not quit within ${QUIT_TIMEOUT_MS} ms of app.close(); killed it${killFailure}`);
 }
 
 export interface DesktopApp {

@@ -576,9 +576,9 @@ onUnmounted(() => {
 <template>
   <div class="@container relative shrink-0">
     <AtMentionPopup
+      v-model:selected-index="atMentionSelectedIndex"
       :is-open="atMentionOpen"
       :items="atMentionItems"
-      v-model:selected-index="atMentionSelectedIndex"
       :list-id="MENTION_LIST_ID"
       :anchor-element="cardRef"
       :query="atMentionQuery"
@@ -588,9 +588,9 @@ onUnmounted(() => {
     />
 
     <SlashCommandPopup
+      v-model:selected-index="slashCommandSelectedIndex"
       :is-open="slashCommandOpen"
       :commands="slashCommandCommands"
-      v-model:selected-index="slashCommandSelectedIndex"
       :list-id="COMMAND_LIST_ID"
       :anchor-element="cardRef"
       :query="slashCommandQuery"

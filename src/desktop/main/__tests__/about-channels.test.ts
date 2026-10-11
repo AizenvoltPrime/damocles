@@ -2,12 +2,13 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { OVERLAY_CHANNELS } from '../../preload/overlay-channels';
+import { OVERLAY_CHANNELS, type PopupAnswer } from '../../preload/overlay-channels';
 import { isUpdateAction, type UpdateState, type VersionInfo } from '../../preload/updates';
 import type { SettingsTarget } from '../../../shared/settings-sections';
 import { handleAboutChannels, runUpdateAction, type AboutDeps } from '../about-channels';
 import { ReleaseNotesSource } from '../release-notes';
 import type { UpdateService } from '../updater';
+import { fakeHandleWhileOpen } from './fake-popup-channels';
 
 const INFO: VersionInfo = { version: '3.4.0', packaged: true, platform: 'linux', arch: 'x64', electron: '39.2.0', chromium: '142.0.1', node: '24.11.0' };
 
@@ -50,17 +51,26 @@ beforeEach(() => {
     showLog: () => calls.push('showLog'),
     openSettings: (target) => opened.push(target),
   };
-  handleAboutChannels({ handle: (channel, handler) => handlers.set(channel, handler), isOpen: (kind) => open && kind === 'settings' }, deps);
+  handleAboutChannels({
+    handleWhileOpen: fakeHandleWhileOpen(handlers),
+    isOpen: (kind) => open && kind === 'settings',
+  }, deps);
 });
 
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-const invoke = async (channel: string, ...args: unknown[]): Promise<unknown> => handlers.get(channel)!(...args);
+const answer = async (channel: string, ...args: unknown[]): Promise<unknown> => handlers.get(channel)!(...args);
+// The value of an answer the open modal gets.
+const invoke = async (channel: string, ...args: unknown[]): Promise<unknown> => {
+  const answered = (await answer(channel, ...args)) as PopupAnswer<unknown>;
+  if (!answered.ok) throw new Error(`${channel} answered closed`);
+  return answered.value;
+};
 
 describe('About channels', () => {
-  it('refuses every channel while the settings modal is closed', async () => {
+  it('answers every channel closed, as a value, while the settings modal is closed, and acts on none', async () => {
     open = false;
     const channels = [
       OVERLAY_CHANNELS.updateGet, OVERLAY_CHANNELS.updateCheck, OVERLAY_CHANNELS.updateRestart, OVERLAY_CHANNELS.updateShowLog,
@@ -68,7 +78,7 @@ describe('About channels', () => {
       OVERLAY_CHANNELS.releaseNotesIndex, OVERLAY_CHANNELS.releaseNotesGet,
     ];
     expect([...handlers.keys()].sort()).toEqual([...channels].sort());
-    for (const channel of channels) await expect(invoke(channel, '3.4.0'), channel).rejects.toThrow('The settings are not open');
+    for (const channel of channels) await expect(answer(channel, '3.4.0'), channel).resolves.toEqual({ ok: false, reason: 'closed' });
     expect(calls).toEqual([]);
     expect(copied).toEqual([]);
   });

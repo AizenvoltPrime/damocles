@@ -143,3 +143,12 @@ describe('shiki.firstHighlight span', () => {
     expect(spans).toEqual([{ label: 'shiki.firstHighlight', lang: 'python', theme: 'github-dark', failed: true }]);
   });
 });
+
+describe('normalizeLanguage', () => {
+  it.each(['constructor', 'Constructor', '__proto__'])('reads a fence tagged %j as plain text, not an inherited key', async (tag) => {
+    const { normalizeLanguage } = await freshModule();
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    expect(normalizeLanguage(tag)).toBe('txt');
+  });
+});

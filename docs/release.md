@@ -36,7 +36,7 @@ The six gates, in workflow order, with the step name the Actions log shows:
 | --- | --- |
 | Verify package.json version matches tag | compares `node -p "require('./package.json').version"` against `${GITHUB_REF_NAME#v}` and exits 1 when they differ |
 | Typecheck | `npm run typecheck` |
-| Lint | `npm run lint`, which also enforces that core code never imports `vscode` or `electron` |
+| Lint | `npm run lint`: ESLint and stylelint with `--max-warnings 0`, so any warning fails it; ESLint also enforces that core code never imports `vscode` or `electron` |
 | Test | `npm test` |
 | Smoke test pi runtime contract | `npm run smoke:pi` |
 | Verify .vscodeignore allowlist is in sync | `node scripts/sync-vscodeignore.mjs --check` |
@@ -171,7 +171,7 @@ Each leg runs, in order:
    On Windows, **Verify the tested Windows app is still clean** then runs the integrity check again, because the installer step packs the directory the suite just ran from, and the check fails on runtime leftovers such as `__pycache__` in the Python package.
 7. **Verify this leg's release artifacts**: `node scripts/release-targets.mjs --check-desktop-artifacts <target> dist-desktop` fails when an artifact in `DESKTOP_TARGETS` is missing or electron-builder wrote one under a name the module does not list.
 8. The `win-arm64`, `mac-arm64` and `linux-x64` legs build version N+1 for the update test (see "Update tests") into `dist-desktop/next`.
-9. Upload `desktop-<target>`: only installers, blockmaps and `latest*.yml`. The unpacked app, `builder-debug.yml` and `builder-effective-config.yaml` never leave the runner. On failure the packaged-app suite's Playwright report uploads as `e2e-report-<target>`, from `dist/e2e-report/packaged` and `dist/e2e-results/packaged`.
+9. Upload `desktop-<target>`: only installers, blockmaps and `latest*.yml`. The unpacked app, `builder-debug.yml` and `builder-effective-config.yaml` never leave the runner. Unless the job was cancelled, the packaged-app suite's Playwright report uploads as `e2e-report-<target>`, from `dist/e2e-report/packaged` and `dist/e2e-results/packaged`.
 
 ## Desktop end-to-end suite
 
@@ -182,8 +182,25 @@ Each shard runs, in order:
 1. Linux only: `apt-get install xvfb openbox`.
 2. `npm ci`, then **Download the Electron binary**: `npx --no install-electron`. The `electron` package has no install script and downloads its binary the first time something requires it, so without this step the setuid step below finds no `node_modules/electron/dist`, and two Playwright workers race to download the binary. The step is idempotent. The `verify`, `package` and `package-desktop` jobs never download the binary.
 3. Linux only: Ubuntu 24.04 restricts unprivileged user namespaces for binaries without an AppArmor profile, so the step makes `node_modules/electron/dist/chrome-sandbox` root-owned and setuid, which lets Chromium use its setuid sandbox helper. The sandbox stays on: nothing in CI passes `--no-sandbox` or relaxes the kernel setting.
-4. **Desktop end-to-end suite**: `npm run test:desktop -- --shard=<n>/<total>`. The script fetches the assets and builds the webview and the desktop app (main, preloads, workers and sentinel) itself, so the job has no separate build step; the suite never loads the extension bundle. On Linux it runs under `xvfb-run` on a 1920x1080 screen with the openbox window manager, because minimizing a window needs a window manager and the pane specs size the window to 1400x900. On Linux and macOS the suite runs one worker, here and in the packaged-app suite (`workers` in `playwright.desktop.config.ts`). On both, a session gives keyboard focus to one window of one app, and each test's app takes it when its window opens, so a parallel worker would take it from a test that is pressing keys: native key presses reach the menu only in the key window, and `toBeFocused` needs `document.hasFocus()`. On macOS the suite's `pressKeys` posts each key, modifiers included, to the app's process through the window server with `CGEventPostToPid` through koffi (`e2e/desktop/support/mac-key-event.ts`), so it takes the path a physical key takes. An event from `webContents.sendInputEvent` has no `NSEvent`, and Electron's macOS path hands only an `NSEvent` to the application menu, so such a key never reaches a menu accelerator or an Edit menu role. An `NSEvent` posted with `-[NSApplication postEvent:atStart:]` skips the window server, and with a non-editable element focused a menu key equivalent with Shift held never fires from it. On Windows the suite's global setup first builds Windows PowerShell 5.1's module analysis cache, and every test's hermetic home starts with a copy (`WINDOWS_POWERSHELL_CACHE` in `e2e/desktop/support/hermetic.ts`): without it, a Windows PowerShell terminal's first cmdlet analyses every module on the runner's module path first, which takes longer than a test waits.
-5. On failure the shard's Playwright report uploads as `e2e-report-<target>-<n>`, from `dist/e2e-report/dev` and `dist/e2e-results/dev`.
+4. **Desktop end-to-end suite**: `npm run test:desktop -- --shard=<n>/<total>`. The script fetches the assets and builds the webview and the desktop app (main, preloads, workers and sentinel) itself, so the job has no separate build step; the suite never loads the extension bundle. On Linux it runs under `xvfb-run` on a 1920x1080 screen with the openbox window manager, because minimizing a window needs a window manager and the pane specs size the window to 1400x900. On Linux and macOS the suite runs one worker, here and in the packaged-app suite (`workers` in `playwright.desktop.config.ts`). On both, a session gives keyboard focus to one window of one app, and each test's app takes it when its window opens, so a parallel worker would take it from a test that is pressing keys: native key presses reach the menu only in the key window, and `toBeFocused` needs `document.hasFocus()`. On macOS the suite's `pressKeys` posts each key, modifiers included, to the app's process through the window server with `CGEventPostToPid` through koffi (`e2e/desktop/support/mac-key-event.ts`), so it takes the path a physical key takes. An event from `webContents.sendInputEvent` has no `NSEvent`, and Electron's macOS path hands only an `NSEvent` to the application menu, so such a key never reaches a menu accelerator or an Edit menu role. An `NSEvent` posted with `-[NSApplication postEvent:atStart:]` skips the window server, and with a non-editable element focused a menu key equivalent with Shift held never fires from it. On Windows the suite's global setup first builds Windows PowerShell 5.1's module analysis cache, and every test's hermetic home starts with a copy (`WINDOWS_POWERSHELL_CACHE` in `e2e/desktop/support/hermetic.ts`): without it, a Windows PowerShell terminal's first cmdlet analyses every module on the runner's module path first, which takes longer than a test waits. On Windows the step also points `TEMP` and `TMP` at `RUNNER_TEMP` before it starts the suite, as the packaged-app suite step does, so every test home, with its Electron user data and SQLite stores, sits on the runner's D: drive where the runner has one. C: is the OS disk on GitHub's Windows runners and much slower (actions/runner-images#8755): in release run 38138596439 every disk write on it stalled for two minutes, a memory database open that takes under 0.4 s took 21 s, and a test's app outlived its 30-second quit. `win-arm64` runners have no D:, so there `RUNNER_TEMP` and the test homes stay on C:.
+5. Unless the job was cancelled, the shard's Playwright report uploads as `e2e-report-<target>-<n>`, from `dist/e2e-report/dev` and `dist/e2e-results/dev`, so a green shard keeps its report and launch diagnostics too. Traces are saved only for a failed attempt.
+
+In CI the suite retries a failed test once, only to tell a flaky test from a broken one and to keep the first attempt's trace: `failOnFlakyTests` fails the shard on a test that passed on retry. The packaged-app suite in `package-desktop` runs under the same config, so a flaky test fails that leg too. `globalTimeout` ends a hung run 45 minutes after Playwright starts, global setup included, and Playwright then writes the report; each suite step's `timeout-minutes` lies past that, as "Time limits" sets out.
+
+### Time limits
+
+A job's `timeout-minutes` cancels the job, and a cancelled job skips every `if: ${{ !cancelled() }}` step, so a suite that hits it loses its report. A step's `timeout-minutes` fails only that step: the runner marks a timed-out step failed, not cancelled, unless the job itself was cancelled (`StepsRunner.cs` in actions/runner), and `cancelled()` reads only the job's status, so the `e2e-report-*` upload still runs. The limits therefore nest: Playwright's `globalTimeout` (45 minutes) inside each suite step's `timeout-minutes` (55), inside its job's (90 for both `e2e-desktop` and `package-desktop`).
+
+The measurements below come from the release runs 38075559913 and 37964451858, the first two with this job layout (`gh run view <id> --json jobs`, and the job logs for Playwright's own run time), and `scripts/__tests__/release-targets.test.ts` asserts every margin with them:
+
+| Budget (test constant) | Measured | Budget |
+| --- | --- | --- |
+| Job start to the suite step (`INSTALL_BUDGET_MIN`) | `e2e-desktop` on `win-arm64` 10.1 to 17.3 min, of which `npm ci` 9.6 to 16.7 min; under 2 min on the other targets. `package-desktop`, with its builds, up to 15.2 min on `win-arm64` | 25 min |
+| `test:desktop`'s asset fetch, `install-electron`, branding and builds before Playwright starts, and the HTML report after it ends (`BUILD_AND_REPORT_BUDGET_MIN`) | 1.4 to 1.5 min (the step's duration less Playwright's reported run time); the report under a second. The packaged-app suite builds nothing first | 10 min |
+| The report upload and post-job steps after the `e2e-desktop` suite (`UPLOAD_BUDGET_MIN`) | under 0.5 min | 5 min |
+| `package-desktop`'s steps after its suite: the Windows installer, the N+1 build and the uploads (`PACKAGE_AFTER_SUITE_BUDGET_MIN`) | up to 3.2 min | 10 min |
+
+Each suite step is 45 + 10 = 55 minutes. `e2e-desktop` needs 25 + 55 + 5 = 85 minutes and has 90; `package-desktop` needs 25 + 55 + 10 = 90 and has 90. If a measurement outgrows its budget, raise the budget, then the limits the test names.
 
 ## Install verification
 
@@ -262,20 +279,21 @@ To enable Open VSX publishing:
 1. Bump `package.json` `version` to match the intended tag. The `verify` job's "Verify package.json version matches tag" step fails the run when they disagree.
 2. Add a `## [x.y.z] - YYYY-MM-DD` section to `CHANGELOG.md`. The `release` job's "Extract changelog section" step scans `CHANGELOG.md` for a line starting with `## ` that contains `[x.y.z]`, and takes every line after it up to the next `## ` heading as the GitHub Release body. A missing or empty section fails the job, so the entry has to exist before the tag is pushed.
 3. Commit the version bump and the changelog section together with the work they describe, using a conventional-commit subject that names the change. The workflow reads nothing from the commit; `gh release create` titles the Release with the tag name.
-4. Tag and push:
+4. Run the dry run on a release candidate tag ("Dry run on a release candidate tag" below) from a commit on top of this one that sets the rc version (dry run step 3), because the `verify` job fails when `package.json` `version` differs from the tag. Tag `origin` only after every job of the dry run passed.
+5. Tag and push:
 
    ```bash
    git tag vx.y.z
    git push origin vx.y.z
    ```
 
-5. Watch the workflow in Actions. On success, check the [VS Marketplace listing](https://marketplace.visualstudio.com/items?itemName=Aizenvolt.damocles) and the [Open VSX listing](https://open-vsx.org/extension/Aizenvolt/damocles) serve per-platform VSIXes, and install at least one on Windows, macOS, and Linux to confirm activation.
-6. Check the GitHub Release lists the seven VSIXes, the five legs' installers, their blockmaps, five feed files (`latest-x64.yml`, `latest-arm64.yml`, `latest-mac.yml`, `latest-linux.yml`, `latest-linux-arm64.yml`) and `SHA256SUMS`, and that its notes end with the "Desktop app" caveats the "Extract changelog section" step appends. Spot-check one download as described in "Provenance and checksums".
-7. Windows x64 update, by hand, because CI covers only arm64: with the previous release installed, start it, wait for the "Restart Now" prompt, restart, and check Settings > Apps shows the new version.
+6. Watch the workflow in Actions. If any job fails, follow "Release run failure". On success, check the [VS Marketplace listing](https://marketplace.visualstudio.com/items?itemName=Aizenvolt.damocles) and the [Open VSX listing](https://open-vsx.org/extension/Aizenvolt/damocles) serve per-platform VSIXes, and install at least one on Windows, macOS, and Linux to confirm activation.
+7. Check the GitHub Release lists the seven VSIXes, the five legs' installers, their blockmaps, five feed files (`latest-x64.yml`, `latest-arm64.yml`, `latest-mac.yml`, `latest-linux.yml`, `latest-linux-arm64.yml`) and `SHA256SUMS`, and that its notes end with the "Desktop app" caveats the "Extract changelog section" step appends. Spot-check one download as described in "Provenance and checksums".
+8. Windows x64 update, by hand, because CI covers only arm64: with the previous release installed, start it, wait for the "Restart Now" prompt, restart, and check Settings > Apps shows the new version.
 
-### Dry run on a prerelease tag
+### Dry run on a release candidate tag
 
-The `release` job creates a real GitHub Release and publishes to both registries, so do the first desktop run in a fork, where neither publish secret exists:
+Every release runs the whole workflow on a release candidate (rc) tag in a fork before its tag reaches `origin`, so a failing or flaky test fails on a disposable tag. The `release` job creates a real GitHub Release and publishes to both registries, so the dry run happens in a fork, where neither publish secret exists:
 
 1. Fork `AizenvoltPrime/damocles` on GitHub and enable Actions in the fork (Actions tab > "I understand my workflows, go ahead and enable them"). The fork must be public, because the `windows-11-arm` and `ubuntu-24.04-arm` runners are free only for public repositories.
 2. Do not add `VSCE_PAT` or `OVSX_PAT` to the fork; without them both publish steps are skipped. "Create GitHub Release" needs no secret, because it uses the job's own `GITHUB_TOKEN`, so the dry run creates a release in the fork.
@@ -288,8 +306,17 @@ The `release` job creates a real GitHub Release and publishes to both registries
    git push fork v2.37.0-rc.1
    ```
 
-4. Every job must pass. The fork gets a release whose assets you can check against step 6 above, with attestations under the fork's name (`gh attestation verify <file> --repo <you>/damocles`).
+4. Every job must pass. A failed test, flaky or not, is fixed at its cause and the dry run repeats on the next rc tag (`v2.37.0-rc.2`), from a commit that sets `package.json` `version` and the `CHANGELOG.md` section to that rc, as in step 3. The fork gets a release whose assets you can check against step 7 above, with attestations under the fork's name (`gh attestation verify <file> --repo <you>/damocles`).
 5. Delete the local tag afterwards (`git tag -d v2.37.0-rc.1`) so it is never pushed to `origin`, and delete the fork's release.
+
+## Release run failure
+
+A pushed tag is never moved or re-pushed to other code ([git-tag, "On Re-tagging"](https://git-scm.com/docs/git-tag#_on_re_tagging)): anyone who fetched it keeps the old commit.
+
+- A test failure, flaky or not, is fixed at its cause. "Re-run failed jobs" never answers a test failure, because a pass on the re-run ships the race that failed.
+- "Re-run failed jobs" is only for a failure outside the tests: a lost runner, or a download or install that failed on the network.
+- Before tagging `origin`, the fix lands and the dry run repeats on the next rc tag, with `package.json` and `CHANGELOG.md` set to that rc.
+- When a real tag's run fails, fix the cause and release the next patch version. Its release commit takes over the unreleased version's `CHANGELOG.md` section and its compare link, so the failed version never appears as released.
 
 ## Publish failure recovery
 

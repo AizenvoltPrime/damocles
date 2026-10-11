@@ -11,7 +11,7 @@ if (process.platform === 'win32' && packagedAppPath() === undefined) {
 // A CI leg runs both projects in turn and uploads the parent folders, so neither run's results replace the other's.
 const PROJECT = packagedAppPath() === undefined ? 'dev' : 'packaged';
 
-// Desktop end-to-end suite (Electron driver); vitest never loads e2e/, and this config never loads src/.
+// Desktop end-to-end suite (Electron driver); vitest never runs the e2e specs, and this config never loads src/.
 // DAMOCLES_E2E_PACKAGED_APP selects the project: unset runs `dev` against dist/desktop/main.js, set runs `packaged` against that executable.
 export default defineConfig({
   testDir: './e2e/desktop',
@@ -24,8 +24,11 @@ export default defineConfig({
   fullyParallel: true,
   timeout: 120_000,
   expect: { timeout: 20_000 },
-  // A pass on retry is reported as flaky, which is the signal; it never turns a flaky test green silently.
+  // The CI retry only sorts a failure into flaky or broken and keeps the first attempt's trace; either one fails the run.
   retries: process.env.CI ? 1 : 0,
+  failOnFlakyTests: !!process.env.CI,
+  // Below the suite steps' timeout-minutes in release.yml, so a hung run still writes its report (docs/release.md "Time limits").
+  globalTimeout: process.env.CI ? 45 * 60_000 : 0,
   forbidOnly: !!process.env.CI,
   reporter: [['list'], ['html', { open: 'never', outputFolder: `./dist/e2e-report/${PROJECT}` }]],
   projects: PROJECT === 'dev'

@@ -52,8 +52,8 @@ const activePreview = computed(() => {
   const option = q.options.find(o => o.label === previewingOptionLabel.value);
   const raw = option?.preview;
   if (!raw) return null;
-  // Model-written markup must not restyle or cover the panel, so it keeps no styles and none of the app's classes.
-  return DOMPurify.sanitize(raw, { FORBID_TAGS: ['style'], FORBID_ATTR: ['style', 'class'] });
+  // Model-written markup must not restyle or cover the panel or pose as a control, so it keeps no styles, app classes or form elements.
+  return DOMPurify.sanitize(raw, { FORBID_TAGS: ['style', 'form', 'input', 'button', 'textarea', 'select'], FORBID_ATTR: ['style', 'class'] });
 });
 
 const hasCustomInput = computed(() => currentCustomInput.value.trim().length > 0);
@@ -340,12 +340,14 @@ watch(() => store.currentTabIndex, () => {
           </DockPromptOptions>
         </ListboxRoot>
 
+        <!-- eslint-disable vue/no-v-html -- DOMPurify sanitizes activePreview -->
         <div
           v-if="activePreview"
           class="mx-1 mt-1.5 max-h-48 overflow-auto rounded-lg border border-(--d-border) bg-(--d-code) p-3 text-xs"
           data-testid="question-option-preview"
           v-html="activePreview"
         />
+        <!-- eslint-enable vue/no-v-html -->
       </div>
 
       <div

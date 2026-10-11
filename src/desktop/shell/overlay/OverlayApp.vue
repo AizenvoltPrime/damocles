@@ -3,6 +3,7 @@ import { nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { DamoclesOverlayApi, OverlayAnswer, OverlayRequest, PaletteCommand, QuickOpenResponse, QuickOpenScope } from '../../preload/overlay-channels';
 import { applyShellLocale } from '../i18n';
+import { answerOf } from './popup-answer';
 import ContextMenu from './components/ContextMenu.vue';
 import ConfirmDialog from './components/ConfirmDialog.vue';
 import MessageDialog from './components/MessageDialog.vue';
@@ -63,7 +64,7 @@ const OWN_ESCAPE: ReadonlySet<OverlayRequest['kind']> = new Set(['settings', 'co
 // query starting with ">" is the command palette, as in VS Code: it lists main's commands once per open request.
 let quickOpenGeneration = 0;
 let lastQuickOpen: QuickOpenResponse | undefined;
-let paletteCommands: Promise<readonly PaletteCommand[]> | undefined;
+let paletteCommands: Promise<readonly PaletteCommand[] | undefined> | undefined;
 const paletteMode = ref(false);
 // The folder main limited the open Quick Open to; its files list in path order, without groups.
 let quickOpenScope: QuickOpenScope | undefined;
@@ -73,18 +74,37 @@ function scopeName(scope: QuickOpenScope): string {
 }
 const PALETTE_PREFIX = '>';
 
-async function loadQuickOpen(query: string): Promise<QuickPickModel> {
+// undefined: main answered that Quick Open closed, so the list on screen stays while it leaves. A failed read, or main's
+// index answering failed, says the list could not load rather than that nothing matched.
+async function loadQuickOpen(query: string): Promise<QuickPickModel | undefined> {
   paletteMode.value = query.startsWith(PALETTE_PREFIX);
   if (paletteMode.value) {
-    paletteCommands ??= props.api.listCommands();
-    return commandsModel(await paletteCommands, query.slice(PALETTE_PREFIX.length), locale.value !== 'en', {
+    const asked = (paletteCommands ??= answerOf(props.api.listCommands()));
+    let commands: readonly PaletteCommand[] | undefined;
+    try {
+      commands = await asked;
+    } catch {
+      // Not kept, so the next palette query asks again.
+      if (paletteCommands === asked) paletteCommands = undefined;
+      return { rows: [], failure: t('palette.loadFailed') };
+    }
+    if (!commands) return undefined;
+    return commandsModel(commands, query.slice(PALETTE_PREFIX.length), locale.value !== 'en', {
       recent: t('palette.recent'),
       other: t('palette.other'),
     });
   }
-  const response = await props.api.queryQuickOpen({ query, generation: ++quickOpenGeneration });
+  const generation = ++quickOpenGeneration;
+  let response: QuickOpenResponse | undefined;
+  try {
+    response = await answerOf(props.api.queryQuickOpen({ query, generation }));
+  } catch {
+    response = { generation, mention: false, results: [], failed: true };
+  }
+  if (!response) return undefined;
   // QuickPick shows only the newest query's answer, so a pick reads only that one.
   if (response.generation === quickOpenGeneration) lastQuickOpen = response;
+  if (response.failed) return { rows: [], failure: t('quickOpen.loadFailed') };
   return quickOpenModel(response, query.trim() === '' && quickOpenScope === undefined, {
     recent: t('quickOpen.recent'),
     current: (project) => t('quickOpen.current', { project }),

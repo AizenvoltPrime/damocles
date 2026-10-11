@@ -2031,12 +2031,14 @@ class DesktopApp {
     this.fileTree = fileTree;
     this.quickOpenIndex = quickOpenIndex;
     this.editorPane = editorPane;
-    // Playwright drives the agent's side of EditorService (openFile, showDiff without approvalId), raises host prompts and stores
-    // their answers as secrets, routes the browser's requests and makes Files' trash or permanent delete fail through this, in the unpackaged app only.
+    // Playwright drives the agent's side of EditorService (openFile, showDiff without approvalId), raises host prompts and modal
+    // questions, stores their answers as secrets, routes the browser's requests and makes Files' trash or permanent delete fail
+    // through this, in the unpackaged app only.
     if (!app.isPackaged && process.env['DAMOCLES_E2E_HOOKS'] === '1') {
       const hooks = {
         editor: platform.editor,
         dialogs: platform.dialogs,
+        notifications: platform.notifications,
         secrets: platform.secrets,
         browser: () => this.requireCore().provider.getBrowserService(),
         failFiles: (failure: { readonly trash?: string; readonly remove?: string }) => {

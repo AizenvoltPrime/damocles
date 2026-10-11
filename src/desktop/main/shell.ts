@@ -115,7 +115,7 @@ import { GestureGrant, isActivationKey, isContextMenuKey, isContextMenuMouse, is
 import { isRelativeOrRoot } from './documents/confine';
 import { parseOverlayRequest } from './overlay';
 import { APP_ORIGIN, SHELL_PAGE_URL } from './protocol';
-import { loadAppPage, loggableUrl } from './security';
+import { loadAppPage, loggableUrl, mainFrameLoadFailed } from './security';
 import { isPanelSender } from './views';
 import { parseGridSizes, parseSearchEditorConfig, parseSidebarLayout } from './window-layout-store';
 
@@ -871,6 +871,8 @@ export class ShellHost {
   // given since the page last started loading, the ones a request of its can name.
   private projectKeysFrom: Array<{ readonly revision: number; readonly keys: ReadonlySet<string> }> = [];
   private loaded = false;
+  // the main frame's load failed; the did-finish-load Electron emits after it shows no page
+  private loadFailed = false;
   private reportedBadBounds = false;
   private crashes: number[] = [];
   private disposed = false;
@@ -998,9 +1000,17 @@ export class ShellHost {
     // A reload by any route commits a new document, which refetches what it shows once it has loaded.
     contents.on('did-navigate', () => {
       this.loaded = false;
+      this.loadFailed = false;
       this.projectKeysFrom = [];
     });
+    contents.on('did-fail-load', (_event, errorCode: number, _description, _url, isMainFrame: boolean) => {
+      if (!mainFrameLoadFailed(errorCode, isMainFrame)) return;
+      this.loaded = false;
+      this.loadFailed = true;
+      this.log(`[shell] the page did not load (${errorCode})`);
+    });
     contents.on('did-finish-load', () => {
+      if (this.loadFailed) return;
       this.loaded = true;
       this.actions.terminal.setInputFocused(false);
       this.actions.editor.setFocusOverlay(false);
@@ -1395,6 +1405,7 @@ export class ShellHost {
 
   load(): void {
     this.loaded = false;
+    this.loadFailed = false;
     this.projectKeysFrom = [];
     loadAppPage(this.window.webContents, SHELL_PAGE_URL).catch((err: unknown) => {
       this.log(`[shell] failed to load: ${err instanceof Error ? err.message : String(err)}`);

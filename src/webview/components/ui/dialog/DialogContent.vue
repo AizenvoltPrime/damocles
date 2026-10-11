@@ -17,7 +17,7 @@ import { useDialogLayer } from "@/composables/useOverlayEscape"
 
 const props = withDefaults(
   defineProps<DialogContentProps & { class?: HTMLAttributes["class"]; showClose?: boolean }>(),
-  { class: undefined, showClose: true },
+  { showClose: true },
 )
 const emits = defineEmits<DialogContentEmits>()
 

@@ -4,9 +4,9 @@ import { __webviewPanels, type FakeWebviewPanel } from 'vscode';
 import { wrapChatPanel, wrapSidebarView } from '../webview-hosts';
 import { createHarness, folderEntry, type Harness } from '../../../core/chat-panel/__tests__/panel-manager-harness';
 
-// The VS Code chat panel CSP as shipped before the desktop Monaco editor existed; any change to it is a VS Code-visible change.
+// The VS Code chat panel CSP, which carries no desktop-only directive (worker-src); any change to it is a VS Code-visible change.
 const VSCODE_CHAT_PANEL_CSP =
-  "default-src 'none'; style-src vscode-csp-source 'unsafe-inline'; script-src 'nonce-<nonce>' 'wasm-unsafe-eval'; font-src vscode-csp-source; img-src vscode-csp-source data: https:;";
+  "default-src 'none'; style-src vscode-csp-source 'unsafe-inline'; script-src 'nonce-<nonce>' 'wasm-unsafe-eval'; font-src vscode-csp-source; img-src vscode-csp-source data: https:; form-action 'none';";
 
 function cspOf(html: string): string {
   const csp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(html)?.[1];

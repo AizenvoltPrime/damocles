@@ -24,6 +24,7 @@ import { MessageBus } from '../message-bus';
 import { FakeSession } from './fake-session';
 import { initPiLoader } from '../../pi-session/pi-loader';
 import { teamAgentToolset } from './team-mcp-fixture';
+import { stubCheckpointWriter } from './checkpoint-writer-stub';
 import type { AgentMcpContext, TeamAgent, TeamConfig, TeamRole } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { TeamAgent as WebviewTeamAgent, TeamState } from '../../../shared/types/team';
@@ -136,6 +137,7 @@ async function makeHarness(cwd: string) {
   const runner = new TeamRunner(config, (m) => handlers[m.type]?.(m, {} as never));
   const target = runner as unknown as Record<string, unknown>;
   target['persistence'] = persistence;
+  target['checkpointWriter'] = stubCheckpointWriter();
   target['agentRunner'] = new AgentRunner();
   target['messageBus'] = new MessageBus(TEAM_ID);
   target['scratchpad'] = new Scratchpad();

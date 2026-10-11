@@ -13,7 +13,7 @@ import { CHIME_URGENCY, type ChimeTone } from '../preload/notifications';
 import type { PanelTheme } from '../preload/panel-channels';
 import type { ToastSink } from './notification-center';
 import { NOTIFIER_PAGE_URL } from './protocol';
-import { loadAppPage, loggableUrl } from './security';
+import { loadAppPage, loggableUrl, mainFrameLoadFailed } from './security';
 import { isPanelSender } from './views';
 
 // A page that kills its renderer on every load is left dead rather than reloaded in a loop.
@@ -110,6 +110,8 @@ export class NotifierHost implements ToastSink {
   // contents is kept apart from the view: reading a destroyed view's webContents throws.
   private popup: { readonly window: BaseWindow; readonly view: WebContentsView; readonly contents: WebContents } | undefined;
   private loaded = false;
+  // the main frame's load failed; the did-finish-load Electron emits after it shows no page
+  private loadFailed = false;
   private area: OverlayToastArea = { width: 0, height: 0, parts: [] };
   // as the page last reported it; a fresh page starts with the pointer off its toasts
   private pointerOver = false;
@@ -270,13 +272,25 @@ export class NotifierHost implements ToastSink {
     this.on(contents, OVERLAY_CHANNELS.toastsLeave, () => this.deps.leave());
     // A reload by any route commits a new document that shows no toast until main replays them once it has loaded.
     contents.on('did-navigate', () => {
-      if (this.popup !== popup || !this.loaded) return;
+      if (this.popup !== popup) return;
+      this.loadFailed = false;
+      if (!this.loaded) return;
       this.loaded = false;
       this.area = { width: 0, height: 0, parts: [] };
       this.pointerOver = false;
       this.place();
     });
+    contents.on('did-fail-load', (_event, errorCode: number, _description, _url, isMainFrame: boolean) => {
+      if (this.popup !== popup || !mainFrameLoadFailed(errorCode, isMainFrame)) return;
+      this.loadFailed = true;
+      this.loaded = false;
+      this.area = { width: 0, height: 0, parts: [] };
+      this.pointerOver = false;
+      this.place();
+      this.deps.log(`[notifier] the page did not load (${errorCode})`);
+    });
     contents.on('did-finish-load', () => {
+      if (this.loadFailed) return;
       this.loaded = true;
       this.pointerOver = false;
       for (const toast of this.deps.pendingToasts()) this.show(toast);
@@ -306,6 +320,7 @@ export class NotifierHost implements ToastSink {
   }
 
   private load(contents: WebContents): void {
+    this.loadFailed = false;
     loadAppPage(contents, NOTIFIER_PAGE_URL).catch((err: unknown) => {
       this.deps.log(`[notifier] failed to load: ${err instanceof Error ? err.message : String(err)}`);
     });

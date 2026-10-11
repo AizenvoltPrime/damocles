@@ -3,12 +3,15 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mount, type VueWrapper } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 import ConsolidationOverlay from '../ConsolidationOverlay.vue';
+import ConsolidationStepper from '../ConsolidationStepper.vue';
 import { i18n } from '@/i18n';
 import { useConsolidationStore } from '@/stores/useConsolidationStore';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { useUIStore } from '@/stores/useUIStore';
-import { VSCODE_HOST_CAPABILITIES, type WebviewToExtensionMessage } from '@shared/types/messages';
-import type { ConsolidationFailure } from '@shared/types/consolidation';
+import { createConsolidationHandlers } from '@/composables/message-handler/handlers/consolidation-handlers';
+import type { HandlerContext } from '@/composables/message-handler/types';
+import { VSCODE_HOST_CAPABILITIES, type ExtensionToWebviewMessage, type WebviewToExtensionMessage } from '@shared/types/messages';
+import type { ConsolidationFailure, ConsolidationResult } from '@shared/types/consolidation';
 import { MAX_FAILED_ANSWERS } from '@shared/consolidation';
 
 const posted = vi.hoisted((): WebviewToExtensionMessage[] => []);
@@ -35,6 +38,15 @@ function mountOverlay(failure?: ConsolidationFailure, setAside = 0): VueWrapper 
   mounted.push(wrapper);
   return wrapper;
 }
+
+const run = (contents: string[]): ConsolidationResult => ({
+  ranAt: Date.now(),
+  trigger: 'manual',
+  status: contents.length ? 'extracted' : 'empty',
+  extracted: contents.map((content) => ({ kind: 'fact', scope: 'project', content, outcome: 'inserted' as const })),
+  maintenance: { promoted: 0, decayed: 0, pruned: 0 },
+  candidatesReviewed: contents.length,
+});
 
 const signInButton = (wrapper: VueWrapper) => wrapper.findAll('button').find((b) => b.text() === i18n.global.t('consolidation.signIn'));
 
@@ -129,6 +141,15 @@ describe('ConsolidationOverlay actions', () => {
     expect(useUIStore().settingsTarget).toEqual({ section: 'accounts' });
   });
 
+  it('words a refused access (HTTP 403) as the provider refusing access and offers no Sign in', () => {
+    const wrapper = mountOverlay({ kind: 'error', reason: 'forbidden', phase: 'extract' });
+
+    const strip = wrapper.get('[data-testid="consolidation-strip"]').text();
+    expect(strip).toContain(i18n.global.t('consolidation.failure.extract', { reason: i18n.global.t('consolidation.stepper.reason.forbidden') }));
+    expect(i18n.global.t('consolidation.stepper.reason.forbidden')).not.toBe('consolidation.stepper.reason.forbidden');
+    expect(signInButton(wrapper)).toBeUndefined();
+  });
+
   it('offers no Sign in for an unreachable model', () => {
     const wrapper = mountOverlay({ kind: 'error', reason: 'unreachable', phase: 'extract' });
     expect(signInButton(wrapper)).toBeUndefined();
@@ -190,6 +211,106 @@ describe('ConsolidationOverlay actions', () => {
 
     expect(store.isRunning).toBe(true);
     expect(store.phaseStatus).toEqual({ claim: 'done', extract: 'pending', persist: 'pending', maintain: 'pending', profiles: 'pending' });
+  });
+
+  it('keeps the last run in view through a run\'s first pass, then shows this run\'s memories and names the pass in the strip', async () => {
+    const store = useConsolidationStore();
+    store.setResult(run(['Previous run memory.']));
+    const wrapper = mountOverlay();
+    const heading = () => wrapper.get('[data-testid="consolidation-results-heading"]').text();
+    const extracted = () => wrapper.findAll('[data-testid="consolidation-extracted"]').map((m) => m.html());
+    const strip = () => wrapper.get('[data-testid="consolidation-strip"]').text();
+    const stepperRows = () => wrapper.getComponent(ConsolidationStepper).element.childElementCount;
+
+    store.setRunning(true, 1);
+    await wrapper.vm.$nextTick();
+    expect(heading()).toBe(i18n.global.t('overlays.consolidation.lastRun', { n: 1 }));
+    expect(extracted()).toHaveLength(1);
+    expect(extracted()[0]).toContain('Previous run memory.');
+    expect(strip()).not.toContain(i18n.global.t('consolidation.strip.pass', { n: 1 }));
+    const firstPassRows = stepperRows();
+
+    store.setRunning(true, 2, run(['First pass memory.']));
+    store.applyProgress({ phase: 'claim', status: 'done', meta: { count: 1 } });
+    await wrapper.vm.$nextTick();
+    expect(heading()).toBe(i18n.global.t('overlays.consolidation.thisRun', { n: 1 }));
+    expect(extracted()).toHaveLength(1);
+    expect(extracted()[0]).toContain('First pass memory.');
+    expect(wrapper.html()).not.toContain('Previous run memory.');
+    expect(strip()).toContain(i18n.global.t('consolidation.strip.pass', { n: 2 }));
+    expect(stepperRows()).toBe(firstPassRows);
+
+    store.setResult(run(['First pass memory.', 'Second pass memory.']));
+    store.setRunning(false);
+    await wrapper.vm.$nextTick();
+    expect(heading()).toBe(i18n.global.t('overlays.consolidation.lastRun', { n: 2 }));
+    expect(extracted()).toHaveLength(2);
+    expect(strip()).not.toContain(i18n.global.t('consolidation.strip.pass', { n: 2 }));
+  });
+
+  it('says a later pass has kept nothing yet when the run\'s earlier passes kept nothing', async () => {
+    const store = useConsolidationStore();
+    store.setResult(run(['Previous run memory.']));
+    const wrapper = mountOverlay();
+
+    store.setRunning(true, 2, run([]));
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.get('[data-testid="consolidation-results-heading"]').text()).toBe(i18n.global.t('overlays.consolidation.thisRun', { n: 0 }));
+    expect(wrapper.text()).toContain(i18n.global.t('overlays.consolidation.thisRunEmpty'));
+    expect(wrapper.findAll('[data-testid="consolidation-extracted"]')).toEqual([]);
+  });
+
+  it('restores a run in flight from the replay core sends when the overlay opens mid-run', async () => {
+    // The order core's `requestConsolidationPreview` posts; consolidation-replay-parity.test.ts feeds core's own replay to the store.
+    const sent: ExtensionToWebviewMessage[] = [
+      { type: 'consolidationPreview', candidates: [] },
+      { type: 'consolidationPendingCount', count: 1, setAside: 0 },
+      { type: 'consolidationResult', result: run(['Previous run memory.']) },
+      { type: 'consolidationRunning', running: true, pass: 2, runSoFar: run(['First pass memory.']) },
+      { type: 'consolidationProgress', event: { phase: 'claim', status: 'active' } },
+      { type: 'consolidationProgress', event: { phase: 'claim', status: 'done', meta: { count: 1 } } },
+      { type: 'consolidationProgress', event: { phase: 'extract', status: 'active' } },
+    ];
+
+    const wrapper = mountOverlay();
+    const handlers = createConsolidationHandlers();
+    const ctx = { stores: { consolidationStore: useConsolidationStore() } } as unknown as HandlerContext;
+    for (const msg of sent) (handlers[msg.type] as ((m: ExtensionToWebviewMessage, c: HandlerContext) => void) | undefined)!(msg, ctx);
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.get('[data-testid="consolidation-results-heading"]').text()).toBe(i18n.global.t('overlays.consolidation.thisRun', { n: 1 }));
+    const extracted = wrapper.findAll('[data-testid="consolidation-extracted"]');
+    expect(extracted).toHaveLength(1);
+    expect(extracted[0]!.html()).toContain('First pass memory.');
+    expect(wrapper.get('[data-testid="consolidation-strip"]').text()).toContain(i18n.global.t('consolidation.strip.pass', { n: 2 }));
+    expect(useConsolidationStore().phaseStatus).toMatchObject({ claim: 'done', extract: 'active' });
+  });
+
+  it('keys each extracted memory uniquely, so a memory a run kept twice renders twice', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const store = useConsolidationStore();
+    store.setResult(run(['Earlier memory.']));
+    const wrapper = mountOverlay();
+
+    const twice: ConsolidationResult = {
+      ...run([]),
+      status: 'extracted',
+      extracted: [
+        { kind: 'preference', scope: 'global', content: 'Prefers tabs.', outcome: 'inserted' },
+        { kind: 'preference', scope: 'global', content: 'Prefers tabs.', outcome: 'deduped' },
+      ],
+    };
+    store.setResult(twice);
+    await wrapper.vm.$nextTick();
+
+    const extracted = wrapper.findAll('[data-testid="consolidation-extracted"]');
+    expect(extracted.map((m) => m.text())).toEqual([
+      expect.stringContaining(i18n.global.t('consolidation.outcome.inserted')),
+      expect.stringContaining(i18n.global.t('consolidation.outcome.deduped')),
+    ]);
+    expect(warn.mock.calls.flat().join(' ')).not.toContain('Duplicate keys');
+    warn.mockRestore();
   });
 
   it('Sign in asks core for the Accounts settings when the host keeps them outside the page', async () => {

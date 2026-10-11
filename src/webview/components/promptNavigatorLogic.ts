@@ -1,37 +1,9 @@
 import type { EnrichedPrompt } from "@/composables/useEnrichedPrompts";
+import { highlightMatches } from "@/utils/highlightMatches";
 
-/**
- * HTML-escape a raw string. MUST run BEFORE wrapping matches in <mark>.
- * Order is load-bearing: escape first, then highlight, otherwise the
- * inserted <mark> tags would be re-escaped into literals.
- */
-export function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-/**
- * Regex-escape a user-supplied query so it can be safely embedded in a RegExp.
- */
-export function escapeRegex(query: string): string {
-  return query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/**
- * Wraps every case-insensitive occurrence of `query` inside `text` with a
- * `<mark>` element. The text is HTML-escaped first to neutralize stored-XSS-style
- * injections from prompt content. Empty queries return the escaped text only.
- */
+/** Escaped `text` with every case-insensitive occurrence of `query` in a `<mark>`. */
 export function highlight(text: string, query: string): string {
-  const escaped = escapeHtml(text);
-  if (!query) return escaped;
-  const escapedQueryForHtml = escapeHtml(query);
-  const re = new RegExp(`(${escapeRegex(escapedQueryForHtml)})`, "gi");
-  return escaped.replace(re, "<mark>$1</mark>");
+  return highlightMatches(text, query, "<mark>", "</mark>");
 }
 
 /**

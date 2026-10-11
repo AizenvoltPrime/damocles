@@ -579,20 +579,17 @@ export class NotificationCenter {
 
 // The overlay host as the center's channels use it.
 export interface CenterOverlay {
-  handle(channel: string, handler: (...args: unknown[]) => unknown): void;
+  handleWhileOpen<T>(channel: string, isOpen: () => boolean, handler: (...args: unknown[]) => T | Promise<T>): void;
   isOpen(kind: OverlayRequest['kind']): boolean;
 }
 
 /** The bell's center channels act only while it is open, so no other overlay state can clear the log or change Do not disturb. */
 export function handleCenterChannels(overlay: CenterOverlay, center: NotificationCenter): void {
-  const whileOpen = <A extends unknown[], R>(act: (...args: A) => R) => (...args: A): R => {
-    if (!overlay.isOpen('notifications')) throw new Error('The notification center is not open');
-    return act(...args);
-  };
-  overlay.handle(OVERLAY_CHANNELS.notificationsGet, whileOpen(() => center.state()));
-  overlay.handle(OVERLAY_CHANNELS.notificationsClear, whileOpen(() => center.clear()));
-  overlay.handle(OVERLAY_CHANNELS.notificationsDnd, whileOpen((on: unknown) => {
+  const centerOpen = (): boolean => overlay.isOpen('notifications');
+  overlay.handleWhileOpen(OVERLAY_CHANNELS.notificationsGet, centerOpen, () => center.state());
+  overlay.handleWhileOpen(OVERLAY_CHANNELS.notificationsClear, centerOpen, () => center.clear());
+  overlay.handleWhileOpen(OVERLAY_CHANNELS.notificationsDnd, centerOpen, (on) => {
     if (typeof on !== 'boolean') throw new Error('Malformed Do not disturb value');
     return center.setDoNotDisturb(on);
-  }));
+  });
 }

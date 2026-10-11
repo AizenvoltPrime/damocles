@@ -6,12 +6,13 @@ export type MemorySubCallPurpose = 'rerank' | 'extract' | 'merge' | 'profile' | 
 
 /**
  * Why a sub-call produced no value: `unanswered` (the model saw the request and replied without a valid
- * result), `rejected` (the provider refused the request as sent: HTTP 400, 413 or 422), `unreachable`
- * (the model never saw it or its reply was lost), `credential` (unreachable because the provider or pi
- * refused the credential) or `no-model` (no credentials/config). Only `unanswered` and `rejected` may
- * count against the input.
+ * result), `rejected` (the provider refused the request as sent: HTTP 400, 413 or 422, or an OpenRouter
+ * 403 that names a content refusal), `unreachable` (the model never saw it or its reply was lost),
+ * `credential` (unreachable because the provider or pi refused the credential), `forbidden` (unreachable
+ * because the provider refused access whatever the credential, any other HTTP 403) or `no-model` (no
+ * credentials/config). Only `unanswered` and `rejected` may count against the input.
  */
-export type MemorySubCallFailure = 'unanswered' | 'rejected' | 'unreachable' | 'credential' | 'no-model';
+export type MemorySubCallFailure = 'unanswered' | 'rejected' | 'unreachable' | 'credential' | 'forbidden' | 'no-model';
 
 export interface MemorySubCallResult<T> {
   value: T | null;
@@ -87,7 +88,7 @@ export function createMemorySubCallRunner(lifetime: AbortSignal): MemorySubCallR
         timeoutMs,
       });
       if (result.kind === 'answered') return { value: result.value };
-      return { value: null, failure: result.kind === 'unreachable' && result.cause === 'credential' ? 'credential' : result.kind };
+      return { value: null, failure: result.kind === 'unreachable' && result.cause !== undefined ? result.cause : result.kind };
     },
     hasClassifier(): boolean {
       return !lifetime.aborted && PiRuntime.get().hasClassifier();

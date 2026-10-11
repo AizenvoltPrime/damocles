@@ -175,8 +175,8 @@ export interface TeamServiceRef {
   /** Throws the resume validation errors verbatim. */
   resumeTeam: (teamId: string, message: string | undefined, toolCallId: string) => Promise<string>;
   getTeamStatus: (teamId: string) => Record<string, unknown> | null;
-  /** Returns the tool result text; throws when the team is not running. */
-  cancelTeam: (teamId: string) => string;
+  /** Resolves to the tool result text; rejects when the team is not running. */
+  cancelTeam: (teamId: string) => Promise<string>;
   /** Record the spawning `create_team` tool-call id, which the parent's invocation entry carries. */
   setPendingToolUseId: (toolUseId: string) => void;
   /** Stop the active team for `stop`; the blocked `create_team` or `resume_team` call returns its partial result. */
@@ -280,7 +280,7 @@ export function buildTeamMainPiTools(pi: PiCodingAgentModule, teamService: TeamS
       parameters: cancelTeamSchema,
       execute: async (_id, input) => {
         try {
-          return textResult(teamService.cancelTeam(input.team_id));
+          return textResult(await teamService.cancelTeam(input.team_id));
         } catch (err) {
           throw new TeamToolError(err instanceof Error ? err.message : String(err));
         }

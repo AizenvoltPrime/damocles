@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
 import { mount, type VueWrapper } from '@vue/test-utils';
 import type { SteerTargetInfo } from '@shared/types/subagents';
 import SlashCommandPopup from '../SlashCommandPopup.vue';
@@ -25,8 +25,14 @@ const SUBAGENT: SteerTargetInfo = {
   isBackground: false,
 };
 
+const mounted: VueWrapper[] = [];
+
+afterEach(() => {
+  for (const wrapper of mounted.splice(0)) wrapper.unmount();
+});
+
 function picker(agents: SteerTargetInfo[]): VueWrapper {
-  return mount(SlashCommandPopup, {
+  const wrapper = mount(SlashCommandPopup, {
     props: {
       isOpen: true,
       listId: 'commands',
@@ -40,6 +46,8 @@ function picker(agents: SteerTargetInfo[]): VueWrapper {
     },
     global: { plugins: [i18n], stubs: { teleport: true } },
   });
+  mounted.push(wrapper);
+  return wrapper;
 }
 
 function rows(wrapper: VueWrapper): string[] {
@@ -62,5 +70,30 @@ describe('the /steer agent picker', () => {
     expect(row).toContain('Explorer');
     expect(row).toContain('find the callers');
     expect(row).not.toContain('·');
+  });
+});
+
+describe('the slash command list', () => {
+  it.each(['', 'onerror'])('renders a command name as text, never markup (query %j)', (query) => {
+    const name = '<img src=x onerror=alert(1)>';
+    const wrapper = mount(SlashCommandPopup, {
+      props: {
+        isOpen: true,
+        listId: 'commands',
+        commands: [{ name, description: 'd', filePath: 'f.md', source: 'project' }],
+        selectedIndex: 0,
+        anchorElement: null,
+        query,
+        isLoading: false,
+        mode: 'command',
+        agents: [],
+      },
+      global: { plugins: [i18n], stubs: { teleport: true } },
+    });
+    mounted.push(wrapper);
+
+    expect(wrapper.find('img').exists()).toBe(false);
+    expect(at(rows(wrapper), 0)).toContain(`/${name}`);
+    expect(wrapper.findAll('[role="option"] span.font-bold').map((match) => match.text())).toEqual(query ? [query] : []);
   });
 });

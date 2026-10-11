@@ -66,10 +66,10 @@ async function reconcile(
   parent: SessionManager,
   dir: string,
   live: (id: string) => LiveAgentStatus | undefined = () => undefined,
-  teamStop: (teamId: string) => Promise<InterruptionCause | null> = async (teamId) => resumableTeams.get(teamId) ?? null,
+  teamStop: (teamId: string) => Promise<InterruptionCause | 'running' | null> = async (teamId) => resumableTeams.get(teamId) ?? null,
 ) {
   const sent: NoticeMessage[] = [];
-  const announced = await reconcileInterruptions({
+  const { announced, retry } = await reconcileInterruptions({
     branch: parent.getBranch(),
     subagentDir: dir,
     liveSubagent: live,
@@ -79,7 +79,7 @@ async function reconcile(
       parent.appendCustomMessageEntry(message.customType, message.content, message.display, message.details);
     },
   });
-  return { sent, announced };
+  return { sent, announced, retry };
 }
 
 describe('reconcileInterruptions', () => {
@@ -275,6 +275,8 @@ describe('reconcileInterruptions for teams', () => {
   it.each([
     ['parent', 'cancelled by your cancel_team call'],
     ['shutdown', 'stopped when its chat panel closed, switched session or the editor window reloaded'],
+    ['failed', 'failed when its lead agent failed'],
+    ['interrupted', 'stopped when Damocles exited while it ran'],
     ['unrecorded', 'stopped with no recorded cause'],
   ] as const)('names a team stopped for %s by its cause', async (cause, text) => {
     const dir = tempDir();
@@ -287,7 +289,7 @@ describe('reconcileInterruptions for teams', () => {
     expect(sent[0]!.content).toContain(`- team ${T1} ("why"), ${text}: resume with resume_team({team_id:"${T1}"})`);
   });
 
-  it('a team with no unused checkpoint (completed, failed or already resumed) is not listed', async () => {
+  it('a team with no unused checkpoint (completed or already resumed) is not listed', async () => {
     const dir = tempDir();
     const parent = SessionManager.inMemory('/ws');
     invokeTeam(parent, T1, 'tc-team');
@@ -345,5 +347,27 @@ describe('reconcileInterruptions for teams', () => {
 
     expect(sent).toHaveLength(1);
     expect(sent[0]!.details.agents).toEqual([{ kind: 'team', id: T2, toolCallId: 'tc-team-2' }]);
+  });
+
+  it('leaves out a team this process runs with no seal yet and asks for a later check, still listing the others', async () => {
+    const dir = tempDir();
+    const parent = SessionManager.inMemory('/ws');
+    invokeTeam(parent, T1, 'tc-team', { title: 'running here' });
+    invokeTeam(parent, T2, 'tc-team-2', { title: 'stopped' });
+    leaveUnusedCheckpoint(T2);
+
+    const { sent, retry } = await reconcile(parent, dir, undefined, async (teamId) => (teamId === T1 ? 'running' : resumableTeams.get(teamId) ?? null));
+
+    expect(retry).toBe(true);
+    expect(sent.map((m) => m.details.agents)).toEqual([[{ kind: 'team', id: T2, toolCallId: 'tc-team-2' }]]);
+  });
+
+  it('asks for no later check when every team was decided', async () => {
+    const dir = tempDir();
+    const parent = SessionManager.inMemory('/ws');
+    invokeTeam(parent, T1, 'tc-team', { title: 'stopped' });
+    leaveUnusedCheckpoint(T1);
+
+    expect((await reconcile(parent, dir)).retry).toBe(false);
   });
 });

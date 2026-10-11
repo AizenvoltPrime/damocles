@@ -3,7 +3,7 @@ import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { IconFile, IconFolder, IconLoader, IconRobot } from '@/components/icons';
 import type { AtMentionItem } from '@shared/types/commands';
-import { escapeHtml } from '@shared/utils';
+import { highlightFirstMatch } from '@/utils/highlightMatches';
 
 const { t } = useI18n();
 const listLabel = computed(() => t('composer.mentionList'));
@@ -98,20 +98,7 @@ function getFolderPath(path: string): string {
 }
 
 function highlightMatch(text: string): string {
-  const escaped = escapeHtml(text);
-  if (!props.query) return escaped;
-
-  const lowerText = text.toLowerCase();
-  const lowerQuery = props.query.toLowerCase();
-  const index = lowerText.indexOf(lowerQuery);
-
-  if (index === -1) return escaped;
-
-  const escapedBefore = escapeHtml(text.slice(0, index));
-  const escapedMatch = escapeHtml(text.slice(index, index + props.query.length));
-  const escapedAfter = escapeHtml(text.slice(index + props.query.length));
-
-  return `${escapedBefore}<span class="text-(--d-accent-text) font-bold">${escapedMatch}</span>${escapedAfter}`;
+  return highlightFirstMatch(text, props.query);
 }
 </script>
 
@@ -147,8 +134,12 @@ function highlightMatch(text: string): string {
               v-else-if="items.length === 0"
               class="px-3 py-4 text-center text-12.5 text-(--d-muted)"
             >
-              <div class="mb-1">{{ t('atMention.noMatches') }}</div>
-              <div class="text-xs opacity-70">{{ t('atMention.tryDifferent') }}</div>
+              <div class="mb-1">
+                {{ t('atMention.noMatches') }}
+              </div>
+              <div class="text-xs opacity-70">
+                {{ t('atMention.tryDifferent') }}
+              </div>
             </div>
 
             <!-- Item List -->
@@ -176,10 +167,12 @@ function highlightMatch(text: string): string {
                   class="size-4 shrink-0 text-(--d-muted)"
                 />
                 <div class="flex-1 min-w-0 flex items-center gap-2">
+                  <!-- eslint-disable vue/no-v-html -- highlightMatch escapes the text with escapeHtml -->
                   <span
                     class="font-medium truncate"
                     v-html="highlightMatch(getFileName(item.data.relativePath))"
                   />
+                  <!-- eslint-enable vue/no-v-html -->
                   <span
                     v-if="getFolderPath(item.data.relativePath)"
                     class="text-xs truncate flex-1 text-right"
@@ -195,10 +188,12 @@ function highlightMatch(text: string): string {
               <template v-else-if="item.type === 'builtin-agent'">
                 <span class="shrink-0 text-base leading-none">{{ item.data.icon }}</span>
                 <div class="flex-1 min-w-0 flex items-center gap-2">
+                  <!-- eslint-disable vue/no-v-html -- highlightMatch escapes the text with escapeHtml -->
                   <span
                     class="font-medium truncate"
                     v-html="highlightMatch(`agent-${item.data.id}`)"
                   />
+                  <!-- eslint-enable vue/no-v-html -->
                   <span
                     class="text-xs truncate flex-1"
                     :class="index === selectedIndex ? 'text-(--d-faint-text)' : 'text-(--d-faint)'"
@@ -217,10 +212,12 @@ function highlightMatch(text: string): string {
                   class="size-4 shrink-0 text-(--d-accent)"
                 />
                 <div class="flex-1 min-w-0 flex items-center gap-2">
+                  <!-- eslint-disable vue/no-v-html -- highlightMatch escapes the text with escapeHtml -->
                   <span
                     class="font-medium truncate"
                     v-html="highlightMatch(`agent-${item.data.name}`)"
                   />
+                  <!-- eslint-enable vue/no-v-html -->
                   <span
                     class="text-xs truncate flex-1"
                     :class="index === selectedIndex ? 'text-(--d-faint-text)' : 'text-(--d-faint)'"
@@ -232,7 +229,6 @@ function highlightMatch(text: string): string {
                   {{ item.data.source }}
                 </span>
               </template>
-
             </div>
           </div>
         </div>

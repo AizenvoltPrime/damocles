@@ -2,10 +2,11 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, useId, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useVirtualList } from '@vueuse/core';
-import { Bell, Moon } from 'lucide-vue-next';
-import type { DamoclesOverlayApi, OverlayAnswer, OverlayRequest } from '../../../preload/overlay-channels';
+import { Bell, CircleAlert, Moon } from 'lucide-vue-next';
+import type { DamoclesOverlayApi, OverlayAnswer, OverlayRequest, PopupAnswer } from '../../../preload/overlay-channels';
 import type { NotificationCenterState, NotificationEntry } from '../../../preload/notifications';
 import { trapTab } from '../focus-trap';
+import { answerOf } from '../popup-answer';
 import { notificationView, relativeTime, TONE_CLASSES } from '../notification-view';
 import ToggleSwitch from '@/components/ToggleSwitch.vue';
 import { Button } from '@/components/ui/button';
@@ -32,6 +33,8 @@ const helpId = useId();
 const dndLabelId = useId();
 const subtitleId = useId();
 const state = shallowRef<NotificationCenterState | null>(null);
+// the first read failed and main has pushed no state since
+const loadFailed = ref(false);
 const entries = computed(() => state.value?.entries ?? []);
 const virtual = computed(() => entries.value.length > VIRTUALIZE_AFTER);
 const { list, containerProps, wrapperProps, scrollTo } = useVirtualList(entries, { itemHeight: () => remPx(ROW_REM), overscan: 8 });
@@ -65,15 +68,22 @@ function open(entry: NotificationEntry): void {
   emit('answer', { kind: 'notifications', action: 'open', entryId: entry.id });
 }
 
-// Main refuses the center's channels once the center has closed, as for a click still in flight; nothing is left to update.
-function ignoreRefusal(): void {}
+// The center shows only the state main pushes, so a failed action leaves main's state on screen; this says it failed.
+const failedAction = ref<string | null>(null);
+
+function act(failureKey: string, action: () => Promise<PopupAnswer<void>>): void {
+  failedAction.value = null;
+  action().catch(() => {
+    failedAction.value = failureKey;
+  });
+}
 
 function clearAll(): void {
-  props.api.clearNotifications().catch(ignoreRefusal);
+  act('notifications.clearFailed', () => props.api.clearNotifications());
 }
 
 function setDoNotDisturb(on: boolean): void {
-  props.api.setDoNotDisturb(on).catch(ignoreRefusal);
+  act('notifications.doNotDisturbFailed', () => props.api.setDoNotDisturb(on));
 }
 
 function rowButton(index: number): HTMLElement | null {
@@ -133,8 +143,12 @@ onMounted(async () => {
   tick = setInterval(() => {
     now.value = Date.now();
   }, CLOCK_TICK_MS);
-  const first = await props.api.getNotifications().catch(() => null);
-  if (!state.value) state.value = first;
+  try {
+    const first = await answerOf(props.api.getNotifications());
+    if (!state.value && first) state.value = first;
+  } catch {
+    loadFailed.value = true;
+  }
   await nextTick();
   (rowButton(0) ?? dndSwitch())?.focus();
 });
@@ -208,6 +222,14 @@ onBeforeUnmount(() => {
         @update:checked="setDoNotDisturb"
       />
     </label>
+    <p
+      v-if="failedAction"
+      role="alert"
+      data-testid="notification-action-failed"
+      class="mx-3.5 mb-2 text-11.5 text-(--d-danger-text)"
+    >
+      {{ t(failedAction) }}
+    </p>
     <div
       v-bind="virtual ? containerProps : {}"
       class="min-h-0 flex-1 overflow-y-auto"
@@ -278,6 +300,18 @@ onBeforeUnmount(() => {
             </button>
           </li>
         </ul>
+        <div
+          v-else-if="!state && loadFailed"
+          role="alert"
+          data-testid="notification-load-failed"
+          class="flex flex-col items-center gap-1.5 border-t border-(--d-border) px-4 pt-6.5 pb-7.5 text-xs text-(--d-danger-text)"
+        >
+          <CircleAlert
+            aria-hidden="true"
+            class="size-5"
+          />
+          {{ t('notifications.loadFailed') }}
+        </div>
         <div
           v-else
           data-testid="notification-empty"

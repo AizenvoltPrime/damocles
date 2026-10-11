@@ -6,12 +6,12 @@ import { installPlatformBridge } from '@/composables/usePlatformBridge';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import ExtensionUiDialog from '@/components/ExtensionUiDialog.vue';
 import { VSCODE_HOST_CAPABILITIES } from '@shared/types/messages';
-import type { OverlayPrefs, OverlayPrefWrite } from '../../preload/overlay-channels';
+import type { OverlayPrefs, OverlayPrefWrite, PopupAnswer } from '../../preload/overlay-channels';
 import OverlayApp from '../overlay/OverlayApp.vue';
 import { createOverlaySettingsBridge } from '../overlay/settings/overlay-bridge';
 import { addSettingsMessages } from '../overlay/settings/settings-messages';
 import { shellI18n } from '../i18n';
-import { FakeResizeObserver, fakeOverlayApi } from './fakes';
+import { FakeResizeObserver, fakeOverlayApi, opened } from './fakes';
 
 // One overlay page per file, as in the app: the bridge is installed before anything uses it.
 const api = fakeOverlayApi();
@@ -192,12 +192,42 @@ describe('overlay settings', () => {
     await flushPromises();
     expect(document.querySelector('[data-testid="settings-row-damocles.desktop.theme"] [data-testid="setting-saved"]')!.getAttribute('title')).toBe('/home/u/.damocles/settings.json');
 
-    vi.mocked(api.setPref).mockResolvedValueOnce({ ok: false, error: 'not allowed' });
+    vi.mocked(api.setPref).mockResolvedValueOnce(opened({ ok: false, error: 'not allowed' }));
     const motion = document.querySelector<HTMLElement>('[data-testid="settings-row-damocles.desktop.reduceMotion"] [role="switch"]')!;
     motion.click();
     await flushPromises();
     expect(motion.getAttribute('aria-checked')).toBe('false');
     expect(document.querySelector('[data-testid="settings-row-damocles.desktop.reduceMotion"] [data-testid="setting-error"]')!.textContent).toContain('not allowed');
+  });
+
+  it('reverts a preference whose write call fails and says so in the user\'s language, never with the invoke error', async () => {
+    await openSettings(1, 'appearance');
+    await flushPromises();
+    vi.mocked(api.setPref).mockRejectedValueOnce(new Error('Error invoking remote method \'damocles:overlay:prefs:set\': Error: Rejected'));
+    const motion = document.querySelector<HTMLElement>('[data-testid="settings-row-damocles.desktop.reduceMotion"] [role="switch"]')!;
+    motion.click();
+    await flushPromises();
+    expect(motion.getAttribute('aria-checked')).toBe('false');
+    expect(document.querySelector('[data-testid="settings-row-damocles.desktop.reduceMotion"] [data-testid="setting-error"]')!.textContent!.trim()).toBe('Damocles could not save this setting.');
+  });
+
+  it('says the default layout is back, or that it could not be restored, never with the invoke error', async () => {
+    await openSettings(1, 'appearance');
+    await flushPromises();
+    const row = (): HTMLElement => document.querySelector<HTMLElement>('[data-testid="settings-row-restore-default-layout"]')!;
+    vi.mocked(api.resetLayout).mockRejectedValueOnce(new Error('Error invoking remote method \'damocles:overlay:layout:reset\': Error: EPERM'));
+    row().querySelector('button')!.click();
+    await flushPromises();
+    expect(row().textContent).toContain('Damocles could not restore the default layout.');
+    expect(row().textContent).not.toContain('damocles:overlay');
+    row().querySelector('button')!.click();
+    await flushPromises();
+    expect(row().textContent).toContain('The default layout is back.');
+    expect(row().textContent).not.toContain('could not restore');
+    vi.mocked(api.resetLayout).mockResolvedValueOnce({ ok: false, reason: 'closed' });
+    row().querySelector('button')!.click();
+    await flushPromises();
+    expect(row().textContent).not.toContain('The default layout is back.');
   });
 
   it('never lets a late first read overwrite a value set since, and follows a change main pushes', async () => {
@@ -218,7 +248,7 @@ describe('overlay settings', () => {
   });
 
   it('keeps a value whose write main has not answered when main pushes a change', async () => {
-    let written!: (result: OverlayPrefWrite) => void;
+    let written!: (result: PopupAnswer<OverlayPrefWrite>) => void;
     vi.mocked(api.setPref).mockReturnValueOnce(new Promise((resolve) => (written = resolve)));
     await openSettings(1, 'appearance');
     await flushPromises();
@@ -227,7 +257,7 @@ describe('overlay settings', () => {
     api.prefsChanged({ values: { 'damocles.desktop.theme': 'system' }, languageAtLaunch: 'system' });
     await flushPromises();
     expect(theme('Light').getAttribute('aria-pressed')).toBe('true');
-    written({ ok: true, file: '/home/u/.damocles/settings.json' });
+    written(opened({ ok: true, file: '/home/u/.damocles/settings.json' }));
     await flushPromises();
     expect(theme('Light').getAttribute('aria-pressed')).toBe('true');
   });
@@ -254,5 +284,21 @@ describe('overlay settings', () => {
     const restart = [...banner.querySelectorAll('button')].find((el) => el.textContent?.includes('Restart now'))!;
     restart.click();
     expect(api.relaunch).toHaveBeenCalled();
+  });
+
+  // Main answers the relaunch once it starts the quit; the user's own Cancel of that quit leaves this banner offering it.
+  it('says the restart did not happen when the relaunch call fails, and offers it again', async () => {
+    await openSettings(1, 'application');
+    await flushPromises();
+    const greek = [...document.querySelectorAll<HTMLElement>('[data-testid="settings-row-damocles.desktop.language"] button[aria-pressed]')].find((el) => el.textContent?.trim() === 'Ελληνικά')!;
+    greek.click();
+    await flushPromises();
+    vi.mocked(api.relaunch).mockRejectedValueOnce(new Error('Error invoking remote method \'damocles:overlay:app:relaunch\': Error: Rejected'));
+    const restart = (): HTMLElement => [...document.querySelectorAll<HTMLElement>('[data-testid="settings-restart-banner"] button')].find((el) => el.textContent?.includes('Restart now'))!;
+    restart().click();
+    await flushPromises();
+    expect(document.querySelector('[data-testid="settings-restart-banner"]')!.textContent).toContain('Damocles could not restart.');
+    restart().click();
+    expect(api.relaunch).toHaveBeenCalledTimes(2);
   });
 });

@@ -818,13 +818,13 @@ interface ToolLike {
 }
 
 /** The REAL tool closures over a REAL agent scope; the page's snapshot read is canned. */
-function buildToolsOverScope(service: BrowserService, page: unknown): Map<string, ToolLike> {
+function buildToolsOverScope(service: BrowserService, page: unknown, documentUrl = 'http://fixture.test/'): Map<string, ToolLike> {
   const scope = service.createAgentScope(PRIMARY);
   const snapshotData = {
     snapshot: '[0] button "OK"',
     refCount: 1,
     title: 'Fixture',
-    url: 'http://fixture.test/',
+    url: documentUrl,
     belowFold: 0,
     scrollInfo: [],
     emptyFields: [],
@@ -977,6 +977,18 @@ describe('acceptance criterion 8 end-to-end — the dialog surfaces to the agent
 
     expect(out).not.toContain('[Dialogs]');
     expect(out).toBe('[Page] Fixture\n[URL] http://fixture.test/\n[1 interactive elements]\n\n[0] button "OK"');
+  });
+
+  it("a snapshot of Chromium's error page names the address that failed, as the address bar does", async () => {
+    const { service, page } = await makeServiceWithPage('chrome-error://chromewebdata/');
+    const entry = priv(service).pages.get(page) as unknown as { lastUrl: string | null; unreachableUrl: string | null };
+    entry.lastUrl = 'http://fixture.test/';
+    entry.unreachableUrl = 'http://gone.test/x';
+    const tools = buildToolsOverScope(service, page, 'chrome-error://chromewebdata/');
+    const out = textOf(await tools.get('BrowserSnapshot')!.execute('t', {}));
+
+    expect(out).toContain('[URL] http://gone.test/x\n');
+    expect(out).not.toContain('chrome-error');
   });
 
   it('BrowserConsole appends a NON-draining "Recent dialogs:" section (contract §7)', async () => {

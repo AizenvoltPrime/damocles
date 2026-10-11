@@ -5,6 +5,7 @@ import CodeBlock from './CodeBlock.vue';
 import RemoteImagePlaceholder from './RemoteImagePlaceholder.vue';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { sanitizeUrl } from '@/lib/sanitize-url';
+import { escapeHtml } from '@shared/utils';
 
 const props = withDefaults(
   defineProps<{
@@ -15,7 +16,7 @@ const props = withDefaults(
     /** Gate remote images behind click-to-load. Default true (chat unchanged); Memory panel passes false. */
     allowRemoteImages?: boolean | undefined;
   }>(),
-  { baseUrl: undefined, allowRemoteImages: true }
+  { allowRemoteImages: true }
 );
 
 const { postMessage } = usePlatformBridge();
@@ -41,21 +42,13 @@ const tokens = computed(() => {
   }
 });
 
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
 function isLocalPath(href: string): boolean {
   return href.startsWith('file://') || href.startsWith('/') || !href.includes('://');
 }
 
 function isAbsolutePath(filePath: string): boolean {
   if (filePath.startsWith('/')) return true;
-  if (/^[A-Za-z]:[\\\/]/.test(filePath)) return true;
+  if (/^[A-Za-z]:[\\/]/.test(filePath)) return true;
   return false;
 }
 

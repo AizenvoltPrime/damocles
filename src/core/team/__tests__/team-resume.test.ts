@@ -12,7 +12,10 @@ vi.mock('../../paths', async () => {
   return { DAMOCLES_HOME_DIR: mkdtempSync(joinPath(tmpdir(), 'damocles-team-resume-')) };
 });
 
+import { SessionManager, type SessionEntry } from '@earendil-works/pi-coding-agent';
 import { DAMOCLES_HOME_DIR } from '../../paths';
+import { TeamService } from '../index';
+import { buildInterruptedResumePrompt } from '../prompts';
 import { TeamRunner } from '../team-runner';
 import { TeamPersistence } from '../persistence';
 import type { CoverageView, ReviewCoverage } from '../review-coverage';
@@ -26,8 +29,9 @@ import type { ImageBlock } from '../../../shared/types/content';
 import { buildResumePrompt, wrapSteerMessage } from '../../../shared/steer';
 import { piSessionDir } from '../../pi-session/session-store';
 import { initPiLoader } from '../../pi-session/pi-loader';
-import { listTeamCheckpoints, teamCheckpointsDir, teamEventLogPath, teamMembersDir } from '../../pi-session/agent-records';
-import { DAMOCLES_AGENT_LAUNCH_ENTRY, DAMOCLES_AGENT_SEGMENT_ENTRY } from '../../pi-session/session-store/constants';
+import { listTeamCheckpoints, teamCheckpointPath, teamCheckpointsDir, teamEventLogPath, teamMembersDir } from '../../pi-session/agent-records';
+import { CheckpointWriter } from '../checkpoint-writer';
+import { DAMOCLES_AGENT_INVOCATION_ENTRY, DAMOCLES_AGENT_LAUNCH_ENTRY, DAMOCLES_AGENT_SEGMENT_ENTRY } from '../../pi-session/session-store/constants';
 
 // The first pi import takes about a second, which under a loaded machine overruns a test's timeout.
 beforeAll(async () => {
@@ -79,6 +83,13 @@ function makeTeam(opts: {
   opening?: Record<string, FakeOpeningTotals>;
   /** Holds a member's session open until the promise settles. */
   gate?: Record<string, Promise<void>>;
+  /**
+   * Backs each new member session with a real pi session file that receives every entry the session
+   * persists, and has each member reply once to its first prompt, since pi writes no file before a reply.
+   */
+  realFiles?: boolean;
+  /** Resolves each member's prompt at `agent_settled`, as real pi does, instead of at `turn_end`. */
+  settleOn?: 'turn_end' | 'agent_settled';
 }): Harness {
   const opened: Opened[] = [];
   const forgotten: FakeSession[] = [];
@@ -106,8 +117,19 @@ function makeTeam(opts: {
         const gate = opts.gate?.[name];
         if (gate) await gate;
         const behaviour = opts.behave[name] ?? endTurn;
-        const session = new FakeSession({ onPrompt: (text, s) => behaviour(text, s, h) });
+        const session = new FakeSession({
+          ...(opts.settleOn ? { settleOn: opts.settleOn } : {}),
+          onPrompt: (text, s) => {
+            if (opts.realFiles && s.prompts.length === 1) s.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: `${name} is on it` }], stopReason: 'stop' } });
+            behaviour(text, s, h);
+          },
+        });
         session.sessionFile = store['kind'] === 'reopen' ? String(store['path']) : path.join(String(store['dir']), `${String(store['id'])}.jsonl`);
+        if (opts.realFiles && store['kind'] !== 'reopen') {
+          const real = SessionManager.create(opts.cwd, String(store['dir']), { id: String(store['id']) });
+          session.mirror = { appendMessage: (m) => real.appendMessage(m as never), appendCustomEntry: (t, d) => real.appendCustomEntry(t, d) };
+          session.sessionFile = real.getSessionFile();
+        }
         const opening = opts.opening?.[name];
         if (opening) session.seedOpening(opening);
         opened.push({ name, store, session });
@@ -178,9 +200,9 @@ function logEntries(h: Harness): Array<Record<string, unknown>> {
  * D pending, E approved (completed), F running with no session file later, G cancelled, H cancelled
  * while still pending, so the log has no launch of it.
  */
-async function interruptedTeam(cwd: string, teamId: string): Promise<{ h: Harness; files: Map<string, string>; run: Promise<{ status: string; text: string }> }> {
+async function interruptedTeam(cwd: string, teamId: string, realFiles = false): Promise<{ h: Harness; files: Map<string, string>; run: Promise<{ status: string; text: string }> }> {
   const h = makeTeam({
-    cwd, teamId,
+    cwd, teamId, realFiles,
     specialists: ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'],
     behave: {
       Lead: (_t, s, hh) => {
@@ -201,6 +223,7 @@ async function interruptedTeam(cwd: string, teamId: string): Promise<{ h: Harnes
         hh.runner.enterStandby('C');
         s.emit({ type: 'turn_end' });
       },
+      D: holdTurn,
       E: (_t, s, hh) => {
         hh.runner.reportComplete('E', 'E signed off');
         s.emit({ type: 'turn_end' });
@@ -288,30 +311,32 @@ describe('TeamRunner checkpoint on cancel', () => {
     expect(members.get('A')!.undelivered).toEqual([]);
   });
 
-  it('keeps one checkpoint per run, rewritten only after the drain, and none after the team completed', async () => {
-    const write = vi.spyOn(TeamPersistence.prototype, 'writeCheckpoint');
+  it('keeps one checkpoint per run, sealed by the first stop and again after the drain, and a completed run offers no resume', async () => {
+    const seal = vi.spyOn(CheckpointWriter.prototype, 'seal');
     try {
       const { h, run } = await interruptedTeam(newCwd('cancel-once'), crypto.randomUUID());
+      const [key] = await checkpointTimes(h);
       h.runner.cancel('user');
       h.runner.cancel('user');
-      expect(write).toHaveBeenCalledTimes(1);
+      expect(seal).toHaveBeenCalledTimes(1);
+      expect(seal.mock.results[0]!.value).toMatchObject({ cancelledAt: key, stoppedBy: 'user' });
       await run;
-      expect(write).toHaveBeenCalledTimes(2);
-      expect(await checkpointTimes(h)).toEqual([write.mock.calls[0]![0].cancelledAt]);
+      expect(seal).toHaveBeenCalledTimes(2);
+      expect(await checkpointTimes(h)).toEqual([key]);
 
-      write.mockClear();
+      seal.mockClear();
       const done = makeTeam({ cwd: newCwd('cancel-after-complete'), teamId: crypto.randomUUID(), specialists: [], behave: {} });
       const result = await done.runner.run();
       done.runner.cancel('user');
       expect(result.status).toBe('completed');
-      expect(write).not.toHaveBeenCalled();
-      expect(await checkpointTimes(done)).toEqual([]);
+      expect(seal).not.toHaveBeenCalled();
+      expect(await persistenceOf(done).resumableStop(done.teamId)).toBeNull();
     } finally {
-      write.mockRestore();
+      seal.mockRestore();
     }
   });
 
-  it('round-trips: a restored team cancelled before it resumes writes the checkpoint it read', async () => {
+  it('round-trips: a restored team cancelled before it resumes seals the checkpoint it read under its own key', async () => {
     const { h, run } = await interruptedTeam(newCwd('round-trip'), crypto.randomUUID());
     h.runner.cancel('user');
     await run;
@@ -320,11 +345,15 @@ describe('TeamRunner checkpoint on cancel', () => {
 
     const restored = makeTeam({ cwd: h.cwd, teamId: h.teamId, specialists: ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'], behave: {} });
     restored.runner.restore(await persistence.readEventLog(h.teamId), written, new Map());
+    expect(await restored.runner.persistResumeCheckpoint()).toBe(true);
     restored.runner.cancel('user');
+    expect(await restored.runner.flushCheckpoint()).toBe(true);
 
     const rewritten = (await checkpointOf(persistence, h.teamId))!;
     expect(rewritten.cancelledAt).toBeGreaterThan(written.cancelledAt);
-    expect({ ...rewritten, cancelledAt: written.cancelledAt }).toEqual(written);
+    // The restored bus holds the whole log, so the restored state accounts for every message on it.
+    expect(rewritten.messagesThrough).toBe(restored.bus().getAllMessages().at(-1)!.messageId);
+    expect({ ...rewritten, cancelledAt: written.cancelledAt, asOf: written.asOf, messagesThrough: written.messagesThrough }).toEqual(written);
   });
 
   it('restores a steer from a checkpoint that recorded no attempt as the member attempt in that checkpoint', async () => {
@@ -333,12 +362,12 @@ describe('TeamRunner checkpoint on cancel', () => {
     await run;
     const persistence = persistenceOf(h);
     const written = (await checkpointOf(persistence, h.teamId))!;
-    expect(persistence.writeCheckpoint({
+    fs.writeFileSync(teamCheckpointPath(piSessionDir(h.cwd), SESSION, h.teamId, written.cancelledAt + 1), JSON.stringify({
       ...written,
       cancelledAt: written.cancelledAt + 1,
       members: written.members.map((m) => (m.name === 'B' ? { ...m, attempt: 2 } : m)),
       operatorSteers: written.operatorSteers.map((s) => ({ memberName: s.memberName, message: s.message })),
-    })).toBe(true);
+    }));
     const older = (await checkpointOf(persistence, h.teamId))!;
     expect(older.operatorSteers).toEqual([{ memberName: 'B', message: 'focus on the parser' }]);
 
@@ -346,6 +375,247 @@ describe('TeamRunner checkpoint on cancel', () => {
     restored.runner.restore(await persistence.readEventLog(h.teamId), older, new Map());
 
     expect(restored.runner.getOperatorSteers()).toEqual([{ memberName: 'B', message: 'focus on the parser', attempt: 2 }]);
+  });
+});
+
+describe('the live checkpoint follows a member the runner parks or wakes between turns', () => {
+  const memberIn = (c: TeamCheckpoint, name: string) => c.members.find((m) => m.name === name)!;
+
+  /**
+   * Prompts settle at `agent_settled`, as in pi, so the snapshot the turn's last boundary takes lands before
+   * the runner parks A. B keeps working, so A is never stranded. A parks once and holds every later prompt.
+   */
+  async function parkedTeam(label: string): Promise<{ h: Harness; run: Promise<{ status: string; text: string }> }> {
+    let settleA!: () => void;
+    const h = makeTeam({
+      cwd: newCwd(label), teamId: crypto.randomUUID(), specialists: ['A', 'B'], settleOn: 'agent_settled',
+      behave: {
+        Lead: (_t, s, hh) => { if (s.prompts.length === 1) hh.runner.startSpecialist('B', 'task for B, described in full'); },
+        B: holdTurn,
+        A: (_t, s, hh) => {
+          if (s.prompts.length > 1) return;
+          hh.runner.enterStandby('A');
+          s.emit({ type: 'turn_end' });
+          s.emit({ type: 'agent_end', messages: [], willRetry: false });
+          settleA = () => s.emit({ type: 'agent_settled' });
+        },
+      },
+    });
+    const run = h.runner.run();
+    await (await opened(h, 'B')).whenPrompted(1);
+    h.runner.startSpecialist('A', 'task for A, described in full');
+    await (await opened(h, 'A')).whenPrompted(1);
+    expect(await h.runner.flushCheckpoint()).toBe(true);
+    settleA();
+    await status(h, 'A', 'standby');
+    return { h, run };
+  }
+
+  it('records a member that parked in standby when its run settled, though no entry followed', async () => {
+    const { h, run } = await parkedTeam('park-after-turn');
+
+    expect(await h.runner.flushCheckpoint()).toBe(true);
+    const live = (await checkpointOf(persistenceOf(h), h.teamId))!;
+    expect(live.live).toBe(true);
+    expect(memberIn(live, 'A').status).toBe('standby');
+    expect(live.review.pendingStandby).toEqual(['A']);
+
+    h.runner.cancel('user');
+    await run;
+  });
+
+  it('records a standby member a message woke as running, while its woken turn is still in its first call', async () => {
+    const { h, run } = await parkedTeam('wake-from-standby');
+    const a = h.session('A');
+
+    h.bus().send('Lead', 'A', 'my findings are posted');
+    await a.whenPrompted(2);
+    expect(h.agent('A').status).toBe('running');
+
+    expect(await h.runner.flushCheckpoint()).toBe(true);
+    const live = (await checkpointOf(persistenceOf(h), h.teamId))!;
+    expect(memberIn(live, 'A').status).toBe('running');
+    expect(live.review.pendingStandby).toEqual([]);
+
+    h.runner.cancel('user');
+    await run;
+  });
+});
+
+describe('a run killed with no team-completed resumes from its live checkpoint', () => {
+  const CRASH = 'crash-sess';
+  const DELIVERED = 'damocles-team-delivered';
+  type CrashBehaviour = (text: string, session: FakeSession, runner: TeamRunner) => void;
+
+  interface CrashPanel {
+    service: TeamService;
+    opened: Opened[];
+    runner: () => TeamRunner;
+    /** The newest checkpoint on disk when the resume opened its first member session, before any member could change it. */
+    atFirstOpen: TeamCheckpoint | null;
+  }
+
+  const deliveredIds = (s: FakeSession): string[] =>
+    s.customEntries.flatMap((e) => (e.customType === DELIVERED ? (e.data as { ids: string[] }).ids : []));
+
+  function newestCheckpoint(cwd: string, sessionId: string, teamId: string): TeamCheckpoint {
+    const dir = teamCheckpointsDir(piSessionDir(cwd), sessionId, teamId);
+    const newest = Math.max(...fs.readdirSync(dir).filter((n) => /^\d+\.json$/.test(n)).map((n) => Number(n.slice(0, -'.json'.length))));
+    return JSON.parse(fs.readFileSync(path.join(dir, `${newest}.json`), 'utf-8')) as TeamCheckpoint;
+  }
+
+  /** The panel of the session the crashed run's files were copied into: a real TeamService whose engine opens FakeSessions by member name. */
+  function crashPanel(cwd: string, teamId: string, nameOf: ReadonlyMap<string, string>, behave: Record<string, CrashBehaviour>): CrashPanel {
+    const p = { opened: [], atFirstOpen: null } as unknown as CrashPanel;
+    const engine = {
+      createSession: async (opts: { store: Record<string, unknown> }) => {
+        const store = opts.store;
+        p.atFirstOpen ??= newestCheckpoint(cwd, CRASH, teamId);
+        const agentId = store['kind'] === 'reopen' ? String(store['agentId']) : String(store['id']).replace(/\.a\d+$/, '');
+        const name = nameOf.get(agentId)!;
+        const behaviour = behave[name] ?? ((_t: string, s: FakeSession) => s.emit({ type: 'turn_end' }));
+        const session = new FakeSession({ onPrompt: (text, s) => behaviour(text, s, p.runner()) });
+        session.sessionFile = store['kind'] === 'reopen' ? String(store['path']) : path.join(String(store['dir']), `${String(store['id'])}.jsonl`);
+        p.opened.push({ name, store, session });
+        return session as never;
+      },
+      forgetSession: () => undefined,
+      buildAgentToolset: () => teamAgentToolset(),
+      buildExtensionFactory: () => (() => undefined) as never,
+      onAgentCost: () => undefined,
+      disposeBrowserScope: () => undefined,
+      cancelAgentDialogs: () => undefined,
+    };
+    const invocation = {
+      type: 'custom', id: 'e0', parentId: null, timestamp: new Date().toISOString(), customType: DAMOCLES_AGENT_INVOCATION_ENTRY,
+      data: { kind: 'team', id: teamId, toolCallId: 'tc-create', resume: false },
+    } as unknown as SessionEntry;
+    p.service = new TeamService({
+      cwd,
+      onMessage: () => undefined,
+      getSessionId: () => CRASH,
+      getPermissionMode: () => 'default',
+      resolveRoleModel: () => ({ modelLabel: 'model', dollarBilled: false }),
+      buildEngine: () => engine as never,
+      recordInvocation: () => undefined,
+      parentBranch: () => [invocation],
+      assertResumableModel: () => undefined,
+      requestInterruptionCheck: () => undefined,
+    });
+    p.runner = () => (p.service as unknown as { activeRunner: TeamRunner }).activeRunner;
+    return p;
+  }
+
+  it('relaunches and parks members as recorded, redelivers only what pi had not delivered, and admits what the log recorded after the snapshot', async () => {
+    const cwd = newCwd('crash');
+    const teamId = crypto.randomUUID();
+    const sessionDir = piSessionDir(cwd);
+    const { h, run } = await interruptedTeam(cwd, teamId, true);
+
+    // The snapshot the crash leaves behind: the live checkpoint as the writer last landed it.
+    expect(await h.runner.flushCheckpoint()).toBe(true);
+    const snapshot = newestCheckpoint(cwd, SESSION, teamId);
+    expect(snapshot.live).toBe(true);
+    expect(snapshot.stoppedBy).toBeUndefined();
+    const snapshotOf = (name: string) => snapshot.members.find((m) => m.name === name)!;
+    const steer = wrapSteerMessage('focus on the parser');
+    const steerIds = snapshotOf('B').undelivered.find((u) => u.text === steer)?.ids;
+    expect(steerIds).toHaveLength(1);
+    expect(snapshotOf('D').status).toBe('pending');
+    fs.cpSync(teamCheckpointsDir(sessionDir, SESSION, teamId), teamCheckpointsDir(sessionDir, CRASH, teamId), { recursive: true });
+
+    // Everything below reaches the log and the member files but not the copied snapshot, as the writes a crash cuts off.
+    const tailForB = h.bus().send('Lead', 'B', 'logged after the snapshot');
+    const b = h.session('B');
+    b.emit({ type: 'turn_end' });
+    await b.whenPrompted(2);
+    expect(b.prompts[1]).toBe(steer);
+    const tailForLead = h.bus().send('B', 'Lead', 'tail message for Lead');
+    // D has no run yet, so nothing subscribed to this; its restored run must not receive it either.
+    const beforeD = h.bus().send('Lead', 'D', 'sent before D was spawned');
+    h.runner.startSpecialist('D', 'task for D, described in full');
+    h.runner.redispatchSpecialist('G', 'task for G again, described in full');
+    await (await opened(h, 'D')).whenPrompted(1);
+    await vi.waitFor(() => {
+      expect(deliveredIds(b)).toEqual(steerIds);
+      expect(deliveredIds(h.session('Lead'))).toContain(tailForLead.messageId);
+      expect(h.opened.filter((o) => o.name === 'G')).toHaveLength(2);
+    });
+    await h.session('G').whenPrompted(1);
+    const gSecondFile = h.session('G').sessionFile!;
+
+    fs.copyFileSync(teamEventLogPath(sessionDir, SESSION, teamId), teamEventLogPath(sessionDir, CRASH, teamId));
+    fs.cpSync(teamMembersDir(sessionDir, SESSION, teamId), teamMembersDir(sessionDir, CRASH, teamId), { recursive: true });
+    h.runner.cancel('user');
+    await run;
+
+    const nameOf = new Map(['Lead', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'].map((n) => [h.agent(n).agentId, n]));
+    const reportOnce = (name: string): CrashBehaviour => (_t, s, runner) => {
+      if (s.prompts.length === 1) runner.reportComplete(name, `${name} resumed and done`);
+      s.emit({ type: 'turn_end' });
+    };
+    const crashed = crashPanel(cwd, teamId, nameOf, {
+      Lead: () => undefined, B: reportOnce('B'), C: reportOnce('C'), D: () => undefined, F: () => undefined, G: () => undefined,
+    });
+    expect(await new TeamPersistence(cwd, CRASH).resumableStop(teamId)).toBe('interrupted');
+
+    const done = crashed.service.resumeTeam(teamId, undefined, 'tc-crash-resume');
+    let resumeError: unknown = null;
+    done.catch((err: unknown) => { resumeError = err; });
+    const crashedSession = async (name: string): Promise<FakeSession> => {
+      await vi.waitFor(() => {
+        if (resumeError) throw resumeError;
+        expect(crashed.opened.some((o) => o.name === name)).toBe(true);
+      });
+      return crashed.opened.find((o) => o.name === name)!.session;
+    };
+    const lead = await crashedSession('Lead');
+    await lead.whenPrompted(1);
+    const resumedB = await crashedSession('B');
+
+    // The restored state, as the resume saved it under its own key before any member ran.
+    const restored = crashed.atFirstOpen!;
+    expect(restored.cancelledAt).toBeGreaterThan(snapshot.cancelledAt);
+    expect(restored.live).toBe(true);
+    const restoredOf = (name: string) => restored.members.find((m) => m.name === name)!;
+    const bTexts = restoredOf('B').undelivered.map((u) => u.text);
+    expect(bTexts).toEqual(expect.arrayContaining([
+      '[Message from Lead]: for B before cancel',
+      'steer held for B',
+      `[Message from Lead]: ${tailForB.content}`,
+    ]));
+    expect(bTexts).not.toContain(steer);
+    expect(restoredOf('Lead').undelivered.map((u) => u.text)).not.toContain(`[Message from B]: ${tailForLead.content}`);
+    expect(restoredOf('C').undelivered.map((u) => u.text)).toEqual(['[Message from Lead]: follow-up held for C']);
+    expect(restoredOf('D')).toMatchObject({ status: 'running', attempt: 0, toolCallCount: 0 });
+    expect(restoredOf('D').undelivered.map((u) => u.text)).not.toContain(`[Message from Lead]: ${beforeD.content}`);
+    expect(restoredOf('D').undelivered).toEqual([]);
+    expect(restoredOf('G')).toMatchObject({ status: 'running', attempt: 1, toolCallCount: 0, usage: snapshotOf('G').usage });
+
+    expect(lead.prompts[0]).toBe(buildInterruptedResumePrompt());
+    await crashedSession('G');
+    const resumedEntries = fs.readFileSync(teamEventLogPath(sessionDir, CRASH, teamId), 'utf-8').trim().split('\n')
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(resumedEntries.filter((e) => e['type'] === 'team-resumed').map((e) => e['checkpoint'])).toEqual([snapshot.cancelledAt]);
+    expect(Object.fromEntries(resumedEntries.filter((e) => e['type'] === 'agent-resumed').map((e) => [e['name'], [e['mode'], e['attempt']]]))).toEqual({
+      Lead: ['relaunch', 0], A: ['park', 0], B: ['relaunch', 0], C: ['park', 0], D: ['relaunch', 0], F: ['relaunch', 0], G: ['relaunch', 1],
+    });
+    expect(crashed.opened.find((o) => o.name === 'G')!.store).toEqual({
+      kind: 'reopen', path: path.join(teamMembersDir(sessionDir, CRASH, teamId), path.basename(gSecondFile)), agentId: h.agent('G').agentId,
+    });
+    const agents = (crashed.runner() as unknown as { agents: Map<string, TeamAgent> }).agents;
+    expect(agents.get('D')).toMatchObject({ status: 'running', attempt: 0, toolCallCount: 0, result: null });
+    expect(agents.get('A')!.status).toBe('awaiting-review');
+
+    // B gets each message pi had not delivered, and never the steer its file records as delivered.
+    await vi.waitFor(() => {
+      const text = resumedB.prompts.join('\n');
+      for (const expected of ['[Message from Lead]: for B before cancel', 'steer held for B', `[Message from Lead]: ${tailForB.content}`]) expect(text).toContain(expected);
+    });
+    expect(resumedB.prompts.filter((p) => p.includes('focus on the parser'))).toEqual([]);
+
+    crashed.service.stopTeam(teamId);
+    await done;
   });
 });
 
@@ -412,13 +682,50 @@ describe('TeamRunner checkpoint and restore edge cases', () => {
     );
   });
 
-  it("a reset's cancel writes no checkpoint, so the old conversation does not offer a resume", async () => {
+  it('a live checkpoint names the last message its log holds, so a failed append leaves the team resumable', async () => {
+    const h = makeTeam({ cwd: newCwd('lost-append'), teamId: crypto.randomUUID(), specialists: [], behave: { Lead: holdTurn } });
+    const run = h.runner.run();
+    await (await opened(h, 'Lead')).whenPrompted(1);
+    const kept = h.bus().broadcast('system', 'logged');
+    const append = vi.spyOn(TeamPersistence.prototype, 'appendTeamEntry').mockImplementationOnce(() => false);
+    h.bus().broadcast('system', 'lost to a locked log');
+    append.mockRestore();
+
+    expect(await h.runner.flushCheckpoint()).toBe(true);
+    const persistence = persistenceOf(h);
+    const live = (await checkpointOf(persistence, h.teamId))!;
+    expect(live.messagesThrough).toBe(kept.messageId);
+    const after = makeTeam({ cwd: h.cwd, teamId: h.teamId, specialists: [], behave: {} });
+    const log = await persistence.readEventLog(h.teamId);
+    expect(() => after.runner.restore(log, live, new Map())).not.toThrow();
+
+    h.runner.cancel('user');
+    await run;
+  });
+
+  it('a lead whose model cannot be resolved stops the run before it writes a log or a checkpoint', async () => {
+    const h = makeTeam({ cwd: newCwd('lead-error'), teamId: crypto.randomUUID(), specialists: [], behave: {} });
+    const config = (h.runner as unknown as { config: TeamConfig }).config;
+    config.resolveRoleModel = (role) => (role === 'lead' ? { error: 'Sign in to Anthropic to use the lead model' } : { modelLabel: 'spec-model' }) as never;
+
+    await expect(h.runner.run()).rejects.toThrow('Sign in to Anthropic to use the lead model');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(await checkpointTimes(h)).toEqual([]);
+    expect(fs.existsSync(teamEventLogPath(piSessionDir(h.cwd), SESSION, h.teamId))).toBe(false);
+    expect(await persistenceOf(h).resumableStop(h.teamId)).toBeNull();
+  });
+
+  it("a reset's cancel seals the run's checkpoint as reset, so the old conversation does not offer a resume", async () => {
     const { h, run } = await interruptedTeam(newCwd('reset'), crypto.randomUUID());
 
     h.runner.cancel('reset');
     await run;
 
-    expect(await checkpointTimes(h)).toEqual([]);
+    const [key] = await checkpointTimes(h);
+    expect(await persistenceOf(h).readCheckpoint(h.teamId, key!)).toMatchObject({ stoppedBy: 'reset' });
+    expect(await checkpointOf(persistenceOf(h), h.teamId)).toBeNull();
+    expect(await persistenceOf(h).resumableStop(h.teamId)).toBeNull();
   });
 });
 
@@ -445,7 +752,7 @@ describe('TeamRunner steer to a member whose session is still opening', () => {
     await run;
 
     const checkpoint = (await checkpointOf(persistenceOf(h), h.teamId))!;
-    expect(checkpoint.members.find((m) => m.name === 'A')!.undelivered).toEqual([{ text: wrapSteerMessage('use the v2 schema'), echoed: true }]);
+    expect(checkpoint.members.find((m) => m.name === 'A')!.undelivered).toEqual([{ text: wrapSteerMessage('use the v2 schema'), echoed: true, ids: [expect.any(String)] }]);
     expect(checkpoint.operatorSteers).toEqual([{ memberName: 'A', message: 'use the v2 schema', attempt: 0 }]);
   });
 });
@@ -533,7 +840,7 @@ describe('TeamRunner image steer still queued in pi at the cancel', () => {
     const persistence = persistenceOf(h);
     const log = await persistence.readEventLog(h.teamId);
     const checkpoint = (await checkpointOf(persistence, h.teamId))!;
-    expect(checkpoint.members.find((m) => m.name === 'A')!.undelivered).toEqual([{ text: steer, echoed: true, images: [image] }]);
+    expect(checkpoint.members.find((m) => m.name === 'A')!.undelivered).toEqual([{ text: steer, echoed: true, images: [image], ids: [expect.any(String)] }]);
     expect(checkpoint.operatorSteers).toEqual([{ memberName: 'A', message: 'use this layout', imageCount: 1, attempt: 0 }]);
 
     const after = makeTeam({ cwd: h.cwd, teamId: h.teamId, specialists: ['A'], behave: { Lead: holdTurn } });
@@ -559,7 +866,7 @@ describe('TeamRunner peer message still queued in pi at the cancel', () => {
     await a.whenPrompted(1);
 
     const peer = '[Message from Lead]: check the parser';
-    h.bus().send('Lead', 'A', 'check the parser');
+    const sent = h.bus().send('Lead', 'A', 'check the parser');
     await a.whenPrompted(2);
     expect(a.getSteeringMessages()).toEqual([peer]);
     const files = new Map(['Lead', 'A'].map((n) => [h.agent(n).agentId, h.session(n).sessionFile!]));
@@ -569,7 +876,7 @@ describe('TeamRunner peer message still queued in pi at the cancel', () => {
 
     const persistence = persistenceOf(h);
     const checkpoint = (await checkpointOf(persistence, h.teamId))!;
-    expect(checkpoint.members.find((m) => m.name === 'A')!.undelivered).toEqual([{ text: peer, echoed: true }]);
+    expect(checkpoint.members.find((m) => m.name === 'A')!.undelivered).toEqual([{ text: peer, echoed: true, ids: [sent.messageId] }]);
 
     const after = makeTeam({ cwd: h.cwd, teamId: h.teamId, specialists: ['A'], behave: { Lead: holdTurn } });
     after.runner.restore(await persistence.readEventLog(h.teamId), checkpoint, files);

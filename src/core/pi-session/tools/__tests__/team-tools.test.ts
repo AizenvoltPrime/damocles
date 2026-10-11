@@ -234,7 +234,7 @@ describe('resume_team and cancel_team tools', () => {
 
   it('cancel_team returns the service text, header included, and reports a team that is not running', async () => {
     const cancel = tools({
-      cancelTeam: (id: string) => {
+      cancelTeam: async (id: string) => {
         if (id !== TEAM) throw new Error(`Team "${id}" is not running.`);
         return `(TEAM CANCELLED ...)\n\nTeam "${id}" cancelled.`;
       },

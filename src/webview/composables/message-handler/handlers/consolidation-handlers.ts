@@ -11,7 +11,7 @@ export function createConsolidationHandlers(): Partial<HandlerRegistry> {
     },
 
     consolidationRunning: (msg, ctx) => {
-      ctx.stores.consolidationStore.setRunning(msg.running);
+      ctx.stores.consolidationStore.setRunning(msg.running, msg.pass, msg.runSoFar);
     },
 
     consolidationProgress: (msg, ctx) => {

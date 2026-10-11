@@ -10,6 +10,7 @@ import CompassHelpDialog from './CompassHelpDialog.vue';
 import CompassEdgeFilterPopover from './CompassEdgeFilterPopover.vue';
 import { useCompassStore } from '@/stores/useCompassStore';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
+import { prefersReducedMotion } from '@/utils/reducedMotion';
 import { EDGE_STYLE, NODE_EQUIVALENT_RADIUS, nodePathGenerator } from '@/composables/compass/useGraphSymbols';
 import type { Selection as D3Selection } from 'd3-selection';
 import type { Simulation, SimulationLinkDatum, SimulationNodeDatum } from 'd3-force';
@@ -477,10 +478,6 @@ onMounted(async () => {
 onUnmounted(() => {
 	cleanupGraph();
 });
-
-function prefersReducedMotion(): boolean {
-	return typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
-}
 
 function handleFitToView(): void {
 	if (!d3Modules || !svgElement.value || !containerRef.value || !currentZoomBehavior.value || currentNodes.value.length === 0) return;

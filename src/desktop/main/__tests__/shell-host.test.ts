@@ -294,6 +294,35 @@ describe('ShellHost', () => {
     expect(shell.editorFlush('flush-3', [])).toBe(true);
   });
 
+  // Electron emits did-finish-load after a failed load too (electron/electron#5128).
+  it('sends nothing to a page that failed to load, and loads as usual once a page loads again', () => {
+    actions.state = vi.fn(() => ({ projects: [], selected: {} }) as never);
+    const shell = host();
+    contents.emit('did-finish-load');
+    contents.emit('did-fail-load', {}, -6, 'ERR_FILE_NOT_FOUND', SHELL_PAGE_URL, true);
+    contents.send.mockClear();
+    vi.mocked(actions.terminal.shellLoaded).mockClear();
+    contents.emit('did-finish-load');
+    expect(contents.send).not.toHaveBeenCalled();
+    expect(actions.terminal.shellLoaded).not.toHaveBeenCalled();
+    expect(shell.editorFlush('flush-1', [])).toBe(false);
+    expect(lines).toContain('[shell] the page did not load (-6)');
+
+    contents.emit('did-navigate', {}, SHELL_PAGE_URL, 200, 'OK');
+    contents.emit('did-finish-load');
+    expect(contents.send).toHaveBeenCalledWith(SHELL_CHANNELS.state, expect.anything());
+    expect(shell.editorFlush('flush-2', [])).toBe(true);
+  });
+
+  it('keeps its page for a load another navigation aborted or a subframe that failed', () => {
+    actions.state = vi.fn(() => ({ projects: [], selected: {} }) as never);
+    const shell = host();
+    contents.emit('did-finish-load');
+    contents.emit('did-fail-load', {}, -3, 'ERR_ABORTED', SHELL_PAGE_URL, true);
+    contents.emit('did-fail-load', {}, -6, 'ERR_FILE_NOT_FOUND', 'app://damocles/shell/x.png', false);
+    expect(shell.editorFlush('flush-1', [])).toBe(true);
+  });
+
   // The page asks by the state it holds while main may already have changed the list and sent the next state.
   it('answers a chat list only for a project of the state the page names; one that left the list since answers null after the state without it', async () => {
     const projects = (...keys: string[]): ShellState['projects'] => keys.map((key) => ({ key, name: key, fsPath: key, trusted: true, running: 0, waiting: 0 }));

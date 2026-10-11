@@ -14,7 +14,7 @@ const props = withDefaults(defineProps<{
   disabled?: boolean;
   /** A longer tooltip than the label. */
   title?: string | undefined;
-}>(), { primary: false, iconOnly: false, busy: false, disabled: false, title: undefined });
+}>(), { primary: false, iconOnly: false, busy: false, disabled: false });
 
 const emit = defineEmits<{
   (e: 'click', event: MouseEvent): void;

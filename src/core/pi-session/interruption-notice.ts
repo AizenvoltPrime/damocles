@@ -21,11 +21,14 @@ import {
   type LiveAgentStatus,
 } from './agent-records';
 import { DAMOCLES_INTERRUPTION_NOTICE } from './session-store/constants';
-import type { TeamResumableStop } from '../team/types';
+import type { TeamCheckpointCause } from '../team/types';
 import { log } from '../logger';
 
-/** Why an agent stopped; 'unrecorded' when nothing persisted a cause (a kill, or a file from before causes were recorded). */
-export type InterruptionCause = TeamResumableStop | 'unrecorded';
+/**
+ * Why an agent stopped; 'interrupted' for a team whose live checkpoint no run in this process sealed, 'unrecorded'
+ * when nothing persisted a cause (a kill, or a file from before causes were recorded).
+ */
+export type InterruptionCause = TeamCheckpointCause | 'interrupted' | 'unrecorded';
 
 /** One interrupted invocation. A later interruption of the same agent is a new invocation. */
 export interface InterruptedAgent {
@@ -47,8 +50,17 @@ export interface InterruptionSources {
   subagentDir: string;
   /** The in-memory status of a subagent, when this panel still tracks it. */
   liveSubagent: (id: string) => LiveAgentStatus | undefined;
-  /** Why a team stopped, when it has a checkpoint that `resume_team` would continue from; else null. */
-  teamStop: (teamId: string) => Promise<InterruptionCause | null>;
+  /**
+   * Why a team stopped, when it has a checkpoint that `resume_team` would continue from; else null. 'running' when
+   * this process runs it and no stop has sealed it, which a later check decides.
+   */
+  teamStop: (teamId: string) => Promise<InterruptionCause | 'running' | null>;
+}
+
+/** What a collection found. `retry`: a team could not be decided yet, so the check must run again. */
+export interface InterruptionScan {
+  agents: InterruptedAgent[];
+  retry: boolean;
 }
 
 export interface NoticeMessage {
@@ -104,11 +116,12 @@ export async function collectInterruptedSubagents(sources: InterruptionSources):
 }
 
 /** Resumable teams on the branch: those with an unused resume checkpoint, listed under their latest invocation. */
-export async function collectInterruptedTeams(sources: InterruptionSources): Promise<InterruptedAgent[]> {
+export async function collectInterruptedTeams(sources: InterruptionSources): Promise<InterruptionScan> {
   const invocations = agentInvocationsOnBranch(sources.branch).filter((inv) => inv.kind === 'team');
   const out: InterruptedAgent[] = [];
+  let retry = false;
   for (const id of new Set(invocations.map((inv) => inv.id))) {
-    let cause: InterruptionCause | null;
+    let cause: InterruptionCause | 'running' | null;
     try {
       cause = await sources.teamStop(id);
     } catch (err) {
@@ -116,18 +129,21 @@ export async function collectInterruptedTeams(sources: InterruptionSources): Pro
       log('[interruption-notice] skipping team %s: reading its resume state failed: %O', id, err);
       continue;
     }
-    if (cause === null) continue;
+    if (cause === 'running') retry = true;
+    if (cause === null || cause === 'running') continue;
     const mine = invocations.filter((inv) => inv.id === id);
     const created = mine.find((inv) => !inv.resume);
     const title = created ? toolCallArgumentsOnBranch(sources.branch, created.toolCallId)?.['title'] : undefined;
     out.push({ kind: 'team', id, toolCallId: mine.at(-1)!.toolCallId, description: typeof title === 'string' ? title : '', cause });
   }
-  return out;
+  return { agents: out, retry };
 }
 
 /** Every interrupted agent this conversation can resume. */
-export async function collectInterrupted(sources: InterruptionSources): Promise<InterruptedAgent[]> {
-  return [...(await collectInterruptedSubagents(sources)), ...(await collectInterruptedTeams(sources))];
+export async function collectInterrupted(sources: InterruptionSources): Promise<InterruptionScan> {
+  const subagents = await collectInterruptedSubagents(sources);
+  const teams = await collectInterruptedTeams(sources);
+  return { agents: [...subagents, ...teams.agents], retry: teams.retry };
 }
 
 /** Invocations an earlier notice on the branch already listed. */
@@ -154,6 +170,8 @@ const CAUSE_TEXT: Record<InterruptionCause, string> = {
   user: 'stopped by the user',
   parent: 'cancelled by your cancel_team call',
   shutdown: 'stopped when its chat panel closed, switched session or the editor window reloaded',
+  failed: 'failed when its lead agent failed',
+  interrupted: 'stopped when Damocles exited while it ran',
   unrecorded: 'stopped with no recorded cause',
 };
 
@@ -172,19 +190,21 @@ export function formatInterruptionNotice(agents: readonly InterruptedAgent[]): s
 
 /**
  * Append one hidden notice listing every interrupted invocation no earlier notice on the branch listed.
- * Returns what it announced; throws when collecting or sending fails.
+ * Returns what it announced and whether a team was left for a later check; throws when collecting or sending fails.
  */
 export async function reconcileInterruptions(
   sources: InterruptionSources & { send: (message: NoticeMessage) => Promise<void> },
-): Promise<InterruptedAgent[]> {
+): Promise<{ announced: InterruptedAgent[]; retry: boolean }> {
   const announced = announcedOnBranch(sources.branch);
-  const fresh = (await collectInterrupted(sources)).filter((agent) => !announced.has(noticeKey(agent)));
-  if (fresh.length === 0) return [];
-  await sources.send({
-    customType: DAMOCLES_INTERRUPTION_NOTICE,
-    content: formatInterruptionNotice(fresh),
-    display: false,
-    details: { agents: fresh.map(({ kind, id, toolCallId }) => ({ kind, id, toolCallId })) },
-  });
-  return fresh;
+  const scan = await collectInterrupted(sources);
+  const fresh = scan.agents.filter((agent) => !announced.has(noticeKey(agent)));
+  if (fresh.length > 0) {
+    await sources.send({
+      customType: DAMOCLES_INTERRUPTION_NOTICE,
+      content: formatInterruptionNotice(fresh),
+      display: false,
+      details: { agents: fresh.map(({ kind, id, toolCallId }) => ({ kind, id, toolCallId })) },
+    });
+  }
+  return { announced: fresh, retry: scan.retry };
 }

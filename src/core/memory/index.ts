@@ -30,6 +30,7 @@ import {
   accumulateRunResult,
   countSetAsideCandidates,
   retrySetAsideCandidates,
+  type ConsolidationRunPass,
   type PendingConsolidationRequest,
 } from './consolidation';
 import { attributeFilesToWorkspace, listKnownWorkspaces } from './workspaces';
@@ -138,6 +139,8 @@ export class MemoryService {
   private lastConsolidationResult: ConsolidationResult | null = null;
   /** Ordered live-progress events of the in-flight pass, replayed when a panel reopens the overlay mid-pass. */
   private currentPhaseEvents: ConsolidationPhaseEvent[] = [];
+  /** The in-flight run's pass and its result over the passes that ended; null between runs. */
+  private currentRun: ConsolidationRunPass | null = null;
   /** This window's quality audit, from the moment it starts taking the lease until the run settles. */
   private audit: { abort: AbortController; done: Promise<void> } | null = null;
   private disposed = false;
@@ -281,14 +284,15 @@ export class MemoryService {
 
   /** Publishes a run's result, then the counts, then running:false; the panel needs the result first. */
   private endRun(result: ConsolidationResult | null): void {
+    this.currentRun = null;
     if (result) this.emitTerminalResult(result);
     this.broadcastPendingCount();
     this.consolidationBroadcast?.({ type: 'consolidationRunning', running: false });
   }
 
-  /** Live consolidation activity for overlay-open replay: running flag + every phase event of the current pass so far. */
-  getConsolidationActivity(): { running: boolean; phaseEvents: ConsolidationPhaseEvent[] } {
-    return { running: this.consolidating, phaseEvents: [...this.currentPhaseEvents] };
+  /** Live consolidation activity for overlay-open replay: running flag, the run's pass and result so far, and every phase event of the current pass. */
+  getConsolidationActivity(): { running: boolean; phaseEvents: ConsolidationPhaseEvent[] } & Partial<ConsolidationRunPass> {
+    return { running: this.consolidating, phaseEvents: [...this.currentPhaseEvents], ...(this.consolidating ? this.currentRun : null) };
   }
 
   /** Read from the store at send time, so the last publication follows the last write whatever ran between. */
@@ -1041,14 +1045,14 @@ export class MemoryService {
     // The handler already guards isEnabled and shows memoryError, so stay silent here, except to end a
     // run whose earlier passes the panel still shows as running.
     if (!this.isEnabled) {
-      if (opts.runSoFar) this.endRun(opts.runSoFar);
+      if (opts.run) this.endRun(opts.run.runSoFar);
       return Promise.resolve();
     }
 
     // Not initialized: a manual run surfaces a visible failed/unavailable result; background passes
     // stay silent and retry on the next idle timer.
     if (!this.db || !this.writeQueue || !this.runner || !this.factGraph || !this.profileManager) {
-      if (opts.runSoFar) this.endRun(accumulateRunResult(opts.runSoFar, this.buildUnavailableResult('manual')));
+      if (opts.run) this.endRun(accumulateRunResult(opts.run.runSoFar, this.buildUnavailableResult('manual')));
       else if (manual) this.emitTerminalResult(this.buildUnavailableResult('manual'));
       return Promise.resolve();
     }
@@ -1058,7 +1062,7 @@ export class MemoryService {
         ...(opts.sessionId !== undefined ? { sessionId: opts.sessionId } : {}),
         ...(opts.forceExtract !== undefined ? { forceExtract: opts.forceExtract } : {}),
         ...(opts.declinedInRun !== undefined ? { declinedInRun: opts.declinedInRun } : {}),
-        ...(opts.runSoFar !== undefined ? { runSoFar: opts.runSoFar } : {}),
+        ...(opts.run !== undefined ? { run: opts.run } : {}),
       });
       return this.consolidationInFlight ?? Promise.resolve();
     }
@@ -1074,8 +1078,10 @@ export class MemoryService {
     this.consolidating = true;
     this.currentPhaseEvents = [];
 
-    // The panel shows a run as running from its first pass to its result; a later pass only restarts the stepper.
-    if (!opts.runSoFar) this.consolidationBroadcast?.({ type: 'consolidationRunning', running: true });
+    // The panel shows a run as running from its first pass to its result, with the pass and what the run kept so far.
+    const currentRun: ConsolidationRunPass = opts.run ?? { pass: 1 };
+    this.currentRun = currentRun;
+    this.consolidationBroadcast?.({ type: 'consolidationRunning', running: true, ...currentRun });
 
     const work = (async () => {
       let runResult: ConsolidationResult | null = null;
@@ -1118,7 +1124,7 @@ export class MemoryService {
             this.consolidationBroadcast?.({ type: 'consolidationProgress', event });
           },
         });
-        runResult = accumulateRunResult(opts.runSoFar, result);
+        runResult = accumulateRunResult(opts.run?.runSoFar, result);
 
         // A `failed` terminal means the batch was released back to consumed=0. Bump the failure
         // counter and re-arm the idle timer (which reads it for backoff) so the batch re-enters a
@@ -1137,7 +1143,7 @@ export class MemoryService {
                   reason: 'manual',
                   forceExtract: true,
                   declinedInRun,
-                  runSoFar: runResult,
+                  run: { pass: currentRun.pass + 1, runSoFar: runResult },
                 });
                 runContinues = true;
               } else if (!manual && this.getPendingCount() > 0) {

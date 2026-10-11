@@ -17,7 +17,7 @@ const props = withDefaults(defineProps<{
   argTitle?: string | undefined;
   status: ToolCall['status'];
   expandable?: boolean;
-}>(), { arg: undefined, argTitle: undefined, expandable: false });
+}>(), { expandable: false });
 
 const emit = defineEmits<{
   (e: 'expand'): void;

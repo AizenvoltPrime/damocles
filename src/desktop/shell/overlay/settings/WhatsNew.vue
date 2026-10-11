@@ -8,6 +8,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { useSettingsTarget } from '@/components/settings/settings-view';
 import { remPx } from '@/composables/useRemPx';
 import type { ReleaseIndex, ReleaseIndexEntry } from '../../../preload/updates';
+import { answerOf } from '../popup-answer';
 import { useDesktopPrefs } from './desktop-prefs';
 import ReleaseNotes from './ReleaseNotes.vue';
 
@@ -65,13 +66,18 @@ async function load(version: string): Promise<void> {
   const known = notes.value.get(version);
   if (known && known.status !== 'failed') return;
   notes.value = new Map(notes.value).set(version, { status: 'loading' });
-  let next: Notes;
+  let next: Notes | undefined;
   try {
-    next = { status: 'ready', markdown: (await api.getReleaseNotes(version)).markdown };
+    const loaded = await answerOf(api.getReleaseNotes(version));
+    next = loaded && { status: 'ready', markdown: loaded.markdown };
   } catch {
     next = { status: 'failed' };
   }
-  notes.value = new Map(notes.value).set(version, next);
+  const settled = new Map(notes.value);
+  // Main answered that the modal closed: no entry is kept, so a later expand asks again.
+  if (next) settled.set(version, next);
+  else settled.delete(version);
+  notes.value = settled;
 }
 
 function setOpen(version: string, open: boolean): void {
@@ -153,7 +159,8 @@ function onKeydown(event: KeyboardEvent, position: number): void {
   void focusRow(next);
 }
 
-void api.getReleaseIndex().then(async (loaded) => {
+void answerOf(api.getReleaseIndex()).then(async (loaded) => {
+  if (!loaded) return;
   index.value = loaded;
   setOpen(loaded.current, true);
   const requested = target.value?.release;

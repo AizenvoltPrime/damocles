@@ -132,6 +132,11 @@ function imageResult(base64: string, text?: string): SdkResult {
   return { content };
 }
 
+// A page that loaded with an HTTP error status is a loaded page, not a tool error (Playwright's page.goto contract).
+function httpErrorNote(status: number | undefined): string {
+  return status !== undefined && status >= 400 ? ` (HTTP ${status})` : '';
+}
+
 function errorResult(toolName: string, error: unknown): SdkResult {
   const msg = error instanceof Error ? error.message : String(error);
   log(`[Browser MCP] ${toolName} failed — ${msg}`);
@@ -586,7 +591,8 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
     // function-detection regex), so the object comes back exactly as before.
     const page = cdp.getPage();
     const data = await page.evaluate(buildSnapshotExpression()) as { snapshot: string; refCount: number; title: string; url: string; belowFold: number; scrollInfo: string[]; emptyFields: string[] };
-    const header = [`[Page] ${data.title}`, `[URL] ${data.url}`];
+    // The address bar's address: over Chromium's error page the document's own is chrome-error://.
+    const header = [`[Page] ${data.title}`, `[URL] ${scope.getCurrentUrl() ?? data.url}`];
     const elemInfo = data.belowFold > 0
       ? `${data.refCount} interactive elements, ${data.belowFold} off-screen below`
       : `${data.refCount} interactive elements`;
@@ -630,18 +636,18 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
     pi.defineTool<typeof browserOpenSchema, undefined>({
       name: piName('browser_open'),
       label: piName('browser_open'),
-      description: "Open a URL in VS Code's integrated browser with full automation. User sees the browser live. If already open, navigates to the new URL. Provide exact, complete URLs — look up routes in the codebase rather than guessing. After opening, call BrowserQuery to discover interactive elements on the page.",
+      description: "Open a URL in the integrated browser with full automation. User sees the browser live in the browser panel. If already open, navigates to the new URL. Provide exact, complete URLs — look up routes in the codebase rather than guessing. After opening, call BrowserQuery to discover interactive elements on the page.",
       parameters: browserOpenSchema,
       execute: async (_id, input, signal) => {
         try {
-          await scope.open(input.url, signal);
+          const opened = `Opened browser: ${input.url}${httpErrorNote(await scope.open(input.url, signal))}`;
           const cdpReady = await scope.waitForController(25_000, signal);
-          if (signal?.aborted) return wrap(textResult(`Opened browser: ${input.url}`));
+          if (signal?.aborted) return wrap(textResult(opened));
           if (cdpReady) {
             const cdp = scope.getController()!;
-            return wrap(await screenshotWithSnapshot(cdp, `Opened browser: ${input.url}`));
+            return wrap(await screenshotWithSnapshot(cdp, opened));
           }
-          return wrap(textResult(`Opened browser: ${input.url}\nNote: CDP automation not available — screenshot and interaction tools will not work.`));
+          return wrap(textResult(`${opened}\nNote: CDP automation not available — screenshot and interaction tools will not work.`));
         } catch (error) {
           return wrap(errorResult('browser_open', error));
         }
@@ -651,18 +657,18 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
     pi.defineTool<typeof browserNavigateSchema, undefined>({
       name: piName('browser_navigate'),
       label: piName('browser_navigate'),
-      description: 'Navigate the integrated browser to a new URL. The user sees navigation live in the VS Code panel. IMPORTANT: Provide the exact, complete URL path. Do not guess URL paths — look up routes in the codebase or ask the user. Wrong paths will silently load a 404 or wrong page. Returns a screenshot after navigation.',
+      description: 'Navigate the integrated browser to a new URL. The user sees navigation live in the browser panel. IMPORTANT: Provide the exact, complete URL path. Do not guess URL paths — look up routes in the codebase or ask the user. A wrong path usually loads the server\'s error page, and the result names its HTTP error status (for example "(HTTP 404)"), but a single-page app may answer a wrong path with its own page and status 200, so check the screenshot. A page that does not load at all, or an address that starts a download, is an error. Returns a screenshot after navigation.',
       parameters: browserNavigateSchema,
       execute: async (_id, input, signal) => {
         try {
-          await scope.open(input.url, signal);
+          const navigated = `Navigated to: ${input.url}${httpErrorNote(await scope.open(input.url, signal))}`;
           const cdpReady = await scope.waitForController(25_000, signal);
-          if (signal?.aborted) return wrap(textResult(`Navigated to: ${input.url}`));
+          if (signal?.aborted) return wrap(textResult(navigated));
           if (cdpReady) {
             const cdp = scope.getController()!;
-            return wrap(await screenshotWithSnapshot(cdp, `Navigated to: ${input.url}`));
+            return wrap(await screenshotWithSnapshot(cdp, navigated));
           }
-          return wrap(textResult(`Navigated to: ${input.url}\nNote: CDP automation not available — screenshot not captured.`));
+          return wrap(textResult(`${navigated}\nNote: CDP automation not available — screenshot not captured.`));
         } catch (error) {
           return wrap(errorResult('browser_navigate', error));
         }
@@ -1739,8 +1745,8 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
             return wrap(textResult(`Open tabs (${tabs.length}):\n${lines.join('\n')}`));
           }
           if (input.action === 'new') {
-            await scope.openNewTab(input.url);
-            return wrap(await screenshotWithSnapshot(requireCdp('browser_tabs'), `Opened new tab${input.url ? `: ${input.url}` : ''}`));
+            const status = await scope.openNewTab(input.url);
+            return wrap(await screenshotWithSnapshot(requireCdp('browser_tabs'), `Opened new tab${input.url ? `: ${input.url}${httpErrorNote(status)}` : ''}`));
           }
           if (input.index === undefined) {
             return wrap({ content: [{ type: 'text', text: `Error: index is required for ${input.action}` }], isError: true });

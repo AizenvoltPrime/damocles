@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { log } from '../logger';
 import { ensurePiSessionDir } from '../pi-session/session-store';
+import { DAMOCLES_TEAM_DELIVERED_ENTRY } from '../pi-session/session-store/constants';
 import {
   indexTeamMemberFiles,
   listTeamCheckpoints,
@@ -12,9 +13,12 @@ import {
   teamMembersDir,
 } from '../pi-session/agent-records';
 import { memberHistoryMessages } from './content-blocks';
+import { CheckpointWriter } from './checkpoint-writer';
 import { TeamRunLog } from './runs';
 import type {
+  AgentFailureKind,
   AgentSpec,
+  ResumableCheckpoint,
   ScratchpadUpdateEvent,
   TeamAgent,
   TeamCheckpoint,
@@ -22,7 +26,7 @@ import type {
   TeamLogSpawn,
   TeamMessage,
   TeamPersistenceWriter,
-  TeamResumableStop,
+  TeamCheckpointCause,
   TeamStatus,
 } from './types';
 import { isImageBlock } from '../../shared/types/content';
@@ -66,33 +70,28 @@ export class TeamPersistence implements TeamPersistenceWriter {
   }
 
   /** A failed write is collected and reported by `flush()`, so one bad entry never stops the team. */
-  appendTeamEntry(entry: Record<string, unknown>): void {
+  appendTeamEntry(entry: Record<string, unknown>): boolean {
     const teamId = entry['teamId'];
-    if (typeof teamId !== 'string' || !teamId) return;
+    if (typeof teamId !== 'string' || !teamId) return false;
     try {
       fs.appendFileSync(this.eventLogPath(teamId), JSON.stringify(entry) + '\n');
-    } catch (err) {
-      this.writeErrors.push(err instanceof Error ? err : new Error(String(err)));
-    }
-  }
-
-  /**
-   * Temp file then rename, so a reload mid-write leaves the previous file or none, never half of one.
-   * Writing the same `cancelledAt` again replaces that cancel's checkpoint.
-   */
-  writeCheckpoint(checkpoint: TeamCheckpoint): boolean {
-    try {
-      const target = teamCheckpointPath(this.ensureDir(), this.persistenceSessionId, checkpoint.teamId, checkpoint.cancelledAt);
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      const temp = `${target}.tmp`;
-      fs.writeFileSync(temp, JSON.stringify(checkpoint));
-      fs.renameSync(temp, target);
       return true;
     } catch (err) {
-      log('[TeamPersistence] writing the resume checkpoint of team %s failed: %O', checkpoint.teamId, err);
       this.writeErrors.push(err instanceof Error ? err : new Error(String(err)));
       return false;
     }
+  }
+
+  /** The writer of one run's checkpoint; a failed write is logged and collected for `flush()`. */
+  createCheckpointWriter(teamId: string, key: number, snapshot: () => TeamCheckpoint): CheckpointWriter {
+    return new CheckpointWriter({
+      filePath: teamCheckpointPath(this.ensureDir(), this.persistenceSessionId, teamId, key),
+      snapshot,
+      onError: (err) => {
+        log('[TeamPersistence] writing the resume checkpoint %d of team %s failed: %O', key, teamId, err);
+        this.writeErrors.push(err);
+      },
+    });
   }
 
   /** Null when there is none. An unreadable checkpoint is logged and also reads as none. */
@@ -119,20 +118,25 @@ export class TeamPersistence implements TeamPersistenceWriter {
   }
 
   /**
-   * The checkpoint a resume of `log`'s team continues from: its newest, unless a `team-resumed` entry
-   * already used it. An older checkpoint is never offered, since the team ran on past it.
+   * The checkpoint a resume of `log`'s team continues from: its newest, unless the log ends completed, a
+   * `team-resumed` entry already used it, or a reset sealed it. An older checkpoint is never offered, since
+   * the team ran on past it.
    */
-  async resumableCheckpoint(log: TeamEventLog): Promise<TeamCheckpoint | null> {
+  async resumableCheckpoint(log: TeamEventLog): Promise<ResumableCheckpoint | null> {
+    if (log.finalStatus === 'completed') return null;
     const newest = (await listTeamCheckpoints(teamCheckpointsDir(this.ensureDir(), this.persistenceSessionId, log.teamId))).at(-1);
     if (newest === undefined || log.resumedCheckpoints.has(newest)) return null;
-    return this.readCheckpoint(log.teamId, newest);
+    const checkpoint = await this.readCheckpoint(log.teamId, newest);
+    return checkpoint !== null && isResumable(checkpoint) ? checkpoint : null;
   }
 
   /**
-   * Why the team stopped, when `resume_team` would find a checkpoint to continue from, else null; a team
-   * with no event log has none. 'unrecorded' for a checkpoint written before the cause was recorded.
+   * Why the team stopped, when `resume_team` would find a checkpoint to continue from and the team is offered for
+   * one, else null; a team with no event log has none, and a team whose lead failed to start is not offered, since
+   * a resume would not start it either. 'interrupted' for a live checkpoint, whose run never sealed it: the caller
+   * rules out a team this process still runs. 'unrecorded' for a checkpoint written before the cause was recorded.
    */
-  async resumableStop(teamId: string): Promise<TeamResumableStop | 'unrecorded' | null> {
+  async resumableStop(teamId: string): Promise<TeamCheckpointCause | 'interrupted' | 'unrecorded' | null> {
     let teamLog: TeamEventLog;
     try {
       teamLog = await this.readEventLog(teamId);
@@ -141,7 +145,9 @@ export class TeamPersistence implements TeamPersistenceWriter {
       throw err;
     }
     const checkpoint = await this.resumableCheckpoint(teamLog);
-    return checkpoint === null ? null : checkpoint.stoppedBy ?? 'unrecorded';
+    if (checkpoint === null || (checkpoint.stoppedBy === 'failed' && checkpoint.leadFailure === 'start')) return null;
+    if (checkpoint.live) return 'interrupted';
+    return checkpoint.stoppedBy ?? 'unrecorded';
   }
 
   /** The event log as a resume needs it. Throws when the log is missing or a line is malformed. */
@@ -360,8 +366,11 @@ export class TeamPersistence implements TeamPersistenceWriter {
       for (const [index, { path: filePath }] of files.entries()) {
         const file = await readAgentFile(filePath);
         if (!file) continue;
-        // Entry ids are unique only within one file, and the card keys its messages by id.
-        for (const message of memberHistoryMessages(file.messages, file.entryIds, file.stoppedToolCallIds, file.windDownMessages)) history.push({ ...message, id: `${index}:${message.id}` });
+        // Each segment is one run of the member's runner, which starts with no batch an abort could cut.
+        for (const segment of file.segments) {
+          // Entry ids are unique only within one file, and the card keys its messages by id.
+          for (const message of memberHistoryMessages(segment.messages, file.entryIds, file.stoppedToolCallIds, file.windDownMessages)) history.push({ ...message, id: `${index}:${message.id}` });
+        }
       }
       return history;
     } catch (err) {
@@ -376,7 +385,10 @@ const AGENT_STATUSES: ReadonlySet<string> = new Set<TeamAgent['status']>([
 ]);
 
 const TERMINAL_STATUSES: ReadonlySet<string> = new Set<TeamAgent['status']>(['completed', 'failed', 'cancelled']);
-const RESUMABLE_STOPS: ReadonlySet<TeamResumableStop> = new Set<TeamResumableStop>(['user', 'parent', 'shutdown']);
+const SEAL_CAUSES: ReadonlySet<string> = new Set<TeamCheckpointCause | 'reset'>(['user', 'parent', 'shutdown', 'failed', 'reset']);
+const FAILURE_KINDS: ReadonlySet<string> = new Set<AgentFailureKind>(['start', 'model', 'run']);
+
+const isResumable = (checkpoint: TeamCheckpoint): checkpoint is ResumableCheckpoint => checkpoint.stoppedBy !== 'reset';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -405,7 +417,8 @@ function isCheckpointMember(v: unknown): boolean {
     && isString(v['status']) && AGENT_STATUSES.has(v['status'])
     && Array.isArray(v['undelivered'])
     && v['undelivered'].every((m) => isRecord(m) && isString(m['text']) && typeof m['echoed'] === 'boolean'
-      && (m['images'] === undefined || (Array.isArray(m['images']) && m['images'].every(isImageBlock))))
+      && (m['images'] === undefined || (Array.isArray(m['images']) && m['images'].every(isImageBlock)))
+      && (m['ids'] === undefined || isStringArray(m['ids'])))
     && isUsage(v['usage'])
     && isCount(v['toolCallCount']);
 }
@@ -428,7 +441,13 @@ function isCoverage(v: unknown): boolean {
 
 export function isTeamCheckpoint(value: unknown): value is TeamCheckpoint {
   if (!isRecord(value) || value['version'] !== 1 || !isString(value['teamId']) || !isCount(value['cancelledAt'])) return false;
-  if (value['stoppedBy'] !== undefined && !RESUMABLE_STOPS.has(value['stoppedBy'] as TeamResumableStop)) return false;
+  if (value['stoppedBy'] !== undefined && !SEAL_CAUSES.has(value['stoppedBy'] as string)) return false;
+  if (value['live'] !== undefined && value['live'] !== true) return false;
+  // A failure seal names how the lead failed, and a seal of a resume that never launched carries it on.
+  if (value['leadFailure'] === undefined ? value['stoppedBy'] === 'failed' : !(FAILURE_KINDS.has(value['leadFailure'] as string) && value['live'] === undefined)) return false;
+  if (value['interrupted'] !== undefined && !(value['interrupted'] === true && value['live'] === undefined)) return false;
+  if (value['asOf'] !== undefined && !isCount(value['asOf'])) return false;
+  if (value['messagesThrough'] !== undefined && !isString(value['messagesThrough'])) return false;
   if (!Array.isArray(value['members']) || !value['members'].every(isCheckpointMember)) return false;
   if (!isPairArray(value['readerCursors'], (s) => isPairArray(s, isCount))) return false;
   const review = value['review'];
@@ -451,6 +470,25 @@ export function isTeamCheckpoint(value: unknown): value is TeamCheckpoint {
   return Array.isArray(steers) && steers.every((s) => isRecord(s) && isString(s['memberName']) && isString(s['message'])
     && (s['imageCount'] === undefined || isCount(s['imageCount']))
     && (s['attempt'] === undefined || isCount(s['attempt'])));
+}
+
+/** Every delivery id a member session file's `damocles-team-delivered` entries record. Rejects when the file cannot be read. */
+export async function deliveredIdsInSessionFile(filePath: string): Promise<Set<string>> {
+  const ids = new Set<string>();
+  for (const line of (await fs.promises.readFile(filePath, 'utf-8')).split('\n')) {
+    if (!line.includes(DAMOCLES_TEAM_DELIVERED_ENTRY)) continue;
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      // A line a crash tore records nothing, so its message is redelivered.
+      continue;
+    }
+    if (!isRecord(entry) || entry['type'] !== 'custom' || entry['customType'] !== DAMOCLES_TEAM_DELIVERED_ENTRY) continue;
+    const data = entry['data'];
+    if (isRecord(data) && isStringArray(data['ids'])) for (const id of data['ids']) ids.add(id);
+  }
+  return ids;
 }
 
 class TeamLogError extends Error {
@@ -537,6 +575,7 @@ export function parseTeamEventLog(teamId: string, content: string): TeamEventLog
           profileId: isString(profileId) ? profileId : null,
           attempt: num('attempt'),
           timestamp: time('timestamp'),
+          messagesBefore: messages.length,
           ...(kind ? { kind } : {}),
           // `[]` is a declared reviewer of nobody, distinct from an absent list.
           ...(isStringArray(reviews) ? { reviews: [...reviews] } : {}),

@@ -75,7 +75,7 @@ function collectMdFiles(dir) {
 }
 
 function escapeForTs(str) {
-  return str.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
+  return str.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
 }
 
 // The catalog ships in the team system prompt, so descriptions are capped rather than sent whole — the

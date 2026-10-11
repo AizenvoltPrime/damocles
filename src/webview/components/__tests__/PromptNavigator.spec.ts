@@ -1,12 +1,8 @@
 import { describe, it, expect } from "vitest";
 import type { EnrichedPrompt } from "@/composables/useEnrichedPrompts";
-import {
-  canRewindForPrompt,
-  escapeHtml,
-  escapeRegex,
-  filterPrompts,
-  highlight,
-} from "../promptNavigatorLogic";
+import { escapeHtml } from "@shared/utils";
+import { escapeRegex } from "@/utils/highlightMatches";
+import { canRewindForPrompt, filterPrompts, highlight } from "../promptNavigatorLogic";
 import { getToolColorClass } from "../toolBadgeColors";
 
 function makePrompt(overrides: Partial<EnrichedPrompt> = {}): EnrichedPrompt {
@@ -22,7 +18,7 @@ function makePrompt(overrides: Partial<EnrichedPrompt> = {}): EnrichedPrompt {
   };
 }
 
-describe("promptNavigatorLogic.escapeHtml", () => {
+describe("escapeHtml", () => {
   it("escapes <, >, &, \" and ' so prompt content cannot inject HTML", () => {
     expect(escapeHtml("<script>alert('x')</script>&\"")).toBe(
       "&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;&amp;&quot;",
@@ -30,7 +26,7 @@ describe("promptNavigatorLogic.escapeHtml", () => {
   });
 });
 
-describe("promptNavigatorLogic.escapeRegex", () => {
+describe("escapeRegex", () => {
   it("escapes regex metacharacters so user input is treated literally", () => {
     expect(escapeRegex(".*+?^${}()|[]\\")).toBe(
       "\\.\\*\\+\\?\\^\\$\\{\\}\\(\\)\\|\\[\\]\\\\",
@@ -59,6 +55,18 @@ describe("promptNavigatorLogic.highlight", () => {
   it("treats regex metacharacters in the query as literals", () => {
     const out = highlight("a.b a*b", ".");
     expect((out.match(/<mark/g) ?? []).length).toBe(1);
+  });
+
+  it("never matches inside the entity an escaped character becomes", () => {
+    expect(highlight("a < b", "t")).toBe("a &lt; b");
+    expect(highlight("don't", "t")).toBe("don&#39;<mark>t</mark>");
+    expect(highlight('say "hi"', "o")).toBe("say &quot;hi&quot;");
+    expect(highlight("a < b", ";")).toBe("a &lt; b");
+  });
+
+  it("highlights an escaped character the query names", () => {
+    expect(highlight("a < b", "<")).toBe("a <mark>&lt;</mark> b");
+    expect(highlight('say "hi"', '"')).toBe("say <mark>&quot;</mark>hi<mark>&quot;</mark>");
   });
 });
 

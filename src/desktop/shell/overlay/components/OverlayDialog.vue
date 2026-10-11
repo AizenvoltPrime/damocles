@@ -107,9 +107,11 @@ const FILL: Readonly<Record<MessageSeverity, string>> = {
 </script>
 
 <!-- AlertDialog would own the open state, but main does: the panel plays its exit before the answer reaches main. -->
+<!-- pointer-events-auto: a reka popup beneath sets the body's pointer-events to none until its exit ends, which this
+     dialog, not one of reka's layers, would otherwise inherit. -->
 <template>
   <div
-    class="overlay-dialog fixed inset-0 flex items-center justify-center bg-(--d-scrim) p-5"
+    class="overlay-dialog pointer-events-auto fixed inset-0 flex items-center justify-center bg-(--d-scrim) p-5"
     :style="{ zIndex }"
     @click.self="emit('choose', cancelIndex)"
     @contextmenu.self.prevent="emit('choose', cancelIndex)"

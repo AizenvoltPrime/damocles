@@ -118,11 +118,11 @@ function writeEventLog(extra: Array<Record<string, unknown>> = []): string {
   return file;
 }
 
-/** A checkpoint of a cancel at `cancelledAt`, its file modified at `mtimeMs`. */
-function writeCheckpoint(cancelledAt: number, mtimeMs = cancelledAt): string {
+/** A checkpoint keyed `cancelledAt`, its file modified at `mtimeMs`; a live one carries the time its content was taken. */
+function writeCheckpoint(cancelledAt: number, mtimeMs = cancelledAt, live?: { asOf: number }): string {
   const file = teamCheckpointPath(sessionDir, SOURCE, TEAM, cancelledAt);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify({ version: 1, teamId: TEAM, cancelledAt }));
+  fs.writeFileSync(file, JSON.stringify({ version: 1, teamId: TEAM, cancelledAt, ...(live ? { live: true, asOf: live.asOf } : {}) }));
   fs.utimesSync(file, mtimeMs / 1000, mtimeMs / 1000);
   return file;
 }
@@ -265,6 +265,32 @@ describe('copyForkAgentData — teams', () => {
     expect(await fork(parent, leaf, 2000)).toEqual([]);
 
     expect(await forkCheckpoints()).toEqual([1800]);
+  });
+
+  it('copies a live checkpoint only when its content was taken at or before the fork point', async () => {
+    const { parent, leaf } = teamParent();
+    writeEventLog();
+    writeCheckpoint(1600, 1600, { asOf: 1900 });
+    writeCheckpoint(1700, 1700, { asOf: 2000 });
+    // Keyed before the fork point but rewritten after it, so it holds state the cut log lacks.
+    writeCheckpoint(1800, 1800, { asOf: 2400 });
+
+    expect(await fork(parent, leaf, 2000)).toEqual([]);
+
+    expect(await forkCheckpoints()).toEqual([1600, 1700]);
+  });
+
+  it('copies a checkpoint it cannot parse as it is, judged by its key, so the fork reads it as the source does', async () => {
+    const { parent, leaf } = teamParent();
+    writeEventLog();
+    const corrupt = teamCheckpointPath(sessionDir, SOURCE, TEAM, 1800);
+    fs.mkdirSync(path.dirname(corrupt), { recursive: true });
+    fs.writeFileSync(corrupt, '{"version":1,"teamId":');
+
+    expect(await fork(parent, leaf, 2000)).toEqual([]);
+
+    expect(await forkCheckpoints()).toEqual([1800]);
+    expect(fs.readFileSync(teamCheckpointPath(sessionDir, TARGET, TEAM, 1800), 'utf8')).toBe('{"version":1,"teamId":');
   });
 
   it('copies nothing for a team invoked after the fork point', async () => {

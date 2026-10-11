@@ -26,6 +26,7 @@ import {
   type RasterArt,
   type OverlayRequest,
   type OverlayState,
+  type PopupAnswer,
 } from '../preload/overlay-channels';
 import type { PanelTheme } from '../preload/panel-channels';
 import { TERMINAL_COLORS, TERMINAL_CUSTOM_ICONS, TERMINAL_ICONS, type TerminalColor, type TerminalGlyph } from '../preload/terminal-channels';
@@ -33,7 +34,7 @@ import { DEFAULT_GRID_LAYOUT, GRID_PANES, GRID_SLOTS, MAX_EDITOR_LINE, MAX_TAG_L
 import { isRelativeFilePath } from '../../shared/relative-path';
 import { validPng } from './notification-art';
 import { APP_ORIGIN, OVERLAY_PAGE_URL } from './protocol';
-import { loadAppPage, loggableUrl } from './security';
+import { loadAppPage, loggableUrl, mainFrameLoadFailed } from './security';
 import { tickDeadline } from './tick-deadline';
 import { isPanelSender } from './views';
 import { parseGridLayout } from './window-layout-store';
@@ -65,8 +66,12 @@ const MAX_PENDING_RASTERS = 16;
 const MAX_CRASHES_IN_WINDOW = 3;
 const CRASH_WINDOW_MS = 60_000;
 const TRANSPARENT = '#00000000';
-// net::ERR_ABORTED: another navigation replaced the one that failed, and that one loads instead.
-const ERR_ABORTED = -3;
+
+// Electron 44 emits did-stop-loading for a renderer that died mid-navigation before render-process-gone, while isCrashed()
+// is still false; its process id already reads 0.
+function rendererAlive(contents: WebContents): boolean {
+  return !contents.isCrashed() && contents.getOSProcessId() !== 0;
+}
 
 const ICONS: ReadonlySet<string> = new Set(OVERLAY_ICONS);
 const GLYPHS: ReadonlySet<string> = new Set([...TERMINAL_ICONS, ...TERMINAL_CUSTOM_ICONS]);
@@ -398,7 +403,7 @@ interface OpenRequest {
   shownAt: number | undefined;
 }
 
-// A request made while the page loads, sent once it has.
+// A request made while the page loads or navigates, sent once a page has loaded and no navigation is pending.
 interface HeldRequest {
   readonly request: OverlayRequest;
   readonly returnFocus: WebContents | undefined;
@@ -425,7 +430,6 @@ interface PendingRaster {
 export class OverlayHost {
   readonly view: WebContentsView;
   private readonly deps: OverlayHostDeps;
-  private readonly invokeChannels: string[] = [];
   private readonly sendHandlers: Array<[string, (event: IpcMainEvent, ...args: unknown[]) => void]> = [];
   // the page's requests main is still answering
   private readonly answering = new Set<Promise<unknown>>();
@@ -437,6 +441,8 @@ export class OverlayHost {
   private returnFocus: WebContents | undefined;
   private currentMode: OverlayMode = 'hidden';
   private page: PageState = 'none';
+  // A main-frame, cross-document navigation started and has neither committed nor stopped: requests stay held until it does.
+  private navigating = false;
   private crashes: number[] = [];
   private disposed = false;
   private readonly rasters = new Map<string, PendingRaster>();
@@ -518,8 +524,15 @@ export class OverlayHost {
     });
 
     const contents = this.view.webContents;
+    // The page state flips only at commit, so a request made between a navigation's start and its commit would reach the
+    // document it replaces and be rejected at the commit; it is held instead. Open requests stay open: that document can
+    // still answer them.
+    contents.on('did-start-navigation', (details) => {
+      if (details.isMainFrame && !details.isSameDocument && this.page !== 'none') this.navigating = true;
+    });
     // A reload by any route commits a new document that holds none of the old page's popups or drawings.
     contents.on('did-navigate', () => {
+      this.navigating = false;
       const reloaded = this.page === 'loaded';
       this.page = 'loading';
       if (!reloaded) return;
@@ -527,24 +540,36 @@ export class OverlayHost {
       this.failAll(new Error('The overlay page reloaded'));
       this.dropRasters();
     });
+    // Electron emits it after a failed load too (electron/electron#5128), so it counts only while a page loads.
     contents.on('did-finish-load', () => {
+      if (this.page !== 'loading') return;
       this.page = 'loaded';
       this.coldShow = true;
       this.lateRasters.clear();
       this.lateAnswered = false;
       this.deps.canRasterize();
-      const held = this.held;
-      this.held = [];
-      for (const entry of held) this.request(entry.request, entry.returnFocus, entry.shown).then(entry.resolve, entry.reject);
+      if (!this.navigating) this.sendHeld();
+    });
+    // A started navigation that stopped without committing (stopped, blocked by will-navigate, a 204, a download) leaves the
+    // page it started from; a dead renderer's stop is left to render-process-gone and its reload.
+    contents.on('did-stop-loading', () => {
+      if (!this.navigating || !rendererAlive(contents)) return;
+      this.navigating = false;
+      if (this.page === 'loaded') this.sendHeld();
     });
     contents.on('did-fail-load', (_event, errorCode: number, _description, _url, isMainFrame: boolean) => {
-      if (!isMainFrame || errorCode === ERR_ABORTED || this.page !== 'loading') return;
+      if (!mainFrameLoadFailed(errorCode, isMainFrame) || (this.page !== 'loading' && !this.navigating)) return;
       this.page = 'none';
+      this.navigating = false;
       this.deps.log(`[overlay] the page did not load (${errorCode})`);
-      this.failHeld(new Error('The overlay page did not load'));
+      const failed = new Error('The overlay page did not load');
+      this.failAll(failed);
+      this.failHeld(failed);
+      this.dropRasters();
     });
     contents.on('render-process-gone', (_event, details) => {
       this.page = 'none';
+      this.navigating = false;
       this.deps.log(`[overlay] renderer gone (${details.reason})`);
       const stopped = new Error('The overlay page stopped');
       this.failAll(stopped);
@@ -581,12 +606,16 @@ export class OverlayHost {
 
   load(): void {
     this.page = 'loading';
+    this.navigating = false;
     loadAppPage(this.view.webContents, OVERLAY_PAGE_URL).catch((err: unknown) => {
       this.deps.log(`[overlay] failed to load: ${err instanceof Error ? err.message : String(err)}`);
     });
   }
 
-  /** Resolves once the overlay page has loaded, at once when it has and is not reloading. */
+  /**
+   * Resolves at once while a page is loaded, a navigation of it included, since request() holds for the next page; else
+   * on the next did-finish-load, which Electron also emits after a failed load, when request() then refuses.
+   */
   whenLoaded(): Promise<void> {
     if (this.page === 'loaded') return Promise.resolve();
     return new Promise((resolve) => this.view.webContents.once('did-finish-load', () => resolve()));
@@ -602,7 +631,7 @@ export class OverlayHost {
     if (this.disposed || this.page === 'none' || this.view.webContents.isDestroyed()) {
       return Promise.reject(new Error('The overlay is not available'));
     }
-    if (this.page === 'loading') return this.hold(request, returnFocus, shown);
+    if (this.page === 'loading' || this.navigating) return this.hold(request, returnFocus, shown);
     if (this.view.webContents.isCrashed()) return Promise.reject(new Error('The overlay is not available'));
     // Focus returns where it was before the first of the requests that are open together.
     if (this.open.length === 0) this.returnFocus = returnFocus === this.view.webContents ? undefined : returnFocus;
@@ -692,7 +721,7 @@ export class OverlayHost {
     if (!this.deps.window.isDestroyed()) this.deps.window.removeListener('resize', this.onResize);
     const contents = this.view.webContents;
     if (contents.isDestroyed()) return;
-    for (const channel of this.invokeChannels) contents.ipc.removeHandler(channel);
+    // Invoke handlers stay for the view's life: the closing page can still ask, and a call with no handler is an error.
     for (const [channel, handler] of this.sendHandlers) contents.ipc.removeListener(channel, handler);
     contents.close();
   }
@@ -711,6 +740,12 @@ export class OverlayHost {
     return new Promise<OverlayAnswer>((resolve, reject) => {
       this.held = [...this.held, { request, returnFocus, shown, resolve, reject }];
     });
+  }
+
+  private sendHeld(): void {
+    const held = this.held;
+    this.held = [];
+    for (const entry of held) this.request(entry.request, entry.returnFocus, entry.shown).then(entry.resolve, entry.reject);
   }
 
   private failHeld(err: Error): void {
@@ -796,26 +831,39 @@ export class OverlayHost {
 
   // webContents.ipc receives only this view's messages; the check still pins them to its main frame on the exact overlay page.
   private accepts(event: IpcMainEvent | IpcMainInvokeEvent, channel: string): boolean {
-    const accepted = !this.disposed && isPanelSender(event, this.view.webContents, OVERLAY_PAGE_URL);
+    const accepted = isPanelSender(event, this.view.webContents, OVERLAY_PAGE_URL);
     if (!accepted) this.deps.log(`[overlay] rejected ${channel} from ${event.senderFrame ? loggableUrl(event.senderFrame.url) : 'a destroyed frame'} (webContents ${event.sender.id})`);
     return accepted;
   }
 
+  /** A read the page may make at any time, the closing page included, so it is answered after dispose too. */
   handle(channel: string, handler: (...args: unknown[]) => unknown): void {
     this.view.webContents.ipc.handle(channel, async (event, ...args: unknown[]) => {
       if (!this.accepts(event, channel)) throw new Error('Rejected');
-      const answer = (async () => handler(...args))();
-      this.answering.add(answer);
-      try {
-        return await answer;
-      } finally {
-        this.answering.delete(answer);
-      }
+      return this.answer(handler, args);
     });
-    this.invokeChannels.push(channel);
   }
 
-  // After dispose no request is accepted, so this settles once the last one main was still answering has.
+  /** A channel scoped to one popup: answers closed, as a value, while `isOpen` is false or the overlay is disposed. */
+  handleWhileOpen<T>(channel: string, isOpen: () => boolean, handler: (...args: unknown[]) => T | Promise<T>): void {
+    this.view.webContents.ipc.handle(channel, async (event, ...args: unknown[]): Promise<PopupAnswer<T>> => {
+      if (!this.accepts(event, channel)) throw new Error('Rejected');
+      if (this.disposed || !isOpen()) return { ok: false, reason: 'closed' };
+      return { ok: true, value: await this.answer(handler, args) };
+    });
+  }
+
+  private async answer<T>(handler: (...args: unknown[]) => T | Promise<T>, args: unknown[]): Promise<T> {
+    const answer = (async () => handler(...args))();
+    this.answering.add(answer);
+    try {
+      return await answer;
+    } finally {
+      this.answering.delete(answer);
+    }
+  }
+
+  // After dispose only handle()'s reads are answered, so this settles once the last request main was still acting on has.
   async settled(): Promise<void> {
     await Promise.allSettled([...this.answering]);
   }

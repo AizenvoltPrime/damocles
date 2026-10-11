@@ -1,6 +1,6 @@
 import { getHighlighter, normalizeLanguage, type HighlightTheme } from '@/composables/useShikiHighlighter';
 import type { DiffLine } from './parseUnifiedDiff';
-import { escapeHtml } from './stringUtils';
+import { escapeHtml } from '@shared/utils';
 
 export interface HighlightedDiffLine extends DiffLine {
   highlightedContent: string;

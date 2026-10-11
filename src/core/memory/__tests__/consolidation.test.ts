@@ -184,7 +184,7 @@ describe('runConsolidation', () => {
   });
 
   it('names an extraction failure by a reason token the panel words, never by English text', async () => {
-    for (const failure of ['unreachable', 'rejected', 'unanswered', 'credential'] as const) {
+    for (const failure of ['unreachable', 'rejected', 'unanswered', 'credential', 'forbidden'] as const) {
       const fresh = await createTestMemoryDb();
       seedCandidate(fresh, SESSION_ID, 'q1', 'a1');
       const run = subCallSpy(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
@@ -689,12 +689,12 @@ describe('mergePendingConsolidation — forceExtract survival (flag-loss fix)', 
   });
 
   it('keeps the result a run has so far across a merge, so the run still ends in one result', () => {
-    const soFar = runPass({ status: 'extracted' });
-    const followUp = { reason: 'manual' as const, forceExtract: true, runSoFar: soFar };
+    const run = { pass: 2, runSoFar: runPass({ status: 'extracted' }) };
+    const followUp = { reason: 'manual' as const, forceExtract: true, run };
 
-    expect(mergePendingConsolidation({ reason: 'switch', sessionId: 's' }, followUp).runSoFar).toBe(soFar);
-    expect(mergePendingConsolidation(followUp, { reason: 'idle' }).runSoFar).toBe(soFar);
-    expect(mergePendingConsolidation({ reason: 'idle' }, { reason: 'manual', forceExtract: true })).not.toHaveProperty('runSoFar');
+    expect(mergePendingConsolidation({ reason: 'switch', sessionId: 's' }, followUp).run).toBe(run);
+    expect(mergePendingConsolidation(followUp, { reason: 'idle' }).run).toBe(run);
+    expect(mergePendingConsolidation({ reason: 'idle' }, { reason: 'manual', forceExtract: true })).not.toHaveProperty('run');
   });
 });
 
@@ -1381,7 +1381,7 @@ describe('runConsolidation: a turn the model keeps declining is set aside, never
    */
   function decliningRunner(
     declined: readonly string[],
-    failure: 'unanswered' | 'rejected' | 'unreachable' | 'credential' | 'no-model' = 'unanswered',
+    failure: 'unanswered' | 'rejected' | 'unreachable' | 'credential' | 'forbidden' | 'no-model' = 'unanswered',
   ): { runner: MemorySubCallRunner; extractCalls: () => number; extractedUsers: () => string[][] } {
     const prompts: string[][] = [];
     const run = subCallSpy(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
@@ -1490,7 +1490,7 @@ describe('runConsolidation: a turn the model keeps declining is set aside, never
     expect(turn(only!)).toMatchObject({ consumed: 0, failed_attempts: 0, set_aside_at: null });
   });
 
-  it.each(['unreachable', 'credential', 'no-model'] as const)('never counts a %s failure, however many runs it lasts', async (failure) => {
+  it.each(['unreachable', 'credential', 'forbidden', 'no-model'] as const)('never counts a %s failure, however many runs it lasts', async (failure) => {
     const ids = seedTurns(['q1', 'q2']);
     const { runner, extractCalls } = decliningRunner(['q1'], failure);
 
@@ -1598,6 +1598,21 @@ describe('runConsolidation: a turn the model keeps declining is set aside, never
 
     expect(events.find(e => e.phase === 'extract' && e.status === 'failed')?.meta?.reason).toBe('credential');
     expect(result.failure).toEqual({ kind: 'error', reason: 'credential', phase: 'extract' });
+    expect(onNoModel).not.toHaveBeenCalled();
+  });
+
+  it('stops the pass on a refused access (HTTP 403) and names it apart from a refused credential', async () => {
+    const ids = seedTurns(['q1', 'q2']);
+    const onNoModel = vi.fn();
+    const { runner, extractCalls } = decliningRunner(['q1'], 'forbidden');
+    const { onPhase, events } = makePhaseCollector();
+
+    const result = await runConsolidation(makeCtx(db, runner, { onPhase, onNoModel }));
+
+    expect(extractCalls()).toBe(1);
+    expect(events.find(e => e.phase === 'extract' && e.status === 'failed')?.meta?.reason).toBe('forbidden');
+    expect(result.failure).toEqual({ kind: 'error', reason: 'forbidden', phase: 'extract' });
+    for (const id of ids) expect(turn(id)).toMatchObject({ consumed: 0, failed_attempts: 0, set_aside_at: null });
     expect(onNoModel).not.toHaveBeenCalled();
   });
 

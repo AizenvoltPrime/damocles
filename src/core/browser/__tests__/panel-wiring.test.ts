@@ -5,6 +5,7 @@ import { join } from 'path';
 import { BrowserService } from '../index';
 import { createFakePlatform, installFakePlatform, type FakePanelHost, type FakePlatform } from '../../../__mocks__/fake-platform';
 import { BrowserPanel } from '../browser-panel';
+import * as logger from '../../logger';
 import { BROWSER_WEBVIEW_SCRIPT } from '../browser-webview-script';
 import { AS_TYPED, HTTP_AT_ONCE, REFUSED, UPGRADED } from '../../../shared/__tests__/typed-address-cases';
 
@@ -838,6 +839,21 @@ describe('core reads a typed address as Chrome does, and falls back to http for 
     service.dispose();
   });
 
+  it.each([
+    ['file:///c:/Users/me/token=secret.txt', '[Browser] Refused address-bar navigation to a non-web address: file:'],
+    ['javascript:fetch("/?token=secret")', '[Browser] Refused address-bar navigation to a non-web address: javascript:'],
+    ['token=secret two words', '[Browser] Refused address-bar text that is not an address'],
+  ])('logs only the origin of a refused entry, never its text: %s', async (typed, logged) => {
+    const logSpy = vi.spyOn(logger, 'log').mockImplementation(() => {});
+    const service = await makeService();
+    const { entry } = await addTab(service);
+    panelOf(entry).fireMessage({ type: 'navigate', url: typed });
+    const lines = logSpy.mock.calls.map((call) => call.map(String).join(' '));
+    expect(lines).toContain(logged);
+    expect(lines.join('\n')).not.toContain('secret');
+    service.dispose();
+  });
+
   it.each(['net::ERR_CONNECTION_REFUSED', 'net::ERR_CONNECTION_RESET', 'net::ERR_SSL_PROTOCOL_ERROR', 'net::ERR_CERT_AUTHORITY_INVALID', 'net::ERR_EMPTY_RESPONSE'])(
     'loads the http address after an upgraded https load fails with %s',
     async (errorText) => {
@@ -852,6 +868,27 @@ describe('core reads a typed address as Chrome does, and falls back to http for 
       expect(await navigateWith({ url: 'dev.example.com' }, errorText)).toEqual(['https://dev.example.com/']);
     },
   );
+
+  it('logs every load the address bar asked for that did not load, an aborted one included', async () => {
+    const logSpy = vi.spyOn(logger, 'log').mockImplementation(() => {});
+    expect(await navigateWith({ url: 'https://dev.example.com/a?token=secret' }, 'net::ERR_ABORTED')).toEqual(['https://dev.example.com/a?token=secret']);
+    const lines = logSpy.mock.calls.map((call) => call.map(String).join(' '));
+    expect(lines).toContain('[Browser] Navigation to https://dev.example.com did not load (net::ERR_ABORTED)');
+    expect(lines.join('\n')).not.toContain('secret');
+    logSpy.mockRestore();
+  });
+
+  it('rejects an agent open whose load failed, and records no address that did not load', async () => {
+    const logSpy = vi.spyOn(logger, 'log').mockImplementation(() => {});
+    const service = await makeService();
+    const { entry, page } = await addTab(service, 'about:blank');
+    (service as unknown as { setScopeCurrentPage: (id: string, p: unknown) => boolean }).setScopeCurrentPage(BrowserService.PRIMARY_SCOPE_ID, page);
+    entry.session.send.mockImplementation(async (method: string) => (method === 'Page.navigate' ? { frameId: 'f', loaderId: 'l', errorText: 'net::ERR_NAME_NOT_RESOLVED' } : {}));
+    await expect(service.openForScope(BrowserService.PRIMARY_SCOPE_ID, 'https://nowhere.example/x')).rejects.toThrow('Navigation to https://nowhere.example failed: net::ERR_NAME_NOT_RESOLVED');
+    expect(entry.lastUrl).toBe('about:blank');
+    logSpy.mockRestore();
+    service.dispose();
+  });
 
   it('never falls back for an address typed with its scheme, whatever the message claims', async () => {
     expect(await navigateWith({ url: 'https://dev.example.com/' }, 'net::ERR_CONNECTION_REFUSED')).toEqual(['https://dev.example.com/']);

@@ -14,10 +14,10 @@ vi.mock('../../paths', async () => {
 
 import { DAMOCLES_HOME_DIR } from '../../paths';
 import { CANCELLED_TOOL_DETAIL_KEY } from '../../../shared/types/session';
-import { TeamPersistence, isTeamCheckpoint, parseTeamEventLog } from '../persistence';
+import { TeamPersistence, deliveredIdsInSessionFile, isTeamCheckpoint, parseTeamEventLog } from '../persistence';
 import type { TeamCheckpoint } from '../types';
 import { ensurePiSessionDir } from '../../pi-session/session-store';
-import { DAMOCLES_AGENT_LAUNCH_ENTRY, DAMOCLES_TURN_STOPPED_ENTRY } from '../../pi-session/session-store/constants';
+import { DAMOCLES_AGENT_LAUNCH_ENTRY, DAMOCLES_AGENT_SEGMENT_ENTRY, DAMOCLES_TEAM_DELIVERED_ENTRY, DAMOCLES_TURN_STOPPED_ENTRY } from '../../pi-session/session-store/constants';
 import { teamCheckpointPath, teamEventLogPath, teamMemberSessionId, teamMembersDir, type TeamMemberLaunchData } from '../../pi-session/agent-records';
 import { mapPiToolName, normalizeToolDetails, normalizeToolInput } from '../../pi-session/tool-normalization';
 import { joinResultText } from '../../pi-session/tool-result-text';
@@ -256,6 +256,32 @@ describe('member card history from the member pi session file', () => {
     expect(history.map((m) => m.role)).toEqual(['user', 'assistant']);
     expect(history.find((m) => m.id === `0:${call}`)!.content).toEqual([
       { type: 'tool_use', id: 'tc-gated', name: 'Bash', input: { command: 'rm -rf build' }, abandoned: 'stopped' },
+    ]);
+  });
+
+  // A resume reopens the attempt's file in a new run, whose live runner starts with no batch, so an earlier run's cut batch stays as it was.
+  it('reloads an aborted first call of a resumed run without stopping the batch an earlier, killed run left cut', async () => {
+    const cwd = join(DAMOCLES_HOME_DIR, 'resumed-run');
+    const aborted = (content: unknown[]): PiMessage => ({ ...(assistantMessage(content) as object), stopReason: 'aborted' }) as unknown as PiMessage;
+    const dir = teamMembersDir(ensurePiSessionDir(cwd), SESSION_ID, TEAM_ID);
+    const sm = SessionManager.create(cwd, dir, { id: teamMemberSessionId(AGENT_ID, 0) });
+    sm.appendCustomEntry(DAMOCLES_AGENT_LAUNCH_ENTRY, launch(0, 'fix the parser'));
+    sm.appendMessage(userMessage('fix the parser'));
+    // The process died between the batch's two calls: the first has its result, the second never ran.
+    const cut = sm.appendMessage(assistantMessage([
+      { type: 'toolCall', id: 'tc-read', name: 'read', arguments: { path: 'src/parse.ts' } },
+      { type: 'toolCall', id: 'tc-test', name: 'bash', arguments: { command: 'npm test' } },
+    ]));
+    sm.appendMessage(toolResultMessage('tc-read', 'read', 'export function parse() {}', undefined));
+    sm.appendCustomEntry(DAMOCLES_AGENT_SEGMENT_ENTRY, { toolCallId: 'tc-resume' });
+    sm.appendMessage(userMessage('You were interrupted. Re-read the team status first.'));
+    sm.appendMessage(aborted([]));
+
+    const history = await new TeamPersistence(cwd, SESSION_ID).loadAgentConversation(TEAM_ID, AGENT_ID);
+
+    expect(history.find((m) => m.id === `0:${cut}`)!.content).toEqual([
+      { type: 'tool_use', id: 'tc-read', name: 'Read', input: { file_path: 'src/parse.ts' } },
+      { type: 'tool_use', id: 'tc-test', name: 'Bash', input: { command: 'npm test' } },
     ]);
   });
 
@@ -723,20 +749,45 @@ describe('TeamPersistence checkpoint files', () => {
     });
     return persistence;
   }
-  const resumedFrom = (persistence: TeamPersistence, cancelledAt: number): void =>
+  const resumedFrom = (persistence: TeamPersistence, cancelledAt: number): boolean =>
     persistence.appendTeamEntry({ type: 'team-resumed', teamId: TEAM_ID, toolUseId: `tu-${cancelledAt}`, checkpoint: cancelledAt, timestamp: '2026-09-01T11:00:00.000Z' });
+  /** A checkpoint file written raw, so the reader sees exactly these bytes. */
+  const place = (cwd: string, value: unknown, cancelledAt = CANCELLED_AT): void => {
+    fs.mkdirSync(join(pathIn(cwd, cancelledAt), '..'), { recursive: true });
+    fs.writeFileSync(pathIn(cwd, cancelledAt), JSON.stringify(value));
+  };
 
-  it('keeps one file per cancel, reads each back exactly, and leaves no temp file behind', async () => {
+  it('keeps one file per run key through its writer, reads each back exactly, and leaves no temp file behind', async () => {
     const cwd = join(DAMOCLES_HOME_DIR, 'checkpoint-rt');
     const persistence = new TeamPersistence(cwd, SESSION_ID);
     persistence.initTeamFile(TEAM_ID);
 
-    expect(persistence.writeCheckpoint(checkpoint())).toBe(true);
-    expect(persistence.writeCheckpoint(checkpoint(CANCELLED_AT + 5))).toBe(true);
+    for (const key of [CANCELLED_AT, CANCELLED_AT + 5]) {
+      const writer = persistence.createCheckpointWriter(TEAM_ID, key, () => checkpoint(key));
+      writer.schedule();
+      expect(await writer.flush()).toBe(true);
+    }
 
     expect(await persistence.readCheckpoint(TEAM_ID, CANCELLED_AT)).toEqual(checkpoint());
     expect(await persistence.readCheckpoint(TEAM_ID, CANCELLED_AT + 5)).toEqual(checkpoint(CANCELLED_AT + 5));
     expect(fs.readdirSync(join(pathIn(cwd), '..')).sort()).toEqual([`${CANCELLED_AT}.json`, `${CANCELLED_AT + 5}.json`]);
+    await expect(persistence.flush()).resolves.toBeUndefined();
+  });
+
+  it("reports a checkpoint write that failed through the persistence's flush, as it does a failed append", async () => {
+    const cwd = join(DAMOCLES_HOME_DIR, 'checkpoint-failed');
+    const persistence = new TeamPersistence(cwd, SESSION_ID);
+    persistence.initTeamFile(TEAM_ID);
+    const writer = persistence.createCheckpointWriter(TEAM_ID, CANCELLED_AT, () => checkpoint());
+    writer.schedule();
+    expect(await writer.flush()).toBe(true);
+    fs.rmSync(join(pathIn(cwd), '..'), { recursive: true });
+
+    writer.seal(() => ({ ...checkpoint(), stoppedBy: 'user' }));
+
+    expect(await writer.flush()).toBe(false);
+    expect(fs.existsSync(join(pathIn(cwd), '..'))).toBe(false);
+    await expect(persistence.flush()).rejects.toThrow('1 persistence write(s) failed');
   });
 
   it('reads a missing or malformed checkpoint, or one whose cancel time is not its file name, as absent', async () => {
@@ -757,11 +808,12 @@ describe('TeamPersistence checkpoint files', () => {
   });
 
   it('offers the newest checkpoint until a team-resumed entry names it, and never an older one', async () => {
-    const persistence = teamWithLog(join(DAMOCLES_HOME_DIR, 'checkpoint-newest'));
+    const cwd = join(DAMOCLES_HOME_DIR, 'checkpoint-newest');
+    const persistence = teamWithLog(cwd);
     expect(await persistence.resumableStop(TEAM_ID)).toBeNull();
 
-    persistence.writeCheckpoint(checkpoint());
-    persistence.writeCheckpoint(checkpoint(CANCELLED_AT + 10));
+    place(cwd, checkpoint());
+    place(cwd, checkpoint(CANCELLED_AT + 10), CANCELLED_AT + 10);
     expect((await persistence.resumableCheckpoint(await persistence.readEventLog(TEAM_ID)))?.cancelledAt).toBe(CANCELLED_AT + 10);
 
     resumedFrom(persistence, CANCELLED_AT + 10);
@@ -773,16 +825,17 @@ describe('TeamPersistence checkpoint files', () => {
   it('orders checkpoints by cancel time, not by name, and ignores files that are not checkpoints', async () => {
     const cwd = join(DAMOCLES_HOME_DIR, 'checkpoint-order');
     const persistence = teamWithLog(cwd);
-    persistence.writeCheckpoint(checkpoint(9_000));
-    persistence.writeCheckpoint(checkpoint(10_000));
+    place(cwd, checkpoint(9_000), 9_000);
+    place(cwd, checkpoint(10_000), 10_000);
     fs.writeFileSync(`${pathIn(cwd, 20_000)}.tmp`, '{}');
 
     expect((await persistence.resumableCheckpoint(await persistence.readEventLog(TEAM_ID)))?.cancelledAt).toBe(10_000);
   });
 
   it('a team with no event log is not resumable', async () => {
-    const persistence = new TeamPersistence(join(DAMOCLES_HOME_DIR, 'checkpoint-nolog'), SESSION_ID);
-    persistence.writeCheckpoint(checkpoint());
+    const cwd = join(DAMOCLES_HOME_DIR, 'checkpoint-nolog');
+    const persistence = new TeamPersistence(cwd, SESSION_ID);
+    place(cwd, checkpoint());
 
     expect(await persistence.resumableStop(TEAM_ID)).toBeNull();
   });
@@ -801,17 +854,126 @@ describe('TeamPersistence checkpoint files', () => {
     expect(isTeamCheckpoint({ ...checkpoint(), cancelledAt: '1' })).toBe(false);
     expect(isTeamCheckpoint({ ...checkpoint(), review: { ...checkpoint().review, reviewedSpecialists: 'dev' } })).toBe(false);
     expect(isTeamCheckpoint({ ...checkpoint(), stoppedBy: 'parent' })).toBe(true);
-    expect(isTeamCheckpoint({ ...checkpoint(), stoppedBy: 'reset' })).toBe(false);
+    expect(isTeamCheckpoint({ ...checkpoint(), stoppedBy: 'reset' })).toBe(true);
+    expect(isTeamCheckpoint({ ...checkpoint(), stoppedBy: 'interrupted' })).toBe(false);
     expect(isTeamCheckpoint({ ...checkpoint(), stoppedBy: 'budget' })).toBe(false);
   });
 
+  describe('live checkpoints', () => {
+    const live = (cancelledAt = CANCELLED_AT): TeamCheckpoint => ({
+      ...checkpoint(cancelledAt),
+      live: true,
+      asOf: cancelledAt + 40,
+      messagesThrough: 'msg-7',
+      members: [{ ...checkpoint().members[0]!, undelivered: [{ text: '[Message from lead]: later', echoed: false, ids: ['msg-6', 'msg-7'] }] }],
+    });
+    it('accepts the live fields and delivery ids, and a checkpoint written before them', () => {
+      expect(isTeamCheckpoint(live())).toBe(true);
+      expect(isTeamCheckpoint(checkpoint())).toBe(true);
+      expect(checkpoint()).not.toHaveProperty('live');
+      expect(checkpoint().members[0]!.undelivered[0]).not.toHaveProperty('ids');
+    });
+
+    it.each([
+      ['live that is false', { live: false }],
+      ['live that is a string', { live: 'true' }],
+      ['a negative asOf', { asOf: -1 }],
+      ['a string asOf', { asOf: '1' }],
+      ['a numeric messagesThrough', { messagesThrough: 7 }],
+    ])('rejects %s', (_label, field) => {
+      expect(isTeamCheckpoint({ ...live(), ...field })).toBe(false);
+    });
+
+    it.each([['a string', 'msg-7'], ['a number in the list', [7]], ['null', null]])('rejects delivery ids that are %s', (_label, ids) => {
+      expect(isTeamCheckpoint({ ...live(), members: [{ ...live().members[0]!, undelivered: [{ text: 't', echoed: false, ids }] }] })).toBe(false);
+    });
+
+    it('reads a live checkpoint back exactly', async () => {
+      const cwd = join(DAMOCLES_HOME_DIR, 'checkpoint-live-rt');
+      const persistence = teamWithLog(cwd);
+      place(cwd, live());
+
+      expect(await persistence.readCheckpoint(TEAM_ID, CANCELLED_AT)).toEqual(live());
+    });
+
+    it('reports a live checkpoint, whose run never sealed it, as interrupted', async () => {
+      const cwd = join(DAMOCLES_HOME_DIR, 'checkpoint-live-cause');
+      const persistence = teamWithLog(cwd);
+      place(cwd, live());
+
+      expect(await persistence.resumableStop(TEAM_ID)).toBe('interrupted');
+      expect((await persistence.resumableCheckpoint(await persistence.readEventLog(TEAM_ID)))?.live).toBe(true);
+    });
+
+    it('offers nothing when the newest checkpoint was sealed by a reset', async () => {
+      const cwd = join(DAMOCLES_HOME_DIR, 'checkpoint-reset');
+      const persistence = teamWithLog(cwd);
+      place(cwd, { ...checkpoint(), stoppedBy: 'user' });
+      place(cwd, { ...checkpoint(CANCELLED_AT + 1), stoppedBy: 'reset' }, CANCELLED_AT + 1);
+
+      expect(await persistence.resumableCheckpoint(await persistence.readEventLog(TEAM_ID))).toBeNull();
+      expect(await persistence.resumableStop(TEAM_ID)).toBeNull();
+    });
+
+    it('offers nothing for a team whose log ends completed, although its checkpoint is on disk', async () => {
+      const cwd = join(DAMOCLES_HOME_DIR, 'checkpoint-completed');
+      const persistence = teamWithLog(cwd);
+      place(cwd, live());
+      persistence.appendTeamEntry({ type: 'team-completed', teamId: TEAM_ID, status: 'completed', timestamp: '2026-09-01T12:00:00.000Z' });
+
+      expect(await persistence.resumableCheckpoint(await persistence.readEventLog(TEAM_ID))).toBeNull();
+      expect(await persistence.resumableStop(TEAM_ID)).toBeNull();
+    });
+  });
+
   it('reports why the resumable team stopped, and a checkpoint from before causes were recorded as unrecorded', async () => {
-    const persistence = teamWithLog(join(DAMOCLES_HOME_DIR, 'checkpoint-cause'));
-    persistence.writeCheckpoint(checkpoint());
+    const cwd = join(DAMOCLES_HOME_DIR, 'checkpoint-cause');
+    const persistence = teamWithLog(cwd);
+    place(cwd, checkpoint());
     expect(await persistence.resumableStop(TEAM_ID)).toBe('unrecorded');
 
-    persistence.writeCheckpoint({ ...checkpoint(CANCELLED_AT + 1), stoppedBy: 'shutdown' });
+    place(cwd, { ...checkpoint(CANCELLED_AT + 1), stoppedBy: 'shutdown' }, CANCELLED_AT + 1);
     expect(await persistence.resumableStop(TEAM_ID)).toBe('shutdown');
+  });
+
+  it('offers no resume of a team whose lead failed to start, which a resume would not start either, and offers one after any other failure', async () => {
+    const cwd = join(DAMOCLES_HOME_DIR, 'checkpoint-start-failure');
+    const persistence = teamWithLog(cwd);
+    place(cwd, { ...checkpoint(), stoppedBy: 'failed', leadFailure: 'model' });
+    expect(await persistence.resumableStop(TEAM_ID)).toBe('failed');
+
+    place(cwd, { ...checkpoint(CANCELLED_AT + 1), stoppedBy: 'failed', leadFailure: 'start' }, CANCELLED_AT + 1);
+    expect(await persistence.resumableStop(TEAM_ID)).toBeNull();
+    expect((await persistence.resumableCheckpoint(await persistence.readEventLog(TEAM_ID)))?.leadFailure).toBe('start');
+  });
+
+  it.each([
+    ['a failure seal with no lead failure kind', { stoppedBy: 'failed' }, false],
+    ['an unknown lead failure kind', { stoppedBy: 'failed', leadFailure: 'crash' }, false],
+    ['a lead failure kind', { stoppedBy: 'failed', leadFailure: 'run' }, true],
+    ['a lead failure kind a stopped resume carried', { stoppedBy: 'user', leadFailure: 'model' }, true],
+    ['a lead failure kind on a live checkpoint', { live: true, leadFailure: 'model' }, false],
+    ['an interrupted mark that is not true', { stoppedBy: 'user', interrupted: false }, false],
+    ['an interrupted mark on a sealed checkpoint', { stoppedBy: 'user', interrupted: true }, true],
+    ['an interrupted mark on a live checkpoint', { live: true, interrupted: true }, false],
+  ])('isTeamCheckpoint judges %s', (_label, fields, valid) => {
+    expect(isTeamCheckpoint({ ...checkpoint(), ...fields })).toBe(valid);
+  });
+
+  it('reads the delivery ids of a member session file without blocking', async () => {
+    const cwd = join(DAMOCLES_HOME_DIR, 'delivered-ids');
+    fs.mkdirSync(cwd, { recursive: true });
+    const file = join(cwd, 'member.jsonl');
+    fs.writeFileSync(file, [
+      JSON.stringify({ type: 'custom', customType: DAMOCLES_TEAM_DELIVERED_ENTRY, data: { ids: ['a', 'b'] } }),
+      '{"type":"custom","customType":"damocles-team-delivered"',
+      JSON.stringify({ type: 'custom', customType: DAMOCLES_TEAM_DELIVERED_ENTRY, data: { ids: ['c'] } }),
+    ].join('\n'));
+
+    const read = deliveredIdsInSessionFile(file);
+
+    expect(read).toBeInstanceOf(Promise);
+    expect(await read).toEqual(new Set(['a', 'b', 'c']));
   });
 
   describe('steer images and attempts', () => {

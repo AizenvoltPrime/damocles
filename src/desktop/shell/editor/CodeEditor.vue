@@ -3,7 +3,7 @@ import { computed, inject, onBeforeUnmount, onMounted, ref, shallowRef, watch } 
 import { useI18n } from 'vue-i18n';
 import type { editor as MonacoEditor, IDisposable } from 'monaco-editor/editor/editor.api';
 import type { DamoclesShellApi, EditorMenuShortcut, EditorSelectionRange, SearchRange, ShellEditorSettings, ShellEditorTab } from '../../preload/shell-channels';
-import { reducedMotion } from '../reduced-motion';
+import { prefersReducedMotion } from '@/utils/reducedMotion';
 import { attachEditorContextMenu } from './context-menu';
 import { EDITOR_STORE } from './editor-store';
 
@@ -149,7 +149,7 @@ onMounted(async () => {
     model: null,
     readOnly: props.tab.readOnly,
     scrollBeyondLastLine: false,
-    smoothScrolling: !reducedMotion(),
+    smoothScrolling: !prefersReducedMotion(),
     fixedOverflowWidgets: true,
     contextmenu: false,
   });

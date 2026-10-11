@@ -2,6 +2,35 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [3.7.0] - 2026-10-11
+
+### Added
+
+- **A team that was running when Damocles closed unexpectedly can be resumed.** While a team runs, its resume state is saved after every change, so after a crash or a killed process `resume_team` picks it up from the last saved state. A message a member already received is not delivered to it again, and the lead is told the team was interrupted and that the saved state may be behind what was done.
+- **A team whose lead failed can be resumed, and its result says why it failed.** The result names the cause: the lead failed to start, its model call failed, or its run stopped on an error. It offers `resume_team` unless the lead failed to start, which a resume would repeat, and a resumed lead is told it failed rather than that it was interrupted. A specialist that fails to start tells the lead why, without suggesting a re-run.
+
+### Changed
+
+- **Streamed replies keep up with the model.** Text used to appear at a fixed 200 characters a second, so a fast reply fell further and further behind and then jumped when it ended. The reveal now speeds up when more text is waiting and stays about half a second behind the model, and a short reply still types at 200 characters a second. Text that arrives after a pause types at that rate instead of appearing at once, a reply scrolled back into view does not type again, and with reduced motion on, text appears as it arrives.
+- **Browser tools report a load the way Playwright's `page.goto` does.** A page that fails to load, such as a refused connection or an unknown host, is a tool error naming Chromium's error, and a page that loads with an HTTP error, an empty 404 or 500 included, adds its status to the result, such as "(HTTP 404)". An address that starts a download returns an error that points to BrowserDownloads. Over Chromium's error page, the address bar, the tab and what the agent reads all show the address that failed, and on desktop that page keeps its tab across a restart. The `browser_navigate` description warns that a single-page app can answer a wrong path with its own page and status 200.
+- **A provider that refuses access (HTTP 403) no longer asks you to sign in.** Memory extraction says the provider refused access (the plan, the region or the permissions) and offers Retry. An OpenRouter 403 that refuses a turn's content counts as declining that turn, so the turn is set aside instead of stalling extraction.
+- **The consolidation card shows the run in progress.** From a run's second pass, or once a pass has kept memories, it shows This run with the memories kept so far, and the status strip names the pass. Through a run's first pass it keeps showing the last run.
+- **Desktop failures say so.** Clear all and Do not disturb in the notification center, Restore default layout, and a setting that could not be saved show a message in your language. The notification center, Quick Open, the command palette and Settings › Terminal say when they could not load, instead of showing an empty list or "No matches". Settings › About says when it cannot read the version or update status, or when an action fails.
+- **Rename and tag are refused while a chat is opening or closing that conversation.** They used to write the session file beside that chat, which could split its history. They now show "This conversation is opening or closing in a panel. Try again in a moment."
+
+### Fixed
+
+- **An address typed into a newly opened browser page loads, even while the page is still opening.** New Browser Page opens a new page while the browser is still starting. The headless user agent is rewritten before a page is shown, and reading it no longer waits on the page, so a page held up by a dialog cannot stall new tabs.
+- **Desktop popups survive reloads and crashes.** A popup requested while the overlay page reloads opens once the reload finishes, including when the overlay page crashes during that reload. A window that closes while its overlay page is starting, or a popup that closes while it is still loading, no longer logs errors.
+- **A stopped call reads stopped on every path.** A tool call a stopped team agent skipped shows Not executed instead of spinning. Resuming another conversation while a reply streams stops that reply the way Stop does, including when the switch fails. A call left over from a crash no longer reads as stopped by a later Stop.
+- **Work after `/clear` lands on the conversation it belongs to.** A chat cleared right after its first reply still gets its AI title, and so does a chat closed while its title is being generated. The last turn's memories are filed under that chat.
+- **Team stops and resumes keep their state.** A specialist stopped because the lead failed is recorded as cancelled, not completed, and its browser tabs are not closed as if it succeeded. Deleting a conversation waits for a team resume that is still checking its saved state, and no message waiting for a member is lost when a team stops, fails to start or is refused a prompt. Quitting the app or reloading the window writes the team's stop record before it exits, so the team is reported as stopped by the shutdown, and a team still finishing its stop is listed in the next interruption notice.
+- **Closing a chat never leaves a session behind.** A resume or `/clear` still in progress when a chat closes no longer opens a session on the closing chat. A hook that renames a conversation no longer writes its file while another process or a chat holds it.
+- **Prompt navigator search no longer garbles `<`, `>`, `&`, quotes or apostrophes**, and the @ and / menus highlight the right letters after characters such as `İ`.
+- **VS Code's Reduce Motion setting (`workbench.reduceMotion`) is honoured.** It turns off the typing effect and the panel's animations, as the system setting and the desktop setting do.
+- **Question previews show no working form controls, and the chat panel blocks form submission.**
+- **A code block tagged `constructor` renders as plain text.**
+
 ## [3.6.0] - 2026-10-09
 
 ### Added
@@ -4555,6 +4584,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[3.7.0]: https://github.com/AizenvoltPrime/damocles/compare/v3.6.0...v3.7.0
 [3.6.0]: https://github.com/AizenvoltPrime/damocles/compare/v3.5.0...v3.6.0
 [3.5.0]: https://github.com/AizenvoltPrime/damocles/compare/v3.4.0...v3.5.0
 [3.4.0]: https://github.com/AizenvoltPrime/damocles/compare/v3.3.0...v3.4.0

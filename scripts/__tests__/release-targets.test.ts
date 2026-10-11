@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { parse } from 'yaml';
@@ -12,9 +12,9 @@ import { RELEASE_TARGETS, MIN_VSIX_BYTES, DESKTOP_TARGETS, DESKTOP_ARTIFACT_PATT
  * desktop installer the release never attaches, so this is the seam that reports it.
  */
 
-type Step = { name?: string; uses?: string; run?: string; if?: string; with?: Record<string, string> };
+type Step = { name?: string; uses?: string; run?: string; if?: string; with?: Record<string, string>; 'timeout-minutes'?: number };
 type Matrix = { include: Record<string, string | number | boolean>[]; target?: string[]; shard?: number[]; exclude?: { target: string; shard: number }[] };
-type Job = { needs?: string | string[]; permissions?: Record<string, string>; steps: Step[]; strategy?: { matrix: Matrix } };
+type Job = { needs?: string | string[]; permissions?: Record<string, string>; steps: Step[]; strategy?: { matrix: Matrix }; 'timeout-minutes'?: number };
 type DesktopSpec = { runner: string; os: string; builder: string; arch: string; channel?: string; appDir: string; executable: string; artifacts: string[] };
 
 const workflowText = readFileSync(join(__dirname, '..', '..', '.github', 'workflows', 'release.yml'), 'utf8');
@@ -32,6 +32,25 @@ function releaseAssetGlobs(): string[] {
   const create = workflow.jobs.release!.steps.find((step) => step.run?.includes('gh release create'));
   if (!create) throw new Error('release.yml has no gh release create step');
   return create.run!.split(/\r?\n/).map((line) => line.trim().replace(/\s*\\$/, '')).filter((line) => line.startsWith('dist-artifacts/'));
+}
+
+// The variables loading playwright.desktop.config.ts reads or sets; it sets ELECTRON_OVERRIDE_DIST_PATH at import on Windows.
+const PLAYWRIGHT_CONFIG_ENV = ['CI', 'ELECTRON_OVERRIDE_DIST_PATH'] as const;
+
+/** playwright.desktop.config.ts as evaluated with CI set to `ci`, leaving the environment as it found it. */
+async function loadPlaywrightConfig(ci: string | undefined): Promise<{ failOnFlakyTests?: boolean; globalTimeout?: number }> {
+  const saved = PLAYWRIGHT_CONFIG_ENV.map((key) => [key, process.env[key]] as const);
+  if (ci === undefined) delete process.env.CI;
+  else process.env.CI = ci;
+  try {
+    vi.resetModules();
+    return ((await import('../../playwright.desktop.config')) as { default: { failOnFlakyTests?: boolean; globalTimeout?: number } }).default;
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 }
 
 /** The file globs an upload-artifact or `gh release create` step names, as anchored regexes over a file name. */
@@ -134,11 +153,64 @@ describe('the dev end-to-end suite runs in shards on every desktop target', () =
     expect(JSON.stringify(suite)).toContain('${{ matrix.shard }}/${{ matrix.shards }}');
   });
 
+  it('uploads every e2e report unless the run was cancelled', () => {
+    const uploads = Object.values(workflow.jobs).flatMap((j) => j.steps).filter((step) => step.uses?.startsWith('actions/upload-artifact@') && step.with?.name?.startsWith('e2e-report-'));
+    expect(uploads).toHaveLength(2);
+    for (const step of uploads) {
+      expect({ name: step.with!.name, if: step.if, retention: step.with!['retention-days'], missing: step.with!['if-no-files-found'] })
+        .toEqual({ name: step.with!.name, if: '${{ !cancelled() }}', retention: 7, missing: 'ignore' });
+    }
+  });
+
+  it('fails a CI run on a flaky test and ends a hung one with globalTimeout, which a local run lacks', async () => {
+    const ci = await loadPlaywrightConfig('1');
+    expect(ci.failOnFlakyTests).toBe(true);
+    expect(ci.globalTimeout).toBeGreaterThan(0);
+    const local = await loadPlaywrightConfig(undefined);
+    expect(local.failOnFlakyTests).toBeFalsy();
+    expect(local.globalTimeout ?? 0).toBe(0);
+  });
+
+  it('loads the Playwright config without leaving its environment behind', async () => {
+    const before = PLAYWRIGHT_CONFIG_ENV.map((key) => process.env[key]);
+    await loadPlaywrightConfig('1');
+    expect(PLAYWRIGHT_CONFIG_ENV.map((key) => process.env[key])).toEqual(before);
+  });
+
   it('leaves package-desktop the packaged-app suite only', () => {
     const runs = workflow.jobs['package-desktop']!.steps.map((step) => step.run ?? '');
     expect(runs.filter((run) => /test:desktop(?!:packaged)/.test(run))).toEqual([]);
     expect(runs.filter((run) => run.includes('test:desktop:packaged'))).toHaveLength(1);
   });
+});
+
+// docs/release.md "Time limits": from job start to the suite step, npm ci on windows-11-arm the longest part.
+const INSTALL_BUDGET_MIN = 25;
+// docs/release.md "Time limits": test:desktop's fetch and builds before Playwright's clock starts, and the HTML report after.
+const BUILD_AND_REPORT_BUDGET_MIN = 10;
+// docs/release.md "Time limits": what runs after the suite, the e2e-report upload on a failed or timed-out suite.
+const UPLOAD_BUDGET_MIN = 5;
+// docs/release.md "Time limits": package-desktop's steps after its suite, the installer and N+1 builds and the uploads.
+const PACKAGE_AFTER_SUITE_BUDGET_MIN = 10;
+
+describe('the time limits keep a hung suite\'s report (docs/release.md "Time limits")', () => {
+  const suites = [
+    { job: 'e2e-desktop', suite: /npm run test:desktop(?!:packaged)/, after: UPLOAD_BUDGET_MIN },
+    { job: 'package-desktop', suite: /npm run test:desktop:packaged/, after: PACKAGE_AFTER_SUITE_BUDGET_MIN },
+  ];
+
+  for (const { job, suite, after } of suites) {
+    it(`${job}: the suite step outlasts globalTimeout with its build and report, and the job outlasts install, that step and what follows`, async () => {
+      const { globalTimeout } = await loadPlaywrightConfig('1');
+      const steps = workflow.jobs[job]!.steps.filter((step) => suite.test(step.run ?? ''));
+      expect(steps).toHaveLength(1);
+      // A step timeout fails only that step, so the `!cancelled()` report upload still runs; a job timeout cancels it.
+      const stepMinutes = steps[0]!['timeout-minutes'];
+      expect(stepMinutes, 'the suite step sets timeout-minutes').toBeTypeOf('number');
+      expect(stepMinutes! * 60_000).toBeGreaterThanOrEqual(globalTimeout! + BUILD_AND_REPORT_BUDGET_MIN * 60_000);
+      expect(workflow.jobs[job]!['timeout-minutes']).toBeGreaterThanOrEqual(INSTALL_BUDGET_MIN + stepMinutes! + after);
+    });
+  }
 });
 
 describe('the release workflow runs electron-builder safely', () => {

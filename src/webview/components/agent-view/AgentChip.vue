@@ -14,7 +14,7 @@ withDefaults(defineProps<{
   title?: string | undefined;
   /** Renders a button that emits `click`. */
   clickable?: boolean;
-}>(), { icon: undefined, logo: undefined, unit: undefined, iconClass: undefined, valueClass: undefined, mono: false, title: undefined, clickable: false });
+}>(), { mono: false, clickable: false });
 
 const emit = defineEmits<{
   (e: 'click'): void;

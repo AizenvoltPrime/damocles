@@ -369,6 +369,166 @@ describe('overlay page reload', () => {
     expect(lines.filter((line) => line.includes('did not acknowledge'))).toEqual([]);
   });
 
+  function navigationStarts(details: { isMainFrame?: boolean; isSameDocument?: boolean } = {}): void {
+    view().webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false, url: OVERLAY_PAGE_URL, ...details });
+  }
+
+  it('holds a request made after a reload starts and before it commits, and sends it once the new page has loaded', async () => {
+    loaded();
+    navigationStarts();
+    const answer = outcome(host.request(SETTINGS, undefined));
+    expect(sentRequests()).toBe(0);
+    reloadCommits();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(answer).toEqual({});
+    expect(sentRequests()).toBe(0);
+    view().webContents.emit('did-finish-load');
+    expect(sentRequests()).toBe(1);
+  });
+
+  it('sends a held request to the old page when the navigation stops without committing', () => {
+    loaded();
+    navigationStarts();
+    void host.request(SETTINGS, undefined);
+    expect(sentRequests()).toBe(0);
+    view().webContents.emit('did-stop-loading');
+    expect(sentRequests()).toBe(1);
+    expect(host.isOpen('settings')).toBe(true);
+  });
+
+  it('holds nothing for a same-document or subframe navigation', () => {
+    loaded();
+    navigationStarts({ isSameDocument: true });
+    navigationStarts({ isMainFrame: false });
+    void host.request(SETTINGS, undefined);
+    expect(sentRequests()).toBe(1);
+  });
+
+  it('rejects open and held requests when the started navigation fails, and a later finish does not mark the page loaded', async () => {
+    loaded();
+    const open = outcome(host.request(MENU, undefined));
+    navigationStarts();
+    const held = outcome(host.request(QUESTION, undefined));
+    view().webContents.emit('did-fail-load', {}, -6, 'ERR_FILE_NOT_FOUND', OVERLAY_PAGE_URL, true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(open.error).toBeDefined();
+    expect(held.error).toBeDefined();
+    view().webContents.emit('did-finish-load');
+    await expect(host.request(SETTINGS, undefined)).rejects.toThrow('not available');
+  });
+
+  it('keeps holding through a superseded navigation until the second one loads', () => {
+    loaded();
+    navigationStarts();
+    void host.request(SETTINGS, undefined);
+    navigationStarts();
+    reloadCommits();
+    expect(sentRequests()).toBe(0);
+    view().webContents.emit('did-finish-load');
+    expect(sentRequests()).toBe(1);
+  });
+
+  // Electron 44 emits did-stop-loading for a renderer that died mid-navigation before render-process-gone, while isCrashed()
+  // is still false and the renderer's pid already reads 0 (e2e/desktop/overlay-crash.spec.ts).
+  it('keeps a held request through a crash during the navigation and sends it once, to the reloaded page', async () => {
+    loaded();
+    navigationStarts();
+    const answer = outcome(host.request(SETTINGS, undefined));
+    view().webContents.osProcessId = 0;
+    view().webContents.emit('did-stop-loading');
+    view().webContents.crashed = true;
+    view().webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sentRequests()).toBe(0);
+    expect(answer).toEqual({});
+    expect(host.mode).toBe('hidden');
+
+    view().webContents.crashed = false;
+    view().webContents.osProcessId = 4343;
+    navigationStarts();
+    reloadCommits();
+    view().webContents.emit('did-finish-load');
+    view().webContents.emit('did-stop-loading');
+    expect(sentRequests()).toBe(1);
+    expect(host.isOpen('settings')).toBe(true);
+  });
+
+  it('holds a request through a second navigation that starts before the first page finished loading, until that one loads', async () => {
+    loaded();
+    reloadCommits();
+    navigationStarts();
+    const answer = outcome(host.request(SETTINGS, undefined));
+    view().webContents.emit('did-finish-load');
+    expect(sentRequests()).toBe(0);
+    expect(host.mode).toBe('hidden');
+    reloadCommits();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(answer).toEqual({});
+    view().webContents.emit('did-finish-load');
+    expect(sentRequests()).toBe(1);
+    expect(host.isOpen('settings')).toBe(true);
+  });
+
+  it('sends a request held through a second navigation to the first page once that navigation stops without committing', () => {
+    loaded();
+    reloadCommits();
+    navigationStarts();
+    void host.request(SETTINGS, undefined);
+    view().webContents.emit('did-finish-load');
+    expect(sentRequests()).toBe(0);
+    view().webContents.emit('did-stop-loading');
+    expect(sentRequests()).toBe(1);
+  });
+
+  it('sends a held request to the old page when an aborted navigation stops, and keeps that page loaded', () => {
+    loaded();
+    navigationStarts();
+    void host.request(SETTINGS, undefined);
+    view().webContents.emit('did-fail-load', {}, -3, 'ERR_ABORTED', OVERLAY_PAGE_URL, true);
+    expect(sentRequests()).toBe(0);
+    view().webContents.emit('did-stop-loading');
+    expect(sentRequests()).toBe(1);
+    expect(host.isOpen('settings')).toBe(true);
+  });
+
+  it('sends a held request once when the navigation commits and loads, and its later did-stop-loading sends nothing more', () => {
+    loaded();
+    navigationStarts();
+    void host.request(SETTINGS, undefined);
+    reloadCommits();
+    view().webContents.emit('did-finish-load');
+    view().webContents.emit('did-stop-loading');
+    expect(sentRequests()).toBe(1);
+    void host.request(MENU, undefined);
+    expect(sentRequests()).toBe(2);
+  });
+
+  it('tells a caller waiting for the page at once while the loaded page navigates, since a request then waits for the next page', async () => {
+    loaded();
+    navigationStarts();
+    await expect(host.whenLoaded()).resolves.toBeUndefined();
+    const answer = outcome(host.request(SETTINGS, undefined));
+    expect(sentRequests()).toBe(0);
+    reloadCommits();
+    view().webContents.emit('did-finish-load');
+    expect(sentRequests()).toBe(1);
+    void answer;
+  });
+
+  // Electron emits did-finish-load after a failed load too (electron/electron#5128).
+  it('tells a caller waiting for the page when a failed load finishes, and the request it then makes is refused', async () => {
+    host.load();
+    let ready = false;
+    const waiting = host.whenLoaded().then(() => {
+      ready = true;
+    });
+    view().webContents.emit('did-fail-load', {}, -6, 'ERR_FILE_NOT_FOUND', OVERLAY_PAGE_URL, true);
+    view().webContents.emit('did-finish-load');
+    await waiting;
+    expect(ready).toBe(true);
+    await expect(host.request(SETTINGS, undefined)).rejects.toThrow('not available');
+  });
+
   it('tells a caller waiting for the page only once the reloaded page has loaded', async () => {
     loaded();
     reloadCommits();
@@ -615,7 +775,7 @@ describe('overlay acknowledgement', () => {
 });
 
 describe('overlay dispose', () => {
-  it('stops following the window and its IPC, rejects the open request and closes the page', async () => {
+  it('stops following the window and its messages, rejects the open request and closes the page', async () => {
     loaded();
     const answer = host.request(MENU, returnFocus as never);
     const settled = expect(answer).rejects.toThrow('window closed');
@@ -625,11 +785,51 @@ describe('overlay dispose', () => {
     await settled;
 
     expect(window.listenerCount('resize')).toBe(0);
-    expect(view().webContents.ipc.handlers.size).toBe(0);
     for (const channel of channels) expect(view().webContents.ipc.listenerCount(channel)).toBe(0);
     expect(view().webContents.close).toHaveBeenCalledTimes(1);
     host.dispose();
     expect(view().webContents.close).toHaveBeenCalledTimes(1);
+  });
+
+  // A window closing while its overlay page starts: the page asks for its state at mount, and a throw in a handler is an error in main.
+  it('still answers its page\'s state request after dispose, refuses a foreign sender, and answers a popup channel closed', async () => {
+    host.handleWhileOpen('test:popup', () => true, () => 'value');
+    host.dispose();
+    const getState = view().webContents.ipc.handlers.get(OVERLAY_CHANNELS.getState)!;
+    await expect(getState(own())).resolves.toEqual({ locale: 'en', platform: 'win32' });
+    await expect(getState({ sender: { id: 9 }, senderFrame: { url: OVERLAY_PAGE_URL, parent: null } })).rejects.toThrow('Rejected');
+    await expect(view().webContents.ipc.handlers.get('test:popup')!(own())).resolves.toEqual({ ok: false, reason: 'closed' });
+  });
+
+  it('answers a popup channel with its value while the popup is open and closed while it is not', async () => {
+    let open = true;
+    host.handleWhileOpen('test:popup', () => open, (n: unknown) => (n as number) + 1);
+    const call = view().webContents.ipc.handlers.get('test:popup')!;
+    await expect(call(own(), 1)).resolves.toEqual({ ok: true, value: 2 });
+    open = false;
+    await expect(call(own(), 1)).resolves.toEqual({ ok: false, reason: 'closed' });
+    await expect(call({ sender: { id: 9 }, senderFrame: { url: OVERLAY_PAGE_URL, parent: null } }, 1)).rejects.toThrow('Rejected');
+  });
+
+  it('rejects, rather than answering closed, when an open popup\'s handler fails, and settles only once that call has', async () => {
+    let fail!: (err: Error) => void;
+    host.handleWhileOpen('test:popup', () => true, () => new Promise<never>((_resolve, reject) => (fail = reject)));
+    const call = view().webContents.ipc.handlers.get('test:popup')!(own()) as Promise<unknown>;
+    let settled = false;
+    const done = host.settled().then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+    fail(new Error('failed'));
+    await expect(call).rejects.toThrow('failed');
+    await done;
+    expect(settled).toBe(true);
+  });
+
+  it('refuses a second handler for a channel, as Electron does', () => {
+    host.handleWhileOpen('test:popup', () => true, () => 'value');
+    expect(() => host.handle('test:popup', () => 'value')).toThrow('second handler');
   });
 
   it('settles once every request it was still answering when its page went has been answered, a failed one included', async () => {
@@ -909,6 +1109,7 @@ describe('overlay rasterizing (D52)', () => {
     expect(redraws).toBe(2);
     expect(lines.filter((line) => line.includes('ignoring a rasterized image'))).toEqual([]);
 
+    view().webContents.emit('did-navigate', {}, OVERLAY_PAGE_URL, 200, 'OK');
     view().webContents.emit('did-finish-load');
     expect(redraws).toBe(3);
     const third = host.rasterize(ART);

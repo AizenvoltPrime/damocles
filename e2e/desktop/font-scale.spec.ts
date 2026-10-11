@@ -1,9 +1,9 @@
-import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Page } from '@playwright/test';
 import type { DesktopApp, LaunchOptions } from './support/app';
 import { expect, test } from './support/fixtures';
+import { git } from './support/git';
 import { seedStubModel, type HermeticHome } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { openProjectChat, setPageSize, settled } from './support/screenshots';
@@ -90,10 +90,8 @@ async function openChat(home: HermeticHome, launch: (options?: LaunchOptions) =>
   fs.writeFileSync(models, JSON.stringify(config, null, 2));
   const project = path.join(path.dirname(home.project), LONG_PROJECT_NAME);
   fs.mkdirSync(project);
-  const git = (...args: string[]): string =>
-    execFileSync('git', ['-c', 'user.name=e2e', '-c', 'user.email=e2e@example.com', '-c', 'commit.gpgsign=false', ...args], { cwd: project, encoding: 'utf8' }).trim();
-  git('init', '-q', '-b', 'main');
-  git('commit', '-q', '--allow-empty', '-m', 'init');
+  await git(project, 'init', '-q', '-b', 'main');
+  await git(project, 'commit', '-q', '--allow-empty', '-m', 'init');
   const { app } = await launch();
   const tab = await openProjectChat(app, project);
   await setContentSize(app, 1280, HEIGHT);

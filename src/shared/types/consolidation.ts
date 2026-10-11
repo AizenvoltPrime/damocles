@@ -41,10 +41,10 @@ export type ConsolidationStatus = 'extracted' | 'empty' | 'failed';
 /** Who initiated the pass — a manual "Run now" vs a background auto pass. */
 export type ConsolidationTrigger = 'auto' | 'manual';
 
-/** Why a pass ended in `failed`. `unavailable` = the memory DB never initialized / init failed. */
 /** Why extraction got no answer; the panel words it, so core never sends English for these. */
-export type ExtractFailureReason = 'unanswered' | 'rejected' | 'invalid-shape' | 'unreachable' | 'credential';
+export type ExtractFailureReason = 'unanswered' | 'rejected' | 'invalid-shape' | 'unreachable' | 'credential' | 'forbidden';
 
+/** Why a pass ended in `failed`. `unavailable` = the memory DB never initialized / init failed. */
 export interface ConsolidationFailure {
   kind: 'no-model' | 'error' | 'unavailable';
   reason?: ExtractFailureReason;

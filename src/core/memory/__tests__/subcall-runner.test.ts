@@ -73,6 +73,18 @@ describe('createMemorySubCallRunner', () => {
     expect(result).toEqual({ value: null, failure: 'credential' });
   });
 
+  it('an unreachable completion with a forbidden cause surfaces as a forbidden failure', async () => {
+    mockPiRuntime();
+    hasAuthedSubCallModel.mockReturnValue(true);
+    runStructuredCompletion.mockResolvedValue({ kind: 'unreachable', cause: 'forbidden' });
+
+    const { createMemorySubCallRunner } = await import('../subcall-runner');
+    const runner = createMemorySubCallRunner(new AbortController().signal);
+    const result = await runner.run({ prompt: 'p', systemPrompt: 's', schema: {}, purpose: 'extract' });
+
+    expect(result).toEqual({ value: null, failure: 'forbidden' });
+  });
+
   it('routes classify to the runtime under the memory ledger purpose', async () => {
     mockPiRuntime();
     hasClassifier.mockReturnValue(true);

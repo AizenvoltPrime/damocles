@@ -9,7 +9,7 @@ import OverlayApp from '../overlay/OverlayApp.vue';
 import { placePopup } from '../overlay/placement';
 import { shellI18n } from '../i18n';
 import { createOverlaySettingsBridge } from '../overlay/settings/overlay-bridge';
-import { FakeResizeObserver, fakeOverlayApi, type FakeOverlayApi } from './fakes';
+import { FakeResizeObserver, fakeOverlayApi, opened, type FakeOverlayApi } from './fakes';
 
 const mounted: VueWrapper[] = [];
 let api: FakeOverlayApi;
@@ -657,7 +657,7 @@ describe('command palette', () => {
     const result = { projectKey: 'web-key', projectName: 'web', relativePath: 'src/foo.ts', label: 'foo.ts', description: 'src', labelMatches: [], descriptionMatches: [], recent: false };
     const late: Array<() => void> = [];
     vi.mocked(api.queryQuickOpen).mockImplementation((query) => new Promise((resolve) => {
-      const answer = { generation: query.generation, mention: false, results: [result], ...(query.query === 'foo:12' ? { line: 12 } : {}) };
+      const answer = opened({ generation: query.generation, mention: false, results: [result], ...(query.query === 'foo:12' ? { line: 12 } : {}) });
       if (query.query === 'foo:12') late.push(() => resolve(answer));
       else resolve(answer);
     }));
@@ -670,6 +670,75 @@ describe('command palette', () => {
     await flushPromises();
     press('Enter');
     await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('q1', { kind: 'quickOpen', pick: { projectKey: 'web-key', relativePath: 'src/foo.ts', mention: false } }));
+  });
+
+  it('keeps the list it shows when a query or the command list answers closed, with no unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const record = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', record);
+    try {
+      const result = { projectKey: 'web-key', projectName: 'web', relativePath: 'src/foo.ts', label: 'foo.ts', description: 'src', labelMatches: [], descriptionMatches: [], recent: false };
+      api.quickOpen.answer = (query) => ({ generation: query.generation, mention: false, results: [result] });
+      const wrapper = mountOverlay();
+      await flushPromises();
+      await open(wrapper, 'q1', { kind: 'quickOpen', mode: 'files' });
+      expect(wrapper.findAll('[data-testid="quick-pick-item"]')).toHaveLength(1);
+
+      vi.mocked(api.queryQuickOpen).mockResolvedValueOnce({ ok: false, reason: 'closed' });
+      await type(wrapper, 'fo');
+      expect(wrapper.findAll('[data-testid="quick-pick-item"]')).toHaveLength(1);
+      expect(wrapper.find('[data-testid="quick-pick-empty"]').exists()).toBe(false);
+
+      vi.mocked(api.listCommands).mockResolvedValueOnce({ ok: false, reason: 'closed' });
+      await type(wrapper, '>');
+      expect(wrapper.find('[data-testid="quick-pick-empty"]').exists()).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', record);
+    }
+  });
+
+  it('says the files or commands could not load, never that nothing matched, when a query or the command list fails', async () => {
+    const unhandled: unknown[] = [];
+    const record = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', record);
+    try {
+      api.commands.list = COMMANDS;
+      vi.mocked(api.queryQuickOpen).mockRejectedValueOnce(new Error('Malformed Quick Open query'));
+      const wrapper = mountOverlay();
+      const failed = (): string | undefined => {
+        const notice = wrapper.find('[data-testid="quick-pick-failed"]');
+        return notice.exists() ? notice.text() : undefined;
+      };
+      await flushPromises();
+      await open(wrapper, 'q1', { kind: 'quickOpen', mode: 'files' });
+      expect(wrapper.find('[data-testid="quick-pick-empty"]').exists()).toBe(false);
+      expect(failed()).toBe('Damocles could not search the files.');
+
+      // Main's index answers failed when its worker failed.
+      api.quickOpen.answer = (query) => ({ generation: query.generation, mention: false, results: [], failed: true });
+      await type(wrapper, 'fo');
+      expect(wrapper.find('[data-testid="quick-pick-empty"]').exists()).toBe(false);
+      expect(failed()).toBe('Damocles could not search the files.');
+
+      vi.mocked(api.listCommands).mockRejectedValueOnce(new Error('no commands'));
+      await type(wrapper, '>');
+      expect(wrapper.find('[data-testid="quick-pick-empty"]').exists()).toBe(false);
+      expect(failed()).toBe('The commands could not load.');
+      // A failed list is not kept: the next palette query asks again.
+      await type(wrapper, '>c');
+      expect(failed()).toBeUndefined();
+      expect(wrapper.find('[data-item-id="damocles.chat.contextUsage"]').exists()).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', record);
+    }
   });
 
   it('in Greek finds a command by its English title', async () => {

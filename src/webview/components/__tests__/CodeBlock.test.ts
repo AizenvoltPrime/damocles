@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { flushPromises, mount } from '@vue/test-utils';
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { i18n } from '@/i18n';
 import CodeBlock from '../CodeBlock.vue';
@@ -30,12 +30,18 @@ beforeEach(() => {
   shiki.instance.codeToHtml.mockClear();
 });
 
+const mounted: VueWrapper[] = [];
+
 afterEach(() => {
+  for (const wrapper of mounted.splice(0)) wrapper.unmount();
+  vi.restoreAllMocks();
   document.body.className = '';
 });
 
-function mountBlock() {
-  return mount(CodeBlock, { props: { code: 'const x = 1;', language: 'ts' }, global: { plugins: [i18n] } });
+function mountBlock(code = 'const x = 1;') {
+  const wrapper = mount(CodeBlock, { props: { code, language: 'ts' }, global: { plugins: [i18n] } });
+  mounted.push(wrapper);
+  return wrapper;
 }
 
 describe('CodeBlock', () => {
@@ -49,6 +55,19 @@ describe('CodeBlock', () => {
 
     expect(shiki.instance.loadTheme).toHaveBeenCalledWith('github-light');
     expect(wrapper.find('.code-block-content').text()).toBe('const x = 1;');
+  });
+
+  it('shows markup in the plain fallback as text', async () => {
+    shiki.instance.codeToHtml.mockImplementationOnce(() => { throw new Error('no grammar'); });
+    vi.spyOn(console, 'error').mockImplementationOnce(() => undefined);
+    const code = '<img src=x onerror=alert(1)>';
+
+    const wrapper = mountBlock(code);
+    await flushPromises();
+
+    expect(shiki.instance.codeToHtml).toHaveBeenCalledWith(code, expect.anything());
+    expect(wrapper.find('img').exists()).toBe(false);
+    expect(wrapper.find('.code-block-content').text()).toBe(code);
   });
 
   it('keeps the theme matched to VS Code without damoclesTheme, and uses the token-fed Damocles theme with it', async () => {

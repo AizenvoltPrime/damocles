@@ -6,6 +6,7 @@ import { IconCheck, IconCopy } from "@/components/icons";
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard";
 import { getHighlighter, codeHighlightTheme, normalizeLanguage, isHighlighterReady } from "@/composables/useShikiHighlighter";
 import { useSettingsStore } from "@/stores/useSettingsStore";
+import { escapeHtml } from "@shared/utils";
 
 const { t } = useI18n();
 const settingsStore = useSettingsStore();
@@ -77,10 +78,6 @@ async function highlight() {
   }
 }
 
-function escapeHtml(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
 function handleCopy() {
   copyToClipboard(props.code);
 }
@@ -111,10 +108,13 @@ onUnmounted(() => {
     @mouseleave="isHovering = false"
   >
     <div class="flex items-center justify-between px-3 py-1.5 bg-muted border-b border-border">
-      <span v-if="displayLanguage" class="text-xs font-mono text-muted-foreground select-none">
+      <span
+        v-if="displayLanguage"
+        class="text-xs font-mono text-muted-foreground select-none"
+      >
         {{ displayLanguage }}
       </span>
-      <span v-else></span>
+      <span v-else />
 
       <Button
         variant="ghost"
@@ -124,12 +124,23 @@ onUnmounted(() => {
         :title="t('codeBlock.copyCode')"
         @click="handleCopy"
       >
-        <IconCheck v-if="hasCopied" class="size-3.5" />
-        <IconCopy v-else class="size-3.5" />
+        <IconCheck
+          v-if="hasCopied"
+          class="size-3.5"
+        />
+        <IconCopy
+          v-else
+          class="size-3.5"
+        />
       </Button>
     </div>
 
-    <div class="code-block-content overflow-x-auto" v-html="highlightedHtml" />
+    <!-- eslint-disable vue/no-v-html -- Shiki output, or the escaped fallback -->
+    <div
+      class="code-block-content overflow-x-auto"
+      v-html="highlightedHtml"
+    />
+    <!-- eslint-enable vue/no-v-html -->
   </div>
 </template>
 

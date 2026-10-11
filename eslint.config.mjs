@@ -140,10 +140,25 @@ export default [
         argsIgnorePattern: '^_',
         varsIgnorePattern: '^_',
         caughtErrorsIgnorePattern: '^_',
+        ignoreRestSiblings: true,
       }],
       '@typescript-eslint/no-empty-object-type': 'off',
       'no-empty': ['warn', { allowEmptyCatch: true }],
       'no-useless-escape': 'warn',
+    },
+  },
+  {
+    files: ['**/*.vue'],
+    rules: {
+      // Strict null checks already make every use of a typed optional prop handle undefined, so an undefined default adds nothing (eslint-plugin-vue #1914, #2306, #2475).
+      'vue/require-default-prop': 'off',
+    },
+  },
+  {
+    files: ['src/**/__tests__/**'],
+    rules: {
+      // Tests define stub components inline.
+      'vue/one-component-per-file': 'off',
     },
   },
   {

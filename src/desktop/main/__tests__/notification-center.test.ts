@@ -16,6 +16,7 @@ import {
   type EntryActionDeps,
   type NotificationCenterDeps,
 } from '../notification-center';
+import { fakeHandleWhileOpen } from './fake-popup-channels';
 
 const CHAT: ChatRef = { panelId: 'view-1', sessionId: 's1', project: { key: 'acme', name: 'acme' }, title: 'Fix login' };
 
@@ -602,22 +603,26 @@ describe('notification center: core notices', () => {
 });
 
 describe('notification center channels', () => {
-  it('read the entries, clear them and set Do not disturb only while the center is open', async () => {
+  it('read the entries, clear them and set Do not disturb only while the center is open, and answer closed as a value otherwise', async () => {
     const handlers = new Map<string, (...args: unknown[]) => unknown>();
     let open = false;
     const notifications = center();
-    handleCenterChannels({ handle: (channel, handler) => handlers.set(channel, handler), isOpen: (kind) => open && kind === 'notifications' }, notifications);
+    handleCenterChannels({
+      handleWhileOpen: fakeHandleWhileOpen(handlers),
+      isOpen: (kind) => open && kind === 'notifications',
+    }, notifications);
     const invoke = async (channel: string, ...args: unknown[]): Promise<unknown> => handlers.get(channel)!(...args);
     void notifications.notice('info', 'Saved', []);
 
-    await expect(invoke(OVERLAY_CHANNELS.notificationsGet)).rejects.toThrow('The notification center is not open');
-    await expect(invoke(OVERLAY_CHANNELS.notificationsClear)).rejects.toThrow('The notification center is not open');
-    await expect(invoke(OVERLAY_CHANNELS.notificationsDnd, true)).rejects.toThrow('The notification center is not open');
+    const closed = { ok: false, reason: 'closed' };
+    await expect(invoke(OVERLAY_CHANNELS.notificationsGet)).resolves.toEqual(closed);
+    await expect(invoke(OVERLAY_CHANNELS.notificationsClear)).resolves.toEqual(closed);
+    await expect(invoke(OVERLAY_CHANNELS.notificationsDnd, true)).resolves.toEqual(closed);
     expect(dnd).toBe(false);
     expect(notifications.state().entries).toHaveLength(1);
 
     open = true;
-    await expect(invoke(OVERLAY_CHANNELS.notificationsGet)).resolves.toMatchObject({ entries: [expect.objectContaining({ body: expect.objectContaining({ message: 'Saved' }) })] });
+    await expect(invoke(OVERLAY_CHANNELS.notificationsGet)).resolves.toMatchObject({ ok: true, value: { entries: [expect.objectContaining({ body: expect.objectContaining({ message: 'Saved' }) })] } });
     await expect(invoke(OVERLAY_CHANNELS.notificationsDnd, 'on')).rejects.toThrow('Malformed Do not disturb value');
     await invoke(OVERLAY_CHANNELS.notificationsDnd, true);
     expect(dnd).toBe(true);

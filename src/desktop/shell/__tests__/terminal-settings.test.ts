@@ -114,6 +114,18 @@ describe('Settings › Terminal profiles', () => {
     expect(q('terminal-profiles-no-problems')).not.toBeNull();
   });
 
+  it('says the profiles could not load, never that there are none, when the first read fails, until main pushes a report', async () => {
+    vi.mocked(api.getTerminalProfiles).mockRejectedValueOnce(new Error('the report could not be read'));
+    await openTerminalSettings();
+    expect(q('terminal-profiles-none')).toBeNull();
+    expect(q('terminal-profiles-no-problems')).toBeNull();
+    expect(q('terminal-profiles-unavailable')!.textContent!.trim()).toBe('The terminal profiles could not load.');
+    api.pushTerminalProfiles(REPORT);
+    await flushPromises();
+    expect(q('terminal-profiles-unavailable')).toBeNull();
+    expect(all('terminal-profile')).toHaveLength(2);
+  });
+
   // Scrollback's minimum is 0, and every open terminal trims its history to a new scrollback at once.
   it('refuses an emptied or non-decimal Scrollback instead of writing 0', async () => {
     await openTerminalSettings();

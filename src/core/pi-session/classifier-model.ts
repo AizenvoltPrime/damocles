@@ -52,28 +52,6 @@ export function classifierCredential(
   return openai.status.chatgpt ? 'chatgpt-active' : 'no-key';
 }
 
-/** OpenRouter's `error_type` values for a 403 that declined the content, not the key. */
-const CONTENT_REFUSAL_ERROR_TYPES: ReadonlySet<unknown> = new Set(['content_policy_violation', 'refusal']);
-
-/**
- * Whether a failed Jev request is OpenRouter refusing this one input rather than the credential: a 403
- * whose body carries moderation `reasons`, guardrail `patterns`, or a content-policy or refusal
- * `error_type` in `error.metadata` (openrouter.ai/docs/api-reference/errors). The body is parsed here
- * and never kept.
- */
-export function isInputRefusal(errorMessage: string | undefined): boolean {
-  const body = errorMessage ? /^[^(]*\(403\):\s*([\s\S]*)$/.exec(errorMessage)?.[1] : undefined;
-  if (!body) return false;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    return false;
-  }
-  const metadata = (parsed as { error?: { metadata?: { reasons?: unknown; patterns?: unknown; error_type?: unknown } } } | null)?.error?.metadata;
-  return Array.isArray(metadata?.reasons) || Array.isArray(metadata?.patterns) || CONTENT_REFUSAL_ERROR_TYPES.has(metadata?.error_type);
-}
-
 /** A loggable cause for a failed classifier request, never including the response body. */
 export function classifierFailureCause(errorMessage: string | undefined): string {
   if (!errorMessage) return 'no error message';

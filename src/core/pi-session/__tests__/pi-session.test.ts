@@ -359,6 +359,11 @@ vi.mock('../session-store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../session-store')>();
   return { ...actual, resolvePiSessionFile: vi.fn(actual.resolvePiSessionFile) };
 });
+// The store's own mutations resolve a file through `reading`, which the index spy above does not reach.
+vi.mock('../session-store/reading', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../session-store/reading')>();
+  return { ...actual, resolvePiSessionFile: vi.fn(actual.resolvePiSessionFile) };
+});
 vi.mock('../fork-agent-data', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../fork-agent-data')>();
   return { ...actual, copyForkAgentData: vi.fn(actual.copyForkAgentData) };
@@ -402,6 +407,7 @@ import { reconcileInterruptions, type NoticeMessage } from '../interruption-noti
 import { copyForkAgentData } from '../fork-agent-data';
 import { collectUndeliveredFromFiles, type UndeliveredFileResult } from '../undelivered-results';
 import { resolvePiSessionFile } from '../session-store';
+import { resolvePiSessionFile as resolveStoredSessionFile } from '../session-store/reading';
 import { deliveredBackgroundResults, latestSubagentInvocations, subagentBranchIndex } from '../agent-records';
 import type { AgentManager } from '../subagents/agent-manager';
 import { SUBAGENT_RESULTS_CUSTOM_TYPE } from '../subagents/background-results';
@@ -409,7 +415,7 @@ import type { AgentRecord } from '../subagents/types';
 import { emptyAgentUsage } from '../../../shared/usage-accounting';
 import { buildAgentStartResult, type ProjectionReader } from '../agent-start';
 import type { PanelGateContext } from '../permission-gate';
-import { DAMOCLES_AGENT_INVOCATION_ENTRY, DAMOCLES_INTERRUPTION_NOTICE } from '../session-store/constants';
+import { DAMOCLES_AGENT_INVOCATION_ENTRY, DAMOCLES_INTERRUPTION_NOTICE, DAMOCLES_TURN_STOPPED_ENTRY, DAMOCLES_USER_RENAMED_ENTRY } from '../session-store/constants';
 import { FORK_AT_SECOND_PROMPT, FORK_PROMPT_COUNT, STORED_CONVERSATION, STORED_PROMPT_COUNT, withPrompt } from '../session-store/__tests__/prompt-index-fixtures';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import * as fsSync from 'fs';
@@ -418,7 +424,7 @@ import * as fsSync from 'fs';
 // paid once during collection instead of inside a test's 5s timeout budget.
 import * as realPi from '@earendil-works/pi-coding-agent';
 import { installFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
-import { SESSION_LEASE_DIR, sessionLeaseBlocker, sessionLeasePath, sessionLeasesOf } from '../session-store/session-lease';
+import { SESSION_LEASE_DIR, acquireSessionLease, releaseSessionLease, sessionLeaseBlocker, sessionLeasePath, sessionLeasesOf } from '../session-store/session-lease';
 import elBundle from '../../../../l10n/bundle.l10n.el.json';
 
 /** The platform every session here reads through, also served by the host accessor; fresh per test. */
@@ -1218,7 +1224,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
       let disposed!: Promise<void>;
       vi.mocked(reconcileInterruptions).mockImplementationOnce(async () => {
         disposed = session.dispose();
-        return [];
+        return { announced: [], retry: false };
       });
       const withdrawn = vi.fn();
 
@@ -1647,7 +1653,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
       session.requestInterruptionCheck();
       vi.mocked(reconcileInterruptions).mockImplementationOnce(async () => {
         session.cancel();
-        return [];
+        return { announced: [], retry: false };
       });
     }
 
@@ -1821,6 +1827,79 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     await session.sendMessage('hi', undefined, 'corr', { content: 'hi' });
 
     expect(memory.enqueueTurnCandidate).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('files a turn a clear cut short under the cleared conversation and that turn\'s prompt index', async () => {
+    const opts = makeOptions([]);
+    const memory = memorySpy();
+    opts.memoryService = memory as never;
+    const session = new PiSession(opts);
+    await session.initializeEarly();
+    forceAgentRun(session);
+    const live = H.getLastSession()!;
+    const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn>;
+    getBranch.mockReturnValue([
+      { type: 'message', id: 'u1', message: { role: 'user', content: 'old' } },
+      { type: 'message', id: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'old answer' }] } },
+    ]);
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, promptOpts: unknown) => {
+      piRuns(promptOpts, getBranch, [
+        { type: 'message', id: 'u2', message: { role: 'user', content: 'hi' } },
+        { type: 'message', id: 'a2', message: { role: 'assistant', content: [{ type: 'text', text: 'partial' }] } },
+      ]);
+      // The clear lands before the run settles, so the panel is on a new conversation when prompt() resolves.
+      session.reset();
+      await session.whenReplaced();
+    });
+
+    await session.sendMessage('hi', undefined, 'corr', { content: 'hi' });
+
+    expect(H.getLastSession()).not.toBe(live);
+    expect(memory.enqueueTurnCandidate).toHaveBeenCalledTimes(1);
+    expect(memory.enqueueTurnCandidate).toHaveBeenCalledWith(expect.objectContaining({ sessionId: live.sessionId, promptIndex: 1, userText: 'hi' }));
+    await session.dispose();
+  });
+
+  it('files a turn under the prompt index it started with after an overlapping send pi queued has cleared the in-flight index', async () => {
+    const opts = makeOptions([]);
+    const memory = memorySpy();
+    opts.memoryService = memory as never;
+    const session = new PiSession(opts);
+    await session.initializeEarly();
+    forceAgentRun(session);
+    const live = H.getLastSession()!;
+    const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn<() => unknown[]>>;
+    getBranch.mockReturnValue([
+      { type: 'message', id: 'u1', message: { role: 'user', content: 'old' } },
+      { type: 'message', id: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'old answer' }] } },
+    ]);
+    let endRun!: () => void;
+    (live.prompt as ReturnType<typeof vi.fn>)
+      .mockImplementationOnce(async (_text: string, promptOpts: unknown) => {
+        piRuns(promptOpts, getBranch, [{ type: 'message', id: 'u2', message: { role: 'user', content: 'hi' } }]);
+        await new Promise<void>((resolve) => { endRun = resolve; });
+        // The queued prompt runs inside this run, so it is the branch's newest prompt when this one settles.
+        getBranch.mockReturnValue([
+          ...getBranch(),
+          { type: 'message', id: 'a2', message: { role: 'assistant', content: [{ type: 'text', text: 'first' }] } },
+          { type: 'message', id: 'u3', message: { role: 'user', content: 'also this' } },
+          { type: 'message', id: 'a3', message: { role: 'assistant', content: [{ type: 'text', text: 'second' }] } },
+        ]);
+      })
+      .mockImplementationOnce(async (_text: string, promptOpts: { preflightResult: (d: string) => void }) => {
+        promptOpts.preflightResult('queued');
+      });
+
+    // Both pass the processing check before either sets it, so the second joins the first one's run.
+    const first = session.sendMessage('hi', undefined, 'c1', { content: 'hi' });
+    const second = session.sendMessage('also this', undefined, 'c2', { content: 'also this' });
+    await second;
+    endRun();
+    await first;
+
+    expect(memory.enqueueTurnCandidate).toHaveBeenCalledTimes(1);
+    expect(memory.enqueueTurnCandidate).toHaveBeenCalledWith(expect.objectContaining({ sessionId: live.sessionId, promptIndex: 1 }));
     await session.dispose();
   });
 
@@ -3672,6 +3751,28 @@ describe('PiSession team stop causes', () => {
     await session.whenReplaced();
     await session.dispose();
   });
+
+  // A queued subagent the Stop completes posts its stop synchronously; the webview's cancel must not reach its card first.
+  it('a Stop settles the agents it stops before it tells the webview the turn was cancelled', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const teamService = {
+      dispose: vi.fn(),
+      setRunListener: vi.fn(),
+      running: false,
+      cancelActiveTeam: vi.fn(() => { messages.push({ type: 'teamCancelled', teamId: 'team-1' } as unknown as ExtensionToWebviewMessage); return true; }),
+    };
+    const session = new PiSession(makeOptions(messages, { teamService: teamService as unknown as NonNullable<SessionOptions['teamService']> }));
+    await session.initializeEarly();
+    (session as unknown as { subagentManager: { abortAll: (reason: string) => void } }).subagentManager.abortAll = () => {
+      messages.push({ type: 'subagentStop', agentId: 'agent-queued' } as unknown as ExtensionToWebviewMessage);
+    };
+    messages.length = 0;
+
+    session.cancel();
+
+    expect(messages.map((m) => m.type).filter((type) => type !== 'sessionStateChanged')).toEqual(['subagentStop', 'teamCancelled', 'sessionCancelled', 'processing']);
+    await session.dispose();
+  });
 });
 
 describe('PiSession.steerTarget (/steer routing to team members)', () => {
@@ -5195,16 +5296,24 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
   });
 });
 
-describe('PiSession auto-title — no write through a session replaced mid-completion (US-012)', () => {
+describe('PiSession auto-title — the title lands on the conversation it was generated for (US-012)', () => {
+  let dir: string;
+
   beforeEach(() => {
     H.seq.length = 0;
     H.captured.services.length = 0;
     H.resetServices();
     TITLE.impl = async () => null;
+    dir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'damocles-title-'));
   });
   afterEach(async () => {
     TITLE.impl = async () => null;
+    H.setSessionManagerFactory(null);
+    H.setSessionSetup(null);
+    delete (H.fakePi.SessionManager as Record<string, unknown>)['open'];
+    vi.mocked(resolveStoredSessionFile).mockReset();
     await PiRuntime.disposeInstance();
+    fsSync.rmSync(dir, { recursive: true, force: true });
   });
 
   /** A title sub-call the test settles by hand, so the replacement lands inside the async window. */
@@ -5215,40 +5324,149 @@ describe('PiSession auto-title — no write through a session replaced mid-compl
     return { resolve: (title) => release(title) };
   }
 
+  /**
+   * A panel whose first session persists to a real file in `dir`, as pi's SessionManager writes it; every later
+   * session of any panel gets a fresh file there. The store resolves ids against `dir`.
+   */
+  async function panelOnRealFile(overrides: Partial<SessionOptions> = {}): Promise<{ session: PiSession; file: string; id: string; onSessionPersisted: ReturnType<typeof vi.fn> }> {
+    const seeded = realPi.SessionManager.create('/cwd', dir);
+    seeded.appendMessage({ role: 'user', content: 'hello world' } as never);
+    const file = seeded.getSessionFile()!;
+    let opened = 0;
+    H.setSessionManagerFactory(() => (opened++ === 0 ? realPi.SessionManager.open(file, dir) : realPi.SessionManager.create('/cwd', dir)));
+    H.setSessionSetup((s) => {
+      const fake = s as unknown as { sessionId: string; sessionManager: { getSessionId(): string } };
+      fake.sessionId = fake.sessionManager.getSessionId();
+    });
+    (H.fakePi.SessionManager as Record<string, unknown>)['open'] = (f: string, d: string) => realPi.SessionManager.open(f, d);
+    vi.mocked(resolveStoredSessionFile).mockImplementation(async (_cwd, id) => {
+      const name = fsSync.readdirSync(dir).find((f) => f.endsWith(`_${id}.jsonl`));
+      return name ? path.join(dir, name) : null;
+    });
+    const onSessionPersisted = vi.fn();
+    const session = new PiSession(makeOptions([], { onSessionPersisted, ...overrides }));
+    await session.initializeEarly();
+    return { session, file, id: seeded.getSessionId(), onSessionPersisted };
+  }
+
+  /** The file's name and whether a user-rename marker backs it. */
+  function storedName(file: string): { name: string | undefined; infos: number; userRenamed: boolean } {
+    const sm = realPi.SessionManager.open(file, dir);
+    const entries = sm.getEntries();
+    return {
+      name: sm.getSessionName(),
+      infos: entries.filter((e) => e.type === 'session_info').length,
+      userRenamed: entries.some((e) => e.type === 'custom' && e.customType === DAMOCLES_USER_RENAMED_ENTRY),
+    };
+  }
+
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+
   it('names the session when it is still the live one', async () => {
-    const session = new PiSession(makeOptions([]));
+    const onSessionPersisted = vi.fn();
+    const session = new PiSession(makeOptions([], { onSessionPersisted }));
     await session.initializeEarly();
     const gate = deferredTitle();
 
     await session.sendMessage('go', undefined, 'c1', { content: 'go' });
     const live = H.getLastSession()!;
     gate.resolve('Fix The Parser');
-    await new Promise((r) => setTimeout(r, 0));
+    await settle();
 
     expect(live.setSessionName).toHaveBeenCalledWith('Fix The Parser');
+    expect(onSessionPersisted).toHaveBeenCalledWith(live.sessionId);
     await session.dispose();
   });
 
-  it('drops the title when a reset replaced the session during the completion', async () => {
-    // The resurrection bug: reset()/delete disposes the old AgentSession and its file is removed, but
-    // its SessionManager still believes it flushed — so a late setSessionName() appends past the rm and
-    // recreates the file holding only that `session_info` line, which no reader can parse afterwards.
-    const session = new PiSession(makeOptions([]));
-    await session.initializeEarly();
+  it('titles the cleared conversation\'s file when a reset replaced the session during the completion', async () => {
+    const { session, file, id, onSessionPersisted } = await panelOnRealFile();
     const gate = deferredTitle();
 
     await session.sendMessage('go', undefined, 'c1', { content: 'go' });
     const first = H.getLastSession()!;
-
     session.reset();
     await session.whenReplaced();
-    expect(H.getLastSession()).not.toBe(first);
+    const next = H.getLastSession()!;
+    expect(next).not.toBe(first);
 
     gate.resolve('Fix The Parser');
-    await new Promise((r) => setTimeout(r, 0));
+    await vi.waitFor(() => expect(onSessionPersisted).toHaveBeenCalledWith(id));
 
+    expect(storedName(file)).toEqual({ name: 'Fix The Parser', infos: 1, userRenamed: false });
+    // Written through a manager of its own, never the replaced session's captured one.
     expect(first.setSessionName).not.toHaveBeenCalled();
+    expect(next.setSessionName).not.toHaveBeenCalled();
+    expect(next.sessionManager.getSessionName()).toBeUndefined();
     await session.dispose();
+  });
+
+  it('leaves a user rename made during the completion in place', async () => {
+    const { session, file } = await panelOnRealFile();
+    const gate = deferredTitle();
+
+    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    await session.renameActiveSession('My Name');
+    gate.resolve('Fix The Parser');
+    await settle();
+
+    expect(storedName(file)).toEqual({ name: 'My Name', infos: 1, userRenamed: true });
+    await session.dispose();
+  });
+
+  it('recreates no file for a conversation deleted during the completion', async () => {
+    const { session, file, id } = await panelOnRealFile();
+    const gate = deferredTitle();
+    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+
+    // The catalog's delete: the writer lease spans the detach and the rm, and the title lands in between.
+    const deleting = { onSessionLeaseLost: () => undefined };
+    expect(acquireSessionLease(id, deleting, { writer: true })).toBe(true);
+    try {
+      await session.detachFromDeletedSession();
+      vi.mocked(resolveStoredSessionFile).mockClear();
+      gate.resolve('Fix The Parser');
+      await vi.waitFor(() => expect(resolveStoredSessionFile).toHaveBeenCalledWith(expect.anything(), id));
+      await settle();
+      // The title reached the store between the detach and the rm, and the delete's lease kept it out of the file.
+      expect(storedName(file).infos).toBe(0);
+      fsSync.rmSync(file);
+    } finally {
+      releaseSessionLease(id, deleting);
+    }
+    await settle();
+
+    expect(fsSync.existsSync(file)).toBe(false);
+    expect(fsSync.readdirSync(dir).filter((f) => f.includes(id))).toEqual([]);
+    await session.dispose();
+  });
+
+  it('titles a conversation another panel resumed during the completion through that panel, which refreshes its own header', async () => {
+    const firstPersisted = vi.fn();
+    const first = new PiSession(makeOptions([], { onSessionPersisted: firstPersisted }));
+    await first.initializeEarly();
+    const gate = deferredTitle();
+    await first.sendMessage('go', undefined, 'c1', { content: 'go' });
+    const cleared = H.getLastSession()!;
+    first.reset();
+    await first.whenReplaced();
+
+    H.setSessionSetup((s) => { (s as unknown as { sessionId: string }).sessionId = cleared.sessionId; });
+    const otherPersisted = vi.fn();
+    const other = new PiSession(makeOptions([], { onSessionPersisted: otherPersisted }));
+    await other.initializeEarly();
+    const resumed = H.getLastSession()!;
+    expect(PiRuntime.liveSessionMutator(cleared.sessionId)).toBe(other);
+
+    gate.resolve('Fix The Parser');
+    await settle();
+
+    expect(resumed.setSessionName).toHaveBeenCalledWith('Fix The Parser');
+    expect(resumed.sessionManager.appendCustomEntry).not.toHaveBeenCalledWith(DAMOCLES_USER_RENAMED_ENTRY);
+    expect(cleared.setSessionName).not.toHaveBeenCalled();
+    expect(otherPersisted).toHaveBeenCalledWith(cleared.sessionId);
+    expect(firstPersisted).not.toHaveBeenCalled();
+    await other.dispose();
+    await first.dispose();
   });
 
   it('detachFromDeletedSession replaces the session and clears its OWN webview', async () => {
@@ -5269,9 +5487,8 @@ describe('PiSession auto-title — no write through a session replaced mid-compl
     await session.dispose();
   });
 
-  it('drops the title when the panel was disposed during the completion', async () => {
-    const session = new PiSession(makeOptions([]));
-    await session.initializeEarly();
+  it('titles the stored file of a panel disposed during the completion', async () => {
+    const { session, file, id, onSessionPersisted } = await panelOnRealFile();
     const gate = deferredTitle();
 
     await session.sendMessage('go', undefined, 'c1', { content: 'go' });
@@ -5279,9 +5496,78 @@ describe('PiSession auto-title — no write through a session replaced mid-compl
 
     await session.dispose();
     gate.resolve('Fix The Parser');
-    await new Promise((r) => setTimeout(r, 0));
+    await vi.waitFor(() => expect(onSessionPersisted).toHaveBeenCalledWith(id));
 
     expect(live.setSessionName).not.toHaveBeenCalled();
+    expect(storedName(file)).toEqual({ name: 'Fix The Parser', infos: 1, userRenamed: false });
+  });
+
+  it('titles the conversation of a panel whose title lands while its dispose waits on the team seal', async () => {
+    let sealed!: () => void;
+    const teamService = {
+      dispose: vi.fn(() => new Promise<void>((resolve) => { sealed = resolve; })),
+      setRunListener: () => {},
+      running: false,
+      cancelActiveTeam: vi.fn(() => true),
+      whenRunSettled: vi.fn(async () => undefined),
+    };
+    const { session, file, id, onSessionPersisted } = await panelOnRealFile({ teamService: teamService as unknown as NonNullable<SessionOptions['teamService']> });
+    const gate = deferredTitle();
+    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+
+    const disposing = session.dispose();
+    await vi.waitFor(() => expect(teamService.dispose).toHaveBeenCalled());
+    gate.resolve('Fix The Parser');
+    await settle();
+    sealed();
+    await disposing;
+    await vi.waitFor(() => expect(onSessionPersisted).toHaveBeenCalledWith(id));
+
+    expect(storedName(file)).toEqual({ name: 'Fix The Parser', infos: 1, userRenamed: false });
+  });
+
+  it('titles the conversation of a panel whose title lands while its runtime tears down, and only once the teardown let go of the file', async () => {
+    const { session, file, id, onSessionPersisted } = await panelOnRealFile();
+    const gate = deferredTitle();
+    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    const runtime = (session as unknown as { runtime: { dispose: () => Promise<void> } }).runtime;
+    const teardown = runtime.dispose.bind(runtime);
+    let tornDown!: () => void;
+    const tearingDown = new Promise<void>((resolve) => { tornDown = resolve; });
+    let entered!: () => void;
+    const inTeardown = new Promise<void>((resolve) => { entered = resolve; });
+    runtime.dispose = async () => {
+      entered();
+      await tearingDown;
+      await teardown();
+    };
+
+    const disposing = session.dispose();
+    await inTeardown;
+    gate.resolve('Fix The Parser');
+    await settle();
+    await settle();
+    // The teardown still appends to the file, so no second writer may write it meanwhile.
+    expect(storedName(file).infos).toBe(0);
+    tornDown();
+    await disposing;
+    await vi.waitFor(() => expect(onSessionPersisted).toHaveBeenCalledWith(id));
+
+    expect(storedName(file)).toEqual({ name: 'Fix The Parser', infos: 1, userRenamed: false });
+  });
+
+  it('writes nothing once the runtime retired at shutdown', async () => {
+    const { session, file } = await panelOnRealFile();
+    const gate = deferredTitle();
+
+    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    await session.dispose();
+    await PiRuntime.disposeInstance();
+    gate.resolve('Fix The Parser');
+    await settle();
+    await settle();
+
+    expect(storedName(file).name).toBeUndefined();
   });
 });
 
@@ -5783,7 +6069,7 @@ describe('PiSession session-replacement contract (what a destructive delete is s
   it('a resume that lands while start() builds the runtime switches to it once the runtime exists', async () => {
     const gate = parkNextStart();
     const session = new PiSession(makeOptions([]));
-    const switchTo = vi.spyOn(session as unknown as { switchToResumeTarget: (id: string) => Promise<void> }, 'switchToResumeTarget')
+    const switchTo = vi.spyOn(session as unknown as { switchToResumeTarget: (target: unknown, stopped: unknown) => Promise<void> }, 'switchToResumeTarget')
       .mockResolvedValue(undefined);
     const starting = session.initializeEarly();
     await tick();
@@ -5793,7 +6079,7 @@ describe('PiSession session-replacement contract (what a destructive delete is s
     await starting;
     await session.whenReplaced();
 
-    expect(switchTo).toHaveBeenCalledWith('sess-late');
+    expect(switchTo).toHaveBeenCalledWith({ sessionId: 'sess-late', cancelled: false }, null);
     await session.dispose();
   });
 
@@ -6161,7 +6447,7 @@ describe('PiSession interruption notice and the pre-turn window', () => {
     const gate = deferred();
     vi.mocked(reconcileInterruptions).mockImplementationOnce(async () => {
       await gate.promise;
-      return [];
+      return { announced: [], retry: false };
     });
 
     const sending = session.sendMessage('go', undefined, 'c1', { content: 'go' });
@@ -6187,7 +6473,7 @@ describe('PiSession interruption notice and the pre-turn window', () => {
     vi.mocked(reconcileInterruptions).mockImplementationOnce(async (sources) => {
       await gate.promise;
       await sources.send({ customType: DAMOCLES_INTERRUPTION_NOTICE, content: 'notice', display: false, details: { agents: [] } });
-      return [];
+      return { announced: [], retry: false };
     });
 
     const sending = session.sendMessage('go', undefined, 'c1', { content: 'go' });
@@ -6218,6 +6504,20 @@ describe('PiSession interruption notice and the pre-turn window', () => {
 
     expect(messages.some((m) => m.type === 'notification' && m.notificationType === 'warning')).toBe(true);
     expect(live.prompt).toHaveBeenCalledTimes(1);
+    await session.dispose();
+  });
+
+  it('a check that could not decide a team yet runs again at the next prompt, and stops once it decided', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    session.requestInterruptionCheck();
+    vi.mocked(reconcileInterruptions).mockResolvedValueOnce({ announced: [], retry: true });
+
+    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    await session.sendMessage('again', undefined, 'c2', { content: 'again' });
+    await session.sendMessage('and again', undefined, 'c3', { content: 'and again' });
+
+    expect(reconcileInterruptions).toHaveBeenCalledTimes(2);
     await session.dispose();
   });
 
@@ -6657,6 +6957,315 @@ describe('PiSession undelivered background results', () => {
     expect(teamService.cancelActiveTeam).toHaveBeenCalledWith('shutdown');
     expect(order).toEqual(['cancel', 'settled']);
     await session.dispose();
+  });
+
+  it("dispose resolves only once the team's shutdown seal is on disk", async () => {
+    let sealed!: () => void;
+    const teamService = {
+      dispose: vi.fn(() => new Promise<void>((resolve) => { sealed = resolve; })),
+      setRunListener: () => {},
+      running: false,
+      cancelActiveTeam: vi.fn(() => true),
+      whenRunSettled: vi.fn(async () => undefined),
+    };
+    const session = new PiSession(makeOptions([], { teamService: teamService as unknown as NonNullable<SessionOptions['teamService']> }));
+    await session.initializeEarly();
+    let disposed = false;
+
+    const disposing = session.dispose().then(() => { disposed = true; });
+    await vi.waitFor(() => expect(teamService.dispose).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(disposed).toBe(false);
+    sealed();
+    await disposing;
+
+    expect(disposed).toBe(true);
+  });
+
+  it('a resume switch while a turn streams stops it, abandons the call pi never started and records the stop in the old file before the switch', async () => {
+    storedSessions([{ id: 'sess-A', branch: [] }, { id: 'sess-B', branch: [] }]);
+    const order: string[] = [];
+    const teamService = {
+      dispose: () => {},
+      setRunListener: () => {},
+      running: false,
+      cancelActiveTeam: vi.fn((cause: string) => { order.push(`team:${cause}`); return true; }),
+      whenRunSettled: vi.fn(async () => undefined),
+    };
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages, { teamService: teamService as unknown as NonNullable<SessionOptions['teamService']> }));
+    await session.initializeEarly();
+    const a = H.getLastSession()!;
+    let endRun!: () => void;
+    (a.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(() => new Promise<void>((resolve) => { endRun = resolve; }));
+    a.abort.mockImplementation(async () => { order.push('abort'); endRun(); });
+    (a.sessionManager['appendCustomEntry'] as ReturnType<typeof vi.fn>).mockImplementation((customType: string) => { order.push(customType); return 'custom-1'; });
+    const runtime = (session as unknown as { runtime: { switchSession: (p: string) => Promise<{ cancelled: boolean }> } }).runtime;
+    const switchSession = runtime.switchSession.bind(runtime);
+    runtime.switchSession = async (p) => { order.push('switch'); return switchSession(p); };
+    const turn = session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    await vi.waitFor(() => expect(a.prompt).toHaveBeenCalled());
+    const call = (id: string) => ({ type: 'toolCall', id, name: 'read', arguments: { path: `/${id}.ts` } });
+    H.fireEvent({ type: 'message_start', message: { role: 'assistant', content: [] } });
+    H.fireEvent({ type: 'message_update', message: { role: 'assistant', content: [] }, assistantMessageEvent: { type: 'toolcall_end', toolCall: call('tc-ran') } });
+    H.fireEvent({ type: 'message_update', message: { role: 'assistant', content: [] }, assistantMessageEvent: { type: 'toolcall_end', toolCall: call('tc-unstarted') } });
+    H.fireEvent({ type: 'message_end', message: { role: 'assistant', content: [call('tc-ran'), call('tc-unstarted')], stopReason: 'toolUse' } });
+    H.fireEvent({ type: 'tool_execution_start', toolCallId: 'tc-ran', toolName: 'read', args: { path: '/tc-ran.ts' } });
+    messages.length = 0;
+
+    session.setResumeSession('sess-B');
+
+    expect(messages.filter((m) => m.type === 'toolAbandoned')).toEqual([
+      { type: 'toolAbandoned', toolUseId: 'tc-unstarted', toolName: 'Read', parentToolUseId: null, reason: 'stopped' },
+    ]);
+    expect(messages.some((m) => m.type === 'sessionCancelled')).toBe(true);
+    expect(session.turnRunning).toBe(false);
+    await session.whenReplaced();
+    await turn;
+    expect(H.getLastSession()!.sessionId).toBe('sess-B');
+    expect(a.sessionManager['appendCustomEntry']).toHaveBeenCalledWith(DAMOCLES_TURN_STOPPED_ENTRY, { toolCallIds: ['tc-ran', 'tc-unstarted'], entryIds: [] });
+    expect(order.slice(0, 4)).toEqual(['team:shutdown', 'abort', DAMOCLES_TURN_STOPPED_ENTRY, 'switch']);
+    expect(teamService.cancelActiveTeam.mock.calls).toEqual([['shutdown']]);
+    await session.dispose();
+  });
+
+  it('a resume switch whose target is gone still ends the turn it stopped as a Stop, on the session it stays on', async () => {
+    storedSessions([{ id: 'sess-A', branch: [] }]);
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const a = H.getLastSession()!;
+    let endRun!: () => void;
+    (a.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(() => new Promise<void>((resolve) => { endRun = resolve; }));
+    a.abort.mockImplementation(async () => { endRun(); });
+    const turn = session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    await vi.waitFor(() => expect(a.prompt).toHaveBeenCalled());
+    H.fireEvent({ type: 'message_start', message: { role: 'assistant', content: [] } });
+    H.fireEvent({ type: 'tool_execution_start', toolCallId: 'tc-ran', toolName: 'read', args: { path: '/a.ts' } });
+    vi.mocked(resolvePiSessionFile).mockResolvedValue(null);
+
+    session.setResumeSession('sess-gone');
+    await session.whenReplaced();
+    await turn;
+
+    expect(H.getLastSession()).toBe(a);
+    expect(a.abort).toHaveBeenCalled();
+    expect(a.sessionManager['appendCustomEntry']).toHaveBeenCalledWith(DAMOCLES_TURN_STOPPED_ENTRY, { toolCallIds: ['tc-ran'], entryIds: [] });
+    await session.dispose();
+  });
+
+  it('a resume switch whose target lookup fails still aborts the turn it showed stopped, and records the stop', async () => {
+    storedSessions([{ id: 'sess-A', branch: [] }]);
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const a = H.getLastSession()!;
+    let endRun!: () => void;
+    (a.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(() => new Promise<void>((resolve) => { endRun = resolve; }));
+    a.abort.mockImplementation(async () => { endRun(); });
+    const turn = session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    await vi.waitFor(() => expect(a.prompt).toHaveBeenCalled());
+    H.fireEvent({ type: 'message_start', message: { role: 'assistant', content: [] } });
+    H.fireEvent({ type: 'tool_execution_start', toolCallId: 'tc-ran', toolName: 'read', args: { path: '/a.ts' } });
+    vi.mocked(resolvePiSessionFile).mockRejectedValue(new Error('EACCES: the sessions folder could not be created'));
+
+    session.setResumeSession('sess-B');
+    await session.whenReplaced();
+    await turn;
+
+    expect(H.getLastSession()).toBe(a);
+    expect(a.abort).toHaveBeenCalled();
+    expect(a.sessionManager['appendCustomEntry']).toHaveBeenCalledWith(DAMOCLES_TURN_STOPPED_ENTRY, { toolCallIds: ['tc-ran'], entryIds: [] });
+    await session.dispose();
+  });
+
+  describe('a resume switch binds only a target the panel still holds when it switches', () => {
+    type Switching = { runtime: { switchSession: (p: string) => Promise<{ cancelled: boolean }> } };
+    function spyOnSwitch(session: PiSession): ReturnType<typeof vi.fn> {
+      const runtime = (session as unknown as Switching).runtime;
+      const switchSession = runtime.switchSession.bind(runtime);
+      const spy = vi.fn((p: string) => switchSession(p));
+      runtime.switchSession = spy;
+      return spy;
+    }
+    function deferredLookup(): () => void {
+      let resolveLookup!: () => void;
+      const looked = new Promise<void>((resolve) => { resolveLookup = resolve; });
+      vi.mocked(resolvePiSessionFile).mockImplementation(async (_cwd, id) => {
+        await looked;
+        return `/fake/agent/sessions/cwd/2026-01-01T00-00-00-000Z_${id}.jsonl`;
+      });
+      return resolveLookup;
+    }
+
+    it('not one whose lease was lost while the lookup ran, even once the detach dropped the loss', async () => {
+      // Only A: the detach's fresh session must not take B's id from the stored list.
+      storedSessions([{ id: 'sess-A', branch: [] }]);
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      const switchSession = spyOnSwitch(session);
+      const resolveLookup = deferredLookup();
+
+      session.setResumeSession('sess-B');
+      session.onSessionLeaseLost('sess-B');
+      // The detach's reset lets go of the target, which forgets the loss before the lookup resolves.
+      await vi.waitFor(() => expect(session.holdsSession('sess-B')).toBe(false));
+      resolveLookup();
+      await session.whenReplaced();
+
+      expect(switchSession).not.toHaveBeenCalled();
+      expect(H.getLastSession()!.sessionId).not.toBe('sess-B');
+      await session.dispose();
+    });
+
+    it('not one a clear let go of while the lookup ran', async () => {
+      storedSessions([{ id: 'sess-A', branch: [] }, { id: 'sess-B', branch: [] }]);
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      const switchSession = spyOnSwitch(session);
+      const resolveLookup = deferredLookup();
+
+      session.setResumeSession('sess-B');
+      session.reset();
+      resolveLookup();
+      await session.whenReplaced();
+
+      expect(switchSession).not.toHaveBeenCalled();
+      await session.dispose();
+    });
+
+    it('not one whose lease was lost while the retired agents settled', async () => {
+      storedSessions([{ id: 'sess-A', branch: [] }, { id: 'sess-B', branch: [] }]);
+      let settleTeam!: () => void;
+      const teamSettled = new Promise<void>((resolve) => { settleTeam = resolve; });
+      const teamService = { dispose: () => {}, setRunListener: () => {}, running: false, cancelActiveTeam: vi.fn(() => true), whenRunSettled: vi.fn(() => teamSettled) };
+      const session = new PiSession(makeOptions([], { teamService: teamService as unknown as NonNullable<SessionOptions['teamService']> }));
+      await session.initializeEarly();
+      const switchSession = spyOnSwitch(session);
+
+      session.setResumeSession('sess-B');
+      await vi.waitFor(() => expect(teamService.whenRunSettled).toHaveBeenCalled());
+      session.onSessionLeaseLost('sess-B');
+      await vi.waitFor(() => expect(session.holdsSession('sess-B')).toBe(false));
+      settleTeam();
+      await session.whenReplaced();
+
+      expect(switchSession).not.toHaveBeenCalled();
+      await session.dispose();
+    });
+
+    it('not one whose panel began disposing while the lookup ran', async () => {
+      storedSessions([{ id: 'sess-A', branch: [] }, { id: 'sess-B', branch: [] }]);
+      let sealTeam!: () => void;
+      const teamSealed = new Promise<void>((resolve) => { sealTeam = resolve; });
+      // The dispose waits on the team's seal, so the switch below resumes while the dispose is under way.
+      const teamService = { dispose: vi.fn(() => teamSealed), setRunListener: () => {}, running: false, cancelActiveTeam: vi.fn(() => true), whenRunSettled: vi.fn(async () => undefined) };
+      const session = new PiSession(makeOptions([], { teamService: teamService as unknown as NonNullable<SessionOptions['teamService']> }));
+      await session.initializeEarly();
+      const switchSession = spyOnSwitch(session);
+      const resolveLookup = deferredLookup();
+
+      session.setResumeSession('sess-B');
+      const disposing = session.dispose();
+      resolveLookup();
+      await session.whenReplaced();
+
+      expect(switchSession).not.toHaveBeenCalled();
+      sealTeam();
+      await disposing;
+    });
+
+    it('and a switch already inside pi when the panel began disposing binds and registers nothing, and the dispose tears down the session it installed', async () => {
+      storedSessions([{ id: 'sess-A', branch: [] }, { id: 'sess-B', branch: [] }]);
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      const runtime = (session as unknown as { runtime: Switching['runtime'] & { session: { sessionId: string }; dispose: () => Promise<void> } }).runtime;
+      const switchSession = runtime.switchSession.bind(runtime);
+      let entered!: () => void;
+      const inside = new Promise<void>((resolve) => { entered = resolve; });
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      runtime.switchSession = async (p) => {
+        entered();
+        await released;
+        return switchSession(p);
+      };
+      const disposeRuntime = runtime.dispose.bind(runtime);
+      const tornDown: string[] = [];
+      runtime.dispose = async () => {
+        tornDown.push(runtime.session.sessionId);
+        await disposeRuntime();
+      };
+
+      session.setResumeSession('sess-B');
+      await inside;
+      const disposing = session.dispose();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      release();
+      await disposing;
+      await session.whenReplaced();
+
+      const folder = cwdFolder() as unknown as { _panelRegistryReader(): { get(id: string): unknown } };
+      expect(folder._panelRegistryReader().get('sess-B')).toBeUndefined();
+      expect(PiRuntime.get('/fake/agent').getSessionMutator('sess-B')).toBeUndefined();
+      expect(tornDown).toEqual(['sess-B']);
+    });
+  });
+
+  describe('a reset during a dispose', () => {
+    it('creates no session on the runtime when its replacement had not started before the panel began disposing', async () => {
+      storedSessions([{ id: 'sess-A', branch: [] }]);
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      const runtime = (session as unknown as { runtime: { newSession: () => Promise<{ cancelled: boolean }> } }).runtime;
+      const newSession = vi.spyOn(runtime, 'newSession');
+      let finishReload!: () => void;
+      // The reset chains off an MCP reload still in flight, so its replacement waits for it.
+      (session as unknown as { mcpReloadPromise: Promise<void> | null }).mcpReloadPromise = new Promise<void>((resolve) => { finishReload = resolve; });
+
+      session.reset();
+      await session.dispose();
+      finishReload();
+      await session.whenReplaced();
+
+      expect(newSession).not.toHaveBeenCalled();
+    });
+
+    it('waits for a replacement already inside pi, which binds and registers nothing, and tears down the session it installed', async () => {
+      storedSessions([{ id: 'sess-A', branch: [] }]);
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      const runtime = (session as unknown as { runtime: { newSession: () => Promise<{ cancelled: boolean }>; session: { sessionId: string }; dispose: () => Promise<void> } }).runtime;
+      const newSession = runtime.newSession.bind(runtime);
+      let entered!: () => void;
+      const inside = new Promise<void>((resolve) => { entered = resolve; });
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      runtime.newSession = async () => {
+        entered();
+        await released;
+        return newSession();
+      };
+      const disposeRuntime = runtime.dispose.bind(runtime);
+      const tornDown: string[] = [];
+      runtime.dispose = async () => {
+        tornDown.push(runtime.session.sessionId);
+        await disposeRuntime();
+      };
+
+      session.reset();
+      await inside;
+      const disposing = session.dispose();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      release();
+      await disposing;
+      await session.whenReplaced();
+
+      expect(tornDown).toHaveLength(1);
+      const [installed] = tornDown as [string];
+      expect(installed).not.toBe('sess-A');
+      const folder = cwdFolder() as unknown as { _panelRegistryReader(): { get(id: string): unknown } };
+      expect(folder._panelRegistryReader().get(installed)).toBeUndefined();
+      expect(PiRuntime.get('/fake/agent').getSessionMutator(installed)).toBeUndefined();
+    });
   });
 
   it('a resume switch that fails after retiring the agents leaves their results and interruptions to the next prompt on the old session', async () => {

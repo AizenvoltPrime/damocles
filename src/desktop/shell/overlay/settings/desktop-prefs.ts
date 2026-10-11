@@ -1,7 +1,9 @@
 import { inject, onScopeDispose, provide, shallowRef, type InjectionKey, type ShallowRef } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { useSettingWritesStore } from '@/components/settings/settings-writes';
 import type { DamoclesOverlayApi, OverlayPrefs } from '../../../preload/overlay-channels';
 import type { ShellPlatform } from '../../../preload/shell-channels';
+import { answerOf } from '../popup-answer';
 
 /** The desktop-only damocles.desktop.* settings, which main reads and writes at user scope (C6 prefs:get / prefs:set). */
 export interface DesktopPrefs {
@@ -10,7 +12,7 @@ export interface DesktopPrefs {
   readonly languageAtLaunch: ShallowRef<OverlayPrefs['languageAtLaunch'] | undefined>;
   /** undefined until main's overlay state answers; platform-only rows (macOS Option Is Meta) wait for it. */
   readonly platform: ShallowRef<ShellPlatform | undefined>;
-  /** Shows the value at once and reverts it if main refuses the write, like every other row (M7). */
+  /** Shows the value at once and reverts it if main refuses the write or the call fails, like every other row (M7). */
   set(key: string, value: unknown): void;
   readonly api: DamoclesOverlayApi;
 }
@@ -22,6 +24,7 @@ export function provideDesktopPrefs(api: DamoclesOverlayApi): DesktopPrefs {
   const languageAtLaunch = shallowRef<OverlayPrefs['languageAtLaunch'] | undefined>(undefined);
   const platform = shallowRef<ShellPlatform | undefined>(undefined);
   const writes = useSettingWritesStore();
+  const { t } = useI18n();
   // A read never overwrites a value set since it was asked for: the first read skips each key set before it answered,
   // and a change main pushes skips each key whose write main has not answered yet.
   const setBeforeLoad = new Set<string>();
@@ -50,16 +53,18 @@ export function provideDesktopPrefs(api: DamoclesOverlayApi): DesktopPrefs {
       const before = values.value[key];
       writes.begin(key, () => (values.value = { ...values.value, [key]: before }));
       values.value = { ...values.value, [key]: value };
-      void api.setPref(key, value).then(
+      void answerOf(api.setPref(key, value)).then(
         (result) => {
           answered(key);
+          // The modal closed before main wrote it; the next open reads every value again.
+          if (!result) return;
           writes.settle(result.ok
             ? { type: 'settingWriteResult', key, ok: true, scope: 'user', file: result.file }
             : { type: 'settingWriteResult', key, ok: false, error: result.error });
         },
-        (error: unknown) => {
+        () => {
           answered(key);
-          writes.settle({ type: 'settingWriteResult', key, ok: false, error: error instanceof Error ? error.message : String(error) });
+          writes.settle({ type: 'settingWriteResult', key, ok: false, error: t('settingsHost.prefWriteFailed') });
         },
       );
     },

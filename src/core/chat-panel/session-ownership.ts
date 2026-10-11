@@ -5,13 +5,13 @@ import {
   SESSION_RELEASE_REQUEST_TTL_MS,
   acquireSessionLease,
   readSessionLeaseOwner,
-  releaseSessionLease,
   sessionLeaseBlocker,
   withdrawSessionReleaseRequest,
   writeSessionReleaseRequest,
-  type SessionLeaseBlocker,
+  writeUnderSessionLease,
   type SessionLeaseHolder,
   type SessionReleaseRequest,
+  type SessionWriteRefusal,
 } from "../pi-session/session-store/session-lease";
 import { log } from "../logger";
 import { t } from "../l10n";
@@ -38,7 +38,7 @@ export function announceHeldElsewhere(notifications: NotificationService): void 
 }
 
 /** Why this process cannot take a stored conversation's lease now; `unreadable` when the lease itself failed. */
-export type LeaseRefusal = SessionLeaseBlocker | { readonly kind: "unreadable"; readonly reason: string };
+export type LeaseRefusal = SessionWriteRefusal | { readonly kind: "unreadable"; readonly reason: string };
 
 /** An open of stored session `sessionId` refused by another process's lease, which the user may take over. */
 export interface LeaseTakeover {
@@ -69,6 +69,9 @@ export function announceLeaseRefusal(notifications: NotificationService, refusal
       return;
     case "unreadable":
       void notifications.error(t("This conversation could not be opened: {0}", refusal.reason));
+      return;
+    case "panel":
+      void notifications.info(t("This conversation is opening or closing in a panel. Try again in a moment."));
       return;
     case "other-process":
       if (refusal.heldUntilMs === undefined) {
@@ -127,6 +130,7 @@ function readRefusal(sessionId: string): LeaseRefusal | undefined {
 
 /** Which process holds `sessionId`, for the log of a refusal. */
 function logHolder(sessionId: string, refusal: LeaseRefusal): void {
+  if (refusal.kind === "panel") log("[session-ownership] session %s is held by a panel of this process with no live session to write through", sessionId);
   if (refusal.kind !== "other-process") return;
   const owner = readSessionLeaseOwner(sessionId);
   const heartbeat = refusal.heldUntilMs === undefined ? "live" : "stopped";
@@ -221,31 +225,16 @@ export function claimStoredSession(
   return undefined;
 }
 
-/**
- * Run `work`, which writes or removes stored session `sessionId`'s file with no panel of this process
- * writing it live, while holding the session's lease as its writer: no other process writes it meanwhile,
- * and no panel of this process claims it until `work` settles. Panels of this process that already hold
- * it share the lease, so it stays held while they detach. False, after telling the user, when another
- * process holds it or another write of this process is running on it.
- */
+/** `writeUnderSessionLease`, telling the user when it is refused. False when refused. */
 export async function whileSessionLeased(
   notifications: NotificationService,
   sessionId: string,
   work: () => Promise<void>,
+  options: { readonly joinPanels?: boolean } = {},
 ): Promise<boolean> {
-  // The write is short and awaited; a lease lost during it has no live session to detach.
-  const writer: SessionLeaseHolder = { onSessionLeaseLost: () => undefined };
-  const blocker = sessionLeaseBlocker(sessionId);
-  if (blocker || !acquireSessionLease(sessionId, writer, { writer: true })) {
-    const refusal = blocker ?? { kind: "other-process" };
-    logHolder(sessionId, refusal);
-    announceLeaseRefusal(notifications, refusal);
-    return false;
-  }
-  try {
-    await work();
-    return true;
-  } finally {
-    releaseSessionLease(sessionId, writer);
-  }
+  const refusal = await writeUnderSessionLease(sessionId, work, options);
+  if (!refusal) return true;
+  logHolder(sessionId, refusal);
+  announceLeaseRefusal(notifications, refusal);
+  return false;
 }

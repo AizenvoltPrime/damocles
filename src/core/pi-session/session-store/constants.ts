@@ -56,6 +56,13 @@ export const DAMOCLES_MID_STREAM_ENTRY = 'damocles-mid-stream';
 export const DAMOCLES_TURN_STOPPED_ENTRY = 'damocles-turn-stopped';
 
 /**
+ * Team member session custom-entry `{ ids: string[] }`, appended right after pi commits a delivered team message
+ * as a user entry: the delivery ids that message carried, so a resume never redelivers it. Inert in LLM
+ * context; the history loader skips it.
+ */
+export const DAMOCLES_TEAM_DELIVERED_ENTRY = 'damocles-team-delivered';
+
+/**
  * pi custom-entry recording that the user steered a running/queued subagent via `/steer`. Payload
  * `{ agentId, agentType?, description?, message }`. Inert in LLM context (a `CustomEntry`). Unlike the
  * other markers this is a STANDALONE entry keyed to nothing — its position on the branch IS its position

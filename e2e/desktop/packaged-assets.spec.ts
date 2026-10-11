@@ -1,8 +1,9 @@
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { promisify } from 'node:util';
 import { asarFiles, readAsarHeader } from '../../scripts/asar-archive.mjs';
 import { DESKTOP_FONT_FILES, DESKTOP_FONT_LICENSES } from '../../src/desktop/main/desktop-fonts';
 import { logBeforeQuit, mainLog } from './support/app';
@@ -55,6 +56,7 @@ function missingShellFiles(): string[] {
 // The only Damocles files userData may hold: window and tab state, the trust store, the project list, encrypted secrets and logs.
 const USER_DATA_JSON = new Set(['panels.json', 'projects.json', 'trusted-folders.json', 'secrets.json']);
 const USER_DATA_STATE = new Set(['global.json', 'workspace.json']);
+const execFileAsync = promisify(execFile);
 
 /** Lists the project and trusts it, as a previous run that added and trusted it would have left userData. */
 function seedTrustedProject(h: HermeticHome): void {
@@ -81,10 +83,10 @@ function parsedSamples(h: HermeticHome): string[] {
 }
 
 /** Command lines of running shell sentinels whose environment carries this test's home, so parallel tests never count. */
-function sentinelsOf(h: HermeticHome): string[] {
+async function sentinelsOf(h: HermeticHome): Promise<string[]> {
   const isSentinel = (args: string): boolean => args.includes(`${path.sep}dist${path.sep}sentinel.js`);
   if (process.platform === 'darwin') {
-    return execFileSync('ps', ['-A', '-E', '-ww', '-o', 'args'], { encoding: 'utf8' })
+    return (await execFileAsync('ps', ['-A', '-E', '-ww', '-o', 'args'], { encoding: 'utf8' })).stdout
       .split('\n')
       .filter((line) => isSentinel(line) && line.includes(`HOME=${h.home}`));
   }
@@ -160,7 +162,7 @@ test('bundled assets resolve: first window, overlay, fonts, pi chat, shell, ripg
     expect(fs.readFileSync(path.join(home.project, 'written-by-agent.txt'), 'utf8')).toBe('from the agent');
     await expect.poll(() => mainLog(home)).toMatch(/\[git\] git version /);
     // The POSIX sentinel is the app binary running dist/sentinel.js as Node, which needs the runAsNode fuse.
-    if (process.platform !== 'win32') expect(sentinelsOf(home).length, 'a shell sentinel running on this home').toBeGreaterThan(0);
+    if (process.platform !== 'win32') expect((await sentinelsOf(home)).length, 'a shell sentinel running on this home').toBeGreaterThan(0);
     await expect.poll(() => checkpointRepos(home).length, { timeout: 30_000 }).toBeGreaterThan(0);
 
     // ripgrep lists the project's files for @ mentions.

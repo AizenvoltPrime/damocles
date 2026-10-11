@@ -5,10 +5,11 @@ import { teamMemberSessionId, teamMembersDir, type AgentSegmentData, type TeamMe
 import { DAMOCLES_AGENT_LAUNCH_ENTRY, DAMOCLES_AGENT_SEGMENT_ENTRY } from '../pi-session/session-store/constants';
 import { MessageBus } from './message-bus';
 import { Scratchpad, VERIFICATION_SECTION, type ScratchpadReadStats } from './scratchpad';
-import { AgentRunner } from './agent-runner';
-import { TeamPersistence } from './persistence';
+import { AgentRunner, busMessageDelivery } from './agent-runner';
+import { TeamPersistence, deliveredIdsInSessionFile } from './persistence';
+import type { CheckpointWriter } from './checkpoint-writer';
 import type { TeamRunTotals } from './runs';
-import { buildLeadSystemPrompt, buildSpecialistSystemPrompt } from './prompts';
+import { buildFailedResumePrompt, buildInterruptedResumePrompt, buildLeadSystemPrompt, buildSpecialistSystemPrompt } from './prompts';
 import type { DomainProfile } from './prompts';
 import {
   checkApprovalReadGate,
@@ -35,9 +36,13 @@ import type {
   SpecialistKind,
   ResolvedTeamModel,
   TeamSessionOptions,
+  AgentFailure,
+  AgentFailureKind,
   AgentStart,
   ScratchpadEntry,
   TeamCheckpoint,
+  TeamCheckpointCause,
+  TeamCheckpointMember,
   TeamEventLog,
   TeamLogSpawn,
   TeamMessage,
@@ -189,6 +194,40 @@ function launchesOnResume(role: TeamAgent['role'], status: TeamAgent['status']):
   return role === 'lead' || status === 'running' || status === 'standby' || status === 'awaiting-review';
 }
 
+/**
+ * A live checkpoint's members, each member the log spawned after the snapshot (absent or pending there, or at a
+ * newer attempt) taken from its spawn: running, that attempt, work fields at zero, the snapshot's cumulative usage
+ * and nothing undelivered. `respawned` names them.
+ */
+function liveRoster(
+  checkpoint: TeamCheckpoint,
+  spawns: ReadonlyMap<string, TeamLogSpawn>,
+): { members: TeamCheckpointMember[]; respawned: Set<string> } {
+  const respawned = new Set<string>();
+  const fromSpawn = (spawn: TeamLogSpawn, member: TeamCheckpointMember | undefined): TeamCheckpointMember => {
+    respawned.add(spawn.name);
+    return {
+      agentId: spawn.agentId,
+      name: spawn.name,
+      role: spawn.role,
+      attempt: spawn.attempt,
+      resumeCount: 0,
+      status: 'running',
+      undelivered: [],
+      usage: member ? { ...member.usage } : emptyAgentUsage(),
+      toolCallCount: 0,
+    };
+  };
+  const members = checkpoint.members.map((member) => {
+    const spawn = spawns.get(member.name);
+    const newer = spawn !== undefined && spawn.agentId === member.agentId && (member.status === 'pending' || spawn.attempt > member.attempt);
+    return newer ? fromSpawn(spawn, member) : member;
+  });
+  const listed = new Set(members.map((m) => m.name));
+  for (const spawn of spawns.values()) if (!listed.has(spawn.name)) members.push(fromSpawn(spawn, undefined));
+  return { members, respawned };
+}
+
 function usageTotals(agent: TeamAgent): AgentUsageTotals {
   return {
     totalInputTokens: agent.totalInputTokens,
@@ -217,6 +256,8 @@ export class TeamRunner {
   private status: TeamStatus = 'running';
   // Set with status 'cancelled' by the cancel that stopped the run unfinished; a later cancel keeps it.
   private cancelledBy: TeamStop | null = null;
+  // Set with status 'failed' by a lead failure that came before any stop and before the synthesis.
+  private leadFailure: AgentFailure | null = null;
   private teamAbort = new AbortController();
   private completionResolve: ((result: string) => void) | null = null;
   private completionResolved = false;
@@ -268,8 +309,8 @@ export class TeamRunner {
   // Every `/steer` a member's run accepted, in order: listed in the lead's review-round notification and
   // prefixed onto the team's result so the parent sees the redirect.
   private readonly operatorSteers: OperatorSteer[] = [];
-  // Each live run's undelivered-message taker, keyed by agentId; same ownership rule as noteSinks.
-  private undeliveredTakers = new Map<string, () => UndeliveredMessage[]>();
+  // Each live run's undelivered-message taker and peeker, keyed by agentId; same ownership rule as noteSinks.
+  private undeliveredHooks = new Map<string, { take: () => UndeliveredMessage[]; peek: () => UndeliveredMessage[] }>();
   // Resumes of a member's current attempt, keyed by name. A redispatch starts a new attempt at zero.
   private resumeCounts = new Map<string, number>();
   // The role slot each specialist was dispatched under, which a restart without a session file resolves again.
@@ -279,10 +320,21 @@ export class TeamRunner {
   // Filled by `restore`, consumed once by `resume`.
   private resumePlans = new Map<string, ResumePlan>();
   private restoredUndelivered = new Map<string, UndeliveredMessage[]>();
-  // The `cancelledAt` of the checkpoint `restore` read.
+  // Member session files whose delivery records `dropDeliveredMessages` reads before the resume launches, keyed by name.
+  private deliveryReads = new Map<string, string>();
+  // The `cancelledAt` of the checkpoint `restore` read, whether a crash interrupted the run it holds, and how its lead
+  // failed, which the lead's resume prompt states.
   private restoredCheckpointAt: number | null = null;
-  // This run's cancel checkpoint, once it is on disk.
-  private writtenCheckpoint: TeamCheckpoint | null = null;
+  private restoredInterrupted = false;
+  private restoredLeadFailure: AgentFailureKind | null = null;
+  // This run's checkpoint, opened by `run` or `restore`.
+  private checkpointWriter!: CheckpointWriter;
+  private checkpointKey = 0;
+  // The cause the run's first stop sealed its checkpoint with, and the content sealed, null when it could not be built.
+  private sealedCause: TeamCheckpointCause | 'reset' | null = null;
+  private sealedCheckpoint: TeamCheckpoint | null = null;
+  // The last bus message the event log holds, which a live checkpoint's undelivered lists are anchored to.
+  private lastLoggedMessageId: string | undefined;
   // The runs before this one, as the event log `restore` read records them.
   private pastRuns: TeamRunSummary[] = [];
   // Opened by the entry that starts this run. The usage baseline is the team's spend before it.
@@ -300,19 +352,57 @@ export class TeamRunner {
     this.emitAtTeamEnd = onMessage;
   }
 
-  /** Same rule as `onMessage`: once `team-completed` is written, a late settle appends nothing to the log. */
-  private appendEntry(entry: Record<string, unknown>): void {
-    if (this.endedRun === null) this.persistence.appendTeamEntry(entry);
+  /** Same rule as `onMessage`: once `team-completed` is written, a late settle appends nothing to the log. False when nothing was logged. */
+  private appendEntry(entry: Record<string, unknown>): boolean {
+    if (this.endedRun !== null) return false;
+    const logged = this.persistence.appendTeamEntry(entry);
+    this.scheduleCheckpoint();
+    return logged;
+  }
+
+  private scheduleCheckpoint(): void {
+    if (this.endedRun === null) this.checkpointWriter.schedule();
+  }
+
+  /** Opens this run's checkpoint. Its key is unique per team, even in the millisecond of the checkpoint a resume restored. */
+  private openCheckpoint(): void {
+    this.checkpointKey = Math.max(Date.now(), (this.restoredCheckpointAt ?? -1) + 1);
+    this.checkpointWriter = this.persistence.createCheckpointWriter(this.config.teamId, this.checkpointKey, () => this.liveCheckpoint());
+  }
+
+  /** Resolves once the checkpoint's latest content landed (true) or failed to (false). */
+  flushCheckpoint(): Promise<boolean> {
+    return this.checkpointWriter.flush();
+  }
+
+  /**
+   * Once the writer is idle: whether a resumable stop sealed this run's checkpoint and some content of it is on
+   * disk. A failed seal over a landed live snapshot still leaves the team resumable, read as interrupted.
+   */
+  async resumableCheckpointLanded(): Promise<boolean> {
+    await this.flushCheckpoint();
+    return this.sealedCause !== null && this.sealedCause !== 'reset' && this.checkpointWriter.hasLanded;
+  }
+
+  /** Writes the restored state live under this run's new key, before `team-resumed` marks the old key used. */
+  persistResumeCheckpoint(): Promise<boolean> {
+    this.checkpointWriter.schedule();
+    return this.flushCheckpoint();
   }
 
   async run(): Promise<TeamRunResult> {
-    // Before the event log exists, so a refused roster leaves no log of a team that never ran.
+    // Before the event log exists, so a refused roster or lead model leaves no log or checkpoint of a team that never ran.
     validateRoster(this.config.agents);
+    const lead = this.config.resolveRoleModel('lead');
+    // A blocking lead resolution error must fail team creation up front, not silently degrade the lead
+    // to the engine default model (the fail-soft the design forbids for a configured-but-unauthed slot).
+    if (lead.error) throw new Error(lead.error);
     this.messageBus = new MessageBus(this.config.teamId);
     this.scratchpad = new Scratchpad();
     this.persistence = new TeamPersistence(this.config.cwd, this.config.persistenceSessionId);
 
     this.persistence.initTeamFile(this.config.teamId);
+    this.openCheckpoint();
 
     const createdAt = new Date().toISOString();
     this.appendEntry({
@@ -328,10 +418,6 @@ export class TeamRunner {
 
     this.installSubscribers();
 
-    const lead = this.config.resolveRoleModel('lead');
-    // A blocking lead resolution error must fail team creation up front, not silently degrade the lead
-    // to the engine default model (the fail-soft the design forbids for a configured-but-unauthed slot).
-    if (lead.error) throw new Error(lead.error);
     const leadModelValue = lead.modelLabel ?? '';
 
     for (const spec of this.config.agents) {
@@ -470,7 +556,8 @@ export class TeamRunner {
       abortSignal: this.teamAbort.signal,
       messageBus: this.messageBus,
       bindNoteDelivery: (deliver) => this.bindNoteDelivery(leadAgent.agentId, deliver),
-      bindTakeUndelivered: (take) => this.bindTakeUndelivered(leadAgent.agentId, take),
+      bindTakeUndelivered: (take, peek) => this.bindTakeUndelivered(leadAgent.agentId, take, peek),
+      onStateBoundary: () => this.scheduleCheckpoint(),
       onMessage: this.onMessage,
       teamId: this.config.teamId,
       onTurnEnd: () => {
@@ -524,9 +611,10 @@ export class TeamRunner {
     // Set once the settle handler has written this run's `agent-completed`, so the throw path writes no second one.
     let settledAs: AgentResult['status'] | null = null;
     leadPromise.then((result) => {
+      // Only a team that completed turns the abort that released its lead into a completion; a stop or a failure does not.
       const effectiveStatus = result.status === 'cancelled'
         && this.completionResolved
-        && this.status !== 'cancelled'
+        && this.status === 'running'
         ? 'completed'
         : result.status;
 
@@ -543,7 +631,7 @@ export class TeamRunner {
       applyAttemptUsage(leadAgent, result);
       leadAgent.finalResponse = result.finalResponse;
       leadAgent.result = result.finalResponse;
-      if (result.error !== undefined) leadAgent.error = result.error;
+      if (result.failure) leadAgent.error = result.failure.message;
 
       this.appendEntry({
         type: 'agent-completed',
@@ -566,6 +654,7 @@ export class TeamRunner {
       this.emitSettledStatus(leadAgent, effectiveStatus);
 
       if (result.status === 'failed') {
+        this.stopOnLeadFailure(result.failure ?? { kind: 'run', message: result.finalResponse ?? 'unknown error' }, result.undelivered);
         this.teamAbort.abort();
       }
 
@@ -576,17 +665,31 @@ export class TeamRunner {
           : result.finalResponse ?? 'Lead agent completed without explicit synthesis.');
       }
     }).catch((err) => {
-      leadAgent.error = err instanceof Error ? err.message : String(err);
+      const error = err instanceof Error ? err.message : String(err);
+      leadAgent.error = error;
       if (settledAs !== null) console.error(`[TeamRunner] Settling lead "${leadName}" threw after it settled ${settledAs}:`, err);
       const status = settledAs ?? this.recordThrownSettle(leadAgent);
       this.config.engine.disposeBrowserScope(leadScopeId, false);
       this.config.engine.cancelAgentDialogs(leadAgent.agentId);
       this.emitSettledStatus(leadAgent, status);
+      if (status === 'failed') this.stopOnLeadFailure({ kind: 'run', message: error });
       this.teamAbort.abort();
       if (!this.completionResolved) {
         this.synthesizeResult(this.buildPartialResults());
       }
     });
+  }
+
+  /**
+   * A lead failure is the run's stop unless a stop or the synthesis came first. It runs before the abort,
+   * so the checkpoint records the members' live statuses. `leadUndelivered` is what the failed run read before its
+   * hooks went; a run that threw has none.
+   */
+  private stopOnLeadFailure(failure: AgentFailure, leadUndelivered?: UndeliveredMessage[]): void {
+    if (this.cancelledBy !== null || this.leadFailure !== null || this.completionResolved) return;
+    this.sealCheckpoint({ stoppedBy: 'failed', leadFailure: failure.kind }, leadUndelivered);
+    this.status = 'failed';
+    this.leadFailure = failure;
   }
 
   /** Wait for the synthesis, drain the members, and record the team's end. */
@@ -616,12 +719,13 @@ export class TeamRunner {
       // a wedged agent's scope entry and tabs outlive the team. Tabs stay OPEN (this is not a real
       // success, and the page is worth inspecting); disposeScope is idempotent, so an agent that later
       // settles anyway does not double-dispose.
+      const finalStatus = this.status === 'running' ? 'completed' : this.status;
       const finalized = new Set<TeamAgent>();
       for (const agent of this.agents.values()) {
         if (agent.status === 'pending') {
           agent.status = 'cancelled';
         } else if (agent.status === 'running' || agent.status === 'awaiting-review' || agent.status === 'standby' || agent.status === 'monitoring') {
-          agent.status = this.status === 'cancelled' ? 'cancelled' : 'completed';
+          agent.status = finalStatus === 'completed' ? 'completed' : 'cancelled';
         } else {
           continue;
         }
@@ -632,7 +736,6 @@ export class TeamRunner {
 
       this.rewriteCheckpointAfterDrain();
       this.setPhase('complete');
-      const finalStatus = this.status === 'cancelled' ? 'cancelled' : 'completed';
       this.status = finalStatus;
 
       const completedAt = new Date().toISOString();
@@ -670,6 +773,8 @@ export class TeamRunner {
         stopwatch: stopwatchOf(agent),
       }));
 
+      // Before the persistence flush, which reports the writer's failures.
+      const resumable = await this.resumableCheckpointLanded();
       try {
         await this.persistence.flush();
       } catch (err) {
@@ -686,9 +791,9 @@ export class TeamRunner {
         run: endedRun,
       });
 
-      return this.cancelledBy === null
-        ? { status: 'completed', text: synthesizedResult }
-        : { status: 'cancelled', text: synthesizedResult, stop: this.cancelledBy, resumable: this.writtenCheckpoint !== null };
+      if (this.cancelledBy !== null) return { status: 'cancelled', text: synthesizedResult, stop: this.cancelledBy, resumable };
+      if (this.leadFailure !== null) return { status: 'failed', text: synthesizedResult, failure: this.leadFailure, resumable };
+      return { status: 'completed', text: synthesizedResult };
     } finally {
       if (!this.teamAbort.signal.aborted) {
         this.teamAbort.abort();
@@ -704,7 +809,7 @@ export class TeamRunner {
    */
   private installSubscribers(): void {
     this.messageBus.subscribe((msg) => {
-      this.appendEntry({
+      const logged = this.appendEntry({
         type: 'agent-message',
         teamId: this.config.teamId,
         messageId: msg.messageId,
@@ -714,6 +819,7 @@ export class TeamRunner {
         ...(msg.kind ? { kind: msg.kind } : {}),
         timestamp: new Date(msg.timestamp).toISOString(),
       });
+      if (logged) this.lastLoggedMessageId = msg.messageId;
 
       this.onMessage({
         type: 'teamMessage',
@@ -923,7 +1029,8 @@ export class TeamRunner {
       abortSignal: specialistAbort.signal,
       messageBus: this.messageBus,
       bindNoteDelivery: (deliver) => this.bindNoteDelivery(agent.agentId, deliver),
-      bindTakeUndelivered: (take) => this.bindTakeUndelivered(agent.agentId, take),
+      bindTakeUndelivered: (take, peek) => this.bindTakeUndelivered(agent.agentId, take, peek),
+      onStateBoundary: () => this.scheduleCheckpoint(),
       onMessage: this.onMessage,
       teamId: this.config.teamId,
       getReportedSummary: () => this.reportedSummaries.get(name) ?? null,
@@ -937,25 +1044,7 @@ export class TeamRunner {
         }
         return false;
       },
-      shouldDeliverMessage: (msg) => {
-        if (this.confirmedComplete.has(name) && msg.to === null) {
-          return false;
-        }
-        // A ledger append never re-prompts anyone: it is a pull surface, and a peer's test run cannot
-        // advance an agent parked on someone's findings.
-        if (msg.kind === 'ledger-notice') {
-          return false;
-        }
-        // A scratchpad notice re-prompts only an agent that is actually waiting for peer content. A
-        // `running` specialist pulls shared state with team_read_scratchpad when it needs it (both
-        // specialist prompts require reading peer sections before reporting complete), so pushing every
-        // peer write at it only pays for its whole context again. Standby is the state whose entire
-        // purpose is to wake on peer content, so it still receives them.
-        if (msg.kind === 'scratchpad-notice' && !this.pendingStandby.has(name)) {
-          return false;
-        }
-        return true;
-      },
+      shouldDeliverMessage: (msg) => this.specialistShouldDeliver(name, msg),
       onTurnEnd: () => {
         if (this.confirmedComplete.has(name) && agent.status !== 'awaiting-review') {
           agent.status = 'awaiting-review';
@@ -1025,9 +1114,10 @@ export class TeamRunner {
     let settledAs: AgentResult['status'] | null = null;
     promise.then((result) => {
       const wasApproved = this.reviewedSpecialists.has(name);
+      // Only a team that completed turns the abort that released its member into a completion; a stop or a lead failure does not.
       const effectiveStatus = result.status === 'cancelled'
         && (this.completionResolved || wasApproved)
-        && this.status !== 'cancelled'
+        && this.status === 'running'
         ? 'completed'
         : result.status;
       agent.status = effectiveStatus;
@@ -1041,7 +1131,7 @@ export class TeamRunner {
       applyAttemptUsage(agent, result);
       agent.finalResponse = result.finalResponse;
       agent.result = result.finalResponse;
-      if (result.error !== undefined) agent.error = result.error;
+      if (result.failure) agent.error = result.failure.message;
 
       // This entry carries one attempt's own usage, never the running total: the loader sums the
       // entries per agent name, so a cumulative figure here would count the earlier attempts twice.
@@ -1072,12 +1162,14 @@ export class TeamRunner {
       if (!wasApproved) {
         const leadName = [...this.agents.values()].find(a => a.role === 'lead')?.name;
         if (leadName) {
+          const failure = effectiveStatus === 'failed' ? result.failure : undefined;
           const statusText = effectiveStatus === 'completed'
             ? `completed (${completionTally(agent)})`
-            : effectiveStatus === 'failed' && result.error !== undefined
-              ? `failed: ${result.error}`
+            : failure
+              ? `${failure.kind === 'start' ? 'failed to start' : 'failed'}: ${failure.message}`
               : effectiveStatus;
-          const reRun = effectiveStatus === 'failed' && result.error !== undefined
+          // Re-running cannot fix a start failure, which is a missing model, sign-in or session setup.
+          const reRun = failure && failure.kind !== 'start'
             ? ', and re-run it with team_redispatch_specialist if its work is still needed'
             : '';
           this.messageBus.send('system', leadName,
@@ -1107,6 +1199,27 @@ export class TeamRunner {
     });
 
     this.specialistPromises.set(name, promise);
+  }
+
+  /** A specialist's delivery policy, read live at each delivery and by a resume's replay of the log tail. */
+  private specialistShouldDeliver(name: string, msg: { to: string | null; kind?: TeamMessage['kind'] }): boolean {
+    if (this.confirmedComplete.has(name) && msg.to === null) {
+      return false;
+    }
+    // A ledger append never re-prompts anyone: it is a pull surface, and a peer's test run cannot
+    // advance an agent parked on someone's findings.
+    if (msg.kind === 'ledger-notice') {
+      return false;
+    }
+    // A scratchpad notice re-prompts only an agent that is actually waiting for peer content. A
+    // `running` specialist pulls shared state with team_read_scratchpad when it needs it (both
+    // specialist prompts require reading peer sections before reporting complete), so pushing every
+    // peer write at it only pays for its whole context again. Standby is the state whose entire
+    // purpose is to wake on peer content, so it still receives them.
+    if (msg.kind === 'scratchpad-notice' && !this.pendingStandby.has(name)) {
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -1156,23 +1269,7 @@ export class TeamRunner {
     // fresh nudge allowance, never burn it toward force-synthesis.
     this.leadReviewStalls = 0;
 
-    // Clear ALL per-attempt bookkeeping keyed by name — this reset IS the fresh attempt: the keepAlive /
-    // onTurnEnd / shouldDeliverMessage closures capture `name` and read these live maps, so emptying them
-    // restores fresh-spawn behavior for the re-run. briefConflicts is intentionally NOT cleared.
-    this.specialistReviewRounds.delete(name);
-    this.reviewedSpecialists.delete(name);
-    this.confirmedComplete.delete(name);
-    this.reportedSummaries.delete(name);
-    this.pendingStandby.delete(name);
-    this.nudgeScheduled.delete(name);
-    this.nudgeDelivered.delete(name);
-    this.owedTerminalAction.delete(name);
-    this.terminalNudgeScheduled.delete(name);
-    this.terminalNudgeDelivered.delete(name);
-    this.cancelAttempts.delete(name);
-    this.cancellationTimestamps.delete(name);
-    // Scratchpad read state is keyed by name as well, and the re-run has seen none of it.
-    this.scratchpad.clearReader(name);
+    this.clearAttemptReview(name);
     // The new attempt has neither landed work nor reviewed any; a kind change may add or drop its pairs.
     this.coverage.resetReviewer(name);
     this.coverage.resetImplementor(name);
@@ -1245,6 +1342,28 @@ export class TeamRunner {
     // specialistPromises — the old controller is already aborted/settled, so overwriting is correct.
     this.launchSpecialist(name, agent, { kind: 'fresh', resolution, prompt: task, redeliver: [] }, domainProfile);
     return agent.agentId;
+  }
+
+  /**
+   * Clear ALL per-attempt bookkeeping keyed by name, which is what makes a new attempt fresh: the keepAlive /
+   * onTurnEnd / shouldDeliverMessage closures capture `name` and read these live maps. briefConflicts is
+   * intentionally NOT cleared. Review coverage is the caller's.
+   */
+  private clearAttemptReview(name: string): void {
+    this.specialistReviewRounds.delete(name);
+    this.reviewedSpecialists.delete(name);
+    this.confirmedComplete.delete(name);
+    this.reportedSummaries.delete(name);
+    this.pendingStandby.delete(name);
+    this.nudgeScheduled.delete(name);
+    this.nudgeDelivered.delete(name);
+    this.owedTerminalAction.delete(name);
+    this.terminalNudgeScheduled.delete(name);
+    this.terminalNudgeDelivered.delete(name);
+    this.cancelAttempts.delete(name);
+    this.cancellationTimestamps.delete(name);
+    // Scratchpad read state is keyed by name as well, and the new attempt has seen none of it.
+    this.scratchpad.clearReader(name);
   }
 
   synthesizeResult(result: string): void {
@@ -1947,6 +2066,7 @@ export class TeamRunner {
     this.operatorSteers.push({
       memberName: agent.name, message, attempt: agent.attempt, ...(images?.length ? { imageCount: images.length } : {}),
     });
+    this.scheduleCheckpoint();
     return 'steered';
   }
 
@@ -1963,11 +2083,11 @@ export class TeamRunner {
   }
 
   /**
-   * True when it stopped an unfinished team. Every stop but 'reset' leaves a checkpoint for a resume that
-   * records why; a 'reset' stop leaves none, since the conversation that could resume the team is gone.
+   * True when it stopped an unfinished team. Every stop seals the checkpoint with its cause; no resume
+   * accepts a 'reset' seal, since the conversation that could resume the team is gone.
    */
   cancel(stop: TeamStop): boolean {
-    this.writeCheckpointOnCancel(stop);
+    this.sealOnCancel(stop);
     // A cancel after the synthesis only cuts the drain short: the team completed, and nothing is left to resume.
     const unfinished = !this.completionResolved;
     if (unfinished) {
@@ -1984,46 +2104,80 @@ export class TeamRunner {
     return unfinished;
   }
 
-  /** Whether a cancel of this run left a checkpoint that `resume_team` can continue from. */
-  hasCheckpoint(): boolean {
-    return this.writtenCheckpoint !== null;
+  /**
+   * Runs before the abort changes member state and before the synthesis clears review state, so a reload that kills
+   * the drain once the seal landed still leaves it; a kill before then leaves the live snapshot. The synthesis that
+   * follows sets completionResolved, which keeps it to one cancel per run.
+   */
+  private sealOnCancel(stop: TeamStop): void {
+    if (this.completionResolved) return;
+    this.sealCheckpoint({ stoppedBy: stop });
   }
 
   /**
-   * Runs before the abort changes member state and before the synthesis clears review state, so a
-   * reload that kills the drain still leaves it. The synthesis that follows sets completionResolved,
-   * which keeps it to one cancel per run.
+   * A resume stopped before it launched: the restored state it wrote stays as resumable as the checkpoint it came
+   * from, under the stop's cause, and keeps what ended the lead's last run, which no run has continued from.
    */
-  private writeCheckpointOnCancel(stop: TeamStop): void {
-    if (this.completionResolved || stop === 'reset') return;
-    // Unique per team, even for a cancel in the same millisecond as the resume it follows.
-    const cancelledAt = Math.max(Date.now(), (this.restoredCheckpointAt ?? -1) + 1);
-    const checkpoint = { ...this.buildCheckpoint(cancelledAt), stoppedBy: stop };
-    if (this.persistence.writeCheckpoint(checkpoint)) this.writtenCheckpoint = checkpoint;
+  sealUnlaunchedResume(stop: TeamStop): Promise<boolean> {
+    this.sealCheckpoint({
+      stoppedBy: stop,
+      ...(this.restoredInterrupted ? { interrupted: true as const } : {}),
+      ...(this.restoredLeadFailure !== null ? { leadFailure: this.restoredLeadFailure } : {}),
+    });
+    return this.flushCheckpoint();
   }
 
-  /** The in-flight requests settled in the drain, so their usage and tool calls replace the totals taken at the cancel. */
+  /**
+   * The one seal of a stop; the caller decides the stop is the run's first. It takes each live member's queued
+   * messages, so it runs right before the abort. `leadUndelivered` is a failed lead's, read before its hooks went.
+   * A seal whose content cannot be built is reported by the writer and leaves the last live snapshot.
+   */
+  private sealCheckpoint(
+    fields: { stoppedBy: TeamCheckpointCause | 'reset' } & Pick<TeamCheckpoint, 'leadFailure' | 'interrupted'>,
+    leadUndelivered?: UndeliveredMessage[],
+  ): void {
+    this.sealedCause = fields.stoppedBy;
+    this.sealedCheckpoint = this.checkpointWriter.seal(() => ({
+      ...this.buildCheckpoint((agent) => (agent.role === 'lead' && leadUndelivered) || this.undeliveredHooks.get(agent.agentId)?.take()),
+      ...fields,
+    }));
+  }
+
+  /**
+   * The in-flight requests settled in the drain, so their usage and tool calls replace the totals taken at the stop.
+   * It writes the seal again, which also retries one that failed to land.
+   */
   private rewriteCheckpointAfterDrain(): void {
-    const checkpoint = this.writtenCheckpoint;
+    const checkpoint = this.sealedCheckpoint;
     if (!checkpoint) return;
-    this.persistence.writeCheckpoint({
+    this.checkpointWriter.seal(() => ({
       ...checkpoint,
       members: checkpoint.members.map((m) => {
         const agent = this.agents.get(m.name)!;
         return { ...m, usage: usageTotals(agent), toolCallCount: agent.toolCallCount };
       }),
-    });
+    }));
+  }
+
+  /** The live snapshot: it reads each running member's queued messages without taking them. */
+  private liveCheckpoint(): TeamCheckpoint {
+    return { ...this.buildCheckpoint((agent) => this.undeliveredHooks.get(agent.agentId)?.peek()), live: true };
   }
 
   /**
-   * Everything a resume needs that no team event records. It takes each live member's queued messages,
-   * so only a cancel, right before its abort, may call it.
+   * Everything a resume needs that no team event records, as of now. `undeliveredOf` reads a member's
+   * queued messages, or undefined when it has no live run.
    */
-  private buildCheckpoint(cancelledAt: number): TeamCheckpoint {
+  private buildCheckpoint(undeliveredOf: (agent: TeamAgent) => UndeliveredMessage[] | undefined): TeamCheckpoint {
+    // Every message the bus holds has reached each subscribed inbox, since the bus delivers synchronously, so the lists
+    // account for every logged message up to the last one and a resume adds only what the log holds after it.
+    const messagesThrough = this.lastLoggedMessageId;
     return {
       version: 1,
       teamId: this.config.teamId,
-      cancelledAt,
+      cancelledAt: this.checkpointKey,
+      asOf: Date.now(),
+      ...(messagesThrough !== undefined ? { messagesThrough } : {}),
       members: [...this.agents.values()].map((a) => ({
         agentId: a.agentId,
         name: a.name,
@@ -2032,7 +2186,7 @@ export class TeamRunner {
         resumeCount: this.resumeCounts.get(a.name) ?? 0,
         status: this.statusAtCancel(a),
         // A restored member that has not relaunched yet still owes the messages its checkpoint carried.
-        undelivered: this.undeliveredTakers.get(a.agentId)?.() ?? this.restoredUndelivered.get(a.name) ?? [],
+        undelivered: undeliveredOf(a) ?? this.restoredUndelivered.get(a.name) ?? [],
         usage: usageTotals(a),
         toolCallCount: a.toolCallCount,
       })),
@@ -2064,7 +2218,7 @@ export class TeamRunner {
   }
 
   /**
-   * Rebuild a cancelled team from its event log and checkpoint, and decide what `resume` does with each
+   * Rebuild a stopped or failed team from its event log and checkpoint, and decide what `resume` does with each
    * member. `sessionFiles` maps an agentId to its current attempt's session file. Throws, before anything
    * is launched, when a member cannot be resumed. Subscribers are installed last, so nothing restored
    * here is persisted or emitted again.
@@ -2072,9 +2226,12 @@ export class TeamRunner {
   restore(log: TeamEventLog, checkpoint: TeamCheckpoint, sessionFiles: ReadonlyMap<string, string>): void {
     const teamId = this.config.teamId;
     const roster = new Set(log.agents.map((a) => a.name));
-    const names = new Set(checkpoint.members.map((m) => m.name));
-    const matches = names.size === checkpoint.members.length && names.size === roster.size && [...names].every((n) => roster.has(n))
-      && checkpoint.members.filter((m) => m.role === 'lead').length === 1;
+    const spawns = new Map<string, TeamLogSpawn>();
+    for (const spawn of log.spawns) spawns.set(spawn.name, spawn);
+    const { members, respawned } = checkpoint.live ? liveRoster(checkpoint, spawns) : { members: checkpoint.members, respawned: new Set<string>() };
+    const names = new Set(members.map((m) => m.name));
+    const matches = names.size === members.length && names.size === roster.size && [...names].every((n) => roster.has(n))
+      && members.filter((m) => m.role === 'lead').length === 1;
     if (!matches) throw new Error(`Team "${teamId}" has a resume checkpoint that does not match its roster.`);
     for (const { name } of log.agents) {
       const error = agentNameError(name);
@@ -2094,10 +2251,9 @@ export class TeamRunner {
     this.startTime = log.startTime;
     this.pastRuns = log.runs;
 
-    const spawns = new Map<string, TeamLogSpawn>();
-    for (const spawn of log.spawns) spawns.set(spawn.name, spawn);
     const summaries = new Map(review.reportedSummaries);
-    for (const member of checkpoint.members) {
+    for (const name of respawned) summaries.delete(name);
+    for (const member of members) {
       const spawn = spawns.get(member.name);
       // A specialist the lead cancelled while still pending was never spawned.
       if (spawn ? spawn.agentId !== member.agentId : launchesOnResume(member.role, member.status)) {
@@ -2133,7 +2289,7 @@ export class TeamRunner {
 
     // The log is untrusted, so its pairs pass a spawn's rules, against every member's kind, before any coverage rule reads them.
     const rosterMembers = this.reviewRoster();
-    for (const member of checkpoint.members) {
+    for (const member of members) {
       const reviews = spawns.get(member.name)?.reviews;
       if (!reviews) continue;
       let declared: string[] | null;
@@ -2160,9 +2316,21 @@ export class TeamRunner {
     this.conflictNudges = review.conflictNudges;
     this.leadReviewStalls = review.leadReviewStalls;
     this.lastReviewRoundNotification = review.lastReviewRoundNotification;
+    for (const name of respawned) this.clearAttemptReview(name);
     if (review.coverage) this.coverage.restore(review.coverage);
     else this.landSettledWork();
+    for (const name of respawned) {
+      this.coverage.resetReviewer(name);
+      this.coverage.resetImplementor(name);
+    }
+    if (checkpoint.live) {
+      this.restoreLogTail(log, checkpoint, new Map([...respawned].map((name) => [name, spawns.get(name)!])));
+    }
+    this.planDeliveryReads(sessionFiles);
+    this.restoredInterrupted = checkpoint.live === true || checkpoint.interrupted === true;
+    this.restoredLeadFailure = checkpoint.leadFailure ?? null;
     this.restoredCheckpointAt = checkpoint.cancelledAt;
+    this.lastLoggedMessageId = log.messages.at(-1)?.messageId;
     // A steer with no recorded attempt is read as the member's attempt at that checkpoint.
     this.operatorSteers.push(...checkpoint.operatorSteers.map((s) => ({
       ...s, attempt: s.attempt ?? this.agents.get(s.memberName)?.attempt ?? 0,
@@ -2173,7 +2341,62 @@ export class TeamRunner {
       if (plan) this.resumePlans.set(agent.name, plan);
     }
 
+    this.openCheckpoint();
     this.installSubscribers();
+  }
+
+  /**
+   * A live checkpoint can trail the log: bus messages logged after its `messagesThrough` join their recipients'
+   * undelivered lists under the live delivery rules.
+   */
+  private restoreLogTail(log: TeamEventLog, checkpoint: TeamCheckpoint, respawned: ReadonlyMap<string, TeamLogSpawn>): void {
+    let tailStart = 0;
+    if (checkpoint.messagesThrough !== undefined) {
+      const index = log.messages.findIndex((m) => m.messageId === checkpoint.messagesThrough);
+      if (index === -1) {
+        throw new Error(`Team "${this.config.teamId}" cannot resume: its checkpoint names message ${checkpoint.messagesThrough}, which its event log lacks.`);
+      }
+      tailStart = index + 1;
+    }
+    for (const agent of this.agents.values()) {
+      // A member restored from a later spawn subscribed only at that spawn, so it gets only what the log holds after it.
+      const from = Math.max(tailStart, respawned.get(agent.name)?.messagesBefore ?? 0);
+      this.restoredUndelivered.set(agent.name, [
+        ...(this.restoredUndelivered.get(agent.name) ?? []),
+        ...log.messages.slice(from).filter((m) => this.deliversTo(agent, m)).map(busMessageDelivery),
+      ]);
+    }
+  }
+
+  /**
+   * The session files whose delivery records `dropDeliveredMessages` reads: a member the resume launches and that is
+   * owed a message with ids. A member the resume leaves as it is never receives its list, so its file is not read.
+   */
+  private planDeliveryReads(sessionFiles: ReadonlyMap<string, string>): void {
+    for (const agent of this.agents.values()) {
+      const path = sessionFiles.get(agent.agentId);
+      const owed = this.restoredUndelivered.get(agent.name) ?? [];
+      if (path !== undefined && launchesOnResume(agent.role, agent.status) && owed.some((m) => m.ids?.length)) this.deliveryReads.set(agent.name, path);
+    }
+  }
+
+  /**
+   * Drops every restored undelivered entry whose ids the recipient's session already records, live or sealed: pi can
+   * commit a message after the snapshot read it or after the stop took it. Rejects when a session file cannot be read.
+   */
+  async dropDeliveredMessages(): Promise<void> {
+    for (const [name, path] of this.deliveryReads) {
+      const delivered = await deliveredIdsInSessionFile(path);
+      const owed = this.restoredUndelivered.get(name) ?? [];
+      this.restoredUndelivered.set(name, owed.filter((m) => !(m.ids?.length && m.ids.every((id) => delivered.has(id)))));
+    }
+    this.deliveryReads.clear();
+  }
+
+  /** A run's subscription rule: not its own message, addressed to it or broadcast, and passed by its role's filter. */
+  private deliversTo(agent: TeamAgent, msg: TeamMessage): boolean {
+    if (msg.from === agent.name || (msg.to !== agent.name && msg.to !== null)) return false;
+    return agent.role === 'lead' ? leadShouldDeliverMessage(msg) : this.specialistShouldDeliver(agent.name, msg);
   }
 
   /**
@@ -2248,7 +2471,11 @@ export class TeamRunner {
         const prompt = isLead && message?.trim() ? wrapSteerMessage(`${message.trim()}\n\nYour original task:\n${task}`) : task;
         launch = { kind: 'fresh', resolution: plan.resolution, prompt, redeliver };
       } else if (plan.mode === 'relaunch') {
-        const initial: AgentStart = { kind: 'prompt', text: buildResumePrompt(isLead ? message : undefined) };
+        const prompt = !isLead ? buildResumePrompt()
+          : this.restoredInterrupted ? buildInterruptedResumePrompt(message)
+            : this.restoredLeadFailure !== null ? buildFailedResumePrompt(message)
+              : buildResumePrompt(message);
+        const initial: AgentStart = { kind: 'prompt', text: prompt };
         launch = { kind: 'reopen', path: plan.path, segment, initial, redeliver };
       } else {
         launch = { kind: 'reopen', path: plan.path, segment, initial: { kind: 'park' }, redeliver };
@@ -2425,10 +2652,11 @@ export class TeamRunner {
     };
   }
 
-  private bindTakeUndelivered(agentId: string, take: () => UndeliveredMessage[]): () => void {
-    this.undeliveredTakers.set(agentId, take);
+  private bindTakeUndelivered(agentId: string, take: () => UndeliveredMessage[], peek: () => UndeliveredMessage[]): () => void {
+    const hooks = { take, peek };
+    this.undeliveredHooks.set(agentId, hooks);
     return () => {
-      if (this.undeliveredTakers.get(agentId) === take) this.undeliveredTakers.delete(agentId);
+      if (this.undeliveredHooks.get(agentId) === hooks) this.undeliveredHooks.delete(agentId);
     };
   }
 

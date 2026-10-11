@@ -54,7 +54,12 @@ interface PageEntry {
   controller: PageController;
   picker: ElementPicker;
   panel: BrowserPanel;
+  /** The last address the main frame loaded; Chromium's error page never replaces it. */
   lastUrl: string | null;
+  /** The main frame's last navigation request that failed, until the next main-frame commit. */
+  failedLoadUrl: string | null;
+  /** The address Chromium's error page stands for while it is shown; the address bar shows it, as Chrome's omnibox does. */
+  unreachableUrl: string | null;
   lastTitle: string | null;
   lastFrame: { bytes: Buffer; deviceWidth: number; deviceHeight: number } | null;
   /** Last cursor the page pushed. The cursor binding is push-only, so without remembering it a
@@ -89,6 +94,8 @@ interface PageEntry {
   readonly chat: PanelHost | undefined;
   /** Back/forward availability and whether the main frame is loading, for a host that draws the chrome. */
   navigation: NavigationState;
+  /** HTTP status of the main frame's last navigation response. Chromium sends that response before it answers Page.navigate. */
+  documentStatus: number | undefined;
   /** Damocles closed the page or released it; Chromium may still report its requests failing while it closes. */
   closing: boolean;
   consoleCollector: ConsoleCollector;
@@ -186,6 +193,56 @@ const BRIDGE_TITLE_MAX_CHARS = 300;
 const BRIDGE_CONSOLE_BATCH_MAX = 64;
 /** A level is one of six known words; the cap only stops a forged one from being unbounded. */
 const BRIDGE_CONSOLE_LEVEL_MAX_CHARS = 16;
+
+// Origin only: a URL's path and query can carry tokens.
+function navigationOrigin(url: string): string {
+  if (!URL.canParse(url)) return 'an unparseable address';
+  const parsed = new URL(url);
+  return parsed.origin === 'null' ? parsed.protocol : parsed.origin;
+}
+
+function logFailedNavigation(url: string, errorText: string): void {
+  log(`[Browser] Navigation to ${navigationOrigin(url)} did not load (${errorText})`);
+}
+
+// The URL Chromium commits its own error page at.
+const CHROME_ERROR_PAGE_PREFIX = 'chrome-error://';
+
+// The address a page's address bar and tab show.
+function shownUrl(entry: { lastUrl: string | null; unreachableUrl: string | null }): string | null {
+  return entry.unreachableUrl ?? entry.lastUrl;
+}
+
+/**
+ * The context's default user agent with HeadlessChrome rewritten to Chrome, or null when it needs no rewrite. Read
+ * over a browser-level CDP session, so no page's JS runs and a page stalled on a dialog cannot hold it up.
+ */
+async function readCleanUserAgent(context: BrowserContext): Promise<string | null> {
+  try {
+    // Null only for an Android or Electron context, never for a launched Chromium.
+    const session = await context.browser()!.newBrowserCDPSession();
+    try {
+      const { userAgent } = await session.send('Browser.getVersion');
+      return userAgent.includes('HeadlessChrome') ? userAgent.replace(/HeadlessChrome/g, 'Chrome') : null;
+    } finally {
+      await session.detach();
+    }
+  } catch (err) {
+    log(`[Browser] Reading the browser's user agent failed: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
+// Chromium's answer to a 4xx/5xx response with an empty body, for which it shows its own "HTTP ERROR" page.
+const HTTP_RESPONSE_CODE_FAILURE = 'net::ERR_HTTP_RESPONSE_CODE_FAILURE';
+
+/** A navigation that loaded no page, as Playwright's page.goto rejects: a net error (net::ERR_*) or a download. */
+class NavigationFailedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NavigationFailedError';
+  }
+}
 
 /**
  * Installs Damocles' context-level cursor, title and console observers: the three `exposeBinding`
@@ -351,7 +408,8 @@ export class BrowserService {
   // Guards restore so only the first persisted browser tab relaunches the session; extras are disposed.
   private restoreClaimed = false;
   private broadcastToChat: ((element: ElementAttachment, chat: PanelHost | undefined) => void) | null = null;
-  private cleanUserAgent: string | null = null;
+  // The live context's one user-agent read, started at launch: the clean user agent to apply, or null when none is needed.
+  private userAgentCheck: Promise<string | null> | null = null;
   // Most-recent viewport, used to size the NEXT launch context. Deliberately NOT used to seed a new
   // page: it tracks the last resize of whichever tab was resized last, which is a size that page never
   // had.
@@ -481,14 +539,14 @@ export class BrowserService {
     return page && this.pages.has(page) ? page : null;
   }
 
-  /** The scope's current tab URL (tracked last-url, else the live page url), or null. Reads only a LIVE
+  /** The scope's current tab URL as its address bar shows it, else the live page url, or null. Reads only a LIVE
    *  tab: `page.url()` on a closed page throws, so an unregistered page reports no url. */
   getScopeCurrentUrl(scopeId: string): string | null {
     const page = this.scopes.get(scopeId)?.currentPage;
     if (!page) return null;
     const entry = this.pages.get(page);
     if (!entry) return null;
-    return entry.lastUrl ?? page.url() ?? null;
+    return shownUrl(entry) ?? page.url() ?? null;
   }
 
   /** Poll the SCOPE's controller readiness (not global isConnected) so a scope waits for its own tab. */
@@ -544,7 +602,7 @@ export class BrowserService {
       tabs.push({
         index: index++,
         title: entry.lastTitle ?? '',
-        url: entry.lastUrl ?? entry.page.url(),
+        url: shownUrl(entry) ?? entry.page.url(),
         active: entry.page === current,
       });
     }
@@ -587,8 +645,9 @@ export class BrowserService {
    * navigate it. context.newPage() also fires context.on('page'); registration is idempotent so the tab
    * is set up exactly once, and the explicit scope authoritatively owns it. Only a human scope
    * reveals the new tab to the human (a subagent opening a tab must not steal the screencast).
+   * Resolves with the loaded document's HTTP status, when it had one; rejects when the load failed.
    */
-  async openNewTab(scopeId: string, url?: string): Promise<void> {
+  async openNewTab(scopeId: string, url?: string): Promise<number | undefined> {
     if (!this.context) {
       throw new Error('Browser is not connected. Use browser_open first.');
     }
@@ -598,11 +657,30 @@ export class BrowserService {
       entry.panel.reveal();
       this.setActivePage(page);
     }
-    if (url) {
-      await entry.controller.navigate(url);
-      entry.lastUrl = url;
-      if (page === this.activePage) this.currentUrl = url;
+    // A new tab already is about:blank.
+    return url && url !== 'about:blank' ? this.navigateEntry(entry, url) : undefined;
+  }
+
+  /**
+   * Navigates `entry` as Playwright's page.goto does: a Chromium net error (DNS, refused, TLS, aborted) or a
+   * download rejects, and any HTTP status counts as loaded and is returned. The rejection names only the origin,
+   * since a URL can carry tokens; whoever catches it logs it.
+   */
+  private async navigateEntry(entry: PageEntry, url: string, signal?: AbortSignal): Promise<number | undefined> {
+    if (signal?.aborted) throw new Error('Browser open aborted');
+    entry.documentStatus = undefined;
+    const { errorText, isDownload } = await this.raceAbort(entry.controller.navigate(url), signal);
+    if (isDownload) {
+      throw new NavigationFailedError(`${navigationOrigin(url)} started a download instead of loading a page; BrowserDownloads lists it`);
     }
+    // An empty-bodied HTTP error still is the server's answer, so its status is reported like any other.
+    const answeredByServer = errorText === HTTP_RESPONSE_CODE_FAILURE && entry.documentStatus !== undefined;
+    if (errorText !== undefined && !answeredByServer) {
+      throw new NavigationFailedError(`Navigation to ${navigationOrigin(url)} failed: ${errorText}`);
+    }
+    entry.lastUrl = url;
+    if (entry.page === this.activePage) this.currentUrl = url;
+    return entry.documentStatus;
   }
 
   /**
@@ -751,18 +829,32 @@ export class BrowserService {
       this.setActivePage(watched.page);
       return;
     }
-    await this.openForScope(this.humanScopeId(chat), 'about:blank');
+    await this.openBlankForScope(this.humanScopeId(chat));
   }
 
-  /** The human's "new page" beside a chat: a blank tab in the chat's human scope, launching the browser when needed. */
+  // A page Damocles just created or adopted already is about:blank, so a blank open sends no Page.navigate: one
+  // sent after the tab is shown would supersede an address the user typed meanwhile.
+  private async openBlankForScope(scopeId: string): Promise<void> {
+    await this.ensureContext(scopeId);
+    const state = this.scopes.get(scopeId);
+    if (!state) throw BrowserService.disposedScopeError(scopeId);
+    const current = state.currentPage;
+    const page = current && this.pages.has(current) ? current : await this.claimNewTabForScope(scopeId);
+    this.pages.get(page)?.panel.reveal();
+    this.setActivePage(page);
+  }
+
+  /**
+   * The human's "new page" beside a chat: a blank tab in the chat's human scope. A launch this call starts presents
+   * its first page as the new one; otherwise, behind any launch in flight, a new tab opens.
+   */
   async openNewPageForChat(chat: PanelHost): Promise<void> {
     if (!this.readEnabledSetting()) {
       log('[Browser] Not opening a new page: damocles.browser.enabled is off');
       return;
     }
     const scopeId = this.humanScopeId(chat);
-    if (this.context) await this.openNewTab(scopeId);
-    else await this.openForScope(scopeId, 'about:blank');
+    if (!(await this.ensureContext(scopeId))) await this.openNewTab(scopeId);
   }
 
   /**
@@ -787,11 +879,15 @@ export class BrowserService {
         // never navigated away.
         const current = this.scopes.get(scopeId)?.currentPage ?? null;
         const blank = current !== null && !restored.has(current) && this.pages.get(current)?.lastUrl === 'about:blank';
-        if (blank) await this.openForScope(scopeId, url);
-        else await this.openTabForScope(scopeId, url);
+        if (!blank) await this.openTabForScope(scopeId, url);
+        else if (url !== 'about:blank') await this.openForScope(scopeId, url);
       } catch (err) {
-        log(`[Browser] Failed to restore a page — ${err instanceof Error ? err.message : String(err)}`);
-        continue;
+        // A page whose load failed keeps its tab, showing Chromium's error page when there is one, so it still counts as restored.
+        if (!(err instanceof NavigationFailedError)) {
+          log(`[Browser] Failed to restore a page — ${err instanceof Error ? err.message : String(err)}`);
+          continue;
+        }
+        log(`[Browser] A restored page did not load: ${err.message}`);
       }
       const page = this.scopes.get(scopeId)?.currentPage ?? null;
       if (page) restored.add(page);
@@ -807,25 +903,27 @@ export class BrowserService {
   // without it a second first-open would tear down the first launch's Chrome while the first launch's
   // catch disposes the panel the second is already using. Per-scope tab creation and every per-page CDP
   // action run OUTSIDE this chain, so concurrent scopes open tabs and drive their pages in parallel.
-  private async ensureContext(launchScopeId: string, signal?: AbortSignal): Promise<void> {
+  // Resolves true when this call launched the context, which adopted its first page for launchScopeId.
+  private async ensureContext(launchScopeId: string, signal?: AbortSignal): Promise<boolean> {
     const run = this.openChain.then(() => this.ensureContextInternal(launchScopeId, signal));
     this.openChain = run.then(() => {}, () => {});
     return run;
   }
 
-  private async ensureContextInternal(launchScopeId: string, signal?: AbortSignal): Promise<void> {
-    if (this.state === 'connected' && this.context) return; // idempotent: a concurrent first-open awaited
+  private async ensureContextInternal(launchScopeId: string, signal?: AbortSignal): Promise<boolean> {
+    if (this.state === 'connected' && this.context) return false; // idempotent: a concurrent first-open awaited
     if (this.context) await this.close(); // lingering/failed context — tear it down before relaunch
     await this.ensureUserDataDir();
     await this.launchAndAdopt(launchScopeId, signal);
+    return true;
   }
 
   /**
    * Open a URL for a scope: launch the shared context if needed (the launcher's scope adopts the initial
    * tab in ensureContext), then reuse the scope's current tab (navigate it) or open a fresh tab owned by
-   * the scope. Replaces the old global `open`.
+   * the scope. Resolves with the loaded document's HTTP status, when it had one; rejects when the load failed.
    */
-  async openForScope(scopeId: string, url: string, signal?: AbortSignal): Promise<void> {
+  async openForScope(scopeId: string, url: string, signal?: AbortSignal): Promise<number | undefined> {
     await this.ensureContext(scopeId, signal);
     // ensureContext awaits a launch that can outlast the calling agent — never re-create the entry here.
     const state = this.scopes.get(scopeId);
@@ -835,15 +933,27 @@ export class BrowserService {
       // Reuse: navigate the scope's own current tab. The launcher's first open lands here on the adopted
       // initial page (set by ensureContext), so no orphan blank tab is ever left behind.
       const entry = this.pages.get(current)!;
-      await this.raceAbort(entry.controller.navigate(url), signal);
-      entry.lastUrl = url;
-      if (current === this.activePage) this.currentUrl = url;
       // Only a human scope (main agent + human) follows the human's focus on navigate; a subagent
       // navigating its background tab must not steal the human's screencast from a sibling scope.
-      if (this.isHumanScope(scopeId)) entry.panel.reveal();
-      return;
+      const reveal = (): void => {
+        if (this.isHumanScope(scopeId)) entry.panel.reveal();
+      };
+      // A blank page sends no about:blank navigate, which would supersede an address typed into its tab.
+      if (url === 'about:blank' && entry.lastUrl === 'about:blank' && entry.unreachableUrl === null) {
+        reveal();
+        return undefined;
+      }
+      try {
+        const status = await this.navigateEntry(entry, url, signal);
+        reveal();
+        return status;
+      } catch (err) {
+        // The human follows a failed load like a loaded one; the tab shows Chromium's error page when there is one.
+        if (err instanceof NavigationFailedError) reveal();
+        throw err;
+      }
     }
-    await this.openTabForScope(scopeId, url, signal);
+    return this.openTabForScope(scopeId, url, signal);
   }
 
   /**
@@ -853,13 +963,12 @@ export class BrowserService {
    * assignment never cross-contaminates a sibling create (page identity disambiguates the
    * context.on('page') race). Do NOT serialize tab creation.
    */
-  private async openTabForScope(scopeId: string, url: string, signal?: AbortSignal): Promise<void> {
+  private async openTabForScope(scopeId: string, url: string, signal?: AbortSignal): Promise<number | undefined> {
     if (!this.context) throw new Error('Browser is not connected. Use browser_open first.');
     const page = await this.claimNewTabForScope(scopeId);
     const entry = this.pages.get(page)!;
-    await this.raceAbort(entry.controller.navigate(url), signal);
-    entry.lastUrl = url;
-    if (page === this.activePage) this.currentUrl = url;
+    // A new tab already is about:blank.
+    return url === 'about:blank' ? undefined : this.navigateEntry(entry, url, signal);
   }
 
   // Called once per persisted browser editor tab when the window reloads. Only the first restored panel
@@ -887,7 +996,9 @@ export class BrowserService {
       // The primary scope owns the restored tab (main agent + human share it).
       await this.openForScope(BrowserService.PRIMARY_SCOPE_ID, url);
     } catch (err) {
-      log(`[Browser] Failed to restore browser session — ${err instanceof Error ? err.message : String(err)}`);
+      // A page whose load failed is still restored, as in restoreChatPages.
+      if (err instanceof NavigationFailedError) log(`[Browser] A restored page did not load: ${err.message}`);
+      else log(`[Browser] Failed to restore browser session — ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -956,6 +1067,7 @@ export class BrowserService {
       const context = await this.raceAbort(contextPromise, signal);
       this.context = context;
       this.closing = false;
+      this.userAgentCheck = readCleanUserAgent(context);
       // Capture the launching scope for popup owner-attribution fallback. Set BEFORE wiring
       // context.on('page') so a spontaneous popup can resolve it.
       this.launchOwnerScopeId = launchScopeId;
@@ -991,13 +1103,9 @@ export class BrowserService {
       this.launchOwnerScopeId = owner;
       this.setActivePage(initial);
 
-      // UA scrub (#6): branded system Chrome (channel:'chrome') reports a normal Chrome UA even under
-      // new headless, so this is a no-op safety net; it only rewrites if HeadlessChrome survives (e.g.
-      // an Edge/bundled fallback). Done before navigation so the first request carries the clean UA.
-      await this.maybeScrubUserAgent(entry);
-
       // NOTE: no navigation here — the caller (openForScope) navigates the adopted tab after this
-      // resolves. This keeps launch (serialized on openChain) and navigation (concurrent) separate.
+      // resolves, and a blank open (openBlankForScope) leaves it at about:blank. This keeps launch
+      // (serialized on openChain) and navigation (concurrent) separate.
       this.state = 'connected';
       this.screencast.syncWatchdog();
     } catch (err) {
@@ -1005,6 +1113,7 @@ export class BrowserService {
       this.closing = false;
       this.state = 'disconnected';
       this.launchOwnerScopeId = null;
+      this.userAgentCheck = null;
       // currentUrl is intentionally preserved: the caller (openForScope / restorePanel) decides
       // whether to clear it, and a kept-alive recovery panel needs it so Reload can relaunch.
       throw err;
@@ -1102,9 +1211,20 @@ export class BrowserService {
       ? { scopeId: explicit, chat: this.scopes.get(explicit)?.chat }
       : await this.resolveOwner(page, openerHint);
 
-    // Both awaits above can straddle a teardown (teardownContext clears `pages` and disposes every
+    // Headless Chrome reports HeadlessChrome in its user agent (system Chrome 155 under --headless=new included). The
+    // rewrite is applied before the tab is presented, so a typed address's first request carries it.
+    const controller = new PageController(page, session);
+    const cleanUserAgent = await this.userAgentCheck;
+    if (cleanUserAgent) {
+      await controller.setUserAgentOverride(cleanUserAgent).catch((err) =>
+        log(`[Browser] UA override failed — ${err instanceof Error ? err.message : String(err)}`),
+      );
+    }
+
+    // Every await above can straddle a teardown (teardownContext clears `pages` and disposes every
     // panel). Committing now would re-populate the map with an entry nobody will ever dispose and open a
     // fresh editor tab for a page whose context is already gone, so bail once the context has moved on.
+    // Nothing awaits from here until the tab is presented.
     if (this.context !== context || this.closing) {
       await session.detach().catch(() => {});
       return null;
@@ -1118,7 +1238,6 @@ export class BrowserService {
     }
     const consoleCollector = new ConsoleCollector();
     const networkCollector = new NetworkCollector();
-    const controller = new PageController(page, session);
     const picker = new ElementPicker(controller, consoleCollector, networkCollector);
     const entry: PageEntry = {
       page,
@@ -1127,6 +1246,8 @@ export class BrowserService {
       picker,
       panel: new BrowserPanel(this.platform.window),
       lastUrl: page.url() || null,
+      failedLoadUrl: null,
+      unreachableUrl: null,
       lastTitle: null,
       lastFrame: null,
       lastCursor: null,
@@ -1146,6 +1267,7 @@ export class BrowserService {
       ownerScopeId: owner.scopeId,
       chat: owner.chat,
       navigation: { loading: false, canGoBack: false, canGoForward: false },
+      documentStatus: undefined,
       closing: false,
       consoleCollector,
       networkCollector,
@@ -1168,9 +1290,11 @@ export class BrowserService {
     // (onConsoleBinding) is the sole source; wiring both would double-record if Patchright ever restored it.
     page.on('response', (res) => {
       const status = res.status();
+      if (res.request().isNavigationRequest() && res.frame() === page.mainFrame()) entry.documentStatus = status;
       if (status >= 400) entry.networkCollector.recordResponse(res.url(), status, res.statusText());
     });
     page.on('requestfailed', (req) => {
+      if (req.isNavigationRequest() && req.frame() === page.mainFrame()) entry.failedLoadUrl = req.url();
       entry.networkCollector.recordRequestFailed(req.url(), req.failure()?.errorText ?? 'failed');
     });
 
@@ -1220,12 +1344,6 @@ export class BrowserService {
     });
 
     page.on('download', (download) => this.downloadManager.handleDownload(download));
-
-    if (this.cleanUserAgent) {
-      await controller.setUserAgentOverride(this.cleanUserAgent).catch((err) =>
-        log(`[Browser] UA override failed — ${err instanceof Error ? err.message : String(err)}`),
-      );
-    }
 
     // Bind this page's own editor tab (toolbar/input/screencast) and show it. presentPanel adopts a
     // restored panel when one is pending, otherwise opens a new editor tab in the browser column.
@@ -1330,13 +1448,19 @@ export class BrowserService {
   }
 
   private onMainFrameNavigated(entry: PageEntry, url: string): void {
-    entry.lastUrl = url;
+    // Chromium's error page commits after the load failed; the address bar shows the address that failed instead.
+    const errorPage = url.startsWith(CHROME_ERROR_PAGE_PREFIX);
+    entry.unreachableUrl = errorPage ? entry.failedLoadUrl : null;
+    entry.failedLoadUrl = null;
+    if (!errorPage) {
+      entry.lastUrl = url;
+      if (entry.page === this.activePage) this.currentUrl = url;
+    }
     // A main-frame navigation invalidates the old title and favicon; clear the title so the URL shows
     // until the title binding reports the new one, and refetch the favicon.
     entry.lastTitle = null;
-    entry.panel.updateUrl(url);
+    entry.panel.updateUrl(shownUrl(entry) ?? '');
     this.applyTabIdentity(entry);
-    if (entry.page === this.activePage) this.currentUrl = url;
     if (this.iconCacheDir) resolveFavicon(this.iconCacheDir, entry, (icon) => entry.panel.setIcon(icon));
     // `Overlay.setInspectMode` is per-DOCUMENT, so after a navigation `Overlay.inspectNodeRequested`
     // can never fire for an in-flight pick. Left alone, `picking` stays true forever: the toolbar pick
@@ -1425,18 +1549,6 @@ export class BrowserService {
       // The per-entry text bound belongs to the collector, which caps and redacts on record — that
       // placement is what keeps the bound true for every producer, not just this one.
       entry.consoleCollector.record(level.slice(0, BRIDGE_CONSOLE_LEVEL_MAX_CHARS), text);
-    }
-  }
-
-  private async maybeScrubUserAgent(entry: PageEntry): Promise<void> {
-    try {
-      const ua = await entry.page.evaluate(() => navigator.userAgent);
-      if (typeof ua === 'string' && ua.includes('HeadlessChrome')) {
-        this.cleanUserAgent = ua.replace(/HeadlessChrome/g, 'Chrome');
-        await entry.controller.setUserAgentOverride(this.cleanUserAgent);
-      }
-    } catch (err) {
-      log(`[Browser] UA scrub check failed — ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -1569,17 +1681,20 @@ export class BrowserService {
     panel.onNavigate((typed) => {
       const address = typedAddress(typed);
       if (!address || !isNavigableUrl(address.url)) {
-        log(`[Browser] Refused address-bar navigation to a non-web address: ${typed.slice(0, 120)}`);
-        panel.updateUrl(entry.lastUrl ?? this.currentUrl ?? '');
+        log(address ? `[Browser] Refused address-bar navigation to a non-web address: ${navigationOrigin(address.url)}` : '[Browser] Refused address-bar text that is not an address');
+        panel.updateUrl(shownUrl(entry) ?? this.currentUrl ?? '');
         return;
       }
       const navUrl = address.url;
       void (async () => {
         const { errorText } = await controller.navigate(navUrl);
+        if (errorText === undefined) return;
+        logFailedNavigation(navUrl, errorText);
         const fallback = address.upgraded ? httpFallbackUrl(navUrl, errorText) : undefined;
         if (fallback === undefined) return;
         log(`[Browser] ${new URL(navUrl).host} did not load over https (${errorText}); loading it over http`);
-        await controller.navigate(fallback);
+        const fallbackLoad = await controller.navigate(fallback);
+        if (fallbackLoad.errorText !== undefined) logFailedNavigation(fallback, fallbackLoad.errorText);
       })().catch((err) =>
         log(`[Browser] Navigate failed — ${err instanceof Error ? err.message : String(err)}`),
       );
@@ -1678,7 +1793,7 @@ export class BrowserService {
    *  a panel can go through any number of hide→show→ready cycles. */
   private resyncPanel(entry: PageEntry): void {
     const panel = entry.panel;
-    panel.updateUrl(entry.lastUrl ?? this.currentUrl ?? '');
+    panel.updateUrl(shownUrl(entry) ?? this.currentUrl ?? '');
     panel.updateViewport(entry.viewport.width, entry.viewport.height);
     panel.setPickingState(entry.picker.isPicking);
     panel.setCursor(entry.lastCursor ?? 'default');
@@ -1788,8 +1903,9 @@ export class BrowserService {
 
   // Sets this page's editor-tab label to its title, falling back to its URL until a title exists.
   private applyTabIdentity(entry: PageEntry): void {
-    if (!entry.lastUrl) return;
-    entry.panel.setTabTitle(entry.lastTitle, entry.lastUrl);
+    const url = shownUrl(entry);
+    if (!url) return;
+    entry.panel.setTabTitle(entry.lastTitle, url);
   }
 
   // Resize a single page to its own editor tab's size (panels can differ under split view). Restarts
@@ -1899,7 +2015,7 @@ export class BrowserService {
       ...[...this.chatScopeIds].map(([chat, id]): [string, ScopeState] => [id, { currentPage: null, chat }]),
     ]);
     this.launchOwnerScopeId = null;
-    this.cleanUserAgent = null;
+    this.userAgentCheck = null;
     this.state = 'disconnected';
     // Must follow the state reset above (and teardown's pages.clear()): syncWatchdog reads both, and
     // running it any earlier would see a populated map of visible panels and keep the interval alive

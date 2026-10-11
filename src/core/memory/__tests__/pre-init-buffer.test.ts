@@ -619,8 +619,29 @@ describe('MemoryService: the terminal result describes the whole run', () => {
       'The user asked about gamma.',
     ]);
     expect(service.getLastConsolidationResult()).toEqual(run);
-    expect(runningFlags()).toEqual([true, false]);
+    expect(runningFlags()).toEqual([true, true, false]);
     expect(broadcasts.filter((m) => m.type === 'consolidationProgress' && m.event!.phase === 'claim')).toHaveLength(2);
+  });
+
+  it('a manual run announces each pass, and its later pass carries the memories the run kept so far', async () => {
+    const db = service.database!;
+    seed(db, 'alpha', '/ws/a', 1);
+    seed(db, 'gamma', '/ws/b', 2);
+    const activityAtClaim: Array<ReturnType<MemoryService['getConsolidationActivity']>> = [];
+    service.setConsolidationBroadcast((msg) => {
+      broadcasts.push(msg as never);
+      if (msg.type === 'consolidationProgress' && msg.event.phase === 'claim' && msg.event.status === 'done') activityAtClaim.push(service.getConsolidationActivity());
+    });
+
+    await service.triggerConsolidation();
+
+    const running = broadcasts.filter((m) => m.type === 'consolidationRunning') as Array<{ running: boolean; pass?: number; runSoFar?: ConsolidationResult }>;
+    expect(running.map((m) => [m.running, m.pass])).toEqual([[true, 1], [true, 2], [false, undefined]]);
+    expect(running[0]!.runSoFar).toBeUndefined();
+    expect(running[1]!.runSoFar!.extracted.map((m) => m.content)).toEqual(['The user asked about alpha.']);
+    expect(activityAtClaim.map((a) => [a.pass, a.runSoFar?.extracted.length])).toEqual([[1, undefined], [2, 1]]);
+    expect(results()).toHaveLength(1);
+    expect(service.getConsolidationActivity()).toEqual({ running: false, phaseEvents: [] });
   });
 
   it('a manual run whose follow-up pass fails keeps the first pass\'s memories beside the failure', async () => {
@@ -642,7 +663,7 @@ describe('MemoryService: the terminal result describes the whole run', () => {
     });
     expect(run!.extracted.map((m) => m.content)).toEqual(['The user asked about alpha.', 'The user asked about beta.']);
     expect(service.getLastConsolidationResult()).toEqual(run);
-    expect(runningFlags()).toEqual([true, false]);
+    expect(runningFlags()).toEqual([true, true, false]);
     expect(failures()).toBe(1);
     expect(service.getPendingCount()).toBe(1);
   });
@@ -665,7 +686,7 @@ describe('MemoryService: the terminal result describes the whole run', () => {
     expect(results()).toHaveLength(1);
     expect(results()[0]).toMatchObject({ status: 'failed', candidatesReviewed: 2, failure: { kind: 'error', detail: 'boom' } });
     expect(results()[0]!.extracted.map((m) => m.content)).toEqual(['The user asked about alpha.']);
-    expect(runningFlags()).toEqual([true, false]);
+    expect(runningFlags()).toEqual([true, true, false]);
     expect(service.getPendingCount()).toBe(1);
   });
 

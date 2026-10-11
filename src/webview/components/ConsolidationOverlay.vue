@@ -21,7 +21,7 @@ const emit = defineEmits<{ (e: 'close'): void }>();
 const { t, te } = useI18n();
 
 const store = useConsolidationStore();
-const { pendingCandidates, isRunning, lastResult, phase, phaseMeta, persistProgress, setAsideCount: storedSetAside } =
+const { pendingCandidates, isRunning, lastResult, runPass, runSoFar, phase, phaseMeta, persistProgress, setAsideCount: storedSetAside } =
   storeToRefs(store);
 const { postMessage } = usePlatformBridge();
 const openSettings = useOpenSettings();
@@ -136,8 +136,11 @@ const offersSignIn = computed(() => {
   return f?.kind === 'no-model' || f?.reason === 'credential';
 });
 
+/** Named from a run's second pass on; a single-pass run needs no number. */
+const laterPass = computed(() => isRunning.value && runPass.value !== null && runPass.value > 1);
+
 const stripText = computed(() => {
-  if (isRunning.value) return runningText.value;
+  if (isRunning.value) return laterPass.value ? `${t('consolidation.strip.pass', { n: runPass.value })} · ${runningText.value}` : runningText.value;
   const r = lastResult.value;
   if (!r) return `${t('consolidation.noRunYet')} ${t('consolidation.noRunHintBefore')} ${t('consolidation.runNow')} ${t('consolidation.noRunHintAfter')}`;
   if (r.status === 'failed') {
@@ -155,8 +158,33 @@ const stripIcon = computed(() => {
   return { icon: CircleDashed, class: 'text-(--d-faint)' };
 });
 
+/** The results section shows the run in flight once a pass of it has ended, else the last run. */
+const showsThisRun = computed(() => laterPass.value || (isRunning.value && runSoFar.value !== null));
+const shownResult = computed(() => (showsThisRun.value ? runSoFar.value : lastResult.value));
+
+const resultsHeading = computed(() => {
+  if (showsThisRun.value) return t('overlays.consolidation.thisRun', { n: runSoFar.value?.extracted.length ?? 0 });
+  return lastResult.value ? t('overlays.consolidation.lastRun', { n: lastResult.value.extracted.length }) : t('overlays.consolidation.noRun');
+});
+
+const resultsEmptyText = computed(() => {
+  if (showsThisRun.value) return t('overlays.consolidation.thisRunEmpty');
+  return lastResult.value ? t('overlays.consolidation.nothingExtracted') : t('consolidation.noRunYet');
+});
+
+/** Extracted memories carry no id, and a run can keep the same one twice (one global memory from two folders), so a repeat is numbered. */
+const shownExtracted = computed(() => {
+  const seen = new Map<string, number>();
+  return (shownResult.value?.extracted ?? []).map((memory) => {
+    const identity = JSON.stringify([memory.kind, memory.scope, memory.workspace ?? null, memory.content]);
+    const repeat = seen.get(identity) ?? 0;
+    seen.set(identity, repeat + 1);
+    return { memory, key: `${identity}#${repeat}` };
+  });
+});
+
 const rollup = computed<string[]>(() => {
-  const r = lastResult.value;
+  const r = shownResult.value;
   if (!r) return [];
   const counts: Record<ConsolidationPersistOutcome, number> = {
     inserted: 0,
@@ -258,28 +286,23 @@ function toggleQueue(): void {
           v-if="isFailed"
           class="flex w-full justify-end gap-2 pt-1"
         >
-          <button
+          <Button
             v-if="offersSignIn"
-            type="button"
-            class="d-press flex h-7 items-center gap-1.5 rounded-lg border border-(--d-border2) px-2.5 transition-colors hover:bg-(--d-hover)"
+            variant="outline"
+            size="sm"
+            class="d-press h-7 gap-1.5 rounded-lg border-(--d-border2) bg-transparent px-2.5 text-xs font-normal [&_svg]:size-3.25"
             @click="signIn"
           >
-            <KeyRound
-              class="size-3.25"
-              aria-hidden="true"
-            />{{ t('consolidation.signIn') }}
-          </button>
-          <button
-            type="button"
-            class="d-press flex h-7 items-center gap-1.5 rounded-lg bg-(--d-accent) px-2.5 font-semibold text-(--d-on-accent) transition-[filter] hover:brightness-110"
+            <KeyRound aria-hidden="true" />{{ t('consolidation.signIn') }}
+          </Button>
+          <Button
+            size="sm"
+            class="d-press h-7 gap-1.5 rounded-lg px-2.5 text-xs font-semibold [&_svg]:size-3.25"
             data-testid="consolidation-retry"
             @click="triggerNow"
           >
-            <RotateCcw
-              class="size-3.25"
-              aria-hidden="true"
-            />{{ t('consolidation.retryNow') }}
-          </button>
+            <RotateCcw aria-hidden="true" />{{ t('consolidation.retryNow') }}
+          </Button>
         </div>
       </div>
 
@@ -361,19 +384,21 @@ function toggleQueue(): void {
         </section>
 
         <section class="flex min-w-0 flex-col gap-1.5">
-          <h3 class="text-11 font-semibold tracking-[.07em] text-(--d-faint) uppercase">
-            {{ lastResult ? t('overlays.consolidation.lastRun', { n: lastResult.extracted.length }) : t('overlays.consolidation.noRun') }}
+          <h3
+            class="text-11 font-semibold tracking-[.07em] text-(--d-faint) uppercase"
+            data-testid="consolidation-results-heading"
+          >
+            {{ resultsHeading }}
           </h3>
           <p
-            v-if="!lastResult || lastResult.extracted.length === 0"
+            v-if="shownExtracted.length === 0"
             class="rounded-10 border border-dashed border-(--d-border2) p-3 text-xs text-(--d-faint)"
           >
-            {{ lastResult ? t('overlays.consolidation.nothingExtracted') : t('consolidation.noRunYet') }}
+            {{ resultsEmptyText }}
           </p>
-          <!-- Extracted memories carry no id; their kind, scope and content are their identity. -->
           <div
-            v-for="(m, index) in lastResult?.extracted ?? []"
-            :key="`${m.kind}:${m.scope}:${m.content}`"
+            v-for="({ memory: m, key }, index) in shownExtracted"
+            :key="key"
             class="d-arrive flex flex-col gap-1.25 rounded-10 border border-(--d-border) bg-(--d-card) px-2.75 py-2.25"
             :style="{ animationDelay: `${Math.min(index, 8) * 30}ms` }"
             data-testid="consolidation-extracted"

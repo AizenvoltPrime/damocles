@@ -14,7 +14,7 @@ const props = withDefaults(defineProps<{
   /** The confirm button is destructive. */
   danger?: boolean;
   confirmDisabled?: boolean;
-}>(), { tone: 'accent', description: undefined, confirmLabel: undefined, cancelLabel: undefined, danger: false, confirmDisabled: false });
+}>(), { tone: 'accent', danger: false, confirmDisabled: false });
 
 const emit = defineEmits<{
   (e: 'confirm'): void;

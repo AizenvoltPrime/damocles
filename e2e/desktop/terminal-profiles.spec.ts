@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication, Page } from '@playwright/test';
-import type { TerminalCreateResult, TerminalProfileReport, TerminalState } from '../../src/desktop/preload/terminal-channels';
+import type { TerminalCreateResult, TerminalState } from '../../src/desktop/preload/terminal-channels';
 import { expect, test } from './support/fixtures';
 import { readUserSettings, writeUserSettings, type HermeticHome } from './support/hermetic';
 import { openProjectChat } from './support/screenshots';
@@ -85,8 +85,9 @@ test('an invalid profile is listed in Settings › Terminal with its reason and 
   expect(await profileNames(shell)).not.toContain('Bad Share Shell');
   expect(await create(shell, 'user:Bad Share Shell')).toEqual({ ok: false, reason: 'unknownProfile' });
   const overlay = await openSettingsModal(app, 'terminal');
-  const report = await overlay.evaluate(() => window.damoclesOverlay!.getTerminalProfiles()) as TerminalProfileReport;
-  expect(report.problems).toEqual(expect.arrayContaining([
+  const answer = await overlay.evaluate(() => window.damoclesOverlay!.getTerminalProfiles());
+  if (!answer.ok) throw new Error('Settings › Terminal is open, yet main answered closed');
+  expect(answer.value.problems).toEqual(expect.arrayContaining([
     { name: 'Bad Share Shell', reason: 'pathNotAllowed', detail: REFUSED_PATH },
     { name: 'Bad Env Shell', reason: 'unknownField', detail: 'env' },
   ]));

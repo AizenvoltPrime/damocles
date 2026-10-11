@@ -68,7 +68,8 @@ export function createSessionCatalog(deps: SessionCatalogDeps): SessionCatalog {
 
   /**
    * Rename and tag go through the live session when one holds the conversation: a second file writer
-   * would fork the branch and drop messages. Otherwise the file is written under the session's lease.
+   * would fork the branch and drop messages. Otherwise the file is written under the session's lease, which
+   * refuses while a panel of this process holds the conversation with no live session yet (opening or closing it).
    * Resolves the folder key the change belongs to, or undefined when the session has no file yet and so sits in no list.
    */
   const mutate = async (
@@ -156,7 +157,7 @@ export function createSessionCatalog(deps: SessionCatalogDeps): SessionCatalog {
           }
           await Promise.all([...holders].map((holder) => holder.detachFromDeletedSession()));
           await deletePiSession(folder.fsPath, sessionId);
-        });
+        }, { joinPanels: true });
         if (!deleted) return LEASED;
         // The file is gone, which is the deletion; a memory cleanup failure leaves it deleted.
         try {
