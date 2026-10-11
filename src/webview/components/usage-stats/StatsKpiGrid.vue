@@ -101,8 +101,13 @@ const kpis = computed<Kpi[]>(() => {
       :value-title="k.valueTitle"
       :note="k.note"
     >
-      <template #formula>{{ t(`usageStats.formula.${k.id}`) }}</template>
-      <template v-if="k.delta" #delta>
+      <template #formula>
+        {{ t(`usageStats.formula.${k.id}`) }}
+      </template>
+      <template
+        v-if="k.delta"
+        #delta
+      >
         <span
           data-kpi-delta
           class="font-mono text-10.5 tabular-nums"

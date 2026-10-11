@@ -77,10 +77,19 @@ const notRankedText = computed(() => {
   >
     <div class="flex items-start gap-2">
       <div class="flex min-w-0 flex-1 flex-wrap items-center gap-1">
-        <Badge variant="outline" class="px-1.5 py-0 text-10" :class="scopeBadgeClass(memory.scope)" data-badge="scope">
+        <Badge
+          variant="outline"
+          class="px-1.5 py-0 text-10"
+          :class="scopeBadgeClass(memory.scope)"
+          data-badge="scope"
+        >
           {{ t(`memory.scope.${memory.scope}`) }}
         </Badge>
-        <Badge variant="outline" class="px-1.5 py-0 text-10 text-(--d-muted)" data-badge="kind">
+        <Badge
+          variant="outline"
+          class="px-1.5 py-0 text-10 text-(--d-muted)"
+          data-badge="kind"
+        >
           {{ t(`memory.kind.${memory.kind}`) }}
         </Badge>
         <Badge
@@ -91,17 +100,40 @@ const notRankedText = computed(() => {
         >
           {{ t(`contextInjection.tier.${memory.tier}`) }}
         </Badge>
-        <Badge v-if="pinned" variant="outline" class="border-[color-mix(in_srgb,var(--d-warning)_40%,transparent)] px-1.5 py-0 text-10 text-(--d-warning-text)" data-badge="pinned">
-          <Pin class="size-2.5" aria-hidden="true" />
+        <Badge
+          v-if="pinned"
+          variant="outline"
+          class="border-[color-mix(in_srgb,var(--d-warning)_40%,transparent)] px-1.5 py-0 text-10 text-(--d-warning-text)"
+          data-badge="pinned"
+        >
+          <Pin
+            class="size-2.5"
+            aria-hidden="true"
+          />
           {{ t('contextInjection.badge.pinned') }}
         </Badge>
-        <Badge v-if="memory.isStale" variant="outline" class="border-[color-mix(in_srgb,var(--d-warning)_40%,transparent)] px-1.5 py-0 text-10 text-(--d-warning-text)" data-badge="stale">
+        <Badge
+          v-if="memory.isStale"
+          variant="outline"
+          class="border-[color-mix(in_srgb,var(--d-warning)_40%,transparent)] px-1.5 py-0 text-10 text-(--d-warning-text)"
+          data-badge="stale"
+        >
           {{ t('contextInjection.badge.stale') }}
         </Badge>
-        <Badge v-if="memory.upgradedFromCompact" variant="outline" class="border-[color-mix(in_srgb,var(--d-info)_40%,transparent)] px-1.5 py-0 text-10 text-(--d-info-text)" data-badge="upgraded">
+        <Badge
+          v-if="memory.upgradedFromCompact"
+          variant="outline"
+          class="border-[color-mix(in_srgb,var(--d-info)_40%,transparent)] px-1.5 py-0 text-10 text-(--d-info-text)"
+          data-badge="upgraded"
+        >
           {{ t('contextInjection.badge.upgraded') }}
         </Badge>
-        <Badge v-if="memory.truncated" variant="outline" class="px-1.5 py-0 text-10 text-(--d-muted)" data-badge="truncated">
+        <Badge
+          v-if="memory.truncated"
+          variant="outline"
+          class="px-1.5 py-0 text-10 text-(--d-muted)"
+          data-badge="truncated"
+        >
           {{ t('contextInjection.badge.truncated') }}
         </Badge>
         <Badge
@@ -113,7 +145,12 @@ const notRankedText = computed(() => {
         >
           {{ t(`contextInjection.badge.rerank.${memory.rerankRelevance}`) }}
         </Badge>
-        <Badge v-if="forgotten" variant="outline" class="border-[color-mix(in_srgb,var(--d-danger)_40%,transparent)] px-1.5 py-0 text-10 text-(--d-danger-text)" data-badge="forgotten">
+        <Badge
+          v-if="forgotten"
+          variant="outline"
+          class="border-[color-mix(in_srgb,var(--d-danger)_40%,transparent)] px-1.5 py-0 text-10 text-(--d-danger-text)"
+          data-badge="forgotten"
+        >
           {{ t('contextInjection.badge.forgotten') }}
         </Badge>
       </div>
@@ -126,35 +163,88 @@ const notRankedText = computed(() => {
       />
     </div>
 
-    <ul class="flex flex-wrap gap-x-3 gap-y-0.5 text-11 text-(--d-accent-text)" :aria-label="t('contextInjection.reason.label')">
-      <li v-for="(reason, i) in memory.reasons" :key="i" :data-reason="reason.kind" class="wrap-break-word">
-        <I18nT v-if="reason.kind === 'file'" :keypath="`contextInjection.reason.file.${reason.source}`" scope="global">
-          <template #path><span class="break-all">{{ reason.path }}</span></template>
+    <ul
+      class="flex flex-wrap gap-x-3 gap-y-0.5 text-11 text-(--d-accent-text)"
+      :aria-label="t('contextInjection.reason.label')"
+    >
+      <li
+        v-for="(reason, i) in memory.reasons"
+        :key="i"
+        :data-reason="reason.kind"
+        class="wrap-break-word"
+      >
+        <I18nT
+          v-if="reason.kind === 'file'"
+          :keypath="`contextInjection.reason.file.${reason.source}`"
+          scope="global"
+        >
+          <template #path>
+            <span class="break-all">{{ reason.path }}</span>
+          </template>
         </I18nT>
-        <template v-else>{{ reasonText(reason) }}</template>
+        <template v-else>
+          {{ reasonText(reason) }}
+        </template>
       </li>
     </ul>
 
-    <h4 v-if="memory.title" class="text-xs font-medium text-(--d-text) wrap-break-word" data-memory-title>
-      <HighlightedText :text="memory.title" :terms="highlight" />
+    <h4
+      v-if="memory.title"
+      class="text-xs font-medium text-(--d-text) wrap-break-word"
+      data-memory-title
+    >
+      <HighlightedText
+        :text="memory.title"
+        :terms="highlight"
+      />
     </h4>
-    <p class="whitespace-pre-wrap wrap-break-word text-xs text-(--d-text)" data-memory-content>
-      <HighlightedText :text="memory.content" :terms="highlight" />
+    <p
+      class="whitespace-pre-wrap wrap-break-word text-xs text-(--d-text)"
+      data-memory-content
+    >
+      <HighlightedText
+        :text="memory.content"
+        :terms="highlight"
+      />
     </p>
 
-    <ul v-if="isObservation && memory.facts.length > 0" class="space-y-0.5" data-memory-facts>
-      <li v-for="(fact, i) in memory.facts" :key="i" class="border-l border-(--d-border) pl-2 text-xs text-(--d-muted) wrap-break-word">
-        <HighlightedText :text="fact" :terms="highlight" />
+    <ul
+      v-if="isObservation && memory.facts.length > 0"
+      class="space-y-0.5"
+      data-memory-facts
+    >
+      <li
+        v-for="(fact, i) in memory.facts"
+        :key="i"
+        class="border-l border-(--d-border) pl-2 text-xs text-(--d-muted) wrap-break-word"
+      >
+        <HighlightedText
+          :text="fact"
+          :terms="highlight"
+        />
       </li>
     </ul>
-    <ul v-if="isObservation && memory.files.length > 0" class="flex flex-wrap gap-1" data-memory-files>
-      <li v-for="file in memory.files" :key="file" class="rounded bg-[color-mix(in_srgb,var(--d-bg)_60%,transparent)] px-1 font-mono text-10 text-(--d-muted) break-all">{{ file }}</li>
+    <ul
+      v-if="isObservation && memory.files.length > 0"
+      class="flex flex-wrap gap-1"
+      data-memory-files
+    >
+      <li
+        v-for="file in memory.files"
+        :key="file"
+        class="rounded bg-[color-mix(in_srgb,var(--d-bg)_60%,transparent)] px-1 font-mono text-10 text-(--d-muted) break-all"
+      >
+        {{ file }}
+      </li>
     </ul>
 
     <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-10 text-(--d-muted) tabular-nums">
       <span data-memory-tokens>{{ tokenCount }}</span>
       <span v-if="memory.sourceCount > 1">{{ t('contextInjection.badge.sources', { count: memory.sourceCount }) }}</span>
-      <span class="ml-auto flex items-center gap-1" data-memory-score>
+      <span
+        class="ml-auto flex items-center gap-1"
+        data-memory-score
+      >
         <span v-if="memory.score !== null">{{ t('contextInjection.score.value', { score: fmt(memory.score) }) }}</span>
         <span v-else>{{ t('contextInjection.score.notRanked') }}</span>
         <Popover>
@@ -169,35 +259,61 @@ const notRankedText = computed(() => {
               <IconInfo class="size-3" />
             </Button>
           </PopoverTrigger>
-          <PopoverContent class="w-80 space-y-2 p-3 text-xs/relaxed" align="end" data-score-popover>
+          <PopoverContent
+            class="w-80 space-y-2 p-3 text-xs/relaxed"
+            align="end"
+            data-score-popover
+          >
             <template v-if="breakdown && computedScore !== null">
-              <p class="font-mono text-11" data-score-formula>{{ t('contextInjection.formula.score', SCORE_FORMULA_WEIGHTS) }}</p>
+              <p
+                class="font-mono text-11"
+                data-score-formula
+              >{{ t('contextInjection.formula.score', SCORE_FORMULA_WEIGHTS) }}</p>
               <p class="text-(--d-muted)">
                 {{ t('contextInjection.formula.relevance', { matched: fmt(breakdown.matchedIdf), query: fmt(breakdown.queryIdf) }) }}
               </p>
               <table class="w-full tabular-nums">
                 <tbody>
-                  <tr v-for="term in terms" :key="term.id" :data-score-term="term.id">
-                    <th scope="row" class="py-0.5 pr-2 text-left font-normal text-(--d-muted)">{{ t(`contextInjection.score.term.${term.id}`) }}</th>
+                  <tr
+                    v-for="term in terms"
+                    :key="term.id"
+                    :data-score-term="term.id"
+                  >
+                    <th
+                      scope="row"
+                      class="py-0.5 pr-2 text-left font-normal text-(--d-muted)"
+                    >{{ t(`contextInjection.score.term.${term.id}`) }}</th>
                     <td class="py-0.5 pr-2 text-right">{{ fmt(term.value) }}</td>
                     <td class="py-0.5 text-right text-(--d-muted)">
                       {{ term.weight === null ? fmt(term.contribution) : `${fmt(term.weight)} × ${fmt(term.value)} = ${fmt(term.contribution)}` }}
                     </td>
                   </tr>
                   <tr data-score-term="stalenessPenalty">
-                    <th scope="row" class="py-0.5 pr-2 text-left font-normal text-(--d-muted)">{{ t('contextInjection.score.term.stalenessPenalty') }}</th>
+                    <th
+                      scope="row"
+                      class="py-0.5 pr-2 text-left font-normal text-(--d-muted)"
+                    >{{ t('contextInjection.score.term.stalenessPenalty') }}</th>
                     <td class="py-0.5 pr-2 text-right">× {{ fmt(breakdown.stalenessPenalty) }}</td>
                     <td />
                   </tr>
-                  <tr class="border-t border-(--d-border) font-medium" data-score-total>
-                    <th scope="row" class="pt-1 pr-2 text-left">{{ t('contextInjection.score.total') }}</th>
+                  <tr
+                    class="border-t border-(--d-border) font-medium"
+                    data-score-total
+                  >
+                    <th
+                      scope="row"
+                      class="pt-1 pr-2 text-left"
+                    >{{ t('contextInjection.score.total') }}</th>
                     <td class="pt-1 pr-2 text-right">{{ fmt(memory.score ?? computedScore) }}</td>
                     <td />
                   </tr>
                 </tbody>
               </table>
             </template>
-            <p v-else data-score-not-ranked>{{ notRankedText }}</p>
+            <p
+              v-else
+              data-score-not-ranked
+            >{{ notRankedText }}</p>
           </PopoverContent>
         </Popover>
       </span>

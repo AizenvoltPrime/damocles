@@ -364,12 +364,12 @@ onUnmounted(() => {
       <Transition
         name="t-pop"
         appear
-    >
-      <PinnedRestoreChip
-        :message="sticky.activeMessage.value"
+      >
+        <PinnedRestoreChip
+          :message="sticky.activeMessage.value"
           class="pointer-events-auto absolute top-2 right-4.5"
-        @restore="setPinnedHeaderHidden(false)"
-      />
+          @restore="setPinnedHeaderHidden(false)"
+        />
       </Transition>
     </div>
 
@@ -394,6 +394,10 @@ onUnmounted(() => {
       @unmounted="engine.onItemUnmounted(item.id)"
     />
 
-    <ImageLightbox :open="lightboxImageUrl !== null" :image-url="lightboxImageUrl ?? ''" @close="lightboxImageUrl = null" />
+    <ImageLightbox
+      :open="lightboxImageUrl !== null"
+      :image-url="lightboxImageUrl ?? ''"
+      @close="lightboxImageUrl = null"
+    />
   </div>
 </template>

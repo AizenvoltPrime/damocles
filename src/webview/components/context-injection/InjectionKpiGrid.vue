@@ -102,11 +102,26 @@ const kpis = computed<Kpi[]>(() => {
       :note="k.note"
     >
       <template #formula>
-        <p data-kpi-formula>{{ t(`contextInjection.formula.${k.id}`) }}</p>
-        <dl v-if="k.details.length > 0" class="grid grid-cols-[1fr_auto] gap-x-3 gap-y-0.5 tabular-nums">
-          <template v-for="detail in k.details" :key="detail.id">
-            <dt class="text-(--d-muted)">{{ detail.label }}</dt>
-            <dd class="text-right" :data-kpi-detail="detail.id">{{ detail.value }}</dd>
+        <p data-kpi-formula>
+          {{ t(`contextInjection.formula.${k.id}`) }}
+        </p>
+        <dl
+          v-if="k.details.length > 0"
+          class="grid grid-cols-[1fr_auto] gap-x-3 gap-y-0.5 tabular-nums"
+        >
+          <template
+            v-for="detail in k.details"
+            :key="detail.id"
+          >
+            <dt class="text-(--d-muted)">
+              {{ detail.label }}
+            </dt>
+            <dd
+              class="text-right"
+              :data-kpi-detail="detail.id"
+            >
+              {{ detail.value }}
+            </dd>
           </template>
         </dl>
       </template>

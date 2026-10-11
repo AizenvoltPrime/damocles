@@ -90,7 +90,10 @@ onUnmounted(() => {
     />
 
     <div v-else-if="item.type === 'compact-marker' && item.marker">
-      <CompactMarker :marker="item.marker" @rewind-to-compaction="(entryId: string) => emit('rewindToCompaction', entryId)" />
+      <CompactMarker
+        :marker="item.marker"
+        @rewind-to-compaction="(entryId: string) => emit('rewindToCompaction', entryId)"
+      />
     </div>
 
     <div v-else-if="item.type === 'cache-miss-notice' && item.notice">
@@ -114,13 +117,29 @@ onUnmounted(() => {
     />
 
     <div v-else-if="item.type === 'text-block'">
-      <EffortBadge v-if="item.effort" :effort="item.effort" class="mb-1" />
-      <MessageContent :content="item.text ?? ''" :is-streaming="false" :is-thinking-phase="false" />
+      <EffortBadge
+        v-if="item.effort"
+        :effort="item.effort"
+        class="mb-1"
+      />
+      <MessageContent
+        :content="item.text ?? ''"
+        :is-streaming="false"
+        :is-thinking-phase="false"
+      />
     </div>
 
     <div v-else-if="item.type === 'streaming-text'">
-      <EffortBadge v-if="item.effort" :effort="item.effort" class="mb-1" />
-      <MessageContent :content="item.text ?? ''" :is-streaming="true" :is-thinking-phase="item.message.isThinkingPhase ?? false" />
+      <EffortBadge
+        v-if="item.effort"
+        :effort="item.effort"
+        class="mb-1"
+      />
+      <MessageContent
+        :content="item.text ?? ''"
+        :is-streaming="true"
+        :is-thinking-phase="item.message.isThinkingPhase ?? false"
+      />
     </div>
 
     <div v-else-if="item.type === 'tool-call' && item.toolCall">

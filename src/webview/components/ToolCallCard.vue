@@ -423,7 +423,7 @@ const statusNote = computed(() => {
       </button>
     </template>
 
-      <div
+    <div
       v-if="fileDiff"
       class="mx-2 mb-2"
     >
@@ -454,10 +454,10 @@ const statusNote = computed(() => {
         class="text-xs text-(--d-faint) italic"
       >
         {{ t('toolCall.structuredOutputEmpty') }}
-        </div>
       </div>
+    </div>
 
-      <!-- Stops the click so selecting output text does not expand the card. -->
+    <!-- Stops the click so selecting output text does not expand the card. -->
     <div
       v-if="showLiveOutput"
       class="mx-2 mb-2 space-y-1"
@@ -469,19 +469,19 @@ const statusNote = computed(() => {
           aria-hidden="true"
         />{{ t('toolCall.liveOutput') }}
       </p>
-        <LiveOutputPane
-          :output="liveOutputText"
-          :truncated="toolCall.liveOutputTruncated === true"
+      <LiveOutputPane
+        :output="liveOutputText"
+        :truncated="toolCall.liveOutputTruncated === true"
         height-class="h-45"
-        />
-      </div>
+      />
+    </div>
 
-      <div
+    <div
       v-if="hasPeek"
       class="grid transition-[grid-template-rows] duration-250 ease-out"
       :class="peek ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'"
       :inert="!peek"
-      >
+    >
       <div class="min-h-0 overflow-hidden">
         <div class="grid grid-cols-[2.125rem_1fr] gap-x-2 gap-y-1 border-t border-(--d-border) px-3 pt-2 pb-2.5 text-11.5">
           <template v-if="inputSummary && !isLs">
@@ -504,9 +504,9 @@ const statusNote = computed(() => {
               </code>
             </span>
           </template>
-      </div>
         </div>
       </div>
+    </div>
 
     <div
       v-if="isFailed && toolCall.errorMessage"
@@ -517,7 +517,7 @@ const statusNote = computed(() => {
         aria-hidden="true"
       />
       <span>{{ toolCall.errorMessage }}</span>
-      </div>
+    </div>
 
     <div
       v-if="statusNote"
@@ -529,7 +529,7 @@ const statusNote = computed(() => {
         aria-hidden="true"
       />
       <span><span class="font-semibold text-(--d-text)">{{ statusNote.title }}</span><template v-if="statusNote.description"> · {{ statusNote.description }}</template></span>
-      </div>
+    </div>
 
     <div
       v-if="isRunning"

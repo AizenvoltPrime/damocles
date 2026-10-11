@@ -83,11 +83,18 @@ function open(s: UsageStatsTopSession): void {
 </script>
 
 <template>
-  <section class="min-w-0 space-y-2 rounded-lg border border-(--d-border) p-3" data-top-sessions>
-    <h3 class="truncate text-xs font-semibold">{{ t('usageStats.topSessions.title') }}</h3>
+  <section
+    class="min-w-0 space-y-2 rounded-lg border border-(--d-border) p-3"
+    data-top-sessions
+  >
+    <h3 class="truncate text-xs font-semibold">
+      {{ t('usageStats.topSessions.title') }}
+    </h3>
 
     <Table class="text-xs">
-      <TableCaption class="sr-only">{{ t('usageStats.topSessions.title') }}</TableCaption>
+      <TableCaption class="sr-only">
+        {{ t('usageStats.topSessions.title') }}
+      </TableCaption>
       <TableHeader>
         <TableRow class="hover:bg-transparent">
           <TableHead
@@ -105,8 +112,14 @@ function open(s: UsageStatsTopSession): void {
               @click="toggleSort(col.id)"
             >
               <span>{{ col.label }}</span>
-              <IconArrowDown v-if="ariaSort(col.id) === 'descending'" class="size-2.5" />
-              <IconArrowUp v-else-if="ariaSort(col.id) === 'ascending'" class="size-2.5" />
+              <IconArrowDown
+                v-if="ariaSort(col.id) === 'descending'"
+                class="size-2.5"
+              />
+              <IconArrowUp
+                v-else-if="ariaSort(col.id) === 'ascending'"
+                class="size-2.5"
+              />
             </button>
           </TableHead>
         </TableRow>
@@ -139,13 +152,30 @@ function open(s: UsageStatsTopSession): void {
                 class="shrink-0 px-1.5 py-0 text-10 font-normal text-(--d-muted)"
                 :title="t('usageStats.breakdown.unpricedTitle', { tokens: format.integer(s.unpricedTokens) }, s.unpricedTokens)"
                 data-unpriced
-              >{{ t('usageStats.breakdown.unpriced') }}</Badge>
+              >
+                {{ t('usageStats.breakdown.unpriced') }}
+              </Badge>
             </div>
           </TableCell>
-          <TableCell class="max-w-32 truncate px-2 py-1.5" :title="s.cwd ?? undefined">{{ labels.project(s.projectKey, s.cwd) }}</TableCell>
-          <TableCell class="whitespace-nowrap px-2 py-1.5 text-right tabular-nums" :title="spendTitle(s.cost, tokensOf(s))" data-cost>{{ spendLabel(s.cost, tokensOf(s)) }}</TableCell>
-          <TableCell class="whitespace-nowrap px-2 py-1.5 text-right tabular-nums">{{ format.tokens(tokensOf(s)) }}</TableCell>
-          <TableCell class="whitespace-nowrap px-2 py-1.5 text-right tabular-nums">{{ format.dateTime(s.lastActiveMs) }}</TableCell>
+          <TableCell
+            class="max-w-32 truncate px-2 py-1.5"
+            :title="s.cwd ?? undefined"
+          >
+            {{ labels.project(s.projectKey, s.cwd) }}
+          </TableCell>
+          <TableCell
+            class="whitespace-nowrap px-2 py-1.5 text-right tabular-nums"
+            :title="spendTitle(s.cost, tokensOf(s))"
+            data-cost
+          >
+            {{ spendLabel(s.cost, tokensOf(s)) }}
+          </TableCell>
+          <TableCell class="whitespace-nowrap px-2 py-1.5 text-right tabular-nums">
+            {{ format.tokens(tokensOf(s)) }}
+          </TableCell>
+          <TableCell class="whitespace-nowrap px-2 py-1.5 text-right tabular-nums">
+            {{ format.dateTime(s.lastActiveMs) }}
+          </TableCell>
         </TableRow>
       </TableBody>
     </Table>

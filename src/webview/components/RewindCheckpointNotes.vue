@@ -74,7 +74,11 @@ const notRewindableDetail = computed(() => {
 </script>
 
 <template>
-  <div v-if="notRewindable || hasSkipped" class="space-y-2" data-no-keyboard-shortcuts>
+  <div
+    v-if="notRewindable || hasSkipped"
+    class="space-y-2"
+    data-no-keyboard-shortcuts
+  >
     <div
       v-if="notRewindable"
       data-testid="rewind-not-rewindable"
@@ -82,13 +86,26 @@ const notRewindableDetail = computed(() => {
     >
       <IconWarning class="size-3.5 mt-0.5 shrink-0 text-warning" />
       <div class="min-w-0">
-        <div class="font-medium text-(--d-warning-text)">{{ t('rewind.notRewindable.title') }}</div>
-        <div class="text-foreground/80">{{ notRewindableReason }}</div>
-        <div v-if="notRewindableDetail" class="text-muted-foreground wrap-break-word">{{ notRewindableDetail }}</div>
+        <div class="font-medium text-(--d-warning-text)">
+          {{ t('rewind.notRewindable.title') }}
+        </div>
+        <div class="text-foreground/80">
+          {{ notRewindableReason }}
+        </div>
+        <div
+          v-if="notRewindableDetail"
+          class="text-muted-foreground wrap-break-word"
+        >
+          {{ notRewindableDetail }}
+        </div>
       </div>
     </div>
 
-    <div v-if="skipped && hasSkipped" data-testid="rewind-not-restored" class="px-1 text-xs text-muted-foreground">
+    <div
+      v-if="skipped && hasSkipped"
+      data-testid="rewind-not-restored"
+      class="px-1 text-xs text-muted-foreground"
+    >
       <button
         type="button"
         class="flex items-center gap-1 text-foreground/80 hover:text-foreground transition-colors cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-primary rounded"
@@ -96,11 +113,17 @@ const notRewindableDetail = computed(() => {
         :aria-label="t('rewind.notRestored.toggle')"
         @click="toggle"
       >
-        <IconChevronRight class="size-3 transition-transform" :class="expanded ? 'rotate-90' : ''" />
+        <IconChevronRight
+          class="size-3 transition-transform"
+          :class="expanded ? 'rotate-90' : ''"
+        />
         <span class="font-medium">{{ t('rewind.notRestored.title') }}</span>
         <span>· {{ t('rewind.notRestored.summary', { n: skipped.totalCount, size: formatBytes(skipped.totalBytes) }, skipped.totalCount) }}</span>
       </button>
-      <div v-if="expanded" class="mt-2 rounded bg-muted/50 border border-border/60 max-h-40 overflow-y-auto">
+      <div
+        v-if="expanded"
+        class="mt-2 rounded bg-muted/50 border border-border/60 max-h-40 overflow-y-auto"
+      >
         <div
           v-for="row in reasonRows"
           :key="row.reason"
@@ -119,10 +142,18 @@ const notRewindableDetail = computed(() => {
           <span class="font-mono text-foreground/80 truncate flex-1 min-w-0">{{ t('rewind.notRestored.pattern', { pattern: pattern.pattern, n: pattern.count }, pattern.count) }}</span>
           <span class="shrink-0 text-muted-foreground/80">{{ t(REASON_KEYS[pattern.reason]) }}</span>
         </div>
-        <div v-if="listState?.status === 'loading'" data-testid="rewind-not-restored-loading" class="px-3 py-1.5 d-pulsing">
+        <div
+          v-if="listState?.status === 'loading'"
+          data-testid="rewind-not-restored-loading"
+          class="px-3 py-1.5 d-pulsing"
+        >
           {{ t('rewind.notRestored.loading') }}
         </div>
-        <div v-else-if="listState?.status === 'error'" data-testid="rewind-not-restored-error" class="px-3 py-1.5 text-warning">
+        <div
+          v-else-if="listState?.status === 'error'"
+          data-testid="rewind-not-restored-error"
+          class="px-3 py-1.5 text-warning"
+        >
           {{ t('rewind.notRestored.loadFailed') }}
         </div>
         <template v-else-if="listState?.status === 'loaded'">
@@ -132,13 +163,21 @@ const notRewindableDetail = computed(() => {
             data-testid="rewind-not-restored-file"
             class="flex items-center gap-2 px-3 py-1.5"
           >
-            <span class="font-mono text-foreground/80 truncate flex-1 min-w-0" :title="file.path">{{ file.path }}</span>
-            <span v-if="file.bytes !== null" class="shrink-0 tabular-nums">{{ formatBytes(file.bytes) }}</span>
+            <span
+              class="font-mono text-foreground/80 truncate flex-1 min-w-0"
+              :title="file.path"
+            >{{ file.path }}</span>
+            <span
+              v-if="file.bytes !== null"
+              class="shrink-0 tabular-nums"
+            >{{ formatBytes(file.bytes) }}</span>
             <span class="shrink-0 text-muted-foreground/80">{{ t(REASON_KEYS[file.reason]) }}</span>
           </div>
         </template>
       </div>
-      <div class="mt-1">{{ t('rewind.notRestored.hint') }}</div>
+      <div class="mt-1">
+        {{ t('rewind.notRestored.hint') }}
+      </div>
     </div>
   </div>
 </template>

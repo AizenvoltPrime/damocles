@@ -211,20 +211,34 @@ function toggleSection(key: string): void {
     </template>
 
     <!-- Loading -->
-    <div v-if="store.isLoading" class="flex-1 flex items-center justify-center py-16">
+    <div
+      v-if="store.isLoading"
+      class="flex-1 flex items-center justify-center py-16"
+    >
       <LoadingSpinner class="size-8" />
     </div>
 
     <!-- Error states -->
-    <div v-else-if="!store.data" class="flex-1 flex flex-col items-center justify-center gap-2 py-16 text-muted-foreground">
+    <div
+      v-else-if="!store.data"
+      class="flex-1 flex flex-col items-center justify-center gap-2 py-16 text-muted-foreground"
+    >
       <IconChartBar class="size-8 opacity-40" />
       <template v-if="store.failReason === 'noQuery'">
-        <p class="text-sm font-medium">{{ t('context.noQuery') }}</p>
-        <p class="text-xs opacity-70">{{ t('context.noQueryHint') }}</p>
+        <p class="text-sm font-medium">
+          {{ t('context.noQuery') }}
+        </p>
+        <p class="text-xs opacity-70">
+          {{ t('context.noQueryHint') }}
+        </p>
       </template>
       <template v-else>
-        <p class="text-sm font-medium">{{ t('context.sessionBusy') }}</p>
-        <p class="text-xs opacity-70">{{ t('context.sessionBusyHint') }}</p>
+        <p class="text-sm font-medium">
+          {{ t('context.sessionBusy') }}
+        </p>
+        <p class="text-xs opacity-70">
+          {{ t('context.sessionBusyHint') }}
+        </p>
       </template>
     </div>
 
@@ -279,14 +293,14 @@ function toggleSection(key: string): void {
             class="flex h-2.5 overflow-hidden rounded-full bg-(--d-hover)"
             data-testid="context-bar"
           >
-        <div
-          v-for="cat in visibleCategories"
-          :key="cat.name"
+            <div
+              v-for="cat in visibleCategories"
+              :key="cat.name"
               class="d-bar min-w-0.5"
-          :style="{ width: `${store.data!.maxTokens > 0 ? (cat.tokens / store.data!.maxTokens) * 100 : 0}%`, backgroundColor: cat.color }"
-          :title="`${cat.name}: ${formatTokens(cat.tokens)}`"
-        />
-      </div>
+              :style="{ width: `${store.data!.maxTokens > 0 ? (cat.tokens / store.data!.maxTokens) * 100 : 0}%`, backgroundColor: cat.color }"
+              :title="`${cat.name}: ${formatTokens(cat.tokens)}`"
+            />
+          </div>
           <div class="flex justify-between font-mono text-10.5 text-(--d-faint)">
             <span>0</span>
             <span v-if="store.data.autoCompactThreshold">{{ t('context.autoCompactAt', { threshold: store.data.autoCompactThreshold }) }}</span>
@@ -294,13 +308,13 @@ function toggleSection(key: string): void {
           </div>
 
           <div class="mt-0.5 flex flex-col gap-1.25">
-        <div
-          v-for="cat in allCategories"
-          :key="cat.name"
+            <div
+              v-for="cat in allCategories"
+              :key="cat.name"
               class="flex items-center gap-2.25 text-xs"
-          :class="cat.isDeferred ? 'opacity-60' : ''"
+              :class="cat.isDeferred ? 'opacity-60' : ''"
               data-testid="context-legend-row"
-        >
+            >
               <span
                 class="size-2.25 flex-none rounded-[0.1875rem]"
                 :style="{ backgroundColor: cat.color }"
@@ -311,24 +325,33 @@ function toggleSection(key: string): void {
                 data-testid="context-legend-name"
               >{{ cat.name }}</span>
               <span
-            v-if="cat.isDeferred"
+                v-if="cat.isDeferred"
                 class="flex-none rounded-full border border-(--d-border2) px-1.5 text-10.5/4 text-(--d-muted)"
               >{{ t('context.deferred') }}</span>
               <span class="w-12 flex-none text-right font-mono tabular-nums">{{ formatTokens(cat.tokens) }}</span>
               <span class="w-11 flex-none text-right font-mono text-(--d-faint) tabular-nums">
-            {{ store.data!.maxTokens > 0 ? ((cat.tokens / store.data!.maxTokens) * 100).toFixed(1) : '0.0' }}%
-          </span>
+                {{ store.data!.maxTokens > 0 ? ((cat.tokens / store.data!.maxTokens) * 100).toFixed(1) : '0.0' }}%
+              </span>
             </div>
           </div>
         </div>
       </div>
 
       <!-- Message Breakdown -->
-      <div v-if="store.data.messageBreakdown" class="space-y-1 pt-2 border-t border-border/30">
-        <Collapsible :open="openSections.has('messageBreakdown')" @update:open="toggleSection('messageBreakdown')">
+      <div
+        v-if="store.data.messageBreakdown"
+        class="space-y-1 pt-2 border-t border-border/30"
+      >
+        <Collapsible
+          :open="openSections.has('messageBreakdown')"
+          @update:open="toggleSection('messageBreakdown')"
+        >
           <CollapsibleTrigger as-child>
             <button class="flex items-center gap-2 w-full py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
-              <IconChevronRight class="size-3.5 shrink-0 transition-transform" :class="{ 'rotate-90': openSections.has('messageBreakdown') }" />
+              <IconChevronRight
+                class="size-3.5 shrink-0 transition-transform"
+                :class="{ 'rotate-90': openSections.has('messageBreakdown') }"
+              />
               <span class="font-medium">{{ t('context.messageBreakdown') }}</span>
             </button>
           </CollapsibleTrigger>
@@ -351,12 +374,23 @@ function toggleSection(key: string): void {
               </div>
               <!-- Tool calls by type -->
               <template v-if="toolCallsByType.length > 0">
-                <Collapsible :open="openSections.has('toolCallsByType')" @update:open="toggleSection('toolCallsByType')">
+                <Collapsible
+                  :open="openSections.has('toolCallsByType')"
+                  @update:open="toggleSection('toolCallsByType')"
+                >
                   <CollapsibleTrigger as-child>
                     <button class="flex items-center gap-2 w-full py-1 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
-                      <IconChevronRight class="size-3 shrink-0 transition-transform" :class="{ 'rotate-90': openSections.has('toolCallsByType') }" />
+                      <IconChevronRight
+                        class="size-3 shrink-0 transition-transform"
+                        :class="{ 'rotate-90': openSections.has('toolCallsByType') }"
+                      />
                       <span>{{ t('context.toolCallsByType') }}</span>
-                      <Badge variant="secondary" class="text-xs px-1.5 py-0">{{ toolCallsByType.length }}</Badge>
+                      <Badge
+                        variant="secondary"
+                        class="text-xs px-1.5 py-0"
+                      >
+                        {{ toolCallsByType.length }}
+                      </Badge>
                     </button>
                   </CollapsibleTrigger>
                   <CollapsibleContent>
@@ -377,12 +411,23 @@ function toggleSection(key: string): void {
               </template>
               <!-- Attachments by type -->
               <template v-if="attachmentsByType.length > 0">
-                <Collapsible :open="openSections.has('attachmentsByType')" @update:open="toggleSection('attachmentsByType')">
+                <Collapsible
+                  :open="openSections.has('attachmentsByType')"
+                  @update:open="toggleSection('attachmentsByType')"
+                >
                   <CollapsibleTrigger as-child>
                     <button class="flex items-center gap-2 w-full py-1 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
-                      <IconChevronRight class="size-3 shrink-0 transition-transform" :class="{ 'rotate-90': openSections.has('attachmentsByType') }" />
+                      <IconChevronRight
+                        class="size-3 shrink-0 transition-transform"
+                        :class="{ 'rotate-90': openSections.has('attachmentsByType') }"
+                      />
                       <span>{{ t('context.attachmentsByType') }}</span>
-                      <Badge variant="secondary" class="text-xs px-1.5 py-0">{{ attachmentsByType.length }}</Badge>
+                      <Badge
+                        variant="secondary"
+                        class="text-xs px-1.5 py-0"
+                      >
+                        {{ attachmentsByType.length }}
+                      </Badge>
                     </button>
                   </CollapsibleTrigger>
                   <CollapsibleContent>
@@ -454,7 +499,10 @@ function toggleSection(key: string): void {
                 >
                   {{ item.badge }}
                 </Badge>
-                <span v-if="item.detail" class="shrink-0 text-xs text-(--d-muted)">{{ item.detail }}</span>
+                <span
+                  v-if="item.detail"
+                  class="shrink-0 text-xs text-(--d-muted)"
+                >{{ item.detail }}</span>
                 <span class="w-12 shrink-0 text-right text-(--d-muted) tabular-nums">{{ formatTokens(item.tokens) }}</span>
               </component>
             </div>
@@ -463,8 +511,13 @@ function toggleSection(key: string): void {
       </div>
 
       <!-- API Usage Footer -->
-      <div v-if="store.data.apiUsage" class="pt-2 border-t border-border/30">
-        <p class="text-xs font-medium text-muted-foreground mb-1">{{ t('context.apiUsage') }}</p>
+      <div
+        v-if="store.data.apiUsage"
+        class="pt-2 border-t border-border/30"
+      >
+        <p class="text-xs font-medium text-muted-foreground mb-1">
+          {{ t('context.apiUsage') }}
+        </p>
         <div class="flex items-center gap-3 text-xs tabular-nums text-muted-foreground">
           <span>↓ {{ formatTokens(store.data.apiUsage.input_tokens) }}</span>
           <span>↑ {{ formatTokens(store.data.apiUsage.output_tokens) }}</span>

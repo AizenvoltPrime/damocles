@@ -12,5 +12,9 @@ defineEmits<{
 </script>
 
 <template>
-  <ImageLightboxLayer v-if="open" :image-url="imageUrl" @close="$emit('close')" />
+  <ImageLightboxLayer
+    v-if="open"
+    :image-url="imageUrl"
+    @close="$emit('close')"
+  />
 </template>

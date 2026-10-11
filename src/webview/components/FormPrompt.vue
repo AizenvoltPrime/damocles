@@ -253,14 +253,25 @@ const nativeControlClass =
     </header>
 
     <div class="max-h-[60vh] space-y-3 overflow-y-auto px-3.5 py-3">
-      <div v-for="field in fields" :key="field.id" class="flex flex-col gap-1">
+      <div
+        v-for="field in fields"
+        :key="field.id"
+        class="flex flex-col gap-1"
+      >
         <label
           :for="field.type === 'radio' ? undefined : `form-field-${field.id}`"
           class="flex items-center gap-1.5 text-xs font-medium text-(--d-muted)"
         >
-          <IconLock v-if="field.sensitive || field.type === 'password'" class="size-3 shrink-0 text-(--d-faint)" />
+          <IconLock
+            v-if="field.sensitive || field.type === 'password'"
+            class="size-3 shrink-0 text-(--d-faint)"
+          />
           <span>{{ field.label }}</span>
-          <span v-if="field.required" class="text-(--d-danger)" aria-hidden="true">*</span>
+          <span
+            v-if="field.required"
+            class="text-(--d-danger)"
+            aria-hidden="true"
+          >*</span>
         </label>
 
         <!-- text / password / number / date / email / url / tel -->
@@ -297,26 +308,46 @@ const nativeControlClass =
           :class="[nativeControlClass, showErrors && isMissing(field) ? 'border-(--d-danger) focus-visible:ring-(--d-danger)' : '']"
           @change="(e) => (values[field.id] = (e.target as HTMLSelectElement).value)"
         >
-          <option value="" disabled>{{ field.placeholder ?? t('form.selectPlaceholder') }}</option>
-          <option v-for="opt in field.options ?? []" :key="opt.value" :value="opt.value">
+          <option
+            value=""
+            disabled
+          >
+            {{ field.placeholder ?? t('form.selectPlaceholder') }}
+          </option>
+          <option
+            v-for="opt in field.options ?? []"
+            :key="opt.value"
+            :value="opt.value"
+          >
             {{ opt.label }}
           </option>
         </select>
 
         <!-- checkbox -->
-        <div v-else-if="field.type === 'checkbox'" class="flex items-center gap-2">
+        <div
+          v-else-if="field.type === 'checkbox'"
+          class="flex items-center gap-2"
+        >
           <Checkbox
             :id="`form-field-${field.id}`"
             :checked="values[field.id] === true"
             @update:checked="(v: boolean) => (values[field.id] = v)"
           />
-          <label :for="`form-field-${field.id}`" class="text-xs text-(--d-text) cursor-pointer">
+          <label
+            :for="`form-field-${field.id}`"
+            class="text-xs text-(--d-text) cursor-pointer"
+          >
             {{ field.placeholder ?? field.label }}
           </label>
         </div>
 
         <!-- radio group -->
-        <div v-else-if="field.type === 'radio'" class="flex flex-col gap-1.5" role="radiogroup" :aria-label="field.label">
+        <div
+          v-else-if="field.type === 'radio'"
+          class="flex flex-col gap-1.5"
+          role="radiogroup"
+          :aria-label="field.label"
+        >
           <label
             v-for="opt in field.options ?? []"
             :key="opt.value"
@@ -329,7 +360,7 @@ const nativeControlClass =
               :checked="values[field.id] === opt.value"
               class="cursor-pointer accent-(--d-accent)"
               @change="() => (values[field.id] = opt.value)"
-            />
+            >
             <span>{{ opt.label }}</span>
           </label>
         </div>

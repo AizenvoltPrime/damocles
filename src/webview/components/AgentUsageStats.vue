@@ -52,15 +52,25 @@ const costClasses = computed(() => (props.variant === 'card' ? `font-medium ${pr
   <span :class="variant === 'card' ? 'contents' : undefined">
     <template v-if="totalTokens > 0">
       <span :class="separatorClasses">{{ separatorText }}</span>
-      <span data-part="tokens" :title="tokensTooltip">{{ t('agentUsage.tokens', { n: formatTokenCount(totalTokens, locale) }, totalTokens) }}</span>
+      <span
+        data-part="tokens"
+        :title="tokensTooltip"
+      >{{ t('agentUsage.tokens', { n: formatTokenCount(totalTokens, locale) }, totalTokens) }}</span>
     </template>
     <template v-if="cachePct !== null">
       <span :class="separatorClasses">{{ separatorText }}</span>
-      <span data-part="cache" :title="t('agentUsage.cacheHitTooltip')">{{ t('agentUsage.cacheHit', { pct: cachePct }) }}</span>
+      <span
+        data-part="cache"
+        :title="t('agentUsage.cacheHitTooltip')"
+      >{{ t('agentUsage.cacheHit', { pct: cachePct }) }}</span>
     </template>
     <template v-if="usage.costUsd > 0">
       <span :class="separatorClasses">{{ separatorText }}</span>
-      <span data-part="cost" :class="costClasses" :title="costTitle(dollarBilled)">{{ costLabel(usage.costUsd, dollarBilled) }}</span>
+      <span
+        data-part="cost"
+        :class="costClasses"
+        :title="costTitle(dollarBilled)"
+      >{{ costLabel(usage.costUsd, dollarBilled) }}</span>
     </template>
   </span>
 </template>

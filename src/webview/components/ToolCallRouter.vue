@@ -60,12 +60,30 @@ const agentSubagent = computed(() =>
     :subagent="agentSubagent"
     @expand="emit('expandSubagent', toolUseId)"
   />
-  <QuestionToolCard v-else-if="toolName === TOOL_ASK_USER_QUESTION" :tool-call="toolCall" />
-  <FormToolCard v-else-if="toolName === TOOL_BROWSER_REQUEST_INPUT" :tool-call="toolCall" />
-  <ExitPlanModeToolCard v-else-if="toolName === TOOL_EXIT_PLAN_MODE" :tool-call="toolCall" />
-  <EnterPlanModeToolCard v-else-if="toolName === TOOL_ENTER_PLAN_MODE" :tool-call="toolCall" />
-  <SkillToolCard v-else-if="toolName === TOOL_SKILL" :tool-call="toolCall" />
-  <SteerSubagentToolCard v-else-if="toolName === TOOL_STEER_SUBAGENT" :tool-call="toolCall" />
+  <QuestionToolCard
+    v-else-if="toolName === TOOL_ASK_USER_QUESTION"
+    :tool-call="toolCall"
+  />
+  <FormToolCard
+    v-else-if="toolName === TOOL_BROWSER_REQUEST_INPUT"
+    :tool-call="toolCall"
+  />
+  <ExitPlanModeToolCard
+    v-else-if="toolName === TOOL_EXIT_PLAN_MODE"
+    :tool-call="toolCall"
+  />
+  <EnterPlanModeToolCard
+    v-else-if="toolName === TOOL_ENTER_PLAN_MODE"
+    :tool-call="toolCall"
+  />
+  <SkillToolCard
+    v-else-if="toolName === TOOL_SKILL"
+    :tool-call="toolCall"
+  />
+  <SteerSubagentToolCard
+    v-else-if="toolName === TOOL_STEER_SUBAGENT"
+    :tool-call="toolCall"
+  />
   <ToolCallCard
     v-else-if="toolName !== TEAM_CREATE_TOOL"
     :tool-call="toolCall"

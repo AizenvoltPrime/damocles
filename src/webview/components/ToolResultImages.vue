@@ -61,8 +61,17 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div v-if="imageCount > 0" class="flex flex-wrap gap-2 pl-2" data-testid="tool-result-images">
-    <div v-if="state === 'loading'" role="status" aria-busy="true" class="flex flex-wrap gap-2">
+  <div
+    v-if="imageCount > 0"
+    class="flex flex-wrap gap-2 pl-2"
+    data-testid="tool-result-images"
+  >
+    <div
+      v-if="state === 'loading'"
+      role="status"
+      aria-busy="true"
+      class="flex flex-wrap gap-2"
+    >
       <span class="sr-only">{{ t('toolOverlay.loadingResultImages') }}</span>
       <div
         v-for="index in imageCount"
@@ -84,9 +93,14 @@ onUnmounted(() => {
           :src="url"
           alt=""
           class="max-w-64 max-h-64 rounded-md border border-border object-contain"
-        />
+        >
       </button>
     </template>
-    <p v-else class="text-sm text-muted-foreground italic">{{ t('toolOverlay.resultImagesUnavailable') }}</p>
+    <p
+      v-else
+      class="text-sm text-muted-foreground italic"
+    >
+      {{ t('toolOverlay.resultImagesUnavailable') }}
+    </p>
   </div>
 </template>

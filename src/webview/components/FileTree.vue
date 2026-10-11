@@ -34,8 +34,13 @@ function getDirectory(path: string): string {
 </script>
 
 <template>
-  <div v-if="files.length > 0" class="border border-border rounded p-2">
-    <div class="text-xs font-medium mb-2 opacity-70">{{ t('fileTree.title') }}</div>
+  <div
+    v-if="files.length > 0"
+    class="border border-border rounded p-2"
+  >
+    <div class="text-xs font-medium mb-2 opacity-70">
+      {{ t('fileTree.title') }}
+    </div>
 
     <div class="space-y-1">
       <div

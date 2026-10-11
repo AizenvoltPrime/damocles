@@ -33,11 +33,23 @@ const label = computed(() => memoryLabel(props.memory.title, props.memory.snippe
       :aria-label="t('contextInjection.badge.pinned')"
       data-badge="pinned"
     />
-    <span class="min-w-0 flex-1 truncate text-(--d-text)" :title="memory.title ?? memory.snippet">{{ memory.title ?? memory.snippet }}</span>
-    <Badge v-if="forgotten" variant="outline" class="shrink-0 border-[color-mix(in_srgb,var(--d-danger)_40%,transparent)] px-1 py-0 text-10 text-(--d-danger)" data-badge="forgotten">
+    <span
+      class="min-w-0 flex-1 truncate text-(--d-text)"
+      :title="memory.title ?? memory.snippet"
+    >{{ memory.title ?? memory.snippet }}</span>
+    <Badge
+      v-if="forgotten"
+      variant="outline"
+      class="shrink-0 border-[color-mix(in_srgb,var(--d-danger)_40%,transparent)] px-1 py-0 text-10 text-(--d-danger)"
+      data-badge="forgotten"
+    >
       {{ t('contextInjection.badge.forgotten') }}
     </Badge>
-    <Badge variant="outline" class="shrink-0 px-1 py-0 text-10" :class="scopeBadgeClass(memory.scope)">
+    <Badge
+      variant="outline"
+      class="shrink-0 px-1 py-0 text-10"
+      :class="scopeBadgeClass(memory.scope)"
+    >
       {{ t(`memory.scope.${memory.scope}`) }} · {{ t(`memory.kind.${memory.kind}`) }} · {{ t(`contextInjection.tier.${memory.tier}`) }}
     </Badge>
     <span class="shrink-0 text-10 text-(--d-muted) tabular-nums">

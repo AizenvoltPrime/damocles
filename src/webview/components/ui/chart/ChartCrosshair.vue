@@ -43,6 +43,12 @@ function color(_d: unknown, i: number): string {
 </script>
 
 <template>
-  <VisTooltip :horizontal-shift="20" :vertical-shift="20" />
-  <VisCrosshair :template="template" :color="color" />
+  <VisTooltip
+    :horizontal-shift="20"
+    :vertical-shift="20"
+  />
+  <VisCrosshair
+    :template="template"
+    :color="color"
+  />
 </template>

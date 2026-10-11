@@ -167,9 +167,17 @@ const tableCaption = computed(() => t('usageStats.chart.tableCaption', labelPart
 </script>
 
 <template>
-  <section class="space-y-2 rounded-lg border border-(--d-border) px-3 pt-2.5 pb-2" :aria-labelledby="headingId">
+  <section
+    class="space-y-2 rounded-lg border border-(--d-border) px-3 pt-2.5 pb-2"
+    :aria-labelledby="headingId"
+  >
     <div class="flex flex-wrap items-center gap-2">
-      <h3 :id="headingId" class="min-w-30 flex-1 truncate text-xs font-semibold">{{ t('usageStats.chart.title') }}</h3>
+      <h3
+        :id="headingId"
+        class="min-w-30 flex-1 truncate text-xs font-semibold"
+      >
+        {{ t('usageStats.chart.title') }}
+      </h3>
       <SegmentedToggle
         :model-value="metric"
         :options="metricOptions"
@@ -196,36 +204,107 @@ const tableCaption = computed(() => t('usageStats.chart.tableCaption', labelPart
       :aria-describedby="tableId"
       class="text-xs [--vis-axis-grid-color:var(--chart-grid)] [--vis-axis-tick-label-color:var(--muted-foreground)] [--vis-axis-label-color:var(--muted-foreground)] [--vis-axis-domain-color:var(--chart-grid)] [--vis-axis-tick-color:var(--chart-grid)] [--vis-font-family:var(--d-font)] [--vis-axis-font-family:var(--d-font)] [--vis-axis-tick-label-font-size:0.75rem] [--vis-crosshair-line-stroke-color:var(--muted-foreground)] [--vis-crosshair-circle-stroke-color:var(--card)] [--vis-tooltip-background-color:transparent] [--vis-tooltip-border-color:transparent] [--vis-tooltip-padding:0px] [--vis-tooltip-text-color:var(--popover-foreground)] [--vis-stacked-bar-stroke-color:transparent]"
     >
-      <VisXYContainer :data="data" :height="remPx(CHART_HEIGHT_REM)" :duration="0" :y-domain="allZero ? [0, 1] : undefined">
-        <VisStackedBar :x="x" :y="y" :color="color" :bar-padding="0.2" :rounded-corners="2" />
-        <VisAxis type="x" :tick-values="tickValues" :tick-format="xTick" :grid-line="false" :tick-line="false" :domain-line="false" />
-        <VisAxis type="y" :num-ticks="4" :tick-format="yTick" :tick-line="false" :domain-line="false" />
-        <ChartCrosshair :colors="categories.map((c) => c.color)" :items="legendItems" :index="TITLE_KEY" :custom-tooltip="Tooltip" :tooltip-key="`${locale}:${panelDollarBilled}`" />
+      <VisXYContainer
+        :data="data"
+        :height="remPx(CHART_HEIGHT_REM)"
+        :duration="0"
+        :y-domain="allZero ? [0, 1] : undefined"
+      >
+        <VisStackedBar
+          :x="x"
+          :y="y"
+          :color="color"
+          :bar-padding="0.2"
+          :rounded-corners="2"
+        />
+        <VisAxis
+          type="x"
+          :tick-values="tickValues"
+          :tick-format="xTick"
+          :grid-line="false"
+          :tick-line="false"
+          :domain-line="false"
+        />
+        <VisAxis
+          type="y"
+          :num-ticks="4"
+          :tick-format="yTick"
+          :tick-line="false"
+          :domain-line="false"
+        />
+        <ChartCrosshair
+          :colors="categories.map((c) => c.color)"
+          :items="legendItems"
+          :index="TITLE_KEY"
+          :custom-tooltip="Tooltip"
+          :tooltip-key="`${locale}:${panelDollarBilled}`"
+        />
       </VisXYContainer>
     </div>
 
-    <table :id="tableId" class="sr-only" data-chart-table>
+    <table
+      :id="tableId"
+      class="sr-only"
+      data-chart-table
+    >
       <caption>{{ tableCaption }}</caption>
       <thead>
         <tr>
-          <th scope="col">{{ t('usageStats.chart.period') }}</th>
-          <th v-for="c in categories" :key="c.key" scope="col">{{ categoryLabel(c.key) }}</th>
-          <th scope="col">{{ t('usageStats.chart.total') }}</th>
+          <th scope="col">
+            {{ t('usageStats.chart.period') }}
+          </th>
+          <th
+            v-for="c in categories"
+            :key="c.key"
+            scope="col"
+          >
+            {{ categoryLabel(c.key) }}
+          </th>
+          <th scope="col">
+            {{ t('usageStats.chart.total') }}
+          </th>
         </tr>
       </thead>
       <tbody>
-        <tr v-for="row in tableRows" :key="row.title">
-          <th scope="row">{{ row.title }}</th>
-          <td v-for="(value, i) in row.values" :key="i">{{ value }}</td>
+        <tr
+          v-for="row in tableRows"
+          :key="row.title"
+        >
+          <th scope="row">
+            {{ row.title }}
+          </th>
+          <td
+            v-for="(value, i) in row.values"
+            :key="i"
+          >
+            {{ value }}
+          </td>
           <td>{{ row.total }}</td>
         </tr>
       </tbody>
     </table>
 
-    <ul class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-(--d-muted)" data-chart-legend>
-      <li v-for="c in legend" :key="c.key" class="flex min-w-0 items-center gap-1.5" :title="c.key.includes('/') ? c.key : undefined">
-        <span class="size-2.5 shrink-0 rounded-sm" :style="{ backgroundColor: c.color }" aria-hidden="true" />
-        <ProviderLogo v-if="c.provider" :provider="c.provider" class="size-3.5" data-model-logo />
+    <ul
+      class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-(--d-muted)"
+      data-chart-legend
+    >
+      <li
+        v-for="c in legend"
+        :key="c.key"
+        class="flex min-w-0 items-center gap-1.5"
+        :title="c.key.includes('/') ? c.key : undefined"
+      >
+        <span
+          class="size-2.5 shrink-0 rounded-sm"
+          :style="{ backgroundColor: c.color }"
+          aria-hidden="true"
+        />
+        <ProviderLogo
+          v-if="c.provider"
+          :provider="c.provider"
+          class="size-3.5"
+          data-model-logo
+        />
         <span class="truncate">{{ c.label }}</span>
       </li>
     </ul>

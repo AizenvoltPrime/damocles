@@ -218,7 +218,9 @@ function barSegments(rows: readonly Row[]): Array<{ id: string; color: string; w
       :class="{ '@4xl:col-span-2': section.id === 'source' }"
     >
       <div class="flex flex-wrap items-center gap-2">
-        <h3 class="flex-1 truncate text-xs font-semibold">{{ section.title }}</h3>
+        <h3 class="flex-1 truncate text-xs font-semibold">
+          {{ section.title }}
+        </h3>
         <template v-if="section.id === 'project'">
           <Badge
             v-for="chip in projectChips"
@@ -242,7 +244,11 @@ function barSegments(rows: readonly Row[]): Array<{ id: string; color: string; w
         </template>
       </div>
 
-      <div class="flex h-2 w-full overflow-hidden rounded-sm bg-(--d-hover)" aria-hidden="true" data-breakdown-bar>
+      <div
+        class="flex h-2 w-full overflow-hidden rounded-sm bg-(--d-hover)"
+        aria-hidden="true"
+        data-breakdown-bar
+      >
         <span
           v-for="seg in barSegments(section.rows)"
           :key="seg.id"
@@ -253,7 +259,9 @@ function barSegments(rows: readonly Row[]): Array<{ id: string; color: string; w
       </div>
 
       <Table class="text-xs">
-        <TableCaption class="sr-only">{{ section.title }}</TableCaption>
+        <TableCaption class="sr-only">
+          {{ section.title }}
+        </TableCaption>
         <TableHeader>
           <TableRow class="bg-(--d-panel) hover:bg-(--d-panel)">
             <TableHead
@@ -272,14 +280,23 @@ function barSegments(rows: readonly Row[]): Array<{ id: string; color: string; w
                 @click="toggleSort(section.id, col.id)"
               >
                 <span>{{ col.label }}</span>
-                <IconArrowDown v-if="ariaSort(section.id, col.id) === 'descending'" class="size-2.5" />
-                <IconArrowUp v-else-if="ariaSort(section.id, col.id) === 'ascending'" class="size-2.5" />
+                <IconArrowDown
+                  v-if="ariaSort(section.id, col.id) === 'descending'"
+                  class="size-2.5"
+                />
+                <IconArrowUp
+                  v-else-if="ariaSort(section.id, col.id) === 'ascending'"
+                  class="size-2.5"
+                />
               </button>
             </TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          <template v-for="row in sorted(section.id, section.rows)" :key="row.id">
+          <template
+            v-for="row in sorted(section.id, section.rows)"
+            :key="row.id"
+          >
             <TableRow
               :data-row="row.id"
               :class="{ 'cursor-pointer': row.projectKey !== undefined }"
@@ -296,54 +313,119 @@ function barSegments(rows: readonly Row[]): Array<{ id: string; color: string; w
                     data-expand
                     @click.stop="toggleExpanded(row.id)"
                   >
-                    <IconChevronDown v-if="expanded.has(row.id)" class="size-3" />
-                    <IconChevronRight v-else class="size-3" />
+                    <IconChevronDown
+                      v-if="expanded.has(row.id)"
+                      class="size-3"
+                    />
+                    <IconChevronRight
+                      v-else
+                      class="size-3"
+                    />
                   </button>
-                  <span class="size-2 shrink-0 rounded-sm" :style="{ backgroundColor: row.color }" aria-hidden="true" />
-                  <ProviderLogo v-if="row.provider" :provider="row.provider" class="size-3.5" data-model-logo />
+                  <span
+                    class="size-2 shrink-0 rounded-sm"
+                    :style="{ backgroundColor: row.color }"
+                    aria-hidden="true"
+                  />
+                  <ProviderLogo
+                    v-if="row.provider"
+                    :provider="row.provider"
+                    class="size-3.5"
+                    data-model-logo
+                  />
                   <button
                     v-if="row.projectKey !== undefined"
                     type="button"
                     class="cursor-pointer truncate text-left hover:underline"
                     :title="row.title ? `${row.title}\n${t('usageStats.breakdown.drillHint')}` : t('usageStats.breakdown.drillHint')"
-                  >{{ row.label }}</button>
-                  <span v-else class="truncate" :title="row.title">{{ row.label }}</span>
+                  >
+                    {{ row.label }}
+                  </button>
+                  <span
+                    v-else
+                    class="truncate"
+                    :title="row.title"
+                  >{{ row.label }}</span>
                   <Badge
                     v-if="row.agg.unpricedTokens > 0"
                     variant="outline"
                     class="shrink-0 px-1.5 py-0 text-10 font-normal text-(--d-muted)"
                     :title="t('usageStats.breakdown.unpricedTitle', { tokens: format.integer(row.agg.unpricedTokens) }, row.agg.unpricedTokens)"
                     data-unpriced
-                  >{{ t('usageStats.breakdown.unpriced') }}</Badge>
+                  >
+                    {{ t('usageStats.breakdown.unpriced') }}
+                  </Badge>
                 </div>
               </TableCell>
-              <TableCell class="whitespace-nowrap px-2 py-1.5 text-right font-mono text-11.5 tabular-nums" :title="spendTitle(row.agg.cost, tokensOf(row.agg))" data-cost>{{ spendLabel(row.agg.cost, tokensOf(row.agg)) }}</TableCell>
-              <TableCell class="whitespace-nowrap px-2 py-1.5 text-right font-mono text-11.5 text-(--d-muted) tabular-nums" :title="format.integer(tokensOf(row.agg))">{{ format.tokens(tokensOf(row.agg)) }}</TableCell>
+              <TableCell
+                class="whitespace-nowrap px-2 py-1.5 text-right font-mono text-11.5 tabular-nums"
+                :title="spendTitle(row.agg.cost, tokensOf(row.agg))"
+                data-cost
+              >
+                {{ spendLabel(row.agg.cost, tokensOf(row.agg)) }}
+              </TableCell>
+              <TableCell
+                class="whitespace-nowrap px-2 py-1.5 text-right font-mono text-11.5 text-(--d-muted) tabular-nums"
+                :title="format.integer(tokensOf(row.agg))"
+              >
+                {{ format.tokens(tokensOf(row.agg)) }}
+              </TableCell>
               <TableCell class="whitespace-nowrap px-2 py-1.5 text-right font-mono text-11 text-(--d-muted) tabular-nums">
                 <span class="inline-flex items-center justify-end gap-1.5">
-                  <span class="h-0.75 w-7.5 overflow-hidden rounded-xs bg-(--d-hover)" aria-hidden="true"><span class="block h-full origin-left bg-(--d-muted) rtl:origin-right" :style="{ transform: `scaleX(${share(row.agg) ?? 0})` }" /></span>{{ percentText(share(row.agg)) }}
+                  <span
+                    class="h-0.75 w-7.5 overflow-hidden rounded-xs bg-(--d-hover)"
+                    aria-hidden="true"
+                  ><span
+                    class="block h-full origin-left bg-(--d-muted) rtl:origin-right"
+                    :style="{ transform: `scaleX(${share(row.agg) ?? 0})` }"
+                  /></span>{{ percentText(share(row.agg)) }}
                 </span>
               </TableCell>
-              <TableCell class="whitespace-nowrap px-2 py-1.5 text-right font-mono text-11 text-(--d-muted) tabular-nums">{{ percentText(hitRate(row.agg)) }}</TableCell>
+              <TableCell class="whitespace-nowrap px-2 py-1.5 text-right font-mono text-11 text-(--d-muted) tabular-nums">
+                {{ percentText(hitRate(row.agg)) }}
+              </TableCell>
             </TableRow>
             <template v-if="row.children && expanded.has(row.id)">
-              <TableRow v-for="child in row.children" :key="child.id" :data-row="child.id" data-source-detail class="bg-[color-mix(in_srgb,var(--d-hover)_30%,transparent)]">
+              <TableRow
+                v-for="child in row.children"
+                :key="child.id"
+                :data-row="child.id"
+                data-source-detail
+                class="bg-[color-mix(in_srgb,var(--d-hover)_30%,transparent)]"
+              >
                 <TableCell class="w-full max-w-0 py-1 pl-8 pr-2">
                   <div class="flex min-w-0 items-center gap-1.5">
-                    <span class="truncate" :title="child.title">{{ child.label }}</span>
+                    <span
+                      class="truncate"
+                      :title="child.title"
+                    >{{ child.label }}</span>
                     <Badge
                       v-if="child.agg.unpricedTokens > 0"
                       variant="outline"
                       class="shrink-0 px-1.5 py-0 text-10 font-normal text-(--d-muted)"
                       :title="t('usageStats.breakdown.unpricedTitle', { tokens: format.integer(child.agg.unpricedTokens) }, child.agg.unpricedTokens)"
                       data-unpriced
-                    >{{ t('usageStats.breakdown.unpriced') }}</Badge>
+                    >
+                      {{ t('usageStats.breakdown.unpriced') }}
+                    </Badge>
                   </div>
                 </TableCell>
-                <TableCell class="whitespace-nowrap px-2 py-1 text-right tabular-nums" :title="spendTitle(child.agg.cost, tokensOf(child.agg))" data-cost>{{ spendLabel(child.agg.cost, tokensOf(child.agg)) }}</TableCell>
-                <TableCell class="whitespace-nowrap px-2 py-1 text-right tabular-nums">{{ format.tokens(tokensOf(child.agg)) }}</TableCell>
-                <TableCell class="whitespace-nowrap px-2 py-1 text-right tabular-nums">{{ percentText(share(child.agg)) }}</TableCell>
-                <TableCell class="whitespace-nowrap px-2 py-1 text-right tabular-nums">{{ percentText(hitRate(child.agg)) }}</TableCell>
+                <TableCell
+                  class="whitespace-nowrap px-2 py-1 text-right tabular-nums"
+                  :title="spendTitle(child.agg.cost, tokensOf(child.agg))"
+                  data-cost
+                >
+                  {{ spendLabel(child.agg.cost, tokensOf(child.agg)) }}
+                </TableCell>
+                <TableCell class="whitespace-nowrap px-2 py-1 text-right tabular-nums">
+                  {{ format.tokens(tokensOf(child.agg)) }}
+                </TableCell>
+                <TableCell class="whitespace-nowrap px-2 py-1 text-right tabular-nums">
+                  {{ percentText(share(child.agg)) }}
+                </TableCell>
+                <TableCell class="whitespace-nowrap px-2 py-1 text-right tabular-nums">
+                  {{ percentText(hitRate(child.agg)) }}
+                </TableCell>
               </TableRow>
             </template>
           </template>

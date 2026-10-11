@@ -36,10 +36,16 @@ function handleClick(): void {
       :src="thumbnailUrl"
       alt=""
       class="size-6 shrink-0 rounded-5 object-cover"
+    >
+    <IconImage
+      v-else
+      class="size-3.5 ms-1 shrink-0 text-(--d-muted)"
     />
-    <IconImage v-else class="size-3.5 ms-1 shrink-0 text-(--d-muted)" />
     <span class="truncate max-w-[20ch]">{{ displayName }}</span>
-    <span v-if="hasDimensions" class="shrink-0 font-mono text-11 tabular-nums text-(--d-muted)">{{ width }}×{{ height }}</span>
+    <span
+      v-if="hasDimensions"
+      class="shrink-0 font-mono text-11 tabular-nums text-(--d-muted)"
+    >{{ width }}×{{ height }}</span>
     <slot />
   </button>
 </template>

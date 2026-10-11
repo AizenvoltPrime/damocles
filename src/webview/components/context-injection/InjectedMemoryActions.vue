@@ -50,11 +50,20 @@ function openInPanel(): void {
       :data-action="isPinned ? 'unpin' : 'pin'"
       @click="togglePin"
     >
-      <PinOff v-if="isPinned" class="size-3" />
-      <Pin v-else class="size-3" />
+      <PinOff
+        v-if="isPinned"
+        class="size-3"
+      />
+      <Pin
+        v-else
+        class="size-3"
+      />
     </Button>
 
-    <Popover v-if="!forgotten" v-model:open="confirmOpen">
+    <Popover
+      v-if="!forgotten"
+      v-model:open="confirmOpen"
+    >
       <PopoverTrigger as-child>
         <Button
           variant="ghost"
@@ -67,13 +76,28 @@ function openInPanel(): void {
           <EyeOff class="size-3" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent class="w-64 space-y-3 p-3 text-xs/relaxed" align="end">
+      <PopoverContent
+        class="w-64 space-y-3 p-3 text-xs/relaxed"
+        align="end"
+      >
         <p>{{ t('contextInjection.action.forgetConfirm') }}</p>
         <div class="flex justify-end gap-2">
-          <Button variant="ghost" size="sm" class="h-7 px-2 text-xs" data-action="forget-cancel" @click="confirmOpen = false">
+          <Button
+            variant="ghost"
+            size="sm"
+            class="h-7 px-2 text-xs"
+            data-action="forget-cancel"
+            @click="confirmOpen = false"
+          >
             {{ t('contextInjection.action.cancel') }}
           </Button>
-          <Button variant="destructive" size="sm" class="h-7 px-2 text-xs" data-action="forget-confirm" @click="confirmForget">
+          <Button
+            variant="destructive"
+            size="sm"
+            class="h-7 px-2 text-xs"
+            data-action="forget-confirm"
+            @click="confirmForget"
+          >
             {{ t('contextInjection.action.forget') }}
           </Button>
         </div>

@@ -124,10 +124,10 @@ const follow = useStickToBottom(
             <slot name="subtitle">
               {{ subtitle }}
             </slot>
+          </div>
         </div>
-      </div>
 
-      <slot name="header-actions" />
+        <slot name="header-actions" />
 
         <button
           type="button"
@@ -143,7 +143,7 @@ const follow = useStickToBottom(
             aria-hidden="true"
           />
         </button>
-    </header>
+      </header>
 
       <div
         ref="body"
@@ -152,7 +152,7 @@ const follow = useStickToBottom(
         :class="[fill ? 'flex-1' : 'flex-[0_1_auto]', followKey !== undefined && 'outline-none']"
         style="scrollbar-gutter: stable"
       >
-      <slot />
+        <slot />
         <!-- Last in the body, so sticking to its bottom holds the button at the body's bottom edge. -->
         <div
           v-if="followKey !== undefined"
@@ -166,9 +166,9 @@ const follow = useStickToBottom(
             />
           </Transition>
         </div>
-    </div>
+      </div>
 
-    <slot name="footer" />
-  </div>
+      <slot name="footer" />
+    </div>
   </div>
 </template>

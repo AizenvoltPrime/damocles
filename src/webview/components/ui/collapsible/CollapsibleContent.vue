@@ -7,7 +7,10 @@ const props = defineProps<CollapsibleContentProps>()
 </script>
 
 <template>
-  <CollapsibleContent v-bind="definedProps(props)" class="d-collapsible overflow-hidden transition-all">
+  <CollapsibleContent
+    v-bind="definedProps(props)"
+    class="d-collapsible overflow-hidden transition-all"
+  >
     <slot />
   </CollapsibleContent>
 </template>

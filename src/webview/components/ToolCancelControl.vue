@@ -86,7 +86,11 @@ function submit(): void {
 
 <template>
   <!-- Stops the click so pressing Stop or typing a note never expands the card underneath. -->
-  <div v-if="isVisible" class="flex items-center gap-1 shrink-0" @click.stop>
+  <div
+    v-if="isVisible"
+    class="flex items-center gap-1 shrink-0"
+    @click.stop
+  >
     <template v-if="isNoteMode && !isStopping">
       <!-- One line is the h-6 buttons' height (hence pb-0.5); max-h-18 holds four lines, then the note scrolls. -->
       <textarea
@@ -98,11 +102,21 @@ function submit(): void {
         class="max-h-18 w-44 min-h-6 resize-none overflow-x-hidden overflow-y-auto rounded-md border border-input bg-background px-2 pb-0.5 pt-1 text-xs/4 text-foreground field-sizing-content placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         @keydown="handleNoteKeydown"
         @keydown.esc.stop.prevent="closeNote"
-      ></textarea>
-      <Button variant="secondary" size="sm" class="h-6 px-2 text-xs" @click="submit">
+      />
+      <Button
+        variant="secondary"
+        size="sm"
+        class="h-6 px-2 text-xs"
+        @click="submit"
+      >
         {{ t("toolCall.cancelNoteSubmit") }}
       </Button>
-      <Button variant="ghost" size="sm" class="h-6 px-2 text-xs" @click="closeNote">
+      <Button
+        variant="ghost"
+        size="sm"
+        class="h-6 px-2 text-xs"
+        @click="closeNote"
+      >
         {{ t("toolCall.cancelNoteBack") }}
       </Button>
     </template>

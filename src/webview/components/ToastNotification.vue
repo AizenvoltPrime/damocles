@@ -85,7 +85,10 @@ defineExpose({ addToast });
             typeStyles[toast.type]
           ]"
         >
-          <component :is="typeIcons[toast.type]" class="size-4 shrink-0" />
+          <component
+            :is="typeIcons[toast.type]"
+            class="size-4 shrink-0"
+          />
           <span class="flex-1">{{ toast.message }}</span>
           <Button
             variant="ghost"

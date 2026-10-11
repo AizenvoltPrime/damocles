@@ -271,7 +271,7 @@ onUnmounted(() => {
             :aria-label="t('session.renameSession')"
             @keyup.enter="submitRename"
             @keyup.escape="cancelRename"
-          />
+          >
           <button
             type="button"
             class="d-tool-btn h-7 min-w-7 px-0 text-(--d-accent)"
@@ -311,7 +311,7 @@ onUnmounted(() => {
             :aria-label="t('session.tagSession')"
             @keyup.enter="submitTag"
             @keyup.escape="cancelTag"
-          />
+          >
           <button
             type="button"
             class="d-tool-btn h-7 min-w-7 px-0 text-(--d-accent)"

@@ -18,12 +18,30 @@ const isEmpty = computed(
 </script>
 
 <template>
-  <section class="space-y-1.5" :aria-label="t('contextInjection.query.label')">
-    <p v-if="isEmpty" class="text-xs text-(--d-muted)" data-query-empty>{{ t('contextInjection.query.none') }}</p>
+  <section
+    class="space-y-1.5"
+    :aria-label="t('contextInjection.query.label')"
+  >
+    <p
+      v-if="isEmpty"
+      class="text-xs text-(--d-muted)"
+      data-query-empty
+    >
+      {{ t('contextInjection.query.none') }}
+    </p>
 
-    <div v-if="query.terms.length > 0 || query.dropped.length > 0" class="flex flex-wrap items-center gap-1">
+    <div
+      v-if="query.terms.length > 0 || query.dropped.length > 0"
+      class="flex flex-wrap items-center gap-1"
+    >
       <span class="mr-1 text-11 text-(--d-muted)">{{ t('contextInjection.query.terms') }}</span>
-      <Badge v-for="term in query.terms" :key="`t:${term}`" variant="secondary" class="px-1.5 py-0 text-10 font-normal" data-query-term>
+      <Badge
+        v-for="term in query.terms"
+        :key="`t:${term}`"
+        variant="secondary"
+        class="px-1.5 py-0 text-10 font-normal"
+        data-query-term
+      >
         {{ term }}
       </Badge>
       <Badge
@@ -39,7 +57,10 @@ const isEmpty = computed(
       </Badge>
     </div>
 
-    <div v-if="query.mentionedIds.length > 0" class="flex flex-wrap items-center gap-1">
+    <div
+      v-if="query.mentionedIds.length > 0"
+      class="flex flex-wrap items-center gap-1"
+    >
       <span class="mr-1 text-11 text-(--d-muted)">{{ t('contextInjection.query.mentioned') }}</span>
       <Badge
         v-for="id in query.mentionedIds"
@@ -53,7 +74,10 @@ const isEmpty = computed(
       </Badge>
     </div>
 
-    <div v-if="query.files.length > 0" class="flex flex-wrap items-center gap-1">
+    <div
+      v-if="query.files.length > 0"
+      class="flex flex-wrap items-center gap-1"
+    >
       <span class="mr-1 text-11 text-(--d-muted)">{{ t('contextInjection.query.files') }}</span>
       <Badge
         v-for="file in query.files"
@@ -62,7 +86,10 @@ const isEmpty = computed(
         class="max-w-full gap-1 px-1.5 py-0 text-10 font-normal"
         :data-query-file="file.source"
       >
-        <span class="truncate font-mono" :title="file.path">{{ file.path }}</span>
+        <span
+          class="truncate font-mono"
+          :title="file.path"
+        >{{ file.path }}</span>
         <span class="shrink-0 text-(--d-muted)">{{ t(`contextInjection.query.fileSource.${file.source}`) }}</span>
       </Badge>
     </div>

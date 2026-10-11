@@ -952,7 +952,10 @@ function handleSuggestion(prompt: string) {
 
     <!-- The message area is the scroll-to-bottom button's positioning context. -->
     <div class="relative min-h-0 flex-1">
-      <Toaster position="top-right" :duration="4000" />
+      <Toaster
+        position="top-right"
+        :duration="4000"
+      />
 
       <!-- Marked as the overlay return-focus region: a transcript row can be recycled away while an overlay opened from it is up. -->
       <div

@@ -38,7 +38,10 @@ function openElementCode(attachment: ElementAttachment): void {
     v-if="attachments.length > 0"
     class="flex gap-2 p-2 overflow-x-auto border-b border-border/50"
   >
-    <template v-for="attachment in attachments" :key="attachment.id">
+    <template
+      v-for="attachment in attachments"
+      :key="attachment.id"
+    >
       <!-- Image card -->
       <div class="relative group shrink-0">
         <img
@@ -48,7 +51,7 @@ function openElementCode(attachment: ElementAttachment): void {
           class="size-16 object-cover rounded-md border border-border cursor-pointer hover:opacity-80 transition-opacity"
           :title="$t('elementAttachment.preview')"
           @click="openLightbox(attachment)"
-        />
+        >
         <div
           v-else
           class="size-16 rounded-md border border-border bg-muted flex items-center justify-center"
@@ -76,7 +79,10 @@ function openElementCode(attachment: ElementAttachment): void {
         />
         <div class="flex flex-col min-w-0">
           <span class="text-10 font-medium text-(--d-info) uppercase tracking-wider">{{ $t('elementAttachment.element') }}</span>
-          <span class="text-xs text-foreground truncate max-w-30" :title="attachment.selector">
+          <span
+            class="text-xs text-foreground truncate max-w-30"
+            :title="attachment.selector"
+          >
             {{ attachment.selector }}
           </span>
         </div>

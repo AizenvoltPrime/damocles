@@ -27,7 +27,10 @@ const accessibleName = computed(() => t('effortBadge.ariaLabel', { level: label.
     data-testid="effort-badge"
     :class="cn('text-10 px-1.5 py-0 gap-1 font-medium shrink-0', props.class)"
   >
-    <IconBrain aria-hidden="true" class="size-2.5 shrink-0" />
+    <IconBrain
+      aria-hidden="true"
+      class="size-2.5 shrink-0"
+    />
     <span aria-hidden="true">{{ label }}</span>
   </Badge>
 </template>

@@ -12,7 +12,11 @@ const delegatedProps = reactiveOmit(props, "class")
 </script>
 
 <template>
-  <TabsContent v-bind="definedProps(delegatedProps)" :value="props.value" :class="cn('flex-1 outline-none', props.class)">
+  <TabsContent
+    v-bind="definedProps(delegatedProps)"
+    :value="props.value"
+    :class="cn('flex-1 outline-none', props.class)"
+  >
     <slot />
   </TabsContent>
 </template>

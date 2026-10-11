@@ -63,8 +63,15 @@ function onUpdate(value: AcceptableValue | AcceptableValue[]): void {
         />
       </button>
     </PopoverTrigger>
-    <PopoverContent class="w-64 p-0" align="start">
-      <Command multiple :model-value="modelValue" @update:model-value="onUpdate">
+    <PopoverContent
+      class="w-64 p-0"
+      align="start"
+    >
+      <Command
+        multiple
+        :model-value="modelValue"
+        @update:model-value="onUpdate"
+      >
         <CommandInput :placeholder="t('usageStats.filters.search')" />
         <CommandList>
           <CommandEmpty>{{ t('usageStats.filters.noMatches') }}</CommandEmpty>
@@ -77,14 +84,25 @@ function onUpdate(value: AcceptableValue | AcceptableValue[]): void {
               class="text-xs"
             >
               <span class="flex size-4 shrink-0 items-center justify-center">
-                <IconCheck v-if="modelValue.includes(option.key)" class="size-3" />
+                <IconCheck
+                  v-if="modelValue.includes(option.key)"
+                  class="size-3"
+                />
               </span>
               <span class="truncate">{{ option.label }}</span>
             </CommandItem>
           </CommandGroup>
         </CommandList>
-        <div v-if="modelValue.length > 0" class="border-t border-(--d-border) p-1">
-          <Button variant="ghost" size="sm" class="h-7 w-full text-xs" @click="emit('update:modelValue', [])">
+        <div
+          v-if="modelValue.length > 0"
+          class="border-t border-(--d-border) p-1"
+        >
+          <Button
+            variant="ghost"
+            size="sm"
+            class="h-7 w-full text-xs"
+            @click="emit('update:modelValue', [])"
+          >
             {{ t('usageStats.filters.clear') }}
           </Button>
         </div>

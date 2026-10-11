@@ -253,7 +253,9 @@ function refresh(): void {
           v-else-if="provider.usage.status === 'error'"
           class="text-xs text-(--d-danger)"
         >
-          {{ t('usage.fetchError') }}<template v-if="provider.usage.error">: {{ provider.usage.error }}</template>
+          {{ t('usage.fetchError') }}<template v-if="provider.usage.error">
+            {{ `: ${provider.usage.error}` }}
+          </template>
         </p>
         <div
           v-else-if="provider.id === 'gpt' && provider.usage.usageUrl && provider.usage.bars.length === 0"

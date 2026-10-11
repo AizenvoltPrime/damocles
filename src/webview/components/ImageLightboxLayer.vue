@@ -18,7 +18,10 @@ const { zIndex } = useOverlayEscape(() => emit('close'));
 </script>
 
 <template>
-  <DialogRoot :open="true" @update:open="(v) => !v && emit('close')">
+  <DialogRoot
+    :open="true"
+    @update:open="(v) => !v && emit('close')"
+  >
     <DialogPortal>
       <DialogOverlay
         class="d-scrim fixed inset-0 bg-(--d-scrim) backdrop-blur-[6px]"
@@ -32,13 +35,15 @@ const { zIndex } = useOverlayEscape(() => emit('close'));
         :aria-describedby="undefined"
         @escape-key-down="(e: KeyboardEvent) => e.preventDefault()"
       >
-        <DialogTitle class="sr-only">{{ t('imageLightbox.title') }}</DialogTitle>
+        <DialogTitle class="sr-only">
+          {{ t('imageLightbox.title') }}
+        </DialogTitle>
         <div class="relative inline-block">
           <img
             :src="imageUrl"
             :alt="t('imageLightbox.enlarged')"
             class="max-h-[88vh] max-w-[90vw] rounded-xl border border-(--d-border2) object-contain shadow-(--d-shadow)"
-          />
+          >
           <DialogClose
             class="d-press absolute -top-3 -right-3 flex size-7.5 items-center justify-center rounded-9 border border-(--d-border2) bg-(--d-card) text-(--d-muted) shadow-(--d-shadow) transition-colors hover:bg-(--d-hover) hover:text-(--d-text)"
             :title="t('overlays.closeHint')"
