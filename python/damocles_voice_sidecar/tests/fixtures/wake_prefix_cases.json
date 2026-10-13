@@ -1,0 +1,151 @@
+{
+  "$comment": "Shared by src/core/voice/__tests__/wake-prefix-parity.test.ts and python/damocles_voice_sidecar/tests/test_wake_prefix.py: both sides must normalize each setting to the listed phrase and strip each transcript as listed. wake_prefix_corpus.json extends the strip cases with a generated corpus.",
+  "cases": [
+    {
+      "setting": "hey jarvis",
+      "phrase": "hey jarvis",
+      "strips": [
+        {
+          "text": "Hey Jarvis, open the file",
+          "expected": "open the file"
+        },
+        {
+          "text": "jarvis. run the tests",
+          "expected": "run the tests"
+        },
+        {
+          "text": "  HEY   JARVIS what time is it",
+          "expected": "what time is it"
+        },
+        {
+          "text": "Hey Jarvis,open the file",
+          "expected": "open the file"
+        },
+        {
+          "text": "jarvis...run the tests",
+          "expected": "run the tests"
+        },
+        {
+          "text": "jarvisx is a word",
+          "expected": "jarvisx is a word"
+        },
+        {
+          "text": "Jarvis's calendar for today",
+          "expected": "'s calendar for today",
+          "note": "An apostrophe is not a word character on either side, so the name is stripped and the possessive suffix stays."
+        },
+        {
+          "text": "say hey jarvis",
+          "expected": "say hey jarvis"
+        },
+        {
+          "text": "jarvis\u00e9 is a name",
+          "expected": "jarvis\u00e9 is a name",
+          "note": "A Unicode letter after the last word is a word character, so nothing is stripped."
+        },
+        {
+          "text": "jarvis2 run the tests",
+          "expected": "jarvis2 run the tests"
+        },
+        {
+          "text": "jarvis_x run the tests",
+          "expected": "jarvis_x run the tests"
+        },
+        {
+          "text": "hey\u00a0jarvis open the file",
+          "expected": "open the file",
+          "note": "U+00A0 is Unicode White_Space."
+        },
+        {
+          "text": "hey\u3000jarvis open the file",
+          "expected": "open the file",
+          "note": "U+3000 is Unicode White_Space."
+        },
+        {
+          "text": "hey\ufeffjarvis open the file",
+          "expected": "hey\ufeffjarvis open the file",
+          "note": "U+FEFF is not Unicode White_Space, so the phrase does not match."
+        },
+        {
+          "text": "hey\u001cjarvis open the file",
+          "expected": "hey\u001cjarvis open the file",
+          "note": "U+001C is not Unicode White_Space, so the phrase does not match."
+        },
+        {
+          "text": "Hey Jarvis, open the file\u0085",
+          "expected": "open the file",
+          "note": "U+0085 is Unicode White_Space, so the final trim removes it."
+        },
+        {
+          "text": "Hey Jarvis, open the file\ufeff",
+          "expected": "open the file\ufeff",
+          "note": "U+FEFF is not Unicode White_Space, so the final trim keeps it."
+        },
+        {
+          "text": "jarvi\u017f open the file",
+          "expected": "jarvi\u017f open the file",
+          "note": "Only ASCII letters match a wake word's letters."
+        },
+        {
+          "text": "jarv\u0130s open the file",
+          "expected": "jarv\u0130s open the file"
+        },
+        {
+          "text": "jarv\u0131s open the file",
+          "expected": "jarv\u0131s open the file"
+        },
+        {
+          "text": "Hey Jarvis\uff0c open the file",
+          "expected": "\uff0c open the file",
+          "note": "Only ASCII comma and period are trailing punctuation, so the fullwidth comma stays."
+        }
+      ]
+    },
+    {
+      "setting": "hey_jarvis",
+      "phrase": "hey jarvis",
+      "strips": []
+    },
+    {
+      "setting": "  Computer ",
+      "phrase": "computer",
+      "strips": [
+        {
+          "text": "Computer, list files",
+          "expected": "list files"
+        },
+        {
+          "text": "Computers are fast",
+          "expected": "Computers are fast"
+        }
+      ]
+    },
+    {
+      "setting": "ok   house robot",
+      "phrase": "ok house robot",
+      "strips": [
+        {
+          "text": "OK house robot. lights on",
+          "expected": "lights on"
+        },
+        {
+          "text": "robot lights on",
+          "expected": "lights on"
+        },
+        {
+          "text": "house robot lights on",
+          "expected": "house robot lights on"
+        }
+      ]
+    }
+  ],
+  "invalid": [
+    "",
+    "   ",
+    "C:\\models\\custom.onnx",
+    "/home/me/wake.onnx",
+    "hey-jarvis",
+    "jarvis2",
+    "one two three four five"
+  ]
+}

@@ -100,6 +100,7 @@ export const SETTINGS_VIEW_REQUESTS = [
   "deleteVoiceApiKey",
   "setVoiceLanguage",
   "setVoiceMode",
+  "setVoiceWakeWord",
   "setVoiceWakeWordSensitivity",
   "setVoiceTtsEnabled",
   "setVoiceTtsVoice",

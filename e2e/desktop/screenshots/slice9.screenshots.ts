@@ -34,7 +34,7 @@ console.log([0, 1, 2, 3, 4, 5, 6, 7].map((i) => '\x1b[4' + i + 'm   \x1b[0m').jo
 console.log([0, 1, 2, 3, 4, 5, 6, 7].map((i) => '\x1b[10' + i + 'm   \x1b[0m').join('') + '  bright');
 `;
 
-test('slice 9 captures', async ({ home, launch }) => {
+test('slice 9 captures', async ({ foreground: _foreground, home, launch }) => {
   fs.mkdirSync(OUT, { recursive: true });
   useTestProfile(home);
   fs.writeFileSync(path.join(home.project, 'colors.js'), COLORS_SCRIPT);

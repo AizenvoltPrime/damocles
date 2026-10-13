@@ -86,10 +86,9 @@ const baseConfig: ManagerConfig = {
   pythonSourceDir: "/fake/python-source",
   modelsDir: "/fake/models",
   runtimeMode: "cuda",
-  wakeWordEnabled: true,
+  wakePhrase: "hey jarvis",
   diagnostics: false,
   initPayload: {
-    wakeWord: "hey_jarvis",
     wakeSensitivity: 0.5,
     endOfTurnSilenceMs: 800,
     maxUtteranceMs: 30000,

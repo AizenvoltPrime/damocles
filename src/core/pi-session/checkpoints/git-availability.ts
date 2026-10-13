@@ -1,3 +1,4 @@
+import { gitExecutable } from '../../git-executable';
 import { execSafe } from './exec';
 
 export interface GitAvailability {
@@ -15,6 +16,6 @@ export function setCheckpointGitAvailability(availability: GitAvailability): voi
 /** Whether checkpoints can run git: the host's startup answer, or else a `git --version` probe. */
 export async function checkpointGitAvailability(): Promise<GitAvailability> {
   if (hostAnswer) return hostAnswer;
-  const probe = await execSafe('git', ['--version']);
+  const probe = await execSafe(gitExecutable, ['--version']);
   return probe.ok ? { available: true } : { available: false, reason: probe.error };
 }

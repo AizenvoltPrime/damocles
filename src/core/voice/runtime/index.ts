@@ -21,6 +21,7 @@ import {
   MissingCxxToolchainError,
 } from "./compiler-check";
 import { ensurePortAudio, MissingSystemLibraryError } from "./system-libs-check";
+import { requireVoiceRuntimePlatform } from "./supported-platforms";
 
 export type RuntimeMode = "auto" | "cuda" | "cpu";
 export type TorchChannel = "cu121" | "cu118" | "cpu";
@@ -142,6 +143,8 @@ export class VoiceRuntimeInstaller {
   }
 
   private async doInstallAll(opts: InstallAllOptions): Promise<InstallAllResult> {
+    // First, runtimePath included: the sidecar targets the pinned requirements.txt, which installs on no other host.
+    requireVoiceRuntimePlatform(process.platform, process.arch);
     await this.ensureInitialized();
     const onProgress = opts.onProgress ?? ((): void => {});
     const requestedMode: RuntimeMode = opts.runtimeMode ?? "auto";

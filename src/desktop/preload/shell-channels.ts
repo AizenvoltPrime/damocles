@@ -7,6 +7,7 @@ import type { UpdateAction, UpdateSnapshot } from './updates';
 import type { SettingsFileScope } from '../../shared/types/messages';
 import type { SearchFileKey, SearchFileResult, SearchQuery, SearchRange, SearchSortOrder } from '../../shared/text-search';
 import type { DamoclesTerminalApi } from './terminal-channels';
+import type { DamoclesScmApi, ScmChangesTab } from './scm-channels';
 import type { SEARCH_ACTIONS_POSITIONS, SEARCH_COLLAPSE_RESULTS, SEARCH_DEFAULT_VIEW_MODES, SEARCH_EDITOR_DOUBLE_CLICK, SEARCH_MODES } from '../main/desktop-configuration';
 
 export type { SearchFileKey, SearchFileResult, SearchMatch, SearchPreview, SearchQuery, SearchRange, SearchSortOrder } from '../../shared/text-search';
@@ -367,22 +368,32 @@ export interface ShellLayout {
     readonly projects: ShellSectionLayout;
     readonly files: ShellSectionLayout;
     readonly search: ShellSectionLayout;
+    readonly scm: ShellSectionLayout;
     readonly chats: { readonly collapsed: boolean };
   };
   readonly grid: ShellGridLayout;
   // by project key
   readonly search: { readonly [projectKey: string]: SearchViewState };
+  // Source control's View & Sort, global as in VS Code
+  readonly scm: ScmViewOptions;
+}
+
+export const SCM_VIEW_MODES = ['list', 'tree'] as const;
+export const SCM_SORT_KEYS = ['name', 'path', 'status'] as const;
+export interface ScmViewOptions {
+  readonly viewMode: (typeof SCM_VIEW_MODES)[number];
+  readonly sortKey: (typeof SCM_SORT_KEYS)[number];
 }
 
 // The parts of the layout the shell writes, each reported by its owner alone; main owns the rest.
-export type ShellSidebarLayout = Pick<ShellLayout, 'sidebarWidth' | 'sections' | 'search'>;
+export type ShellSidebarLayout = Pick<ShellLayout, 'sidebarWidth' | 'sections' | 'search' | 'scm'>;
 export type ShellGridSizes = Pick<ShellGridLayout, 'sideWidth' | 'bottomHeight'>;
 
 export type ShellFocusPart = 'sidebar' | 'editor' | 'terminal';
 export const SHELL_FOCUS_PARTS: readonly ShellFocusPart[] = ['sidebar', 'editor', 'terminal'];
 
 // Editor pane (main's editor-pane.ts relay). Ids are issued by main; the shell passes them back verbatim.
-export type EditorTabKind = 'code' | 'diff' | 'markdownPreview' | 'image' | 'untitled' | 'settings' | 'log' | 'notDisplayed' | 'browser' | 'searchEditor';
+export type EditorTabKind = 'code' | 'diff' | 'markdownPreview' | 'image' | 'untitled' | 'settings' | 'log' | 'notDisplayed' | 'browser' | 'searchEditor' | 'changes';
 export type EditorReadOnlyReason = 'encoding' | 'log' | 'outsideProject' | 'tooLarge';
 
 // A browser page of the selected chat (D14), as main observed it from the host messages core posts to the page.
@@ -403,7 +414,15 @@ export interface ShellEditorTab {
   // absent on diff and browser tabs
   readonly documentId?: string;
   // conflictCompare: the conflict bar's Compare, whose bar offers only Overwrite and Revert; either closes it
-  readonly diff?: { readonly originalId: string; readonly modifiedId: string; readonly added: number; readonly removed: number; readonly conflictCompare?: true };
+  // sides: absent when both are text
+  readonly diff?: {
+    readonly originalId: string;
+    readonly modifiedId: string;
+    readonly added: number;
+    readonly removed: number;
+    readonly conflictCompare?: true;
+    readonly sides?: { readonly original: ShellDiffSide; readonly modified: ShellDiffSide };
+  };
   // browser tabs only
   readonly browser?: ShellBrowserPage;
   // a browser tab's is the page's own title, which the shell shows without bidi controls
@@ -426,6 +445,8 @@ export interface ShellEditorTab {
   // searchEditor tabs only: main's config of the editor, whether its search runs, and what its message line says
   // untitled: no .code-search file yet, so a save asks where
   readonly searchEditor?: { readonly config: SearchEditorConfig; readonly running: boolean; readonly untitled: boolean; readonly message?: SearchEditorMessage };
+  // changes tabs only: a source control group's multi-file diff, whose entries main keeps current
+  readonly changes?: ScmChangesTab;
 }
 
 // A Search Editor's query (VS Code's SearchConfiguration without the notebook filters).
@@ -520,7 +541,16 @@ export type ShellDocumentContent =
     }
   // dataUrl: a size-capped data: URL of a png, jpeg, gif, webp, bmp, x-icon or svg+xml image, for an <img> only
   | { readonly kind: 'image'; readonly documentId: string; readonly dataUrl: string; readonly bytes: number }
-  | { readonly kind: 'notDisplayed'; readonly documentId: string; readonly reason: 'binary' | 'tooLarge' | 'unreadable'; readonly bytes?: number };
+  | { readonly kind: 'notDisplayed'; readonly documentId: string; readonly reason: NotDisplayedReason; readonly bytes?: number };
+
+// missing: a git side that does not exist there (a core-originated placeholder, never a file)
+export type NotDisplayedReason = 'binary' | 'tooLarge' | 'unreadable' | 'missing';
+
+// A diff side main sends as text, or one it never sends (VS Code's binary or large file placeholder). openable: the side is
+// the file on disk the tab's Open File shows in its own tab.
+export type ShellDiffSide =
+  | { readonly kind: 'text' }
+  | { readonly kind: 'notDisplayed'; readonly reason: NotDisplayedReason; readonly bytes?: number; readonly openable: boolean };
 
 export type DocumentEncoding = 'utf8' | 'utf16le' | 'utf16be';
 
@@ -707,6 +737,8 @@ export interface FileEntry {
   readonly name: string;
   // a symlink is listed by what it points to and never followed outside the project
   readonly kind: 'file' | 'dir';
+  // git ignores it (source control's check-ignore); the tree draws it faded
+  readonly ignored?: true;
 }
 
 export type FilesListResult =
@@ -742,7 +774,8 @@ export interface DropZonesPointer {
 
 export interface FilesChanged {
   readonly projectKey: string;
-  // '' is the project folder; each is a directory whose listing may have changed
+  // '' is the project folder; each is a directory whose listing may have changed; none: every folder the tree shows (files.exclude
+  // or what git ignores changed)
   readonly relativeDirs: readonly string[];
 }
 
@@ -1075,4 +1108,6 @@ export interface DamoclesShellApi {
   runUpdateAction(action: UpdateAction): Promise<void>;
   // the integrated terminal (terminal-channels.ts)
   readonly terminal: DamoclesTerminalApi;
+  // source control (scm-channels.ts)
+  readonly scm: DamoclesScmApi;
 }

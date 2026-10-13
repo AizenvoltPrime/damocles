@@ -2,7 +2,7 @@
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useEventListener, useResizeObserver } from '@vueuse/core';
-import { GitCompare, Globe, Image as ImageIcon, LoaderCircle, ScrollText, Search, Settings2, X } from 'lucide-vue-next';
+import { FileDiff, GitCompare, Globe, Image as ImageIcon, LoaderCircle, ScrollText, Search, Settings2, X } from 'lucide-vue-next';
 import type { Component } from 'vue';
 import type { DamoclesShellApi, FileRef, ShellEditorTab } from '../../preload/shell-channels';
 import type { OverlayMenuItem } from '../../preload/overlay-channels';
@@ -13,12 +13,15 @@ import { FILE_DRAG_MIME, serializeFileDragPayload } from '@shared/file-drag';
 import { fileIcon } from '../file-icons';
 import { tidyMenu } from '../../preload/overlay-channels';
 import { EDITOR_STORE } from './editor-store';
+import { SCM_STORE } from '../scm/scm-store';
+import { TONE_TEXT } from '../scm/scm-list';
 import { isBlankPage, pageText, pageTitle } from './browser-page';
 
 const props = defineProps<{ api: DamoclesShellApi; closeShortcut: string }>();
 const emit = defineEmits<{ revealInFiles: [file: FileRef]; focusOverlay: [] }>();
 const { t } = useI18n();
 const store = inject(EDITOR_STORE)!;
+const scm = inject(SCM_STORE)!;
 
 // The strip scrolls; the tabs and the active tab's bar sit in its content row, so the bar scrolls and clips with the tabs.
 const strip = ref<HTMLElement | null>(null);
@@ -60,6 +63,7 @@ watch(() => [store.state.value?.activeTabId, store.tabs.value.map((tab) => tab.i
 const KIND_ICONS: Partial<Record<ShellEditorTab['kind'], { icon: Component; color: string }>> = {
   browser: { icon: Globe, color: 'var(--d-info)' },
   diff: { icon: GitCompare, color: 'var(--d-warning)' },
+  changes: { icon: FileDiff, color: 'var(--d-warning)' },
   image: { icon: ImageIcon, color: 'var(--d-info)' },
   settings: { icon: Settings2, color: 'var(--d-muted)' },
   log: { icon: ScrollText, color: 'var(--d-muted)' },
@@ -75,6 +79,12 @@ const badgeOf = (tab: ShellEditorTab): string | undefined => {
   if (tab.kind === 'markdownPreview') return t('editor.tab.preview');
   if (tab.kind === 'log') return t('editor.tab.readOnly');
   return undefined;
+};
+// B3: a project file's tab takes its source control letter and tint; the tab's own deleted and conflict states win over them.
+const decorationOf = (tab: ShellEditorTab) => {
+  if (tab.deleted || tab.conflict || tab.kind === 'diff' || tab.kind === 'changes' || tab.relativePath === undefined) return undefined;
+  const decoration = scm.decorationOf(tab.projectKey, tab.relativePath);
+  return decoration?.letter === undefined ? undefined : { letter: decoration.letter, color: TONE_TEXT[decoration.tone], strike: decoration.strike, title: decoration.status ? t(`scm.status.${decoration.status}`) : undefined };
 };
 const isMarkdown = (tab: ShellEditorTab): boolean => tab.kind === 'markdownPreview' || (tab.kind === 'code' && /\.md$/i.test(tab.title));
 const fileOf = (tab: ShellEditorTab): FileRef | undefined =>
@@ -240,9 +250,9 @@ async function openMenu(tab: ShellEditorTab, anchor: { left: number; top: number
     item('focusOverlay', t('editor.menu.focusOverlay'), 'maximize-2'),
     ...(file ? [item('mention', t('editor.menu.mention'), 'at-sign')] : []),
     separator,
-    ...(tab.kind === 'untitled' ? [] : [item('copyPath', t('editor.menu.copyPath'), 'copy')]),
+    ...(tab.kind === 'untitled' || tab.kind === 'changes' ? [] : [item('copyPath', t('editor.menu.copyPath'), 'copy')]),
     ...(file ? [item('revealInFiles', t('editor.menu.revealInFiles'), 'list-tree')] : []),
-    ...(tab.kind === 'untitled' ? [] : [item('revealInExplorer', t('editor.menu.revealInExplorer'), 'folder-search')]),
+    ...(tab.kind === 'untitled' || tab.kind === 'changes' ? [] : [item('revealInExplorer', t('editor.menu.revealInExplorer'), 'folder-search')]),
   ];
   const answer = await props.api.requestOverlay({
     kind: 'menu',
@@ -352,8 +362,25 @@ function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
             <span
               data-testid="editor-tab-title"
               class="truncate text-12.5"
-              :class="tab.deleted ? 'text-(--d-danger-text) line-through' : tab.conflict ? 'text-(--d-warning-text)' : ''"
+              :class="tab.deleted ? 'text-(--d-danger-text) line-through' : tab.conflict ? 'text-(--d-warning-text)' : decorationOf(tab)?.strike ? 'line-through' : ''"
+              :style="decorationOf(tab) ? { color: decorationOf(tab)!.color } : undefined"
             >{{ titleOf(tab) }}</span>
+            <span
+              v-if="decorationOf(tab)"
+              data-testid="editor-tab-decoration"
+              aria-hidden="true"
+              class="shrink-0 font-mono text-10 font-semibold"
+              :style="{ color: decorationOf(tab)!.color }"
+              :title="decorationOf(tab)!.title"
+            >
+              <Transition name="t-letter">
+                <span :key="decorationOf(tab)!.letter">{{ decorationOf(tab)!.letter }}</span>
+              </Transition>
+            </span>
+            <span
+              v-if="decorationOf(tab)?.title"
+              class="sr-only"
+            >{{ decorationOf(tab)!.title }}</span>
             <span
               v-if="tab.deleted"
               class="sr-only"

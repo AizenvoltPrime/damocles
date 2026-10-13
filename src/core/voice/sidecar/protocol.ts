@@ -27,7 +27,6 @@ export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode];
 export type InitMessage = {
   type: "init";
   protocol_version: number;
-  wake_word: string;
   wake_sensitivity: number;
   end_of_turn_silence_ms: number;
   max_utterance_ms: number;
@@ -97,7 +96,6 @@ const inboundSchema: z.ZodType<SidecarInbound> = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("init"),
     protocol_version: z.number().int(),
-    wake_word: z.string(),
     wake_sensitivity: z.number().min(0.1).max(0.95),
     end_of_turn_silence_ms: z.number().int().min(300).max(3000),
     max_utterance_ms: z.number().int().min(5000).max(120000),

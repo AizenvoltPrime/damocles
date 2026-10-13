@@ -316,7 +316,7 @@ test('a page tab shown again resumes its live screencast, and the header\'s open
   expect((await browserTabs(app)).map((candidate) => candidate.browser.url)).toEqual([`${site.url}/ticking`]);
 });
 
-test('closing a page tab closes its page; deleting a chat closes its pages; a restart restores each chat\'s pages as its tabs', async ({ home, launch }) => {
+test('closing a page tab closes its page; deleting a chat closes its pages; a restart restores each chat\'s pages as its tabs', async ({ foreground: _foreground, home, launch }) => {
   enableBrowser(home);
   const { app, tab: first } = await launchWithBrowser(launch);
   const firstId = panelIdOf(first);

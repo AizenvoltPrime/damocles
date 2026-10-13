@@ -18,6 +18,7 @@ vi.mock("../../../../pi-session/checkpoints/exec", () => ({ exec: execMock }));
 vi.mock("../../../../logger", () => ({ log: logMock }));
 
 import { isLocalMcpFileUnignored } from "../mcp-local-gitignore";
+import { gitExecutable } from "../../../../git-executable";
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dam-mcp-ignore-"));
 const workspaceRoot = path.join(tmpRoot, "workspace");
@@ -128,7 +129,7 @@ describe("isLocalMcpFileUnignored", () => {
 
     expect(execMock).toHaveBeenCalledTimes(1);
     const [command, args, env, cwd, timeoutMs] = execMock.mock.calls[0]!;
-    expect(command).toBe("git");
+    expect(command).toBe(gitExecutable);
     // Order carries meaning here: `-c` overrides only apply before the subcommand, and everything
     // after `--` is a pathspec. The sibling integration suite proves git accepts this list.
     expect(args).toEqual([

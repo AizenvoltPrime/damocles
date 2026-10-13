@@ -92,19 +92,19 @@ export function desktopArtifactProblems(targets, version, present) {
 }
 
 /**
- * `node scripts/release-targets.mjs --check-desktop-artifacts <target|all> <dir>` exits 1 when `<dir>`
+ * `node scripts/release-targets.mjs --check-desktop-artifacts <target[,target...]|all> <dir>` exits 1 when `<dir>`
  * lacks an artifact the target(s) must produce, or holds one no target names.
  */
 function main() {
   const flag = process.argv.indexOf('--check-desktop-artifacts');
   const [target, dir] = flag === -1 ? [] : process.argv.slice(flag + 1);
   if (!target || !dir) {
-    console.error('Usage: node scripts/release-targets.mjs --check-desktop-artifacts <target|all> <dir>');
+    console.error('Usage: node scripts/release-targets.mjs --check-desktop-artifacts <target[,target...]|all> <dir>');
     process.exit(1);
   }
   const root = join(dirname(fileURLToPath(import.meta.url)), '..');
   const { version } = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-  const targets = target === 'all' ? Object.keys(DESKTOP_TARGETS) : [target];
+  const targets = target === 'all' ? Object.keys(DESKTOP_TARGETS) : target.split(',');
   const { missing, unexpected } = desktopArtifactProblems(targets, version, readdirSync(dir));
   if (missing.length) console.error(`Missing desktop artifacts in ${dir}: ${missing.join(', ')}`);
   if (unexpected.length) console.error(`Desktop artifacts in ${dir} that no target in scripts/release-targets.mjs names: ${unexpected.join(', ')}`);

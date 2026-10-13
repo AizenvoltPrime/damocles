@@ -25,6 +25,7 @@ import {
   lstatFiles,
   readSkippedManifest,
 } from '../checkpoints';
+import { gitExecutable } from '../../git-executable';
 import { log } from '../../logger';
 import { ensurePiSessionDir } from './session-dir';
 import { resolvePiSessionFile } from './reading';
@@ -72,16 +73,16 @@ async function computeLiveRewindDiffs(
   const env = { GIT_DIR: gitDir, GIT_WORK_TREE: cwd, GIT_INDEX_FILE: tmpIndex };
   try {
     // Files over the cap are kept out of the throwaway index, so the preview never hashes them.
-    const listed = await execSafe('git', [...PORTABLE_CONFIG, 'ls-files', '-z', '--others', '--modified', '--exclude-standard'], env, cwd);
+    const listed = await execSafe(gitExecutable, [...PORTABLE_CONFIG, 'ls-files', '-z', '--others', '--modified', '--exclude-standard'], env, cwd);
     if (!listed.ok) return null;
     const overCap = (await lstatFiles(cwd, listed.value.stdout.split('\0').filter(Boolean))).filter((f) => f.bytes > capBytes).map((f) => f.path);
     const protectFile = path.join(tmpDir, 'over-cap').replace(/\\/g, '/');
     await fs.promises.writeFile(protectFile, overCap.map(excludeLineForPath).join('\n') + '\n', 'utf8');
     if (overCap.length > 0) {
-      const removed = await execSafe('git', [...PORTABLE_CONFIG, 'update-index', '-z', '--force-remove', '--stdin'], env, cwd, overCap.map((p) => `${p}\0`).join(''));
+      const removed = await execSafe(gitExecutable, [...PORTABLE_CONFIG, 'update-index', '-z', '--force-remove', '--stdin'], env, cwd, overCap.map((p) => `${p}\0`).join(''));
       if (!removed.ok) return null;
     }
-    const staged = await execSafe('git', [...PORTABLE_CONFIG, ...BULK_ADD_CONFIG, '-c', `core.excludesFile=${protectFile}`, 'add', '-A'], env, cwd);
+    const staged = await execSafe(gitExecutable, [...PORTABLE_CONFIG, ...BULK_ADD_CONFIG, '-c', `core.excludesFile=${protectFile}`, 'add', '-A'], env, cwd);
     if (!staged.ok) return null;
     await repo.stageTrackedForPreview(env, capBytes);
     const diffs: FileChange[][] = [];
@@ -90,7 +91,7 @@ async function computeLiveRewindDiffs(
         diffs.push([]);
         continue;
       }
-      const diff = await execSafe('git', [...PORTABLE_CONFIG, 'diff', '-R', '--no-renames', '--numstat', '--cached', commit], env, cwd);
+      const diff = await execSafe(gitExecutable, [...PORTABLE_CONFIG, 'diff', '-R', '--no-renames', '--numstat', '--cached', commit], env, cwd);
       if (!diff.ok) {
         diffs.push([]);
         continue;
@@ -410,7 +411,7 @@ export async function getPiFileCheckpointContent(
     if (!cp || !isHexCommit(cp.beforeCommit)) return null;
     const gitDir = getGitDir(repoDirOf(cp, sessionFile));
     const rel = path.relative(cwd, filePath).replace(/\\/g, '/');
-    const result = await execSafe('git', [...PORTABLE_CONFIG, `--git-dir=${gitDir}`, 'show', `${cp.beforeCommit}:${rel}`]);
+    const result = await execSafe(gitExecutable, [...PORTABLE_CONFIG, `--git-dir=${gitDir}`, 'show', `${cp.beforeCommit}:${rel}`]);
     if (result.ok) {
       // A NUL byte means binary content — the text diff viewer would render mojibake, so return null
       // and let the caller just open the live file instead of diffing.

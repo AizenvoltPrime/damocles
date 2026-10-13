@@ -322,6 +322,125 @@ describe('overlay requests', () => {
   });
 });
 
+describe('menu submenus', () => {
+  const SUBMENUS: OverlayRequest = {
+    kind: 'menu',
+    label: 'Views and More Actions',
+    anchor: ANCHOR,
+    items: [
+      {
+        kind: 'submenu',
+        id: 'submenu:view',
+        label: 'View & Sort',
+        icon: 'list-filter',
+        items: [
+          { kind: 'item', id: 'tree', label: 'View as Tree', checked: true, radio: true },
+          { kind: 'item', id: 'list', label: 'View as List', checked: false, radio: true },
+        ],
+      },
+      { kind: 'submenu', id: 'submenu:commit', label: 'Commit', items: [{ kind: 'item', id: 'commit', label: 'Commit' }, { kind: 'item', id: 'amend', label: 'Commit (Amend)' }] },
+      { kind: 'item', id: 'output', label: 'Show Git Output' },
+    ],
+  };
+  const focused = (): string | null | undefined => document.activeElement?.getAttribute('data-item-id');
+  const submenu = (wrapper: VueWrapper) => wrapper.find('[data-testid="overlay-submenu"]');
+  const pressNow = async (key: string): Promise<void> => {
+    press(key);
+    await flushPromises();
+  };
+  let pointer = 0;
+  const hover = async (element: Element): Promise<void> => {
+    element.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, screenX: 400 + ++pointer, screenY: 300 }));
+    await flushPromises();
+  };
+
+  it('opens a submenu with ArrowRight, comes back with ArrowLeft or Escape without closing the menu, and answers a leaf', async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'r1', SUBMENUS);
+    expect(focused()).toBe('submenu:view');
+    await pressNow('ArrowRight');
+    expect(submenu(wrapper).attributes('aria-label')).toBe('View & Sort');
+    expect(focused()).toBe('tree');
+    await pressNow('ArrowDown');
+    expect(focused()).toBe('list');
+    await pressNow('ArrowLeft');
+    expect(submenu(wrapper).exists()).toBe(false);
+    expect(focused()).toBe('submenu:view');
+    await pressNow('ArrowRight');
+    await pressNow('Escape');
+    expect(submenu(wrapper).exists()).toBe(false);
+    expect(focused()).toBe('submenu:view');
+    expect(wrapper.find('[data-testid="overlay-menu"]').exists()).toBe(true);
+    expect(api.answer).not.toHaveBeenCalled();
+    await pressNow('ArrowDown');
+    await pressNow('Enter');
+    expect(focused()).toBe('commit');
+    await pressNow('ArrowDown');
+    await pressNow('Enter');
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('r1', { kind: 'menu', itemId: 'amend' }));
+  });
+
+  it('marks mutually exclusive choices as radio items', async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'r1', SUBMENUS);
+    await pressNow('ArrowRight');
+    expect(submenu(wrapper).findAll('[data-submenu-item]').map((item) => [item.attributes('role'), item.attributes('aria-checked')])).toEqual([
+      ['menuitemradio', 'true'],
+      ['menuitemradio', 'false'],
+    ]);
+  });
+
+  it('keeps an open submenu while the pointer crosses other rows on its way there, and gives way once it rests on one', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const wrapper = mountOverlay();
+      await flushPromises();
+      await open(wrapper, 'r1', SUBMENUS);
+      const row = (id: string) => wrapper.get(`[data-item-id="${id}"]`).element;
+      await hover(row('output'));
+      await hover(row('submenu:commit'));
+      expect(submenu(wrapper).attributes('aria-label')).toBe('Commit');
+
+      await hover(row('output'));
+      await hover(row('output'));
+      vi.advanceTimersByTime(299);
+      await flushPromises();
+      expect(submenu(wrapper).attributes('aria-label')).toBe('Commit');
+      submenu(wrapper).element.dispatchEvent(new MouseEvent('mouseenter'));
+      vi.advanceTimersByTime(400);
+      await flushPromises();
+      expect(submenu(wrapper).attributes('aria-label')).toBe('Commit');
+
+      await hover(row('submenu:view'));
+      vi.advanceTimersByTime(300);
+      await flushPromises();
+      expect(submenu(wrapper).attributes('aria-label')).toBe('View & Sort');
+
+      await hover(row('output'));
+      vi.advanceTimersByTime(300);
+      await flushPromises();
+      expect(submenu(wrapper).exists()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("filters over every submenu's leaves", async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'r1', { ...SUBMENUS, filterPlaceholder: 'Filter actions' });
+    const filter = wrapper.get('[data-testid="overlay-menu-filter"]');
+    await filter.setValue('amend');
+    expect(wrapper.findAll('[data-menu-item]').map((item) => item.attributes('data-item-id'))).toEqual(['amend']);
+    await filter.setValue('view');
+    expect(wrapper.findAll('[data-menu-item]').map((item) => item.attributes('data-item-id'))).toEqual(['tree', 'list']);
+    await filter.trigger('keydown', { key: 'Enter' });
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('r1', { kind: 'menu', itemId: 'tree' }));
+  });
+});
+
 describe('overlay locale', () => {
   it('follows a language change main publishes after the first read', async () => {
     const wrapper = mountOverlay();
@@ -596,6 +715,21 @@ describe('command palette', () => {
     move(301);
     await flushPromises();
     expect(input.attributes('aria-activedescendant')).toBe(context.attributes('id'));
+  });
+
+  it('keeps focus in the field when anything else in the picker is pressed, so the keyboard still drives it', async () => {
+    api.commands.list = COMMANDS;
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'p1', { kind: 'quickOpen', mode: 'commands' });
+    for (const part of ['[data-testid="quick-pick"]', '[data-testid="quick-pick-list"]', '[data-quick-pick-item]']) {
+      const press = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+      wrapper.get(part).element.dispatchEvent(press);
+      expect(press.defaultPrevented, part).toBe(true);
+    }
+    const inField = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+    wrapper.get('[data-testid="quick-pick-input"]').element.dispatchEvent(inField);
+    expect(inField.defaultPrevented).toBe(false);
   });
 
   it('dims a disabled command, which neither Enter nor a click runs', async () => {

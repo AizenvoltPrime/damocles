@@ -6,8 +6,9 @@ import CodeEditor from '../editor/CodeEditor.vue';
 import DiffEditor from '../editor/DiffEditor.vue';
 import MarkdownPreview from '../editor/MarkdownPreview.vue';
 import { createEditorStore, EDITOR_STORE, type EditorStore, type ShellMonacoModule } from '../editor/editor-store';
+import { createScmStore, SCM_STORE } from '../scm/scm-store';
 import { shellI18n } from '../i18n';
-import { EDITOR_STATE, fakeShellApi, STATE, type FakeShellApi } from './fakes';
+import { EDITOR_STATE, fakeScmApi, fakeShellApi, STATE, type FakeShellApi } from './fakes';
 
 vi.mock('../editor/context-menu', () => ({ attachEditorContextMenu: () => ({ dispose: () => {} }) }));
 
@@ -103,8 +104,9 @@ const monacoModule = {
         models.set(uri.toString(), model);
         return model;
       },
-      create: () => {
+      create: (_host: unknown, options: Record<string, unknown> = {}) => {
         const editor = new FakeCodeEditor();
+        editor.options.push(options);
         editors.push(editor);
         return editor;
       },
@@ -146,7 +148,7 @@ async function setup(initial: ShellEditorState, documents: Record<string, ShellD
 }
 
 function mountWith<T>(component: T, store: EditorStore, props: Record<string, unknown>): VueWrapper {
-  const wrapper = mount(component as Parameters<typeof mount>[0], { props, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store } }, attachTo: document.body }) as VueWrapper;
+  const wrapper = mount(component as Parameters<typeof mount>[0], { props, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: createScmStore(fakeScmApi()) } }, attachTo: document.body }) as VueWrapper;
   mounted.push(wrapper);
   return wrapper;
 }
@@ -254,6 +256,40 @@ describe('a text tab\'s view state', () => {
 });
 
 describe('a diff tab', () => {
+  it('shows a side main sends no text for as its placeholder beside the text side, with Open Anyway only for the file on disk', async () => {
+    const binaryHead: ShellEditorTab & { diff: NonNullable<ShellEditorTab['diff']> } = {
+      ...diffTab(),
+      diff: { ...diffTab().diff, sides: { original: { kind: 'notDisplayed', reason: 'binary', bytes: 2048, openable: false }, modified: { kind: 'text' } } },
+    };
+    const { api, store } = await setup(state([binaryHead]), { 'doc-old': { kind: 'notDisplayed', documentId: 'doc-old', reason: 'binary', bytes: 2048 }, 'doc-new': text('doc-new', 'b') });
+    const wrapper = mountWith(DiffEditor, store, { api, tab: binaryHead, menuShortcuts: STATE.shortcuts.editorMenu });
+    await flushPromises();
+    const original = wrapper.get('[data-side="original"]');
+    expect(original.get('[data-testid="diff-not-displayed"]').text()).toContain('This file is not displayed');
+    expect(original.text()).toContain('It is a binary file. 2 kB');
+    expect(original.find('[data-testid="diff-open-anyway"]').exists()).toBe(false);
+    expect(wrapper.get('[data-side="modified"]').find('[data-testid="diff-text-side"]').exists()).toBe(true);
+    expect(diffEditors).toEqual([]);
+    expect(editors).toHaveLength(1);
+    expect(editors[0]!.model).toBe(models.get('damocles-document://doc-new/untitled'));
+    expect(editors[0]!.options[0]).toMatchObject({ readOnly: false });
+    expect(wrapper.get('[data-testid="diff-editor"]').attributes('data-monaco-ready')).toBe('true');
+    expect(api.getDocument).not.toHaveBeenCalledWith('doc-old');
+
+    const largeFile: ShellEditorTab & { diff: NonNullable<ShellEditorTab['diff']> } = {
+      ...diffTab(),
+      id: 'd2',
+      diff: { ...diffTab().diff, originalId: 'doc-new', modifiedId: 'doc-big', sides: { original: { kind: 'text' }, modified: { kind: 'notDisplayed', reason: 'tooLarge', bytes: 12 * 1024 * 1024, openable: true } } },
+    };
+    const large = mountWith(DiffEditor, store, { api, tab: largeFile, menuShortcuts: STATE.shortcuts.editorMenu });
+    await flushPromises();
+    const modified = large.get('[data-side="modified"]');
+    expect(modified.text()).toContain('It is too large to open in the editor. 12 MB');
+    expect(editors[1]!.options[0]).toMatchObject({ readOnly: true });
+    await modified.get('[data-testid="diff-open-anyway"]').trigger('click');
+    expect(api.editorTab).toHaveBeenCalledWith({ action: 'openFile', tabId: 'd2' });
+  });
+
   it('takes the editor settings live, as every other editor does', async () => {
     const diff = diffTab();
     const { api, store } = await setup(state([diff]), { 'doc-old': text('doc-old', 'a'), 'doc-new': text('doc-new', 'b') });

@@ -5,6 +5,7 @@ import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import { extract as tarExtract } from "tar";
 import type { GpuDetection } from "./gpu-detect";
+import { requireVoiceRuntimePlatform, type PbsTriple } from "./supported-platforms";
 import tarballChecksums from "./tarball-checksums.json";
 
 /** Auth env vars that must never leak into a Damocles-spawned subprocess (they belong to the Claude CLI). */
@@ -49,16 +50,6 @@ export type RuntimeInstallProgress = {
 
 export type RuntimeInstallProgressCallback = (p: RuntimeInstallProgress) => void;
 
-export class UnsupportedPlatformError extends Error {
-  constructor(platform: NodeJS.Platform, arch: string) {
-    super(
-      `Voice runtime auto-install is not supported on ${platform}/${arch}. ` +
-        `Set damocles.voice.runtimePath to an existing CUDA-PyTorch venv to bypass.`,
-    );
-    this.name = "UnsupportedPlatformError";
-  }
-}
-
 export class ChecksumMismatchError extends Error {
   readonly expected: string;
   readonly actual: string;
@@ -93,18 +84,8 @@ type ChecksumsFile = {
 
 const CHECKSUMS: ChecksumsFile = tarballChecksums as ChecksumsFile;
 
-export type PbsTriple =
-  | "x86_64-pc-windows-msvc"
-  | "x86_64-apple-darwin"
-  | "aarch64-apple-darwin"
-  | "x86_64-unknown-linux-gnu";
-
 export function pickPbsTriple(platform: NodeJS.Platform, arch: string): PbsTriple {
-  if (platform === "win32" && arch === "x64") return "x86_64-pc-windows-msvc";
-  if (platform === "darwin" && arch === "x64") return "x86_64-apple-darwin";
-  if (platform === "darwin" && arch === "arm64") return "aarch64-apple-darwin";
-  if (platform === "linux" && arch === "x64") return "x86_64-unknown-linux-gnu";
-  throw new UnsupportedPlatformError(platform, arch);
+  return requireVoiceRuntimePlatform(platform, arch).pbsTriple;
 }
 
 export type PbsCandidate = {
@@ -136,9 +117,6 @@ export function getPbsCandidates(platform: NodeJS.Platform, arch: string): PbsCa
       url: `${PBS_BASE_URL}/${rel.release}/${filename}`,
       expectedSha256: sha,
     });
-  }
-  if (candidates.length === 0) {
-    throw new UnsupportedPlatformError(platform, arch);
   }
   return candidates;
 }

@@ -13,6 +13,7 @@ import { createHarness, folderEntry, type Harness } from '../../../core/chat-pan
 import type { FakePanelHost } from '../../../__mocks__/fake-platform';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { MAX_SETTINGS_MESSAGE_CHARS, OVERLAY_CHANNELS, type OverlayAnswer, type OverlayPrefs, type OverlayPrefWrite, type OverlayRequest, type PopupAnswer } from '../../preload/overlay-channels';
+import { DESKTOP_CONFIGURATION, LANGUAGE_SETTING, TERMINAL_PROFILES_SETTING } from '../desktop-configuration';
 import { OverlaySettings } from '../overlay-settings';
 import { WebviewPrompts } from '../../../core/chat-panel/webview-prompts';
 import type { OverlayHost } from '../overlay';
@@ -307,56 +308,15 @@ describe('OverlaySettings', () => {
     expect(await set('damocles.desktop.terminal.confirmOnKill', 'always')).toEqual({ ok: true, file: USER_FILE });
     expect(await set('damocles.desktop.terminal.shellIntegration.enabled', false)).toEqual({ ok: true, file: USER_FILE });
     expect(await set('damocles.desktop.files.exclude', { '**/.git': false, '**/dist': true })).toEqual({ ok: true, file: USER_FILE });
+    expect(await set('damocles.desktop.git.branchProtection', ['main', 'release/*'])).toEqual({ ok: true, file: USER_FILE });
+    expect(await set('damocles.desktop.git.branchProtection', ['main', 7])).toMatchObject({ ok: false });
     expect(settingsPlatform.settings.inspect('damocles.desktop.language')).toStrictEqual({ userValue: 'el' });
     const prefs = (await fake.invoke(OVERLAY_CHANNELS.prefsGet)) as OverlayPrefs;
     expect(prefs.languageAtLaunch).toBe('el');
-    expect(Object.keys(prefs.values).sort()).toEqual([
-      'damocles.desktop.editor.autoSave',
-      'damocles.desktop.editor.detectIndentation',
-      'damocles.desktop.editor.fontSize',
-      'damocles.desktop.editor.formatOnSave',
-      'damocles.desktop.editor.minimap',
-      'damocles.desktop.editor.renderWhitespace',
-      'damocles.desktop.editor.tabSize',
-      'damocles.desktop.editor.wordWrap',
-      'damocles.desktop.files.exclude',
-      'damocles.desktop.language',
-      'damocles.desktop.notifications.enabled',
-      'damocles.desktop.notifications.sound',
-      'damocles.desktop.reduceMotion',
-      'damocles.desktop.restoreLayout',
-      'damocles.desktop.search.actionsPosition',
-      'damocles.desktop.search.collapseResults',
-      'damocles.desktop.search.defaultViewMode',
-      'damocles.desktop.search.exclude',
-      'damocles.desktop.search.maxResults',
-      'damocles.desktop.search.mode',
-      'damocles.desktop.search.searchOnType',
-      'damocles.desktop.search.searchOnTypeDebouncePeriod',
-      'damocles.desktop.search.seedOnFocus',
-      'damocles.desktop.search.seedWithNearestWord',
-      'damocles.desktop.search.showLineNumbers',
-      'damocles.desktop.search.smartCase',
-      'damocles.desktop.search.sortOrder',
-      'damocles.desktop.search.useReplacePreview',
-      'damocles.desktop.searchEditor.defaultNumberOfContextLines',
-      'damocles.desktop.searchEditor.doubleClickBehaviour',
-      'damocles.desktop.searchEditor.focusResultsOnSearch',
-      'damocles.desktop.searchEditor.reusePriorSearchConfiguration',
-      'damocles.desktop.terminal.confirmOnKill',
-      'damocles.desktop.terminal.cursorBlinking',
-      'damocles.desktop.terminal.cursorStyle',
-      'damocles.desktop.terminal.defaultProfile',
-      'damocles.desktop.terminal.fontFamily',
-      'damocles.desktop.terminal.fontSize',
-      'damocles.desktop.terminal.lineHeight',
-      'damocles.desktop.terminal.macOptionIsMeta',
-      'damocles.desktop.terminal.multiLinePasteWarning',
-      'damocles.desktop.terminal.scrollback',
-      'damocles.desktop.terminal.shellIntegration.decorationsEnabled',
-      'damocles.desktop.terminal.shellIntegration.enabled',
-      'damocles.desktop.theme',
-    ]);
+    expect(prefs.values[LANGUAGE_SETTING]).toBe('el');
+    // every declared desktop setting but the terminal profiles, which reach no renderer
+    expect(Object.keys(DESKTOP_CONFIGURATION)).toContain(TERMINAL_PROFILES_SETTING);
+    expect(Object.keys(prefs.values).sort()).toEqual(Object.keys(DESKTOP_CONFIGURATION).filter((key) => key !== TERMINAL_PROFILES_SETTING).sort());
   });
 
   it('restarts, restores the default layout and writes desktop settings only while the modal is open, answering closed as a value otherwise', async () => {

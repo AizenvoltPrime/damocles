@@ -1,6 +1,6 @@
 import { expect, type ElectronApplication, type Locator, type Page } from '@playwright/test';
 import type { SettingsSectionId } from '../../../src/shared/settings-sections';
-import { overlayPage, shellPage } from './shell';
+import { OVERLAY_URL, overlayPage, shellPage } from './shell';
 
 export const settingsModal = (overlay: Page): Locator => overlay.getByTestId('settings-modal');
 export const settingsRow = (overlay: Page, id: string): Locator => overlay.getByTestId(`settings-row-${id}`);
@@ -47,13 +47,30 @@ export async function chooseSegment(row: Locator, option: string): Promise<void>
   await expect(row.getByRole('button', { name: option, exact: true })).toHaveAttribute('aria-pressed', 'true');
 }
 
-/** Sets the window's content area, the size every view lays out in. */
+/**
+ * Sets the window's content area, the size every view lays out in, and resolves once the shell page and a shown overlay
+ * lay out at the size the window took: setContentSize returns before any renderer has it, and the OS may clamp it.
+ */
 export async function setContentSize(app: ElectronApplication, width: number, height: number): Promise<void> {
   await app.evaluate(({ BrowserWindow }, [w, h]) => {
     const win = BrowserWindow.getAllWindows()[0]!;
     if (win.isMaximized()) win.unmaximize();
     win.setContentSize(w!, h!);
   }, [width, height] as const);
+  await expect.poll(() => app.evaluate(async ({ BrowserWindow }, overlayUrl) => {
+    const win = BrowserWindow.getAllWindows()[0]!;
+    const [contentWidth, contentHeight] = win.getContentSize() as [number, number];
+    // Both fill the content area; a hidden overlay keeps the bounds it last had.
+    const overlay = (win.contentView.children as Electron.WebContentsView[]).find((view) => view.webContents?.getURL() === overlayUrl && view.getVisible());
+    const pages = [win.webContents, ...(overlay ? [overlay.webContents] : [])];
+    const behind = await Promise.all(pages.map(async (contents) => {
+      const zoom = contents.getZoomFactor();
+      const [innerWidth, innerHeight] = await contents.executeJavaScript('[innerWidth, innerHeight]') as [number, number];
+      const laidOut = Math.abs(innerWidth - contentWidth / zoom) < 1 && Math.abs(innerHeight - contentHeight / zoom) < 1;
+      return laidOut ? [] : [`${contents.getURL()} lays out at ${innerWidth}x${innerHeight} (zoom ${zoom}), the window is ${contentWidth}x${contentHeight}`];
+    }));
+    return behind.flat();
+  }, OVERLAY_URL)).toEqual([]);
 }
 
 /** The modal's footer, "Edit settings.json": it closes the modal and opens `scope` in the selected chat's JSON editor. */

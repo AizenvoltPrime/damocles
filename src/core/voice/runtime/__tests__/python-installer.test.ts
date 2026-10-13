@@ -2,33 +2,35 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { installFakePlatform } from "../../../../__mocks__/fake-platform";
 import {
   ChecksumMismatchError,
-  UnsupportedPlatformError,
   downloadWithResumeAndVerify,
   getPbsTarballUrl,
   pickPbsTriple,
   pickTorchWheelChannel,
 } from "../python-installer";
+import { UnsupportedPlatformError } from "../supported-platforms";
 
 describe("pickPbsTriple", () => {
-  it("maps win32 x64 to MSVC triple", () => {
-    expect(pickPbsTriple("win32", "x64")).toBe("x86_64-pc-windows-msvc");
+  beforeEach(() => {
+    installFakePlatform();
   });
-  it("maps darwin x64 to apple-darwin", () => {
-    expect(pickPbsTriple("darwin", "x64")).toBe("x86_64-apple-darwin");
+
+  it.each([
+    ["win32", "x64", "x86_64-pc-windows-msvc"],
+    ["linux", "x64", "x86_64-unknown-linux-gnu"],
+    ["darwin", "arm64", "aarch64-apple-darwin"],
+  ] as const)("maps %s %s to %s", (platform, arch, triple) => {
+    expect(pickPbsTriple(platform, arch)).toBe(triple);
   });
-  it("maps darwin arm64 to aarch64-apple-darwin", () => {
-    expect(pickPbsTriple("darwin", "arm64")).toBe("aarch64-apple-darwin");
-  });
-  it("maps linux x64 to gnu triple", () => {
-    expect(pickPbsTriple("linux", "x64")).toBe("x86_64-unknown-linux-gnu");
-  });
-  it("throws UnsupportedPlatformError on win32 arm64", () => {
-    expect(() => pickPbsTriple("win32", "arm64")).toThrow(UnsupportedPlatformError);
-  });
-  it("throws UnsupportedPlatformError on linux arm64", () => {
-    expect(() => pickPbsTriple("linux", "arm64")).toThrow(UnsupportedPlatformError);
+
+  it.each([
+    ["darwin", "x64"],
+    ["win32", "arm64"],
+    ["linux", "arm64"],
+  ] as const)("refuses %s %s", (platform, arch) => {
+    expect(() => pickPbsTriple(platform, arch)).toThrow(UnsupportedPlatformError);
   });
 });
 

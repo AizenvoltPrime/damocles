@@ -22,6 +22,9 @@ import {
   type SearchEditorConfig,
   type SearchHistory,
   type SearchViewState,
+  SCM_SORT_KEYS,
+  SCM_VIEW_MODES,
+  type ScmViewOptions,
 } from '../preload/shell-channels';
 import { MAX_CONTEXT_LINES, MAX_REPLACEMENT_LENGTH, MAX_SEARCH_GLOBS_LENGTH, MAX_SEARCH_HISTORY, MAX_SEARCH_PATTERN_LENGTH } from '../../shared/text-search';
 import { SEARCH_DEFAULT_VIEW_MODES } from './desktop-configuration';
@@ -71,6 +74,8 @@ export interface WindowLayout {
   readonly sidebar: ShellLayout;
   readonly editor: PersistedEditor;
   readonly terminals: PersistedTerminals;
+  // each project's selected repository, by project key, as the repository's root path (main's, never the shell's)
+  readonly scmSelected: Readonly<Record<string, string>>;
 }
 
 export const EMPTY_EDITOR: PersistedEditor = { tabs: [], active: null, recent: [] };
@@ -86,10 +91,15 @@ const BACKUP_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 export const DEFAULT_SHELL_LAYOUT: ShellLayout = {
   sidebarVisible: true,
   sidebarWidth: 264,
-  sections: { projects: { collapsed: false, size: 180 }, files: { collapsed: false, size: 230 }, search: { collapsed: true, size: 260 }, chats: { collapsed: false } },
+  sections: { projects: { collapsed: false, size: 180 }, files: { collapsed: false, size: 230 }, search: { collapsed: true, size: 260 }, scm: { collapsed: false, size: 300 }, chats: { collapsed: false } },
   grid: DEFAULT_GRID_LAYOUT,
   search: {},
+  // VS Code's scm.defaultViewMode and scm.defaultViewSortKey
+  scm: { viewMode: 'list', sortKey: 'path' },
 };
+
+// Projects whose selected repository the layout keeps.
+const MAX_SCM_SELECTIONS = 100;
 
 type Log = (line: string) => void;
 
@@ -225,44 +235,83 @@ function parseSearchViewStates(raw: unknown): Record<string, SearchViewState> | 
   return states;
 }
 
+function parseScmViewOptions(raw: unknown): ScmViewOptions | undefined {
+  if (!isRecord(raw)) return undefined;
+  const viewMode = field(raw, 'viewMode');
+  const sortKey = field(raw, 'sortKey');
+  return (SCM_VIEW_MODES as readonly unknown[]).includes(viewMode) && (SCM_SORT_KEYS as readonly unknown[]).includes(sortKey)
+    ? { viewMode: viewMode as ScmViewOptions['viewMode'], sortKey: sortKey as ScmViewOptions['sortKey'] }
+    : undefined;
+}
+
+/** Each project's selected repository root, the newest MAX_SCM_SELECTIONS kept; malformed and dropped entries are logged. */
+export function parseScmSelected(raw: unknown, log: Log): Record<string, string> {
+  if (!isRecord(raw)) {
+    log('[layout] dropping malformed source control selections');
+    return {};
+  }
+  const valid = Object.entries(raw).filter(([key, root]) => {
+    const ok = key.length > 0 && key.length <= MAX_ID_LENGTH && typeof root === 'string' && root.length <= MAX_PATH_LENGTH && path.isAbsolute(root) && !root.includes('\0');
+    if (!ok) log('[layout] dropping a malformed source control selection');
+    return ok;
+  }) as Array<[string, string]>;
+  return Object.fromEntries(newestSelections(valid, log));
+}
+
+// Insertion order is the order of selection, newest last: the oldest past MAX_SCM_SELECTIONS are dropped.
+function newestSelections(entries: ReadonlyArray<readonly [string, string]>, log: Log): ReadonlyArray<readonly [string, string]> {
+  const dropped = entries.length - MAX_SCM_SELECTIONS;
+  if (dropped <= 0) return entries;
+  log(`[layout] dropping the ${dropped} oldest source control selections`);
+  return entries.slice(dropped);
+}
+
 /**
  * The sidebar's part of a layout from the shell or the file, or undefined when any field is missing, of the wrong type or
- * out of range. A layout written before the Search section gets its defaults.
+ * out of range. A layout written before the Search section gets its defaults. With fileLog (reading the file), a malformed
+ * field that has a default falls back to it alone and is logged, so it never costs the rest of the sidebar.
  */
-export function parseSidebarLayout(raw: unknown): ShellSidebarLayout | undefined {
+export function parseSidebarLayout(raw: unknown, fileLog?: Log): ShellSidebarLayout | undefined {
   if (!isRecord(raw)) return undefined;
   const sidebarWidth = field(raw, 'sidebarWidth');
   const sections = field(raw, 'sections');
   if (!inRange(sidebarWidth, MIN_SIDEBAR_WIDTH, MAX_SHELL_COORDINATE) || !isRecord(sections)) return undefined;
+  const orDefault = <T>(value: unknown, parse: (value: unknown) => T | undefined, fallback: T, name: string): T | undefined => {
+    if (value === undefined) return fallback;
+    const parsed = parse(value);
+    if (parsed !== undefined || !fileLog) return parsed;
+    fileLog(`[layout] dropping the malformed ${name}`);
+    return fallback;
+  };
   const projects = parseSection(field(sections, 'projects'));
   const files = parseSection(field(sections, 'files'));
-  const rawSearchSection = field(sections, 'search');
-  const searchSection = rawSearchSection === undefined ? DEFAULT_SHELL_LAYOUT.sections.search : parseSection(rawSearchSection);
+  const searchSection = orDefault(field(sections, 'search'), parseSection, DEFAULT_SHELL_LAYOUT.sections.search, 'Search section size');
   const chats = field(sections, 'chats');
   const chatsCollapsed = isRecord(chats) ? field(chats, 'collapsed') : undefined;
-  const rawSearch = field(raw, 'search');
-  const search = rawSearch === undefined ? {} : parseSearchViewStates(rawSearch);
-  if (!projects || !files || !searchSection || typeof chatsCollapsed !== 'boolean' || !search) return undefined;
-  return { sidebarWidth, sections: { projects, files, search: searchSection, chats: { collapsed: chatsCollapsed } }, search };
+  const scmSection = orDefault(field(sections, 'scm'), parseSection, DEFAULT_SHELL_LAYOUT.sections.scm, 'Source Control section size');
+  const search = orDefault(field(raw, 'search'), parseSearchViewStates, {}, 'Search states');
+  const scm = orDefault(field(raw, 'scm'), parseScmViewOptions, DEFAULT_SHELL_LAYOUT.scm, 'Source Control view options');
+  if (!projects || !files || !searchSection || !scmSection || typeof chatsCollapsed !== 'boolean' || !search || !scm) return undefined;
+  return { sidebarWidth, sections: { projects, files, search: searchSection, scm: scmSection, chats: { collapsed: chatsCollapsed } }, search, scm };
 }
 
 /** A shell layout from the file, or undefined when any field is missing, of the wrong type or out of range. */
-export function parseShellLayout(raw: unknown): ShellLayout | undefined {
+export function parseShellLayout(raw: unknown, log?: Log): ShellLayout | undefined {
   if (!isRecord(raw)) return undefined;
   const sidebarVisible = field(raw, 'sidebarVisible');
-  const sidebar = parseSidebarLayout(raw);
+  const sidebar = parseSidebarLayout(raw, log);
   const grid = parseGridLayout(field(raw, 'grid'));
   if (typeof sidebarVisible !== 'boolean' || !sidebar || !grid) return undefined;
   return { sidebarVisible, ...sidebar, grid };
 }
 
 // A version 1 file holds the sidebar without Files and the grid, which start at their defaults.
-function parseVersion1Sidebar(raw: unknown): ShellLayout | undefined {
+function parseVersion1Sidebar(raw: unknown, log: Log): ShellLayout | undefined {
   if (!isRecord(raw)) return undefined;
   const sections = field(raw, 'sections');
   if (!isRecord(sections)) return undefined;
   const defaults = DEFAULT_SHELL_LAYOUT;
-  return parseShellLayout({ ...raw, sections: { ...sections, files: defaults.sections.files }, grid: defaults.grid });
+  return parseShellLayout({ ...raw, sections: { ...sections, files: defaults.sections.files }, grid: defaults.grid }, log);
 }
 
 function parsePlacement(raw: unknown): WindowPlacement | undefined {
@@ -435,19 +484,21 @@ export function parseWindowLayout(text: string, log: Log): WindowLayout {
   const version = isRecord(parsed) ? field(parsed, 'version') : undefined;
   if (!isRecord(parsed) || (version !== SCHEMA_VERSION && version !== 1)) {
     log(`[layout] ignoring ${WINDOW_LAYOUT_FILE}: unknown schema`);
-    return { sidebar: DEFAULT_SHELL_LAYOUT, editor: EMPTY_EDITOR, terminals: DEFAULT_PERSISTED_TERMINALS };
+    return { sidebar: DEFAULT_SHELL_LAYOUT, editor: EMPTY_EDITOR, terminals: DEFAULT_PERSISTED_TERMINALS, scmSelected: {} };
   }
   const rawWindow = field(parsed, 'window');
   const placement = rawWindow === undefined ? undefined : parsePlacement(rawWindow);
   if (rawWindow !== undefined && !placement) log('[layout] dropping malformed window bounds');
   const rawSidebar = field(parsed, 'sidebar');
-  const sidebar = rawSidebar === undefined ? undefined : version === 1 ? parseVersion1Sidebar(rawSidebar) : parseShellLayout(rawSidebar);
+  const sidebar = rawSidebar === undefined ? undefined : version === 1 ? parseVersion1Sidebar(rawSidebar, log) : parseShellLayout(rawSidebar, log);
   if (rawSidebar !== undefined && !sidebar) log('[layout] dropping a malformed sidebar layout');
   const rawEditor = field(parsed, 'editor');
   const editor = rawEditor === undefined ? EMPTY_EDITOR : parsePersistedEditor(rawEditor, log);
   const rawTerminals = field(parsed, 'terminals');
   const terminals = rawTerminals === undefined ? DEFAULT_PERSISTED_TERMINALS : parsePersistedTerminals(rawTerminals, log);
-  return { ...(placement ? { window: placement } : {}), sidebar: sidebar ?? DEFAULT_SHELL_LAYOUT, editor, terminals };
+  const rawScmSelected = field(parsed, 'scmSelected');
+  const scmSelected = rawScmSelected === undefined ? {} : parseScmSelected(rawScmSelected, log);
+  return { ...(placement ? { window: placement } : {}), sidebar: sidebar ?? DEFAULT_SHELL_LAYOUT, editor, terminals, scmSelected };
 }
 
 function overlapArea(a: Rect, b: Rect): number {
@@ -478,6 +529,30 @@ export function clampToWorkAreas(bounds: Rect, workAreas: readonly Rect[]): Rect
   return { x, y, width, height };
 }
 
+/** The default window centered on a work area and fit to it, as VS Code's `validateWindowState` fits a new window. */
+export function defaultWindowBounds(workArea: Rect): Rect {
+  const width = Math.min(DEFAULT_WINDOW_WIDTH, workArea.width);
+  const height = Math.min(DEFAULT_WINDOW_HEIGHT, workArea.height);
+  const centered = { x: workArea.x + Math.round((workArea.width - width) / 2), y: workArea.y + Math.round((workArea.height - height) / 2), width, height };
+  return clampToWorkAreas(centered, [workArea]);
+}
+
+// Bounds main applied to a new window, and the window's own read of them right after.
+export interface AppliedBounds {
+  readonly bounds: Rect;
+  readonly read: Rect;
+}
+
+/**
+ * The normal bounds to persist. While the window still reads what it read right after main applied its bounds, those
+ * bounds, since Electron's DIP writes and reads need not round-trip (electron/electron#51572) and a read saved on every
+ * launch would move or grow the window each time.
+ */
+export function boundsToPersist(applied: AppliedBounds | undefined, read: Rect): Rect {
+  const same = applied && applied.read.x === read.x && applied.read.y === read.y && applied.read.width === read.width && applied.read.height === read.height;
+  return same ? applied.bounds : read;
+}
+
 // The window's placement, the sidebar layout, the grid, the open editors, the terminal list and the Search states under
 // userData; a relaunch restores them.
 export class WindowLayoutStore {
@@ -486,6 +561,7 @@ export class WindowLayoutStore {
   private sidebarLayout: ShellLayout = DEFAULT_SHELL_LAYOUT;
   private editorLayout: PersistedEditor = EMPTY_EDITOR;
   private terminalLayout: PersistedTerminals = DEFAULT_PERSISTED_TERMINALS;
+  private scmSelectedLayout: Readonly<Record<string, string>> = {};
   private sealed = false;
   private readonly log: Log;
 
@@ -505,6 +581,7 @@ export class WindowLayoutStore {
       this.sidebarLayout = parsed.sidebar;
       this.editorLayout = parsed.editor;
       this.terminalLayout = parsed.terminals;
+      this.scmSelectedLayout = parsed.scmSelected;
     } catch (err) {
       log(`[layout] ignoring unreadable ${this.filePath}: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -559,6 +636,17 @@ export class WindowLayoutStore {
     this.persist();
   }
 
+  scmSelected(projectKey: string): string | undefined {
+    return Object.hasOwn(this.scmSelectedLayout, projectKey) ? this.scmSelectedLayout[projectKey] : undefined;
+  }
+
+  setScmSelected(projectKey: string, root: string): void {
+    if (this.sealed || this.scmSelected(projectKey) === root) return;
+    const others = Object.entries(this.scmSelectedLayout).filter(([key]) => key !== projectKey);
+    this.scmSelectedLayout = Object.fromEntries(newestSelections([...others, [projectKey, root]], this.log));
+    this.persist();
+  }
+
   setSidebar(layout: ShellLayout): void {
     if (this.sealed || JSON.stringify(this.sidebarLayout) === JSON.stringify(layout)) return;
     this.sidebarLayout = layout;
@@ -580,13 +668,15 @@ export class WindowLayoutStore {
     this.persist();
   }
 
-  // A launch with damocles.desktop.restoreLayout off: the default layout, no saved editors, terminals or Search queries.
+  // A launch with damocles.desktop.restoreLayout off: the default layout, no saved editors, terminals, Search queries or
+  // selected repositories.
   clear(): void {
     if (this.sealed) return;
     this.editorLayout = EMPTY_EDITOR;
     this.terminalLayout = DEFAULT_PERSISTED_TERMINALS;
     this.placement = undefined;
     this.sidebarLayout = DEFAULT_SHELL_LAYOUT;
+    this.scmSelectedLayout = {};
     this.persist();
   }
 
@@ -603,6 +693,7 @@ export class WindowLayoutStore {
       sidebar: this.sidebarLayout,
       editor: this.editorLayout,
       terminals: this.terminalLayout,
+      scmSelected: this.scmSelectedLayout,
     };
     void writeJsonConfig(this.filePath, () => `${JSON.stringify(snapshot, null, 2)}\n`).catch((err: unknown) => {
       this.log(`[layout] failed to write ${this.filePath}: ${err instanceof Error ? err.message : String(err)}`);

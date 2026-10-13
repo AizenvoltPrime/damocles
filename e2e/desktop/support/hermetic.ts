@@ -169,6 +169,8 @@ export function hermeticEnv(h: Pick<HermeticHome, 'root' | 'home'>, extra: Recor
     PI_OFFLINE: '1',
     PI_SKIP_VERSION_CHECK: '1',
     PI_TELEMETRY: '0',
+    // The machine's git config stays out of the app's git and the specs' (support/git.ts), which run on this environment.
+    GIT_CONFIG_NOSYSTEM: '1',
     // A git clone or fetch from GitHub (pi installing a package) fails at once instead of reaching the network.
     GIT_CONFIG_COUNT: '1',
     GIT_CONFIG_KEY_0: `url.${GITHUB_BLOCKED}.insteadOf`,

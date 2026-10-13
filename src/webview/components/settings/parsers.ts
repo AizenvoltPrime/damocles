@@ -1,3 +1,4 @@
+import { parseWakePhrase } from '@shared/wake-phrase';
 import type { InputParse } from './controls/SettingInput.vue';
 
 type Translate = (key: string, named?: Record<string, unknown>) => string;
@@ -23,6 +24,12 @@ export function parseTaskBudget(raw: string, t: Translate): ReturnType<InputPars
   if (text === '') return { ok: true, value: null };
   const value = integerIn(text, 1, Number.MAX_SAFE_INTEGER);
   return value === null ? { ok: false, error: t('settingsModal.invalid.positiveInteger') } : { ok: true, value };
+}
+
+/** Saves the normalized phrase, so the field shows what the sidecar listens for. */
+export function parseWakePhraseInput(raw: string, t: Translate): ReturnType<InputParse<string>> {
+  const words = parseWakePhrase(raw);
+  return words === null ? { ok: false, error: t('settingsModal.invalid.wakePhrase') } : { ok: true, value: words.join(' ') };
 }
 
 /** 0 keeps checkpoints forever. */

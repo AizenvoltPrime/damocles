@@ -74,9 +74,10 @@ export const SUBAGENT_PI_TOOL_NAMES: readonly string[] = SUBAGENT_TOOL_CATALOG.m
  * browser + team). Web tools are excluded — they are in `READ_ONLY_TOOLS`, so the gate's read branch
  * auto-allows them. Team tools (`create_team` and the `team_*` set) perform no writes and no arbitrary
  * shell — they drive the in-process MessageBus/Scratchpad/runner only — so they auto-allow here.
- * `team_record_verification` is the single exception and stays within that rule: it shells out to
- * read-only `git rev-parse`/`git status` and reads files to compute a tree fingerprint. Auto-allowing it
- * in every mode, plan included, is therefore correct. The team AGENTS' own file/shell tools
+ * `team_record_verification` and `team_read_scratchpad` (when it returns the verification ledger) are the
+ * exceptions and stay within that rule: they shell out to read-only `git rev-parse`/`git status` (only in a
+ * trusted folder) and read files to compute a tree fingerprint. Auto-allowing them in every mode, plan
+ * included, is therefore correct. The team AGENTS' own file/shell tools
  * (Edit/Write/Bash) still route through the central gate normally.
  * Never add `GenerateImage`: this branch allows before the plan-mode check, and it is a paid write.
  */

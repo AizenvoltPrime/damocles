@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 const SMOKE_MODULES = [
   "torch",
   "torchaudio",
-  "openwakeword",
+  "sherpa_onnx",
   "silero_vad",
   "nemo.collections.asr",
   "websockets.asyncio.server",

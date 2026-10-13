@@ -79,10 +79,20 @@ export function parseToastArea(raw: unknown): OverlayToastArea | undefined {
   return parts.every((part) => part !== undefined) ? { width, height, parts } : undefined;
 }
 
-/** The popup window's bounds: the reported stack at the bottom-right of the work area, within it. */
-export function popupBounds(area: OverlayToastArea, workArea: Rectangle): Rectangle {
-  const width = Math.min(workArea.width, Math.ceil(area.width));
-  const height = Math.min(workArea.height, Math.ceil(area.height));
+// Windows rounds a fractional device-pixel origin and ceils a fractional size, which puts the far edge a pixel past the
+// work area's; the page anchors the stack bottom-right, so a longer window only adds transparent margin.
+function wholeDeviceLength(length: number, max: number, scaleFactor: number): number {
+  for (let candidate = length; candidate <= max; candidate++) {
+    const pixels = candidate * scaleFactor;
+    if (Math.abs(pixels - Math.round(pixels)) < 1e-3) return candidate;
+  }
+  return length;
+}
+
+/** The popup window's bounds: the reported stack at the bottom-right of the work area, within it, in whole device pixels. */
+export function popupBounds(area: OverlayToastArea, workArea: Rectangle, scaleFactor: number): Rectangle {
+  const width = wholeDeviceLength(Math.min(workArea.width, Math.ceil(area.width)), workArea.width, scaleFactor);
+  const height = wholeDeviceLength(Math.min(workArea.height, Math.ceil(area.height)), workArea.height, scaleFactor);
   return { x: workArea.x + workArea.width - width, y: workArea.y + workArea.height - height, width, height };
 }
 
@@ -336,7 +346,8 @@ export class NotifierHost implements ToastSink {
       this.takePointer(false);
       return;
     }
-    const bounds = popupBounds(this.area, screen.getPrimaryDisplay().workArea);
+    const display = screen.getPrimaryDisplay();
+    const bounds = popupBounds(this.area, display.workArea, display.scaleFactor);
     window.setBounds(bounds);
     view.setBounds({ x: 0, y: 0, width: bounds.width, height: bounds.height });
     // Linux has no pointer forwarding: the window's shape is its toasts and pill, which clips their shadows too.

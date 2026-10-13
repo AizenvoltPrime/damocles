@@ -17,6 +17,7 @@ import type { Project } from '../documents/confine';
 import type { MenuState } from '../menu';
 import { QUICK_OPEN_WORKER_SILENCE_MS, QuickOpenIndex, QuickOpenPicker, type QuickOpenDeps, type QuickOpenWorker } from '../quick-open';
 import { fakeHandleWhileOpen } from './fake-popup-channels';
+import { NO_SCM_MENU_STATE } from '../scm/scm-host';
 
 vi.mock('../../../core/quick-open/fuzzy-match', async (importOriginal) => {
   const original = await importOriginal<typeof import('../../../core/quick-open/fuzzy-match')>();
@@ -30,7 +31,7 @@ async function openValue(answer: unknown): Promise<unknown> {
   return answered.value;
 }
 
-const CONTEXT: MenuState = { chat: true, editor: true, browser: false, page: false, focus: 'editor', updateCheck: false, project: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false } };
+const CONTEXT: MenuState = { chat: true, editor: true, browser: false, page: false, focus: 'editor', updateCheck: false, project: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE };
 
 let root: string;
 let alpha: Project;

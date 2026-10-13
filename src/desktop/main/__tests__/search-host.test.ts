@@ -86,6 +86,7 @@ beforeEach(() => {
     browser: () => undefined,
     warn: () => undefined,
     searchEditorClosed: (documentId) => host.searchEditorClosed(documentId),
+    openChanges: async () => undefined,
   });
   host = new SearchHost({
     settings: platform.settings,

@@ -62,8 +62,8 @@ async function capture(tab: Page, testInfo: TestInfo, theme: Theme): Promise<voi
 
 test('chat panel header, empty state and composer popups in Dark and Light', async ({ home, launch }, testInfo) => {
   test.setTimeout(240_000);
-  await git(home.project, 'init', '-q', '-b', 'main');
-  await git(home.project, 'commit', '-q', '--allow-empty', '-m', 'init');
+  await git(home, home.project, 'init', '-q', '-b', 'main');
+  await git(home, home.project, 'commit', '-q', '--allow-empty', '-m', 'init');
   const stub = await startOpenAIStub();
   try {
     seedStubModel(home, stub.baseUrl);

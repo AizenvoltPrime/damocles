@@ -1,4 +1,5 @@
 import * as fs from 'node:fs';
+import { promises as fsp } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -73,5 +74,39 @@ describe('desktop key-value state', () => {
       },
     });
     expect(onDisk).toEqual([1, 2, 3]);
+  });
+
+  it('flush waits for a write to one memento queued while it waits on the other', async () => {
+    const state = createDesktopKeyValueState(userData, () => undefined);
+    await state.workspace.update('seed', 0);
+    const rename = fsp.rename.bind(fsp);
+    let release: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    let reach: () => void = () => undefined;
+    const reached = new Promise<void>((resolve) => { reach = resolve; });
+    const spy = vi.spyOn(fsp, 'rename').mockImplementation(async (from, to) => {
+      if (path.basename(String(to)) === 'workspace.json') {
+        reach();
+        await released;
+      }
+      return rename(from, to);
+    });
+    try {
+      const first = state.global.update('a', 1);
+      let flushed = false;
+      const flushing = state.flush().then(() => { flushed = true; });
+      const queued = state.workspace.update('c', 3);
+      await first;
+      await reached;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(flushed).toBe(false);
+      release();
+      await flushing;
+      expect(createDesktopKeyValueState(userData, () => undefined).workspace.get('c')).toBe(3);
+      await queued;
+    } finally {
+      release();
+      spy.mockRestore();
+    }
   });
 });

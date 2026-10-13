@@ -34,6 +34,8 @@ export interface FileTreeDeps {
   readonly reveal: (absolutePath: string) => Promise<void>;
   readonly copy: (text: string) => Promise<void>;
   readonly changed: (change: FilesChanged) => void;
+  // the listed entries git ignores (source control's check-ignore); none, and no git, in an untrusted project
+  readonly ignored: (projectKey: string, relativeDir: string, entries: readonly FileEntry[]) => Promise<ReadonlySet<string>>;
 }
 
 // Copy path and Reveal: a cancel never happens, every other failure is reported as a delete's is.
@@ -119,7 +121,11 @@ export class FileTree implements Disposable {
       if (this.isExcluded(joinRelative(relativeDir, dirent.name))) continue;
       entries.push({ name: dirent.name, kind: await this.kindOf(confined.path, dirent) });
     }
-    return { ok: true, entries: entries.sort(compareEntries) };
+    const ignored = await this.deps.ignored(projectKey, relativeDir, entries).catch((err: unknown) => {
+      this.deps.log(`[files] the ignored-file query failed: ${errorText(err)}`);
+      return new Set<string>();
+    });
+    return { ok: true, entries: entries.map((entry) => (ignored.has(entry.name) ? { ...entry, ignored: true as const } : entry)).sort(compareEntries) };
   }
 
   async create(projectKey: string, relativeDir: string, name: unknown, kind: 'file' | 'dir'): Promise<FilesMutationResult> {

@@ -1,4 +1,4 @@
-// How a shell executable's path is read before any file system call, for detected and user terminal profiles alike.
+// How an executable's path is read before any file system call: terminal profiles, and the git every host spawns.
 import * as path from 'node:path';
 
 // Windows opens these names as devices in every folder and with any extension.
@@ -26,11 +26,11 @@ export function executablePathForm(value: string, platform: NodeJS.Platform): Ex
 
 /**
  * The PATH folders an executable may be found in, normalized: only absolute local entries, since a relative entry resolves
- * against main's working folder and a UNC or device entry reaches another machine.
+ * against the spawning process's working folder (a repository, for git) and a UNC or device entry reaches another machine.
  */
 export function searchPathEntries(platform: NodeJS.Platform, env: Readonly<Record<string, string | undefined>>): string[] {
   const windows = platform === 'win32';
-  // Windows keeps PATH as Path; the environment main passes is a plain copy, so find the key case-insensitively there.
+  // Windows keeps PATH as Path; an environment passed as a plain copy needs the key found case-insensitively.
   const key = windows ? Object.keys(env).find((name) => name.toUpperCase() === 'PATH') : 'PATH';
   const value = key === undefined ? undefined : env[key];
   return (value ?? '')

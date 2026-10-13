@@ -25,6 +25,9 @@ import SettingSelect from "./settings/controls/SettingSelect.vue";
 import SettingSeg from "./settings/controls/SettingSeg.vue";
 import SettingSlider from "./settings/controls/SettingSlider.vue";
 import SettingButton from "./settings/controls/SettingButton.vue";
+import SettingInput from "./settings/controls/SettingInput.vue";
+import { parseWakePhraseInput } from "./settings/parsers";
+import { DEFAULT_WAKE_PHRASE } from "@shared/wake-phrase";
 import { useSettingWrite } from "./settings/settings-writes";
 import { useSettingsPage } from "./settings/settings-view";
 import {
@@ -38,7 +41,7 @@ import {
 const { t } = useI18n();
 const page = useSettingsPage();
 const settingsStore = useSettingsStore();
-const { voiceConfig } = storeToRefs(settingsStore);
+const { voiceConfig, voiceRuntimeUnsupported } = storeToRefs(settingsStore);
 const { voiceFilesBytes } = storeToRefs(useVoiceJarvisStore());
 const { postMessage } = usePlatformBridge();
 const write = useSettingWrite();
@@ -86,6 +89,19 @@ const removeAllLabel = computed(() => {
 <template>
   <SettingsRow
     v-if="wakeMode"
+    id="damocles.voice.wakeWord"
+  >
+    <SettingInput
+      :model-value="voiceConfig.wakeWord"
+      :parse="(raw) => parseWakePhraseInput(raw, t)"
+      :label="t('jarvisSettings.wakePhraseLabel')"
+      :placeholder="DEFAULT_WAKE_PHRASE"
+      wide
+      @commit="(wakeWord) => update('damocles.voice.wakeWord', { type: 'setVoiceWakeWord', wakeWord }, { wakeWord })"
+    />
+  </SettingsRow>
+  <SettingsRow
+    v-if="wakeMode"
     id="damocles.voice.wakeWordSensitivity"
   >
     <SettingSlider
@@ -121,7 +137,9 @@ const removeAllLabel = computed(() => {
       @update:model-value="(voice) => update('damocles.voice.tts.voice', { type: 'setVoiceTtsVoice', voice }, { ttsVoice: voice })"
     />
     <SettingButton
+      v-if="!voiceRuntimeUnsupported"
       :disabled="!voiceConfig.ttsEnabled"
+      data-testid="voice-test-voice"
       @click="postMessage({ type: 'voiceTestVoice' })"
     >
       {{ t("jarvisSettings.testVoice") }}
@@ -181,7 +199,11 @@ const removeAllLabel = computed(() => {
   <SettingsRow id="voice-files">
     <template #expand>
       <div class="sm-field-row sm-row-block">
-        <SettingButton @click="postMessage({ type: 'voiceRedownloadModels' })">
+        <SettingButton
+          v-if="!voiceRuntimeUnsupported"
+          data-testid="voice-redownload"
+          @click="postMessage({ type: 'voiceRedownloadModels' })"
+        >
           {{ t("jarvisSettings.redownload") }}
         </SettingButton>
         <SettingButton @click="postMessage({ type: 'voiceOpenModelsFolder' })">

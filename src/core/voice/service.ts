@@ -4,8 +4,11 @@ import { EventEmitter } from "node:events";
 import type { Disposable } from "../../platform/disposable";
 import type { Platform } from "../../platform/platform";
 import { log } from "../logger";
+import { t } from "../l10n";
+import { DEFAULT_WAKE_PHRASE, parseWakePhrase } from "../../shared/wake-phrase";
 import { VoiceRuntimeInstaller, getDefaultRuntimePaths, DEFAULT_RUNTIME_DIR } from "./runtime";
 import type { RuntimePaths } from "./runtime";
+import { unsupportedVoicePlatformMessage } from "./runtime/supported-platforms";
 import { VoiceSidecarManager } from "./sidecar";
 import type {
   CpuFallbackEvent,
@@ -75,9 +78,11 @@ export class VoiceService extends EventEmitter<VoiceServiceEvents> {
       // Reaching this branch would force a full sidecar restart.
       const modeChanged = e.affects("damocles.voice.mode");
       const ttsChanged = e.affects("damocles.voice.tts.enabled");
-      if (!modeChanged && !ttsChanged) return;
       const cfg = this.platform.settings;
       const wakeWordEnabled = cfg.get<string>("damocles.voice.mode", "push-to-talk") === "wake-word";
+      // The sidecar builds its keyword spotter from the --wake-word argument at startup.
+      const phraseChanged = wakeWordEnabled && e.affects("damocles.voice.wakeWord");
+      if (!modeChanged && !ttsChanged && !phraseChanged) return;
       const ttsEnabled = cfg.get<boolean>("damocles.voice.tts.enabled", false);
       if (!wakeWordEnabled && !ttsEnabled) {
         this.stop().catch((err) => log("[VoiceService] stop on config change failed:", err));
@@ -136,6 +141,13 @@ export class VoiceService extends EventEmitter<VoiceServiceEvents> {
     const ttsEnabled = config.get<boolean>("damocles.voice.tts.enabled", false);
     if (!wakeWordEnabled && !ttsEnabled) return;
 
+    const unsupported = unsupportedVoicePlatformMessage(process.platform, process.arch);
+    if (unsupported !== null) {
+      log(`[VoiceService] ${unsupported}`);
+      this.emit("status", { kind: "error", code: "unsupported-platform", message: unsupported });
+      return;
+    }
+
     if (wakeWordEnabled) this.warnIfSpeechExtensionConflicts();
 
     if (this.manager !== null) {
@@ -144,6 +156,8 @@ export class VoiceService extends EventEmitter<VoiceServiceEvents> {
       await previous.stop();
     }
     if (signal.aborted) return;
+
+    if (this.wakePhraseFor(wakeWordEnabled) === undefined) return;
 
     const userPython = config.get<string>("damocles.voice.runtimePath", "");
     const userRuntimeMode = config.get<"auto" | "cuda" | "cpu">("damocles.voice.localGpu", "auto");
@@ -177,6 +191,8 @@ export class VoiceService extends EventEmitter<VoiceServiceEvents> {
     const liveWakeWordEnabled = liveMode === "wake-word";
     const liveTtsEnabled = liveCfg.get<boolean>("damocles.voice.tts.enabled", false);
     if (!liveWakeWordEnabled && !liveTtsEnabled) return;
+    const wakePhrase = this.wakePhraseFor(liveWakeWordEnabled);
+    if (wakePhrase === undefined) return;
 
     const managerCfg: ManagerConfig = {
       pythonExe: this.pythonExe,
@@ -184,9 +200,8 @@ export class VoiceService extends EventEmitter<VoiceServiceEvents> {
       modelsDir: this.paths.modelsDir,
       runtimeMode: liveCfg.get<"auto" | "cuda" | "cpu">("damocles.voice.localGpu", "auto"),
       diagnostics: liveCfg.get<boolean>("damocles.voice.diagnostics", false),
-      wakeWordEnabled: liveWakeWordEnabled,
+      wakePhrase,
       initPayload: {
-        wakeWord: liveCfg.get<string>("damocles.voice.wakeWord", "hey_jarvis"),
         wakeSensitivity: liveCfg.get<number>("damocles.voice.wakeWordSensitivity", 0.5),
         endOfTurnSilenceMs: liveCfg.get<number>("damocles.voice.endOfTurnSilenceMs", 800),
         maxUtteranceMs: liveCfg.get<number>("damocles.voice.maxUtteranceMs", 30000),
@@ -230,6 +245,18 @@ export class VoiceService extends EventEmitter<VoiceServiceEvents> {
     if (signal.aborted) {
       if (this.manager === next) this.manager = null;
     }
+  }
+
+  /** The normalized phrase in wake mode and null outside it; undefined, after reporting the error, when the stored phrase is invalid. */
+  private wakePhraseFor(wakeWordEnabled: boolean): string | null | undefined {
+    if (!wakeWordEnabled) return null;
+    const setting = this.platform.settings.get<string>("damocles.voice.wakeWord", DEFAULT_WAKE_PHRASE);
+    const words = parseWakePhrase(setting);
+    if (words !== null) return words.join(" ");
+    const message = t("The damocles.voice.wakeWord setting is not a valid wake phrase: \"{0}\". Use 1 to 4 English words of letters only, such as \"hey jarvis\".", setting);
+    log(`[VoiceService] ${message}`);
+    this.emit("status", { kind: "error", code: "fatal", message });
+    return undefined;
   }
 
   async stop(): Promise<void> {

@@ -33,6 +33,7 @@ vi.mock("../../../../pi-session/checkpoints/exec", () => ({ exec: execMock }));
 
 import { installFakePlatform, type FakePlatform } from "../../../../../__mocks__/fake-platform";
 import { McpManager } from "../mcp-manager";
+import { gitExecutable } from "../../../../git-executable";
 import { connectedIn, folderTarget } from "./mcp-folder-fixtures";
 
 const WS = folderTarget(fakeWorkspace);
@@ -239,7 +240,7 @@ describe("McpManager: the gitignore leak check and workspace trust", () => {
     await loadedManager(true);
 
     expect(execMock).toHaveBeenCalledTimes(1);
-    expect(execMock.mock.calls[0]![0]).toBe("git");
+    expect(execMock.mock.calls[0]![0]).toBe(gitExecutable);
     expect(execMock.mock.calls[0]![3]).toBe(fakeWorkspace);
   });
 });

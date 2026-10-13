@@ -45,7 +45,7 @@ async function openSearch(app: ElectronApplication): Promise<Page> {
   return shell;
 }
 
-test('a restored message shows when it was sent, and Search comes back with its Replace text', async ({ home, launch }) => {
+test('a restored message shows when it was sent, and Search comes back with its Replace text', async ({ foreground: _foreground, home, launch }) => {
   const stub = await startOpenAIStub();
   try {
     seedStubModel(home, stub.baseUrl);

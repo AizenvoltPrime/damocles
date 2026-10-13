@@ -36,7 +36,12 @@ torchaudio==2.4.1
 # pinning it here would break CPU / macOS installs.
 nemo-toolkit[asr]==2.3.0
 
-openwakeword==0.6.0
+# Wake-phrase keyword spotting. sherpa-onnx pulls sherpa-onnx-core (bundles
+# its own onnxruntime); sentencepiece tokenizes the phrase with the bundled
+# bpe.model. Wheels cover the supported win_amd64, linux x86_64 and macOS arm64
+# on cp310-cp312.
+sherpa-onnx==1.13.8
+sentencepiece==0.2.2
 
 silero-vad==5.1.2
 

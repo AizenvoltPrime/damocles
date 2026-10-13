@@ -9,6 +9,7 @@ import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../..
 import type { ChimeTone, NotificationBody, NotificationCenterState } from './notifications';
 import type { ReleaseIndex, ReleaseNotes, UpdateSnapshot, VersionInfo } from './updates';
 import type { TerminalColor, TerminalGlyph, TerminalProfileOption, TerminalProfileReport, TerminalProjectOption } from './terminal-channels';
+import { INPUT_VALIDATIONS, MAX_INPUT_VALUE_LENGTH, inputProblem, type InputPlatform, type InputValidation } from '../../shared/input-validation';
 
 export const OVERLAY_CHANNELS = {
   // renderer → main, invoke
@@ -96,6 +97,7 @@ export const OVERLAY_ICONS = [
   'arrow-right-to-line',
   'at-sign',
   'check',
+  'check-check',
   'chevrons-up-down',
   'circle-x',
   'clipboard-paste',
@@ -105,25 +107,36 @@ export const OVERLAY_ICONS = [
   'copy-x',
   'eraser',
   'eye',
+  'eye-off',
   'file',
+  'file-clock',
   'file-plus',
+  'file-symlink',
   'file-text',
+  'files',
   'filter',
   'filter-x',
+  'folder-git-2',
   'folder-minus',
   'folder-open',
   'folder-plus',
   'folder-search',
+  'git-commit-horizontal',
   'git-compare',
+  'history',
+  'list',
+  'list-filter',
   'list-tree',
   'maximize-2',
   'message-square',
+  'minus',
   'palette',
   'panel-bottom',
   'panel-right',
   'pencil',
   'pencil-line',
   'plus',
+  'refresh-cw',
   'replace',
   'replace-all',
   'rotate-cw',
@@ -131,12 +144,16 @@ export const OVERLAY_ICONS = [
   'search',
   'shapes',
   'shield-check',
+  'shield-off',
+  'signature',
   'square',
   'square-code',
+  'square-terminal',
   'tag',
   'tags',
   'text-select',
   'trash-2',
+  'undo-2',
   'ungroup',
   'x',
 ] as const;
@@ -216,13 +233,22 @@ export type OverlayMenuItem =
       readonly danger?: boolean;
       readonly disabled?: boolean;
       readonly checked?: boolean;
+      // with checked: one of mutually exclusive choices (menuitemradio) rather than a toggle
+      readonly radio?: boolean;
     }
-  | { readonly kind: 'separator' };
+  | { readonly kind: 'separator' }
+  // one level deep: its items are items and separators, never another submenu; its own id is never an answer
+  | { readonly kind: 'submenu'; readonly id: string; readonly label: string; readonly icon?: OverlayIcon; readonly items: readonly OverlayMenuItem[] };
 
-/** Drops separators at either end and repeated ones, which conditional menu sections and dropped items leave behind. */
+/**
+ * Drops separators at either end and repeated ones, which conditional menu sections and dropped items leave behind, and a
+ * submenu left empty.
+ */
 export function tidyMenu(items: readonly OverlayMenuItem[]): OverlayMenuItem[] {
   const out: OverlayMenuItem[] = [];
-  for (const item of items) {
+  for (const raw of items) {
+    const item = raw.kind === 'submenu' ? { ...raw, items: tidyMenu(raw.items) } : raw;
+    if (item.kind === 'submenu' && item.items.length === 0) continue;
     if (item.kind === 'separator' && (out.length === 0 || out[out.length - 1]?.kind === 'separator')) continue;
     out.push(item);
   }
@@ -297,6 +323,8 @@ export type OverlayRequest =
   // A list main offers (Change Icon..., Change Color..., Select Default Profile); only main opens it. The current item is
   // focused first; filtering matches label and description.
   | { readonly kind: 'quickPick'; readonly placeholder: string; readonly items: readonly OverlayQuickPickItem[] }
+  // A text box main asks through askInput; only main opens it.
+  | ({ readonly kind: 'input' } & InputRequest)
   // a pane dragged past the shell's threshold; grid is the layout grid's rectangle, pointer where the drag is now
   | {
       readonly kind: 'dropZones';
@@ -307,6 +335,74 @@ export type OverlayRequest =
     };
 
 export type MessageSeverity = 'info' | 'warning' | 'danger';
+
+export type { InputValidation };
+
+// VS Code's showInputBox options that Damocles uses. Labels are localized by main.
+export interface InputRequest {
+  // the box's heading, e.g. "Commit to a New Branch"
+  readonly title?: string;
+  // the line under the box, VS Code's prompt
+  readonly prompt: string;
+  readonly placeholder?: string;
+  // the prefill
+  readonly value?: string;
+  // [start, end) UTF-16 offsets into value, VS Code's valueSelection; absent selects the whole value
+  readonly valueSelection?: readonly [number, number];
+  // checked as the user types; Enter is refused while it fails, and main checks the answer again
+  readonly validation?: InputValidation;
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function own(record: Record<string, unknown>, key: string): unknown {
+  return Object.hasOwn(record, key) ? record[key] : undefined;
+}
+
+const isOffset = (value: unknown, max: number): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= max;
+
+/** A clean copy of an input request within the overlay's bounds, or undefined; main asks nothing it cannot show. */
+export function parseInputRequest(raw: unknown): Extract<OverlayRequest, { kind: 'input' }> | undefined {
+  if (!isRecordValue(raw) || own(raw, 'kind') !== 'input') return undefined;
+  const title = own(raw, 'title');
+  const prompt = own(raw, 'prompt');
+  const placeholder = own(raw, 'placeholder');
+  const value = own(raw, 'value');
+  const valueSelection = own(raw, 'valueSelection');
+  const validation = own(raw, 'validation');
+  const label = (text: unknown, max: number): boolean => typeof text === 'string' && text.length > 0 && text.length <= max;
+  if (!label(prompt, MAX_OVERLAY_TEXT_LENGTH)) return undefined;
+  if (title !== undefined && !label(title, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
+  if (placeholder !== undefined && !label(placeholder, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
+  if (value !== undefined && !(typeof value === 'string' && value.length <= MAX_INPUT_VALUE_LENGTH)) return undefined;
+  if (validation !== undefined && !(INPUT_VALIDATIONS as readonly unknown[]).includes(validation)) return undefined;
+  let selection: readonly [number, number] | undefined;
+  if (valueSelection !== undefined) {
+    const length = typeof value === 'string' ? value.length : 0;
+    if (!Array.isArray(valueSelection) || valueSelection.length !== 2) return undefined;
+    const [start, end] = valueSelection as unknown[];
+    if (!isOffset(start, length) || !isOffset(end, length) || start > end) return undefined;
+    selection = [start, end];
+  }
+  return {
+    kind: 'input',
+    prompt: prompt as string,
+    ...(title !== undefined ? { title: title as string } : {}),
+    ...(placeholder !== undefined ? { placeholder: placeholder as string } : {}),
+    ...(value !== undefined ? { value } : {}),
+    ...(selection ? { valueSelection: selection } : {}),
+    ...(validation !== undefined ? { validation: validation as InputValidation } : {}),
+  };
+}
+
+/** The typed value when it answers `request`: a bounded string its validation kind accepts on `platform`. */
+export function parseInputAnswer(raw: Record<string, unknown>, request: Extract<OverlayRequest, { kind: 'input' }>, platform: InputPlatform): string | undefined {
+  const value = own(raw, 'value');
+  if (typeof value !== 'string' || value.length > MAX_INPUT_VALUE_LENGTH) return undefined;
+  return request.validation === undefined || inputProblem(request.validation, value, platform) === undefined ? value : undefined;
+}
 
 // At most MAX_OVERLAY_ITEMS per request; id and label within MAX_OVERLAY_ID_LENGTH and MAX_OVERLAY_LABEL_LENGTH.
 export interface OverlayQuickPickItem {
@@ -339,6 +435,8 @@ export type OverlayAnswer =
   | { readonly kind: 'newTerminal'; readonly profileId: string; readonly projectKey: string }
   // Escape answers dismissed; main refuses an id the request did not offer
   | { readonly kind: 'quickPick'; readonly itemId: string }
+  // Escape answers dismissed; main refuses a value its validation kind rejects
+  | { readonly kind: 'input'; readonly value: string }
   // null: dropped outside every zone, or Escape
   | { readonly kind: 'dropZones'; readonly slot: GridSlot | null };
 

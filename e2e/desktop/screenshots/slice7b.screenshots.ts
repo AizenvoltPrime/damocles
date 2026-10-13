@@ -60,7 +60,7 @@ async function toastCard(app: ElectronApplication, text: string, seen: ReadonlyS
   return { id, card, popup };
 }
 
-test('slice 7b captures', async ({ home, launch }) => {
+test('slice 7b captures', async ({ foreground: _foreground, home, launch }) => {
   const trusted = home.project;
   const untrusted = path.join(path.dirname(home.project), 'bookshelf');
   seed(trusted, 5000);

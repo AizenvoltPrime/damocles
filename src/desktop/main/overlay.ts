@@ -27,6 +27,9 @@ import {
   type OverlayRequest,
   type OverlayState,
   type PopupAnswer,
+  type InputRequest,
+  parseInputAnswer,
+  parseInputRequest,
 } from '../preload/overlay-channels';
 import type { PanelTheme } from '../preload/panel-channels';
 import { TERMINAL_COLORS, TERMINAL_CUSTOM_ICONS, TERMINAL_ICONS, type TerminalColor, type TerminalGlyph } from '../preload/terminal-channels';
@@ -92,6 +95,14 @@ function isNonEmptyText(value: unknown, max: number): value is string {
   return isText(value, max) && value.length > 0;
 }
 
+// Text a menu only shows (its label, caption and item labels): past MAX_OVERLAY_LABEL_LENGTH it keeps its tail behind '…', so
+// a path keeps its file name. Undefined unless a string.
+function shownLabel(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  if (value.length <= MAX_OVERLAY_LABEL_LENGTH) return value;
+  return `…${value.slice(value.length - MAX_OVERLAY_LABEL_LENGTH + 1).replace(/^[\uDC00-\uDFFF]/, '')}`;
+}
+
 function isCoordinate(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MAX_OVERLAY_COORDINATE;
 }
@@ -115,13 +126,13 @@ function parseMenuItem(raw: unknown): OverlayMenuItem | undefined {
   if (kind === 'separator') return { kind: 'separator' };
   if (kind !== 'item') return undefined;
   const id = field(raw, 'id');
-  const label = field(raw, 'label');
+  const label = shownLabel(field(raw, 'label'));
   const icon = field(raw, 'icon');
   const glyph = field(raw, 'glyph');
   const color = field(raw, 'color');
   const shortcut = field(raw, 'shortcut');
   const clipboard = field(raw, 'clipboard');
-  if (!isNonEmptyText(id, MAX_OVERLAY_ID_LENGTH) || !isNonEmptyText(label, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
+  if (!isNonEmptyText(id, MAX_OVERLAY_ID_LENGTH) || !label) return undefined;
   if (clipboard !== undefined && !OVERLAY_CLIPBOARD_ACTIONS.includes(clipboard as OverlayClipboardAction)) return undefined;
   if (icon !== undefined && !(typeof icon === 'string' && ICONS.has(icon))) return undefined;
   if (glyph !== undefined && !(typeof glyph === 'string' && GLYPHS.has(glyph))) return undefined;
@@ -130,7 +141,9 @@ function parseMenuItem(raw: unknown): OverlayMenuItem | undefined {
   const danger = optionalFlag(raw, 'danger');
   const disabled = optionalFlag(raw, 'disabled');
   const checked = optionalFlag(raw, 'checked');
-  if (!danger.ok || !disabled.ok || !checked.ok) return undefined;
+  const radio = optionalFlag(raw, 'radio');
+  if (!danger.ok || !disabled.ok || !checked.ok || !radio.ok) return undefined;
+  if (radio.value !== undefined && checked.value === undefined) return undefined;
   return {
     kind: 'item',
     id,
@@ -143,35 +156,74 @@ function parseMenuItem(raw: unknown): OverlayMenuItem | undefined {
     ...(danger.value !== undefined ? { danger: danger.value } : {}),
     ...(disabled.value !== undefined ? { disabled: disabled.value } : {}),
     ...(checked.value !== undefined ? { checked: checked.value } : {}),
+    ...(radio.value !== undefined ? { radio: radio.value } : {}),
   };
 }
 
-function parseMenu(raw: Record<string, unknown>): OverlayRequest | undefined {
-  const label = field(raw, 'label');
-  const anchor = parseRect(field(raw, 'anchor'));
-  const rawItems = field(raw, 'items');
-  const filterPlaceholder = field(raw, 'filterPlaceholder');
-  const caption = field(raw, 'caption');
-  if (!isNonEmptyText(label, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
-  if (caption !== undefined && !isText(caption, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
-  if (!anchor || !Array.isArray(rawItems) || rawItems.length === 0 || rawItems.length > MAX_OVERLAY_ITEMS) return undefined;
-  if (filterPlaceholder !== undefined && !isText(filterPlaceholder, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
-  const items: OverlayMenuItem[] = [];
+// A menu's items with one level of submenus. Every item at both levels counts against MAX_OVERLAY_ITEMS before a nested
+// list is walked, ids are unique across levels, and a submenu holds no clipboard item, which askShellMenu checks only at
+// the top level.
+function parseMenuItems(rawItems: unknown): OverlayMenuItem[] | undefined {
+  if (!Array.isArray(rawItems) || rawItems.length === 0 || rawItems.length > MAX_OVERLAY_ITEMS) return undefined;
+  let total = rawItems.length;
   const ids = new Set<string>();
   const clipboardActions = new Set<OverlayClipboardAction>();
-  for (const rawItem of rawItems as unknown[]) {
-    const item = parseMenuItem(rawItem);
-    if (!item) return undefined;
-    if (item.kind === 'item') {
-      if (ids.has(item.id)) return undefined;
-      ids.add(item.id);
-      if (item.clipboard !== undefined) {
-        if (clipboardActions.has(item.clipboard)) return undefined;
-        clipboardActions.add(item.clipboard);
+  const claim = (id: string): boolean => {
+    if (ids.has(id)) return false;
+    ids.add(id);
+    return true;
+  };
+  const parseLevel = (list: readonly unknown[], nested: boolean): OverlayMenuItem[] | undefined => {
+    const items: OverlayMenuItem[] = [];
+    for (const rawItem of list) {
+      if (isRecord(rawItem) && field(rawItem, 'kind') === 'submenu') {
+        if (nested) return undefined;
+        const id = field(rawItem, 'id');
+        const label = shownLabel(field(rawItem, 'label'));
+        const icon = field(rawItem, 'icon');
+        const children = field(rawItem, 'items');
+        if (!isNonEmptyText(id, MAX_OVERLAY_ID_LENGTH) || !label || !claim(id)) return undefined;
+        if (icon !== undefined && !(typeof icon === 'string' && ICONS.has(icon))) return undefined;
+        if (!Array.isArray(children) || children.length === 0) return undefined;
+        total += children.length;
+        if (total > MAX_OVERLAY_ITEMS) return undefined;
+        const parsed = parseLevel(children as unknown[], true);
+        if (!parsed) return undefined;
+        items.push({ kind: 'submenu', id, label, ...(icon !== undefined ? { icon: icon as OverlayIcon } : {}), items: parsed });
+        continue;
       }
+      const item = parseMenuItem(rawItem);
+      if (!item) return undefined;
+      if (item.kind === 'item') {
+        if (!claim(item.id)) return undefined;
+        if (item.clipboard !== undefined) {
+          if (nested || clipboardActions.has(item.clipboard)) return undefined;
+          clipboardActions.add(item.clipboard);
+        }
+      }
+      items.push(item);
     }
-    items.push(item);
-  }
+    return items;
+  };
+  return parseLevel(rawItems as unknown[], false);
+}
+
+/** The enabled leaf item of a menu with this id, at either level; a submenu's own id is no answer. */
+function enabledMenuLeaf(items: readonly OverlayMenuItem[], id: unknown): boolean {
+  return items.some((item) => (item.kind === 'submenu' ? enabledMenuLeaf(item.items, id) : item.kind === 'item' && item.id === id && item.disabled !== true));
+}
+
+function parseMenu(raw: Record<string, unknown>): OverlayRequest | undefined {
+  const label = shownLabel(field(raw, 'label'));
+  const anchor = parseRect(field(raw, 'anchor'));
+  const filterPlaceholder = field(raw, 'filterPlaceholder');
+  const rawCaption = field(raw, 'caption');
+  const caption = shownLabel(rawCaption);
+  if (!label) return undefined;
+  if (rawCaption !== undefined && caption === undefined) return undefined;
+  if (filterPlaceholder !== undefined && !isText(filterPlaceholder, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
+  const items = anchor ? parseMenuItems(field(raw, 'items')) : undefined;
+  if (!anchor || !items) return undefined;
   return {
     kind: 'menu',
     label,
@@ -335,8 +387,7 @@ export function parseOverlayAnswer(raw: unknown, request: OverlayRequest): Overl
   if (kind !== request.kind) return undefined;
   if (request.kind === 'menu') {
     const itemId = field(raw, 'itemId');
-    const enabled = request.items.some((item) => item.kind === 'item' && item.id === itemId && item.disabled !== true);
-    return enabled ? { kind: 'menu', itemId: itemId as string } : undefined;
+    return enabledMenuLeaf(request.items, itemId) ? { kind: 'menu', itemId: itemId as string } : undefined;
   }
   if (request.kind === 'confirm') {
     const confirmed = field(raw, 'confirmed');
@@ -360,6 +411,10 @@ export function parseOverlayAnswer(raw: unknown, request: OverlayRequest): Overl
     const itemId = field(raw, 'itemId');
     return request.items.some((item) => item.id === itemId) ? { kind: 'quickPick', itemId: itemId as string } : undefined;
   }
+  if (request.kind === 'input') {
+    const value = parseInputAnswer(raw, request, { windows: process.platform === 'win32' });
+    return value === undefined ? undefined : { kind: 'input', value };
+  }
   if (request.kind === 'dropZones') {
     const slot = field(raw, 'slot');
     if (slot === null) return { kind: 'dropZones', slot: null };
@@ -368,6 +423,49 @@ export function parseOverlayAnswer(raw: unknown, request: OverlayRequest): Overl
   const tag = field(raw, 'tag');
   if (tag === null) return { kind: 'tagPicker', tag: null };
   return isTag(tag) ? { kind: 'tagPicker', tag: tag.trim() } : undefined;
+}
+
+/** Asks for a line of text in the overlay's QuickInput; resolves the value, or undefined for Escape or when it cannot ask. */
+export type AskInput = (request: InputRequest) => Promise<string | undefined>;
+
+export interface InputOverlay {
+  request(request: OverlayRequest, returnFocus: WebContents | undefined): Promise<OverlayAnswer>;
+}
+
+export interface InputAskerDeps {
+  // undefined while no window holds an overlay
+  readonly overlay: () => InputOverlay | undefined;
+  // where keyboard focus returns once the box closes
+  readonly focused: () => WebContents | undefined;
+  // the box could not show (no overlay, a failed page, a request beyond its bounds); the caller tells the user, since unlike a
+  // question (D41) a text box has no OS fallback
+  readonly unavailable: () => void;
+  readonly log: (line: string) => void;
+}
+
+/**
+ * The QuickInput asker main's flows use (plan AD4). The answer passed parseOverlayAnswer, which re-runs the request's
+ * validation kind, so a value the overlay should have refused never reaches the caller: the request settles dismissed.
+ */
+export function createInputAsker(deps: InputAskerDeps): AskInput {
+  return async (input) => {
+    const request = parseInputRequest({ ...input, kind: 'input' });
+    const overlay = deps.overlay();
+    if (!request || !overlay) {
+      deps.log(`[input] ${request ? 'no overlay to ask in' : 'the request exceeds the overlay bounds'}; nothing asked`);
+      deps.unavailable();
+      return undefined;
+    }
+    let answer: OverlayAnswer;
+    try {
+      answer = await overlay.request(request, deps.focused());
+    } catch (err) {
+      deps.log(`[input] the overlay could not ask (${err instanceof Error ? err.message : String(err)})`);
+      deps.unavailable();
+      return undefined;
+    }
+    return answer.kind === 'input' ? answer.value : undefined;
+  };
 }
 
 /** The overlay page main serves at OVERLAY_PAGE_URL: the built overlay app under a fresh script nonce and the current theme. */

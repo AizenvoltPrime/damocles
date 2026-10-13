@@ -120,7 +120,7 @@
     "whatThisEnables": "What this enables",
     "privacyAlwaysOn": "Mic is always-on while wake-word mode is active.",
     "privacyLocal": "All processing happens on this machine. No audio or transcripts ever leave.",
-    "privacyWakePhrase": "The wake phrase is dropped before transcription. Only what you say AFTER 'Hey Jarvis' is sent to the assistant.",
+    "privacyWakePhrase": "The wake phrase is dropped before transcription. Only what you say AFTER the wake phrase is sent to the assistant.",
     "privacyAutoDisable": "Auto-disabled on system sleep, screen lock, and panel close.",
     "engines": "On-device engines",
     "roleWake": "Wake word",
@@ -147,6 +147,7 @@
   "jarvisSettings": {
     "title": "Voice",
     "description": "Choose how voice input works. Wake-word runs fully on-device. Push-to-talk uses the cloud STT provider.",
+    "wakePhraseLabel": "Wake phrase",
     "sensitivityLabel": "Wake-word sensitivity",
     "spokenRepliesTitle": "Spoken replies",
     "speakAssistantReplies": "Speak assistant replies",
@@ -841,7 +842,8 @@
       "memory-profile": "Memory profile",
       "memory-query-expansion": "Memory query expansion",
       "btw": "/btw side questions",
-      "memory-audit": "Memory quality audit"
+      "memory-audit": "Memory quality audit",
+      "commit-message": "Commit messages"
     },
     "heatmap": {
       "title": "Activity by weekday and hour (local time)",
@@ -2249,7 +2251,8 @@
     "invalid": {
       "integerRange": "Enter a whole number from {min} to {max}.",
       "amount": "Enter an amount above 0, such as 5 or 2.50.",
-      "positiveInteger": "Enter a whole number above 0."
+      "positiveInteger": "Enter a whole number above 0.",
+      "wakePhrase": "Enter 1 to 4 English words of letters only, such as \"hey jarvis\"."
     },
     "effort": {
       "none": "None",
@@ -2396,7 +2399,7 @@
       },
       "backgroundModel": {
         "label": "Background model",
-        "description": "Runs chat titles, memory extraction, profiles, query expansion and the quality audit. Automatic uses the first signed-in model of Haiku 5.5, GPT-6 Luna, Step 5 Preview and DeepSeek V4.1 Flash; a chosen model never falls back to another provider."
+        "description": "Runs chat titles, memory extraction, profiles, query expansion, the quality audit and the desktop app's commit messages. Automatic uses the first signed-in model of Haiku 5.5, GPT-6 Luna, Step 5 Preview and DeepSeek V4.1 Flash; a chosen model never falls back to another provider."
       },
       "backgroundEffort": {
         "label": "Background reasoning effort"
@@ -2498,6 +2501,10 @@
       "voiceLanguage": {
         "label": "Spoken language",
         "description": "Language used for speech-to-text transcription."
+      },
+      "wakePhrase": {
+        "label": "Wake phrase",
+        "description": "Say it to start a voice turn. 1 to 4 English words, such as \"hey jarvis\" or \"computer\"."
       },
       "wakeSensitivity": {
         "label": "Wake-word sensitivity",

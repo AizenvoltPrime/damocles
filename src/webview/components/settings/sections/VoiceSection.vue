@@ -15,7 +15,7 @@ import { useSettingWrite } from '../settings-writes';
 
 const { t } = useI18n();
 const settingsStore = useSettingsStore();
-const { voiceConfig, voiceHasApiKey } = storeToRefs(settingsStore);
+const { voiceConfig, voiceHasApiKey, voiceRuntimeUnsupported } = storeToRefs(settingsStore);
 const { postMessage } = usePlatformBridge();
 const write = useSettingWrite();
 
@@ -79,6 +79,17 @@ function setProvider(provider: VoiceProvider): void {
 
 <template>
   <SettingsRow id="damocles.voice.mode">
+    <template
+      v-if="voiceRuntimeUnsupported"
+      #note
+    >
+      <p
+        class="sm-feedback sm-feedback-warning"
+        data-testid="voice-runtime-unsupported"
+      >
+        {{ voiceRuntimeUnsupported }}
+      </p>
+    </template>
     <SettingSeg
       :model-value="voiceConfig.mode"
       :options="modeOptions"

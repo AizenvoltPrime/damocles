@@ -12,9 +12,9 @@ import { RELEASE_TARGETS, MIN_VSIX_BYTES, DESKTOP_TARGETS, DESKTOP_ARTIFACT_PATT
  * desktop installer the release never attaches, so this is the seam that reports it.
  */
 
-type Step = { name?: string; uses?: string; run?: string; if?: string; with?: Record<string, string>; 'timeout-minutes'?: number };
+type Step = { id?: string; name?: string; uses?: string; run?: string; if?: string; with?: Record<string, string>; 'timeout-minutes'?: number };
 type Matrix = { include: Record<string, string | number | boolean>[]; target?: string[]; shard?: number[]; exclude?: { target: string; shard: number }[] };
-type Job = { needs?: string | string[]; permissions?: Record<string, string>; steps: Step[]; strategy?: { matrix: Matrix }; 'timeout-minutes'?: number };
+type Job = { needs?: string | string[]; if?: string; env?: Record<string, string>; permissions?: Record<string, string>; steps: Step[]; strategy?: { matrix: Matrix }; 'timeout-minutes'?: number };
 type DesktopSpec = { runner: string; os: string; builder: string; arch: string; channel?: string; appDir: string; executable: string; artifacts: string[] };
 
 const workflowText = readFileSync(join(__dirname, '..', '..', '.github', 'workflows', 'release.yml'), 'utf8');
@@ -227,8 +227,13 @@ describe('the release workflow runs electron-builder safely', () => {
 
   it('passes the per-arch channel on every Windows invocation', () => {
     const windows = invocations.filter((line) => line.includes('--win'));
-    expect(windows.length).toBeGreaterThanOrEqual(2);
-    expect(windows.filter((line) => !line.includes('-c.publish.channel=${{ matrix.channel }}'))).toEqual([]);
+    expect(windows.length).toBeGreaterThanOrEqual(3);
+    const channelOf = (line: string) => {
+      if (line.includes('--${{ matrix.arch }}')) return line.includes('-c.publish.channel=${{ matrix.channel }}');
+      const arch = /--(x64|arm64)\b/.exec(line)?.[1];
+      return arch !== undefined && line.includes(`-c.publish.channel=latest-${arch}`);
+    };
+    expect(windows.filter((line) => !channelOf(line))).toEqual([]);
   });
 
   it('gives no electron-builder step a GitHub token', () => {
@@ -241,6 +246,46 @@ describe('the release workflow runs electron-builder safely', () => {
   });
 });
 
+// docs/release.md "The verify job": one upstream outage then fails one job, not every leg.
+describe('the release workflow downloads the grammars and wake models once', () => {
+  // Commands whose npm scripts run fetch:assets: pretest, build, vscode:prepublish (package), test:desktop.
+  const fetches = /\bnpm (test|run (fetch:assets|build|package|test:desktop))\b(?![:\w])/;
+  const restores = (step: Step) => step.uses?.startsWith('actions/download-artifact@') === true && step.with?.name === 'fetched-assets';
+
+  it('fetches them in verify alone and uploads them as fetched-assets', () => {
+    const steps = workflow.jobs.verify!.steps;
+    const fetch = steps.findIndex((step) => step.run?.trim() === 'npm run fetch:assets');
+    const upload = steps.findIndex((step) => step.uses?.startsWith('actions/upload-artifact@') && step.with?.name === 'fetched-assets');
+    expect(fetch).toBeGreaterThan(-1);
+    expect(upload).toBeGreaterThan(fetch);
+    expect(steps.slice(0, fetch).filter((step) => fetches.test(step.run ?? ''))).toEqual([]);
+  });
+
+  it('uploads every wake model file the manifest lists, or a restored job fetches the archive again', () => {
+    const upload = workflow.jobs.verify!.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@') && step.with?.name === 'fetched-assets')!;
+    const globs = upload.with!.path!.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+      .map((glob) => new RegExp(`^${glob.split('*').map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*')}$`));
+    const manifest = JSON.parse(readFileSync(join(__dirname, '..', '..', 'python', 'damocles_voice_sidecar', 'damocles_voice_sidecar', 'models', 'MODEL_MANIFEST.json'), 'utf8')) as {
+      wake_model: { files: { filename: string }[] };
+    };
+    const uncovered = manifest.wake_model.files
+      .map(({ filename }) => `python/damocles_voice_sidecar/damocles_voice_sidecar/models/wake/${filename}`)
+      .filter((path) => !globs.some((glob) => glob.test(path)));
+    expect(uncovered).toEqual([]);
+  });
+
+  it('restores them in every other job before its first build or test', () => {
+    const late = Object.entries(workflow.jobs).filter(([name]) => name !== 'verify').flatMap(([name, job]) => {
+      const first = job.steps.findIndex((step) => fetches.test(step.run ?? ''));
+      if (first === -1) return [];
+      const restore = job.steps.findIndex(restores);
+      return restore > -1 && restore < first ? [] : [name];
+    });
+    expect(late).toEqual([]);
+    expect(Object.values(workflow.jobs).flatMap((job) => job.steps).filter(restores).length).toBeGreaterThanOrEqual(4);
+  });
+});
+
 describe('the release workflow limits what a compromised action or token can reach', () => {
   const jobs = Object.entries(workflow.jobs);
 
@@ -250,12 +295,20 @@ describe('the release workflow limits what a compromised action or token can rea
     expect(unpinned).toEqual([]);
   });
 
-  it('widens the read-only token only for attest and release', () => {
+  it('widens the read-only token only for sign-windows, attest and release', () => {
     expect((parse(workflowText) as { permissions?: unknown }).permissions).toEqual({ contents: 'read' });
     expect(Object.fromEntries(jobs.filter(([, job]) => job.permissions).map(([name, job]) => [name, job.permissions]))).toEqual({
+      'sign-windows': { contents: 'read', actions: 'read' },
       attest: { contents: 'read', 'id-token': 'write', attestations: 'write' },
       release: { contents: 'write' },
     });
+  });
+
+  it('runs no install script in the jobs that hold the SignPath token or the publish tokens', () => {
+    for (const name of ['sign-windows', 'release']) {
+      const installs = workflow.jobs[name]!.steps.filter((step) => /\bnpm (ci|install)\b/.test(step.run ?? ''));
+      expect(installs.map((step) => step.run!.trim())).toEqual(['npm ci --ignore-scripts']);
+    }
   });
 
   it('keeps the OIDC-capable attest job free of secrets and package installs', () => {
@@ -267,11 +320,21 @@ describe('the release workflow limits what a compromised action or token can rea
 describe('the release attaches every desktop artifact', () => {
   const allNames = Object.keys(desktopTargets).flatMap((target) => desktopArtifacts(target, '1.2.3'));
 
-  it('each leg uploads every artifact it produces', () => {
-    const upload = workflow.jobs['package-desktop']!.steps.find((step) => step.with?.name === 'desktop-${{ matrix.target }}');
-    expect(upload).toBeDefined();
-    const patterns = globs(upload!.with!.path!.trim().split(/\r?\n/).map((line) => line.trim()));
-    expect(allNames.filter((name) => !patterns.some((re) => re.test(name)))).toEqual([]);
+  // package-desktop uploads the macOS and Linux artifacts, sign-windows the signed Windows ones.
+  it('uploads every artifact of each target as desktop-<target>', () => {
+    const legUpload = workflow.jobs['package-desktop']!.steps.find((step) => step.with?.name === 'desktop-${{ matrix.target }}');
+    expect(legUpload?.if).toBe("matrix.os != 'win32'");
+    for (const [target, spec] of Object.entries(desktopTargets)) {
+      const upload = spec.os === 'win32' ? workflow.jobs['sign-windows']!.steps.find((step) => step.with?.name === `desktop-${target}`) : legUpload;
+      expect(upload, `no desktop-${target} upload`).toBeDefined();
+      const patterns = globs(upload!.with!.path!.trim().split(/\r?\n/).map((line) => line.trim()));
+      const names = desktopArtifacts(target, '1.2.3');
+      expect({ target, unmatched: names.filter((name) => !patterns.some((re) => re.test(name))) }).toEqual({ target, unmatched: [] });
+      if (spec.os === 'win32') {
+        const others = allNames.filter((name) => !names.includes(name));
+        expect({ target, foreign: others.filter((name) => patterns.some((re) => re.test(name))) }).toEqual({ target, foreign: [] });
+      }
+    }
   });
 
   it('gh release create names every artifact', () => {
@@ -285,14 +348,98 @@ describe('the release attaches every desktop artifact', () => {
     expect(attest!.with!['subject-path']!.trim().split(/\r?\n/).map((line) => line.trim())).toEqual(releaseAssetGlobs());
   });
 
-  it('waits for the desktop build, end-to-end suite, install and update checks', () => {
-    expect(workflow.jobs.release!.needs).toEqual(expect.arrayContaining(['package', 'package-desktop', 'e2e-desktop', 'verify-desktop-install', 'desktop-update-test', 'attest']));
-    expect(workflow.jobs.attest!.needs).toEqual(expect.arrayContaining(['package', 'package-desktop', 'e2e-desktop', 'verify-desktop-install', 'desktop-update-test']));
+  it('waits for the desktop build, signing, end-to-end suite, install and update checks', () => {
+    expect(workflow.jobs.release!.needs).toEqual(expect.arrayContaining(['package', 'package-desktop', 'sign-windows', 'e2e-desktop', 'verify-desktop-install', 'desktop-update-test', 'attest']));
+    expect(workflow.jobs.attest!.needs).toEqual(expect.arrayContaining(['package', 'package-desktop', 'sign-windows', 'e2e-desktop', 'verify-desktop-install', 'desktop-update-test']));
+  });
+
+  // A manual run signs with the test certificate, whose files must never be attested or released.
+  it('attests and releases only on a tag push', () => {
+    expect(workflow.jobs.attest!.if).toBe("github.event_name == 'push'");
+    expect(workflow.jobs.release!.if).toBe("github.event_name == 'push'");
+  });
+
+  // docs/release.md "Dry run": a manual run checks everything release reads, so release itself only publishes.
+  it('checks the artifacts and the release notes on every run, before attest and release', () => {
+    const notes = workflow.jobs['release-notes']!;
+    expect(notes.if).toBeUndefined();
+    expect(notes.permissions).toBeUndefined();
+    expect(JSON.stringify(notes.steps)).not.toMatch(/secrets\./);
+    expect(notes.steps.some((step) => step.run?.includes('--check-desktop-artifacts all dist-artifacts'))).toBe(true);
+    expect(notes.steps.some((step) => step.run?.includes('CHANGELOG.md'))).toBe(true);
+    for (const name of ['attest', 'release']) expect({ name, needs: workflow.jobs[name]!.needs }).toEqual({ name, needs: expect.arrayContaining(['release-notes']) });
+    expect(JSON.stringify(workflow.jobs.release!.steps)).not.toMatch(/CHANGELOG\.md|--check-desktop-artifacts/);
   });
 
   it('builds an update feed for every leg the update test downloads', () => {
     const feeds = include('package-desktop').filter((leg) => leg.updateFeed).map((leg) => leg.target).sort();
     expect(include('desktop-update-test').map((leg) => leg.target).sort()).toEqual(feeds);
+  });
+});
+
+describe('sign-windows signs the Windows legs (docs/desktop-signing.md)', () => {
+  const job = workflow.jobs['sign-windows']!;
+  const windowsTargets = Object.entries(desktopTargets).filter(([, spec]) => spec.os === 'win32').map(([target]) => target).sort();
+
+  it('signs a tag with the release certificate and a manual run with the test certificate', () => {
+    expect(job.env?.SIGNPATH_SIGNING_POLICY_SLUG).toBe("${{ github.event_name == 'push' && 'release-signing' || 'test-signing' }}");
+    const requests = job.steps.filter((step) => step.uses?.startsWith('signpath/github-action-submit-signing-request@'));
+    expect(requests.map((step) => step.with!['artifact-configuration-slug'])).toEqual(['app-executables', 'installers']);
+    for (const step of requests) expect(step.with!['signing-policy-slug']).toBe('${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}');
+  });
+
+  it('passes both requests the package.json version, which the artifact configurations enforce as each file\'s product version', () => {
+    const version = job.steps.find((step) => step.id === 'version');
+    expect(version?.run).toContain("require('./package.json').version");
+    const requests = job.steps.filter((step) => step.uses?.startsWith('signpath/github-action-submit-signing-request@'));
+    for (const step of requests) expect(step.with!.parameters?.trim()).toBe('version: "${{ steps.version.outputs.version }}"');
+  });
+
+  // SignPath Foundation signs only files built from this repository; Electron's DLLs, ripgrep, koffi and node-pty ship as published.
+  it('submits only Damocles.exe from the apps', () => {
+    const upload = job.steps.find((step) => step.id === 'upload-unsigned-executables');
+    const request = job.steps.find((step) => step.with?.['artifact-configuration-slug'] === 'app-executables');
+    expect(request?.with!['github-artifact-id']).toBe('${{ steps.upload-unsigned-executables.outputs.artifact-id }}');
+    const collect = job.steps.find((step) => step.id === 'collect-executables');
+    const copied = collect!.run!.split('\n').filter((line) => line.trim().startsWith('cp ')).map((line) => line.trim().split(/\s+/)[1]);
+    expect(copied).toEqual(['unsigned/x64/Damocles.exe', 'unsigned/arm64/Damocles.exe']);
+    expect(upload?.with?.path).toBe('executables/');
+  });
+
+  it('receives every Windows leg\'s unpacked app, and no Windows leg uploads an unsigned installer', () => {
+    const legUpload = workflow.jobs['package-desktop']!.steps.find((step) => step.with?.name === 'unpacked-${{ matrix.target }}');
+    expect(legUpload?.if).toBe("matrix.os == 'win32'");
+    const downloads = job.steps.filter((step) => step.uses?.startsWith('actions/download-artifact@')).map((step) => step.with!.name);
+    expect(downloads.filter((name) => name?.startsWith('unpacked-')).sort()).toEqual(windowsTargets.map((target) => `unpacked-${target}`));
+  });
+
+  it('restores the grammars and wake models before the package check, which compares the apps with them', () => {
+    const restore = job.steps.findIndex((step) => step.uses?.startsWith('actions/download-artifact@') && step.with?.name === 'fetched-assets');
+    const check = job.steps.findIndex((step) => step.run?.trim().startsWith('node scripts/verify-desktop-package.mjs'));
+    expect(restore).toBeGreaterThan(-1);
+    expect(check).toBeGreaterThan(restore);
+  });
+
+  it('is waited on by every job that installs or attaches a Windows installer', () => {
+    for (const name of ['verify-desktop-install', 'desktop-update-test', 'attest', 'release']) {
+      expect({ name, needs: workflow.jobs[name]!.needs }).toEqual({ name, needs: expect.arrayContaining(['sign-windows']) });
+    }
+  });
+
+  // Each signing request spends SignPath's yearly artifact quota, so a run that fails a check must fail before it signs.
+  it('waits for every job that does not need the signed files', () => {
+    const needsOf = (name: string): string[] => [workflow.jobs[name]!.needs ?? []].flat();
+    const ancestors = (name: string): Set<string> => {
+      const seen = new Set<string>();
+      const visit = (job: string): void => {
+        for (const parent of needsOf(job)) if (!seen.has(parent)) { seen.add(parent); visit(parent); }
+      };
+      visit(name);
+      return seen;
+    };
+    const independent = Object.keys(workflow.jobs).filter((name) => name !== 'sign-windows' && !ancestors(name).has('sign-windows'));
+    expect(independent.length).toBeGreaterThan(0);
+    expect(independent.filter((name) => !ancestors('sign-windows').has(name))).toEqual([]);
   });
 });
 

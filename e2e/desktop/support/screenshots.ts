@@ -7,7 +7,7 @@ import { activeChat, nextChat } from './fixtures';
 import { captureWindow, pageFramesShown } from './browser';
 import { REPO_ROOT } from './hermetic';
 import { shellState } from './shell';
-import { addProject, chatInput, setThemeSource } from './ui';
+import { addProject, chatInput, clickMenu, setThemeSource } from './ui';
 
 export const THEMES = ['dark', 'light'] as const;
 export type Theme = (typeof THEMES)[number];
@@ -24,6 +24,29 @@ function screenshotFile(testInfo: TestInfo, name: string): string {
   const file = dir ? path.join(dir, `${name}.png`) : testInfo.outputPath(`${name}.png`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   return file;
+}
+
+/**
+ * Closes the app's window whose page URL starts with urlPrefix and waits until it is gone. Never destroy(): an evaluate can run
+ * inside that window's compositor frame, where destroying it fails Chromium's CHECK(!inside_main_frame_) (crbug.com/895883).
+ */
+export async function closeWindowAt(app: ElectronApplication, urlPrefix: string): Promise<void> {
+  await app.evaluate(({ BrowserWindow }, target) => new Promise<void>((resolve) => {
+    const win = BrowserWindow.getAllWindows().find((each) => each.webContents.getURL().startsWith(target));
+    if (!win) return resolve();
+    win.once('closed', () => resolve());
+    win.close();
+  }), urlPrefix);
+}
+
+/**
+ * Hides the editor pane the window shows by default, through View › Toggle Editor Pane, so the chat spans the window beside
+ * the sidebar as in the design reference; returns once the chat's header has room for every control.
+ */
+export async function hideEditorPane(app: ElectronApplication, tab: Page): Promise<void> {
+  if ((await shellState(app)).layout.grid.visible.editor) await clickMenu(app, 'damocles.toggleEditor');
+  await expect.poll(async () => (await shellState(app)).layout.grid.visible.editor).toBe(false);
+  await expect(tab.getByTestId('chat-header')).not.toHaveAttribute('data-width', 'narrow');
 }
 
 /** Saves a PNG of the page or an element for visual review and attaches it to the report. */
@@ -237,10 +260,8 @@ async function openReference(app: ElectronApplication): Promise<Reference> {
       await settled(page);
     },
     async close() {
-      // Closing this page through Playwright also closed the app's main window, so main destroys it instead.
-      await app.evaluate(({ BrowserWindow }, target) => {
-        BrowserWindow.getAllWindows().find((win) => win.webContents.getURL().startsWith(target))?.destroy();
-      }, url);
+      // Closing this page through Playwright also closed the app's main window, so main closes only this one.
+      await closeWindowAt(app, url);
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };

@@ -7,7 +7,7 @@ import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { EDITOR_MAX_DOCUMENT_BYTES, type SettingsFileScope } from '../../../shared/types/messages';
 import type { SettingsFileSaveOutcome } from '../../../core/chat-panel/settings-file-editor';
 import { settingsFileVersion } from '../../../core/config/settings-file';
-import type { EditorConflictResult, EditorEditReport, EditorReadOnlyReason, EditorSaveResult, FilesMutationResult, SearchEditorConfig, SearchEditorMessage, ShellDocumentContent } from '../../preload/shell-channels';
+import type { EditorConflictResult, EditorEditReport, EditorReadOnlyReason, EditorSaveResult, FilesMutationResult, NotDisplayedReason, SearchEditorConfig, SearchEditorMessage, ShellDocumentContent } from '../../preload/shell-channels';
 import {
   DEFAULT_SEARCH_EDITOR_CONFIG,
   parseSearchEditor,
@@ -130,7 +130,7 @@ export interface NotDisplayedDocument {
   readonly kind: 'notDisplayed';
   location: Location | undefined;
   name: string;
-  readonly reason: 'binary' | 'tooLarge' | 'unreadable';
+  readonly reason: NotDisplayedReason;
   readonly bytes?: number;
 }
 
@@ -468,6 +468,13 @@ export class DocumentService {
     };
     this.documents.set(document.id, document);
     if (isDirty(document)) this.deps.backups.changed(document);
+    return document;
+  }
+
+  /** A core-originated side the editor does not show (a git blob that is missing, too large or binary): its reason only, no bytes. */
+  openPlaceholder(name: string, reason: NotDisplayedReason, bytes?: number): NotDisplayedDocument {
+    const document: NotDisplayedDocument = { id: randomUUID(), kind: 'notDisplayed', location: undefined, name, reason, ...(bytes !== undefined ? { bytes } : {}) };
+    this.documents.set(document.id, document);
     return document;
   }
 

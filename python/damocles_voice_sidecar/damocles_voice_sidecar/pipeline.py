@@ -2,16 +2,22 @@
 
 State diagram:
 
-    LISTENING --(wake_detected)--> POST_WAKE_OFFSET --(after 250 ms)--> WAITING_FOR_SPEECH
+    LISTENING --(wake_detected)--> WAITING_FOR_SPEECH
     WAITING_FOR_SPEECH --(no speech in 1500 ms)--> wake_aborted -> LISTENING
     WAITING_FOR_SPEECH --(vad_speech_started)--> CAPTURING
     CAPTURING --(vad_speech_ended OR max_utterance_ms)--> TRANSCRIBING
     TRANSCRIBING --(transcript_final emitted)--> LISTENING
 
+The wake engine fires some time after the phrase ends. While LISTENING, the
+pipeline keeps the last ``PRE_ROLL_MS`` of frames; on detection it replays the
+frames that followed the phrase through the command path, then continues
+live, so command speech that starts during the detection latency is kept.
+
 Wake-phrase exclusion is enforced two ways:
-  1. ASR receives audio starting at T_wake + 250 ms (the post-wake offset).
-  2. ``strip_wake_prefix`` removes any leading "(hey )?jarvis" from the
-     transcript as defense-in-depth.
+  1. Only frames after the phrase end the wake engine reports are replayed,
+     so VAD and ASR start after the phrase.
+  2. ``strip_wake_prefix`` removes a leading wake phrase (or its last word)
+     from the transcript as defense-in-depth.
 
 Both mechanisms together satisfy the FR-11 acceptance test
 (``tests/test_wake_exclusion.py``).
@@ -22,35 +28,35 @@ from __future__ import annotations
 import asyncio
 import gc
 import logging
-import re
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Awaitable, Callable
 
 from .engines import AsrEngine, EngineSet, TtsEngine, VadEvent, WakeEngine, VadEngine
-from .protocol import ErrorCode, FRAME_BYTES, FRAME_DURATION_MS, RecoverableOomError
+from .protocol import (
+    ErrorCode,
+    FRAME_BYTES,
+    FRAME_DURATION_MS,
+    FRAME_SAMPLES,
+    RecoverableOomError,
+)
+from .wake_phrase import (
+    DEFAULT_WAKE_PHRASE,
+    compile_wake_prefix,
+    normalize_wake_phrase,
+    strip_wake_prefix,
+)
 
 logger = logging.getLogger(__name__)
 
-# Tail of the wake phrase. Calibrated against the actual hey_jarvis model
-# during US-006 implementation; 250 ms is the documented starting point.
-POST_WAKE_OFFSET_MS = 250
+# Pre-roll length in ms. Must exceed the wake engine's worst detection latency
+# after the phrase end (659 ms measured; README, "Wake pre-roll").
+PRE_ROLL_MS = 1_000
 
 # If no VAD speech onset within this window of wake_detected, the wake is
 # treated as a false positive.
 FALSE_WAKE_TIMEOUT_MS = 1_500
-
-# Strip leading "Jarvis," / "Hey Jarvis," prefixes that survive the audio
-# offset. Case-insensitive; trailing punctuation/whitespace are absorbed.
-# MUST stay byte-identical to ``WAKE_PREFIX_RE`` in
-# src/core/chat-panel/message-router/handlers/voice-stream-handlers.ts.
-# The TS-side test src/core/voice/__tests__/wake-prefix-parity.test.ts
-# reads both files as text and asserts the literals match.
-WAKE_PREFIX_RE = re.compile(r"^\s*(hey\s+)?jarvis[,.\s]*", re.IGNORECASE)
-
-
-def strip_wake_prefix(text: str) -> str:
-    return WAKE_PREFIX_RE.sub("", text, count=1).strip()
 
 
 def _is_cuda_oom(exc: BaseException) -> bool:
@@ -66,7 +72,6 @@ def _is_cuda_oom(exc: BaseException) -> bool:
 
 class State(Enum):
     LISTENING = "listening"
-    POST_WAKE_OFFSET = "post_wake_offset"
     WAITING_FOR_SPEECH = "waiting_for_speech"
     CAPTURING = "capturing"
     TRANSCRIBING = "transcribing"
@@ -87,8 +92,9 @@ EmitFn = Callable[[PipelineEvent], Awaitable[None]]
 class PipelineConfig:
     end_of_turn_silence_ms: int = 800
     max_utterance_ms: int = 30_000
-    post_wake_offset_ms: int = POST_WAKE_OFFSET_MS
     false_wake_timeout_ms: int = FALSE_WAKE_TIMEOUT_MS
+    # Raw damocles.voice.wakeWord value; normalized by the pipeline.
+    wake_phrase: str = DEFAULT_WAKE_PHRASE
 
 
 class Pipeline:
@@ -111,12 +117,14 @@ class Pipeline:
         self._tts: TtsEngine | None = engines.tts
         self._cfg = config
         self._emit = emit
+        self._wake_prefix = compile_wake_prefix(normalize_wake_phrase(config.wake_phrase))
 
         self._state = State.LISTENING
-        # Audio captured for ASR after the post-wake offset elapses.
+        # Most recent LISTENING frames, replayed from the phrase end on detection.
+        self._pre_roll: deque[bytes] = deque(maxlen=self._frames(PRE_ROLL_MS))
+        # Audio captured for ASR from the VAD speech onset.
         self._capture_buf = bytearray()
-        # Frames since wake_detected, used for the post-wake offset and
-        # false-wake timeout windows.
+        # Frames since the phrase ended, used for the false-wake timeout window.
         self._frames_since_wake = 0
         # Frames captured during CAPTURING; used to enforce max_utterance_ms.
         self._frames_capturing = 0
@@ -133,21 +141,24 @@ class Pipeline:
             return  # malformed frames are dropped silently per backpressure policy
 
         if self._state == State.LISTENING:
+            self._pre_roll.append(frame)
             res = self._wake.process(frame)
             if res.detected:
-                self._state = State.POST_WAKE_OFFSET
-                self._frames_since_wake = 0
-                await self._emit(PipelineEvent("wake_detected", {"confidence": res.confidence}))
-            return
-
-        if self._state == State.POST_WAKE_OFFSET:
-            self._frames_since_wake += 1
-            if self._frames_since_wake >= self._frames(self._cfg.post_wake_offset_ms):
+                after_phrase = min(res.samples_after_phrase // FRAME_SAMPLES, len(self._pre_roll))
+                replay = list(self._pre_roll)[len(self._pre_roll) - after_phrase :]
                 self._state = State.WAITING_FOR_SPEECH
                 self._vad.reset()
                 self._frames_since_wake = 0
+                await self._emit(PipelineEvent("wake_detected", {"confidence": res.confidence}))
+                for buffered in replay:
+                    if self._state not in (State.WAITING_FOR_SPEECH, State.CAPTURING):
+                        break
+                    await self._feed_command(buffered)
             return
 
+        await self._feed_command(frame)
+
+    async def _feed_command(self, frame: bytes) -> None:
         if self._state == State.WAITING_FOR_SPEECH:
             self._frames_since_wake += 1
             ev = self._vad.process(frame)
@@ -191,7 +202,7 @@ class Pipeline:
         reset_on_exit = True
         try:
             result = await self._transcribe_with_oom_recovery(pcm)
-            cleaned = strip_wake_prefix(result.text)
+            cleaned = strip_wake_prefix(result.text, self._wake_prefix)
             await self._emit(
                 PipelineEvent(
                     "transcript_final",
@@ -274,3 +285,4 @@ class Pipeline:
         self._frames_since_wake = 0
         self._frames_capturing = 0
         self._capture_buf.clear()
+        self._pre_roll.clear()

@@ -7,6 +7,7 @@ export const LANGUAGE_SETTING = 'damocles.desktop.language';
 export const RESTORE_LAYOUT_SETTING = 'damocles.desktop.restoreLayout';
 export const NOTIFICATIONS_SETTING = 'damocles.desktop.notifications.enabled';
 export const NOTIFICATION_SOUND_SETTING = 'damocles.desktop.notifications.sound';
+export const UPDATE_CHECK_AUTOMATICALLY_SETTING = 'damocles.desktop.update.checkAutomatically';
 export const EDITOR_FONT_SIZE_SETTING = 'damocles.desktop.editor.fontSize';
 export const EDITOR_TAB_SIZE_SETTING = 'damocles.desktop.editor.tabSize';
 export const EDITOR_DETECT_INDENTATION_SETTING = 'damocles.desktop.editor.detectIndentation';
@@ -47,6 +48,25 @@ export const SEARCH_EDITOR_DOUBLE_CLICK_SETTING = 'damocles.desktop.searchEditor
 export const SEARCH_EDITOR_REUSE_PRIOR_SETTING = 'damocles.desktop.searchEditor.reusePriorSearchConfiguration';
 export const SEARCH_EDITOR_CONTEXT_LINES_SETTING = 'damocles.desktop.searchEditor.defaultNumberOfContextLines';
 export const SEARCH_EDITOR_FOCUS_RESULTS_SETTING = 'damocles.desktop.searchEditor.focusResultsOnSearch';
+export const GIT_UNTRACKED_CHANGES_SETTING = 'damocles.desktop.git.untrackedChanges';
+export const GIT_REPOSITORY_SCAN_MAX_DEPTH_SETTING = 'damocles.desktop.git.repositoryScanMaxDepth';
+export const GIT_OPEN_REPOSITORY_IN_PARENT_FOLDERS_SETTING = 'damocles.desktop.git.openRepositoryInParentFolders';
+export const GIT_INPUT_VALIDATION_SETTING = 'damocles.desktop.git.inputValidation';
+export const GIT_INPUT_VALIDATION_SUBJECT_LENGTH_SETTING = 'damocles.desktop.git.inputValidationSubjectLength';
+export const GIT_INPUT_VALIDATION_LENGTH_SETTING = 'damocles.desktop.git.inputValidationLength';
+export const GIT_ALLOW_NO_VERIFY_COMMIT_SETTING = 'damocles.desktop.git.allowNoVerifyCommit';
+export const GIT_CONFIRM_NO_VERIFY_COMMIT_SETTING = 'damocles.desktop.git.confirmNoVerifyCommit';
+export const GIT_CONFIRM_EMPTY_COMMITS_SETTING = 'damocles.desktop.git.confirmEmptyCommits';
+export const GIT_ENABLE_SMART_COMMIT_SETTING = 'damocles.desktop.git.enableSmartCommit';
+export const GIT_SUGGEST_SMART_COMMIT_SETTING = 'damocles.desktop.git.suggestSmartCommit';
+export const GIT_SMART_COMMIT_CHANGES_SETTING = 'damocles.desktop.git.smartCommitChanges';
+export const GIT_POST_COMMIT_COMMAND_SETTING = 'damocles.desktop.git.postCommitCommand';
+export const GIT_BRANCH_PROTECTION_SETTING = 'damocles.desktop.git.branchProtection';
+export const GIT_BRANCH_PROTECTION_PROMPT_SETTING = 'damocles.desktop.git.branchProtectionPrompt';
+export const GIT_PROMPT_TO_SAVE_FILES_BEFORE_COMMIT_SETTING = 'damocles.desktop.git.promptToSaveFilesBeforeCommit';
+export const GIT_ALWAYS_SIGN_OFF_SETTING = 'damocles.desktop.git.alwaysSignOff';
+export const GIT_ENABLE_COMMIT_SIGNING_SETTING = 'damocles.desktop.git.enableCommitSigning';
+export const GIT_BRANCH_PREFIX_SETTING = 'damocles.desktop.git.branchPrefix';
 
 export const EDITOR_WORD_WRAPS = ['off', 'on'] as const;
 export const EDITOR_RENDER_WHITESPACES = ['none', 'boundary', 'selection', 'trailing', 'all'] as const;
@@ -64,6 +84,14 @@ export const SEARCH_COLLAPSE_RESULTS = ['auto', 'alwaysCollapse', 'alwaysExpand'
 export const SEARCH_DEFAULT_VIEW_MODES = ['tree', 'list'] as const;
 export const SEARCH_ACTIONS_POSITIONS = ['auto', 'right'] as const;
 export const SEARCH_EDITOR_DOUBLE_CLICK = ['selectWord', 'goToLocation', 'openLocationToSide'] as const;
+// VS Code's git.untrackedChanges and git.openRepositoryInParentFolders values.
+export const GIT_UNTRACKED_CHANGES = ['mixed', 'separate', 'hidden'] as const;
+export const GIT_OPEN_REPOSITORY_IN_PARENT_FOLDERS = ['always', 'never', 'prompt'] as const;
+// VS Code's git.smartCommitChanges, git.postCommitCommand, git.branchProtectionPrompt and git.promptToSaveFilesBeforeCommit values.
+export const GIT_SMART_COMMIT_CHANGES = ['all', 'tracked'] as const;
+export const GIT_POST_COMMIT_COMMANDS = ['none', 'push', 'sync'] as const;
+export const GIT_BRANCH_PROTECTION_PROMPTS = ['alwaysCommit', 'alwaysCommitToNewBranch', 'alwaysPrompt'] as const;
+export const GIT_PROMPT_TO_SAVE_FILES_BEFORE_COMMIT = ['always', 'staged', 'never'] as const;
 // Must stay equal to MAX_SEARCH_RESULTS and MAX_CONTEXT_LINES in src/shared/text-search.ts.
 export const SEARCH_MAX_RESULTS = 20000;
 export const SEARCH_EDITOR_MAX_CONTEXT_LINES = 100;
@@ -135,6 +163,8 @@ export interface DesktopSettingProperty {
   readonly maximum?: number;
   // an object setting: each value's schema
   readonly additionalProperties?: DesktopSettingValueSchema;
+  // an array setting: each item's schema
+  readonly items?: DesktopSettingValueSchema;
 }
 
 // The JSON Schema an object setting's values follow, which scripts/generate-settings-schema.mjs copies into the settings schema.
@@ -189,6 +219,12 @@ export const DESKTOP_CONFIGURATION: Readonly<Record<string, DesktopSettingProper
     default: true,
     scope: 'application',
     description: 'Play a short sound with each desktop pop-up.',
+  },
+  [UPDATE_CHECK_AUTOMATICALLY_SETTING]: {
+    type: 'boolean',
+    default: true,
+    scope: 'application',
+    description: 'Check GitHub for a new release at startup, every 4 hours and after the computer wakes. When off, Damocles contacts GitHub only when you choose Check for Updates.',
   },
   [EDITOR_FONT_SIZE_SETTING]: {
     type: 'integer',
@@ -520,6 +556,139 @@ export const DESKTOP_CONFIGURATION: Readonly<Record<string, DesktopSettingProper
     scope: 'application',
     description: 'When a search is triggered, focus the Search Editor results instead of the Search Editor input.',
   },
+  [GIT_UNTRACKED_CHANGES_SETTING]: {
+    type: 'string',
+    enum: GIT_UNTRACKED_CHANGES,
+    enumDescriptions: ['All changes, tracked and untracked, appear together and behave equally.', 'Untracked changes appear separately in the Source Control view. They are also excluded from several actions.', 'Untracked changes are hidden and excluded from several actions.'],
+    default: 'mixed',
+    scope: 'application',
+    description: 'Controls how untracked changes behave.',
+  },
+  [GIT_REPOSITORY_SCAN_MAX_DEPTH_SETTING]: {
+    type: 'integer',
+    default: 1,
+    minimum: -1,
+    maximum: 100,
+    scope: 'application',
+    description: 'Controls the depth used when scanning project folders for Git repositories. Can be set to -1 for no limit.',
+  },
+  [GIT_OPEN_REPOSITORY_IN_PARENT_FOLDERS_SETTING]: {
+    type: 'string',
+    enum: GIT_OPEN_REPOSITORY_IN_PARENT_FOLDERS,
+    enumDescriptions: ['Always open a repository in parent folders of projects.', 'Never open a repository in parent folders of projects.', 'Prompt before opening a repository in parent folders of projects.'],
+    default: 'prompt',
+    scope: 'application',
+    description: 'Control whether a repository in parent folders of projects should be opened.',
+  },
+  [GIT_INPUT_VALIDATION_SETTING]: {
+    type: 'boolean',
+    default: false,
+    scope: 'application',
+    description: 'Controls whether to show commit message input validation diagnostics.',
+  },
+  [GIT_INPUT_VALIDATION_SUBJECT_LENGTH_SETTING]: {
+    type: 'integer',
+    default: 50,
+    minimum: 1,
+    maximum: 1000,
+    scope: 'application',
+    description: 'Controls the commit message subject length threshold for showing a warning.',
+  },
+  [GIT_INPUT_VALIDATION_LENGTH_SETTING]: {
+    type: 'integer',
+    default: 72,
+    minimum: 1,
+    maximum: 1000,
+    scope: 'application',
+    description: 'Controls the commit message length threshold for showing a warning.',
+  },
+  [GIT_ALLOW_NO_VERIFY_COMMIT_SETTING]: {
+    type: 'boolean',
+    default: false,
+    scope: 'application',
+    description: 'Controls whether commits without running pre-commit and commit-msg hooks are allowed.',
+  },
+  [GIT_CONFIRM_NO_VERIFY_COMMIT_SETTING]: {
+    type: 'boolean',
+    default: true,
+    scope: 'application',
+    description: 'Controls whether to ask for confirmation before committing without verification.',
+  },
+  [GIT_CONFIRM_EMPTY_COMMITS_SETTING]: {
+    type: 'boolean',
+    default: true,
+    scope: 'application',
+    description: 'Always confirm the creation of empty commits for the \'Git: Commit Empty\' command.',
+  },
+  [GIT_ENABLE_SMART_COMMIT_SETTING]: {
+    type: 'boolean',
+    default: false,
+    scope: 'application',
+    description: 'Commit all changes when there are no staged changes.',
+  },
+  [GIT_SUGGEST_SMART_COMMIT_SETTING]: {
+    type: 'boolean',
+    default: true,
+    scope: 'application',
+    description: 'Suggests to enable smart commit (commit all changes when there are no staged changes).',
+  },
+  [GIT_SMART_COMMIT_CHANGES_SETTING]: {
+    type: 'string',
+    enum: GIT_SMART_COMMIT_CHANGES,
+    enumDescriptions: ['Automatically stage all changes.', 'Automatically stage tracked changes only.'],
+    default: 'all',
+    scope: 'application',
+    description: 'Control which changes are automatically staged by Smart Commit.',
+  },
+  [GIT_POST_COMMIT_COMMAND_SETTING]: {
+    type: 'string',
+    enum: GIT_POST_COMMIT_COMMANDS,
+    enumDescriptions: ['Don\'t run any command after a commit.', 'Run \'git push\' after a successful commit.', 'Run \'git pull\' and \'git push\' after a successful commit.'],
+    default: 'none',
+    scope: 'application',
+    description: 'Run a git command after a successful commit.',
+  },
+  [GIT_BRANCH_PROTECTION_SETTING]: {
+    type: 'array',
+    items: { type: 'string' },
+    default: [],
+    scope: 'application',
+    description: 'List of protected branches, as glob patterns. By default, a prompt is shown before changes are committed to a protected branch. The prompt can be controlled using the protected branch prompt setting.',
+  },
+  [GIT_BRANCH_PROTECTION_PROMPT_SETTING]: {
+    type: 'string',
+    enum: GIT_BRANCH_PROTECTION_PROMPTS,
+    enumDescriptions: ['Always commit changes to the protected branch.', 'Always commit changes to a new branch.', 'Always prompt before changes are committed to a protected branch.'],
+    default: 'alwaysPrompt',
+    scope: 'application',
+    description: 'Controls whether a prompt is being shown before changes are committed to a protected branch.',
+  },
+  [GIT_PROMPT_TO_SAVE_FILES_BEFORE_COMMIT_SETTING]: {
+    type: 'string',
+    enum: GIT_PROMPT_TO_SAVE_FILES_BEFORE_COMMIT,
+    enumDescriptions: ['Check for any unsaved files.', 'Check only for unsaved staged files.', 'Disable this check.'],
+    default: 'always',
+    scope: 'application',
+    description: 'Controls whether Git should check for unsaved files before committing.',
+  },
+  [GIT_ALWAYS_SIGN_OFF_SETTING]: {
+    type: 'boolean',
+    default: false,
+    scope: 'application',
+    description: 'Controls the signoff flag for all commits.',
+  },
+  [GIT_ENABLE_COMMIT_SIGNING_SETTING]: {
+    type: 'boolean',
+    default: false,
+    scope: 'application',
+    description: 'Enables commit signing with GPG, X.509, or SSH.',
+  },
+  [GIT_BRANCH_PREFIX_SETTING]: {
+    type: 'string',
+    default: '',
+    scope: 'application',
+    description: 'Prefix used when creating a new branch.',
+  },
 };
 
 // Patterns of an object setting from a settings write; a glob is at most this long and there are at most this many.
@@ -527,6 +696,8 @@ const MAX_OBJECT_SETTING_KEYS = 500;
 const MAX_OBJECT_SETTING_KEY_LENGTH = 1000;
 // Characters of a string setting without an enum, such as a font family or a profile id.
 const MAX_STRING_SETTING_LENGTH = 1000;
+// Items of an array setting from a settings write, each a string of at most MAX_STRING_SETTING_LENGTH.
+const MAX_ARRAY_SETTING_ITEMS = 500;
 
 /** Whether `value` fits the declared type, range and enum of the desktop setting `key`; false for a key that is not declared. */
 export function isDesktopSettingValue(key: string, value: unknown): boolean {
@@ -543,6 +714,10 @@ export function isDesktopSettingValue(key: string, value: unknown): boolean {
     const valueType = property.additionalProperties?.type;
     if (typeof valueType !== 'string') return false;
     return entries.length <= MAX_OBJECT_SETTING_KEYS && entries.every(([glob, flag]) => glob.length > 0 && glob.length <= MAX_OBJECT_SETTING_KEY_LENGTH && typeof flag === valueType);
+  }
+  if (property.type === 'array') {
+    if (!Array.isArray(value) || value.length > MAX_ARRAY_SETTING_ITEMS || property.items?.type !== 'string') return false;
+    return value.every((item) => typeof item === 'string' && item.length <= MAX_STRING_SETTING_LENGTH);
   }
   if (property.type !== 'string' || typeof value !== 'string') return false;
   return property.enum === undefined ? value.length <= MAX_STRING_SETTING_LENGTH : property.enum.includes(value);

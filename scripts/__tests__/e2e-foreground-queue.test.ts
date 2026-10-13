@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { STALE_MS, UPDATE_MS } from '../../e2e/desktop/support/fair-lock';
 
 // Playwright workers are processes, so each worker here is a child process running e2e/desktop/support/foreground.ts. Each
 // test gives its workers a temp folder of its own: the real one holds the lock of any desktop e2e run on this machine.
@@ -133,4 +134,33 @@ describe('e2e foreground queue', () => {
     expect(await Promise.all([hog.exited, launch.exited])).toEqual([0, 0]);
     expect(log.filter((event) => !event.endsWith(' asked'))).toEqual(['hog held', 'launch opened']);
   }, 30_000);
+
+  it('ignores an app record a dead worker left behind once another process has its pid', async () => {
+    const dir = tempDir();
+    const records = path.join(dir, 'damocles-e2e-open-apps');
+    fs.mkdirSync(records);
+    // This test's own process stands in for the one Windows gave the dead worker's pid.
+    const left = path.join(records, `${process.pid}-1`);
+    fs.writeFileSync(left, '');
+    const written = new Date(Date.now() - 60_000);
+    fs.utimesSync(left, written, written);
+    const hog = startWorker('hog', dir, [], { JOB: 'hold', HOLDS: '1' });
+    await hog.next('held');
+    hog.send('release');
+    expect(await hog.exited).toBe(0);
+  }, 30_000);
+
+  it('waits for an app that stays open longer than an unrefreshed record would count', async () => {
+    const dir = tempDir();
+    const log: string[] = [];
+    const launch = startWorker('launch', dir, log, { JOB: 'open' });
+    await launch.next('opened');
+    const hog = startWorker('hog', dir, log, { JOB: 'hold', HOLDS: '1' });
+    await new Promise((resolve) => setTimeout(resolve, STALE_MS + 2 * UPDATE_MS));
+    expect(log).not.toContain('hog held');
+    void hog.next('held').then(() => hog.send('release'));
+    launch.send('close');
+    expect(await Promise.all([launch.exited, hog.exited])).toEqual([0, 0]);
+    expect(log.filter((event) => !event.endsWith(' asked'))).toEqual(['launch opened', 'hog held']);
+  }, 40_000);
 });

@@ -121,7 +121,7 @@ test('with focus outside the terminal the Terminal menu splits and moves between
   await expect.poll(async () => (await state(shell)).activeId).toBe(first);
 });
 
-test('sashes resize panes by mouse and keyboard, and double-click shares the width again', async ({ home, launch }) => {
+test('sashes resize panes by mouse and keyboard, and double-click shares the width again', async ({ foreground: _foreground, home, launch }) => {
   const { app, shell } = await launchSplit(home, launch);
   await splitActive(app, shell);
   await splitActive(app, shell);

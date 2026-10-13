@@ -236,7 +236,8 @@ export async function answerToast(app: ElectronApplication, id: string, action?:
 /**
  * Presses a key in the page whose URL contains `urlPart`, through the platform's native input path: AppKit's event
  * queue on macOS, Electron's `sendInputEvent` elsewhere. Unlike Playwright's CDP key presses, these reach the
- * application menu's accelerators when the page leaves them unhandled.
+ * application menu's accelerators when the page leaves them unhandled. Chromium runs an accelerator only while its window is
+ * active, so a test that presses keys holds the `foreground` fixture (scripts/__tests__/e2e-foreground.test.ts).
  */
 export async function pressKeys(app: ElectronApplication, urlPart: string, keyCode: string, modifiers: Array<'control' | 'shift' | 'alt' | 'meta'> = []): Promise<void> {
   // Every platform checks the key against the macOS table, so a key only the macOS runner would reject fails here first.

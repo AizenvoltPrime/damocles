@@ -12,6 +12,7 @@ import {
   DEFAULT_END_OF_TURN_MS,
   DEFAULT_MAX_UTTERANCE_MS,
 } from '@shared/types/voice';
+import { DEFAULT_WAKE_PHRASE } from '@shared/wake-phrase';
 import { DEFAULT_MODELS, DEFAULT_CACHE_WARMING } from '@shared/types/constants';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 
@@ -24,7 +25,7 @@ const INITIAL_VOICE_CONFIG: VoiceConfig = {
   provider: 'openai-whisper',
   language: 'en',
   mode: 'off',
-  wakeWord: 'hey_jarvis',
+  wakeWord: DEFAULT_WAKE_PHRASE,
   wakeWordSensitivity: DEFAULT_WAKE_SENSITIVITY,
   ttsEnabled: false,
   ttsVoice: DEFAULT_TTS_VOICE,
@@ -137,6 +138,8 @@ export const useSettingsStore = defineStore('settings', () => {
   const defaultThinkingModel = ref<string>("");
   const voiceConfig = ref<VoiceConfig>({ ...INITIAL_VOICE_CONFIG });
   const voiceHasApiKey = ref(false);
+  /** The host's localized refusal when the Jarvis runtime cannot install on its platform. */
+  const voiceRuntimeUnsupported = ref<string | null>(null);
   const authStatus = ref<{ isAuthenticating: boolean; error?: string } | null>(null);
   const openaiAuthStatus = ref<OpenAIAuthStatusView>(signedOutOpenAIStatus());
   const openaiPreferApiKey = ref(false);
@@ -396,6 +399,10 @@ export const useSettingsStore = defineStore('settings', () => {
     voiceHasApiKey.value = hasApiKey;
   }
 
+  function setVoiceRuntimeUnsupported(message: string | null) {
+    voiceRuntimeUnsupported.value = message;
+  }
+
   function setExploreSettings(explore: ExtensionSettings['explore']) {
     currentSettings.value.explore = explore;
   }
@@ -496,6 +503,7 @@ export const useSettingsStore = defineStore('settings', () => {
     defaultThinkingModel.value = "";
     voiceConfig.value = { ...INITIAL_VOICE_CONFIG };
     voiceHasApiKey.value = false;
+    voiceRuntimeUnsupported.value = null;
     authStatus.value = null;
     openaiAuthStatus.value = signedOutOpenAIStatus();
     openaiPreferApiKey.value = false;
@@ -589,6 +597,8 @@ export const useSettingsStore = defineStore('settings', () => {
     voiceConfig,
     voiceHasApiKey,
     setVoiceConfig,
+    voiceRuntimeUnsupported,
+    setVoiceRuntimeUnsupported,
     setExploreSettings,
     authStatus,
     setAuthStatus,

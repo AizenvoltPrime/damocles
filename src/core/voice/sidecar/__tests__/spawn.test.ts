@@ -1,8 +1,38 @@
 import { delimiter } from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildSidecarEnv, pickEphemeralPort } from "../spawn";
+import { buildSidecarArgs, buildSidecarEnv, pickEphemeralPort, type SpawnOptions } from "../spawn";
 
 const FAKE_SOURCE_DIR = "/fake/extension/python";
+
+const SPAWN_OPTIONS: SpawnOptions = {
+  pythonExe: "/fake/python",
+  pythonSourceDir: FAKE_SOURCE_DIR,
+  modelsDir: "/fake/models",
+  runtimeMode: "auto",
+  diagnostics: false,
+  wakePhrase: null,
+  ttsEnabled: false,
+};
+
+describe("buildSidecarArgs", () => {
+  it("passes the wake phrase as one argument after --wake-word-enabled", () => {
+    const args = buildSidecarArgs({ ...SPAWN_OPTIONS, wakePhrase: "ok house robot" }, 50000);
+    expect(args).toEqual([
+      "-m", "damocles_voice_sidecar",
+      "--port", "50000",
+      "--models-dir", "/fake/models",
+      "--runtime-mode", "auto",
+      "--wake-word-enabled", "--wake-word", "ok house robot",
+    ]);
+  });
+
+  it("passes no wake arguments when wake detection is off", () => {
+    const args = buildSidecarArgs({ ...SPAWN_OPTIONS, ttsEnabled: true }, 50000);
+    expect(args).not.toContain("--wake-word-enabled");
+    expect(args).not.toContain("--wake-word");
+    expect(args).toContain("--tts-enabled");
+  });
+});
 
 describe("buildSidecarEnv", () => {
   it("strips secret env keys and never mutates process.env", () => {

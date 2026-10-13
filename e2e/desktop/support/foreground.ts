@@ -1,12 +1,13 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { alive, lockInTurn } from './fair-lock';
+import { alive, lockInTurn, STALE_MS, UPDATE_MS } from './fair-lock';
 
 // The OS gives keyboard focus and the pointer's hover to one window at a time, and each app's window takes them as it opens
 // or closes, so every Playwright worker serializes on this lock in the OS temp folder.
 const LOCK_TARGET = path.join(os.tmpdir(), 'damocles-e2e-foreground');
-// One file per app a worker has open, named <worker pid>-<n>, so a holder can wait until no other worker has one.
+// One file per app a worker has open, named <worker pid>-<n> and refreshed every UPDATE_MS, so a holder can wait until no
+// other worker has one.
 const OPEN_APPS = path.join(os.tmpdir(), 'damocles-e2e-open-apps');
 const OPEN_APPS_POLL_MS = 250;
 // Longer than the slowest test's own timeout (300 s) plus its teardown, so a waiter outlasts every other worker's test.
@@ -15,13 +16,24 @@ export const FOREGROUND_WAIT_MS = 330_000;
 let holding = false;
 let opened = 0;
 
-// Apps other workers have open; a worker that died leaves its files behind, and they no longer count.
+// Apps other workers have open. A worker that died leaves its files behind, and Windows reuses its pid, so a file counts only
+// while its worker refreshes it, as a lock ticket does.
 function othersOpen(): number {
   fs.mkdirSync(OPEN_APPS, { recursive: true });
   return fs.readdirSync(OPEN_APPS).filter((name) => {
     const pid = Number(name.split('-')[0]);
-    return pid !== process.pid && alive(pid);
+    return pid !== process.pid && alive(pid) && refreshed(path.join(OPEN_APPS, name));
   }).length;
+}
+
+function refreshed(file: string): boolean {
+  try {
+    return Date.now() - fs.statSync(file).mtimeMs < STALE_MS;
+  } catch (err) {
+    // Gone, or (Windows) being deleted by its worker.
+    if (['ENOENT', 'EPERM'].includes((err as NodeJS.ErrnoException).code ?? '')) return false;
+    throw err;
+  }
 }
 
 function ownOpen(): boolean {
@@ -51,7 +63,15 @@ export async function openingApp(): Promise<() => void> {
       await release();
     }
   }
-  return () => fs.rmSync(file, { force: true });
+  const refresh = setInterval(() => {
+    const now = new Date();
+    fs.utimesSync(file, now, now);
+  }, UPDATE_MS);
+  refresh.unref();
+  return () => {
+    clearInterval(refresh);
+    fs.rmSync(file, { force: true });
+  };
 }
 
 /**

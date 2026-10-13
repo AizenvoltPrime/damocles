@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { log } from '../../logger';
+import { gitExecutable } from '../../git-executable';
 import { folderKey } from '../../workspace-folders/folder-key';
 import { writeFileAtomic, writeFileAtomicIfChanged } from './atomic-write';
 import { exec, execSafe, ExecExitError, type TrackChild } from './exec';
@@ -127,8 +128,8 @@ interface TrackedView {
 
 /** Set the committer identity on a freshly created bare repo. */
 async function configureIdentity(gitDir: string): Promise<void> {
-  await exec('git', [`--git-dir=${gitDir}`, 'config', 'user.email', COMMITTER_EMAIL]);
-  await exec('git', [`--git-dir=${gitDir}`, 'config', 'user.name', COMMITTER_NAME]);
+  await exec(gitExecutable, [`--git-dir=${gitDir}`, 'config', 'user.email', COMMITTER_EMAIL]);
+  await exec(gitExecutable, [`--git-dir=${gitDir}`, 'config', 'user.name', COMMITTER_NAME]);
 }
 
 function nulList(paths: Iterable<string>): string {
@@ -191,7 +192,7 @@ async function projectTrackedFiles(workTree: string): Promise<ReadonlySet<string
   if (cached?.stamp === stamp) return cached.paths;
   let paths: ReadonlySet<string>;
   try {
-    paths = new Set(splitNul((await exec('git', ['-C', workTree, '-c', 'core.fsmonitor=false', 'ls-files', '-z'], undefined, workTree)).stdout));
+    paths = new Set(splitNul((await exec(gitExecutable, ['-C', workTree, '-c', 'core.fsmonitor=false', 'ls-files', '-z'], undefined, workTree)).stdout));
   } catch (err) {
     log('[Checkpoints] reading the tracked files of %s failed, so none are captured beyond the exclude rules: %s', workTree, errorText(err));
     return new Set();
@@ -262,7 +263,7 @@ export class RepoManager {
     options?: { input?: string; env?: ExecEnv; config?: readonly string[] },
   ): Promise<{ stdout: string; stderr: string }> {
     return exec(
-      'git',
+      gitExecutable,
       [...PORTABLE_CONFIG, ...(options?.config ?? []), ...args],
       options?.env ?? this.env,
       this.workTree,
@@ -391,7 +392,7 @@ export class RepoManager {
     let created = false;
     if (!this.isInitialized()) {
       await fs.promises.mkdir(this.gitDir, { recursive: true });
-      await exec('git', ['init', '--bare', this.gitDir]);
+      await exec(gitExecutable, ['init', '--bare', this.gitDir]);
       await configureIdentity(this.gitDir);
       await this.tuneForLargeRepos(this.gitDir);
       await this.seedFromSourceRepo();
@@ -430,12 +431,12 @@ export class RepoManager {
       await fs.promises.rm(path.join(this.repoDir, name), { recursive: true, force: true });
     }
     const tmp = await fs.promises.mkdtemp(path.join(this.repoDir, INIT_TMP_PREFIX));
-    await exec('git', ['init', '--bare', '--quiet', tmp]);
+    await exec(gitExecutable, ['init', '--bare', '--quiet', tmp]);
     await configureIdentity(tmp);
     await this.tuneForLargeRepos(tmp);
     // Excludes and paths match case-insensitively where the file system does.
-    if (IGNORE_CASE) await exec('git', [`--git-dir=${tmp}`, 'config', 'core.ignorecase', 'true']);
-    await exec('git', [`--git-dir=${tmp}`, 'config', '--local', CHECKPOINT_EXCLUDE_VERSION_KEY, String(FOLDER_CHECKPOINT_EXCLUDE_SET.version)]);
+    if (IGNORE_CASE) await exec(gitExecutable, [`--git-dir=${tmp}`, 'config', 'core.ignorecase', 'true']);
+    await exec(gitExecutable, [`--git-dir=${tmp}`, 'config', '--local', CHECKPOINT_EXCLUDE_VERSION_KEY, String(FOLDER_CHECKPOINT_EXCLUDE_SET.version)]);
     await writeFileAtomic(path.join(tmp, 'info', 'attributes'), FOLDER_REPO_ATTRIBUTES);
     await fs.promises.rename(tmp, this.gitDir);
   }
@@ -455,10 +456,10 @@ export class RepoManager {
    */
   private async resolveExcludeSet(set: CheckpointExcludeSet, created: boolean): Promise<readonly string[]> {
     if (created) {
-      await exec('git', [`--git-dir=${this.gitDir}`, 'config', '--local', CHECKPOINT_EXCLUDE_VERSION_KEY, String(set.version)]);
+      await exec(gitExecutable, [`--git-dir=${this.gitDir}`, 'config', '--local', CHECKPOINT_EXCLUDE_VERSION_KEY, String(set.version)]);
       return set.patterns;
     }
-    const probe = await execSafe('git', [`--git-dir=${this.gitDir}`, 'config', '--local', '--get', CHECKPOINT_EXCLUDE_VERSION_KEY]);
+    const probe = await execSafe(gitExecutable, [`--git-dir=${this.gitDir}`, 'config', '--local', '--get', CHECKPOINT_EXCLUDE_VERSION_KEY]);
     if (!probe.ok) return set.legacyPatterns;
     const raw = probe.value.stdout.trim();
     // Digits only, so nothing this code could not have written reads as a stamp. A lenient parse would
@@ -480,7 +481,7 @@ export class RepoManager {
       ['index.threads', 'true'],
     ];
     for (const [key, value] of config) {
-      await execSafe('git', [`--git-dir=${gitDir}`, 'config', key, value]);
+      await execSafe(gitExecutable, [`--git-dir=${gitDir}`, 'config', key, value]);
     }
   }
 
@@ -495,7 +496,7 @@ export class RepoManager {
    */
   private async seedFromSourceRepo(): Promise<void> {
     const probe = await execSafe(
-      'git',
+      gitExecutable,
       ['rev-parse', '--path-format=absolute', '--git-common-dir'],
       undefined,
       this.workTree,
@@ -612,7 +613,7 @@ export class RepoManager {
   private async projectLfsPaths(view: TrackedView, paths: readonly string[]): Promise<Set<string>> {
     if (!view.lfsActive || paths.length === 0) return new Set();
     const out = await exec(
-      'git',
+      gitExecutable,
       ['-C', this.workTree, '-c', 'core.fsmonitor=false', 'check-attr', '-z', '--stdin', 'filter'],
       undefined,
       this.workTree,
@@ -693,7 +694,7 @@ export class RepoManager {
   /** Whether the git repository at `rel` (an embedded one) has a commit checked out. */
   private async embeddedHasCommit(rel: string): Promise<boolean> {
     try {
-      await exec('git', ['-C', path.join(this.workTree, rel), '-c', 'core.fsmonitor=false', 'rev-parse', '--verify', '-q', 'HEAD^{commit}']);
+      await exec(gitExecutable, ['-C', path.join(this.workTree, rel), '-c', 'core.fsmonitor=false', 'rev-parse', '--verify', '-q', 'HEAD^{commit}']);
       return true;
     } catch (err) {
       if (err instanceof ExecExitError) return false;
@@ -989,7 +990,7 @@ export class RepoManager {
    */
   static async cloneFrom(srcGitDir: string, dstGitDir: string): Promise<void> {
     await fs.promises.mkdir(path.dirname(dstGitDir), { recursive: true });
-    await exec('git', ['clone', '--local', '--bare', srcGitDir, dstGitDir]);
+    await exec(gitExecutable, ['clone', '--local', '--bare', srcGitDir, dstGitDir]);
     await configureIdentity(dstGitDir);
   }
 

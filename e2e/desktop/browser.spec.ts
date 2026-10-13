@@ -23,11 +23,21 @@ function filesUnder(dir: string): string[] {
   });
 }
 
+// Windows locks a download while it is copied into place (EBUSY); such a file has not landed yet.
+function savedText(file: string): string | undefined {
+  try {
+    return fs.readFileSync(file, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EBUSY') return undefined;
+    throw err;
+  }
+}
+
 async function framesReceived(page: Page): Promise<number> {
   return page.evaluate(() => ((window as unknown as { __e2eFrames?: number }).__e2eFrames ?? 0));
 }
 
-test('browser page as an editor tab: opens, screencasts, picks an element, downloads a file, and F12 offers the settings when the DevTools port is off', async ({ home, launch }) => {
+test('browser page as an editor tab: opens, screencasts, picks an element, downloads a file, and F12 offers the settings when the DevTools port is off', async ({ foreground: _foreground, home, launch }) => {
   const chrome = systemChrome();
   test.skip(chrome === undefined, 'No system-wide Chrome or Edge is installed on this runner, and the browser feature launches the installed browser by channel.');
   test.setTimeout(180_000);
@@ -53,12 +63,10 @@ test('browser page as an editor tab: opens, screencasts, picks an element, downl
     const browserPage = await opened;
     const browserId = panelIdOf(browserPage);
     const homeId = panelIdOf(homeTab);
-    const shell = await shellPage(app);
-    const address = shell.getByRole('textbox', { name: 'Address' });
-    await address.fill(`${site.url}/`);
-    await address.press('Enter');
 
-    // Screencast frames arrive as binary through the tab's own channel.
+    // Screencast frames arrive as binary through the tab's own channel. The counter starts before the navigation: the site is
+    // static, so Chrome sends the frame of its first paint and then none.
+    await browserPage.waitForFunction(() => window.damoclesBridge !== undefined);
     await browserPage.evaluate(() => {
       const w = window as unknown as { __e2eFrames?: number };
       w.__e2eFrames = 0;
@@ -67,6 +75,10 @@ test('browser page as an editor tab: opens, screencasts, picks an element, downl
         if (frame.type === 'frame' && frame.bytes instanceof ArrayBuffer && frame.bytes.byteLength > 0) w.__e2eFrames! += 1;
       });
     });
+    const shell = await shellPage(app);
+    const address = shell.getByRole('textbox', { name: 'Address' });
+    await address.fill(`${site.url}/`);
+    await address.press('Enter');
     await expect.poll(() => framesReceived(browserPage), { timeout: 60_000 }).toBeGreaterThan(0);
     // The page is an editor tab of its chat, never a chat of its own, and the chat stays selected.
     await expect.poll(async () => (await browserTabs(app)).map((tab) => ({ id: tab.id, title: tab.title }))).toEqual([{ id: browserId, title: PAGE_TITLE }]);
@@ -106,7 +118,7 @@ test('browser page as an editor tab: opens, screencasts, picks an element, downl
     await address.fill(`${site.url}/report.txt`);
     await address.press('Enter');
     const downloads = path.join(home.damoclesDir, 'browser-downloads');
-    await expect.poll(() => filesUnder(downloads).filter((file) => fs.readFileSync(file, 'utf8') === DOWNLOAD_BODY).length, { timeout: 30_000 }).toBe(1);
+    await expect.poll(() => filesUnder(downloads).filter((file) => savedText(file) === DOWNLOAD_BODY).length, { timeout: 30_000 }).toBe(1);
   } finally {
     await site.close();
     await stub.close();

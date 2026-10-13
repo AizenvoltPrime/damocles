@@ -4,8 +4,9 @@ import { GraphStore } from '../database';
 import type { NodeInfo } from '../types';
 import { createTestStore } from './sql-test-helper';
 
-const { execFileSyncMock } = vi.hoisted(() => ({ execFileSyncMock: vi.fn() }));
+const { execFileSyncMock, GIT } = vi.hoisted(() => ({ execFileSyncMock: vi.fn(), GIT: '/resolved/bin/git' }));
 vi.mock('child_process', () => ({ execFileSync: execFileSyncMock }));
+vi.mock('../../git-executable', () => ({ gitExecutable: () => GIT }));
 
 import { getChangedFiles, parseGitDiffRanges, resolveRepoRoot, resetRepoRootCacheForTests, GIT_HARDENING_ARGS } from '../git';
 import { analyzeChanges, mapChangesToNodes } from '../changes';
@@ -32,7 +33,7 @@ function makeNode(overrides: Partial<NodeInfo> & { name: string; file_path: stri
 function mockGit(handlers: { revParse?: () => string; diff?: (args: string[]) => string }): void {
 	execFileSyncMock.mockImplementation((file: unknown, args: unknown) => {
 		const argv = (args as string[]).slice(GIT_HARDENING_ARGS.length);
-		if (file !== 'git') throw new Error(`unexpected executable: ${String(file)}`);
+		if (file !== GIT) throw new Error(`unexpected executable: ${String(file)}`);
 		if (argv[0] === 'rev-parse' && argv[1] === '--show-toplevel') {
 			if (!handlers.revParse) throw new Error('fatal: not a git repository');
 			return handlers.revParse();
@@ -86,7 +87,7 @@ describe('git invocation hardening', () => {
 		getChangedFiles('/repo-h-3', 'release/1.0');
 
 		for (const call of execFileSyncMock.mock.calls) {
-			expect(call[0]).toBe('git');
+			expect(call[0]).toBe(GIT);
 			expect(Array.isArray(call[1])).toBe(true);
 			expect(call[2]).not.toHaveProperty('shell');
 		}

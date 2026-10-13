@@ -1,10 +1,12 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
+import type { ScmDecorations } from '../../preload/scm-channels';
 import type { ShellEditorTab } from '../../preload/shell-channels';
 import ConflictBar from '../editor/ConflictBar.vue';
 import EditorTabs from '../editor/EditorTabs.vue';
 import { createEditorStore, EDITOR_STORE } from '../editor/editor-store';
+import { createScmStore, SCM_STORE } from '../scm/scm-store';
 import { shellI18n } from '../i18n';
 import { EDITOR_STATE, FakeResizeObserver, fakeShellApi } from './fakes';
 
@@ -25,11 +27,14 @@ function codeTab(id: string, title: string, extra: Partial<ShellEditorTab> = {})
   return { id, kind: 'code', documentId: `d-${id}`, title, projectKey: 'home', relativePath: `src/${title}`, displayPath: `C:\\work\\src\\${title}`, dirty: false, readOnly: false, conflict: false, ...extra };
 }
 
-async function mountTabs(tabs: ShellEditorTab[]): Promise<VueWrapper> {
+async function mountTabs(tabs: ShellEditorTab[], decorations: ScmDecorations['files'] = {}): Promise<VueWrapper> {
   const api = fakeShellApi([], { getEditorState: vi.fn(async () => ({ ...EDITOR_STATE, tabs, activeTabId: tabs[0]!.id })) });
   const store = createEditorStore(api);
   await store.start();
-  const wrapper = mount(EditorTabs, { props: { api, closeShortcut: 'Ctrl+W' }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store } }, attachTo: document.body });
+  const scm = createScmStore(api.scm);
+  await scm.start();
+  api.scm.pushDecorations({ projectKey: 'home', files: decorations });
+  const wrapper = mount(EditorTabs, { props: { api, closeShortcut: 'Ctrl+W' }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: scm } }, attachTo: document.body });
   mounted.push(wrapper);
   await flushPromises();
   return wrapper;
@@ -52,6 +57,15 @@ describe('a deleted file\'s tab', () => {
     shellI18n.global.locale.value = 'el';
     const wrapper = await mountTabs([codeTab('a', 'gone.ts', { deleted: true })]);
     expect(wrapper.get('[data-editor-tab]').attributes('title')).toBe('C:\\work\\src\\gone.ts\nΔιαγράφηκε');
+  });
+});
+
+describe("a tab's source control letter", () => {
+  it('is hidden from screen readers, which hear the status in words instead', async () => {
+    const wrapper = await mountTabs([codeTab('a', 'app.ts')], { 'src/app.ts': { letter: 'M', tone: 'modified', staged: false, strike: false, status: 'MODIFIED' } });
+    const tab = wrapper.get('[data-editor-tab]');
+    expect(tab.get('[data-testid="editor-tab-decoration"]').attributes('aria-hidden')).toBe('true');
+    expect(tab.findAll('.sr-only').map((hint) => hint.text())).toEqual(['Modified']);
   });
 });
 

@@ -11,7 +11,6 @@ describe("protocol", () => {
     const json = encodeInbound({
       type: "init",
       protocol_version: PROTOCOL_VERSION,
-      wake_word: "hey_jarvis",
       wake_sensitivity: 0.5,
       end_of_turn_silence_ms: 800,
       max_utterance_ms: 30000,
@@ -29,7 +28,6 @@ describe("protocol", () => {
       encodeInbound({
         type: "init",
         protocol_version: 1,
-        wake_word: "hey_jarvis",
         wake_sensitivity: 1.5,
         end_of_turn_silence_ms: 800,
         max_utterance_ms: 30000,

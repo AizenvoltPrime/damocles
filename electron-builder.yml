@@ -106,6 +106,10 @@ win:
   # One arch per build; each Windows build also passes -c.publish.channel=latest-<arch> so the two feeds do not collide.
   target: nsis
   icon: resources/icon.ico
+  # The release certificate's common name, written into app-update.yml; electron-updater refuses an update signed by anyone else.
+  # Must equal WINDOWS_PUBLISHER in scripts/verify-desktop-package.mjs.
+  signtoolOptions:
+    publisherName: SignPath Foundation
 
 nsis:
   oneClick: true

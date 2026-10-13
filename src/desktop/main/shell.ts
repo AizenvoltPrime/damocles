@@ -107,6 +107,21 @@ import {
   type TerminalState,
 } from '../preload/terminal-channels';
 import { MAX_TERMINAL_ATTACHMENT_CHARS, MAX_TERMINAL_ATTACHMENT_OMITTED_LINES } from '../preload/terminal-attachment-cap';
+import {
+  SCM_CHANNELS,
+  type ScmCommitInput,
+  type ScmCommitResult,
+  type ScmDecorations,
+  type ScmFileDiffResult,
+  type ScmGenerateResult,
+  type ScmRepoSnapshot,
+  type ScmRunResult,
+  type ScmSetInput,
+  type ScmSettings,
+  type ScmShellCommand,
+  type ScmShellState,
+  type ScmView,
+} from '../preload/scm-channels';
 import { parseTerminalName } from './terminal/terminal-service';
 import { isTerminalId } from '../pty-host/protocol';
 import { isRelativeFilePath } from '../../shared/relative-path';
@@ -165,9 +180,23 @@ export interface ShellActions {
   readonly searchEditor: ShellSearchEditorActions;
   readonly browser: ShellBrowserActions;
   readonly terminal: ShellTerminalActions;
+  readonly scm: ShellScmActions;
   readonly gestures: ShellGestureActions;
   openQuickOpen(): Promise<void>;
   showCommands(): Promise<void>;
+}
+
+// Source control (scm-channels.ts): each takes the raw payload, which scm-host.ts validates before anything reaches core.
+export interface ShellScmActions {
+  state(): ScmShellState;
+  select(raw: unknown): void;
+  run(raw: unknown): Promise<ScmRunResult>;
+  commit(raw: unknown): Promise<ScmCommitResult>;
+  generateMessage(raw: unknown): Promise<ScmGenerateResult>;
+  fileDiff(raw: unknown): Promise<ScmFileDiffResult>;
+  copy(raw: unknown): Promise<void>;
+  commitInput(raw: unknown): Promise<ScmCommitInput>;
+  amend(raw: unknown): void;
 }
 
 // User input main observed in the shell page (before-input-event, before-mouse-event), never a renderer's report.
@@ -978,6 +1007,7 @@ export class ShellHost {
     this.handleSearch();
     this.handleSearchEditor();
     this.handleTerminal();
+    this.handleScm();
 
     const contents = window.webContents;
     // Only input the browser process routes reaches these: page script's synthetic events never do.
@@ -1306,6 +1336,46 @@ export class ShellHost {
       if (!request) throw new Error('Malformed terminal link resolution from the shell');
       return terminal.resolveLinks(request);
     });
+  }
+
+  private handleScm(): void {
+    const scm = this.actions.scm;
+    this.handle(SCM_CHANNELS.getState, () => scm.state());
+    this.handle(SCM_CHANNELS.select, (raw) => scm.select(raw));
+    this.handle(SCM_CHANNELS.run, (raw) => scm.run(raw));
+    this.handle(SCM_CHANNELS.commit, (raw) => scm.commit(raw));
+    this.handle(SCM_CHANNELS.generateMessage, (raw) => scm.generateMessage(raw));
+    this.handle(SCM_CHANNELS.fileDiff, (raw) => scm.fileDiff(raw));
+    this.handle(SCM_CHANNELS.copy, (raw) => scm.copy(raw));
+    this.handle(SCM_CHANNELS.commitInput, (raw) => scm.commitInput(raw));
+    this.handle(SCM_CHANNELS.amend, (raw) => scm.amend(raw));
+  }
+
+  scmView(view: ScmView): void {
+    this.send(SCM_CHANNELS.view, view);
+  }
+
+  scmState(snapshot: ScmRepoSnapshot): void {
+    this.send(SCM_CHANNELS.state, snapshot);
+  }
+
+  scmDecorations(decorations: ScmDecorations): void {
+    this.send(SCM_CHANNELS.decorations, decorations);
+  }
+
+  scmSettings(settings: ScmSettings): void {
+    this.send(SCM_CHANNELS.settings, settings);
+  }
+
+  scmSetInput(input: ScmSetInput): void {
+    this.send(SCM_CHANNELS.setInput, input);
+  }
+
+  // Palette Commit, a user's action: keyboard focus moves to the window's own page, whose commit box holds the draft.
+  scmCommand(command: ScmShellCommand): void {
+    if (this.disposed || this.window.isDestroyed()) return;
+    this.window.webContents.focus();
+    this.send(SCM_CHANNELS.command, command);
   }
 
   // A malformed payload is dropped and logged, once per channel, since input and acks stream.

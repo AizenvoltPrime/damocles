@@ -64,6 +64,17 @@
 /* Terminal split panes: a new pane slides in from its right edge; a closed or unsplit one fades where it stood. */
 @keyframes d-pane-in{from{opacity:0;transform:translateX(.75rem)}to{opacity:1;transform:none}}
 @keyframes d-pane-out{from{opacity:1;transform:none}to{opacity:0;transform:scale(.985)}}
+@keyframes d-pane-return{from{opacity:0;transform:scale(.985)}to{opacity:1;transform:none}}
+
+/* A banner that belongs to the box above it: it tucks down out of it and back up into it. */
+@keyframes d-tuck-in{from{opacity:0;transform:translateY(-.3125rem)}to{opacity:1;transform:none}}
+@keyframes d-tuck-out{from{opacity:1;transform:none}to{opacity:0;transform:translateY(-.3125rem)}}
+
+/* Text replaced in a message box: --msg-shift is how far it travels; older messages sit above, so going back moves text down. */
+@keyframes d-msg-in-down{from{opacity:0;transform:translateY(calc(var(--msg-shift,.375rem) * -1))}to{opacity:1;transform:none}}
+@keyframes d-msg-in-up{from{opacity:0;transform:translateY(var(--msg-shift,.375rem))}to{opacity:1;transform:none}}
+@keyframes d-msg-out-down{from{opacity:1;transform:none}to{opacity:0;transform:translateY(var(--msg-shift,.375rem))}}
+@keyframes d-msg-out-up{from{opacity:1;transform:none}to{opacity:0;transform:translateY(calc(var(--msg-shift,.375rem) * -1))}}
 
 /* Vue <Transition name="t-…"> classes. Leave animations hold their last frame so nothing flashes before removal. */
 .t-fade-enter-active{animation:o-fade .2s var(--ease-out)}
@@ -80,12 +91,48 @@
 .t-chip-enter-active{animation:d-scale-in .22s var(--ease-spring) both}
 .t-chip-leave-active{animation:d-scale-out .14s ease-in both}
 .t-chip-move{transition:transform .2s var(--ease-out)}
+/* A count badge pops in with its first item and shrinks out with its last; the number inside swaps with t-swap. */
+.t-badge-enter-active{animation:d-badge-pop .34s var(--ease-spring) both}
+.t-badge-leave-active{animation:d-scale-out .14s ease-in both}
+/* A status letter or an icon replaced in place: no leave, so the slot never holds two; neither plays on first render, so a re-mounted virtual row stays still. */
+.t-letter-enter-active{display:inline-block;animation:d-scale-in .24s var(--ease-spring)}
+.t-icon-enter-active{display:inline-flex;animation:d-icon-in .32s var(--ease-spring)}
+/* A pane whose content follows a selection (a diff per file): the new content fades in over nothing, with no leave to wait for. */
+.t-diff-enter-active{animation:o-fade .16s var(--ease-out)}
+.t-tuck-enter-active{animation:d-tuck-in .22s var(--ease-out)}
+.t-tuck-leave-active{animation:d-tuck-out .14s ease-in both}
+/*
+ * A commit message box's text swap. The textarea takes the entrance (restart it by removing the class, forcing a reflow with
+ * a layout read, then adding it again); an aria-hidden .d-msg-ghost copy of the outgoing text takes the exit and is removed on
+ * its animationend.
+ */
+.d-msg-older{animation:d-msg-in-down .2s var(--ease-out)}
+.d-msg-newer{animation:d-msg-in-up .2s var(--ease-out)}
+.d-msg-return{--msg-shift:.625rem;animation:d-msg-in-up .3s var(--ease-out)}
+.d-msg-ghost{position:absolute;pointer-events:none;user-select:none}
+.d-msg-ghost-down{animation:d-msg-out-down .14s ease-in both}
+.d-msg-ghost-up{animation:d-msg-out-up .14s ease-in both}
+.d-msg-sent{--msg-shift:.625rem;animation:d-msg-out-down .22s ease-in both}
+.d-msg-replaced{animation:o-fade-out .12s ease-in both}
+/*
+ * Rows of a virtualized list in a TransitionGroup armed only right after a change the user caused or watched: a removed row fades
+ * where it stood and the rows after it close the gap by transform. No enter class; a row that arrived takes .d-row-arrive.
+ */
+.t-row-leave-active{position:absolute;inset-inline:0;pointer-events:none;animation:d-pane-out .14s ease-in both}
+.t-row-move{transition:transform .22s var(--ease-out)}
+.d-row-arrive{animation:d-slide .22s var(--ease-out) .06s both}
+/* A row that came back rather than moved (an undone commit's files) grows in where it sits: the reverse of .t-row-leave-active. */
+.d-row-return{animation:d-pane-return .22s var(--ease-out) .06s both}
+/* An empty or error state's icon settles after its block fades in. */
+.d-state-icon{animation:d-scale-in .32s var(--ease-spring) .08s both}
 /* An overlay root (scrim) carries the longest animation so Vue waits for its .o-panel child too. */
 .t-overlay-enter-active{animation:o-fade .26s var(--ease-out)}
 .t-overlay-leave-active{animation:o-fade-out .18s ease-in both}
 .t-overlay-enter-active .o-panel{animation:o-zoom .26s var(--ease-out)}
 .t-overlay-leave-active .o-panel{animation:o-zoom-out .18s ease-in both}
 .t-overlay-leave-active{pointer-events:none}
+/* The overlay's text input pops in under the title bar like Quick Open; overlay.css shrinks it out. */
+.d-quick-input{animation:d-pop .14s var(--ease-out) both}
 
 /* reka-ui content keyed on data-state; reka keeps the node mounted until the closed animation ends. */
 .d-popper[data-state="open"],.d-popper[data-state="delayed-open"],.d-popper[data-state="instant-open"]{animation:d-pop .16s var(--ease-out)}
@@ -121,6 +168,13 @@
 /* Reduced motion stops the sweep, so the band rests across the whole track at half strength rather than off it. */
 @media (prefers-reduced-motion:reduce){.d-sweep-bar::after{width:100%;transform:none;opacity:.5}}
 [data-reduced-motion] .d-sweep-bar::after{width:100%;transform:none;opacity:.5}
+
+/* A box at work (a commit message being generated): an empty child span over it, coloured by currentColor, that a soft band crosses. */
+.d-sheen{position:absolute;inset:0;overflow:hidden;border-radius:inherit;pointer-events:none}
+.d-sheen::after{content:"";position:absolute;inset-block:0;inset-inline-start:0;width:60%;background:linear-gradient(90deg,transparent,color-mix(in srgb,currentColor 20%,transparent),transparent);transform:translateX(-100%);animation:o-sweep 1.8s ease-in-out infinite}
+/* Reduced motion rests the band as a soft tint over the whole box, so the busy state still shows. */
+@media (prefers-reduced-motion:reduce){.d-sheen::after{width:100%;transform:none;background:color-mix(in srgb,currentColor 8%,transparent)}}
+[data-reduced-motion] .d-sheen::after{width:100%;transform:none;background:color-mix(in srgb,currentColor 8%,transparent)}
 
 /*
  * Shimmer text by transform: <span class="d-glint">phrase<span class="d-glint-window" aria-hidden="true"><span>phrase</span></span></span>.

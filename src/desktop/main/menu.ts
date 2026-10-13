@@ -18,8 +18,10 @@ import {
   TOGGLE_SIDEBAR_ACCELERATOR,
   TOGGLE_TERMINAL_ACCELERATOR,
 } from './commands';
-import { CHAT_FEATURE_IDS, desktopCommands, isEnabled, keyFires, MENU_IDS, openChatForProjectId, resolveLabel, SEARCH_EDITOR_COMMAND_IDS, terminalPassKeys, type Command } from './commands';
+import { CHAT_FEATURE_IDS, commandTitle, desktopCommands, GIT_MENU_GROUPS, isEnabled, isHidden, keyFires, MENU_IDS, openChatForProjectId, resolveLabel, SEARCH_EDITOR_COMMAND_IDS, terminalPassKeys, type Command } from './commands';
 import type { DesktopLocalizationService } from './platform/localization-service';
+import type { ScmCommitVariant } from '../preload/scm-channels';
+import type { ScmActiveFileOp, ScmMenuState, ScmPaletteRequest } from './scm/scm-host';
 
 export {
   CLOSE_EDITOR_ACCELERATOR,
@@ -80,6 +82,8 @@ export interface MenuState {
   // an xterm's own input has keyboard focus (VS Code's terminalFocus); focus 'terminal' is anywhere in the terminal pane
   readonly terminalInput: boolean;
   readonly search: SearchMenuState;
+  // source control for the selected project: its open repositories and the selected one's operation in progress (scm-host.ts)
+  readonly scm: ScmMenuState;
 }
 
 // Search's part of the context: what main's search service and editor pane hold, never what a renderer reports.
@@ -193,14 +197,26 @@ export interface MenuActions {
   openSearchEditor(): void;
   // Open Results in Editor: the Search view's results in a new Search Editor
   openResultsInEditor(): void;
+  // a source control command on the selected project or its selected repository
+  scmRun(request: ScmPaletteRequest): void;
+  // a source control command on the active editor's file
+  scmActiveFile(op: ScmActiveFileOp): void;
+  // a commit command: the shell commits its draft for the selected repository with the variant
+  scmCommit(variant: ScmCommitVariant): void;
 }
 
 type MenuClick = NonNullable<MenuItemConstructorOptions['click']>;
 
-// The installed menu's items by id with their commands, and the state its clicks run in, kept current by updateMenuState.
+// The installed menu's items by id with their commands and labels, the commands it left out as hidden, and the state its
+// clicks run in, kept current by updateMenuState, which rebuilds the menu from installedBuild when a label or hidden changes.
 let installedCommands: readonly Command[] = [];
-let installedItems: ReadonlyArray<readonly [string, Command]> = [];
+let installedHidden = '';
+let installedItems: ReadonlyArray<readonly [string, Command, string]> = [];
+let installedBuild: { readonly projects: readonly OpenFolder[]; readonly actions: MenuActions; readonly l10n: DesktopLocalizationService; readonly platform: NodeJS.Platform } | undefined;
 let currentState: MenuState | undefined;
+
+const itemLabel = (command: Command, state: MenuState, l10n: DesktopLocalizationService): string => resolveLabel(command.menuLabel ?? commandTitle(command, state), l10n);
+const hiddenIds = (commands: readonly Command[], state: MenuState): string => commands.filter((command) => isHidden(command, state)).map((command) => command.id).join('\n');
 
 /** Builds and installs the application menu from the command registry; the context-bound items start enabled for state. */
 export function installApplicationMenu(
@@ -213,9 +229,11 @@ export function installApplicationMenu(
   const mac = platform === 'darwin';
   const commands = desktopCommands(projects, actions, platform);
   installedCommands = commands;
+  installedHidden = hiddenIds(commands, state);
+  installedBuild = { projects, actions, l10n, platform };
   currentState = state;
   const byId = new Map(commands.map((command) => [command.id, command]));
-  const items: Array<readonly [string, Command]> = [];
+  const items: Array<readonly [string, Command, string]> = [];
   // An item enables by its precondition; its accelerator runs it only where the key's when clause holds (keyFires).
   const runFrom = (command: Command): MenuClick => (_item, _window, event) => {
     const context = currentState ?? state;
@@ -224,10 +242,11 @@ export function installApplicationMenu(
   };
   const item = (id: string): MenuItemConstructorOptions => {
     const command = byId.get(id)!;
-    items.push([id, command]);
+    const label = itemLabel(command, state, l10n);
+    items.push([id, command, label]);
     return {
       id,
-      label: resolveLabel(command.menuLabel ?? command.title, l10n),
+      label,
       ...(command.sublabel !== undefined ? { sublabel: command.sublabel } : {}),
       ...(command.accelerator !== undefined ? { accelerator: command.accelerator } : {}),
       ...(command.registerAccelerator === false ? { registerAccelerator: false } : {}),
@@ -238,7 +257,7 @@ export function installApplicationMenu(
   // Hidden items carry the alternate accelerators; Windows and Linux honour a hidden item's accelerator, macOS only with this flag.
   const alternate = (id: string, accelerator: string, commandId: string): MenuItemConstructorOptions => {
     const command = byId.get(commandId)!;
-    items.push([id, command]);
+    items.push([id, command, id]);
     return { id, label: id, accelerator, visible: false, acceleratorWorksWhenHidden: true, enabled: isEnabled(command, state), click: runFrom(command) };
   };
 
@@ -321,6 +340,12 @@ export function installApplicationMenu(
           item(MENU_IDS.scrollToPreviousTerminalCommand),
           item(MENU_IDS.scrollToNextTerminalCommand),
         ],
+      },
+      {
+        id: 'damocles.menu.sourceControl',
+        label: l10n.t('Source Control'),
+        submenu: GIT_MENU_GROUPS.map((group) => group.filter((id) => !isHidden(byId.get(id)!, state))).filter((group) => group.length > 0)
+          .flatMap((group, index) => [...(index === 0 ? [] : [{ type: 'separator' as const }]), ...group.map(item)]),
       },
       { type: 'separator' },
       // Electron registers one item per accelerator, so the chat items own Ctrl+Tab and route it by focus, as VS Code's when clauses do.
@@ -413,8 +438,17 @@ export function popupApplicationMenu(window: BrowserWindow, anchor: { readonly x
   Menu.getApplicationMenu()?.popup({ window, x: anchor.x, y: anchor.y });
 }
 
-// The state each accelerator is resolved in, and the items' preconditions; keyboard focus never disables an item.
+// The state each accelerator is resolved in, and the items' preconditions; keyboard focus never disables an item. Electron
+// documents enabled, visible and checked as changeable on a built item but not label, so a changed title rebuilds the menu,
+// as does a command hidden or shown, whose group may leave the menu with its separator.
 export function updateMenuState(state: MenuState): void {
+  const build = installedBuild;
+  const changed = (l10n: DesktopLocalizationService): boolean =>
+    installedItems.some(([id, command, label]) => id === command.id && itemLabel(command, state, l10n) !== label) || hiddenIds(installedCommands, state) !== installedHidden;
+  if (build && changed(build.l10n)) {
+    installApplicationMenu(build.projects, build.actions, build.l10n, state, build.platform);
+    return;
+  }
   currentState = state;
   const menu = Menu.getApplicationMenu();
   for (const [id, command] of installedItems) {

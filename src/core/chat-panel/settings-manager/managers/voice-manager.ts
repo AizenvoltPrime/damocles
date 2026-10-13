@@ -7,10 +7,12 @@ import type {
   TtsVoiceId,
 } from "../../../../shared/types/voice";
 import { TTS_VOICE_IDS, DEFAULT_TTS_VOICE } from "../../../../shared/types/voice";
+import { DEFAULT_WAKE_PHRASE, parseWakePhrase } from "../../../../shared/wake-phrase";
 import type { PanelHost } from "../../../../platform/window-service";
 import type { PostMessageFn } from "../types";
 import { updateConfigAtEffectiveScope, type SettingWrite } from "../utils";
 import { log } from "../../../logger";
+import { unsupportedVoicePlatformMessage } from "../../../voice/runtime/supported-platforms";
 
 const SECRET_PREFIX = "damocles.voice.apiKey:";
 
@@ -29,7 +31,7 @@ export class VoiceManager {
       provider: config.get<VoiceProvider>("damocles.voice.provider", "openai-whisper"),
       language: config.get<string>("damocles.voice.language", "en"),
       mode: config.get<VoiceMode>("damocles.voice.mode", "push-to-talk"),
-      wakeWord: config.get<string>("damocles.voice.wakeWord", "hey_jarvis"),
+      wakeWord: config.get<string>("damocles.voice.wakeWord", DEFAULT_WAKE_PHRASE),
       wakeWordSensitivity: config.get<number>("damocles.voice.wakeWordSensitivity", 0.5),
       ttsEnabled: config.get<boolean>("damocles.voice.tts.enabled", false),
       ttsVoice: this.coerceVoice(config.get<string>("damocles.voice.tts.voice", DEFAULT_TTS_VOICE)),
@@ -60,6 +62,9 @@ export class VoiceManager {
   }
 
   async setWakeWord(wakeWord: string): Promise<SettingWrite> {
+    if (parseWakePhrase(wakeWord) === null) {
+      throw new Error(`wakeWord is not 1 to 4 words of letters: ${JSON.stringify(wakeWord)}`);
+    }
     const written = await updateConfigAtEffectiveScope(this.platform, "damocles.voice.wakeWord", wakeWord);
     log("[VoiceManager] setWakeWord:", wakeWord);
     return written;
@@ -161,6 +166,7 @@ export class VoiceManager {
       type: "voiceConfigUpdate",
       config,
       hasApiKey: hasKey,
+      localRuntimeUnsupported: unsupportedVoicePlatformMessage(process.platform, process.arch),
     });
   }
 }

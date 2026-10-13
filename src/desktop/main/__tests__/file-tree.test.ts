@@ -72,6 +72,7 @@ beforeEach(() => {
     reveal: async (target) => { revealed.push(target); },
     copy: async (text) => { copied.push(text); },
     changed: (change) => changed.push(change),
+    ignored: async () => new Set(),
   });
 });
 
@@ -100,6 +101,31 @@ describe('listing', () => {
       { name: 'a10.ts', kind: 'file' },
       { name: 'b.ts', kind: 'file' },
     ] });
+  });
+
+  it('marks the entries git ignores in the listed folder, and lists them unmarked when the query fails', async () => {
+    touch('src/a.ts');
+    touch('src/b.log');
+    fs.mkdirSync(path.join(projectDir, 'src', 'out'));
+    const lines: string[] = [];
+    const asked: Array<[string, string, string[]]> = [];
+    let fail = false;
+    const make = (): FileTree => new FileTree({
+      projects: () => [project], exclude: () => exclude, watchers: platform.fileWatchers, t: (message) => message, log: (line) => lines.push(line), ask: async () => 0,
+      trash: async () => undefined, remove: async () => undefined, reveal: async () => undefined, copy: async () => undefined, changed: () => undefined,
+      ignored: async (projectKey, relativeDir, entries) => {
+        asked.push([projectKey, relativeDir, entries.map((entry) => `${entry.name}:${entry.kind}`).sort()]);
+        if (fail) throw new Error('git refused');
+        return new Set(['b.log', 'out']);
+      },
+    });
+    tree.dispose();
+    tree = make();
+    expect(await tree.list(project.key, 'src')).toEqual({ ok: true, entries: [{ name: 'out', kind: 'dir', ignored: true }, { name: 'a.ts', kind: 'file' }, { name: 'b.log', kind: 'file', ignored: true }] });
+    expect(asked).toEqual([[project.key, 'src', ['a.ts:file', 'b.log:file', 'out:dir']]]);
+    fail = true;
+    expect(await tree.list(project.key, 'src')).toEqual({ ok: true, entries: [{ name: 'out', kind: 'dir' }, { name: 'a.ts', kind: 'file' }, { name: 'b.log', kind: 'file' }] });
+    expect(lines).toEqual(['[files] the ignored-file query failed: git refused']);
   });
 
   it('shows a pattern turned off, and hides a new one, on the next listing', async () => {
@@ -289,7 +315,7 @@ describe('delete, reveal and copy', () => {
       },
       trash: async () => { throw new Error('no trash'); },
       remove: async (target) => { removed.push(target); },
-      reveal: async () => undefined, copy: async () => undefined, changed: () => undefined,
+      reveal: async () => undefined, copy: async () => undefined, changed: () => undefined, ignored: async () => new Set(),
     });
     expect(await tree.delete(project.key, 'src/a.ts')).toMatchObject({ ok: false, reason: 'failed' });
     expect(removed).toEqual([]);
@@ -305,7 +331,7 @@ describe('delete, reveal and copy', () => {
       trash: async () => undefined, remove: async () => undefined,
       reveal: async () => { throw new Error('no file manager'); },
       copy: async () => { throw new Error('clipboard busy'); },
-      changed: () => undefined,
+      changed: () => undefined, ignored: async () => new Set(),
     });
     expect(await tree.reveal(project.key, 'src/a.ts')).toEqual({ ok: false, reason: 'failed', message: 'no file manager' });
     expect(await tree.copyPath(project.key, 'src/a.ts', true)).toEqual({ ok: false, reason: 'failed', message: 'clipboard busy' });

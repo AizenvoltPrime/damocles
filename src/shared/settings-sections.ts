@@ -12,6 +12,7 @@ export const SETTINGS_SECTION_IDS = [
   'editor',
   'terminal',
   'files',
+  'sourceControl',
   'about',
 ] as const;
 

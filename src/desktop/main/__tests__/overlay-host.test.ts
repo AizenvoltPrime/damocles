@@ -871,7 +871,6 @@ describe('overlay request validation', () => {
     ['too many items', { ...MENU, items: Array.from({ length: 101 }, (_, i) => ({ kind: 'item', id: `i${i}`, label: 'x' })) }],
     ['no items', { ...MENU, items: [] }],
     ['a duplicate item id', { ...MENU, items: [{ kind: 'item', id: 'a', label: 'A' }, { kind: 'item', id: 'a', label: 'B' }] }],
-    ['a long label', { ...MENU, items: [{ kind: 'item', id: 'a', label: 'x'.repeat(201) }] }],
     ['a non-finite anchor', { ...MENU, anchor: { x: Number.NaN, y: 0, width: 1, height: 1 } }],
     ['a negative anchor', { ...MENU, anchor: { x: -1, y: 0, width: 1, height: 1 } }],
     ['dialog text over the bound', { kind: 'confirm', title: 'T', message: 'x'.repeat(2001), confirmLabel: 'OK', cancelLabel: 'No', danger: false }],

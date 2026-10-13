@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useDevicePixelRatio } from '@vueuse/core';
 import { computed } from 'vue';
 import type { IndicatorBox } from '@/composables/useSlidingIndicator';
 
@@ -15,9 +16,11 @@ const props = withDefaults(defineProps<{
   variant?: 'solid' | 'ring' | 'soft';
 }>(), { variant: 'solid' });
 
-// The middle is drawn this many px long, then scaled to its span. Chromium snaps the unscaled box to device pixels,
-// so a 1px middle at 150% display scaling paints 2 device px and the scale stretches it a third past the far cap.
+// The middle is drawn about this many px long, then scaled to its span. Chromium snaps the unscaled box to whole device
+// pixels and the scale multiplies the snap error, so the length is a whole number of device pixels.
 const MIDDLE_BASE = 100;
+const { pixelRatio } = useDevicePixelRatio();
+const middleBase = computed(() => Math.round(MIDDLE_BASE * pixelRatio.value) / pixelRatio.value);
 
 function radiusPx(box: IndicatorBox): number {
   if (props.radius === 'pill') return box.height / 2;
@@ -32,7 +35,7 @@ const pieces = computed(() => {
     height: `${box.height}px`,
     cap: `${r}px`,
     start: `translate(${box.x}px, ${box.y}px)`,
-    middle: `translate(${box.x + r - 1}px, ${box.y}px) scaleX(${Math.max(0, box.width - 2 * r + 2) / MIDDLE_BASE})`,
+    middle: `translate(${box.x + r - 1}px, ${box.y}px) scaleX(${Math.max(0, box.width - 2 * r + 2) / middleBase.value})`,
     end: `translate(${box.x + box.width - r}px, ${box.y}px)`,
   };
 });
@@ -46,7 +49,7 @@ const ring = computed(() => {
     width: `${box.width}px`,
     cap: `${r}px`,
     top: `translate(${box.x}px, ${box.y}px)`,
-    middle: `translate(${box.x}px, ${box.y + r}px) scaleY(${Math.max(0, box.height - 2 * r) / MIDDLE_BASE})`,
+    middle: `translate(${box.x}px, ${box.y + r}px) scaleY(${Math.max(0, box.height - 2 * r) / middleBase.value})`,
     bottom: `translate(${box.x}px, ${box.y + box.height - r}px)`,
   };
 });
@@ -78,7 +81,7 @@ const ringFill = computed(() => (props.variant === 'ring'
     />
     <span
       :class="[pieceClass, ringFill.middle]"
-      :style="{ width: ring.width, height: `${MIDDLE_BASE}px`, transform: ring.middle }"
+      :style="{ width: ring.width, height: `${middleBase}px`, transform: ring.middle }"
     />
     <span
       :class="[pieceClass, ringFill.bottom]"
@@ -99,7 +102,7 @@ const ringFill = computed(() => (props.variant === 'ring'
     <span
       :class="pieceClass"
       class="bg-current"
-      :style="{ width: `${MIDDLE_BASE}px`, height: pieces.height, transform: pieces.middle }"
+      :style="{ width: `${middleBase}px`, height: pieces.height, transform: pieces.middle }"
     />
     <span
       :class="pieceClass"

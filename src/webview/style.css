@@ -34,6 +34,7 @@
   --radius-sm: calc(var(--radius) - 0.25rem);
   /* The reference's recurring radii, named like the `--text-*` ramp by their px at the default host font. */
   --radius-5: 0.3125rem;
+  --radius-6: 0.375rem;
   --radius-7: 0.4375rem;
   --radius-8: 0.5rem;
   --radius-9: 0.5625rem;
@@ -45,6 +46,7 @@
   --text-10\.5: 0.65625rem;
   --text-11: 0.6875rem;
   --text-11\.5: 0.71875rem;
+  --text-12: 0.75rem;
   --text-12\.5: 0.78125rem;
   --text-13: 0.8125rem;
   --text-13\.5: 0.84375rem;
@@ -75,6 +77,15 @@
   [data-disabled],
   label:has(input:disabled, [role="switch"]:disabled) {
     cursor: default;
+  }
+}
+
+/* Monaco's stylesheets size their widgets for the browser's content-box (the find widget's 16px + 3px padding buttons are 22px in VS Code), so preflight's border-box is undone inside it; Monaco's own unlayered border-box rules still win. */
+@layer base {
+  .monaco-editor *,
+  .monaco-editor ::before,
+  .monaco-editor ::after {
+    box-sizing: content-box;
   }
 }
 

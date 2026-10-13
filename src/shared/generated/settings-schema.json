@@ -457,12 +457,14 @@
           "Click the mic to start and stop recording (cloud STT via the configured provider).",
           "Hands-free: say the wake phrase to activate (local on-device STT via the Jarvis sidecar)."
         ],
-        "description": "Voice input mode. 'Off' disables voice entirely. 'Push-to-talk' uses cloud STT (Deepgram / Whisper / Google). 'Wake-word' uses the on-device Jarvis sidecar."
+        "description": "Voice input mode. 'Off' disables voice entirely. 'Push-to-talk' uses cloud STT (Deepgram / Whisper / Google) and works on every platform. 'Wake-word' uses the on-device Jarvis sidecar, which runs only on Windows x64, Linux x64 and macOS arm64; on any other platform Damocles refuses it before installing anything."
       },
       "damocles.voice.wakeWord": {
         "type": "string",
-        "default": "hey_jarvis",
-        "description": "Wake-word model. Treated first as an ID lookup against bundled keywords; if no match, treated as a filesystem path to a user-supplied .onnx OpenWakeWord model. Machine-scope only — workspace settings cannot point this at attacker-controlled .onnx files."
+        "default": "hey jarvis",
+        "pattern": "^[\\s_]*[A-Za-z]+([\\s_]+[A-Za-z]+){0,3}[\\s_]*$",
+        "patternErrorMessage": "Use 1 to 4 English words of letters only, separated by spaces, such as \"hey jarvis\".",
+        "description": "Wake phrase for Jarvis mode: 1 to 4 English words of letters only, such as \"hey jarvis\" or \"computer\". Case does not matter and underscores read as spaces. The on-device keyword spotter listens for this phrase, and it is removed from the start of each transcript."
       },
       "damocles.voice.wakeWordSensitivity": {
         "type": "number",
@@ -539,7 +541,7 @@
       "damocles.voice.runtimePath": {
         "type": "string",
         "default": "",
-        "description": "Advanced: path to an existing CUDA-PyTorch Python venv to skip the bundled runtime. Leave empty to use the default location (~/.damocles/voice/runtime/). Machine-scope only — a workspace setting must not redirect Python execution."
+        "description": "Advanced: path to an existing CUDA-PyTorch Python venv to skip the bundled runtime. It must already hold the pinned voice stack; Damocles only smoke-checks it. Windows x64, Linux x64 and macOS arm64 only: other platforms are refused even with this set. Leave empty to use the default location (~/.damocles/voice/runtime/). Machine-scope only — a workspace setting must not redirect Python execution."
       },
       "damocles.voice.pinModelVersion": {
         "type": "object",
@@ -693,7 +695,7 @@
           "deepseek-flash"
         ],
         "default": "",
-        "description": "Model for background work: chat titles, memory extraction, profile summaries, query expansion and the memory quality audit. Automatic uses the first signed-in model of Haiku 5.5, GPT-6 Luna, Step 5 Preview and DeepSeek V4.1 Flash. A chosen model whose provider is signed out pauses that work; it never falls back to another provider. The memory merge and rerank judges follow Memory: Judge instead. Applies from user settings only."
+        "description": "Model for background work: chat titles, memory extraction, profile summaries, query expansion, the memory quality audit and the desktop app's commit messages. Automatic uses the first signed-in model of Haiku 5.5, GPT-6 Luna, Step 5 Preview and DeepSeek V4.1 Flash. A chosen model whose provider is signed out pauses that work; it never falls back to another provider. The memory merge and rerank judges follow Memory: Judge instead. Applies from user settings only."
       },
       "damocles.background.effort": {
         "type": "string",
@@ -707,7 +709,7 @@
           "ultracode"
         ],
         "default": "",
-        "description": "Reasoning effort for background work on a chosen model. Per job runs each job at its own level (titles and query expansion as low as the model allows, extraction, profiles and the audit at low). Ignored on Automatic. Applies from user settings only."
+        "description": "Reasoning effort for background work on a chosen model. Per job runs each job at its own level (titles and query expansion as low as the model allows, extraction, profiles, the audit and commit messages at low). Ignored on Automatic. Applies from user settings only."
       },
       "damocles.memory.judge": {
         "type": "string",
@@ -793,6 +795,11 @@
         "type": "boolean",
         "default": true,
         "description": "Play a short sound with each desktop pop-up."
+      },
+      "damocles.desktop.update.checkAutomatically": {
+        "type": "boolean",
+        "default": true,
+        "description": "Check GitHub for a new release at startup, every 4 hours and after the computer wakes. When off, Damocles contacts GitHub only when you choose Check for Updates."
       },
       "damocles.desktop.editor.fontSize": {
         "type": "integer",
@@ -1232,6 +1239,168 @@
         "type": "boolean",
         "default": false,
         "description": "When a search is triggered, focus the Search Editor results instead of the Search Editor input."
+      },
+      "damocles.desktop.git.untrackedChanges": {
+        "type": "string",
+        "enum": [
+          "mixed",
+          "separate",
+          "hidden"
+        ],
+        "enumDescriptions": [
+          "All changes, tracked and untracked, appear together and behave equally.",
+          "Untracked changes appear separately in the Source Control view. They are also excluded from several actions.",
+          "Untracked changes are hidden and excluded from several actions."
+        ],
+        "default": "mixed",
+        "description": "Controls how untracked changes behave."
+      },
+      "damocles.desktop.git.repositoryScanMaxDepth": {
+        "type": "integer",
+        "default": 1,
+        "minimum": -1,
+        "maximum": 100,
+        "description": "Controls the depth used when scanning project folders for Git repositories. Can be set to -1 for no limit."
+      },
+      "damocles.desktop.git.openRepositoryInParentFolders": {
+        "type": "string",
+        "enum": [
+          "always",
+          "never",
+          "prompt"
+        ],
+        "enumDescriptions": [
+          "Always open a repository in parent folders of projects.",
+          "Never open a repository in parent folders of projects.",
+          "Prompt before opening a repository in parent folders of projects."
+        ],
+        "default": "prompt",
+        "description": "Control whether a repository in parent folders of projects should be opened."
+      },
+      "damocles.desktop.git.inputValidation": {
+        "type": "boolean",
+        "default": false,
+        "description": "Controls whether to show commit message input validation diagnostics."
+      },
+      "damocles.desktop.git.inputValidationSubjectLength": {
+        "type": "integer",
+        "default": 50,
+        "minimum": 1,
+        "maximum": 1000,
+        "description": "Controls the commit message subject length threshold for showing a warning."
+      },
+      "damocles.desktop.git.inputValidationLength": {
+        "type": "integer",
+        "default": 72,
+        "minimum": 1,
+        "maximum": 1000,
+        "description": "Controls the commit message length threshold for showing a warning."
+      },
+      "damocles.desktop.git.allowNoVerifyCommit": {
+        "type": "boolean",
+        "default": false,
+        "description": "Controls whether commits without running pre-commit and commit-msg hooks are allowed."
+      },
+      "damocles.desktop.git.confirmNoVerifyCommit": {
+        "type": "boolean",
+        "default": true,
+        "description": "Controls whether to ask for confirmation before committing without verification."
+      },
+      "damocles.desktop.git.confirmEmptyCommits": {
+        "type": "boolean",
+        "default": true,
+        "description": "Always confirm the creation of empty commits for the 'Git: Commit Empty' command."
+      },
+      "damocles.desktop.git.enableSmartCommit": {
+        "type": "boolean",
+        "default": false,
+        "description": "Commit all changes when there are no staged changes."
+      },
+      "damocles.desktop.git.suggestSmartCommit": {
+        "type": "boolean",
+        "default": true,
+        "description": "Suggests to enable smart commit (commit all changes when there are no staged changes)."
+      },
+      "damocles.desktop.git.smartCommitChanges": {
+        "type": "string",
+        "enum": [
+          "all",
+          "tracked"
+        ],
+        "enumDescriptions": [
+          "Automatically stage all changes.",
+          "Automatically stage tracked changes only."
+        ],
+        "default": "all",
+        "description": "Control which changes are automatically staged by Smart Commit."
+      },
+      "damocles.desktop.git.postCommitCommand": {
+        "type": "string",
+        "enum": [
+          "none",
+          "push",
+          "sync"
+        ],
+        "enumDescriptions": [
+          "Don't run any command after a commit.",
+          "Run 'git push' after a successful commit.",
+          "Run 'git pull' and 'git push' after a successful commit."
+        ],
+        "default": "none",
+        "description": "Run a git command after a successful commit."
+      },
+      "damocles.desktop.git.branchProtection": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "description": "List of protected branches, as glob patterns. By default, a prompt is shown before changes are committed to a protected branch. The prompt can be controlled using the protected branch prompt setting."
+      },
+      "damocles.desktop.git.branchProtectionPrompt": {
+        "type": "string",
+        "enum": [
+          "alwaysCommit",
+          "alwaysCommitToNewBranch",
+          "alwaysPrompt"
+        ],
+        "enumDescriptions": [
+          "Always commit changes to the protected branch.",
+          "Always commit changes to a new branch.",
+          "Always prompt before changes are committed to a protected branch."
+        ],
+        "default": "alwaysPrompt",
+        "description": "Controls whether a prompt is being shown before changes are committed to a protected branch."
+      },
+      "damocles.desktop.git.promptToSaveFilesBeforeCommit": {
+        "type": "string",
+        "enum": [
+          "always",
+          "staged",
+          "never"
+        ],
+        "enumDescriptions": [
+          "Check for any unsaved files.",
+          "Check only for unsaved staged files.",
+          "Disable this check."
+        ],
+        "default": "always",
+        "description": "Controls whether Git should check for unsaved files before committing."
+      },
+      "damocles.desktop.git.alwaysSignOff": {
+        "type": "boolean",
+        "default": false,
+        "description": "Controls the signoff flag for all commits."
+      },
+      "damocles.desktop.git.enableCommitSigning": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enables commit signing with GPG, X.509, or SSH."
+      },
+      "damocles.desktop.git.branchPrefix": {
+        "type": "string",
+        "default": "",
+        "description": "Prefix used when creating a new branch."
       },
       "permissions": {
         "type": "object",
@@ -1722,13 +1891,13 @@
           "Click the mic to start and stop recording (cloud STT via the configured provider).",
           "Hands-free: say the wake phrase to activate (local on-device STT via the Jarvis sidecar)."
         ],
-        "description": "Voice input mode. 'Off' disables voice entirely. 'Push-to-talk' uses cloud STT (Deepgram / Whisper / Google). 'Wake-word' uses the on-device Jarvis sidecar."
+        "description": "Voice input mode. 'Off' disables voice entirely. 'Push-to-talk' uses cloud STT (Deepgram / Whisper / Google) and works on every platform. 'Wake-word' uses the on-device Jarvis sidecar, which runs only on Windows x64, Linux x64 and macOS arm64; on any other platform Damocles refuses it before installing anything."
       },
       "damocles.voice.wakeWord": {
         "not": {},
         "errorMessage": "damocles.voice.wakeWord applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
         "doNotSuggest": true,
-        "description": "damocles.voice.wakeWord applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nWake-word model. Treated first as an ID lookup against bundled keywords; if no match, treated as a filesystem path to a user-supplied .onnx OpenWakeWord model. Machine-scope only — workspace settings cannot point this at attacker-controlled .onnx files."
+        "description": "damocles.voice.wakeWord applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nWake phrase for Jarvis mode: 1 to 4 English words of letters only, such as \"hey jarvis\" or \"computer\". Case does not matter and underscores read as spaces. The on-device keyword spotter listens for this phrase, and it is removed from the start of each transcript."
       },
       "damocles.voice.wakeWordSensitivity": {
         "type": "number",
@@ -1806,7 +1975,7 @@
         "not": {},
         "errorMessage": "damocles.voice.runtimePath applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
         "doNotSuggest": true,
-        "description": "damocles.voice.runtimePath applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nAdvanced: path to an existing CUDA-PyTorch Python venv to skip the bundled runtime. Leave empty to use the default location (~/.damocles/voice/runtime/). Machine-scope only — a workspace setting must not redirect Python execution."
+        "description": "damocles.voice.runtimePath applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nAdvanced: path to an existing CUDA-PyTorch Python venv to skip the bundled runtime. It must already hold the pinned voice stack; Damocles only smoke-checks it. Windows x64, Linux x64 and macOS arm64 only: other platforms are refused even with this set. Leave empty to use the default location (~/.damocles/voice/runtime/). Machine-scope only — a workspace setting must not redirect Python execution."
       },
       "damocles.voice.pinModelVersion": {
         "not": {},
@@ -1922,13 +2091,13 @@
         "not": {},
         "errorMessage": "damocles.background.model applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
         "doNotSuggest": true,
-        "description": "damocles.background.model applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nModel for background work: chat titles, memory extraction, profile summaries, query expansion and the memory quality audit. Automatic uses the first signed-in model of Haiku 5.5, GPT-6 Luna, Step 5 Preview and DeepSeek V4.1 Flash. A chosen model whose provider is signed out pauses that work; it never falls back to another provider. The memory merge and rerank judges follow Memory: Judge instead. Applies from user settings only."
+        "description": "damocles.background.model applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nModel for background work: chat titles, memory extraction, profile summaries, query expansion, the memory quality audit and the desktop app's commit messages. Automatic uses the first signed-in model of Haiku 5.5, GPT-6 Luna, Step 5 Preview and DeepSeek V4.1 Flash. A chosen model whose provider is signed out pauses that work; it never falls back to another provider. The memory merge and rerank judges follow Memory: Judge instead. Applies from user settings only."
       },
       "damocles.background.effort": {
         "not": {},
         "errorMessage": "damocles.background.effort applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
         "doNotSuggest": true,
-        "description": "damocles.background.effort applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nReasoning effort for background work on a chosen model. Per job runs each job at its own level (titles and query expansion as low as the model allows, extraction, profiles and the audit at low). Ignored on Automatic. Applies from user settings only."
+        "description": "damocles.background.effort applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nReasoning effort for background work on a chosen model. Per job runs each job at its own level (titles and query expansion as low as the model allows, extraction, profiles, the audit and commit messages at low). Ignored on Automatic. Applies from user settings only."
       },
       "damocles.memory.judge": {
         "not": {},
@@ -1977,6 +2146,12 @@
         "errorMessage": "damocles.desktop.notifications.sound applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
         "doNotSuggest": true,
         "description": "damocles.desktop.notifications.sound applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nPlay a short sound with each desktop pop-up."
+      },
+      "damocles.desktop.update.checkAutomatically": {
+        "not": {},
+        "errorMessage": "damocles.desktop.update.checkAutomatically applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.update.checkAutomatically applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nCheck GitHub for a new release at startup, every 4 hours and after the computer wakes. When off, Damocles contacts GitHub only when you choose Check for Updates."
       },
       "damocles.desktop.editor.fontSize": {
         "not": {},
@@ -2217,6 +2392,120 @@
         "errorMessage": "damocles.desktop.searchEditor.focusResultsOnSearch applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
         "doNotSuggest": true,
         "description": "damocles.desktop.searchEditor.focusResultsOnSearch applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nWhen a search is triggered, focus the Search Editor results instead of the Search Editor input."
+      },
+      "damocles.desktop.git.untrackedChanges": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.untrackedChanges applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.untrackedChanges applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls how untracked changes behave."
+      },
+      "damocles.desktop.git.repositoryScanMaxDepth": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.repositoryScanMaxDepth applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.repositoryScanMaxDepth applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls the depth used when scanning project folders for Git repositories. Can be set to -1 for no limit."
+      },
+      "damocles.desktop.git.openRepositoryInParentFolders": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.openRepositoryInParentFolders applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.openRepositoryInParentFolders applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControl whether a repository in parent folders of projects should be opened."
+      },
+      "damocles.desktop.git.inputValidation": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.inputValidation applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.inputValidation applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls whether to show commit message input validation diagnostics."
+      },
+      "damocles.desktop.git.inputValidationSubjectLength": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.inputValidationSubjectLength applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.inputValidationSubjectLength applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls the commit message subject length threshold for showing a warning."
+      },
+      "damocles.desktop.git.inputValidationLength": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.inputValidationLength applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.inputValidationLength applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls the commit message length threshold for showing a warning."
+      },
+      "damocles.desktop.git.allowNoVerifyCommit": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.allowNoVerifyCommit applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.allowNoVerifyCommit applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls whether commits without running pre-commit and commit-msg hooks are allowed."
+      },
+      "damocles.desktop.git.confirmNoVerifyCommit": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.confirmNoVerifyCommit applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.confirmNoVerifyCommit applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls whether to ask for confirmation before committing without verification."
+      },
+      "damocles.desktop.git.confirmEmptyCommits": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.confirmEmptyCommits applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.confirmEmptyCommits applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nAlways confirm the creation of empty commits for the 'Git: Commit Empty' command."
+      },
+      "damocles.desktop.git.enableSmartCommit": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.enableSmartCommit applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.enableSmartCommit applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nCommit all changes when there are no staged changes."
+      },
+      "damocles.desktop.git.suggestSmartCommit": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.suggestSmartCommit applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.suggestSmartCommit applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nSuggests to enable smart commit (commit all changes when there are no staged changes)."
+      },
+      "damocles.desktop.git.smartCommitChanges": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.smartCommitChanges applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.smartCommitChanges applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControl which changes are automatically staged by Smart Commit."
+      },
+      "damocles.desktop.git.postCommitCommand": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.postCommitCommand applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.postCommitCommand applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nRun a git command after a successful commit."
+      },
+      "damocles.desktop.git.branchProtection": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.branchProtection applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.branchProtection applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nList of protected branches, as glob patterns. By default, a prompt is shown before changes are committed to a protected branch. The prompt can be controlled using the protected branch prompt setting."
+      },
+      "damocles.desktop.git.branchProtectionPrompt": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.branchProtectionPrompt applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.branchProtectionPrompt applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls whether a prompt is being shown before changes are committed to a protected branch."
+      },
+      "damocles.desktop.git.promptToSaveFilesBeforeCommit": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.promptToSaveFilesBeforeCommit applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.promptToSaveFilesBeforeCommit applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls whether Git should check for unsaved files before committing."
+      },
+      "damocles.desktop.git.alwaysSignOff": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.alwaysSignOff applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.alwaysSignOff applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls the signoff flag for all commits."
+      },
+      "damocles.desktop.git.enableCommitSigning": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.enableCommitSigning applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.enableCommitSigning applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nEnables commit signing with GPG, X.509, or SSH."
+      },
+      "damocles.desktop.git.branchPrefix": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.branchPrefix applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.branchPrefix applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nPrefix used when creating a new branch."
       },
       "permissions": {
         "type": "object",

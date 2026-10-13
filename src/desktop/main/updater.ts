@@ -35,6 +35,8 @@ export interface UpdaterDeps {
   readonly shell: ShellService;
   // global KeyValueState
   readonly state: Memento;
+  // damocles.desktop.update.checkAutomatically: off leaves only the Help and About checks
+  readonly checkAutomatically: () => boolean;
   // powerMonitor resume
   readonly onResume: (listener: () => void) => Disposable;
   readonly t: (message: string, ...args: Array<string | number | boolean>) => string;
@@ -104,9 +106,9 @@ function configure(updater: AppUpdater, deps: UpdaterDeps): void {
 
 /**
  * The desktop update state (plan AD9), which main owns and pushes whole to the renderers. Windows and Linux download in
- * the background and offer a restart; macOS links to the release page. Checks run after the window is up, every
- * CHECK_INTERVAL_MS, on a resume from sleep once the last check is that old, and on demand; a check while one runs, a
- * download is under way or an update waits is a no-op.
+ * the background and offer a restart; macOS links to the release page. Checks run on demand and, while checkAutomatically
+ * holds, after the window is up, every CHECK_INTERVAL_MS and on a resume from sleep once the last check is that old; a
+ * check while one runs, a download is under way or an update waits is a no-op.
  */
 export class UpdateService {
   private readonly deps: UpdaterDeps;
@@ -144,10 +146,25 @@ export class UpdateService {
       this.deps.log('[updater] off: the app is not packaged');
       return;
     }
-    this.pending = setImmediate(() => this.check('auto'));
+    if (this.deps.checkAutomatically()) this.pending = setImmediate(() => this.check('auto'));
+    else this.deps.log('[updater] automatic checks are off');
     this.resume = this.deps.onResume(() => {
-      if (this.lastCheckedAt === null || Date.now() - this.lastCheckedAt >= CHECK_INTERVAL_MS) this.check('auto');
+      if (this.deps.checkAutomatically() && this.checkIsDue()) this.check('auto');
     });
+  }
+
+  /** damocles.desktop.update.checkAutomatically changed: on checks now when a check is due and resumes the schedule, off stops it. */
+  checkAutomaticallyChanged(): void {
+    if (!this.started || this.disposed || this.current.kind === 'disabled') return;
+    if (!this.deps.checkAutomatically()) {
+      if (this.pending) clearImmediate(this.pending);
+      clearTimeout(this.timer);
+      this.deps.log('[updater] automatic checks turned off');
+      return;
+    }
+    // Scheduled first: a check refused while an update is under way schedules nothing itself.
+    this.schedule();
+    if (this.checkIsDue()) this.check('auto');
   }
 
   snapshot(): UpdateSnapshot {
@@ -167,7 +184,7 @@ export class UpdateService {
     this.origin = origin;
     this.updateFound = false;
     this.checkFailureShown = false;
-    this.schedule();
+    if (this.deps.checkAutomatically()) this.schedule();
     this.setState({ kind: 'checking' });
     this.run(origin).catch((err: unknown) => this.fail(err));
   }
@@ -219,6 +236,10 @@ export class UpdateService {
     const percent = Math.min(100, Math.max(0, Math.floor(progress.percent)));
     this.setState({ ...this.current, percent });
   };
+
+  private checkIsDue(): boolean {
+    return this.lastCheckedAt === null || Date.now() - this.lastCheckedAt >= CHECK_INTERVAL_MS;
+  }
 
   // A periodic check skipped while an update is under way still schedules the next one.
   private schedule(): void {

@@ -29,7 +29,6 @@ TTS_SAMPLE_RATE = 24_000
 class InitMessage(TypedDict):
     type: Literal["init"]
     protocol_version: int
-    wake_word: str
     wake_sensitivity: float
     end_of_turn_silence_ms: int
     max_utterance_ms: int
@@ -220,7 +219,8 @@ class SidecarConfig:
     models_dir: str
     runtime_mode: Literal["cuda", "cpu", "auto"] = "auto"
     diagnostics: bool = False
-    wake_word: str = "hey_jarvis"
+    # From --wake-word only; the init message carries no phrase.
+    wake_word: str = "hey jarvis"
     wake_sensitivity: float = 0.5
     end_of_turn_silence_ms: int = 800
     max_utterance_ms: int = 30_000

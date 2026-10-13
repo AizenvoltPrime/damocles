@@ -56,7 +56,8 @@ test('a save whose file became a folder and a Revert of a file that became binar
 
   await typeAtEnd(app, shell, 'src/gone.ts', 'export const gone = 1;', '// kept after Revert');
   fs.writeFileSync(path.join(src, 'gone.ts'), 'export const gone = 2;\n');
-  await expect(conflictBar(shell)).toBeVisible();
+  // gone.ts's own conflict: data.ts's bar can still be leaving through its transition after the tab switch.
+  await expect(editorTab(shell, 'gone.ts')).toContainText('Changed on disk');
   fs.rmSync(path.join(src, 'gone.ts'));
   await expect(editorTab(shell, 'gone.ts')).toHaveAttribute('data-deleted', 'true');
   await shell.getByTestId('conflict-revert').click();

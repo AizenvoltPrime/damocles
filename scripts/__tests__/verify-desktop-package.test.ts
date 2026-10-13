@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
@@ -12,10 +13,13 @@ import {
   checkShellIntegrationScripts,
   checkSpawnHelperMode,
   checkUnpackedSet,
+  checkWakeModel,
   EXPECTED_FUSES,
   SHELL_INTEGRATION_FILES,
   verifyPackage,
+  WINDOWS_PUBLISHER,
 } from '../verify-desktop-package.mjs';
+import { parse } from 'yaml';
 import { ASAR_UNPACK } from '../../src/desktop/main/platform/unpacked-assets';
 
 type Result = { check: string; ok: boolean; detail: string };
@@ -61,13 +65,25 @@ describe('checkUnpackedSet', () => {
 
 describe('checkAppUpdate', () => {
   const feed = 'owner: AizenvoltPrime\nrepo: damocles\nprovider: github\nupdaterCacheDirName: damocles-updater\n';
+  const publisher = 'publisherName:\n  - SignPath Foundation\n';
 
   it('requires the per-arch channel on Windows and the default feed elsewhere', () => {
-    expect(failures(checkAppUpdate(`${feed}channel: latest-arm64\n`, 'win32', 'arm64'))).toEqual([]);
-    expect(failures(checkAppUpdate(`${feed}channel: latest-x64\n`, 'win32', 'arm64'))).toEqual(['app-update.yml']);
-    expect(failures(checkAppUpdate(feed, 'win32', 'x64'))).toEqual(['app-update.yml']);
+    expect(failures(checkAppUpdate(`${feed}channel: latest-arm64\n${publisher}`, 'win32', 'arm64'))).toEqual([]);
+    expect(failures(checkAppUpdate(`${feed}channel: latest-x64\n${publisher}`, 'win32', 'arm64'))).toEqual(['app-update.yml']);
+    expect(failures(checkAppUpdate(`${feed}${publisher}`, 'win32', 'x64'))).toEqual(['app-update.yml']);
     expect(failures(checkAppUpdate(feed, 'linux', 'arm64'))).toEqual([]);
     expect(failures(checkAppUpdate(`${feed}channel: latest-x64\n`, 'darwin', 'arm64'))).toEqual(['app-update.yml']);
+  });
+
+  it('requires the release certificate as the Windows update publisher, and no publisher elsewhere', () => {
+    expect(failures(checkAppUpdate(`${feed}channel: latest-x64\n`, 'win32', 'x64'))).toEqual(['app-update.yml']);
+    expect(failures(checkAppUpdate(`${feed}channel: latest-x64\npublisherName:\n  - Someone Else\n`, 'win32', 'x64'))).toEqual(['app-update.yml']);
+    expect(failures(checkAppUpdate(`${feed}${publisher}`, 'linux', 'x64'))).toEqual(['app-update.yml']);
+  });
+
+  it('agrees with the publisher electron-builder.yml writes', () => {
+    const config = parse(readFileSync(join(__dirname, '..', '..', 'electron-builder.yml'), 'utf8')) as { win: { signtoolOptions: { publisherName: string } } };
+    expect(config.win.signtoolOptions.publisherName).toBe(WINDOWS_PUBLISHER);
   });
 
   it('fails a missing file and a different repository', () => {
@@ -177,6 +193,50 @@ function put(file: string, content: string | Buffer = 'x'): void {
   writeFileSync(file, content);
 }
 
+const WAKE_FILES: Record<string, string> = { 'encoder.int8.onnx': 'encoder', 'tokens.txt': 'tokens', 'bpe.model': 'bpe' };
+const WAKE_MANIFEST = JSON.stringify({
+  wake_model: {
+    files: Object.entries(WAKE_FILES).map(([filename, content]) => ({
+      filename,
+      archive_path: `kws/${filename}`,
+      sha256: createHash('sha256').update(content).digest('hex'),
+      bytes: Buffer.byteLength(content),
+    })),
+  },
+});
+
+describe('checkWakeModel', () => {
+  function wakeDirs(): { manifest: string; packaged: string } {
+    const root = mkdtempSync(join(tmpdir(), 'vdp-wake'));
+    tempDirs.push(root);
+    const manifest = join(root, 'MODEL_MANIFEST.json');
+    put(manifest, WAKE_MANIFEST);
+    const packaged = join(root, 'wake');
+    for (const [file, content] of Object.entries(WAKE_FILES)) put(join(packaged, file), content);
+    put(join(packaged, '__init__.py'), '');
+    return { manifest, packaged };
+  }
+
+  it('passes exactly the listed files at their listed checksums, beside the package marker', () => {
+    const { manifest, packaged } = wakeDirs();
+    const result: Result = checkWakeModel(manifest, packaged);
+    expect(result.ok).toBe(true);
+  });
+
+  it('fails a missing, a changed and an unlisted file', () => {
+    const { manifest, packaged } = wakeDirs();
+    rmSync(join(packaged, 'bpe.model'));
+    put(join(packaged, 'tokens.txt'), 'tokenz');
+    put(join(packaged, 'hey_jarvis.onnx'), 'old model');
+    const result: Result = checkWakeModel(manifest, packaged);
+    expect(result).toEqual({
+      check: 'wake model',
+      ok: false,
+      detail: 'missing bpe.model; differ from the manifest: tokens.txt; not in the manifest: hey_jarvis.onnx',
+    });
+  });
+});
+
 describe('checkChangelog', () => {
   const changelog = ['# Changelog', '', '## [2.36.0] - 2026-01-02', '- notes', ''].join('\r\n');
   it('passes the repo copy with the packaged version section, and fails a missing, stale or versionless copy', () => {
@@ -198,10 +258,10 @@ describe('verifyPackage', () => {
     put(join(repoRoot, 'package.json'), JSON.stringify({ version: '2.36.0' }));
     put(join(repoRoot, 'CHANGELOG.md'), CHANGELOG);
     put(join(repoRoot, 'resources', 'grammars', 'tree-sitter-go.wasm'), 'go-grammar');
-    put(join(repoRoot, 'python', 'damocles_voice_sidecar', 'damocles_voice_sidecar', 'models', 'wake', 'hey_jarvis.onnx'), 'wake');
+    put(join(repoRoot, 'python', 'damocles_voice_sidecar', 'damocles_voice_sidecar', 'models', 'MODEL_MANIFEST.json'), WAKE_MANIFEST);
     put(platform === 'win32' ? join(app, 'Damocles.exe') : join(app, 'Contents', 'MacOS', 'Damocles'), 'binary');
     put(join(resources, 'monaco-editor-ThirdPartyNotices.txt'), 'notices');
-    put(join(resources, 'app-update.yml'), `owner: AizenvoltPrime\nrepo: damocles\nprovider: github\n${platform === 'win32' ? 'channel: latest-x64\n' : ''}updaterCacheDirName: damocles-updater\n`);
+    put(join(resources, 'app-update.yml'), `owner: AizenvoltPrime\nrepo: damocles\nprovider: github\n${platform === 'win32' ? 'channel: latest-x64\npublisherName:\n  - SignPath Foundation\n' : ''}updaterCacheDirName: damocles-updater\n`);
     const target = platform === 'win32' ? 'win32-x64' : 'darwin-arm64';
     const unpackedFiles = [
       'dist/compass-worker.js',
@@ -215,7 +275,7 @@ describe('verifyPackage', () => {
       ...SHELL_INTEGRATION_FILES.map((file) => `resources/shell-integration/${file}`),
       'python/damocles_voice_sidecar/damocles_voice_sidecar/__main__.py',
       'python/damocles_voice_sidecar/damocles_voice_sidecar/models/MODEL_MANIFEST.json',
-      'python/damocles_voice_sidecar/damocles_voice_sidecar/models/wake/hey_jarvis.onnx',
+      ...Object.keys(WAKE_FILES).map((file) => `python/damocles_voice_sidecar/damocles_voice_sidecar/models/wake/${file}`),
       'node_modules/web-tree-sitter/tree-sitter.wasm',
       `node_modules/@vscode/ripgrep-${target}/bin/${platform === 'win32' ? 'rg.exe' : 'rg'}`,
       `node_modules/@koromix/koffi-${target}/${target.replace('-', '_')}/koffi.node`,
@@ -231,7 +291,7 @@ describe('verifyPackage', () => {
       chmodSync(join(unpacked, 'node_modules', 'node-pty', 'prebuilds', target, 'spawn-helper'), 0o755);
     }
     put(join(unpacked, 'resources', 'grammars', 'tree-sitter-go.wasm'), 'go-grammar');
-    put(join(unpacked, 'python', 'damocles_voice_sidecar', 'damocles_voice_sidecar', 'models', 'wake', 'hey_jarvis.onnx'), 'wake');
+    for (const [file, content] of Object.entries(WAKE_FILES)) put(join(unpacked, 'python', 'damocles_voice_sidecar', 'damocles_voice_sidecar', 'models', 'wake', file), content);
     const packed: Record<string, string> = {
       'package.json': JSON.stringify({ name: 'damocles', version: '2.36.0', main: 'dist/desktop/main.js' }),
       'node_modules/koffi/package.json': '{}',

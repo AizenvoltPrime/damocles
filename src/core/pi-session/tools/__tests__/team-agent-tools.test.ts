@@ -6,7 +6,7 @@ import * as path from 'path';
 import { Value } from 'typebox/value';
 import type { TSchema } from 'typebox';
 import type { PiCodingAgentModule } from '../../pi-loader';
-import { MAX_FINGERPRINTED_FILES, TEAM_AGENT_PI_TOOL_NAMES, TEAM_AGENT_SPECS, UNCHANGED_MARKER_PREFIX, buildAllTeamAgentPiTools, buildTeamAgentPiTools, teamAgentPiToolNamesForRole } from '../team-tools';
+import { MAX_FINGERPRINTED_FILES, TEAM_AGENT_PI_TOOL_NAMES, TEAM_AGENT_SPECS, UNCHANGED_MARKER_PREFIX, buildAllTeamAgentPiTools, buildTeamAgentPiTools, teamAgentPiToolNamesForRole, type TeamToolWorkspace } from '../team-tools';
 import { Scratchpad } from '../../../team/scratchpad';
 import type { AgentMcpContext, TeamAgent } from '../../../team/types';
 
@@ -60,8 +60,12 @@ function specialistCtx(over: Partial<AgentMcpContext> = {}): AgentMcpContext {
   return leadCtx({ role: 'specialist', agentName: 'Dev', agentId: 'dev-id', ...over });
 }
 
+const trustedAt = (cwd: string): TeamToolWorkspace => ({ cwd, isTrusted: () => true });
+// Untrusted, so a fingerprint these tools compute runs no git in the developer's checkout.
+const untrustedCwd: TeamToolWorkspace = { cwd: process.cwd(), isTrusted: () => false };
+
 function toolMap(ctx: AgentMcpContext): Map<string, PiTool> {
-  const tools = buildTeamAgentPiTools(pi, ctx, process.cwd()) as unknown as PiTool[];
+  const tools = buildTeamAgentPiTools(pi, ctx, untrustedCwd) as unknown as PiTool[];
   return new Map(tools.map((t) => [t.name, t]));
 }
 
@@ -71,7 +75,7 @@ function toolMap(ctx: AgentMcpContext): Map<string, PiTool> {
  */
 function guardedTool(name: string, callerRole: 'lead' | 'specialist'): PiTool {
   const ctx = callerRole === 'lead' ? leadCtx() : specialistCtx();
-  const tools = buildAllTeamAgentPiTools(pi, ctx, process.cwd()) as unknown as PiTool[];
+  const tools = buildAllTeamAgentPiTools(pi, ctx, untrustedCwd) as unknown as PiTool[];
   return tools.find((t) => t.name === name)!;
 }
 
@@ -395,8 +399,8 @@ describe('team_record_verification — extension-computed tree fingerprint', () 
     });
     return { ctx, entries };
   }
-  function tool(ctx: AgentMcpContext, cwd: string): PiTool {
-    const tools = buildTeamAgentPiTools(pi, ctx, cwd) as unknown as PiTool[];
+  function tool(ctx: AgentMcpContext, cwd: string, isTrusted: () => boolean = () => true): PiTool {
+    const tools = buildTeamAgentPiTools(pi, ctx, { cwd, isTrusted }) as unknown as PiTool[];
     return tools.find((t) => t.name === 'team_record_verification')!;
   }
 
@@ -462,6 +466,66 @@ describe('team_record_verification — extension-computed tree fingerprint', () 
   }
 
   const treesOf = (entries: string[]): string[] => entries.map((e) => /tree ([0-9a-f]+|unverifiable)/.exec(e)![1]!);
+
+  /** Point the repository's `core.fsmonitor` at a script that writes a sentinel file when git runs it. */
+  function armFsmonitor(repo: string): string {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'team-ledger-hook-')));
+    const hook = path.join(dir, 'hook.js');
+    const sentinel = path.join(dir, 'ran.txt');
+    fs.writeFileSync(hook, 'require("fs").writeFileSync(process.argv[2], "ran");\n');
+    const slashed = (p: string): string => p.replace(/\\/g, '/');
+    execFileSync('git', ['config', 'core.fsmonitor', `"${slashed(process.execPath)}" "${slashed(hook)}" "${slashed(sentinel)}"`], { cwd: repo, stdio: 'ignore' });
+    return sentinel;
+  }
+
+  /** Whether git runs the armed hook when nothing overrides it; a test that relies on the override skips where it does not. */
+  function hookFiresWithoutOverride(repo: string, sentinel: string): boolean {
+    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'dirty');
+    execFileSync('git', ['status', '--porcelain'], { cwd: repo, stdio: 'ignore' });
+    const fired = fs.existsSync(sentinel);
+    fs.rmSync(sentinel, { force: true });
+    return fired;
+  }
+
+  it('runs no git in an untrusted folder, so its core.fsmonitor never runs, and records the tree as unverifiable', async (testCtx) => {
+    const repo = tempRepo();
+    const sentinel = armFsmonitor(repo);
+    try {
+      if (!hookFiresWithoutOverride(repo, sentinel)) testCtx.skip();
+
+      const { ctx, entries } = ledgerCtx();
+      await tool(ctx, repo, () => false).execute('id', { command: 'npx vitest run', result: 'pass' });
+
+      expect(treesOf(entries)).toEqual(['unverifiable']);
+      expect(fs.existsSync(sentinel)).toBe(false);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(path.dirname(sentinel), { recursive: true, force: true });
+    }
+  });
+
+  it('overrides core.fsmonitor in a trusted folder and reads trust on every call', async (testCtx) => {
+    const repo = tempRepo();
+    const sentinel = armFsmonitor(repo);
+    try {
+      if (!hookFiresWithoutOverride(repo, sentinel)) testCtx.skip();
+      let trusted = false;
+      const { ctx, entries } = ledgerCtx();
+      const record = tool(ctx, repo, () => trusted);
+
+      await record.execute('id', { command: 'npx vitest run', result: 'pass' });
+      trusted = true;
+      await record.execute('id', { command: 'npx vitest run', result: 'pass' });
+
+      const [before, after] = treesOf(entries);
+      expect(before).toBe('unverifiable');
+      expect(after).toMatch(/^[0-9a-f]{16}$/);
+      expect(fs.existsSync(sentinel)).toBe(false);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(path.dirname(sentinel), { recursive: true, force: true });
+    }
+  });
 
   it('changes when a file inside a NEW UNTRACKED DIRECTORY is edited (git collapses those to one line)', async () => {
     // Regression: `git status --porcelain` without -uall reports an untracked directory as a single
@@ -788,9 +852,9 @@ describe('team tool registration follows the agent role', () => {
     const renaming = {
       defineTool: (tool: { name: string }) => ({ ...tool, name: tool.name === 'team_standby' ? 'team_unlisted' : tool.name }),
     } as unknown as PiCodingAgentModule;
-    expect(() => buildAllTeamAgentPiTools(renaming, specialistCtx(), process.cwd())).toThrow(/team_unlisted/);
-    expect(() => buildAllTeamAgentPiTools(renaming, specialistCtx(), process.cwd())).toThrow(/TEAM_AGENT_ENTRIES/);
-    expect(() => buildAllTeamAgentPiTools(pi, specialistCtx(), process.cwd())).not.toThrow();
+    expect(() => buildAllTeamAgentPiTools(renaming, specialistCtx(), trustedAt(process.cwd()))).toThrow(/team_unlisted/);
+    expect(() => buildAllTeamAgentPiTools(renaming, specialistCtx(), trustedAt(process.cwd()))).toThrow(/TEAM_AGENT_ENTRIES/);
+    expect(() => buildAllTeamAgentPiTools(pi, specialistCtx(), trustedAt(process.cwd()))).not.toThrow();
   });
 
   it('hands back a frozen name list, which every caller shares', () => {
@@ -1067,7 +1131,7 @@ describe('team_read_scratchpad exposes currentFingerprint with the verification 
     scratchpad.seedAppendOnly('verification');
     scratchpad.appendTo('verification', 'npx vitest run: pass (tree 0123456789abcdef)');
     scratchpad.set('contract', 'body', 'Lead');
-    const tools = buildTeamAgentPiTools(pi, specialistCtx({ agentName: 'Reviewer', scratchpad }), repo) as unknown as PiTool[];
+    const tools = buildTeamAgentPiTools(pi, specialistCtx({ agentName: 'Reviewer', scratchpad }), trustedAt(repo)) as unknown as PiTool[];
     return { repo, scratchpad, tool: tools.find((t) => t.name === 'team_read_scratchpad')! };
   }
 

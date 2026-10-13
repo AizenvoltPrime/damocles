@@ -50,7 +50,7 @@ function write(root: string, relativePath: string, content: string | Buffer): st
   return file;
 }
 
-test('a regex with Match Case groups its matches by file, and a click opens the file at the match with it selected', async ({ home, launch }) => {
+test('a regex with Match Case groups its matches by file, and a click opens the file at the match with it selected', async ({ foreground: _foreground, home, launch }) => {
   write(home.project, 'src/auth.ts', 'const Token = 1;\nconst token = 2;\nexport function makeToken42() {}\n');
   write(home.project, 'src/util/strings.ts', '// Token here\n');
   write(home.project, 'README.md', 'token only in lower case\n');
@@ -91,7 +91,7 @@ test('a regex with Match Case groups its matches by file, and a click opens the 
   await expect(shell.getByTestId('search-tree').locator('[role="treeitem"][tabindex="0"]')).toHaveCount(1);
 });
 
-test('include and exclude globs limit the results, a glob leaving the project is refused, and a pattern starting with "-" is text', async ({ home, launch }) => {
+test('include and exclude globs limit the results, a glob leaving the project is refused, and a pattern starting with "-" is text', async ({ foreground: _foreground, home, launch }) => {
   write(home.project, 'src/a.ts', 'needle\n');
   write(home.project, 'src/a.test.ts', 'needle\n');
   write(home.project, 'lib/b.ts', 'needle\nrun grep -e pattern\n');
@@ -123,7 +123,7 @@ test('include and exclude globs limit the results, a glob leaving the project is
   await expect(matchRows(shell, 'lib/b.ts').getByTestId('search-row-match')).toHaveText('-e');
 });
 
-test('node_modules is skipped until the exclude toggle is off, and a symlink to a folder outside the project yields nothing', async ({ home, launch }) => {
+test('node_modules is skipped until the exclude toggle is off, and a symlink to a folder outside the project yields nothing', async ({ foreground: _foreground, home, launch }) => {
   write(home.project, 'src/a.ts', 'needle\n');
   write(home.project, 'node_modules/pkg/index.js', 'needle\n');
   const outside = path.join(path.dirname(home.project), 'outside');
@@ -146,7 +146,7 @@ test('node_modules is skipped until the exclude toggle is off, and a symlink to 
   await expect(resultFiles(shell)).toHaveCount(0);
 });
 
-test('a dirty buffer is searched as the buffer, not the disk', async ({ home, launch }) => {
+test('a dirty buffer is searched as the buffer, not the disk', async ({ foreground: _foreground, home, launch }) => {
   write(home.project, 'src/a.ts', 'const disk = 1;\n');
   const { app } = await launch();
   await openProjectChat(app, home.project);
@@ -166,7 +166,7 @@ test('a dirty buffer is searched as the buffer, not the disk', async ({ home, la
   expect(fs.readFileSync(path.join(home.project, 'src', 'a.ts'), 'utf8')).not.toContain('onlyinbuffer');
 });
 
-test('a query reaching 20,000 results stops and says so, and a new query replaces it', async ({ home, launch }) => {
+test('a query reaching 20,000 results stops and says so, and a new query replaces it', async ({ foreground: _foreground, home, launch }) => {
   write(home.project, 'big.txt', 'hit\n'.repeat(20_500));
   write(home.project, 'small.txt', 'other\n');
   const { app } = await launch();
@@ -183,7 +183,7 @@ test('a query reaching 20,000 results stops and says so, and a new query replace
   await expect(fileRow(shell, 'small.txt')).toBeVisible();
 });
 
-test('Replace All asks first; an open buffer turns dirty and one undo restores it; closed files keep their encoding, BOM and EOL', async ({ home, launch }) => {
+test('Replace All asks first; an open buffer turns dirty and one undo restores it; closed files keep their encoding, BOM and EOL', async ({ foreground: _foreground, home, launch }) => {
   const openFile = write(home.project, 'open.ts', 'let foo = 1;\nlet foo2 = foo;\n');
   const bom = write(home.project, 'bom.txt', Buffer.from('\uFEFFfoo one\r\nfoo two\r\n', 'utf8'));
   const utf16 = write(home.project, 'wide.txt', Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('foo wide\r\n', 'utf16le')]));
@@ -226,7 +226,7 @@ test('Replace All asks first; an open buffer turns dirty and one undo restores i
   await expect(codeEditor(shell).locator('.view-line', { hasText: 'bar' })).toHaveCount(0);
 });
 
-test('a closed file changed after the search, even to the same size, and a Latin-1 file are skipped and reported, never rewritten', async ({ home, launch }) => {
+test('a closed file changed after the search, even to the same size, and a Latin-1 file are skipped and reported, never rewritten', async ({ foreground: _foreground, home, launch }) => {
   const changed = write(home.project, 'changed.txt', 'foo here\n');
   const latin1 = write(home.project, 'latin1.txt', Buffer.from('caf\xe9 foo\n', 'latin1'));
   const fine = write(home.project, 'fine.txt', 'foo fine\n');
@@ -303,7 +303,7 @@ test('a result\'s context menu opens, mentions, copies its paths and dismisses i
   await expect(shell.getByTestId('search-summary')).toHaveText('1 result in 1 file - Open in editor');
 });
 
-test('Search works in an untrusted project, and the query and toggles come back after a relaunch without running', async ({ home, launch }) => {
+test('Search works in an untrusted project, and the query and toggles come back after a relaunch without running', async ({ foreground: _foreground, home, launch }) => {
   const untrusted = path.join(path.dirname(home.project), 'untrusted');
   write(untrusted, 'notes.txt', 'needle in an untrusted folder\n');
   const first = await launch();
@@ -325,7 +325,7 @@ test('Search works in an untrusted project, and the query and toggles come back 
   await expect(resultFiles(again)).toHaveCount(0);
 });
 
-test('the Replace row comes back after a relaunch with the text it held, and a closed row keeps none', async ({ home, launch }) => {
+test('the Replace row comes back after a relaunch with the text it held, and a closed row keeps none', async ({ foreground: _foreground, home, launch }) => {
   write(home.project, 'a.ts', 'const foo = 1;\n');
   const first = await launch();
   await openProjectChat(first.app, home.project);
@@ -365,7 +365,7 @@ async function replaceAllConfirmed(app: ElectronApplication, shell: Page): Promi
   await overlay.getByRole('alertdialog').getByRole('button', { name: 'Replace', exact: true }).click();
 }
 
-test('Preserve Case replaces each match in its own case, in a closed file and in an open buffer as one undo step', async ({ home, launch }) => {
+test('Preserve Case replaces each match in its own case, in a closed file and in an open buffer as one undo step', async ({ foreground: _foreground, home, launch }) => {
   const closed = write(home.project, 'closed.ts', 'foo Foo FOO\n');
   const open = write(home.project, 'open.ts', 'Foo here\n');
   const { app } = await launch();
@@ -390,7 +390,7 @@ test('Preserve Case replaces each match in its own case, in a closed file and in
   await editorShows(shell, 'Foo here');
 });
 
-test('Search only in Open Editors searches the open buffers, dirty or clean, and untitled tabs; an untitled row offers no path action', async ({ home, launch }) => {
+test('Search only in Open Editors searches the open buffers, dirty or clean, and untitled tabs; an untitled row offers no path action', async ({ foreground: _foreground, home, launch }) => {
   write(home.project, 'open.ts', 'const a = 1;\n');
   write(home.project, 'closed.ts', 'needle on disk\n');
   const { app } = await launch(HOOKS);
@@ -432,7 +432,7 @@ test('Search only in Open Editors searches the open buffers, dirty or clean, and
   await expect(fileRow(shell, 'closed.ts')).toBeVisible();
 });
 
-test('Enter adds a query to its history; Up and Down walk it inside the input without moving anything, and the layout keeps it', async ({ home, launch }) => {
+test('Enter adds a query to its history; Up and Down walk it inside the input without moving anything, and the layout keeps it', async ({ foreground: _foreground, home, launch }) => {
   write(home.project, 'a.ts', 'alpha beta\n');
   const { app } = await launch();
   await openProjectChat(app, home.project);
@@ -476,7 +476,7 @@ test('Enter adds a query to its history; Up and Down walk it inside the input wi
   await expect.poll(() => (fs.existsSync(layoutFile) ? fs.readFileSync(layoutFile, 'utf8').replace(/\s/g, '') : '')).toContain('"query":["alpha","beta"]');
 });
 
-test('Ctrl+Enter adds a line to the query, which grows in place with its toggles pinned, and a multi-line regex matches across lines', async ({ home, launch }) => {
+test('Ctrl+Enter adds a line to the query, which grows in place with its toggles pinned, and a multi-line regex matches across lines', async ({ foreground: _foreground, home, launch }) => {
   write(home.project, 'two.ts', 'foo\nbar\n');
   write(home.project, 'one.ts', 'foo bar\n');
   const { app } = await launch();
@@ -499,7 +499,7 @@ test('Ctrl+Enter adds a line to the query, which grows in place with its toggles
   await expect(fileRow(shell, 'two.ts')).toBeVisible();
 });
 
-test('View as Tree groups by folder in the sort order from settings; Collapse All folds files then folders, and Expand All restores them', async ({ home, launch }) => {
+test('View as Tree groups by folder in the sort order from settings; Collapse All folds files then folders, and Expand All restores them', async ({ foreground: _foreground, home, launch }) => {
   writeUserSettings(home, { 'damocles.desktop.search.sortOrder': 'countDescending' });
   write(home.project, 'src/app/one.ts', 'hit\n');
   write(home.project, 'src/two.ts', 'hit\nhit\nhit\n');
@@ -531,7 +531,7 @@ test('View as Tree groups by folder in the sort order from settings; Collapse Al
   await expect(collapse).toHaveAttribute('aria-label', 'Collapse All');
 });
 
-test('Restrict Search to Folder, Exclude Folder, Exclude and Include File Type rewrite the globs and search again', async ({ home, launch }) => {
+test('Restrict Search to Folder, Exclude Folder, Exclude and Include File Type rewrite the globs and search again', async ({ foreground: _foreground, home, launch }) => {
   write(home.project, 'src/a.ts', 'needle\n');
   write(home.project, 'src/b.test.ts', 'needle\n');
   write(home.project, 'lib/c.ts', 'needle\n');
@@ -564,7 +564,7 @@ test('Restrict Search to Folder, Exclude Folder, Exclude and Include File Type r
   await expect(fileRow(shell, 'lib/c.ts')).toHaveCount(0);
 });
 
-test('Replace All in a folder\'s menu replaces that folder\'s files only', async ({ home, launch }) => {
+test('Replace All in a folder\'s menu replaces that folder\'s files only', async ({ foreground: _foreground, home, launch }) => {
   const inside = write(home.project, 'src/a.ts', 'foo\n');
   const deeper = write(home.project, 'src/deep/b.ts', 'foo foo\n');
   const outside = write(home.project, 'lib/c.ts', 'foo\n');
@@ -583,7 +583,7 @@ test('Replace All in a folder\'s menu replaces that folder\'s files only', async
   expect(fs.readFileSync(outside, 'utf8')).toBe('foo\n');
 });
 
-test('Cancel Search stops a run and offers Search again; Escape in the query cancels without clearing it', async ({ home, launch }) => {
+test('Cancel Search stops a run and offers Search again; Escape in the query cancels without clearing it', async ({ foreground: _foreground, home, launch }) => {
   writeUserSettings(home, { 'damocles.desktop.search.searchOnTypeDebouncePeriod': 10_000 });
   write(home.project, 'a.ts', 'needle\n');
   const { app } = await launch();
@@ -607,7 +607,7 @@ test('Cancel Search stops a run and offers Search again; Escape in the query can
   await expect(searchQuery(shell)).toBeFocused();
 });
 
-test('F4 and Shift+F4 walk the matches and show each in the editor, without moving focus into it', async ({ home, launch }) => {
+test('F4 and Shift+F4 walk the matches and show each in the editor, without moving focus into it', async ({ foreground: _foreground, home, launch }) => {
   write(home.project, 'a.ts', 'hit one\nhit two\n');
   write(home.project, 'b.ts', 'hit three\n');
   const { app } = await launch();

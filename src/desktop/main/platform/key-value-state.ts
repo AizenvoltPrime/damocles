@@ -57,10 +57,6 @@ class JsonFileMemento implements Memento {
     this.listeners.get(key)?.fire();
   }
 
-  flush(): Promise<void> {
-    return jsonConfigWritesSettled(this.filePath);
-  }
-
   onDidChange(key: string, listener: () => void): Disposable {
     let emitter = this.listeners.get(key);
     if (!emitter) {
@@ -83,15 +79,15 @@ export interface DesktopKeyValueState extends KeyValueState {
 // On desktop the app window is the workspace, so both mementos live under userData/state.
 export function createDesktopKeyValueState(userDataDir: string, log: (line: string) => void): DesktopKeyValueState {
   const dir = path.join(userDataDir, 'state');
+  const files = [path.join(dir, 'global.json'), path.join(dir, 'workspace.json')] as const;
   const mementos = {
-    global: new JsonFileMemento(path.join(dir, 'global.json'), log),
-    workspace: new JsonFileMemento(path.join(dir, 'workspace.json'), log),
+    global: new JsonFileMemento(files[0], log),
+    workspace: new JsonFileMemento(files[1], log),
   };
   return {
     ...mementos,
     onDidChange: (scope, key, listener) => mementos[scope].onDidChange(key, listener),
-    flush: async () => {
-      await Promise.all([mementos.global.flush(), mementos.workspace.flush()]);
-    },
+    // One wait over both files: each round re-lists both queues, so a write to either queued meanwhile is included.
+    flush: () => jsonConfigWritesSettled(() => files),
   };
 }

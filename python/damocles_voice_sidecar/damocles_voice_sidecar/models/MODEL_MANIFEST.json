@@ -99,30 +99,48 @@
       "gated": false
     }
   },
-  "wake_models_bundled": [
-    {
-      "id": "hey_jarvis",
-      "filename": "hey_jarvis.onnx",
-      "url": "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/hey_jarvis_v0.1.onnx",
-      "sha256": "94a13cfe60075b132f6a472e7e462e8123ee70861bc3fb58434a73712ee0d2cb",
-      "bytes": 1271370,
-      "license": "Apache-2.0"
+  "wake_model": {
+    "id": "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01",
+    "description": "sherpa-onnx streaming zipformer keyword spotter trained on GigaSpeech XL; detects any typed English phrase (Apache-2.0).",
+    "license": "Apache-2.0",
+    "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
+    "source": "https://github.com/k2-fsa/sherpa-onnx/releases/tag/kws-models",
+    "archive": {
+      "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2",
+      "sha256": "f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a",
+      "bytes": 17626723
     },
-    {
-      "id": "melspectrogram",
-      "filename": "melspectrogram.onnx",
-      "url": "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/melspectrogram.onnx",
-      "sha256": "ba2b0e0f8b7b875369a2c89cb13360ff53bac436f2895cced9f479fa65eb176f",
-      "bytes": 1087958,
-      "license": "Apache-2.0"
-    },
-    {
-      "id": "embedding_model",
-      "filename": "embedding_model.onnx",
-      "url": "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/embedding_model.onnx",
-      "sha256": "70d164290c1d095d1d4ee149bc5e00543250a7316b59f31d056cff7bd3075c1f",
-      "bytes": 1326578,
-      "license": "Apache-2.0"
-    }
-  ]
+    "files": [
+      {
+        "filename": "encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+        "archive_path": "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+        "sha256": "1e721676515bcd42a186979733981213c66c80db680e1cc582dfedf3be76e678",
+        "bytes": 4807159
+      },
+      {
+        "filename": "decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+        "archive_path": "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+        "sha256": "e40ff43297abe815e8898494c17e71bba2152d9d40fa3eb803f75d0f7533329a",
+        "bytes": 277985
+      },
+      {
+        "filename": "joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+        "archive_path": "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+        "sha256": "eae9da0c7e1e6c6a3f4cc42d167899c388f6c6701b94cb96320e4f55df79624c",
+        "bytes": 163380
+      },
+      {
+        "filename": "tokens.txt",
+        "archive_path": "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/tokens.txt",
+        "sha256": "fd2ded4050a55d2b1578870ba8697d02371980217806b7558bd0a5cc60f3ba53",
+        "bytes": 5006
+      },
+      {
+        "filename": "bpe.model",
+        "archive_path": "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/bpe.model",
+        "sha256": "c8a2a0129c4ab8e463164c142f82d25649661b122c8cd0b7aab5c9e80b90ad24",
+        "bytes": 244837
+      }
+    ]
+  }
 }

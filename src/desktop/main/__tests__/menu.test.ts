@@ -14,8 +14,10 @@ vi.mock('electron', () => ({
   },
 }));
 
+import { GIT_COMMAND_IDS } from '../commands';
 import { installApplicationMenu, installedTerminalPassKeys, MENU_IDS, shellShortcutLabels, updateMenuState, type MenuActions, type MenuState } from '../menu';
 import { createDesktopLocalizationService } from '../platform/localization-service';
+import { NO_SCM_MENU_STATE } from '../scm/scm-host';
 
 function flatten(items: readonly MenuItemConstructorOptions[]): MenuItemConstructorOptions[] {
   return items.flatMap((item) => [item, ...(Array.isArray(item.submenu) ? flatten(item.submenu) : [])]);
@@ -23,11 +25,11 @@ function flatten(items: readonly MenuItemConstructorOptions[]): MenuItemConstruc
 
 const calls: string[] = [];
 const actions = new Proxy({} as MenuActions, {
-  get: (_target, name: string) => (...args: unknown[]) => calls.push([name, ...args].join(':')),
+  get: (_target, name: string) => (...args: unknown[]) => calls.push([name, ...args.map((arg) => (typeof arg === 'object' ? JSON.stringify(arg) : arg))].join(':')),
 });
 
-const CHAT: MenuState = { chat: true, editor: false, browser: true, page: false, focus: 'chat', updateCheck: true, project: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false } };
-const NONE: MenuState = { chat: false, editor: false, browser: false, page: false, focus: undefined, updateCheck: false, project: false, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false } };
+const CHAT: MenuState = { chat: true, editor: false, browser: true, page: false, focus: 'chat', updateCheck: true, project: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE };
+const NONE: MenuState = { chat: false, editor: false, browser: false, page: false, focus: undefined, updateCheck: false, project: false, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE };
 const EDITOR: MenuState = { ...CHAT, editor: true, focus: 'editor' };
 
 function build(platform: NodeJS.Platform, state: MenuState, language: 'en' | 'el' = 'en'): MenuItemConstructorOptions[] {
@@ -227,6 +229,63 @@ describe('application menu', () => {
     const none = build('win32', { ...CHAT, terminal: undefined });
     for (const id of [MENU_IDS.renameTerminal, MENU_IDS.changeTerminalIcon, MENU_IDS.changeTerminalColor, MENU_IDS.focusNextTerminal, MENU_IDS.killAllTerminals]) expect(byId(none, id).enabled, id).toBe(false);
     expect(byId(none, MENU_IDS.selectDefaultTerminalProfile).enabled).toBe(true);
+  });
+
+  it('lists every git command once in View › Source Control, grouped by separators, enabled where the palette lists it', () => {
+    const OPEN: MenuState = { ...CHAT, scm: { ...NO_SCM_MENU_STATE, available: true, openRepositoryCount: 1 } };
+    build('win32', OPEN);
+    const view = electron.template.find((menu) => menu.id === 'damocles.menu.view')!.submenu as MenuItemConstructorOptions[];
+    const submenu = view.find((item) => item.id === 'damocles.menu.sourceControl')!.submenu as MenuItemConstructorOptions[];
+    const ids = submenu.filter((item) => item.type !== 'separator').map((item) => item.id);
+    expect([...ids].sort()).toEqual([...GIT_COMMAND_IDS].sort());
+    const groups = submenu.map((item) => (item.type === 'separator' ? '|' : item.id)).join(' ').split('|').map((group) => group.trim().split(' '));
+    expect(groups.length).toBeGreaterThan(5);
+    expect(groups.every((group) => group.length > 0 && group[0] !== '')).toBe(true);
+    const groupOf = (id: string): number => groups.findIndex((group) => group.includes(id));
+    expect(groupOf(MENU_IDS.gitViewChanges)).not.toBe(groupOf(MENU_IDS.gitOpenChange));
+    expect(groupOf(MENU_IDS.gitCommitAmend)).not.toBe(groupOf(MENU_IDS.gitCommit));
+    expect(groupOf(MENU_IDS.gitShowOutput)).toBe(groups.length - 1);
+
+    const items = new Map(submenu.map((item) => [item.id, item]));
+    expect(items.get(MENU_IDS.gitRefresh)!.enabled).toBe(true);
+    expect(items.get(MENU_IDS.gitCommitNoVerify)!.enabled).toBe(false);
+    expect(items.get(MENU_IDS.gitReopenClosedRepositories)!.enabled).toBe(false);
+    (items.get(MENU_IDS.gitStageAllTracked)!.click as () => void)();
+    (items.get(MENU_IDS.gitViewStagedChanges)!.click as () => void)();
+    expect(calls).toEqual(['scmRun:{"op":"stageAll","scope":"tracked"}', 'scmRun:{"op":"openGroupChanges","group":"index"}']);
+
+    const closed = build('win32', CHAT);
+    expect(byId(closed, MENU_IDS.gitRefresh).enabled).toBe(false);
+    expect(byId(closed, MENU_IDS.gitShowOutput).enabled).toBe(true);
+  });
+
+  it('titles the Source Control commit items by the commit box\'s amend mode, rebuilding the menu when it changes, and leaves the amend items out', () => {
+    const OPEN: MenuState = { ...CHAT, scm: { ...NO_SCM_MENU_STATE, available: true, openRepositoryCount: 1 } };
+    const enabledById = new Map<string, boolean>();
+    electron.menu = { getMenuItemById: (id: string) => ({ set enabled(value: boolean) { enabledById.set(id, value); }, get enabled() { return enabledById.get(id) ?? true; } }) };
+    let items = build('win32', OPEN);
+    expect(byId(items, MENU_IDS.gitCommit).label).toBe('Commit');
+    const template = electron.template;
+
+    updateMenuState({ ...OPEN, focus: 'editor' });
+    expect(electron.template).toBe(template);
+    updateMenuState({ ...OPEN, scm: { ...OPEN.scm, amending: true } });
+    expect(electron.template).not.toBe(template);
+    items = flatten(electron.template);
+    expect(byId(items, MENU_IDS.gitCommit).label).toBe('Commit (Amend)');
+    expect(byId(items, MENU_IDS.gitCommitStagedSigned).label).toBe('Commit Staged (Amend, Signed Off)');
+    expect(byId(items, MENU_IDS.gitCommitEmpty).label).toBe('Commit Empty (Amend)');
+    for (const id of [MENU_IDS.gitCommitAmend, MENU_IDS.gitCommitAllAmend, MENU_IDS.gitCommitStagedAmendNoVerify]) expect(items.some((item) => item.id === id), id).toBe(false);
+    const view = electron.template.find((menu) => menu.id === 'damocles.menu.view')!.submenu as MenuItemConstructorOptions[];
+    const submenu = view.find((item) => item.id === 'damocles.menu.sourceControl')!.submenu as MenuItemConstructorOptions[];
+    expect(submenu.every((item, index) => item.type !== 'separator' || (index > 0 && submenu[index - 1]!.type !== 'separator'))).toBe(true);
+    (byId(items, MENU_IDS.gitCommit).click as (...args: unknown[]) => void)(undefined, undefined, {});
+    expect(calls).toEqual(['scmCommit:{"scope":"auto","amend":false,"signoff":false,"noVerify":false,"empty":false}']);
+
+    updateMenuState(OPEN);
+    items = flatten(electron.template);
+    expect(byId(items, MENU_IDS.gitCommit).label).toBe('Commit');
+    expect(byId(items, MENU_IDS.gitCommitAmend)).toMatchObject({ label: 'Commit (Amend)', enabled: true });
   });
 
   it('routes each item to its action', () => {

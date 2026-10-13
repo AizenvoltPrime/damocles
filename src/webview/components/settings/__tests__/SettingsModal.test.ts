@@ -980,3 +980,51 @@ describe('Remove all voice files', () => {
     expect(posted).toContainEqual({ type: 'voiceRemoveAllFiles' });
   });
 });
+
+describe('wake phrase row', () => {
+  async function openVoice(mode: 'push-to-talk' | 'wake-word'): Promise<void> {
+    const store = useSettingsStore();
+    store.setVoiceConfig({ ...store.voiceConfig, mode, wakeWord: 'hey jarvis' }, false);
+    await open(NO_HOST_SETTINGS, 'voice');
+  }
+
+  function edit(input: HTMLInputElement, text: string): void {
+    input.value = text;
+    input.dispatchEvent(new Event('input'));
+  }
+
+  it('shows the saved phrase only in wake word mode', async () => {
+    await openVoice('push-to-talk');
+    expect(row('damocles.voice.wakeWord')).toBeNull();
+    while (mounted.length) mounted.pop()!.unmount();
+    await openVoice('wake-word');
+    const input = row('damocles.voice.wakeWord')!.querySelector('input')!;
+    expect(input.value).toBe('hey jarvis');
+    expect(input.getAttribute('aria-label')).toBe(t('jarvisSettings.wakePhraseLabel'));
+  });
+
+  it('saves the normalized phrase on blur, not per keystroke', async () => {
+    await openVoice('wake-word');
+    const input = row('damocles.voice.wakeWord')!.querySelector('input')!;
+    edit(input, '  OK_House   Robot ');
+    await nextTick();
+    expect(posted.filter((message) => message.type === 'setVoiceWakeWord')).toHaveLength(0);
+    input.dispatchEvent(new Event('blur'));
+    await nextTick();
+    expect(posted).toContainEqual({ type: 'setVoiceWakeWord', wakeWord: 'ok house robot' });
+    expect(useSettingsStore().voiceConfig.wakeWord).toBe('ok house robot');
+    expect(input.value).toBe('ok house robot');
+  });
+
+  it.each(['hey-jarvis', 'jarvis2', 'one two three four five', 'C:\\models\\custom.onnx', '   '])('refuses %j on Enter with an inline error', async (text) => {
+    await openVoice('wake-word');
+    const input = row('damocles.voice.wakeWord')!.querySelector('input')!;
+    edit(input, text);
+    press('Enter', {}, input);
+    await nextTick();
+    const error = row('damocles.voice.wakeWord')!.querySelector('[data-testid="setting-invalid"]')!;
+    expect(error.textContent!.trim()).toBe(t('settingsModal.invalid.wakePhrase'));
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect(posted.filter((message) => message.type === 'setVoiceWakeWord')).toHaveLength(0);
+  });
+});

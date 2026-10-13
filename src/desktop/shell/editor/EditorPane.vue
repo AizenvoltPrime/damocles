@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { AtSign, CircleAlert, FileX2, FolderSearch, LoaderCircle, Maximize2, Minimize2, MousePointerClick, X } from 'lucide-vue-next';
+import { AtSign, CircleAlert, FolderSearch, LoaderCircle, Maximize2, Minimize2, MousePointerClick, X } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import type { DamoclesShellApi, FileRef, ShellEditorTab, ShellState } from '../../preload/shell-channels';
 import PaneGrip from '../layout/PaneGrip.vue';
 import { EDITOR_STORE } from './editor-store';
-import { fileSize } from './file-size';
 import EditorTabs from './EditorTabs.vue';
 import Breadcrumbs from './Breadcrumbs.vue';
 import ConflictBar from './ConflictBar.vue';
@@ -16,10 +15,12 @@ import MarkdownPreview from './MarkdownPreview.vue';
 import ImagePreview from './ImagePreview.vue';
 import BrowserTab from './BrowserTab.vue';
 import SearchEditorTab from './SearchEditorTab.vue';
+import ChangesTab from './ChangesTab.vue';
+import NotDisplayedNotice from './NotDisplayedNotice.vue';
 
 const props = defineProps<{ api: DamoclesShellApi; state: ShellState }>();
 const emit = defineEmits<{ revealInFiles: [file: FileRef] }>();
-const { t, locale } = useI18n();
+const { t } = useI18n();
 const store = inject(EDITOR_STORE)!;
 
 const root = ref<HTMLElement | null>(null);
@@ -31,14 +32,17 @@ const notDisplayed = computed(() => {
   const content = documentId === undefined ? undefined : store.contents.value.get(documentId);
   return content?.kind === 'notDisplayed' ? content : undefined;
 });
+// A core-originated placeholder (a git side) is no file, so there is nothing to reveal.
+const notDisplayedOnDisk = computed(() => tab.value?.documentId !== undefined && store.state.value?.documents[tab.value.documentId]?.path !== undefined);
 watch(tab, (current) => {
   if (current?.kind === 'notDisplayed' && current.documentId !== undefined) void store.load(current.documentId);
 }, { immediate: true });
 
 const diffTab = computed(() => (tab.value?.diff ? (tab.value as ShellEditorTab & { diff: NonNullable<ShellEditorTab['diff']> }) : undefined));
 const searchEditorTab = computed(() => (tab.value?.searchEditor && tab.value.documentId !== undefined ? (tab.value as ShellEditorTab & { searchEditor: NonNullable<ShellEditorTab['searchEditor']> }) : undefined));
+const changesTab = computed(() => (tab.value?.changes ? (tab.value as ShellEditorTab & { changes: NonNullable<ShellEditorTab['changes']> }) : undefined));
 const browserTab = computed(() => (tab.value?.browser ? (tab.value as ShellEditorTab & { browser: NonNullable<ShellEditorTab['browser']> }) : undefined));
-const canMention = computed(() => tab.value !== null && tab.value.kind !== 'untitled' && tab.value.kind !== 'diff' && tab.value.kind !== 'browser');
+const canMention = computed(() => tab.value !== null && tab.value.kind !== 'untitled' && tab.value.kind !== 'diff' && tab.value.kind !== 'browser' && tab.value.kind !== 'changes');
 const formatting = computed(() => tab.value?.documentId !== undefined && store.formatting.value.has(tab.value.documentId));
 const conflictBusy = ref(false);
 // The file's own name: a Compare tab's title names the comparison, a path names the file on any tab.
@@ -180,7 +184,9 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
     </div>
 
     <template v-else>
+      <!-- A changes tab names its group in its own header and is no file, so it has no breadcrumbs. -->
       <Breadcrumbs
+        v-if="tab.kind !== 'changes'"
         :tab="tab"
         :project-name="projectName"
       >
@@ -263,33 +269,25 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
           :key="tab.id"
           :tab="tab"
         />
+        <ChangesTab
+          v-else-if="changesTab"
+          :key="changesTab.id"
+          :tab="changesTab"
+        />
         <BrowserTab
           v-else-if="browserTab"
           :api="api"
           :tab="browserTab"
         />
-        <div
+        <NotDisplayedNotice
           v-else
           :key="tab.id"
           data-testid="editor-not-displayed"
-          class="pane-empty d-fade-in absolute inset-0 flex flex-col items-center justify-center gap-2.5 p-6 text-center"
+          :reason="notDisplayed?.reason ?? 'binary'"
+          :bytes="notDisplayed?.bytes"
         >
-          <span class="flex size-10 items-center justify-center rounded-xl border border-(--d-border) bg-(--d-panel) text-(--d-faint)">
-            <FileX2
-              aria-hidden="true"
-              class="size-5"
-            />
-          </span>
-          <p class="text-12.5 font-medium text-(--d-text)">
-            {{ t('editor.notDisplayed.title') }}
-          </p>
-          <p class="max-w-80 text-11.5 text-(--d-muted)">
-            {{ t(`editor.notDisplayed.${notDisplayed?.reason ?? 'binary'}`) }}
-            <template v-if="notDisplayed?.bytes !== undefined">
-              {{ fileSize(notDisplayed.bytes, locale) }}
-            </template>
-          </p>
           <Button
+            v-if="notDisplayedOnDisk"
             size="sm"
             variant="outline"
             data-testid="editor-reveal"
@@ -298,7 +296,7 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
           >
             <FolderSearch aria-hidden="true" />{{ t('editor.menu.revealInExplorer') }}
           </Button>
-        </div>
+        </NotDisplayedNotice>
       </div>
     </template>
   </section>

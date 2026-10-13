@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { gitExecutable } from '../../git-executable';
 import { execSafe } from './exec';
 import { checkpointGitAvailability } from './git-availability';
 import { withRepoLock } from './lock';
@@ -316,7 +317,7 @@ async function maintainRepo(
       //      objects/info/alternates, so a repack never copies the user's real repo object database
       //      into our pack. Without it, `-A` would pull the entire borrowed store in.
       // No gc, no prune, no reflog expiry anywhere: preservation of unreachable objects is the point.
-      const result = await execSafe('git', [`--git-dir=${gitDir}`, 'repack', '-A', '-d', '-l']);
+      const result = await execSafe(gitExecutable, [`--git-dir=${gitDir}`, 'repack', '-A', '-d', '-l']);
       if (result.ok) {
         summary.reposRepacked++;
       } else {

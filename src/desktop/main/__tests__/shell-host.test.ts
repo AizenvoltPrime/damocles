@@ -33,6 +33,7 @@ import {
   TERMINAL_CHANNELS,
   isTerminalPasteChord,
 } from '../../preload/terminal-channels';
+import { SCM_CHANNELS } from '../../preload/scm-channels';
 import { PASTE_CHORD_CASES } from './paste-chords';
 import { isPanelSender } from '../views';
 
@@ -236,7 +237,7 @@ describe('ShellHost', () => {
 
   it('accepts only the sender\'s own in-range layout fields and only the shell parts as focused part', () => {
     host();
-    const { sidebarWidth, sections, search } = DEFAULT_SHELL_LAYOUT;
+    const { sidebarWidth, sections, search, scm } = DEFAULT_SHELL_LAYOUT;
     ipc.listeners.get(SHELL_CHANNELS.sidebarLayout)!(own, { sidebarWidth: 100, sections, search });
     // A whole layout reaches main as the sidebar's fields alone, so a stale copy of the grid or the visibility never lands.
     ipc.listeners.get(SHELL_CHANNELS.sidebarLayout)!(own, { ...DEFAULT_SHELL_LAYOUT, sidebarVisible: false });
@@ -246,7 +247,7 @@ describe('ShellHost', () => {
     ipc.listeners.get(SHELL_CHANNELS.focusedPart)!(own, 'sidebar');
     ipc.listeners.get(SHELL_CHANNELS.focusedPart)!(own, 'editor');
     ipc.listeners.get(SHELL_CHANNELS.focusedPart)!(own, null);
-    expect(vi.mocked(actions.setSidebarLayout).mock.calls).toEqual([[{ sidebarWidth, sections, search }]]);
+    expect(vi.mocked(actions.setSidebarLayout).mock.calls).toEqual([[{ sidebarWidth, sections, search, scm }]]);
     expect(vi.mocked(actions.setGridSizes).mock.calls).toEqual([[{ sideWidth: 640, bottomHeight: 300 }]]);
     expect((actions.setFocusedPart as ReturnType<typeof vi.fn>).mock.calls).toEqual([['sidebar'], ['editor'], [null]]);
     expect(lines).toContain('[shell] ignoring a malformed sidebar layout');
@@ -982,5 +983,41 @@ describe('terminal channels', () => {
     shell.focusTerminal('term-1');
     expect(contents.send.mock.calls.map(([channel]) => channel)).toEqual([SHELL_CHANNELS.state, TERMINAL_CHANNELS.focus]);
     expect(contents.send).toHaveBeenLastCalledWith(TERMINAL_CHANNELS.focus, { id: 'term-1' });
+  });
+});
+
+describe('ShellHost source control channels', () => {
+  const contents = Object.assign(new EventEmitter(), {
+    id: 1,
+    mainFrame: { url: SHELL_PAGE_URL, parent: null },
+    loadURL: vi.fn(async () => undefined),
+    getZoomFactor: () => 1,
+    isFocused: () => false,
+    isDestroyed: () => false,
+    isCrashed: () => false,
+    send: vi.fn(),
+  });
+  const window = { webContents: contents, isDestroyed: () => false } as never;
+  const own = { sender: contents, senderFrame: contents.mainFrame };
+  const foreigners = [
+    { sender: { id: 2 }, senderFrame: { url: SHELL_PAGE_URL, parent: null } },
+    { sender: contents, senderFrame: { url: SHELL_PAGE_URL, parent: {} } },
+    { sender: contents, senderFrame: { url: 'app://damocles/webview/index.html', parent: null } },
+  ];
+
+  it('refuses every damocles:scm:* invoke from a sender other than the window page\'s main frame, before main sees it', async () => {
+    ipc.handlers.clear();
+    ipc.listeners.clear();
+    contents.removeAllListeners();
+    const scm = Object.fromEntries(['state', 'select', 'run', 'commit', 'generateMessage', 'fileDiff', 'copy', 'commitInput', 'amend'].map((name) => [name, vi.fn(async () => ({ ok: true }))]));
+    new ShellHost(window, { scm } as unknown as ShellActions, () => undefined, () => undefined);
+    const invokes = Object.values(SCM_CHANNELS).filter((channel) => ipc.handlers.has(channel));
+    expect(invokes).toHaveLength(9);
+    for (const channel of invokes) {
+      for (const sender of foreigners) await expect(Promise.resolve(ipc.handlers.get(channel)!(sender, { repoId: 'repo-1' })), channel).rejects.toThrow('Rejected');
+    }
+    for (const action of Object.values(scm)) expect(action).not.toHaveBeenCalled();
+    await ipc.handlers.get(SCM_CHANNELS.commitInput)!(own, { repoId: 'repo-1' });
+    expect(scm['commitInput']).toHaveBeenCalledWith({ repoId: 'repo-1' });
   });
 });

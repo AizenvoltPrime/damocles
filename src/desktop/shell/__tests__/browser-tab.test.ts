@@ -7,6 +7,7 @@ import BrowserTab from '../editor/BrowserTab.vue';
 import Breadcrumbs from '../editor/Breadcrumbs.vue';
 import EditorTabs from '../editor/EditorTabs.vue';
 import { createEditorStore, EDITOR_STORE, type EditorStore } from '../editor/editor-store';
+import { createScmStore, SCM_STORE } from '../scm/scm-store';
 import { isSendableAddress, pageHost, pageTitle } from '../editor/browser-page';
 import { AS_TYPED, HTTP_AT_ONCE, UPGRADED } from '../../../shared/__tests__/typed-address-cases';
 import { shellI18n } from '../i18n';
@@ -23,7 +24,7 @@ const mounted: Array<VueWrapper> = [];
 
 function mountTab(tab: BrowserEditorTab, api: DamoclesShellApi = fakeShellApi()): { wrapper: VueWrapper; api: DamoclesShellApi; store: EditorStore } {
   const store = createEditorStore(api);
-  const wrapper = mount(BrowserTab, { props: { api, tab }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store } }, attachTo: document.body });
+  const wrapper = mount(BrowserTab, { props: { api, tab }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: createScmStore(api.scm) } }, attachTo: document.body });
   mounted.push(wrapper);
   return { wrapper, api, store };
 }
@@ -246,7 +247,7 @@ describe('page tabs in the strip', () => {
     const api = fakeShellApi([], { getEditorState: vi.fn(async () => ({ ...EDITOR_STATE, tabs, activeTabId: tabs[0]!.id })) });
     const store = createEditorStore(api);
     await store.start();
-    const wrapper = mount(EditorTabs, { props: { api, closeShortcut: 'Ctrl+W' }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store } }, attachTo: document.body });
+    const wrapper = mount(EditorTabs, { props: { api, closeShortcut: 'Ctrl+W' }, global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: createScmStore(api.scm) } }, attachTo: document.body });
     mounted.push(wrapper);
     await flushPromises();
     return { wrapper, api };

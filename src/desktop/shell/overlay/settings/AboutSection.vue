@@ -4,9 +4,11 @@ import { useI18n } from 'vue-i18n';
 import { ArrowDownToLine, Check, CircleAlert, Clock, Copy, ExternalLink, LoaderCircle, PowerOff, RefreshCw, RotateCw, ScrollText } from 'lucide-vue-next';
 import SettingsRow from '@/components/settings/SettingsRow.vue';
 import SettingButton from '@/components/settings/controls/SettingButton.vue';
+import SettingSwitch from '@/components/settings/controls/SettingSwitch.vue';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { formatClock, formatDateTime } from '@/utils/clock';
+import { UPDATE_CHECK_AUTOMATICALLY_SETTING } from '../../../main/desktop-configuration';
 import type { PopupAnswer } from '../../../preload/overlay-channels';
 import { canCheck, type UpdateSnapshot, type UpdateState, type VersionInfo } from '../../../preload/updates';
 import { answerOf, ran } from '../popup-answer';
@@ -41,7 +43,8 @@ const STATUS_ICONS: Readonly<Record<UpdateState['kind'], Component>> = {
 };
 
 const { t, locale } = useI18n();
-const { api } = useDesktopPrefs();
+const prefs = useDesktopPrefs();
+const { api } = prefs;
 
 const info = shallowRef<VersionInfo | null>(null);
 const infoFailed = ref(false);
@@ -306,6 +309,13 @@ async function runAction(labelKey: string, action: () => Promise<PopupAnswer<voi
         </p>
       </div>
     </template>
+  </SettingsRow>
+  <SettingsRow :id="UPDATE_CHECK_AUTOMATICALLY_SETTING">
+    <SettingSwitch
+      :model-value="prefs.values.value[UPDATE_CHECK_AUTOMATICALLY_SETTING] !== false"
+      :label="t('settingsHost.rows.updateCheckAutomatically.label')"
+      @update:model-value="(value) => prefs.set(UPDATE_CHECK_AUTOMATICALLY_SETTING, value)"
+    />
   </SettingsRow>
   <SettingsRow
     id="about-whats-new"

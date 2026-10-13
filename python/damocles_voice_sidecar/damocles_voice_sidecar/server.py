@@ -382,6 +382,7 @@ async def run_server(cfg: SidecarConfig, engines: EngineSet) -> None:
             config=PipelineConfig(
                 end_of_turn_silence_ms=cfg.end_of_turn_silence_ms,
                 max_utterance_ms=cfg.max_utterance_ms,
+                wake_phrase=cfg.wake_word,
             ),
             emit=emit_event,
         )

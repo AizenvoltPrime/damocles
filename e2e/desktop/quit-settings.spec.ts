@@ -72,8 +72,10 @@ test('a placement the window reports as it closes leaves the saved layout as it 
       window.setBounds({ x: 80, y: 80, width: 1000, height: 700 });
       window.emit('resized');
     });
-    // What the window took: macOS keeps it inside the work area, and the app's minimum size applies everywhere.
-    const { x, y, width, height } = window.getBounds();
+    // What the window took, as main saves it (position and content size): macOS keeps it inside the work area, and the
+    // app's minimum size applies everywhere.
+    const [x, y] = window.getPosition();
+    const [width, height] = window.getContentSize();
     return { x, y, width, height };
   });
   await expect.poll(savedWindow).toMatchObject(placed);

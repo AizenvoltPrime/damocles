@@ -17,7 +17,7 @@ async function openPalette(app: ElectronApplication): Promise<Page> {
   return overlay;
 }
 
-test('Ctrl+Shift+P lists commands with their categories and shortcuts, and "context" + Enter opens Context usage in the chat', async ({ launch }) => {
+test('Ctrl+Shift+P lists commands with their categories and shortcuts, and "context" + Enter opens Context usage in the chat', async ({ foreground: _foreground, launch }) => {
   const { app } = await launch();
   await readyShell(app);
   const chat = await activeChat(app);
@@ -49,7 +49,7 @@ test('Ctrl+Shift+P lists commands with their categories and shortcuts, and "cont
   await again.getByTestId('quick-pick-input').press('Escape');
 });
 
-test('">" in Quick Open switches to the palette and deleting it switches back', async ({ launch }) => {
+test('">" in Quick Open switches to the palette and deleting it switches back', async ({ foreground: _foreground, launch }) => {
   const { app } = await launch();
   await readyShell(app);
   await activeChat(app);
@@ -66,7 +66,7 @@ test('">" in Quick Open switches to the palette and deleting it switches back', 
   await input.press('Escape');
 });
 
-test('a command whose precondition fails is dimmed and does not run', async ({ launch }) => {
+test('a command whose precondition fails is dimmed and does not run', async ({ foreground: _foreground, launch }) => {
   const { app } = await launch();
   await readyShell(app);
   await activeChat(app);
@@ -88,7 +88,7 @@ test('a command whose precondition fails is dimmed and does not run', async ({ l
   await expect(quickPick(overlay)).toHaveCount(0);
 });
 
-test('in Greek, typing a command\'s English title finds it', async ({ launch }) => {
+test('in Greek, typing a command\'s English title finds it', async ({ foreground: _foreground, launch }) => {
   const { app } = await launch({ args: ['--lang=el-GR'] });
   await readyShell(app);
   await activeChat(app);

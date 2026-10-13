@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import { exec } from "../../../pi-session/checkpoints/exec";
+import { gitExecutable } from "../../../git-executable";
 import { localMcpConfigPath } from "./mcp-config-import";
 import { LOCAL_MCP_RELATIVE_PATH } from "../../../../shared/types/mcp";
 import { log } from "../../../logger";
@@ -46,7 +47,7 @@ export async function isLocalMcpFileUnignored(workspaceRoot: string): Promise<bo
     // `--untracked-files` is passed explicitly because git refuses to combine `--ignored` with the
     // `status.showUntrackedFiles=no` a user may have set, and would exit 128 instead of answering.
     ({ stdout } = await exec(
-      "git",
+      gitExecutable,
       ["-c", "core.fsmonitor=false", "status", "--porcelain", "--ignored=matching", "--untracked-files=all", "--", LOCAL_MCP_RELATIVE_PATH],
       undefined,
       workspaceRoot,

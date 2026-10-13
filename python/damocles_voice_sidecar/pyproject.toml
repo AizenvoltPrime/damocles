@@ -20,7 +20,8 @@ dependencies = [
 ml = [
   "torch",
   "nemo-toolkit[asr]>=2.3.0",
-  "openwakeword>=0.6.0",
+  "sherpa-onnx>=1.13.8",
+  "sentencepiece>=0.2.0",
   "silero-vad>=5.1",
   "transformers>=4.51.0",
   "sounddevice>=0.4.6",
@@ -38,7 +39,12 @@ where = ["."]
 include = ["damocles_voice_sidecar*"]
 
 [tool.setuptools.package-data]
-damocles_voice_sidecar = ["models/wake/*.onnx", "models/MODEL_MANIFEST.json"]
+damocles_voice_sidecar = [
+  "models/wake/*.onnx",
+  "models/wake/tokens.txt",
+  "models/wake/bpe.model",
+  "models/MODEL_MANIFEST.json",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

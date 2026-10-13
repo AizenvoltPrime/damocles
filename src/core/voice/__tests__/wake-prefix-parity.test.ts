@@ -1,74 +1,118 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { WORD_CHAR_RANGES } from "../../../shared/generated/word-chars";
+import {
+  DEFAULT_WAKE_PHRASE,
+  normalizeWakePhrase,
+  parseWakePhrase,
+  stripWakePrefix,
+  wakePrefixPattern,
+  WAKE_PHRASE_SETTING_PATTERN,
+  WHITESPACE,
+  WORD_CHAR_CLASS,
+} from "../../../shared/wake-phrase";
 
 const REPO_ROOT = join(__dirname, "..", "..", "..", "..");
-const TS_PATH = join(
-  REPO_ROOT,
-  "src",
-  "core",
-  "chat-panel",
-  "message-router",
-  "handlers",
-  "voice-stream-handlers.ts",
-);
-const PY_PATH = join(
-  REPO_ROOT,
-  "python",
-  "damocles_voice_sidecar",
-  "damocles_voice_sidecar",
-  "pipeline.py",
-);
+const SIDECAR_ROOT = join(REPO_ROOT, "python", "damocles_voice_sidecar");
 
-// Capture the literal between the slashes in `const WAKE_PREFIX_RE = /…/i;`
-const TS_PATTERN = /const\s+WAKE_PREFIX_RE\s*=\s*\/(.+?)\/([gimsuy]*)\s*;/;
-// Capture the raw string literal in `WAKE_PREFIX_RE = re.compile(r"…", re.IGNORECASE)`
-const PY_PATTERN =
-  /WAKE_PREFIX_RE\s*=\s*re\.compile\(\s*r"([^"]+)"\s*,\s*([A-Za-z._]+)\s*\)/;
+type WakePrefixFixture = {
+  cases: {
+    setting: string;
+    phrase: string;
+    strips: { text: string; expected: string }[];
+  }[];
+  invalid: string[];
+};
 
-function extractTs(): { source: string; flags: string } {
-  const text = readFileSync(TS_PATH, "utf8");
-  const match = TS_PATTERN.exec(text);
-  if (match === null) {
-    throw new Error(`Could not locate WAKE_PREFIX_RE in ${TS_PATH}`);
-  }
-  return { source: match[1]!, flags: match[2]! };
+type WakePrefixCorpus = { cases: Record<string, [text: string, expected: string][]> };
+
+function readJson<T>(...segments: string[]): T {
+  return JSON.parse(readFileSync(join(SIDECAR_ROOT, ...segments), "utf8")) as T;
 }
 
-function extractPy(): { source: string; flags: string } {
-  const text = readFileSync(PY_PATH, "utf8");
-  const match = PY_PATTERN.exec(text);
-  if (match === null) {
-    throw new Error(`Could not locate WAKE_PREFIX_RE in ${PY_PATH}`);
-  }
-  return { source: match[1]!, flags: match[2]! };
+// The sidecar's tests read the same files, so a rule changed on one side alone fails one of the two suites.
+const fixture = readJson<WakePrefixFixture>("tests", "fixtures", "wake_prefix_cases.json");
+const corpus = readJson<WakePrefixCorpus>("tests", "fixtures", "wake_prefix_corpus.json");
+
+type WakeWordSchema = { default: string; pattern: string; scope: string };
+
+function wakeWordSchema(): WakeWordSchema {
+  const manifest = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")) as {
+    contributes: { configuration: { properties: Record<string, WakeWordSchema> } };
+  };
+  return manifest.contributes.configuration.properties["damocles.voice.wakeWord"]!;
 }
 
-describe("WAKE_PREFIX_RE parity", () => {
-  // The TS handler and the Python pipeline strip the wake phrase from
-  // the transcript independently — two-layer defense for FR-11. If the
-  // two regex literals drift the defense becomes asymmetric: a phrase
-  // accepted by one and not the other would either leak the wake word
-  // through to the model OR get double-stripped on benign text.
-  it("source patterns are byte-identical", () => {
-    const ts = extractTs();
-    const py = extractPy();
-    expect(py.source).toBe(ts.source);
+describe("wake phrase rules shared with the sidecar", () => {
+  describe.each(fixture.cases)("setting $setting", ({ setting, phrase, strips }) => {
+    it("normalizes to the listed phrase", () => {
+      expect(normalizeWakePhrase(setting)).toBe(phrase);
+      expect(parseWakePhrase(setting)).toEqual(phrase.split(" "));
+    });
+
+    it.each(strips)("strips $text", ({ text, expected }) => {
+      expect(stripWakePrefix(text, parseWakePhrase(setting)!)).toBe(expected);
+    });
   });
 
-  it("both sides apply case-insensitive matching", () => {
-    const ts = extractTs();
-    const py = extractPy();
-    expect(ts.flags).toContain("i");
-    expect(py.flags).toContain("IGNORECASE");
+  it.each(fixture.invalid)("rejects %j", (setting) => {
+    expect(parseWakePhrase(setting)).toBeNull();
   });
 
-  it("compiled TS regex strips canonical inputs", () => {
-    const ts = extractTs();
-    const re = new RegExp(ts.source, ts.flags);
-    expect("Jarvis, build it".replace(re, "")).toBe("build it");
-    expect("hey jarvis run tests".replace(re, "")).toBe("run tests");
-    expect("HEY JARVIS. ship".replace(re, "")).toBe("ship");
-    expect("nothing to strip".replace(re, "")).toBe("nothing to strip");
+  it.each(Object.entries(corpus.cases))("strips the generated corpus for %j as the sidecar does", (phrase, cases) => {
+    const words = phrase.split(" ");
+    const mismatches = cases
+      .map(([text, expected]) => ({ text, expected, actual: stripWakePrefix(text, words) }))
+      .filter(({ expected, actual }) => actual !== expected);
+    expect(cases.length).toBeGreaterThan(1000);
+    expect(mismatches).toEqual([]);
+  });
+});
+
+describe("wake prefix pattern", () => {
+  it("is built from explicit classes with the u flag only", () => {
+    // The sidecar's test expects the same text with its own spelling of the word-character class.
+    const re = wakePrefixPattern(["hey", "jarvis"]);
+    expect(re.flags).toBe("u");
+    expect(re.source).toBe(
+      String.raw`^[\t-\r \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*` +
+        String.raw`([Hh][Ee][Yy][\t-\r \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+)?` +
+        String.raw`[Jj][Aa][Rr][Vv][Ii][Ss]` +
+        `(?!${WORD_CHAR_CLASS})` +
+        String.raw`[,.\t-\r \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*`,
+    );
+  });
+
+  it("treats exactly Unicode White_Space as whitespace", () => {
+    const re = new RegExp(`^[${WHITESPACE}]$`, "u");
+    const members: number[] = [];
+    for (let code = 0; code <= 0x10ffff; code++) if (re.test(String.fromCodePoint(code))) members.push(code);
+    expect(members).toEqual([
+      0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20, 0x85, 0xa0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006,
+      0x2007, 0x2008, 0x2009, 0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000,
+    ]);
+  });
+
+  it("uses the sidecar's word-character table", () => {
+    const python = readFileSync(join(SIDECAR_ROOT, "damocles_voice_sidecar", "word_chars.py"), "utf8");
+    const pythonRanges = [...python.matchAll(/^ {4}"([^"]*)"/gm)].map((match) => match[1]).join("");
+    expect(pythonRanges).toBe(WORD_CHAR_RANGES);
+  });
+});
+
+describe("damocles.voice.wakeWord schema", () => {
+  const schema = wakeWordSchema();
+
+  it("defaults to the default phrase and stays machine-scoped", () => {
+    expect(schema.default).toBe(DEFAULT_WAKE_PHRASE);
+    expect(schema.scope).toBe("machine");
+  });
+
+  it("declares the pattern the helper validates", () => {
+    expect(schema.pattern).toBe(WAKE_PHRASE_SETTING_PATTERN);
+    const re = new RegExp(schema.pattern);
+    for (const { setting } of fixture.cases) expect(re.test(setting)).toBe(true);
+    for (const setting of fixture.invalid) expect(re.test(setting)).toBe(false);
   });
 });

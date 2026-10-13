@@ -12,7 +12,7 @@ import {
   type TerminalProfileProblemReason,
 } from '../../preload/terminal-channels';
 import { followsLocalLinksOnly } from '../documents/confine';
-import { executablePathForm, searchPathEntries } from './executable-path';
+import { executablePathForm, searchPathEntries } from '../../../core/executable-path';
 import type { TerminalProfile } from './profiles';
 import { sanitizeTitle } from './shell-integration';
 import { isTerminalColor, isTerminalCustomIcon, parseTerminalName } from './terminal-service';

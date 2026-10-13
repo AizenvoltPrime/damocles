@@ -55,6 +55,7 @@ let opened: string[];
 let logShown: number;
 let stored: Map<string, unknown>;
 let resume: (() => void) | undefined;
+let automatic: boolean;
 let services: UpdateService[];
 
 function deps(overrides: Partial<UpdaterDeps> = {}): UpdaterDeps {
@@ -82,6 +83,7 @@ function deps(overrides: Partial<UpdaterDeps> = {}): UpdaterDeps {
         stored.set(key, value);
       },
     },
+    checkAutomatically: () => automatic,
     onResume: (listener) => {
       resume = listener;
       return { dispose: () => { resume = undefined; } };
@@ -132,6 +134,7 @@ beforeEach(() => {
   logShown = 0;
   stored = new Map();
   resume = undefined;
+  automatic = true;
   services = [];
 });
 
@@ -746,6 +749,87 @@ describe('check timing', () => {
     vi.advanceTimersByTime(CHECK_INTERVAL_MS);
     await settle();
     expect(updater.checkForUpdates).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('automatic checks off', () => {
+  it('checks only on demand: no check at start, on resume or on a schedule, and a manual check schedules none', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    automatic = false;
+    updater.checkResult = upToDate();
+    const service = startUpdater();
+    await settle();
+    vi.advanceTimersByTime(2 * CHECK_INTERVAL_MS);
+    resume!();
+    await settle();
+    expect(updater.checkForUpdates).not.toHaveBeenCalled();
+    service.check('help');
+    await settle();
+    expect(updater.checkForUpdates).toHaveBeenCalledOnce();
+    vi.advanceTimersByTime(2 * CHECK_INTERVAL_MS);
+    await settle();
+    expect(updater.checkForUpdates).toHaveBeenCalledOnce();
+  });
+
+  it('turned on, checks at once when a check is due and then every CHECK_INTERVAL_MS', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    automatic = false;
+    updater.checkResult = upToDate();
+    const service = startUpdater();
+    await settle();
+    automatic = true;
+    service.checkAutomaticallyChanged();
+    await settle();
+    expect(updater.checkForUpdates).toHaveBeenCalledOnce();
+    vi.advanceTimersByTime(CHECK_INTERVAL_MS);
+    await settle();
+    expect(updater.checkForUpdates).toHaveBeenCalledTimes(2);
+  });
+
+  it('turned on after a recent check, waits a whole interval before the next', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    updater.checkResult = upToDate();
+    const service = startUpdater();
+    await settle();
+    automatic = false;
+    service.checkAutomaticallyChanged();
+    vi.advanceTimersByTime(CHECK_INTERVAL_MS / 2);
+    automatic = true;
+    service.checkAutomaticallyChanged();
+    await settle();
+    vi.advanceTimersByTime(CHECK_INTERVAL_MS - 1);
+    await settle();
+    expect(updater.checkForUpdates).toHaveBeenCalledOnce();
+    vi.advanceTimersByTime(1);
+    await settle();
+    expect(updater.checkForUpdates).toHaveBeenCalledTimes(2);
+  });
+
+  it('turned off, stops the periodic check', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    updater.checkResult = upToDate();
+    const service = startUpdater();
+    await settle();
+    automatic = false;
+    service.checkAutomaticallyChanged();
+    vi.advanceTimersByTime(2 * CHECK_INTERVAL_MS);
+    await settle();
+    expect(updater.checkForUpdates).toHaveBeenCalledOnce();
+  });
+
+  it('turned on while a download runs, keeps the schedule the refused check could not start', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    automatic = false;
+    updater.checkResult = available('2.37.0', new Promise<string[]>(() => undefined));
+    const service = startUpdater();
+    service.check('about');
+    await settle();
+    vi.advanceTimersByTime(CHECK_INTERVAL_MS);
+    automatic = true;
+    service.checkAutomaticallyChanged();
+    vi.advanceTimersByTime(CHECK_INTERVAL_MS);
+    await settle();
+    expect(lines.filter((line) => line === '[updater] auto check skipped while downloading')).toHaveLength(2);
   });
 });
 

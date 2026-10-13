@@ -2,10 +2,10 @@
 
 Asserts:
   * Frames before wake stay in LISTENING.
-  * Wake -> POST_WAKE_OFFSET window -> WAITING_FOR_SPEECH transition.
+  * Wake -> WAITING_FOR_SPEECH transition.
   * VAD speech_started -> CAPTURING -> speech_ended -> transcript_final.
   * False-wake (no speech in window) -> wake_aborted, no transcript_final.
-  * The wake-phrase prefix is stripped before transcript_final.
+  * The configured wake-phrase prefix is stripped before transcript_final.
 """
 
 from __future__ import annotations
@@ -24,13 +24,12 @@ from damocles_voice_sidecar.engines.mock import (
 )
 from damocles_voice_sidecar.pipeline import (
     FALSE_WAKE_TIMEOUT_MS,
-    POST_WAKE_OFFSET_MS,
     Pipeline,
     PipelineConfig,
     PipelineEvent,
     State,
 )
-from damocles_voice_sidecar.protocol import FRAME_BYTES, FRAME_DURATION_MS
+from damocles_voice_sidecar.protocol import FRAME_BYTES, FRAME_DURATION_MS, ModelLoadFailed
 
 SILENCE_FRAME = b"\x00" * FRAME_BYTES
 
@@ -44,6 +43,7 @@ def _make_pipeline(
     vad_start_at: int = 1,
     vad_end_at: int = 5,
     asr_text: str = "Hey Jarvis, ping me",
+    wake_phrase: str = "hey jarvis",
 ):
     captured: List[PipelineEvent] = []
 
@@ -56,7 +56,7 @@ def _make_pipeline(
         asr=MockAsrEngine(text=asr_text),
         tts=MockTtsEngine(),
     )
-    return Pipeline(engines, PipelineConfig(), emit), captured
+    return Pipeline(engines, PipelineConfig(wake_phrase=wake_phrase), emit), captured
 
 
 @pytest.mark.asyncio
@@ -70,14 +70,9 @@ async def test_happy_path_strips_wake_prefix() -> None:
 
     # 1 frame to fire wake.
     await pipeline.feed(SILENCE_FRAME)
-    assert pipeline.state == State.POST_WAKE_OFFSET
-
-    # Burn through the post-wake offset (250 ms = 12 frames at 20 ms).
-    for _ in range(_frames_for(POST_WAKE_OFFSET_MS)):
-        await pipeline.feed(SILENCE_FRAME)
     assert pipeline.state == State.WAITING_FOR_SPEECH
 
-    # First post-offset frame: VAD signals speech_started.
+    # First frame after the wake: VAD signals speech_started.
     await pipeline.feed(SILENCE_FRAME)
     assert pipeline.state == State.CAPTURING
 
@@ -102,9 +97,6 @@ async def test_false_wake_aborts_when_no_speech_in_window() -> None:
 
     # Fire wake.
     await pipeline.feed(SILENCE_FRAME)
-    # Burn through the post-wake offset.
-    for _ in range(_frames_for(POST_WAKE_OFFSET_MS)):
-        await pipeline.feed(SILENCE_FRAME)
     # Burn through the false-wake timeout.
     for _ in range(_frames_for(FALSE_WAKE_TIMEOUT_MS) + 1):
         await pipeline.feed(SILENCE_FRAME)
@@ -113,3 +105,37 @@ async def test_false_wake_aborts_when_no_speech_in_window() -> None:
     assert "wake_aborted" in kinds
     assert "transcript_final" not in kinds
     assert pipeline.state == State.LISTENING
+
+
+async def _drive_to_transcript(pipeline: Pipeline) -> None:
+    await pipeline.feed(SILENCE_FRAME)
+    for _ in range(6):
+        await pipeline.feed(SILENCE_FRAME)
+
+
+@pytest.mark.asyncio
+async def test_strips_the_configured_phrase() -> None:
+    pipeline, events = _make_pipeline(
+        asr_text="OK computer, hey jarvis is not the phrase",
+        wake_phrase="ok_computer",
+    )
+
+    await _drive_to_transcript(pipeline)
+
+    final = next(e for e in events if e.kind == "transcript_final")
+    assert final.payload["text"] == "hey jarvis is not the phrase"
+
+
+@pytest.mark.asyncio
+async def test_keeps_the_default_phrase_when_another_is_configured() -> None:
+    pipeline, events = _make_pipeline(asr_text="Hey Jarvis, ping me", wake_phrase="computer")
+
+    await _drive_to_transcript(pipeline)
+
+    final = next(e for e in events if e.kind == "transcript_final")
+    assert final.payload["text"] == "Hey Jarvis, ping me"
+
+
+def test_invalid_phrase_fails_construction() -> None:
+    with pytest.raises(ModelLoadFailed, match="damocles.voice.wakeWord"):
+        _make_pipeline(wake_phrase="hey_jarvis.onnx")

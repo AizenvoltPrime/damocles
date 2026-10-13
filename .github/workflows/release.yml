@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*'
+  # A manual run builds, tests and signs Windows with the SignPath test certificate, and publishes nothing (attest and release skip it).
+  workflow_dispatch:
 
 # The workflow token is read-only; only `attest` and `release` widen it, each in its own job.
 permissions:
@@ -26,7 +28,24 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # The only download of the grammars and wake models in a run; every job that builds or tests restores fetched-assets
+      # first, so fetch:assets finds the files present and skips the network (docs/release.md "The verify job").
+      - name: Fetch the grammars and wake models
+        run: npm run fetch:assets
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fetched-assets
+          path: |
+            resources/grammars/*.wasm
+            python/damocles_voice_sidecar/damocles_voice_sidecar/models/wake/*.onnx
+            python/damocles_voice_sidecar/damocles_voice_sidecar/models/wake/tokens.txt
+            python/damocles_voice_sidecar/damocles_voice_sidecar/models/wake/bpe.model
+          retention-days: 1
+          if-no-files-found: error
+
       - name: Verify package.json version matches tag
+        if: github.event_name == 'push'
         run: |
           pkg_version=$(node -p "require('./package.json').version")
           tag_version="${GITHUB_REF_NAME#v}"
@@ -121,6 +140,11 @@ jobs:
         with:
           node-version: 24
           cache: npm
+
+      # The Alpine container copies the workspace, these files included.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: fetched-assets
 
       - name: Build and package on host
         if: ${{ !matrix.alpineContainer }}
@@ -278,14 +302,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: fetched-assets
+
       - name: Build
         run: npm run build
 
       - name: Build desktop
         run: npm run build:desktop
 
-      # Windows builds the unpacked app and the installer in two steps so signing can sit between them (docs/desktop-signing.md).
+      # Windows builds only the unpacked app here; sign-windows signs it and builds the installer from it (docs/desktop-signing.md).
       # The nsis target is required here: only it makes electron-builder write resources/app-update.yml, and --dir or --prepackaged never do.
+      # The unsigned installer this also writes is never uploaded.
       - name: Build unpacked Windows app
         if: matrix.os == 'win32'
         run: npx electron-builder --win ${{ matrix.targets }} --${{ matrix.arch }} --publish never -c.publish.channel=${{ matrix.channel }}
@@ -318,16 +347,21 @@ jobs:
             npm run test:desktop:packaged
           fi
 
-      # The installer packs this directory as the suite left it, so it must still hold no runtime leftovers such as __pycache__.
+      # sign-windows signs and packs this directory as the suite left it, so it must still hold no runtime leftovers such as __pycache__.
       - name: Verify the tested Windows app is still clean
         if: matrix.os == 'win32'
         run: node scripts/verify-desktop-package.mjs --platform ${{ matrix.os }} --arch ${{ matrix.arch }} --app "${{ matrix.appDir }}"
 
-      - name: Build Windows installer from the unpacked app
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: matrix.os == 'win32'
-        run: npx electron-builder --win ${{ matrix.targets }} --${{ matrix.arch }} --prepackaged "${{ matrix.appDir }}" --publish never -c.publish.channel=${{ matrix.channel }}
+        with:
+          name: unpacked-${{ matrix.target }}
+          path: ${{ matrix.appDir }}
+          retention-days: 1
+          if-no-files-found: error
 
       - name: Verify this leg's release artifacts
+        if: matrix.os != 'win32'
         run: node scripts/release-targets.mjs --check-desktop-artifacts ${{ matrix.target }} dist-desktop
 
       # Version N+1 of the same tree for desktop-update-test; never attached to the release.
@@ -342,11 +376,12 @@ jobs:
           npx electron-builder --${{ matrix.builder }} ${{ matrix.updateFeed }} --${{ matrix.arch }} --publish never "${channel_flag[@]}" \
             -c.extraMetadata.version="$next" -c.directories.output=dist-desktop/next
 
+      # sign-windows uploads the Windows legs' desktop-<target> artifacts.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: matrix.os != 'win32'
         with:
           name: desktop-${{ matrix.target }}
           path: |
-            dist-desktop/*.exe
             dist-desktop/*.dmg
             dist-desktop/*.zip
             dist-desktop/*.deb
@@ -378,6 +413,178 @@ jobs:
             dist/e2e-results
           retention-days: 7
           if-no-files-found: ignore
+
+  # Signs both Windows apps' Damocles.exe, builds their installers from the signed apps, signs the installers and rebuilds the update feeds from
+  # the signed files (docs/desktop-signing.md "The signing job structure"). A tag signs with the SignPath Foundation release
+  # certificate, a manual run with the self-signed test certificate. It waits for every job that does not test the signed files, so a run that
+  # fails a check never spends SignPath's yearly artifact quota (release-targets.test.ts enforces this).
+  sign-windows:
+    needs: [verify, package, package-desktop, e2e-desktop]
+    runs-on: windows-latest
+    # Two signing requests, each waiting up to an hour for a human approval, plus npm ci and the installer builds.
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      # The SignPath action reads this run's job details and downloads its artifacts with the job token.
+      actions: read
+    env:
+      SIGNPATH_ORGANIZATION_ID: 567f8646-d332-4f0e-88a9-7f2a21e285d9
+      SIGNPATH_PROJECT_SLUG: damocles
+      SIGNPATH_SIGNING_POLICY_SLUG: ${{ github.event_name == 'push' && 'release-signing' || 'test-signing' }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No npm cache: jobs that run install scripts write the shared cache, and this job holds the SignPath token.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      # electron-builder and the check scripts run from the lockfile. No install script runs in a job that holds the SignPath token.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      # The package check compares the apps' grammars and wake models with these.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: fetched-assets
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: unpacked-win-x64
+          path: unsigned/x64
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: unpacked-win-arm64
+          path: unsigned/arm64
+
+      # SignPath's artifact configurations restrict each signed file's product version to this one.
+      - name: Read the release version
+        id: version
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      # Only Damocles.exe is built from this repository; the upstream binaries ship as their projects publish them (SignPath
+      # Foundation terms). SignPath signs only an artifact of this run, and this zip holds x64/ and arm64/, the layout of the
+      # app-executables artifact configuration.
+      - name: Collect the executables to sign
+        id: collect-executables
+        run: |
+          mkdir -p executables/x64 executables/arm64
+          cp unsigned/x64/Damocles.exe executables/x64/
+          cp unsigned/arm64/Damocles.exe executables/arm64/
+
+      - name: Upload the unsigned executables for SignPath
+        id: upload-unsigned-executables
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unsigned-win-executables
+          path: executables/
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Sign both executables
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ env.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: app-executables
+          github-artifact-id: ${{ steps.upload-unsigned-executables.outputs.artifact-id }}
+          parameters: |
+            version: "${{ steps.version.outputs.version }}"
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed-executables
+
+      - name: Put the signed executables into the apps
+        run: |
+          mv unsigned signed
+          cp signed-executables/x64/Damocles.exe signed/x64/Damocles.exe
+          cp signed-executables/arm64/Damocles.exe signed/arm64/Damocles.exe
+
+      # Signing must leave the fuse wire, the asar integrity hash, the tree and resources/app-update.yml as package-desktop checked them.
+      - name: Verify the signed apps
+        run: |
+          node scripts/verify-desktop-package.mjs --platform win32 --arch x64 --app signed/x64
+          node scripts/verify-desktop-package.mjs --platform win32 --arch arm64 --app signed/arm64
+
+      - name: Check both executables are signed
+        shell: pwsh
+        run: ./scripts/check-authenticode.ps1 -Path signed/x64/Damocles.exe, signed/arm64/Damocles.exe -RequireTrusted:($env:SIGNPATH_SIGNING_POLICY_SLUG -eq 'release-signing')
+
+      # No certificate is in the environment, so electron-builder signs nothing, and signAndEditExecutable=false keeps it from editing the signed binaries.
+      - name: Build both installers from the signed apps
+        run: |
+          npx electron-builder --win nsis --x64 --prepackaged signed/x64 --publish never -c.publish.channel=latest-x64 -c.win.signAndEditExecutable=false
+          npx electron-builder --win nsis --arm64 --prepackaged signed/arm64 --publish never -c.publish.channel=latest-arm64 -c.win.signAndEditExecutable=false
+
+      - name: Verify the unsigned installers' names
+        run: node scripts/release-targets.mjs --check-desktop-artifacts win-x64,win-arm64 dist-desktop
+
+      - name: Upload the unsigned installers for SignPath
+        id: upload-unsigned-installers
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unsigned-win-installers
+          path: dist-desktop/Damocles-Setup-*.exe
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Sign both installers
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ env.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: installers
+          github-artifact-id: ${{ steps.upload-unsigned-installers.outputs.artifact-id }}
+          parameters: |
+            version: "${{ steps.version.outputs.version }}"
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed-installers
+
+      - name: Replace the installers with the signed ones and rebuild their update feeds
+        run: |
+          cp signed-installers/Damocles-Setup-*.exe dist-desktop/
+          node scripts/signed-windows-feed.mjs --rewrite dist-desktop x64 arm64
+
+      # The release attaches these files, so every feed entry must describe the signed bytes.
+      - name: Check the installers' signatures, feeds and names
+        shell: pwsh
+        run: |
+          ./scripts/check-authenticode.ps1 -Path (@((Get-ChildItem dist-desktop -Filter 'Damocles-Setup-*.exe').FullName) + @('signed/x64/Damocles.exe', 'signed/arm64/Damocles.exe')) -RequireTrusted:($env:SIGNPATH_SIGNING_POLICY_SLUG -eq 'release-signing')
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node scripts/signed-windows-feed.mjs --check dist-desktop x64 arm64
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node scripts/release-targets.mjs --check-desktop-artifacts win-x64,win-arm64 dist-desktop
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-win-x64
+          path: |
+            dist-desktop/Damocles-Setup-*-x64.exe
+            dist-desktop/Damocles-Setup-*-x64.exe.blockmap
+            dist-desktop/latest-x64.yml
+          retention-days: 7
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-win-arm64
+          path: |
+            dist-desktop/Damocles-Setup-*-arm64.exe
+            dist-desktop/Damocles-Setup-*-arm64.exe.blockmap
+            dist-desktop/latest-arm64.yml
+          retention-days: 7
+          if-no-files-found: error
 
   # The dev end-to-end suite, split into Playwright shards beside package-desktop, which runs only the packaged-app suite.
   # Keep each target's runner equal to its package-desktop leg (release-targets.test.ts fails on drift).
@@ -440,6 +647,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: fetched-assets
+
       # The electron package has no install script and downloads its binary on first require, which the setuid step below and two parallel Playwright workers cannot wait for.
       - name: Download the Electron binary
         run: npx --no install-electron
@@ -451,7 +662,7 @@ jobs:
           sudo chown root:root node_modules/electron/dist/chrome-sandbox
           sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
 
-      # test:desktop fetches the assets and builds the webview and the desktop app itself; the suite never loads dist/extension.js.
+      # test:desktop builds the webview and the desktop app itself; the suite never loads dist/extension.js.
       # Linux: minimizing needs a window manager and the pane tests size the window to 1400x900. playwright.desktop.config.ts
       # sets the worker count per platform.
       - name: Desktop end-to-end suite (shard ${{ matrix.shard }} of ${{ matrix.shards }})
@@ -478,9 +689,9 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # Fresh runners install what package-desktop built, as a user would.
+  # Fresh runners install what package-desktop built and sign-windows signed, as a user would.
   verify-desktop-install:
-    needs: package-desktop
+    needs: [package-desktop, sign-windows]
     strategy:
       fail-fast: false
       matrix:
@@ -685,7 +896,7 @@ jobs:
 
   # Installs version N, serves N+1 from a loopback feed, and checks the update applies (Windows, Linux) or the notice opens the release page (macOS).
   desktop-update-test:
-    needs: package-desktop
+    needs: [package-desktop, sign-windows]
     strategy:
       fail-fast: false
       matrix:
@@ -768,10 +979,88 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # Checks the run produced every release artifact and writes the release notes. A manual run runs it too, so a dry run checks
+  # everything release reads; release only publishes.
+  release-notes:
+    needs: [package, package-desktop, sign-windows, e2e-desktop, verify-desktop-install, desktop-update-test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist-artifacts
+          pattern: vsix-*
+          merge-multiple: true
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist-artifacts
+          pattern: desktop-*
+          merge-multiple: true
+
+      - name: Verify the run produced every VSIX and desktop artifact
+        run: |
+          node --input-type=module -e "
+            import { existsSync } from 'node:fs';
+            import { RELEASE_TARGETS } from './scripts/release-targets.mjs';
+            const missing = Object.keys(RELEASE_TARGETS)
+              .map((target) => 'dist-artifacts/damocles-' + target + '-' + process.env.GITHUB_REF_NAME + '.vsix')
+              .filter((file) => !existsSync(file));
+            if (missing.length) { console.error('Missing VSIXes: ' + missing.join(', ')); process.exit(1); }
+          "
+          node scripts/release-targets.mjs --check-desktop-artifacts all dist-artifacts
+
+      - name: Extract changelog section
+        run: |
+          # package.json, not the tag: verify holds them equal on a tag push, and a manual run has no tag.
+          version=$(node -p "require('./package.json').version")
+          mkdir -p "$RUNNER_TEMP/release-notes"
+          awk -v ver="$version" '
+            BEGIN { found=0 }
+            /^## / {
+              if (found) exit
+              if (index($0, "[" ver "]") > 0) { found=1; next }
+            }
+            found { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/release-notes/release-body.md"
+          if [ ! -s "$RUNNER_TEMP/release-notes/release-body.md" ]; then
+            echo "ERROR: No changelog section found for version $version" >&2
+            exit 1
+          fi
+          cat >> "$RUNNER_TEMP/release-notes/release-body.md" <<'EOF'
+
+          ## Desktop app
+
+          Installers for Windows 10 or later (x64, arm64), macOS 13 or later (Apple silicon) and Linux (x64, arm64; deb and rpm) are attached below. 64-bit only.
+
+          - **Windows**: the installer and the app are code signed by SignPath Foundation. Until the certificate has built a reputation, SmartScreen can still warn before the first run: choose More info > Run anyway. It installs per user and updates itself: it downloads a new version in the background, checks it is signed by SignPath Foundation, and asks before restarting.
+          - **macOS**: the app is ad hoc signed, not notarized. On macOS 15 and later, open it once, then approve it under System Settings > Privacy & Security > Open Anyway; each new version needs this approval again. The app does not update itself on macOS: it shows a notice that opens the new release page. Voice is unavailable on macOS. macOS builds are verified by CI only, not by hand.
+          - **Linux**: the deb and rpm install an AppArmor profile so the Chromium sandbox works on Ubuntu 24.04 and later. Updates download in the background and ask for an administrator password to install.
+
+          Code signing policy and privacy statement: https://github.com/AizenvoltPrime/damocles#code-signing-policy
+
+          Verifying a download: `SHA256SUMS` lists the SHA-256 of every file attached here (`sha256sum -c SHA256SUMS --ignore-missing` in the download folder), and every file except `SHA256SUMS` has a GitHub build provenance attestation (`gh attestation verify <file> --repo AizenvoltPrime/damocles`).
+          EOF
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/release-notes/release-body.md
+          retention-days: 7
+          if-no-files-found: error
+
   # Build provenance for every file the release attaches. The OIDC token this job can mint signs attestations, so the job
   # holds no secret and installs and runs no package. Its subject-path list must equal the asset list in "Create GitHub Release".
   attest:
-    needs: [package, package-desktop, e2e-desktop, verify-desktop-install, desktop-update-test]
+    needs: [package, package-desktop, sign-windows, e2e-desktop, verify-desktop-install, desktop-update-test, release-notes]
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -803,7 +1092,8 @@ jobs:
             dist-artifacts/latest*.yml
 
   release:
-    needs: [package, package-desktop, e2e-desktop, verify-desktop-install, desktop-update-test, attest]
+    needs: [package, package-desktop, sign-windows, e2e-desktop, verify-desktop-install, desktop-update-test, release-notes, attest]
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     # Only this job writes: `gh release create` authenticates with the job's own GITHUB_TOKEN.
     permissions:
@@ -834,47 +1124,10 @@ jobs:
           pattern: desktop-*
           merge-multiple: true
 
-      - name: Verify one tag produced every VSIX and desktop artifact
-        run: |
-          node --input-type=module -e "
-            import { existsSync } from 'node:fs';
-            import { RELEASE_TARGETS } from './scripts/release-targets.mjs';
-            const missing = Object.keys(RELEASE_TARGETS)
-              .map((target) => 'dist-artifacts/damocles-' + target + '-' + process.env.GITHUB_REF_NAME + '.vsix')
-              .filter((file) => !existsSync(file));
-            if (missing.length) { console.error('Missing VSIXes: ' + missing.join(', ')); process.exit(1); }
-          "
-          node scripts/release-targets.mjs --check-desktop-artifacts all dist-artifacts
-
-      - name: Extract changelog section
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          awk -v ver="$version" '
-            BEGIN { found=0 }
-            /^## / {
-              if (found) exit
-              if (index($0, "[" ver "]") > 0) { found=1; next }
-            }
-            found { print }
-          ' CHANGELOG.md > /tmp/release-body.md
-          if [ ! -s /tmp/release-body.md ]; then
-            echo "ERROR: No changelog section found for version $version" >&2
-            exit 1
-          fi
-          cat >> /tmp/release-body.md <<'EOF'
-
-          ## Desktop app
-
-          Installers for Windows 10 or later (x64, arm64), macOS 13 or later (Apple silicon) and Linux (x64, arm64; deb and rpm) are attached below. 64-bit only.
-
-          - **Windows**: the installer is not code signed yet, so SmartScreen warns before the first run. Choose More info > Run anyway. It installs per user and updates itself: it downloads a new version in the background and asks before restarting.
-          - **macOS**: the app is ad hoc signed, not notarized. On macOS 15 and later, open it once, then approve it under System Settings > Privacy & Security > Open Anyway; each new version needs this approval again. The app does not update itself on macOS: it shows a notice that opens the new release page. Voice is unavailable on macOS. macOS builds are verified by CI only, not by hand.
-          - **Linux**: the deb and rpm install an AppArmor profile so the Chromium sandbox works on Ubuntu 24.04 and later. Updates download in the background and ask for an administrator password to install.
-
-          Code signing policy and privacy statement: https://github.com/AizenvoltPrime/damocles#code-signing-policy
-
-          Verifying a download: `SHA256SUMS` lists the SHA-256 of every file attached here (`sha256sum -c SHA256SUMS --ignore-missing` in the download folder), and every file except `SHA256SUMS` has a GitHub build provenance attestation (`gh attestation verify <file> --repo AizenvoltPrime/damocles`).
-          EOF
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/release-notes
 
       # SHA256SUMS holds bare file names, so `sha256sum -c` runs in the folder the files were downloaded to.
       - name: Create GitHub Release
@@ -894,7 +1147,7 @@ jobs:
           (cd dist-artifacts && sha256sum -- "${assets[@]#dist-artifacts/}") > dist-artifacts/SHA256SUMS
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
-            --notes-file /tmp/release-body.md \
+            --notes-file "$RUNNER_TEMP/release-notes/release-body.md" \
             "${assets[@]}" dist-artifacts/SHA256SUMS
 
       - name: Publish to Visual Studio Marketplace

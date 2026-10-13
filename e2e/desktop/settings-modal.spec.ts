@@ -329,9 +329,10 @@ test('Restore default layout resets window-layout.json, and with Reopen where I 
     await expect.poll(() => readLayout(home.userData)).toEqual({
       sidebarVisible: true,
       sidebarWidth: 264,
-      sections: { projects: { collapsed: false, size: 180 }, chats: { collapsed: false }, files: { collapsed: false, size: 230 }, search: { collapsed: true, size: 260 } },
+      sections: { projects: { collapsed: false, size: 180 }, chats: { collapsed: false }, files: { collapsed: false, size: 230 }, search: { collapsed: true, size: 260 }, scm: { collapsed: false, size: 300 } },
       grid: DEFAULT_GRID_LAYOUT,
       search: {},
+      scm: { viewMode: 'list', sortKey: 'path' },
     });
     await expect.poll(async () => (await shellState(desktop.app)).layout.sidebarVisible).toBe(true);
 

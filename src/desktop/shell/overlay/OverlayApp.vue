@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue';
 import { useI18n } from 'vue-i18n';
-import type { DamoclesOverlayApi, OverlayAnswer, OverlayRequest, PaletteCommand, QuickOpenResponse, QuickOpenScope } from '../../preload/overlay-channels';
+import type { DamoclesOverlayApi, OverlayAnswer, OverlayRequest, OverlayState, PaletteCommand, QuickOpenResponse, QuickOpenScope } from '../../preload/overlay-channels';
+import type { ShellPlatform } from '../../preload/shell-channels';
 import { applyShellLocale } from '../i18n';
 import { answerOf } from './popup-answer';
 import ContextMenu from './components/ContextMenu.vue';
@@ -12,6 +13,7 @@ import TagPicker from './components/TagPicker.vue';
 import QuickPick from './components/QuickPick.vue';
 import TerminalPick from './components/TerminalPick.vue';
 import ListPick from './components/ListPick.vue';
+import QuickInput from './components/QuickInput.vue';
 import DropZones from './components/DropZones.vue';
 import { commandsModel, quickOpenItemId, quickOpenModel, type QuickPickModel } from './quick-pick';
 import OverlaySettings from './settings/OverlaySettings.vue';
@@ -19,6 +21,14 @@ import type { OverlaySettingsBridge } from './settings/overlay-bridge';
 
 const props = defineProps<{ api: DamoclesOverlayApi; settingsBridge: OverlaySettingsBridge }>();
 const { t, locale } = useI18n();
+
+// QuickInput's path check follows main's platform; win32's rules, the strictest, until main's state arrives
+const platform = ref<ShellPlatform>('win32');
+
+function applyState(state: OverlayState): void {
+  applyShellLocale(state.locale);
+  platform.value = state.platform;
+}
 
 // In arrival order; the last one is on top and receives Escape.
 const open = shallowRef<ReadonlyArray<{ readonly id: string; readonly request: OverlayRequest }>>([]);
@@ -57,8 +67,8 @@ function onAfterLeave(element: Element): void {
 
 // Kinds that handle Escape themselves, so the window's handler leaves it to them: the settings modal and the dialogs through
 // the overlay stack (a search query clears first, a dialog above the modal cancels without closing it), and Quick Open, New
-// Terminal and the quick pick in QuickPick's own keydown.
-const OWN_ESCAPE: ReadonlySet<OverlayRequest['kind']> = new Set(['settings', 'confirm', 'message', 'quickOpen', 'newTerminal', 'quickPick']);
+// Terminal, the quick pick and the input box in their own keydown.
+const OWN_ESCAPE: ReadonlySet<OverlayRequest['kind']> = new Set(['settings', 'confirm', 'message', 'quickOpen', 'newTerminal', 'quickPick', 'input']);
 
 // Quick Open asks main for each query; the last answer names the files a pick may choose and how main parsed the query. A
 // query starting with ">" is the command palette, as in VS Code: it lists main's commands once per open request.
@@ -149,9 +159,9 @@ onMounted(async () => {
   }));
   stops.push(props.api.onCancel((id) => void close(id)));
   // Subscribed before the first read, so a language change between the two is not lost.
-  stops.push(props.api.onState((state) => applyShellLocale(state.locale)));
+  stops.push(props.api.onState(applyState));
   window.addEventListener('keydown', onKeydown);
-  applyShellLocale((await props.api.getState()).locale);
+  applyState(await props.api.getState());
 });
 onBeforeUnmount(() => {
   for (const stop of stops) stop();
@@ -251,6 +261,12 @@ onBeforeUnmount(() => {
           <ListPick
             v-else-if="entry.request.kind === 'quickPick'"
             :request="entry.request"
+            @answer="answer(entry.id, $event)"
+          />
+          <QuickInput
+            v-else-if="entry.request.kind === 'input'"
+            :request="entry.request"
+            :platform="platform"
             @answer="answer(entry.id, $event)"
           />
         </div>

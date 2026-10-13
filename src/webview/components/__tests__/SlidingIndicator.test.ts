@@ -29,6 +29,15 @@ describe('SlidingIndicator', () => {
     expect(end!.height).toBe('20px');
   });
 
+  // 100px at a 1.875 device pixel ratio is 187.5 device px; Chromium snaps it to 188 and the scale carries that past the end.
+  it('draws the middle a whole number of device pixels long, so snapping it does not stretch the scaled bar', () => {
+    vi.stubGlobal('devicePixelRatio', 1.875);
+    const [, middle] = pieces({ x: 0, y: 0, width: 189, height: 2 }, 0);
+
+    expect(Number.parseFloat(middle!.width) * 1.875).toBeCloseTo(188, 2);
+    expect(middle!.transform).toBe(`translate(-1px, 0px) scaleX(${191 / (188 / 1.875)})`);
+  });
+
   it('clamps the cap to half the width of a box narrower than two radii', () => {
     const [start, middle, end] = pieces({ x: 0, y: 0, width: 6, height: 20 }, 5);
 

@@ -1,1 +1,1 @@
-"""Bundled wake-word ONNX assets (fetched by ``scripts/fetch-wake-models.mjs``)."""
+"""Bundled keyword-spotting model files (fetched by ``scripts/fetch-wake-models.mjs``)."""

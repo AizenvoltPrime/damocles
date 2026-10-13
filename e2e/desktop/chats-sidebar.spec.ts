@@ -287,13 +287,13 @@ test('the New button stays in place on hover, and enabled controls in the shell,
 });
 
 test("D42: the Projects list and the chat header show each project's branch from git's HEAD, trusted or not, and follow a checkout made outside the app", async ({ home, launch }) => {
-  await git(home.project, 'init', '-q', '-b', 'main');
-  await git(home.project, 'commit', '-q', '--allow-empty', '-m', 'init');
+  await git(home, home.project, 'init', '-q', '-b', 'main');
+  await git(home, home.project, 'commit', '-q', '--allow-empty', '-m', 'init');
   // An untrusted project opened at a subfolder of its repository.
   const monorepo = path.join(home.root, 'p', 'mono');
   const subfolder = path.join(monorepo, 'packages', 'app');
   fs.mkdirSync(subfolder, { recursive: true });
-  await git(monorepo, 'init', '-q', '-b', 'main');
+  await git(home, monorepo, 'init', '-q', '-b', 'main');
   const plain = path.join(home.root, 'p', 'plain');
   fs.mkdirSync(plain, { recursive: true });
 
@@ -323,12 +323,12 @@ test("D42: the Projects list and the chat header show each project's branch from
   await expect(headerBranch).toHaveText('main');
   await expect(headerBranch).toHaveAttribute('dir', 'ltr');
 
-  await git(home.project, 'checkout', '-q', '-b', 'feature/x');
+  await git(home, home.project, 'checkout', '-q', '-b', 'feature/x');
   await expect(await branchLabel(home.project)).toHaveText('feature/x');
   await expect(headerBranch).toHaveText('feature/x');
 
-  await git(home.project, 'checkout', '-q', '--detach');
-  const shortId = (await git(home.project, 'rev-parse', 'HEAD')).slice(0, 7);
+  await git(home, home.project, 'checkout', '-q', '--detach');
+  const shortId = (await git(home, home.project, 'rev-parse', 'HEAD')).slice(0, 7);
   await expect(await branchLabel(home.project)).toHaveText(shortId);
   await expect(headerBranch).toHaveText(shortId);
 });

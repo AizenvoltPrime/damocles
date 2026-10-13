@@ -4443,7 +4443,8 @@ export class PiSession implements ChatSession {
    *  tab scope, so a redispatched specialist never inherits the failed attempt's tabs. `cwd` reaches the
    *  team tools because `team_record_verification` fingerprints the working tree itself. */
   private buildTeamAgentCustomTools(pi: PiCodingAgentModule, ctx: AgentMcpContext): ToolDefinition[] {
-    return [...this.buildSubagentCustomTools(pi, this.noteDeliveryForTeamAgent(ctx), ctx.browserScopeId), ...buildTeamAgentPiTools(pi, ctx, this.cwd)];
+    const workspace = { cwd: this.cwd, isTrusted: () => this.projectScopeTrusted() };
+    return [...this.buildSubagentCustomTools(pi, this.noteDeliveryForTeamAgent(ctx), ctx.browserScopeId), ...buildTeamAgentPiTools(pi, ctx, workspace)];
   }
 
   /**

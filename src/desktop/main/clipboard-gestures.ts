@@ -102,7 +102,7 @@ export async function askShellMenu(request: OverlayRequest, deps: ShellMenuDeps)
       };
     })
     : tidyMenu(request.items.filter((item) => !isClipboardItem(item)));
-  if (!items.some((item) => item.kind === 'item')) return { kind: 'dismissed' };
+  if (items.every((item) => item.kind === 'separator')) return { kind: 'dismissed' };
   const shown: OverlayRequest = { ...request, items };
   const answer = await deps.ask(shown);
   const picked = answer.kind === 'menu' ? items.find((item) => item.kind === 'item' && item.id === answer.itemId) : undefined;

@@ -90,8 +90,8 @@ async function openChat(home: HermeticHome, launch: (options?: LaunchOptions) =>
   fs.writeFileSync(models, JSON.stringify(config, null, 2));
   const project = path.join(path.dirname(home.project), LONG_PROJECT_NAME);
   fs.mkdirSync(project);
-  await git(project, 'init', '-q', '-b', 'main');
-  await git(project, 'commit', '-q', '--allow-empty', '-m', 'init');
+  await git(home, project, 'init', '-q', '-b', 'main');
+  await git(home, project, 'commit', '-q', '--allow-empty', '-m', 'init');
   const { app } = await launch();
   const tab = await openProjectChat(app, project);
   await setContentSize(app, 1280, HEIGHT);

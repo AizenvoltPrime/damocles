@@ -42,6 +42,22 @@ import {
 } from './shell-channels';
 import type { UpdateSnapshot } from './updates';
 import {
+  SCM_CHANNELS,
+  type DamoclesScmApi,
+  type ScmCommitInput,
+  type ScmCommitResult,
+  type ScmDecorations,
+  type ScmFileDiffResult,
+  type ScmGenerateResult,
+  type ScmRepoSnapshot,
+  type ScmRunResult,
+  type ScmSetInput,
+  type ScmSettings,
+  type ScmShellCommand,
+  type ScmShellState,
+  type ScmView,
+} from './scm-channels';
+import {
   TERMINAL_CHANNELS,
   type DamoclesTerminalApi,
   type TerminalCreateResult,
@@ -153,6 +169,29 @@ const terminal: DamoclesTerminalApi = {
   addToChat: (request) => {
     ipcRenderer.send(TERMINAL_CHANNELS.addToChat, { id: request.id, source: request.source, commandId: request.commandId, text: request.text, omittedLines: request.omittedLines });
   },
+};
+
+// Requests leave as plain JSON copies: a renderer's reactive proxy cannot be cloned, and main checks the exact fields.
+function plain<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+const scm: DamoclesScmApi = {
+  getState: () => ipcRenderer.invoke(SCM_CHANNELS.getState) as Promise<ScmShellState>,
+  onView: (listener) => subscribe<ScmView>(SCM_CHANNELS.view, listener),
+  onState: (listener) => subscribe<ScmRepoSnapshot>(SCM_CHANNELS.state, listener),
+  onDecorations: (listener) => subscribe<ScmDecorations>(SCM_CHANNELS.decorations, listener),
+  onSettings: (listener) => subscribe<ScmSettings>(SCM_CHANNELS.settings, listener),
+  onCommand: (listener) => subscribe<ScmShellCommand>(SCM_CHANNELS.command, listener),
+  onSetInput: (listener) => subscribe<ScmSetInput>(SCM_CHANNELS.setInput, listener),
+  select: (request) => ipcRenderer.invoke(SCM_CHANNELS.select, { projectKey: request.projectKey, repoId: request.repoId }) as Promise<void>,
+  run: (request) => ipcRenderer.invoke(SCM_CHANNELS.run, plain(request)) as Promise<ScmRunResult>,
+  commit: (request) => ipcRenderer.invoke(SCM_CHANNELS.commit, { repoId: request.repoId, message: request.message, variant: plain(request.variant) }) as Promise<ScmCommitResult>,
+  generateMessage: (repoId) => ipcRenderer.invoke(SCM_CHANNELS.generateMessage, { repoId }) as Promise<ScmGenerateResult>,
+  fileDiff: (request) => ipcRenderer.invoke(SCM_CHANNELS.fileDiff, { repoId: request.repoId, source: { kind: request.source.kind }, path: request.path }) as Promise<ScmFileDiffResult>,
+  copy: (request) => ipcRenderer.invoke(SCM_CHANNELS.copy, { repoId: request.repoId, kind: request.kind, value: request.value }) as Promise<void>,
+  commitInput: (repoId) => ipcRenderer.invoke(SCM_CHANNELS.commitInput, { repoId }) as Promise<ScmCommitInput>,
+  reportAmend: (report) => ipcRenderer.invoke(SCM_CHANNELS.amend, { repoId: report.repoId, amending: report.amending }) as Promise<void>,
 };
 
 // The shell HTML carries the theme from its creation; this keeps it current after a theme change.
@@ -296,6 +335,7 @@ const api: DamoclesShellApi = {
   onUpdate: (listener) => subscribe<UpdateSnapshot>(SHELL_CHANNELS.updateState, listener),
   runUpdateAction: (action) => ipcRenderer.invoke(SHELL_CHANNELS.updateRun, action) as Promise<void>,
   terminal,
+  scm,
 };
 
 contextBridge.exposeInMainWorld('damoclesShell', api);

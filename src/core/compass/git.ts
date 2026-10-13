@@ -1,5 +1,6 @@
 import * as childProcess from 'child_process';
 import * as path from 'path';
+import { gitExecutable } from '../git-executable';
 import { isWithinRoot } from './util';
 
 export const GIT_TIMEOUT: number = 30_000;
@@ -20,7 +21,8 @@ export function resetRepoRootCacheForTests(): void {
 function runGit(args: string[], cwd: string): string {
 	// `execFileSync`, not `execSync`: no shell, so a ref or path that reaches argv is never re-parsed.
 	// No `ExecEnv` either, since the checkpoint engine's overrides retarget git at its private bare repo.
-	return childProcess.execFileSync('git', [...GIT_HARDENING_ARGS, ...args], {
+	// Every caller catches, so no git found reads as a git failure.
+	return childProcess.execFileSync(gitExecutable(), [...GIT_HARDENING_ARGS, ...args], {
 		cwd, encoding: 'utf8', timeout: GIT_TIMEOUT, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
 	});
 }

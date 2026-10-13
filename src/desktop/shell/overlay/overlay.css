@@ -590,6 +590,12 @@ body {
   animation: d-pop-out 0.12s ease-in both;
 }
 
+/* The text input shrinks out before its answer reaches main. */
+.overlay-pop-leave-active > .d-quick-input {
+  transition: none;
+  animation: d-pop-out 0.12s ease-in both;
+}
+
 /* A matched character is bold accent text, never a filled box. */
 .quick-pick-match {
   background: transparent;

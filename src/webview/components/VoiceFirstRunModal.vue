@@ -37,7 +37,7 @@ interface EngineRow {
 }
 
 const engines = computed<EngineRow[]>(() => [
-  { role: t("voiceFirstRun.roleWake"), name: "OpenWakeWord", license: "Apache-2.0" },
+  { role: t("voiceFirstRun.roleWake"), name: "sherpa-onnx keyword spotting", license: "Apache-2.0" },
   { role: t("voiceFirstRun.roleVad"), name: "Silero", license: "MIT" },
   { role: t("voiceFirstRun.roleAsr"), name: "Parakeet TDT 0.6B v2", license: "CC-BY-4.0" },
   { role: t("voiceFirstRun.roleTts"), name: "VibeVoice-Realtime 0.5B", license: t("voiceFirstRun.ttsLicense") },

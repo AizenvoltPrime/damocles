@@ -50,7 +50,7 @@ test('the markdown preview of unsaved text, and a tab changed on disk', async ({
   await captureThemes(app, OUT, 'conflicted-tab-inactive');
 });
 
-test('the rewind confirmation over a proposal diff', async ({ home, launch }) => {
+test('the rewind confirmation over a proposal diff', async ({ foreground: _foreground, home, launch }) => {
   fs.mkdirSync(OUT, { recursive: true });
   const stub = await startOpenAIStub();
   try {

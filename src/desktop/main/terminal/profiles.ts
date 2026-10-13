@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
 import type { TerminalIcon } from '../../preload/terminal-channels';
-import { searchPathEntries } from './executable-path';
+import { searchPathEntries } from '../../../core/executable-path';
 
 /** A detected shell; id is stable across runs, and damocles.desktop.terminal.defaultProfile names one. */
 export interface TerminalProfile {

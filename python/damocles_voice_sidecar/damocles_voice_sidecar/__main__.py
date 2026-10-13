@@ -12,7 +12,9 @@ import json
 import logging
 import sys
 
+from .engines.base import EngineSet
 from .protocol import ModelLoadFailed, RecoverableOomError, SidecarConfig
+from .wake_phrase import DEFAULT_WAKE_PHRASE, normalize_wake_phrase
 
 OOM_RESTART_EXIT_CODE = 7
 
@@ -31,6 +33,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--wake-word-enabled",
         action="store_true",
         help="Load wake/VAD/ASR engines and open the OS microphone.",
+    )
+    p.add_argument(
+        "--wake-word",
+        type=str,
+        default=DEFAULT_WAKE_PHRASE,
+        help="Wake phrase (damocles.voice.wakeWord): 1 to 4 words of ASCII letters.",
     )
     p.add_argument(
         "--tts-enabled",
@@ -70,6 +78,28 @@ def _setup_logging(diagnostics: bool) -> None:
         )
 
 
+def _build_engines(cfg: SidecarConfig, use_mocks: bool) -> EngineSet:
+    if not use_mocks:
+        from .engines.loader import load_real_engines
+
+        return load_real_engines(cfg)
+
+    from .engines.mock import (
+        MockAsrEngine,
+        MockTtsEngine,
+        MockVadEngine,
+        MockWakeEngine,
+    )
+
+    logging.getLogger(__name__).info("running with mock engines (--use-mocks)")
+    return EngineSet(
+        wake=MockWakeEngine() if cfg.wake_word_enabled else None,
+        vad=MockVadEngine() if cfg.wake_word_enabled else None,
+        asr=MockAsrEngine() if cfg.wake_word_enabled else None,
+        tts=MockTtsEngine() if cfg.tts_enabled else None,
+    )
+
+
 def main() -> None:
     args = _build_parser().parse_args()
     _setup_logging(args.diagnostics)
@@ -80,6 +110,7 @@ def main() -> None:
         runtime_mode=args.runtime_mode,
         diagnostics=args.diagnostics,
         wake_word_enabled=args.wake_word_enabled,
+        wake_word=args.wake_word,
         tts_enabled=args.tts_enabled,
     )
 
@@ -89,48 +120,30 @@ def main() -> None:
         )
         sys.exit(5)
 
-    if args.use_mocks:
-        from .engines.mock import (
-            MockAsrEngine,
-            MockTtsEngine,
-            MockVadEngine,
-            MockWakeEngine,
+    try:
+        # The phrase is only used by wake detection; TTS-only mode must start whatever it holds.
+        if cfg.wake_word_enabled:
+            cfg.wake_word = normalize_wake_phrase(cfg.wake_word)
+        engines = _build_engines(cfg, args.use_mocks)
+    except ModelLoadFailed as exc:
+        # exc_info=True emits the full chained traceback (the
+        # ModelLoadFailed wrapper plus the underlying torch /
+        # transformers / file-IO exception via __cause__). Without
+        # this, exit code 3 carried only str(cause), which collapses
+        # the actual exception type and stack to one line.
+        logging.getLogger(__name__).error(
+            "model-load-failed: id=%s path=%s cause=%s",
+            exc.model_id,
+            exc.path,
+            exc.cause,
+            exc_info=True,
         )
-        from .engines.base import EngineSet
-
-        logging.getLogger(__name__).info(
-            "running with mock engines (--use-mocks)"
+        sys.exit(3)
+    except ImportError as exc:
+        logging.getLogger(__name__).error(
+            "missing ML dependency: %s", exc, exc_info=True
         )
-        engines = EngineSet(
-            wake=MockWakeEngine() if cfg.wake_word_enabled else None,
-            vad=MockVadEngine() if cfg.wake_word_enabled else None,
-            asr=MockAsrEngine() if cfg.wake_word_enabled else None,
-            tts=MockTtsEngine() if cfg.tts_enabled else None,
-        )
-    else:
-        from .engines.loader import load_real_engines
-
-        try:
-            engines = load_real_engines(cfg)
-        except ModelLoadFailed as exc:
-            # exc_info=True emits the full chained traceback (the
-            # ModelLoadFailed wrapper plus the underlying torch /
-            # transformers / file-IO exception via __cause__). Without
-            # this, exit code 3 carried only str(cause), which collapses
-            # the actual exception type and stack to one line.
-            logging.getLogger(__name__).error(
-                "model-load-failed: id=%s path=%s cause=%s",
-                exc.model_id,
-                exc.path,
-                exc.cause,
-                exc_info=True,
-            )
-            sys.exit(3)
-        except ImportError as exc:
-            logging.getLogger(__name__).error(
-                "missing ML dependency: %s", exc, exc_info=True
-            )
-            sys.exit(4)
+        sys.exit(4)
 
     from .server import run_server
 

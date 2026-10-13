@@ -3,8 +3,12 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  boundsToPersist,
   clampToWorkAreas,
   DEFAULT_SHELL_LAYOUT,
+  DEFAULT_WINDOW_HEIGHT,
+  DEFAULT_WINDOW_WIDTH,
+  defaultWindowBounds,
   EMPTY_EDITOR,
   MIN_WINDOW_HEIGHT,
   MIN_WINDOW_WIDTH,
@@ -49,6 +53,32 @@ function writeFile(content: unknown): void {
 const PRIMARY = { x: 0, y: 0, width: 1920, height: 1040 };
 const RIGHT = { x: 1920, y: 0, width: 2560, height: 1400 };
 
+describe('boundsToPersist', () => {
+  // Electron 44 on a 150% display: setBounds(960x640) on a frameless window reads back 961x641.
+  const lossyRead = (b: { x: number; y: number; width: number; height: number }) => ({ ...b, width: b.width + 1, height: b.height + 1 });
+
+  it('keeps the applied bounds across launches while the window reads what it read when they were applied', () => {
+    const first = { x: 40, y: 50, width: 960, height: 640 };
+    let saved = first;
+    for (let launch = 0; launch < 5; launch++) {
+      const read = lossyRead(saved);
+      saved = boundsToPersist({ bounds: saved, read }, read);
+    }
+    expect(saved).toEqual(first);
+  });
+
+  it('saves what the window reads once it moved or resized, and keeps that from the next launch on', () => {
+    const applied = { x: 40, y: 50, width: 960, height: 640 };
+    const moved = { x: 300, y: 50, width: 961, height: 641 };
+    expect(boundsToPersist({ bounds: applied, read: lossyRead(applied) }, moved)).toEqual(moved);
+    expect(boundsToPersist({ bounds: moved, read: lossyRead(moved) }, lossyRead(moved))).toEqual(moved);
+  });
+
+  it('saves the read when main applied nothing', () => {
+    expect(boundsToPersist(undefined, { x: 1, y: 2, width: 1281, height: 821 })).toEqual({ x: 1, y: 2, width: 1281, height: 821 });
+  });
+});
+
 describe('clampToWorkAreas', () => {
   it('keeps bounds that lie on a display', () => {
     expect(clampToWorkAreas({ x: 100, y: 50, width: 1200, height: 800 }, [PRIMARY, RIGHT])).toEqual({ x: 100, y: 50, width: 1200, height: 800 });
@@ -68,6 +98,18 @@ describe('clampToWorkAreas', () => {
     expect(clampToWorkAreas({ x: 0, y: 0, width: 4000, height: 3000 }, [PRIMARY])).toEqual({ x: 0, y: 0, width: 1920, height: 1040 });
     const small = { x: 0, y: 0, width: 800, height: 500 };
     expect(clampToWorkAreas({ x: 0, y: 0, width: 1200, height: 800 }, [small])).toEqual({ x: 0, y: 0, width: MIN_WINDOW_WIDTH, height: MIN_WINDOW_HEIGHT });
+  });
+});
+
+describe('defaultWindowBounds', () => {
+  it('centers the default size on a work area that fits it', () => {
+    expect(defaultWindowBounds(PRIMARY)).toEqual({ x: (1920 - DEFAULT_WINDOW_WIDTH) / 2, y: (1040 - DEFAULT_WINDOW_HEIGHT) / 2, width: DEFAULT_WINDOW_WIDTH, height: DEFAULT_WINDOW_HEIGHT });
+    expect(defaultWindowBounds(RIGHT)).toMatchObject({ x: 1920 + (2560 - DEFAULT_WINDOW_WIDTH) / 2 });
+  });
+
+  it('fits the work area of a display smaller than the default, never below the window minimum', () => {
+    expect(defaultWindowBounds({ x: 0, y: 25, width: 1024, height: 743 })).toEqual({ x: 0, y: 25, width: 1024, height: 743 });
+    expect(defaultWindowBounds({ x: 0, y: 0, width: 800, height: 500 })).toEqual({ x: 0, y: 0, width: MIN_WINDOW_WIDTH, height: MIN_WINDOW_HEIGHT });
   });
 });
 
@@ -97,8 +139,8 @@ describe('parseShellLayout', () => {
 // Each shell part reports only its own fields, so neither report can carry a stale copy of the other's.
 describe('shell reports', () => {
   it('reads the sidebar\'s fields alone from a report', () => {
-    const { sidebarWidth, sections, search } = DEFAULT_SHELL_LAYOUT;
-    expect(parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, sidebarVisible: false })).toEqual({ sidebarWidth, sections, search });
+    const { sidebarWidth, sections, search, scm } = DEFAULT_SHELL_LAYOUT;
+    expect(parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, sidebarVisible: false })).toEqual({ sidebarWidth, sections, search, scm });
     expect(parseSidebarLayout({ sidebarWidth: 100, sections, search })).toBeUndefined();
   });
 
@@ -138,9 +180,10 @@ describe('grid layout', () => {
     writeFile({ version: 1, sidebar: v1Sidebar });
     expect(new WindowLayoutStore(dir, log).sidebar()).toEqual({
       ...v1Sidebar,
-      sections: { ...v1Sidebar.sections, files: DEFAULT_SHELL_LAYOUT.sections.files, search: DEFAULT_SHELL_LAYOUT.sections.search },
+      sections: { ...v1Sidebar.sections, files: DEFAULT_SHELL_LAYOUT.sections.files, search: DEFAULT_SHELL_LAYOUT.sections.search, scm: DEFAULT_SHELL_LAYOUT.sections.scm },
       grid: DEFAULT_GRID_LAYOUT,
       search: {},
+      scm: DEFAULT_SHELL_LAYOUT.scm,
     });
     expect(lines).toEqual([]);
   });
@@ -454,10 +497,55 @@ describe('WindowLayoutStore', () => {
       sidebar,
       editor: EMPTY_EDITOR,
       terminals: DEFAULT_PERSISTED_TERMINALS,
+      scmSelected: {},
     });
     const next = new WindowLayoutStore(dir, log);
     expect(next.window()).toEqual({ bounds: { x: 10, y: 20, width: 1300, height: 900 }, maximized: true, fullScreen: false });
     expect(next.sidebar()).toEqual(sidebar);
+  });
+
+  it('keeps the selected repository root of each project and drops a malformed one', async () => {
+    const store = new WindowLayoutStore(dir, log);
+    store.setScmSelected('p', path.resolve('/repo'));
+    await store.flush();
+    expect(new WindowLayoutStore(dir, log).scmSelected('p')).toBe(path.resolve('/repo'));
+    writeFile({ version: 2, scmSelected: { p: 'relative/path', q: path.resolve('/q') } });
+    const read = new WindowLayoutStore(dir, log);
+    expect(read.scmSelected('p')).toBeUndefined();
+    expect(read.scmSelected('q')).toBe(path.resolve('/q'));
+  });
+
+  it('keeps the newest selections past the bound, as a new selection evicts the oldest, and forgets them when layouts are not restored', async () => {
+    const roots = Array.from({ length: 101 }, (_, index) => [`k${index}`, path.resolve(`/r${index}`)] as const);
+    writeFile({ version: 2, scmSelected: { bad: 'relative', ...Object.fromEntries(roots) } });
+    const read = new WindowLayoutStore(dir, log);
+    expect(read.scmSelected('k0')).toBeUndefined();
+    expect(read.scmSelected('k1')).toBe(path.resolve('/r1'));
+    expect(read.scmSelected('k100')).toBe(path.resolve('/r100'));
+    expect(lines).toEqual(['[layout] dropping a malformed source control selection', '[layout] dropping the 1 oldest source control selections']);
+
+    read.setScmSelected('k1', path.resolve('/again'));
+    read.setScmSelected('new', path.resolve('/new'));
+    expect(read.scmSelected('k2')).toBeUndefined();
+    expect(read.scmSelected('k1')).toBe(path.resolve('/again'));
+    expect(read.scmSelected('new')).toBe(path.resolve('/new'));
+
+    read.clear();
+    await read.flush();
+    expect(new WindowLayoutStore(dir, log).scmSelected('new')).toBeUndefined();
+  });
+
+  it('falls back field by field for a malformed Source Control or Search part of the file, keeping the rest of the sidebar', () => {
+    const search = { pattern: 'needle', isRegex: false, matchCase: false, wholeWord: false, useExcludeSettingsAndIgnoreFiles: true, replaceOpen: false, include: '', exclude: '' };
+    const sidebar = { ...DEFAULT_SHELL_LAYOUT, sidebarWidth: 333, search: { p: search }, scm: { viewMode: 'grid', sortKey: 'path' } };
+    writeFile({ version: 2, sidebar: { ...sidebar, sections: { ...sidebar.sections, scm: { collapsed: 'no', size: 1 } } } });
+    const read = new WindowLayoutStore(dir, log).sidebar();
+    expect(read.sidebarWidth).toBe(333);
+    expect(read.search['p']?.pattern).toBe('needle');
+    expect(read.scm).toEqual(DEFAULT_SHELL_LAYOUT.scm);
+    expect(read.sections.scm).toEqual(DEFAULT_SHELL_LAYOUT.sections.scm);
+    expect(lines).toEqual(['[layout] dropping the malformed Source Control section size', '[layout] dropping the malformed Source Control view options']);
+    expect(parseSidebarLayout(sidebar)).toBeUndefined();
   });
 
   it('drops malformed window bounds and a malformed sidebar with a log line, keeping the defaults', () => {

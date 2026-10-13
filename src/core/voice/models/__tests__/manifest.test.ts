@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   cleanupOldVersions,
   compareInstalled,
+  loadManifest,
   parseManifest,
   type VoiceModelManifest,
 } from "../manifest";
@@ -30,16 +31,22 @@ const VALID_MANIFEST = {
       gated: false,
     },
   },
-  wake_models_bundled: [
-    {
-      id: "hey_jarvis",
-      filename: "hey_jarvis.onnx",
-      url: "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/hey_jarvis_v0.1.onnx",
-      sha256: "94a13cfe60075b132f6a472e7e462e8123ee70861bc3fb58434a73712ee0d2cb",
-      bytes: 1271370,
-      license: "Apache-2.0",
+  wake_model: {
+    id: "kws",
+    description: "Keyword spotter",
+    license: "Apache-2.0",
+    license_url: "https://www.apache.org/licenses/LICENSE-2.0",
+    source: "https://github.com/k2-fsa/sherpa-onnx/releases/tag/kws-models",
+    archive: {
+      url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/kws.tar.bz2",
+      sha256: "cd".repeat(32),
+      bytes: 1000,
     },
-  ],
+    files: [
+      { filename: "tokens.txt", archive_path: "kws/tokens.txt", sha256: "ef".repeat(32), bytes: 10 },
+      { filename: "encoder.int8.onnx", archive_path: "kws/encoder.int8.onnx", sha256: "01".repeat(32), bytes: 20 },
+    ],
+  },
 };
 
 describe("parseManifest", () => {
@@ -50,6 +57,34 @@ describe("parseManifest", () => {
     expect(manifest.models).toHaveLength(1);
     expect(manifest.models[0]?.id).toBe("parakeet");
     expect(manifest.models[0]?.version).toBe("2.0.0");
+    expect(manifest.wakeModel.archive.url).toBe(VALID_MANIFEST.wake_model.archive.url);
+    expect(manifest.wakeModel.files.map((file) => file.filename)).toEqual(["tokens.txt", "encoder.int8.onnx"]);
+  });
+
+  it("parses the shipped manifest", async () => {
+    const manifest = await loadManifest(join(__dirname, "..", "..", "..", "..", ".."));
+    expect(manifest.wakeModel.license).toBe("Apache-2.0");
+    expect(manifest.wakeModel.files.map((file) => file.filename).sort()).toEqual([
+      "bpe.model",
+      "decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+      "encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+      "joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+      "tokens.txt",
+    ]);
+  });
+
+  it("rejects a wake file name that is a path, since files land directly in models/wake", () => {
+    for (const filename of ["../escape.onnx", "sub/tokens.txt", "C:\\x.onnx", ""]) {
+      const broken = JSON.parse(JSON.stringify(VALID_MANIFEST));
+      broken.wake_model.files[0].filename = filename;
+      expect(() => parseManifest(JSON.stringify(broken)), filename).toThrow();
+    }
+  });
+
+  it("requires wake_model", () => {
+    const broken = JSON.parse(JSON.stringify(VALID_MANIFEST));
+    delete broken.wake_model;
+    expect(() => parseManifest(JSON.stringify(broken))).toThrow();
   });
 
   it("defaults status to placeholder-checksums when omitted", () => {

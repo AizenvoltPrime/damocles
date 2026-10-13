@@ -15,6 +15,8 @@ import {
   loadManifest,
 } from "../../../voice/models";
 import type { VoiceModelManifest, ModelEntry, OutdatedModelEntry } from "../../../voice/models";
+import { parseWakePhrase, stripWakePrefix } from "../../../../shared/wake-phrase";
+import { unsupportedVoicePlatformMessage } from "../../../voice/runtime/supported-platforms";
 
 const VOICE_PINNED_VERSIONS_KEY = "damocles.voice.pinModelVersion";
 
@@ -95,15 +97,6 @@ function buildUpgradeNotification(outdated: OutdatedModelEntry[]): {
     gated: entry.gated,
   }));
 }
-
-// MUST stay byte-identical to ``WAKE_PREFIX_RE`` in
-// python/damocles_voice_sidecar/damocles_voice_sidecar/pipeline.py:45.
-// The two-layer FR-11 defense intentionally runs both passes; a silent
-// drift between them (e.g. one accepts a prefix the other doesn't)
-// would let a wake phrase reach the model. The vitest in
-// src/core/voice/__tests__/wake-prefix-parity.test.ts reads both
-// files as text and asserts the literals match — keep that test green.
-const WAKE_PREFIX_RE = /^\s*(hey\s+)?jarvis[,.\s]*/i;
 
 type TurnPhase = "idle" | "vad-active";
 
@@ -240,7 +233,9 @@ export function createVoiceStreamHandlers(
     }
     if (msg.type === "transcript_final") {
       turnPhase = "idle";
-      const cleaned = msg.text.replace(WAKE_PREFIX_RE, "").trim();
+      // The sidecar strips the phrase too; this second pass uses the same rules (src/shared/wake-phrase.ts).
+      const words = parseWakePhrase(deps.settingsManager.getVoiceConfig().wakeWord);
+      const cleaned = words === null ? msg.text.trim() : stripWakePrefix(msg.text, words);
       if (userTypedSinceWake) {
         log("[VoiceStreamHandlers] discarding voice transcript — user typed during turn");
         userTypedSinceWake = false;
@@ -398,6 +393,8 @@ export function createVoiceStreamHandlers(
       if (!voiceService.isReady()) {
         await voiceService.start();
       }
+      // An upgrade notice would offer a model download the runtime can never use.
+      if (unsupportedVoicePlatformMessage(process.platform, process.arch) !== null) return;
       try {
         const paths = voiceService.getPaths();
         const manifest = await loadManifest(platform.paths.unpackedRoot);

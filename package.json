@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "Damocles",
   "description": "An AI coding agent that runs as a standalone desktop app for Windows, macOS and Linux, and as a VS Code extension. Chat with Claude, GPT and other models, approve diffs, rewind checkpoints, and use persistent memory, subagents, teams and MCP, powered by the Pi agent runtime.",
-  "version": "3.7.0",
+  "version": "3.8.0",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -736,13 +736,15 @@
             "Click the mic to start and stop recording (cloud STT via the configured provider).",
             "Hands-free: say the wake phrase to activate (local on-device STT via the Jarvis sidecar)."
           ],
-          "description": "Voice input mode. 'Off' disables voice entirely. 'Push-to-talk' uses cloud STT (Deepgram / Whisper / Google). 'Wake-word' uses the on-device Jarvis sidecar."
+          "description": "Voice input mode. 'Off' disables voice entirely. 'Push-to-talk' uses cloud STT (Deepgram / Whisper / Google) and works on every platform. 'Wake-word' uses the on-device Jarvis sidecar, which runs only on Windows x64, Linux x64 and macOS arm64; on any other platform Damocles refuses it before installing anything."
         },
         "damocles.voice.wakeWord": {
           "type": "string",
-          "default": "hey_jarvis",
+          "default": "hey jarvis",
           "scope": "machine",
-          "description": "Wake-word model. Treated first as an ID lookup against bundled keywords; if no match, treated as a filesystem path to a user-supplied .onnx OpenWakeWord model. Machine-scope only — workspace settings cannot point this at attacker-controlled .onnx files."
+          "pattern": "^[\\s_]*[A-Za-z]+([\\s_]+[A-Za-z]+){0,3}[\\s_]*$",
+          "patternErrorMessage": "Use 1 to 4 English words of letters only, separated by spaces, such as \"hey jarvis\".",
+          "description": "Wake phrase for Jarvis mode: 1 to 4 English words of letters only, such as \"hey jarvis\" or \"computer\". Case does not matter and underscores read as spaces. The on-device keyword spotter listens for this phrase, and it is removed from the start of each transcript."
         },
         "damocles.voice.wakeWordSensitivity": {
           "type": "number",
@@ -820,7 +822,7 @@
           "type": "string",
           "default": "",
           "scope": "machine",
-          "description": "Advanced: path to an existing CUDA-PyTorch Python venv to skip the bundled runtime. Leave empty to use the default location (~/.damocles/voice/runtime/). Machine-scope only — a workspace setting must not redirect Python execution."
+          "description": "Advanced: path to an existing CUDA-PyTorch Python venv to skip the bundled runtime. It must already hold the pinned voice stack; Damocles only smoke-checks it. Windows x64, Linux x64 and macOS arm64 only: other platforms are refused even with this set. Leave empty to use the default location (~/.damocles/voice/runtime/). Machine-scope only — a workspace setting must not redirect Python execution."
         },
         "damocles.voice.pinModelVersion": {
           "type": "object",

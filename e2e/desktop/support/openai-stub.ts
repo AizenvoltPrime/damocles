@@ -29,6 +29,8 @@ export interface OpenAIStub {
   readonly requests: RecordedRequest[];
   /** Replies consumed in order by the agent's turns; a sub-call, or a turn with none left, gets the echo of its last user text. */
   readonly replies: StubReply[];
+  /** Replies consumed in order by the sub-calls whose one output tool has the key's name; others get the echo. */
+  readonly subCallReplies: Map<string, StubReply[]>;
   close(): Promise<void>;
 }
 
@@ -84,6 +86,7 @@ function lastUserText(messages: ChatMessage[]): string {
 export async function startOpenAIStub(options: { tls?: { cert: string; key: string }; hostName?: string } = {}): Promise<OpenAIStub> {
   const requests: RecordedRequest[] = [];
   const replies: StubReply[] = [];
+  const subCallReplies = new Map<string, StubReply[]>();
 
   const handler = (req: http.IncomingMessage, res: http.ServerResponse): void => {
     const parts: Buffer[] = [];
@@ -111,7 +114,7 @@ export async function startOpenAIStub(options: { tls?: { cert: string; key: stri
         res.end(JSON.stringify({ error: { message: `stub has no route ${req.method} ${req.url}` } }));
         return;
       }
-      const params = body as { stream?: boolean; stream_options?: { include_usage?: boolean }; messages?: ChatMessage[]; tools?: unknown[] };
+      const params = body as { stream?: boolean; stream_options?: { include_usage?: boolean }; messages?: ChatMessage[]; tools?: { function?: { name?: string } }[] };
       if (!params.stream) {
         res.writeHead(400, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'stub serves streamed completions only' } }));
@@ -119,7 +122,8 @@ export async function startOpenAIStub(options: { tls?: { cert: string; key: stri
       }
       // A sub-call (runStructuredCompletion: the title, memory extraction) offers only its output tool and fires on its own timers.
       const subCall = params.tools?.length === 1;
-      const reply = (subCall ? undefined : replies.shift()) ?? { chunks: ['Echo: ', lastUserText(params.messages ?? [])] };
+      const outputTool = subCall ? params.tools?.[0]?.function?.name : undefined;
+      const reply = (subCall ? (outputTool === undefined ? undefined : subCallReplies.get(outputTool)?.shift()) : replies.shift()) ?? { chunks: ['Echo: ', lastUserText(params.messages ?? [])] };
       streamReply(res, reply, params.stream_options?.include_usage === true).catch((err: unknown) => {
         res.destroy(err instanceof Error ? err : new Error(String(err)));
       });
@@ -136,6 +140,7 @@ export async function startOpenAIStub(options: { tls?: { cert: string; key: stri
     port,
     requests,
     replies,
+    subCallReplies,
     close: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections();

@@ -30,7 +30,8 @@
     "resizeSections": "Resize the Projects section",
     "sizeValue": "{size} pixels",
     "resizeFiles": "Resize the Chats and Files sections",
-    "resizeSearch": "Resize the Search section"
+    "resizeSearch": "Resize the Search section",
+    "resizeScm": "Resize the Source control section"
   },
   "projects": {
     "heading": "Projects",
@@ -210,12 +211,18 @@
       "terminal": {
         "label": "Terminal",
         "subtitle": "The integrated terminal. Changes apply to open terminals at once."
+      },
+      "sourceControl": {
+        "label": "Source control",
+        "subtitle": "Applies to every project on this machine."
       }
     },
     "groups": {
       "layout": "Layout",
       "search": "Search",
-      "searchEditor": "Search Editor"
+      "searchEditor": "Search Editor",
+      "commit": "Commit",
+      "branches": "Branches and repositories"
     },
     "theme": {
       "dark": "Dark",
@@ -257,6 +264,10 @@
       "aboutVersion": {
         "label": "About Damocles",
         "description": "Version, platform and updates."
+      },
+      "updateCheckAutomatically": {
+        "label": "Check for updates automatically",
+        "description": "Checks GitHub for a new release at startup, every 4 hours and after the computer wakes. When off, Damocles contacts GitHub only when you choose Check for updates."
       },
       "whatsNew": {
         "label": "What's new",
@@ -425,6 +436,82 @@
       "terminalMacOptionIsMeta": {
         "label": "Option is Meta",
         "description": "The Option key sends Meta (Esc) sequences, as terminal programs such as Emacs expect, instead of typing special characters."
+      },
+      "gitUntrackedChanges": {
+        "label": "Untracked changes",
+        "description": "Separate shows untracked files in their own group. Hidden leaves them out."
+      },
+      "gitRepositoryScanMaxDepth": {
+        "label": "Repository scan depth",
+        "description": "How many folders below the project folder to look for nested repositories. -1 looks at every level."
+      },
+      "gitOpenRepositoryInParentFolders": {
+        "label": "Open repositories in parent folders",
+        "description": "Whether a repository that holds the project folder from above opens: always, never, or after asking."
+      },
+      "gitInputValidation": {
+        "label": "Commit message length warning",
+        "description": "Warn while the commit message line you are on runs past the limits below."
+      },
+      "gitInputValidationSubjectLength": {
+        "label": "Subject length limit",
+        "description": "Characters in the first line of a commit message before the warning shows."
+      },
+      "gitInputValidationLength": {
+        "label": "Line length limit",
+        "description": "Characters in the other lines of a commit message before the warning shows."
+      },
+      "gitPostCommitCommand": {
+        "label": "Post-commit command",
+        "description": "Runs after a successful commit."
+      },
+      "gitBranchProtection": {
+        "label": "Protected branches",
+        "description": "Committing on one of these asks first. Separate names with commas."
+      },
+      "gitBranchProtectionPrompt": {
+        "label": "Protected branch prompt",
+        "description": "What Commit does on a protected branch."
+      },
+      "gitPromptToSaveFilesBeforeCommit": {
+        "label": "Save files before commit",
+        "description": "Ask to save unsaved editors of changed files before committing. Staged asks only about files with staged changes."
+      },
+      "gitAlwaysSignOff": {
+        "label": "Always sign off",
+        "description": "Add a Signed-off-by trailer to every commit."
+      },
+      "gitEnableCommitSigning": {
+        "label": "Sign commits",
+        "description": "Sign every commit with your GPG or SSH key (-S)."
+      },
+      "gitAllowNoVerifyCommit": {
+        "label": "Allow no-verify commits",
+        "description": "Shows the No Verify commit variants, which skip pre-commit hooks."
+      },
+      "gitConfirmNoVerifyCommit": {
+        "label": "Confirm no-verify commits",
+        "description": "Ask before committing without verification."
+      },
+      "gitConfirmEmptyCommits": {
+        "label": "Confirm empty commits",
+        "description": "Ask before Commit Empty creates a commit with no changes."
+      },
+      "gitEnableSmartCommit": {
+        "label": "Smart commit",
+        "description": "With nothing staged, Commit stages every change and commits it without asking."
+      },
+      "gitSuggestSmartCommit": {
+        "label": "Suggest smart commit",
+        "description": "With nothing staged, Commit offers to stage every change first."
+      },
+      "gitSmartCommitChanges": {
+        "label": "Smart commit changes",
+        "description": "Which changes smart commit stages: all of them, or only tracked files."
+      },
+      "gitBranchPrefix": {
+        "label": "Branch prefix",
+        "description": "Prefills the name of a new branch, as in Commit to a New Branch."
       }
     },
     "restoreDefaults": "Restore defaults",
@@ -591,6 +678,36 @@
         "goToLocation": "Go to location",
         "openLocationToSide": "Open to the side"
       }
+    },
+    "git": {
+      "untracked": {
+        "mixed": "Mixed",
+        "separate": "Separate",
+        "hidden": "Hidden"
+      },
+      "parentFolders": {
+        "always": "Always",
+        "never": "Never",
+        "prompt": "Prompt"
+      },
+      "none": "none",
+      "postCommit": {
+        "none": "None"
+      },
+      "protectionPrompt": {
+        "alwaysPrompt": "Always prompt",
+        "alwaysCommit": "Always commit",
+        "alwaysCommitToNewBranch": "Always commit to a new branch"
+      },
+      "saveBeforeCommit": {
+        "always": "Always",
+        "staged": "Staged",
+        "never": "Never"
+      },
+      "smartChanges": {
+        "all": "All",
+        "tracked": "Tracked"
+      }
     }
   },
   "update": {
@@ -726,7 +843,9 @@
       "title": "This file is not displayed",
       "binary": "It is a binary file.",
       "tooLarge": "It is too large to open in the editor.",
-      "unreadable": "Damocles could not read it."
+      "unreadable": "Damocles could not read it.",
+      "missing": "It does not exist in this version.",
+      "openAnyway": "Open Anyway"
     },
     "browser": {
       "label": "Browser",
@@ -790,6 +909,9 @@
       "copyRelativePath": "Copy relative path",
       "reveal": "Reveal in File Explorer",
       "findInFolder": "Find in Folder..."
+    },
+    "decoration": {
+      "submodule": "Submodule"
     }
   },
   "quickOpen": {
@@ -1032,5 +1154,240 @@
     "goToResult": "Go to Result",
     "goToResultToSide": "Open Result to the Side",
     "focusInput": "Focus Search Editor Input"
+  },
+  "changesTab": {
+    "files": "{count} file | {count} files",
+    "listLabel": "Changed files",
+    "loading": "Loading the diff",
+    "noFiles": "No changed files.",
+    "hidden": "{count} unchanged line | {count} unchanged lines",
+    "noNewline": "No newline at end of file",
+    "notice": {
+      "binary": "This is a binary file, so it has no line diff.",
+      "tooLarge": "This diff is too large to show.",
+      "missing": "This file is no longer in this group.",
+      "unreadable": "Damocles could not read this diff.",
+      "emptyFile": "The file is empty.",
+      "noChanges": "This file has no line changes."
+    }
+  },
+  "scm": {
+    "heading": "Source control",
+    "noProject": "Open a project to use source control.",
+    "countAria": "{n} change | {n} changes",
+    "refresh": "Refresh",
+    "moreActions": "Views and More Actions…",
+    "submenu": {
+      "viewSort": "View & Sort",
+      "changes": "Changes",
+      "repositories": "Repositories",
+      "commit": "Commit"
+    },
+    "action": {
+      "viewAsTree": "View as Tree",
+      "viewAsList": "View as List",
+      "sortByName": "Sort by Name",
+      "sortByPath": "Sort by Path",
+      "sortByStatus": "Sort by Status",
+      "stageAll": "Stage All Changes",
+      "unstageAll": "Unstage All Changes",
+      "discardAll": "Discard All Changes",
+      "stageAllTracked": "Stage All Tracked Changes",
+      "stageAllUntracked": "Stage All Untracked Changes",
+      "discardAllTracked": "Discard All Tracked Changes",
+      "discardAllUntracked": "Discard All Untracked Changes",
+      "stageAllMerge": "Stage All Merge Changes",
+      "openGroupChanges": "Open Changes",
+      "openUntrackedChanges": "Open Untracked Changes",
+      "closeRepository": "Close Repository",
+      "closeOtherRepositories": "Close Other Repositories",
+      "reopenClosed": "Reopen Closed Repositories...",
+      "showOutput": "Show Git Output",
+      "openChanges": "Open Changes",
+      "openFile": "Open File",
+      "openFileHead": "Open File (HEAD)",
+      "stage": "Stage Changes",
+      "stageMerge": "Stage Changes (mark as resolved)",
+      "unstage": "Unstage Changes",
+      "discard": "Discard Changes",
+      "addToGitignore": "Add to .gitignore",
+      "copyPath": "Copy Path",
+      "copyRelativePath": "Copy Relative Path",
+      "reveal": "Reveal in File Explorer",
+      "mention": "Mention in chat",
+      "commit": "Commit",
+      "commitStaged": "Commit Staged",
+      "commitAll": "Commit All",
+      "undoLastCommit": "Undo Last Commit",
+      "abortRebase": "Abort Rebase",
+      "restoreCommitTemplate": "Restore Commit Template",
+      "commitNoVerify": "Commit (No Verify)",
+      "commitStagedNoVerify": "Commit Staged (No Verify)",
+      "commitAllNoVerify": "Commit All (No Verify)",
+      "commitAmend": "Commit (Amend)",
+      "commitStagedAmend": "Commit Staged (Amend)",
+      "commitAllAmend": "Commit All (Amend)",
+      "commitAmendNoVerify": "Commit (Amend, No Verify)",
+      "commitStagedAmendNoVerify": "Commit Staged (Amend, No Verify)",
+      "commitAllAmendNoVerify": "Commit All (Amend, No Verify)",
+      "commitSigned": "Commit (Signed Off)",
+      "commitStagedSigned": "Commit Staged (Signed Off)",
+      "commitAllSigned": "Commit All (Signed Off)",
+      "commitSignedNoVerify": "Commit (Signed Off, No Verify)",
+      "commitStagedSignedNoVerify": "Commit Staged (Signed Off, No Verify)",
+      "commitAllSignedNoVerify": "Commit All (Signed Off, No Verify)",
+      "commitAmendSigned": "Commit (Amend, Signed Off)",
+      "commitStagedAmendSigned": "Commit Staged (Amend, Signed Off)",
+      "commitAllAmendSigned": "Commit All (Amend, Signed Off)",
+      "commitAmendSignedNoVerify": "Commit (Amend, Signed Off, No Verify)",
+      "commitStagedAmendSignedNoVerify": "Commit Staged (Amend, Signed Off, No Verify)",
+      "commitAllAmendSignedNoVerify": "Commit All (Amend, Signed Off, No Verify)"
+    },
+    "group": {
+      "merge": "Merge Changes",
+      "index": "Staged Changes",
+      "workingTree": "Changes",
+      "untracked": "Untracked Changes"
+    },
+    "groupAria": "{name}, {count}",
+    "groupMenu": "Actions for {name}",
+    "rowMenu": "Actions for {name}",
+    "rowAria": "{name}, {status}, {path}",
+    "folderAria": "{name}, {count}",
+    "empty": {
+      "noUnstaged": "No unstaged changes.",
+      "clean": "Working tree clean."
+    },
+    "status": {
+      "INDEX_MODIFIED": "Index Modified",
+      "INDEX_ADDED": "Index Added",
+      "INDEX_DELETED": "Index Deleted",
+      "INDEX_RENAMED": "Index Renamed",
+      "INDEX_COPIED": "Index Copied",
+      "MODIFIED": "Modified",
+      "DELETED": "Deleted",
+      "UNTRACKED": "Untracked",
+      "IGNORED": "Ignored",
+      "INTENT_TO_ADD": "Intent to Add",
+      "INTENT_TO_RENAME": "Intent to Rename",
+      "TYPE_CHANGED": "Type Changed",
+      "ADDED_BY_US": "Conflict: Added By Us",
+      "ADDED_BY_THEM": "Conflict: Added By Them",
+      "DELETED_BY_US": "Conflict: Deleted By Us",
+      "DELETED_BY_THEM": "Conflict: Deleted By Them",
+      "BOTH_ADDED": "Conflict: Both Added",
+      "BOTH_DELETED": "Conflict: Both Deleted",
+      "BOTH_MODIFIED": "Conflict: Both Modified"
+    },
+    "treeLabel": "Changes in {name}",
+    "keyboardHelp": "Arrow keys move and open groups and folders, Enter opens a change, Shift+F10 opens the menu. Drag a change into the chat to mention it.",
+    "tooManyChanges": "Too many changes were detected. Only the first {limit} changes will be shown below.",
+    "picker": {
+      "menuLabel": "Repositories",
+      "label": "Repository {name}, {index} of {count}",
+      "title": "Repository: select the one Source control shows",
+      "count": "{index} of {count}"
+    },
+    "state": {
+      "untrusted": {
+        "title": "Trust this folder to use source control",
+        "text": "Git runs this repository's hooks and settings, so source control stays off until you trust the project. The branch name still shows.",
+        "trust": "Trust folder"
+      },
+      "gitMissing": {
+        "text": "Install Git, a popular source control system, to track code changes and collaborate with others.",
+        "download": {
+          "windows": "Download Git for Windows",
+          "mac": "Download Git for macOS",
+          "linux": "Download Git for Linux"
+        }
+      },
+      "unsafe": {
+        "text": "The detected Git repository is potentially unsafe as the folder is owned by someone other than the current user. | The detected Git repositories are potentially unsafe as the folders are owned by someone other than the current user.",
+        "manage": "Manage Unsafe Repositories"
+      },
+      "parent": {
+        "text": "A Git repository was found in a parent folder of the project. | Git repositories were found in parent folders of the project.",
+        "open": "Open Repository"
+      },
+      "closed": {
+        "text": "A Git repository was found that was previously closed. | Git repositories were found that were previously closed.",
+        "reopen": "Reopen Closed Repository | Reopen Closed Repositories"
+      },
+      "noRepository": {
+        "text": "The folder currently open doesn't have a Git repository. You can initialize a repository which will enable source control features powered by Git.",
+        "init": "Initialize Repository"
+      }
+    },
+    "commit": {
+      "label": "Commit message",
+      "placeholder": {
+        "branch": "Message ({shortcut} to commit on “{branch}”)",
+        "merge": "Message ({shortcut} to commit the merge)",
+        "rebase": "Message ({shortcut} to continue the rebase)",
+        "cherryPick": "Message ({shortcut} to continue the cherry pick)"
+      },
+      "commit": "Commit",
+      "continue": {
+        "merge": "Commit Merge",
+        "rebase": "Continue Rebase",
+        "cherryPick": "Continue Cherry Pick"
+      },
+      "withShortcut": "{label} ({shortcut})",
+      "generate": "Generate commit message with Damocles",
+      "hint": {
+        "conflicts": "{count} merge conflict to resolve | {count} merge conflicts to resolve",
+        "rebase": "Continues with git's prepared message",
+        "staged": "{count} staged | {count} staged",
+        "nothingStaged": "Nothing staged"
+      },
+      "lengthWarning": "{count} character over {threshold} in current line | {count} characters over {threshold} in current line",
+      "feedback": {
+        "emptyMessage": "Write a commit message first",
+        "nothingToCommit": "Nothing to commit",
+        "unresolvedConflicts": "Resolve the merge conflicts before committing",
+        "missingUserConfig": "Make sure you configure your \"user.name\" and \"user.email\" in git."
+      },
+      "generating": "Generating commit message…",
+      "amend": "Commit (Amend)",
+      "moreActions": "More commit actions",
+      "amending": "Amending “{subject}”",
+      "cancelAmend": "cancel",
+      "cancelAmendAria": "Cancel amend"
+    },
+    "operation": {
+      "merge": "Merge in progress",
+      "rebase": "Rebase in progress",
+      "cherryPick": "Cherry pick in progress",
+      "abort": {
+        "merge": "Abort Merge",
+        "rebase": "Abort Rebase",
+        "cherryPick": "Abort Cherry Pick"
+      }
+    }
+  },
+  "quickInput": {
+    "invalid": {
+      "empty": "This can't be empty",
+      "tooLong": "This is too long",
+      "control": "Control characters aren't allowed",
+      "space": "A name can't contain spaces",
+      "char": "A name can't contain “{char}”",
+      "doubleDot": "A name can't contain “..”",
+      "slashEdge": "A name can't start or end with “/”",
+      "doubleSlash": "A name can't contain “//”",
+      "dotPart": "No part of a name can start with “.”",
+      "lockPart": "No part of a name can end with “.lock”",
+      "trailingDot": "A name can't end with “.”",
+      "atBrace": "A name can't contain “{'@'}{'{'}”",
+      "at": "“{'@'}” alone isn't a valid name",
+      "leadingDash": "A name can't start with “-”",
+      "head": "“HEAD” isn't a valid branch name",
+      "absolute": "Use a path relative to the repository",
+      "backslash": "Use “/” to separate folders",
+      "outside": "The path can't leave the repository",
+      "notNormalized": "Remove empty and “.” parts and doubled “/” from the path",
+      "windowsName": "Windows can't use this name: no part can end with “.” or a space, contain < > : \" {'|'} ? *, or be a device name such as “CON”"
+    }
   }
 }

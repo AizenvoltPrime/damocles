@@ -41,6 +41,7 @@ describe('SUBCALL_THINKING', () => {
       'memory-extract': 'low',
       'memory-profile': 'low',
       'memory-audit': 'low',
+      'commit-message': 'low',
     });
   });
 });

@@ -13,7 +13,7 @@ function seedProject(dir: string): void {
   fs.writeFileSync(path.join(dir, 'README.md'), '# Readme\n');
 }
 
-test('Quick Open lists the project before a query, then fuzzy results with highlighted characters and a project chip', async ({ home, launch }) => {
+test('Quick Open lists the project before a query, then fuzzy results with highlighted characters and a project chip', async ({ foreground: _foreground, home, launch }) => {
   seedProject(home.project);
   const { app } = await launch();
   await openProjectChat(app, home.project);
@@ -38,7 +38,7 @@ test('Quick Open lists the project before a query, then fuzzy results with highl
   await expect(picker).toBeHidden();
 });
 
-test('a :line suffix opens the file at that line, and opening it again from a recent pick lists it first', async ({ home, launch }) => {
+test('a :line suffix opens the file at that line, and opening it again from a recent pick lists it first', async ({ foreground: _foreground, home, launch }) => {
   seedProject(home.project);
   const { app } = await launch();
   await openProjectChat(app, home.project);
@@ -58,7 +58,7 @@ test('a :line suffix opens the file at that line, and opening it again from a re
   await again.getByTestId('quick-pick-input').press('Escape');
 });
 
-test('an @ prefix mentions the picked file in the chat instead of opening it', async ({ home, launch }) => {
+test('an @ prefix mentions the picked file in the chat instead of opening it', async ({ foreground: _foreground, home, launch }) => {
   seedProject(home.project);
   const { app } = await launch();
   const chat = await openProjectChat(app, home.project);

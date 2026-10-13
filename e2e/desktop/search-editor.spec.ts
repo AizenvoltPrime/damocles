@@ -48,7 +48,7 @@ async function runQuery(shell: Page, query: string): Promise<void> {
   await expect(shell.getByTestId('search-editor-progress')).toHaveCount(0);
 }
 
-test('a Search Editor runs a query with context lines in VS Code\'s layout, highlights the matches, and a double-click opens the match', async ({ home, launch }) => {
+test('a Search Editor runs a query with context lines in VS Code\'s layout, highlights the matches, and a double-click opens the match', async ({ foreground: _foreground, home, launch }) => {
   write(home.project, 'src/a.ts', 'one\nneedle here\nthree\nfour\nfive\nneedle again\n');
   write(home.project, 'b.md', 'needle\n');
   const { app } = await launch();
@@ -87,7 +87,7 @@ test('a Search Editor runs a query with context lines in VS Code\'s layout, high
   await expect.poll(async () => (await activeTab(app))?.relativePath).toBe('src/a.ts');
 });
 
-test('Open in editor copies the Search view\'s results into a Search Editor, and Go to Definition on a result line opens the file', async ({ home, launch }) => {
+test('Open in editor copies the Search view\'s results into a Search Editor, and Go to Definition on a result line opens the file', async ({ foreground: _foreground, home, launch }) => {
   write(home.project, 'lib/x.ts', 'const target = 1;\n');
   const { app } = await launch();
   await openProjectChat(app, home.project);
@@ -107,7 +107,7 @@ test('Open in editor copies the Search view\'s results into a Search Editor, and
   await expect.poll(async () => (await activeTab(app))?.relativePath).toBe('lib/x.ts');
 });
 
-test('Enter runs, Ctrl+Enter adds a line to the query, Search Again re-runs after a file changes, and Escape in the body returns to the query', async ({ home, launch }) => {
+test('Enter runs, Ctrl+Enter adds a line to the query, Search Again re-runs after a file changes, and Escape in the body returns to the query', async ({ foreground: _foreground, home, launch }) => {
   const file = write(home.project, 'a.ts', 'alpha\n');
   const { app } = await launch();
   await openProjectChat(app, home.project);
@@ -128,7 +128,7 @@ test('Enter runs, Ctrl+Enter adds a line to the query, Search Again re-runs afte
   await expect(editorQuery(shell)).toHaveValue('alpha\nx');
 });
 
-test('Save As writes VS Code\'s .code-search format, and opening the file again restores its query with Run Search', async ({ home, launch }) => {
+test('Save As writes VS Code\'s .code-search format, and opening the file again restores its query with Run Search', async ({ foreground: _foreground, home, launch }) => {
   write(home.project, 'a.ts', 'needle\n');
   const target = path.join(home.project, 'saved.code-search');
   const { app } = await launch();
@@ -160,7 +160,7 @@ test('Save As writes VS Code\'s .code-search format, and opening the file again 
   await expect(body(shell).locator('.search-editor-match')).toHaveCount(0);
 });
 
-test('a dirty untitled Search Editor survives quit and relaunch', async ({ home, launch }) => {
+test('a dirty untitled Search Editor survives quit and relaunch', async ({ foreground: _foreground, home, launch }) => {
   write(home.project, 'a.ts', 'needle\n');
   {
     const { app, close } = await launch();

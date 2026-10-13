@@ -17,16 +17,17 @@ vi.mock('electron', () => ({
 import { acceleratorLabel, CommandPalette, desktopCommands, isEnabled, keyFires, MENU_IDS, openChatForProjectId, terminalPassKeys } from '../commands';
 import { installApplicationMenu, type MenuActions, type MenuState } from '../menu';
 import { createDesktopLocalizationService } from '../platform/localization-service';
+import { NO_SCM_MENU_STATE } from '../scm/scm-host';
 
 const calls: string[] = [];
 const actions = new Proxy({} as MenuActions, {
-  get: (_target, name: string) => (...args: unknown[]) => calls.push([name, ...args].join(':')),
+  get: (_target, name: string) => (...args: unknown[]) => calls.push([name, ...args.map((arg) => (typeof arg === 'object' ? JSON.stringify(arg) : arg))].join(':')),
 });
 
 const PROJECTS = [{ fsPath: 'C:\\work\\alpha', name: 'alpha' }] as never;
-const CHAT: MenuState = { chat: true, editor: false, browser: true, page: false, focus: 'chat', updateCheck: true, project: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false } };
+const CHAT: MenuState = { chat: true, editor: false, browser: true, page: false, focus: 'chat', updateCheck: true, project: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE };
 const EDITOR: MenuState = { ...CHAT, editor: true, focus: 'editor' };
-const NONE: MenuState = { chat: false, editor: false, browser: false, page: false, focus: undefined, updateCheck: false, project: false, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false } };
+const NONE: MenuState = { chat: false, editor: false, browser: false, page: false, focus: undefined, updateCheck: false, project: false, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE };
 const PLATFORMS = ['win32', 'linux', 'darwin'] as const;
 
 const en = createDesktopLocalizationService(process.cwd(), 'en', () => undefined);
@@ -158,6 +159,97 @@ describe('command palette', () => {
     const rest = listed.slice(2).map((entry) => entry.label);
     expect(rest).toEqual([...rest].sort((a, b) => a.localeCompare(b, 'en')));
     expect(listed.slice(2).every((entry) => !entry.recent)).toBe(true);
+  });
+});
+
+describe('Git commit commands', () => {
+  const OPEN: MenuState = { ...CHAT, scm: { ...NO_SCM_MENU_STATE, available: true, openRepositoryCount: 1 } };
+  const labels = (context: MenuState): string[] => palette().list(context).map((entry) => entry.label).filter((label) => label.startsWith('Git: '));
+
+  it('lists VS Code\'s commit variants, with the No Verify ones only while allowNoVerifyCommit is on', () => {
+    const off = labels(OPEN);
+    expect(off).toEqual(expect.arrayContaining(['Git: Commit', 'Git: Commit Staged', 'Git: Commit All', 'Git: Commit (Amend)', 'Git: Commit Staged (Amend)', 'Git: Commit All (Amend)', 'Git: Commit (Signed Off)', 'Git: Commit Staged (Signed Off)', 'Git: Commit All (Signed Off)', 'Git: Commit Empty', 'Git: Undo Last Commit', 'Git: Close All Diff Editors']));
+    expect(off.filter((label) => label.includes('No Verify'))).toEqual([]);
+    const on = labels({ ...OPEN, scm: { ...OPEN.scm, allowNoVerifyCommit: true } }).filter((label) => label.includes('No Verify'));
+    expect(on.sort()).toEqual([
+      'Git: Commit (Amend, No Verify)',
+      'Git: Commit (No Verify)',
+      'Git: Commit (Signed Off, No Verify)',
+      'Git: Commit All (Amend, No Verify)',
+      'Git: Commit All (No Verify)',
+      'Git: Commit All (Signed Off, No Verify)',
+      'Git: Commit Empty (No Verify)',
+      'Git: Commit Staged (Amend, No Verify)',
+      'Git: Commit Staged (No Verify)',
+      'Git: Commit Staged (Signed Off, No Verify)',
+    ]);
+    expect(labels(CHAT).filter((label) => label.startsWith('Git: Commit'))).toEqual([]);
+    expect(labels(OPEN)).not.toContain('Git: Restore Commit Template');
+  });
+
+  it('titles each commit variant as the amend it runs while the commit box amends, drops the amend variants, and reverts', () => {
+    const NO_VERIFY = { ...OPEN, scm: { ...OPEN.scm, allowNoVerifyCommit: true } };
+    const AMENDING = { ...NO_VERIFY, scm: { ...NO_VERIFY.scm, amending: true } };
+    const commits = (context: MenuState): string[] => labels(context).filter((label) => label.startsWith('Git: Commit')).sort();
+    expect(commits(AMENDING)).toEqual([
+      'Git: Commit (Amend)',
+      'Git: Commit (Amend, No Verify)',
+      'Git: Commit (Amend, Signed Off)',
+      'Git: Commit (Amend, Signed Off, No Verify)',
+      'Git: Commit All (Amend)',
+      'Git: Commit All (Amend, No Verify)',
+      'Git: Commit All (Amend, Signed Off)',
+      'Git: Commit All (Amend, Signed Off, No Verify)',
+      'Git: Commit Empty (Amend)',
+      'Git: Commit Empty (Amend, No Verify)',
+      'Git: Commit Staged (Amend)',
+      'Git: Commit Staged (Amend, No Verify)',
+      'Git: Commit Staged (Amend, Signed Off)',
+      'Git: Commit Staged (Amend, Signed Off, No Verify)',
+    ]);
+    const ids = palette().list(AMENDING).map((entry) => entry.id);
+    for (const id of [MENU_IDS.gitCommitAmend, MENU_IDS.gitCommitStagedAmend, MENU_IDS.gitCommitAllAmend, MENU_IDS.gitCommitAmendNoVerify, MENU_IDS.gitCommitStagedAmendNoVerify, MENU_IDS.gitCommitAllAmendNoVerify]) {
+      expect(ids, id).not.toContain(id);
+      expect(palette().run(id, AMENDING), id).toBe(false);
+    }
+    expect(palette().list(AMENDING).find((entry) => entry.id === MENU_IDS.gitCommit)).toMatchObject({ label: 'Git: Commit (Amend)', englishLabel: 'Git: Commit (Amend)', enabled: true });
+    const greek = palette(el).list(AMENDING);
+    expect(greek.find((entry) => entry.id === MENU_IDS.gitCommitAllSigned)).toMatchObject({ label: 'Git: Υποβολή όλων (τροποποίηση, με sign-off)', englishLabel: 'Git: Commit All (Amend, Signed Off)' });
+    expect(greek.find((entry) => entry.id === MENU_IDS.gitCommitEmpty)!.label).toBe('Git: Κενή υποβολή (τροποποίηση)');
+
+    const back = commits(NO_VERIFY);
+    expect(back).toEqual(expect.arrayContaining(['Git: Commit', 'Git: Commit (Amend)', 'Git: Commit (Signed Off, No Verify)', 'Git: Commit Empty']));
+    expect(back).toHaveLength(20);
+  });
+
+  it('runs each variant as the shell\'s commit of its draft with that variant', () => {
+    const commands = palette();
+    const NO_VERIFY = { ...OPEN, scm: { ...OPEN.scm, allowNoVerifyCommit: true } };
+    for (const id of [MENU_IDS.gitCommit, MENU_IDS.gitCommitAllAmend, MENU_IDS.gitCommitStagedSigned, MENU_IDS.gitCommitEmptyNoVerify]) expect(commands.run(id, NO_VERIFY)).toBe(true);
+    expect(commands.run(MENU_IDS.gitCommitNoVerify, OPEN)).toBe(false);
+    expect(calls).toEqual([
+      'scmCommit:{"scope":"auto","amend":false,"signoff":false,"noVerify":false,"empty":false}',
+      'scmCommit:{"scope":"all","amend":true,"signoff":false,"noVerify":false,"empty":false}',
+      'scmCommit:{"scope":"staged","amend":false,"signoff":true,"noVerify":false,"empty":false}',
+      'scmCommit:{"scope":"auto","amend":false,"signoff":false,"noVerify":true,"empty":true}',
+    ]);
+  });
+
+  it('lists Rename for a file in a repository, Delete for any file, Open All Changes and Close All Unmodified Editors always', () => {
+    const file = { ...OPEN, scm: { ...OPEN.scm, activeEditorFile: true } };
+    expect(labels(file)).toEqual(expect.arrayContaining(['Git: Delete', 'Git: Open All Changes', 'Git: Close All Unmodified Editors']));
+    expect(labels(file)).not.toContain('Git: Rename');
+    expect(labels({ ...file, scm: { ...file.scm, activeFileInRepository: true } })).toContain('Git: Rename');
+    expect(labels(OPEN)).not.toContain('Git: Delete');
+    const none = palette().list(NONE);
+    expect(none.find((entry) => entry.label === 'Git: Open All Changes')?.enabled).toBe(false);
+    expect(none.find((entry) => entry.label === 'Git: Close All Unmodified Editors')?.enabled).toBe(true);
+    const commands = palette();
+    commands.run(MENU_IDS.gitRename, { ...file, scm: { ...file.scm, activeFileInRepository: true } });
+    commands.run(MENU_IDS.gitDelete, file);
+    commands.run(MENU_IDS.gitUndoCommit, OPEN);
+    commands.run(MENU_IDS.gitCloseAllUnmodifiedEditors, NONE);
+    expect(calls).toEqual(['scmActiveFile:rename', 'scmActiveFile:delete', 'scmRun:{"op":"undoLastCommit"}', 'scmRun:{"op":"closeAllUnmodifiedEditors"}']);
   });
 });
 

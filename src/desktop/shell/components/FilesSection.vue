@@ -9,11 +9,14 @@ import { remPx } from '@/composables/useRemPx';
 import { FILE_DRAG_MIME, serializeFileDragPayload } from '@shared/file-drag';
 import { MAX_FILE_NAME_LENGTH, type DamoclesShellApi, type FileRef, type ShellPlatform } from '../../preload/shell-channels';
 import type { OverlayMenuItem } from '../../preload/overlay-channels';
+import type { ScmDecoration, ScmTone } from '../../preload/scm-channels';
 import { fileNameProblem } from '../../preload/file-names';
 import { ancestorsOf, autoRevealExcluded, flattenTree, nameOf, parentOf, type Listing, type TreeEdit, type TreeRow } from '../files-tree';
 import { fileIcon } from '../file-icons';
 import { tidyMenu } from '../../preload/overlay-channels';
 import { EDITOR_STORE } from '../editor/editor-store';
+import { SCM_STORE } from '../scm/scm-store';
+import { TONE_TEXT } from '../scm/scm-list';
 import SidebarSection from './SidebarSection.vue';
 
 const props = defineProps<{
@@ -27,6 +30,7 @@ const props = defineProps<{
 const emit = defineEmits<{ toggle: []; expand: [] }>();
 const { t } = useI18n();
 const editor = inject(EDITOR_STORE)!;
+const scm = inject(SCM_STORE)!;
 
 // rem of a tree row (the reference's 24px) and of each level's indent (14px), from its 8px start.
 const ROW_REM = 1.5;
@@ -57,6 +61,20 @@ const selectedPath = computed(() => {
   return tab?.projectKey === props.projectKey ? tab?.relativePath : undefined;
 });
 const rootListing = computed(() => listings.value.get(''));
+
+type RowDecoration = { readonly own: ScmDecoration | undefined; readonly ignored: boolean; readonly letter: string | undefined; readonly dot: ScmTone | undefined; readonly title: string | undefined };
+// B3: source control's decoration of a row: a file's (or a submodule folder's) letter, a folder's dot for its changed descendants,
+// and ignored entries faded. Main computes the files; the folder dots come from them here.
+function decorationOf(row: Extract<TreeRow, { kind: 'entry' }>): RowDecoration {
+  const own = scm.decorationOf(props.projectKey, row.path);
+  const ignored = row.ignored || own?.tone === 'ignored';
+  const letter = own?.letter;
+  const dot = row.directory && letter === undefined && !ignored ? scm.folderToneOf(props.projectKey, row.path) : undefined;
+  return { own, ignored, letter, dot, title: own?.status ? t(`scm.status.${own.status}`) : own?.submodule ? t('files.decoration.submodule') : undefined };
+}
+// The rendered rows' decorations, worked out once per render.
+const decorations = computed(() => new Map(visibleRows.value.flatMap(({ data }) => (data.kind === 'entry' ? [[data.path, decorationOf(data)] as const] : []))));
+const decoration = (row: Extract<TreeRow, { kind: 'entry' }>): RowDecoration => decorations.value.get(row.path) ?? decorationOf(row);
 
 function setListing(dir: string, listing: Listing): void {
   listings.value.set(dir, listing);
@@ -655,7 +673,36 @@ defineExpose({ reveal, startCreate, collapseAll });
               class="size-3.5 shrink-0"
               :style="{ color: fileIcon(row.name, row.directory, row.expanded).color }"
             />
-            <span class="min-w-0 flex-1 truncate">{{ row.name }}</span>
+            <span
+              data-testid="files-name"
+              class="min-w-0 flex-1 truncate"
+              :data-ignored="decoration(row).ignored || undefined"
+              :class="decoration(row).ignored ? (row.path === selectedPath ? 'text-(--d-faint-text)' : 'text-(--d-faint)') : ''"
+              :style="decoration(row).letter && !row.directory && decoration(row).own ? { color: TONE_TEXT[decoration(row).own!.tone] } : undefined"
+            >{{ row.name }}</span>
+            <span
+              v-if="decoration(row).letter"
+              data-testid="files-decoration"
+              aria-hidden="true"
+              class="flex w-3 shrink-0 justify-center font-mono text-10.5 font-semibold"
+              :style="{ color: TONE_TEXT[decoration(row).own!.tone] }"
+              :title="decoration(row).title"
+            >
+              <Transition name="t-letter">
+                <span :key="decoration(row).letter">{{ decoration(row).letter }}</span>
+              </Transition>
+            </span>
+            <span
+              v-else-if="decoration(row).dot"
+              data-testid="files-folder-dot"
+              :data-tone="decoration(row).dot"
+              class="mx-0.75 size-1.5 shrink-0 rounded-full"
+              :style="{ backgroundColor: TONE_TEXT[decoration(row).dot!] }"
+            />
+            <span
+              v-if="decoration(row).title"
+              class="sr-only"
+            >{{ decoration(row).title }}</span>
           </div>
         </template>
       </div>

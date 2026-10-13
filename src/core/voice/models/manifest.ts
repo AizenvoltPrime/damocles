@@ -23,13 +23,28 @@ export type ModelEntryRaw = {
 
 export type ModelEntry = ModelEntryRaw & { id: string };
 
-export type WakeModelBundled = {
-  id: string;
-  filename: string;
+export type WakeModelArchive = {
   url: string;
   sha256: string;
   bytes: number;
+};
+
+/** One file extracted from the archive's `archive_path` into `models/wake/<filename>`. */
+export type WakeModelFile = {
+  filename: string;
+  archive_path: string;
+  sha256: string;
+  bytes: number;
+};
+
+export type WakeModel = {
+  id: string;
+  description: string;
   license: string;
+  license_url: string;
+  source: string;
+  archive: WakeModelArchive;
+  files: WakeModelFile[];
 };
 
 export type ManifestStatus = "placeholder-checksums" | "production";
@@ -38,14 +53,14 @@ export type VoiceModelManifest = {
   schemaVersion: number;
   status: ManifestStatus;
   models: ModelEntry[];
-  wakeModelsBundled: WakeModelBundled[];
+  wakeModel: WakeModel;
 };
 
 type RawManifest = {
   $schema_version: 1;
   manifest_status?: ManifestStatus | undefined;
   models: Record<string, ModelEntryRaw>;
-  wake_models_bundled: WakeModelBundled[];
+  wake_model: WakeModel;
 };
 
 const fileEntrySchema: z.ZodType<ModelFileEntry> = z.object({
@@ -65,20 +80,33 @@ const modelEntrySchema: z.ZodType<ModelEntryRaw> = z.object({
   gated: z.boolean(),
 });
 
-const wakeModelSchema: z.ZodType<WakeModelBundled> = z.object({
-  id: z.string(),
-  filename: z.string(),
-  url: z.string().url(),
-  sha256: z.string().length(64),
-  bytes: z.number().int().nonnegative(),
-  license: z.string(),
+const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
+
+const wakeModelSchema: z.ZodType<WakeModel> = z.object({
+  id: z.string().min(1),
+  description: z.string(),
+  license: z.string().min(1),
+  license_url: z.string().url(),
+  source: z.string().url(),
+  archive: z.object({
+    url: z.string().url(),
+    sha256: sha256Schema,
+    bytes: z.number().int().positive(),
+  }),
+  files: z.array(z.object({
+    // A bare name: files are written straight into models/wake/.
+    filename: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/),
+    archive_path: z.string().min(1),
+    sha256: sha256Schema,
+    bytes: z.number().int().positive(),
+  })).min(1),
 });
 
 const manifestSchema: z.ZodType<RawManifest> = z.object({
   $schema_version: z.literal(1),
   manifest_status: z.enum(["placeholder-checksums", "production"]).optional(),
   models: z.record(z.string(), modelEntrySchema),
-  wake_models_bundled: z.array(wakeModelSchema),
+  wake_model: wakeModelSchema,
 });
 
 export const MANIFEST_RELATIVE_PATH: string = join(
@@ -103,7 +131,7 @@ export function parseManifest(text: string): VoiceModelManifest {
     schemaVersion: parsed.$schema_version,
     status: parsed.manifest_status ?? "placeholder-checksums",
     models,
-    wakeModelsBundled: parsed.wake_models_bundled,
+    wakeModel: parsed.wake_model,
   };
 }
 

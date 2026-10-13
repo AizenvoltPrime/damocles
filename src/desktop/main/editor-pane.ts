@@ -17,6 +17,7 @@ import {
   EDITOR_FORMAT_TIMEOUT_MS,
   type FileRef,
   type FilesMutationResult,
+  type NotDisplayedReason,
   type SearchEditorConfig,
   type SearchEditorMessage,
   type SearchEditorOpenResult,
@@ -25,8 +26,10 @@ import {
   type ShellEditorDocument,
   type ShellEditorSettings,
   type ShellEditorState,
+  type ShellDiffSide,
   type ShellEditorTab,
 } from '../preload/shell-channels';
+import type { ScmChangesTab } from '../preload/scm-channels';
 import {
   EDITOR_AUTO_SAVES,
   EDITOR_AUTO_SAVE_SETTING,
@@ -46,6 +49,7 @@ import { isDocumentDirty, movedPath, type Document, type DocumentService, type S
 import type { FormatTarget } from './formatting/format-service';
 import { DEFAULT_SEARCH_EDITOR_CONFIG, resultLocation } from './search/search-editor-format';
 import { projectOfPath, type Project } from './documents/confine';
+import { languageIdForName } from './platform/editor-document';
 import type { BrowserTabsEditor } from './browser-tabs';
 import type { AskMessage } from './message-dialog';
 
@@ -62,6 +66,19 @@ export const FLUSH_TIMEOUT_MS = 2000;
 export const FORMAT_FLUSH_MS_PER_DOCUMENT: number = 2 * EDITOR_FORMAT_TIMEOUT_MS + 1000;
 
 type FileTabKind = Exclude<EditorTabKind, 'browser'>;
+
+// A side main never sends as text (a git blob that is missing, too large or binary), shown as its reason only.
+export interface NotShownSide {
+  readonly name: string;
+  readonly notDisplayed: NotDisplayedReason;
+  readonly bytes?: number;
+}
+
+// A source control group's multi-file diff (ChangesTab.vue); its entries follow the repository's status while it is open.
+export interface ChangesTabState {
+  readonly title: string;
+  readonly changes: ScmChangesTab;
+}
 
 // Where a file is: its native path, and its project place when it lies inside an open project.
 interface Place {
@@ -90,7 +107,11 @@ interface Tab {
     subject: DiffSubject;
     readonly conflictCompare?: true;
     readonly replacePreview?: true;
+    // the root and id of the repository whose change source control opened here (Close All Diff Editors, a disposed repository)
+    readonly scmRoot?: string;
+    readonly scmRepoId?: string;
   };
+  changes?: ChangesTabState;
 }
 
 // A persisted tab names its file; ids are issued again on restore.
@@ -157,6 +178,8 @@ export interface EditorPaneDeps {
   readonly warn: (message: string) => void;
   // a Search Editor's document left with its last tab
   readonly searchEditorClosed: (documentId: string) => void;
+  // a code tab's Open Changes: source control's diff of that file
+  readonly openChanges: (absolutePath: string) => Promise<void>;
 }
 
 function readSetting<T>(settings: SettingsStore, key: string, fallback: T): T {
@@ -231,6 +254,20 @@ function placeFields(place: Place): Pick<ShellEditorTab, 'projectKey' | 'relativ
     ...(place.projectKey !== undefined ? { projectKey: place.projectKey } : {}),
     ...(place.relativePath !== undefined ? { relativePath: place.relativePath } : {}),
     displayPath: place.path,
+  };
+}
+
+// A diff side as the shell renders it: an image or a file the editor does not open as text is a placeholder, which only the
+// modified side, the one the tab's Open File shows, offers to open when it is a file on disk.
+function diffSide(document: Document | undefined, modified: boolean): ShellDiffSide {
+  if (document?.kind === 'text') return { kind: 'text' };
+  if (!document) return { kind: 'notDisplayed', reason: 'missing', openable: false };
+  const bytes = document.bytes;
+  return {
+    kind: 'notDisplayed',
+    reason: document.kind === 'image' ? 'binary' : document.reason,
+    ...(bytes !== undefined ? { bytes } : {}),
+    openable: modified && document.location !== undefined,
   };
 }
 
@@ -382,11 +419,65 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     return { ok: true, tabId: tab.id };
   }
 
+  /** A group's multi-file diff: the tab already showing that repository's group, updated, else a new one; a user action focuses it. */
+  showChanges(state: ChangesTabState, opts: { readonly focus: boolean }): string {
+    const same = (tab: Tab): boolean => tab.changes?.changes.repoId === state.changes.repoId && tab.changes.changes.source.kind === state.changes.source.kind;
+    const existing = this.tabs.find(same);
+    if (existing) existing.changes = state;
+    const tab = existing ?? this.addTab({ id: randomUUID(), kind: 'changes', changes: state });
+    this.afterOpen(tab, opts);
+    // afterOpen pushes nothing for the tab already active
+    this.stateChanged();
+    return tab.id;
+  }
+
+  /**
+   * Closes the changes and diff tabs of a repository source control no longer has. A diff whose editable side holds unsaved
+   * edits becomes that file's own tab in its place, keeping the document, as VS Code replaces a diff whose original is gone;
+   * when the file already has its own tab, the edits stay there and the diff closes.
+   */
+  async closeChanges(repoId: string): Promise<void> {
+    const repoDiff = (tab: Tab): boolean => tab.diff?.scmRepoId === repoId;
+    for (const tab of this.tabs.filter(repoDiff)) {
+      const edited = this.deps.documents.get(tab.diff!.modifiedId);
+      if (edited?.kind !== 'text' || edited.readOnlyReason !== undefined || !isDocumentDirty(edited)) continue;
+      if (this.tabs.some((other) => other !== tab && other.documentId === edited.id)) continue;
+      this.replaceWithFileTab(tab, edited);
+    }
+    await this.closeTabs(this.tabs.filter((tab) => tab.changes?.changes.repoId === repoId || repoDiff(tab)).map((tab) => tab.id), { ask: false });
+  }
+
+  /** The open changes tabs, for their owner to keep current. */
+  changesTabs(): ReadonlyArray<{ readonly tabId: string; readonly state: ChangesTabState }> {
+    return this.tabs.flatMap((tab) => (tab.changes ? [{ tabId: tab.id, state: tab.changes }] : []));
+  }
+
+  updateChanges(tabId: string, state: ChangesTabState): void {
+    const tab = this.tabs.find((candidate) => candidate.id === tabId);
+    if (!tab?.changes || JSON.stringify(tab.changes) === JSON.stringify(state)) return;
+    tab.changes = state;
+    this.stateChanged();
+  }
+
   /** A path core named (a tool card click, the agent): shown in the pane, focused only for a user's click. */
   async openPath(filePath: string, opts: { readonly line?: number; readonly focus: boolean; readonly preview?: boolean }): Promise<void> {
     const document = await this.deps.documents.openPath(filePath);
     const tab = this.showDocument(document, opts.preview === true && isMarkdown(document) ? 'markdownPreview' : undefined);
     this.afterOpen(tab, { focus: opts.focus, ...(opts.line !== undefined ? { line: opts.line } : {}) });
+  }
+
+  /** A core-originated side the editor does not show as text, in its own tab titled title. */
+  openPlaceholder(title: string, side: NotShownSide): void {
+    const document = this.deps.documents.openPlaceholder(title, side.notDisplayed, side.bytes);
+    const tab = this.addTab({ id: randomUUID(), kind: 'notDisplayed', documentId: document.id });
+    this.afterOpen(tab, { focus: true });
+  }
+
+  /** A core-originated read-only text (a git side such as HEAD:path) in its own tab, titled title, coloured as fileName. */
+  openReadOnly(title: string, content: string, fileName: string): void {
+    const document = this.deps.documents.openMemory(title, content, { untitled: false, languageId: languageIdForName(fileName) });
+    const tab = this.addTab({ id: randomUUID(), kind: 'code', documentId: document.id });
+    this.afterOpen(tab, { focus: true });
   }
 
   openUntitled(content: string, name: string, languageId: string, opts: { readonly focus: boolean }): void {
@@ -397,16 +488,92 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
 
   /**
    * A diff without an approval: two read-only sides, unless a side is a file inside a project, which stays editable. filePath
-   * names the file it shows, and title its tab after that file's current name.
+   * names the file it shows, and title its tab after that file's current name. A side the editor does not show as text
+   * (NotShownSide, or a file that is binary or too large) is a placeholder the shell renders beside the other side.
    */
-  async showDiff(title: (fileName: string) => string, filePath: string, left: DiffSide, right: DiffSide, opts: { readonly focus: boolean }): Promise<{ close(): void }> {
+  async showDiff(
+    title: (fileName: string) => string,
+    filePath: string,
+    left: DiffSide | NotShownSide,
+    right: DiffSide | NotShownSide,
+    opts: { readonly focus: boolean; readonly scm?: { readonly root: string; readonly repoId: string } },
+  ): Promise<{ close(): void }> {
     const [original, modified] = await Promise.all([this.sideDocument(left), this.sideDocument(right)]);
     const fileSide = 'path' in right ? modified : 'path' in left ? original : undefined;
     const subject: DiffSubject = fileSide ? { documentId: fileSide.id } : { place: await this.placeOfPath(filePath) };
-    const tab = this.openDiffTab(title, original, modified, subject);
+    const tab = this.openDiffTab(title, original, modified, subject, opts.scm ? { scmRoot: opts.scm.root, scmRepoId: opts.scm.repoId } : {});
     this.afterOpen(tab, { focus: opts.focus });
     // Edits the user made to the file in this tab are asked about, as VS Code's tabGroups.close asks before closing a dirty editor.
     return { close: () => this.closeTabs([tab.id], { ask: true }) };
+  }
+
+  /**
+   * Each file's tab opened without taking the active tab, unless the pane shows none (VS Code's background open); the shell
+   * gets the tabs in one state push.
+   */
+  async openInBackground(filePaths: readonly string[]): Promise<void> {
+    let first: Tab | undefined;
+    try {
+      for (const filePath of filePaths) {
+        const document = await this.deps.documents.openPath(filePath);
+        const kind = this.kindFor(document);
+        const tab = this.tabs.find((candidate) => candidate.documentId === document.id && candidate.kind === kind) ?? this.addTab({ id: randomUUID(), kind, documentId: document.id }, false);
+        first ??= tab;
+      }
+    } finally {
+      if (first) {
+        if (this.activeId === null) this.activate(first.id);
+        this.deps.showPane();
+        this.stateChanged();
+      }
+    }
+  }
+
+  /** Close All Diff Editors: the diff tabs source control opened for the repository at root, asking about unsaved edits. */
+  async closeScmDiffs(root: string): Promise<void> {
+    await this.closeTabs(this.tabs.filter((tab) => tab.diff?.scmRoot !== undefined && folderKey(tab.diff.scmRoot) === folderKey(root)).map((tab) => tab.id), { ask: true });
+  }
+
+  /**
+   * Close All Unmodified Editors: every clean text tab (VS Code's TabInputText: a file, untitled, settings or log tab) whose file
+   * has no change in source control.
+   */
+  async closeUnmodified(changed: (absolutePath: string) => boolean): Promise<void> {
+    const text: ReadonlySet<FileTabKind> = new Set(['code', 'untitled', 'settings', 'log']);
+    const targets = this.tabs.filter((tab) => {
+      const document = tab.documentId !== undefined ? this.deps.documents.get(tab.documentId) : undefined;
+      return text.has(tab.kind) && document !== undefined && !isDocumentDirty(document) && !(document.location && changed(document.location.path));
+    });
+    await this.closeTabs(targets.map((tab) => tab.id), { ask: false });
+  }
+
+  /** Closes the active file tab as Close Editor does; cleanOnly leaves a tab with unsaved edits open. */
+  async closeActive(opts: { readonly cleanOnly: boolean }): Promise<void> {
+    const tab = this.tabs.find((candidate) => candidate.id === this.activeId);
+    if (!tab) return;
+    const document = tab.documentId !== undefined ? this.deps.documents.get(tab.documentId) : undefined;
+    if (opts.cleanOnly && document && isDocumentDirty(document)) return;
+    await this.closeTabs([tab.id], { ask: true });
+  }
+
+  /** The unsaved documents of files on disk, once the shell's last edits arrived (the save-before-commit prompt). */
+  async dirtyFiles(): Promise<ReadonlyArray<{ readonly documentId: string; readonly path: string }>> {
+    await this.flush();
+    return this.dirtyDocuments().flatMap((document) =>
+      document.untitled || document.settingsScope !== undefined || document.searchEditor || !document.location ? [] : [{ documentId: document.id, path: document.location.path }],
+    );
+  }
+
+  /** Saves these documents as Save does, formatting first while format on save is on; false when one did not save. */
+  async saveDocuments(documentIds: readonly string[]): Promise<boolean> {
+    const documents = this.dirtyDocuments().filter((document) => documentIds.includes(document.id));
+    await this.flush(this.formatsOnSave(documents));
+    for (const document of documents) {
+      const result = await this.deps.documents.save(document.id, document.version, document.text);
+      if (!result.ok) return false;
+      this.noteRecent(document.id);
+    }
+    return true;
   }
 
   /** Search's replace preview of a project file or an untitled buffer: one read-only diff tab per file, which a later preview of that file takes over. */
@@ -467,7 +634,8 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
         this.afterOpen(this.showDocument(document, document.kind === 'text' ? 'code' : undefined), { focus: true });
         return;
       case 'openChanges':
-        throw new Error('Open changes needs source control, which this version does not have');
+        if (document?.location) await this.deps.openChanges(document.location.path);
+        return;
       case 'copyPath':
       case 'copyRelativePath': {
         const location = document?.location;
@@ -780,7 +948,8 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     return projectKey !== undefined && this.deps.projects().some((project) => project.key === projectKey) ? projectKey : undefined;
   }
 
-  private async sideDocument(side: DiffSide): Promise<Document> {
+  private async sideDocument(side: DiffSide | NotShownSide): Promise<Document> {
+    if ('notDisplayed' in side) return this.deps.documents.openPlaceholder(side.name, side.notDisplayed, side.bytes);
     if ('path' in side) return this.deps.documents.openPath(side.path);
     return this.deps.documents.openMemory(side.name, side.content, { untitled: false });
   }
@@ -790,7 +959,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     original: Document,
     modified: Document,
     subject: DiffSubject,
-    flags: { readonly conflictCompare?: true; readonly replacePreview?: true } = {},
+    flags: { readonly conflictCompare?: true; readonly replacePreview?: true; readonly scmRoot?: string; readonly scmRepoId?: string } = {},
   ): Tab {
     const counts = original.kind === 'text' && modified.kind === 'text' ? diffCounts(original.text, modified.text) : { added: 0, removed: 0 };
     return this.addTab({ id: randomUUID(), kind: 'diff', diff: { originalId: original.id, modifiedId: modified.id, title, subject, ...counts, ...flags } });
@@ -811,6 +980,16 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   private subjectName(subject: DiffSubject): string {
     if ('place' in subject) return path.basename(subject.place.path);
     return this.deps.documents.get(subject.documentId)?.name ?? '';
+  }
+
+  // The diff's original side goes with it; the edited document stays, shown by the new tab.
+  private replaceWithFileTab(tab: Tab, document: TextDocument): void {
+    const fileTab: Tab = { id: randomUUID(), kind: this.kindFor(document), documentId: document.id };
+    this.tabs.splice(this.tabs.indexOf(tab), 1, fileTab);
+    const originalId = tab.diff!.originalId;
+    if (originalId !== document.id && !this.tabs.some((other) => other.documentId === originalId || other.diff?.originalId === originalId || other.diff?.modifiedId === originalId)) this.releaseDocument(originalId);
+    if (this.activeId === tab.id) this.setActive(fileTab.id);
+    else this.stateChanged();
   }
 
   // Overwrite or Revert resolved the conflict: its compare tabs close and the file's own tab shows with focus, as VS Code's
@@ -1001,13 +1180,18 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   }
 
   private shellTab(tab: Tab): ShellEditorTab {
+    if (tab.changes) {
+      return { id: tab.id, kind: 'changes', title: tab.changes.title, displayPath: tab.changes.title, dirty: false, readOnly: true, conflict: false, changes: tab.changes.changes };
+    }
     if (tab.diff) {
+      const original = this.deps.documents.get(tab.diff.originalId);
       const modified = this.deps.documents.get(tab.diff.modifiedId);
       const { originalId, modifiedId, added, removed, conflictCompare, subject } = tab.diff;
+      const sides = { original: diffSide(original, false), modified: diffSide(modified, true) };
       return {
         id: tab.id,
         kind: 'diff',
-        diff: { originalId, modifiedId, added, removed, ...(conflictCompare ? { conflictCompare } : {}) },
+        diff: { originalId, modifiedId, added, removed, ...(conflictCompare ? { conflictCompare } : {}), ...(sides.original.kind === 'text' && sides.modified.kind === 'text' ? {} : { sides }) },
         title: tab.diff.title(this.subjectName(subject)),
         ...('place' in subject ? placeFields(subject.place) : this.placeOf(this.deps.documents.get(subject.documentId))),
         dirty: modified !== undefined && isDocumentDirty(modified),
@@ -1106,7 +1290,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       return { kind: 'searchEditor', ...(projectKey !== undefined ? { projectKey } : {}), config: document.searchEditor.config, ...withBackup };
     }
     if (tab.kind === 'settings') return document.kind === 'text' && document.settingsScope !== undefined ? { kind: 'settings', scope: document.settingsScope, ...withBackup } : undefined;
-    if (tab.kind === 'diff') return undefined;
+    if (tab.kind === 'diff' || tab.kind === 'changes') return undefined;
     const file = fileRefOf(document);
     if (file) return { kind: tab.kind, file, ...withBackup };
     return document.location ? { kind: tab.kind, path: document.location.path } : undefined;

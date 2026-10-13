@@ -1,6 +1,7 @@
 import type { OpenFolder } from '../../platform/workspace-folders';
 import type { ChatCommand } from '../../shared/types/messages';
 import type { PaletteCommand } from '../preload/overlay-channels';
+import type { ScmCommitVariant } from '../preload/scm-channels';
 import type { EditorMenuShortcut, SearchEditorCommand, SearchViewCommand } from '../preload/shell-channels';
 import type { MenuActions, MenuState } from './menu';
 import type { DesktopLocalizationService } from './platform/localization-service';
@@ -98,6 +99,62 @@ export const MENU_IDS = {
   chatSideQuestion: 'damocles.chat.sideQuestion',
   chatOpenSessionLog: 'damocles.chat.openSessionLog',
   chatViewSessionPlan: 'damocles.chat.viewSessionPlan',
+  gitInit: 'damocles.git.init',
+  gitOpenRepository: 'damocles.git.openRepository',
+  gitClose: 'damocles.git.close',
+  gitCloseOtherRepositories: 'damocles.git.closeOtherRepositories',
+  gitReopenClosedRepositories: 'damocles.git.reopenClosedRepositories',
+  gitRefresh: 'damocles.git.refresh',
+  gitShowOutput: 'damocles.git.showOutput',
+  gitStage: 'damocles.git.stage',
+  gitStageAll: 'damocles.git.stageAll',
+  gitStageAllTracked: 'damocles.git.stageAllTracked',
+  gitStageAllUntracked: 'damocles.git.stageAllUntracked',
+  gitStageAllMerge: 'damocles.git.stageAllMerge',
+  gitUnstage: 'damocles.git.unstage',
+  gitUnstageAll: 'damocles.git.unstageAll',
+  gitClean: 'damocles.git.clean',
+  gitCleanAll: 'damocles.git.cleanAll',
+  gitCleanAllTracked: 'damocles.git.cleanAllTracked',
+  gitCleanAllUntracked: 'damocles.git.cleanAllUntracked',
+  gitOpenChange: 'damocles.git.openChange',
+  gitOpenFile: 'damocles.git.openFile',
+  gitOpenHeadFile: 'damocles.git.openHEADFile',
+  gitIgnore: 'damocles.git.ignore',
+  gitCommit: 'damocles.git.commit',
+  gitMergeAbort: 'damocles.git.mergeAbort',
+  gitRebaseAbort: 'damocles.git.rebaseAbort',
+  gitCherryPickAbort: 'damocles.git.cherryPickAbort',
+  gitViewChanges: 'damocles.git.viewChanges',
+  gitViewStagedChanges: 'damocles.git.viewStagedChanges',
+  gitViewUntrackedChanges: 'damocles.git.viewUntrackedChanges',
+  gitManageUnsafeRepositories: 'damocles.git.manageUnsafeRepositories',
+  gitOpenRepositoriesInParentFolders: 'damocles.git.openRepositoriesInParentFolders',
+  gitCommitStaged: 'damocles.git.commitStaged',
+  gitCommitAll: 'damocles.git.commitAll',
+  gitCommitAmend: 'damocles.git.commitAmend',
+  gitCommitStagedAmend: 'damocles.git.commitStagedAmend',
+  gitCommitAllAmend: 'damocles.git.commitAllAmend',
+  gitCommitSigned: 'damocles.git.commitSigned',
+  gitCommitStagedSigned: 'damocles.git.commitStagedSigned',
+  gitCommitAllSigned: 'damocles.git.commitAllSigned',
+  gitCommitNoVerify: 'damocles.git.commitNoVerify',
+  gitCommitStagedNoVerify: 'damocles.git.commitStagedNoVerify',
+  gitCommitAllNoVerify: 'damocles.git.commitAllNoVerify',
+  gitCommitAmendNoVerify: 'damocles.git.commitAmendNoVerify',
+  gitCommitStagedAmendNoVerify: 'damocles.git.commitStagedAmendNoVerify',
+  gitCommitAllAmendNoVerify: 'damocles.git.commitAllAmendNoVerify',
+  gitCommitSignedNoVerify: 'damocles.git.commitSignedNoVerify',
+  gitCommitStagedSignedNoVerify: 'damocles.git.commitStagedSignedNoVerify',
+  gitCommitAllSignedNoVerify: 'damocles.git.commitAllSignedNoVerify',
+  gitCommitEmpty: 'damocles.git.commitEmpty',
+  gitCommitEmptyNoVerify: 'damocles.git.commitEmptyNoVerify',
+  gitUndoCommit: 'damocles.git.undoCommit',
+  gitRename: 'damocles.git.rename',
+  gitDelete: 'damocles.git.delete',
+  gitOpenAllChanges: 'damocles.git.openAllChanges',
+  gitCloseAllDiffEditors: 'damocles.git.closeAllDiffEditors',
+  gitCloseAllUnmodifiedEditors: 'damocles.git.closeAllUnmodifiedEditors',
 } as const;
 
 // One command per project, "Open Chat in Project" in the File menu; the id carries the project's absolute path.
@@ -164,6 +221,8 @@ export type CommandSource = 'menu' | 'accelerator' | 'palette';
 export interface Command {
   readonly id: string;
   readonly title: Label;
+  // the title while the context holds a mode that changes what the command does; absent: title
+  readonly titleIn?: (context: MenuState) => Label;
   readonly category: Label;
   // the menu item's label when it differs from the palette title (Command Palette... for Show All Commands)
   readonly menuLabel?: Label;
@@ -173,6 +232,10 @@ export interface Command {
   readonly registerAccelerator?: false;
   // VS Code's precondition, which never reads keyboard focus: the menu item, the palette entry and the key; absent: always
   readonly enabled?: (context: MenuState) => boolean;
+  // VS Code's menus.commandPalette when clause: the palette lists the command only while it holds; absent: always listed
+  readonly palette?: (context: MenuState) => boolean;
+  // while it holds, the command leaves the palette and its menu item leaves the menu, which a change rebuilds
+  readonly hidden?: (context: MenuState) => boolean;
   // the accelerator also fires while an xterm has focus (VS Code's commandsToSkipShell); every other one reaches the pty
   readonly inTerminal?: true;
   // VS Code's keybinding when clause: whether the accelerator runs the command, never whether its menu item is enabled
@@ -242,6 +305,118 @@ const CHAT_FEATURES: ReadonlyArray<{ readonly id: string; readonly command: Chat
 ];
 
 export const CHAT_FEATURE_IDS: readonly string[] = CHAT_FEATURES.map((feature) => feature.id);
+
+// Source control's commands: VS Code's titles, its menus.commandPalette when clauses as palette and its enablement as enabled
+// (extensions/git/package.json).
+export const GIT_COMMAND_IDS: readonly string[] = Object.entries(MENU_IDS).filter(([key]) => key.startsWith('git')).map(([, id]) => id);
+
+// View › Source Control with a separator between groups, as VS Code's SCM menus group these commands. Holds each
+// GIT_COMMAND_IDS entry once.
+export const GIT_MENU_GROUPS: ReadonlyArray<readonly string[]> = [
+  [MENU_IDS.gitInit, MENU_IDS.gitOpenRepository, MENU_IDS.gitClose, MENU_IDS.gitCloseOtherRepositories, MENU_IDS.gitReopenClosedRepositories, MENU_IDS.gitOpenRepositoriesInParentFolders, MENU_IDS.gitManageUnsafeRepositories, MENU_IDS.gitRefresh],
+  [MENU_IDS.gitCommit, MENU_IDS.gitCommitStaged, MENU_IDS.gitCommitAll, MENU_IDS.gitUndoCommit, MENU_IDS.gitRebaseAbort, MENU_IDS.gitMergeAbort, MENU_IDS.gitCherryPickAbort],
+  [MENU_IDS.gitCommitNoVerify, MENU_IDS.gitCommitStagedNoVerify, MENU_IDS.gitCommitAllNoVerify],
+  [MENU_IDS.gitCommitAmend, MENU_IDS.gitCommitStagedAmend, MENU_IDS.gitCommitAllAmend],
+  [MENU_IDS.gitCommitAmendNoVerify, MENU_IDS.gitCommitStagedAmendNoVerify, MENU_IDS.gitCommitAllAmendNoVerify],
+  [MENU_IDS.gitCommitSigned, MENU_IDS.gitCommitStagedSigned, MENU_IDS.gitCommitAllSigned],
+  [MENU_IDS.gitCommitSignedNoVerify, MENU_IDS.gitCommitStagedSignedNoVerify, MENU_IDS.gitCommitAllSignedNoVerify],
+  [MENU_IDS.gitCommitEmpty, MENU_IDS.gitCommitEmptyNoVerify],
+  [MENU_IDS.gitStageAll, MENU_IDS.gitUnstageAll, MENU_IDS.gitCleanAll],
+  [MENU_IDS.gitStageAllTracked, MENU_IDS.gitStageAllUntracked, MENU_IDS.gitStageAllMerge, MENU_IDS.gitCleanAllTracked, MENU_IDS.gitCleanAllUntracked, MENU_IDS.gitViewChanges, MENU_IDS.gitViewStagedChanges, MENU_IDS.gitViewUntrackedChanges, MENU_IDS.gitOpenAllChanges],
+  [MENU_IDS.gitOpenFile, MENU_IDS.gitOpenHeadFile, MENU_IDS.gitOpenChange, MENU_IDS.gitStage, MENU_IDS.gitUnstage, MENU_IDS.gitClean, MENU_IDS.gitIgnore, MENU_IDS.gitRename, MENU_IDS.gitDelete],
+  [MENU_IDS.gitCloseAllDiffEditors, MENU_IDS.gitCloseAllUnmodifiedEditors],
+  [MENU_IDS.gitShowOutput],
+];
+
+function gitCommands(actions: MenuActions): Command[] {
+  const git = t('Git');
+  const available = (context: MenuState): boolean => context.scm.available;
+  const open = (context: MenuState): boolean => context.scm.available && context.scm.openRepositoryCount !== 0;
+  const changed = (context: MenuState): boolean => open(context) && context.scm.activeFileHasChanges;
+  const inProgress = (operation: MenuState['scm']['operation']) => (context: MenuState): boolean => open(context) && context.scm.operation === operation;
+  // a menu item is enabled only where the palette lists the command, so a click never acts on nothing
+  const command = (id: string, title: Label, palette: (context: MenuState) => boolean, run: () => void, enabled?: (context: MenuState) => boolean, amendedTitle?: Label): Command => ({
+    id,
+    title,
+    ...(amendedTitle ? { titleIn: (context: MenuState) => (context.scm.amending ? amendedTitle : title) } : {}),
+    category: git,
+    palette,
+    enabled: (context) => palette(context) && (enabled?.(context) ?? true),
+    run,
+  });
+  const activeFile = (op: Parameters<MenuActions['scmActiveFile']>[0]) => () => actions.scmActiveFile(op);
+  const noVerify = (context: MenuState): boolean => open(context) && context.scm.allowNoVerifyCommit;
+  const commit = (scope: ScmCommitVariant['scope'], flags: Partial<Omit<ScmCommitVariant, 'scope'>> = {}) => () =>
+    actions.scmCommit({ scope, amend: false, signoff: false, noVerify: false, empty: false, ...flags });
+  // VS Code's commit variants (git.commit* in extensions/git/package.json), each with its exact title, and the title of what
+  // the commit box's amend mode makes it (the shell's AMENDED_LABELS in scm-menus.ts)
+  const commits: ReadonlyArray<readonly [string, Label, ScmCommitVariant['scope'], Partial<Omit<ScmCommitVariant, 'scope'>>, Label?]> = [
+    [MENU_IDS.gitCommitStaged, t('Commit Staged'), 'staged', {}, t('Commit Staged (Amend)')],
+    [MENU_IDS.gitCommitAll, t('Commit All'), 'all', {}, t('Commit All (Amend)')],
+    [MENU_IDS.gitCommitAmend, t('Commit (Amend)'), 'auto', { amend: true }],
+    [MENU_IDS.gitCommitStagedAmend, t('Commit Staged (Amend)'), 'staged', { amend: true }],
+    [MENU_IDS.gitCommitAllAmend, t('Commit All (Amend)'), 'all', { amend: true }],
+    [MENU_IDS.gitCommitSigned, t('Commit (Signed Off)'), 'auto', { signoff: true }, t('Commit (Amend, Signed Off)')],
+    [MENU_IDS.gitCommitStagedSigned, t('Commit Staged (Signed Off)'), 'staged', { signoff: true }, t('Commit Staged (Amend, Signed Off)')],
+    [MENU_IDS.gitCommitAllSigned, t('Commit All (Signed Off)'), 'all', { signoff: true }, t('Commit All (Amend, Signed Off)')],
+    [MENU_IDS.gitCommitNoVerify, t('Commit (No Verify)'), 'auto', { noVerify: true }, t('Commit (Amend, No Verify)')],
+    [MENU_IDS.gitCommitStagedNoVerify, t('Commit Staged (No Verify)'), 'staged', { noVerify: true }, t('Commit Staged (Amend, No Verify)')],
+    [MENU_IDS.gitCommitAllNoVerify, t('Commit All (No Verify)'), 'all', { noVerify: true }, t('Commit All (Amend, No Verify)')],
+    [MENU_IDS.gitCommitAmendNoVerify, t('Commit (Amend, No Verify)'), 'auto', { amend: true, noVerify: true }],
+    [MENU_IDS.gitCommitStagedAmendNoVerify, t('Commit Staged (Amend, No Verify)'), 'staged', { amend: true, noVerify: true }],
+    [MENU_IDS.gitCommitAllAmendNoVerify, t('Commit All (Amend, No Verify)'), 'all', { amend: true, noVerify: true }],
+    [MENU_IDS.gitCommitSignedNoVerify, t('Commit (Signed Off, No Verify)'), 'auto', { signoff: true, noVerify: true }, t('Commit (Amend, Signed Off, No Verify)')],
+    [MENU_IDS.gitCommitStagedSignedNoVerify, t('Commit Staged (Signed Off, No Verify)'), 'staged', { signoff: true, noVerify: true }, t('Commit Staged (Amend, Signed Off, No Verify)')],
+    [MENU_IDS.gitCommitAllSignedNoVerify, t('Commit All (Signed Off, No Verify)'), 'all', { signoff: true, noVerify: true }, t('Commit All (Amend, Signed Off, No Verify)')],
+    [MENU_IDS.gitCommitEmpty, t('Commit Empty'), 'auto', { empty: true }, t('Commit Empty (Amend)')],
+    [MENU_IDS.gitCommitEmptyNoVerify, t('Commit Empty (No Verify)'), 'auto', { empty: true, noVerify: true }, t('Commit Empty (Amend, No Verify)')],
+  ];
+  // in amend mode every other variant amends, so the amend ones leave the palette and the menu, as they leave the commit box's
+  const amending = (context: MenuState): boolean => context.scm.amending;
+  return [
+    command(MENU_IDS.gitInit, t('Initialize Repository'), available, () => actions.scmRun({ op: 'init' })),
+    command(MENU_IDS.gitOpenRepository, t('Open Repository'), available, () => actions.scmRun({ op: 'openRepository' })),
+    command(MENU_IDS.gitClose, t('Close Repository'), open, () => actions.scmRun({ op: 'closeRepository' })),
+    command(MENU_IDS.gitCloseOtherRepositories, t('Close Other Repositories'), (context) => available(context) && context.scm.openRepositoryCount > 1, () => actions.scmRun({ op: 'closeOtherRepositories' })),
+    command(MENU_IDS.gitReopenClosedRepositories, t('Reopen Closed Repositories...'), () => true, () => actions.scmRun({ op: 'reopenClosed' }), (context) => context.scm.closedRepositoryCount !== 0),
+    command(MENU_IDS.gitRefresh, t('Refresh'), open, () => actions.scmRun({ op: 'refresh' })),
+    command(MENU_IDS.gitShowOutput, t('Show Git Output'), () => true, () => actions.scmRun({ op: 'showOutput' })),
+    command(MENU_IDS.gitStage, t('Stage Changes'), open, activeFile('stage')),
+    command(MENU_IDS.gitStageAll, t('Stage All Changes'), open, () => actions.scmRun({ op: 'stageAll', scope: 'all' })),
+    command(MENU_IDS.gitStageAllTracked, t('Stage All Tracked Changes'), open, () => actions.scmRun({ op: 'stageAll', scope: 'tracked' })),
+    command(MENU_IDS.gitStageAllUntracked, t('Stage All Untracked Changes'), open, () => actions.scmRun({ op: 'stageAll', scope: 'untracked' })),
+    command(MENU_IDS.gitStageAllMerge, t('Stage All Merge Changes'), open, () => actions.scmRun({ op: 'stageAll', scope: 'merge' })),
+    command(MENU_IDS.gitUnstage, t('Unstage Changes'), open, activeFile('unstage')),
+    command(MENU_IDS.gitUnstageAll, t('Unstage All Changes'), open, () => actions.scmRun({ op: 'unstageAll' })),
+    command(MENU_IDS.gitClean, t('Discard Changes'), open, activeFile('discard')),
+    command(MENU_IDS.gitCleanAll, t('Discard All Changes'), open, () => actions.scmRun({ op: 'discardAll', scope: 'all' })),
+    command(MENU_IDS.gitCleanAllTracked, t('Discard All Tracked Changes'), open, () => actions.scmRun({ op: 'discardAll', scope: 'tracked' })),
+    command(MENU_IDS.gitCleanAllUntracked, t('Discard All Untracked Changes'), open, () => actions.scmRun({ op: 'discardAll', scope: 'untracked' })),
+    command(MENU_IDS.gitOpenChange, t('Open Changes'), open, activeFile('openChanges')),
+    command(MENU_IDS.gitOpenFile, t('Open File'), changed, activeFile('openFile')),
+    command(MENU_IDS.gitOpenHeadFile, t('Open File (HEAD)'), changed, activeFile('openFileHead')),
+    command(MENU_IDS.gitIgnore, t('Add to .gitignore'), (context) => open(context) && context.scm.activeFileInRepository, activeFile('addToGitignore')),
+    command(MENU_IDS.gitCommit, t('Commit'), open, commit('auto'), undefined, t('Commit (Amend)')),
+    ...commits.map(([id, title, scope, flags, amendedTitle]): Command => ({
+      ...command(id, title, flags.noVerify ? noVerify : open, commit(scope, flags), undefined, amendedTitle),
+      ...(flags.amend ? { hidden: amending } : {}),
+    })),
+    command(MENU_IDS.gitUndoCommit, t('Undo Last Commit'), open, () => actions.scmRun({ op: 'undoLastCommit' })),
+    command(MENU_IDS.gitRename, t('Rename'), (context) => open(context) && context.scm.activeEditorFile && context.scm.activeFileInRepository, activeFile('rename')),
+    command(MENU_IDS.gitDelete, t('Delete'), (context) => open(context) && context.scm.activeEditorFile, activeFile('delete')),
+    command(MENU_IDS.gitOpenAllChanges, t('Open All Changes'), () => true, () => actions.scmRun({ op: 'openAllChanges' }), open),
+    command(MENU_IDS.gitCloseAllDiffEditors, t('Close All Diff Editors'), open, () => actions.scmRun({ op: 'closeAllDiffEditors' })),
+    command(MENU_IDS.gitCloseAllUnmodifiedEditors, t('Close All Unmodified Editors'), () => true, () => actions.scmRun({ op: 'closeAllUnmodifiedEditors' })),
+    command(MENU_IDS.gitMergeAbort, t('Abort Merge'), inProgress('merge'), () => actions.scmRun({ op: 'abortOperation' }), (context) => context.scm.operation === 'merge'),
+    command(MENU_IDS.gitRebaseAbort, t('Abort Rebase'), inProgress('rebase'), () => actions.scmRun({ op: 'abortOperation' }), (context) => context.scm.operation === 'rebase'),
+    command(MENU_IDS.gitCherryPickAbort, t('Abort Cherry Pick'), inProgress('cherryPick'), () => actions.scmRun({ op: 'abortOperation' })),
+    command(MENU_IDS.gitViewChanges, t('Open Changes'), available, () => actions.scmRun({ op: 'openGroupChanges', group: 'workingTree' })),
+    command(MENU_IDS.gitViewStagedChanges, t('Open Staged Changes'), available, () => actions.scmRun({ op: 'openGroupChanges', group: 'index' })),
+    command(MENU_IDS.gitViewUntrackedChanges, t('Open Untracked Changes'), (context) => available(context) && context.scm.untrackedChanges === 'separate', () => actions.scmRun({ op: 'openGroupChanges', group: 'untracked' })),
+    command(MENU_IDS.gitManageUnsafeRepositories, t('Manage Unsafe Repositories'), (context) => available(context) && context.scm.unsafeRepositoryCount !== 0, () => actions.scmRun({ op: 'manageUnsafeRepositories' })),
+    command(MENU_IDS.gitOpenRepositoriesInParentFolders, t('Open Repositories In Parent Folders'), (context) => available(context) && context.scm.parentRepositoryCount !== 0, () => actions.scmRun({ op: 'openParentRepositories' })),
+  ];
+}
 
 /** Every desktop command, the per-project ones included; ids are unique. */
 export function desktopCommands(projects: readonly OpenFolder[], actions: MenuActions, platform: NodeJS.Platform): Command[] {
@@ -390,7 +565,18 @@ export function desktopCommands(projects: readonly OpenFolder[], actions: MenuAc
     { id: MENU_IDS.about, title: t('About Damocles'), category: help, run: () => actions.about() },
     { id: MENU_IDS.releaseNotes, title: t('Release Notes'), category: help, run: () => actions.releaseNotes() },
     { id: MENU_IDS.checkForUpdates, title: t('Check for Updates...'), category: help, enabled: (context) => context.updateCheck, run: () => actions.checkForUpdates() },
+    ...gitCommands(actions),
   ];
+}
+
+/** The command's title in the context, for the palette entry and the menu item that has no label of its own. */
+export function commandTitle(command: Command, context: MenuState): Label {
+  return command.titleIn?.(context) ?? command.title;
+}
+
+/** Whether the command is out of the palette and the menu in the context. */
+export function isHidden(command: Command, context: MenuState): boolean {
+  return command.hidden?.(context) ?? false;
 }
 
 /** The precondition: whether the menu item and the palette entry are enabled, wherever keyboard focus is. */
@@ -464,12 +650,12 @@ export class CommandPalette {
   }
 
   list(context: MenuState): PaletteCommand[] {
-    const entries = this.commands().map((command): PaletteCommand => {
+    const entries = this.commands().filter((command) => (command.palette?.(context) ?? true) && !isHidden(command, context)).map((command): PaletteCommand => {
       const category = resolveLabel(command.category, this.l10n);
       return {
         id: command.id,
-        label: `${category}: ${resolveLabel(command.title, this.l10n)}`,
-        englishLabel: `${resolveLabel(command.category, this.english)}: ${resolveLabel(command.title, this.english)}`,
+        label: `${category}: ${resolveLabel(commandTitle(command, context), this.l10n)}`,
+        englishLabel: `${resolveLabel(command.category, this.english)}: ${resolveLabel(commandTitle(command, context), this.english)}`,
         category,
         accelerator: command.accelerator === undefined ? null : acceleratorLabel(command.accelerator, this.platform),
         enabled: isEnabled(command, context),
@@ -483,7 +669,7 @@ export class CommandPalette {
   /** Runs id in the captured context; false, and nothing runs, for an id that is not registered or not enabled there. */
   run(id: string, context: MenuState): boolean {
     const command = this.commands().find((candidate) => candidate.id === id);
-    if (!command || !isEnabled(command, context)) {
+    if (!command || !isEnabled(command, context) || !(command.palette?.(context) ?? true) || isHidden(command, context)) {
       this.log(`[commands] refusing ${command ? 'disabled' : 'unknown'} command ${id.slice(0, 200)}`);
       return false;
     }

@@ -6,8 +6,8 @@ import { extendTailwindMerge } from 'tailwind-merge';
 const twMerge = extendTailwindMerge({
   extend: {
     theme: {
-      text: ['10', '10.5', '11', '11.5', '12.5', '13', '13.5', '15'],
-      radius: ['5', '7', '8', '9', '10', '11'],
+      text: ['10', '10.5', '11', '11.5', '12', '12.5', '13', '13.5', '15'],
+      radius: ['5', '6', '7', '8', '9', '10', '11'],
     },
   },
 });

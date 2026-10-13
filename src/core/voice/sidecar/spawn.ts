@@ -15,7 +15,8 @@ export type SpawnOptions = {
   modelsDir: string;
   runtimeMode: "cuda" | "cpu" | "auto";
   diagnostics: boolean;
-  wakeWordEnabled: boolean;
+  /** The normalized `damocles.voice.wakeWord` phrase; null when wake detection is off. */
+  wakePhrase: string | null;
   ttsEnabled: boolean;
 };
 
@@ -62,9 +63,7 @@ export function buildSidecarEnv(token: string, pythonSourceDir: string): Record<
   return result;
 }
 
-export async function spawnSidecar(opts: SpawnOptions): Promise<SpawnResult> {
-  const port = await pickEphemeralPort();
-  const token = randomBytes(32).toString("hex");
+export function buildSidecarArgs(opts: SpawnOptions, port: number): string[] {
   const args = [
     "-m",
     "damocles_voice_sidecar",
@@ -76,8 +75,15 @@ export async function spawnSidecar(opts: SpawnOptions): Promise<SpawnResult> {
     opts.runtimeMode,
   ];
   if (opts.diagnostics) args.push("--diagnostics");
-  if (opts.wakeWordEnabled) args.push("--wake-word-enabled");
+  if (opts.wakePhrase !== null) args.push("--wake-word-enabled", "--wake-word", opts.wakePhrase);
   if (opts.ttsEnabled) args.push("--tts-enabled");
+  return args;
+}
+
+export async function spawnSidecar(opts: SpawnOptions): Promise<SpawnResult> {
+  const port = await pickEphemeralPort();
+  const token = randomBytes(32).toString("hex");
+  const args = buildSidecarArgs(opts, port);
 
   const child = spawn(opts.pythonExe, args, {
     env: buildSidecarEnv(token, opts.pythonSourceDir),

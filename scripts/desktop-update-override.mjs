@@ -14,6 +14,8 @@ provider on the loopback URL, keeping updaterCacheDirName and channel.`;
 
 const LOOPBACK_FEED = /^http:\/\/127\.0\.0\.1:([1-9]\d{0,4})\/$/;
 const FLAT_LINE = /^([A-Za-z][A-Za-z0-9]*): ?(.*)$/;
+const LIST_ITEM = /^ {2}- (.+)$/;
+// publisherName is dropped: the test's N+1 is unsigned, so the installed app must skip the publisher check.
 const KEPT_KEYS = ['updaterCacheDirName', 'channel'];
 
 export function appUpdateYmlPath(installDir) {
@@ -21,16 +23,29 @@ export function appUpdateYmlPath(installDir) {
   return join(existsSync(macResources) ? macResources : join(installDir, 'resources'), 'app-update.yml');
 }
 
-// electron-builder writes app-update.yml as flat `key: value` lines; anything else fails loudly.
+// electron-builder writes app-update.yml as flat `key: value` lines, plus a `- item` list under an empty key
+// (Windows publisherName); anything else fails loudly.
 export function parseFlatYaml(text) {
   const entries = {};
+  let listKey;
   for (const raw of text.split(/\r?\n/)) {
     if (raw.trim() === '') continue;
+    const item = LIST_ITEM.exec(raw);
+    if (item && listKey !== undefined) {
+      entries[listKey].push(unquote(item[1]));
+      continue;
+    }
     const match = FLAT_LINE.exec(raw);
     if (!match) throw new Error(`Unexpected app-update.yml line: ${JSON.stringify(raw)}`);
-    entries[match[1]] = match[2].trim().replace(/^(['"])(.*)\1$/, '$2');
+    const value = match[2].trim();
+    listKey = value === '' ? match[1] : undefined;
+    entries[match[1]] = value === '' ? [] : unquote(value);
   }
   return entries;
+}
+
+function unquote(value) {
+  return value.trim().replace(/^(['"])(.*)\1$/, '$2');
 }
 
 export function overrideYaml(original, url) {

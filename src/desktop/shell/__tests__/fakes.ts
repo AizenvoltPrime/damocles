@@ -4,6 +4,7 @@ import type { DamoclesOverlayApi, OverlayAnswer, PaletteCommand, OverlayPrefs, O
 import type { ChimeTone, NotificationCenterState } from '../../preload/notifications';
 import type { DamoclesTerminalApi, TerminalData, TerminalProfileReport, TerminalRunAction, TerminalState } from '../../preload/terminal-channels';
 import type { ReleaseIndex, UpdateSnapshot, VersionInfo } from '../../preload/updates';
+import type { DamoclesScmApi, ScmCommitInput, ScmDecorations, ScmRepoSnapshot, ScmSetInput, ScmSettings, ScmShellCommand, ScmShellState, ScmView } from '../../preload/scm-channels';
 import type { SettingsTarget } from '../../../shared/settings-sections';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 
@@ -38,9 +39,10 @@ export const STATE: ShellState = {
   layout: {
     sidebarVisible: true,
     sidebarWidth: 300,
-    sections: { projects: { collapsed: false, size: 150 }, chats: { collapsed: false }, files: { collapsed: false, size: 230 }, search: { collapsed: true, size: 260 } },
+    sections: { projects: { collapsed: false, size: 150 }, chats: { collapsed: false }, files: { collapsed: false, size: 230 }, search: { collapsed: true, size: 260 }, scm: { collapsed: true, size: 300 } },
     grid: DEFAULT_GRID_LAYOUT,
     search: {},
+    scm: { viewMode: 'list', sortKey: 'path' },
   },
   layoutRevision: 0,
   shortcuts: { newChat: 'Ctrl+N', toggleSidebar: 'Ctrl+B', settings: 'Ctrl+,', quickOpen: 'Ctrl+P', toggleTerminal: 'Ctrl+`', newTerminal: 'Ctrl+Shift+`', splitTerminal: 'Ctrl+Shift+5', closeEditor: 'Ctrl+W', searchAgain: 'Ctrl+Shift+R', toggleQueryDetails: 'Ctrl+Shift+J', focusNextSearchResult: 'F4',
@@ -125,8 +127,53 @@ export function fakeTerminalApi(state: TerminalState = TERMINAL_STATE): FakeTerm
   };
 }
 
+export type FakeScmApi = DamoclesScmApi & {
+  // main's source control pushes
+  pushView: (view: ScmView) => void;
+  pushSnapshot: (snapshot: ScmRepoSnapshot) => void;
+  pushDecorations: (decorations: ScmDecorations) => void;
+  pushSettings: (settings: ScmSettings) => void;
+  command: (command: ScmShellCommand) => void;
+  setInput: (input: ScmSetInput) => void;
+};
+
+export const SCM_SETTINGS: ScmSettings = { untrackedChanges: 'mixed', inputValidation: false, inputValidationSubjectLength: 50, inputValidationLength: 72, allowNoVerifyCommit: false };
+
+export function fakeScmApi(state: ScmShellState = { views: [], snapshots: [], decorations: [], settings: SCM_SETTINGS }): FakeScmApi {
+  const views = emitter<ScmView>();
+  const snapshots = emitter<ScmRepoSnapshot>();
+  const decorations = emitter<ScmDecorations>();
+  const settings = emitter<ScmSettings>();
+  const commands = emitter<ScmShellCommand>();
+  const inputs = emitter<ScmSetInput>();
+  return {
+    getState: vi.fn(async () => state),
+    onView: vi.fn(views.listen),
+    onState: vi.fn(snapshots.listen),
+    onDecorations: vi.fn(decorations.listen),
+    onSettings: vi.fn(settings.listen),
+    onCommand: vi.fn(commands.listen),
+    onSetInput: vi.fn(inputs.listen),
+    select: vi.fn(async () => {}),
+    run: vi.fn(async () => ({ ok: true as const })),
+    commit: vi.fn(async () => ({ ok: true as const, message: '' })),
+    generateMessage: vi.fn(async () => ({ ok: false as const })),
+    fileDiff: vi.fn(async () => ({ kind: 'missing' as const })),
+    copy: vi.fn(async () => {}),
+    commitInput: vi.fn(async (): Promise<ScmCommitInput> => ({ template: null, history: [], headMessage: null })),
+    reportAmend: vi.fn(async () => {}),
+    pushView: views.emit,
+    pushSnapshot: snapshots.emit,
+    pushDecorations: decorations.emit,
+    pushSettings: settings.emit,
+    command: commands.emit,
+    setInput: inputs.emit,
+  };
+}
+
 export type FakeShellApi = DamoclesShellApi & {
   terminal: FakeTerminalApi;
+  scm: FakeScmApi;
   push: (state: ShellState) => void;
   chatsChanged: (projectKey: string) => void;
   focusPart: (part: ShellFocusPart) => void;
@@ -169,7 +216,7 @@ export function emitter<T>(): { listen: (listener: (value: T) => void) => () => 
 
 export const DISABLED_UPDATE: UpdateSnapshot = { state: { kind: 'disabled' }, lastCheckedAt: null, platform: 'win32' };
 
-export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partial<Omit<DamoclesShellApi, 'terminal'>> = {}): FakeShellApi {
+export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partial<Omit<DamoclesShellApi, 'terminal' | 'scm'>> = {}): FakeShellApi {
   const stateListeners = new Set<(s: ShellState) => void>();
   const changedListeners = new Set<(key: string) => void>();
   const focusListeners = new Set<(part: ShellFocusPart) => void>();
@@ -285,6 +332,7 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
     replaceInFiles: vi.fn(async () => ({ replacedFiles: 0, replacedCount: 0, skipped: [] })),
     previewReplace: vi.fn(async () => ({ ok: true as const })),
     terminal: fakeTerminalApi(),
+    scm: fakeScmApi(),
     push: (state) => { for (const l of stateListeners) l(state); },
     chatsChanged: (key) => { for (const l of changedListeners) l(key); },
     focusPart: (part) => { for (const l of focusListeners) l(part); },

@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { expect, type ElectronApplication, type Page } from '@playwright/test';
 import type { ShellEditorTab } from '../../../src/desktop/preload/shell-channels';
 import { editorState } from './editor';
+import { setContentSize } from './settings';
 import { shellPage } from './shell';
 import { clickMenu, postFromWebview } from './ui';
 
@@ -133,11 +134,7 @@ export async function pageFramesShown(app: ElectronApplication): Promise<void> {
 
 /** Resizes the window's content area, as the user dragging its frame would. */
 export async function setWindowContentSize(app: ElectronApplication, width: number, height: number): Promise<void> {
-  await app.evaluate(({ BrowserWindow }, [w, h]) => {
-    const win = BrowserWindow.getAllWindows()[0]!;
-    if (win.isMaximized()) win.unmaximize();
-    win.setContentSize(w!, h!);
-  }, [width, height] as const);
+  await setContentSize(app, width, height);
 }
 
 /** Types `text` through Electron's native input path into whichever webContents has keyboard focus, as the OS would. */

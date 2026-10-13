@@ -1,20 +1,21 @@
-"""FR-11 acceptance test: 'Hey Jarvis' must never appear in the submitted prompt.
+"""FR-11 acceptance test: the wake phrase must never appear in the submitted prompt.
 
 Both defenses are tested:
   1. ``strip_wake_prefix`` regex strip pass.
-  2. The pipeline-level post-wake offset (the ASR engine never receives the
-     wake-phrase audio in the first place; the mock here returns whatever
-     text it was given, so the test exercises the regex pass directly).
-
-A real-audio integration test against a fixture WAV is added in US-006 once
-the OpenWakeWord + Parakeet engines are wired in.
+  2. The pipeline replays only audio after the phrase end the wake engine
+     reports, so ASR never receives the wake-phrase audio; that is covered
+     in ``test_wake_pre_roll.py``, and this file exercises the regex pass.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from damocles_voice_sidecar.pipeline import strip_wake_prefix
+from damocles_voice_sidecar.wake_phrase import (
+    DEFAULT_WAKE_PHRASE,
+    compile_wake_prefix,
+    strip_wake_prefix,
+)
 
 
 @pytest.mark.parametrize(
@@ -29,4 +30,4 @@ from damocles_voice_sidecar.pipeline import strip_wake_prefix
     ],
 )
 def test_strip_wake_prefix(raw: str, expected: str) -> None:
-    assert strip_wake_prefix(raw) == expected
+    assert strip_wake_prefix(raw, compile_wake_prefix(DEFAULT_WAKE_PHRASE)) == expected

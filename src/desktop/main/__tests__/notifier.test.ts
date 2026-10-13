@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const H = vi.hoisted(() => ({ windows: [] as unknown[], workArea: { x: 0, y: 0, width: 1920, height: 1040 } }));
+const H = vi.hoisted(() => ({ windows: [] as unknown[], workArea: { x: 0, y: 0, width: 1920, height: 1040 }, scaleFactor: 1 }));
 
 vi.mock('electron', async () => {
   const { EventEmitter: Emitter } = await import('node:events');
@@ -97,7 +97,7 @@ vi.mock('electron', async () => {
       this.destroyed = true;
     }
   }
-  const screen = Object.assign(new Emitter(), { getPrimaryDisplay: () => ({ workArea: H.workArea }) });
+  const screen = Object.assign(new Emitter(), { getPrimaryDisplay: () => ({ workArea: H.workArea, scaleFactor: H.scaleFactor }) });
   return { BaseWindow, WebContentsView, screen, nativeTheme: { shouldUseDarkColors: true, on: vi.fn(), off: vi.fn() }, protocol: {} };
 });
 
@@ -169,6 +169,7 @@ function notifier(platform: NodeJS.Platform): NotifierHost {
 
 beforeEach(() => {
   H.windows.length = 0;
+  H.scaleFactor = 1;
   resolved = [];
   holds = [];
   leaves = 0;
@@ -184,8 +185,18 @@ afterEach(() => {
 
 describe('desktop popup window (D52)', () => {
   it('sits at the bottom-right of the work area, never larger than it', () => {
-    expect(popupBounds({ width: 412, height: 180.4, parts: [] }, { x: 0, y: 0, width: 1920, height: 1040 })).toEqual({ x: 1508, y: 859, width: 412, height: 181 });
-    expect(popupBounds({ width: 412, height: 2000, parts: [] }, { x: -1280, y: 40, width: 1280, height: 984 })).toEqual({ x: -412, y: 40, width: 412, height: 984 });
+    expect(popupBounds({ width: 412, height: 180.4, parts: [] }, { x: 0, y: 0, width: 1920, height: 1040 }, 1)).toEqual({ x: 1508, y: 859, width: 412, height: 181 });
+    expect(popupBounds({ width: 412, height: 2000, parts: [] }, { x: -1280, y: 40, width: 1280, height: 984 }, 1)).toEqual({ x: -412, y: 40, width: 412, height: 984 });
+  });
+
+  // Measured on Electron 44 at 150%: a 381x121 DIP window at the corner is 572x182 px reaching 1 px past the work area.
+  it.each([
+    [1.5, { x: 2178, y: 1270, width: 382, height: 122 }],
+    [1.25, { x: 2176, y: 1268, width: 384, height: 124 }],
+    [1.75, { x: 2176, y: 1268, width: 384, height: 124 }],
+    [2, { x: 2179, y: 1271, width: 381, height: 121 }],
+  ])('grows to whole device pixels at scale %s, so its edges land on the work area\'s', (scale, bounds) => {
+    expect(popupBounds({ width: 380.2, height: 120.6, parts: [] }, { x: 0, y: 0, width: 2560, height: 1392 }, scale)).toEqual(bounds);
   });
 
   it('places the reported parts in the window by the area\'s bottom-right corner, in whole pixels', () => {
@@ -301,6 +312,15 @@ describe('desktop popup window (D52)', () => {
     win().webContents.ipc.emit(OVERLAY_CHANNELS.toastArea, own(), { width: 0, height: 0, parts: [] });
     expect(win().hide).toHaveBeenCalledTimes(1);
     expect(win().visible).toBe(false);
+  });
+
+  it('sizes the window by the primary display\'s scale', () => {
+    H.scaleFactor = 1.5;
+    host.sink();
+    win().webContents.emit('did-finish-load');
+    win().webContents.ipc.emit(OVERLAY_CHANNELS.toastArea, own(), { width: 412, height: 199, parts: [] });
+    expect(win().bounds).toEqual({ x: 1508, y: 840, width: 412, height: 200 });
+    expect(win().views[0]!.bounds).toEqual({ x: 0, y: 0, width: 412, height: 200 });
   });
 
   it('ignores a malformed toast area', () => {

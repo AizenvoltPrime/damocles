@@ -5,15 +5,21 @@ import * as ts from 'typescript';
 
 /**
  * The OS gives keyboard focus and the pointer's hover to one window at a time, and the desktop e2e suite runs workers in
- * parallel, so a test that reads native focus or relies on hover holds the `foreground` fixture (e2e/desktop/support/
- * foreground.ts), or the `clipboard` fixture, which holds the foreground too. This fails on such a test that takes neither
- * first, and on a test that takes both.
+ * parallel, so a test that reads native focus, relies on hover or presses keys through `pressKeys` holds the `foreground`
+ * fixture (e2e/desktop/support/foreground.ts), or the `clipboard` fixture, which holds the foreground too. This fails on
+ * such a test that takes neither first, and on a test that takes both.
  */
 
 const ROOT = join(__dirname, '..', '..');
 // Support helpers that report native focus, or move the pointer onto an element and keep it there.
 const FOCUS_HELPERS = new Set(['viewFocused']);
 const HOVER_CALLS = new Set(['hover', 'hoverTerminalText', 'holdToast']);
+// Chromium runs an application-menu accelerator only while its window is active (View::CanHandleAccelerators), so a key
+// pressKeys sends is lost when another worker's app takes the foreground before main dispatches it.
+const KEY_PRESS = 'pressKeys';
+
+const supportFiles = (): ts.SourceFile[] => globSync('e2e/desktop/support/**/*.ts', { cwd: ROOT })
+  .map((file) => ts.createSourceFile(file, readFileSync(join(ROOT, file), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS));
 // The fields support helpers fill from webContents.isFocused() or BrowserWindow.isFocused().
 const FOCUS_FIELDS = new Set(['focused', 'pageFocused']);
 
@@ -30,13 +36,15 @@ function rootName(expression: ts.Expression): string | undefined {
   return undefined;
 }
 
-// What a node does that needs the foreground, if anything; `readers` are this file's functions that read native focus.
+// What a node does that needs the foreground, if anything; `readers` are this file's functions that need it.
 function needOf(node: ts.Node, readers: ReadonlySet<string>): string | undefined {
   if (ts.isCallExpression(node)) {
     const name = calleeName(node);
     if (name === 'isFocused' && ts.isPropertyAccessExpression(node.expression)) return 'reads isFocused()';
-    if (name !== undefined && (FOCUS_HELPERS.has(name) || readers.has(name))) return `reads native focus through ${name}`;
+    if (name !== undefined && FOCUS_HELPERS.has(name)) return `reads native focus through ${name}`;
+    if (name !== undefined && readers.has(name)) return `needs the foreground through ${name}`;
     if (name !== undefined && HOVER_CALLS.has(name)) return `relies on hover through ${name}`;
+    if (name !== undefined && keyCalls().has(name)) return `presses keys through ${name}`;
   }
   if (ts.isPropertyAccessExpression(node) && FOCUS_FIELDS.has(node.name.text) && !(ts.isCallExpression(node.parent) && node.parent.expression === node)) return `reads native focus through .${node.name.text}`;
   return undefined;
@@ -61,7 +69,27 @@ function namedFunctions(file: ts.SourceFile): Map<string, ts.Node> {
   return functions;
 }
 
-// The file's functions that read native focus or hover, directly or through each other.
+const callsAny = (node: ts.Node, names: ReadonlySet<string>): boolean =>
+  (ts.isCallExpression(node) && names.has(calleeName(node) ?? '')) || (ts.forEachChild(node, (child) => callsAny(child, names) || undefined) ?? false);
+
+let keyCallNames: ReadonlySet<string> | undefined;
+// pressKeys and every support helper that calls it, directly or through another.
+function keyCalls(): ReadonlySet<string> {
+  if (keyCallNames) return keyCallNames;
+  const helpers = supportFiles().flatMap((file) => [...namedFunctions(file)]);
+  const names = new Set([KEY_PRESS]);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const [name, body] of helpers) {
+      if (names.has(name) || !callsAny(body, names)) continue;
+      names.add(name);
+      grew = true;
+    }
+  }
+  return (keyCallNames = names);
+}
+
+// The file's functions that need the foreground, directly or through each other.
 function readersOf(file: ts.SourceFile): Set<string> {
   const functions = namedFunctions(file);
   const readers = new Set<string>();
@@ -109,7 +137,7 @@ function foregroundFindings(fileName: string, source: string): string[] {
 }
 
 describe('e2e foreground', () => {
-  it('is held by every desktop e2e test that reads native focus or relies on hover', () => {
+  it('is held by every desktop e2e test that reads native focus, relies on hover or presses keys through pressKeys', () => {
     const files = globSync('e2e/desktop/**/*.ts', { cwd: ROOT })
       .map((file) => file.replaceAll('\\', '/'))
       .filter((file) => !file.includes('/node_modules/') && !file.includes('/support/'));
@@ -128,6 +156,9 @@ describe('e2e foreground', () => {
       "test('t', async ({ launch }) => { await row.hover(); });",
       "test('t', async ({ launch }) => { await hoverTerminalText(shell, 'a', 'a'); });",
       "test('t', async ({ launch, foreground }) => { await row.hover(); });",
+      "test('t', async ({ launch }) => { await pressKeys(app, '/shell/', 'F', [PRIMARY, 'shift']); });",
+      "async function openSearch(app) { await pressKeys(app, '/shell/', 'F'); }\ntest('t', async ({ launch }) => { await openSearch(app); });",
+      "test('t', async ({ launch }) => { await quickOpen(app, 'a.ts'); });",
       "test('t', async ({ foreground: _foreground, clipboard, launch }) => { await launch(); });",
     ];
     for (const sample of needs) expect(foregroundFindings('sample.spec.ts', sample), sample).not.toEqual([]);
@@ -137,6 +168,9 @@ describe('e2e foreground', () => {
     const clean = [
       "test('t', async ({ clipboard, home, launch }) => { expect(await viewFocused(app, shell)).toBe(true); });",
       "test('t', async ({ foreground: _foreground, launch }) => { expect(await viewFocused(app, chat)).toBe(true); await row.hover(); });",
+      "test('t', async ({ foreground: _foreground, launch }) => { await saveWithKeyboard(app); });",
+      "test('t', async ({ clipboard, launch }) => { await pressKeys(app, '/shell/', 'V', [PRIMARY]); });",
+      "test('t', async ({ launch }) => { await shell.keyboard.press('Control+Shift+F'); });",
       "test('t', async ({ launch }) => { await expect(chatInput(tab)).toBeFocused(); });",
       "test('t', async ({ launch }) => { await app.evaluate(({ BrowserWindow }) => { const win = BrowserWindow.getAllWindows()[0]; win.isFocused = () => true; }); });",
       "test('t', async ({ launch }) => { expect({ focused: true }).toEqual({ focused: true }); });",

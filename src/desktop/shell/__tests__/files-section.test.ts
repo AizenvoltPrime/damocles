@@ -4,6 +4,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import FilesSection from '../components/FilesSection.vue';
 import { shellI18n } from '../i18n';
 import { createEditorStore, EDITOR_STORE } from '../editor/editor-store';
+import { createScmStore, SCM_STORE } from '../scm/scm-store';
 import { FakeResizeObserver, fakeShellApi, type FakeShellApi } from './fakes';
 
 const mounted: VueWrapper[] = [];
@@ -24,7 +25,7 @@ async function mountFiles(platform: 'win32' | 'linux' = 'win32'): Promise<{ wrap
   });
   const wrapper = mount(FilesSection, {
     props: { api, projectKey: 'home', projectName: 'Home', platform, collapsed: false },
-    global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: createEditorStore(api) } },
+    global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: createEditorStore(api), [SCM_STORE]: createScmStore(api.scm) } },
     attachTo: document.body,
   });
   mounted.push(wrapper);

@@ -142,6 +142,34 @@ describe('probeGit', () => {
     process.env['PATH'] = dir;
     const t = vi.fn((message: string) => `[el] ${message}`);
     const probe = await probeGit(log, t);
-    expect(probe).toEqual({ available: false, reason: '[el] Git was not found on PATH, so checkpoints and rewind are turned off. Install Git and restart Damocles.' });
+    expect(probe).toEqual({ available: false, reason: '[el] Git was not found on PATH, so source control, checkpoints and rewind are turned off. Install Git and restart Damocles.' });
+  });
+
+  const gitName = process.platform === 'win32' ? 'git.exe' : 'git';
+  // the git this machine runs the suite with, found as probeGit looks: an absolute PATH folder holding the file
+  const realGitDir = (): string => {
+    const dirs = (saved['PATH'] ?? saved['Path'] ?? '').split(path.delimiter).filter((entry) => path.isAbsolute(entry));
+    const found = dirs.find((entry) => fs.statSync(path.join(entry, gitName), { throwIfNoEntry: false })?.isFile());
+    if (!found) throw new Error('the suite needs git on PATH');
+    return found;
+  };
+
+  it('resolves git to an absolute path with its parsed version', async () => {
+    const gitDir = realGitDir();
+    process.env['PATH'] = gitDir;
+    const probe = await probeGit(log, (message) => message);
+    expect(probe).toMatchObject({ available: true, path: path.join(gitDir, gitName) });
+    expect(probe.available && probe.version.major).toBeGreaterThanOrEqual(2);
+  });
+
+  it('never takes a git from a relative PATH entry, which would resolve against the working folder', async () => {
+    const planted = path.join(dir, 'planted');
+    fs.mkdirSync(planted);
+    fs.writeFileSync(path.join(planted, gitName), 'not git');
+    const relative = path.relative(process.cwd(), planted);
+    expect(path.isAbsolute(relative)).toBe(false);
+    const gitDir = realGitDir();
+    process.env['PATH'] = [relative, gitDir].join(path.delimiter);
+    expect(await probeGit(log, (message) => message)).toMatchObject({ available: true, path: path.join(gitDir, gitName) });
   });
 });

@@ -50,6 +50,9 @@ export function childEnv(env?: ExecEnv): NodeJS.ProcessEnv {
   return { ...inherited, ...env };
 }
 
+/** A function is called as the process starts, so its throw (`gitExecutable` finding no git) fails the call as a spawn error would. */
+export type ExecCommand = string | (() => string);
+
 /** Called with the pid of a spawned child; the returned function runs once the child is gone. */
 export type TrackChild = (pid: number) => () => void;
 
@@ -67,7 +70,7 @@ export type TrackChild = (pid: number) => () => void;
  * `track` sees the child's pid right after spawn and is released once the child has exited or failed.
  */
 export function exec(
-  command: string,
+  command: ExecCommand,
   args: string[],
   env?: ExecEnv,
   cwd?: string,
@@ -76,7 +79,8 @@ export function exec(
   track?: TrackChild,
 ): Promise<ProcessOutput> {
   return new Promise<ProcessOutput>((resolve, reject) => {
-    const child = spawn(command, args, {
+    const file = typeof command === 'string' ? command : command();
+    const child = spawn(file, args, {
       cwd,
       env: childEnv(env),
       windowsHide: true,
@@ -103,7 +107,7 @@ export function exec(
     const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
       timedOut = true;
       child.kill('SIGKILL');
-      reject(new Error(`${command} ${args.join(' ')} timed out after ${timeoutMs}ms and was killed`));
+      reject(new Error(`${file} ${args.join(' ')} timed out after ${timeoutMs}ms and was killed`));
     }, timeoutMs);
 
     child.stdout.on('data', (chunk: Buffer) => {
@@ -113,7 +117,7 @@ export function exec(
       stderrChunks.push(chunk);
     });
     child.stdin.on('error', (err) => {
-      log('[Checkpoints] %s stdin write failed: %s', command, err.message);
+      log('[Checkpoints] %s stdin write failed: %s', file, err.message);
     });
     child.stdin.end(input);
 
@@ -134,7 +138,7 @@ export function exec(
         return;
       }
       const detail = stderr.trim() || stdout.trim();
-      reject(new ExecExitError(`${command} ${args.join(' ')} exited with code ${code}${detail ? `: ${detail}` : ''}`, code));
+      reject(new ExecExitError(`${file} ${args.join(' ')} exited with code ${code}${detail ? `: ${detail}` : ''}`, code));
     });
   });
 }
@@ -145,7 +149,7 @@ export function exec(
  * since the whole engine is fail-soft.
  */
 export async function execSafe(
-  command: string,
+  command: ExecCommand,
   args: string[],
   env?: ExecEnv,
   cwd?: string,

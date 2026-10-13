@@ -4,7 +4,9 @@ import type { Page } from '@playwright/test';
 import { expect, test } from '../support/fixtures';
 import { seedStubModel } from '../support/hermetic';
 import { startOpenAIStub } from '../support/openai-stub';
-import { hostMessage, openProjectChat, settled, shoot, shootReferences } from '../support/screenshots';
+import { hideEditorPane, hostMessage, openProjectChat, saveScreenshot, settled, shoot, shootReferences } from '../support/screenshots';
+import { editorPane } from '../support/editor';
+import { shellPage } from '../support/shell';
 import { setContentSize } from '../support/settings';
 import { chatInput, postFromWebview, sendAndAwaitEcho } from '../support/ui';
 
@@ -27,6 +29,7 @@ test('bind-plan overlay beside the reference', async ({ home, launch }, testInfo
     const { app } = await launch();
     const tab = await openProjectChat(app, home.project);
     await setContentSize(app, 1280, 860);
+    await hideEditorPane(app, tab);
     await sendAndAwaitEcho(tab, 'Rate-limit the /login route');
 
     await shootReferences(app, testInfo, [{ name: 'bind-plan', setup: openOverlay('bindPlan') }]);
@@ -192,6 +195,7 @@ test('alpha overlays beside the reference', async ({ home, launch }, testInfo) =
     const { app } = await launch();
     const tab = await openProjectChat(app, home.project);
     await setContentSize(app, 1280, 860);
+    await hideEditorPane(app, tab);
 
     const overlays = [['navigator', 'navigator'], ['rewind', 'rewind'], ['consolidation', 'consolidation'], ['plan', 'plan-view'], ['memory', 'memory'], ['usage', 'usage'], ['stats', 'stats']] as const;
     await shootReferences(app, testInfo, overlays.map(([overlay, name]) => ({ name, setup: openOverlay(overlay) })));
@@ -258,19 +262,21 @@ test('alpha overlays beside the reference', async ({ home, launch }, testInfo) =
       await tab.getByRole('menuitem', { name: /View session plan/ }).click();
     }, 'plan-view-overlay');
 
-    // A system prompt row opens the prompt read-only in the chat's in-app editor, over the context usage overlay.
+    // A system prompt row opens the prompt as a read-only Markdown preview in the editor pane, which shows the pane.
     await tab.getByTestId('composer-context').click();
     await tab.getByRole('menuitem', { name: /View details/ }).click();
-    await expect(tab.getByRole('dialog', { name: /Context/ })).toBeVisible();
-    await tab.getByRole('button', { name: /System Prompt Sections/ }).click();
+    const context = tab.getByRole('dialog', { name: /Context/ });
+    await expect(context).toBeVisible();
+    const sections = tab.getByRole('button', { name: /System Prompt Sections/ });
+    await sections.click();
     await tab.getByTestId('context-row-open').first().click();
-    await expect(tab.getByTestId('editor-overlay')).toBeVisible();
-    await shoot(app, tab, testInfo, 'context-usage-preview');
-    await tab.getByTestId('editor-overlay-close').focus();
-    await tab.keyboard.press('Escape');
-    await expect(tab.getByTestId('editor-overlay')).toBeHidden();
-    await tab.keyboard.press('Escape');
-    await expect(tab.getByRole('dialog', { name: /Context/ })).toBeHidden();
+    const shell = await shellPage(app);
+    await expect(editorPane(shell).getByTestId('markdown-preview')).toBeVisible();
+    await settled(shell);
+    await saveScreenshot(shell, testInfo, 'context-usage-preview', editorPane(shell));
+    await hideEditorPane(app, tab);
+    await sections.press('Escape');
+    await expect(context).toBeHidden();
 
     await shootOverlay('context-injection', () => tab.getByRole('button', { name: /View injected context/ }).first().click(), 'context-injection-overlay');
     await shootOverlay('memory-audit', async () => {

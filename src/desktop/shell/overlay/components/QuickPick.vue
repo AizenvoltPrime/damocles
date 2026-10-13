@@ -129,6 +129,11 @@ function onKeydown(event: KeyboardEvent): void {
   event.stopPropagation();
 }
 
+// A press outside the field must not take focus from it, or Enter, Escape and the arrows stop answering.
+function keepFocus(event: MouseEvent): void {
+  if (event.target !== input.value) event.preventDefault();
+}
+
 const pointerMoved = createPointerMoveFilter();
 function onPointerMove(event: PointerEvent, rowIndex: number): void {
   if (!pointerMoved(event)) return;
@@ -149,6 +154,7 @@ onMounted(() => {
   <div
     data-testid="quick-pick"
     class="quick-pick fixed top-11.5 left-1/2 flex w-[min(40rem,calc(100vw-2rem))] -translate-x-1/2 flex-col rounded-xl border border-(--d-border2) bg-(--d-card) p-1.5 text-(--d-text) shadow-(--d-shadow)"
+    @mousedown="keepFocus"
   >
     <label class="quick-pick-input flex h-8 shrink-0 items-center gap-2 rounded-lg border border-(--d-accent) bg-(--d-input) px-2.5 shadow-[0_0_0_3px_var(--d-accent-soft)]">
       <Search

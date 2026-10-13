@@ -118,7 +118,7 @@ export type SidecarManagerStatus =
   | { kind: "loading"; message: string }
   | { kind: "ready"; device: "cuda" | "cpu"; vramMbFree: number; modelsLoaded: string[]; cpuFallbackActive: boolean }
   | { kind: "restarting"; attempt: number }
-  | { kind: "error"; code: ErrorCodeValue | "fatal"; message: string }
+  | { kind: "error"; code: ErrorCodeValue | "fatal" | "unsupported-platform"; message: string }
   | { kind: "cpu-fallback"; reason: CpuFallbackReason };
 
 export type CpuFallbackReason = "no-cuda" | "low-vram" | "user-pref" | "cuda-oom-fallback";
@@ -131,9 +131,9 @@ export type ManagerConfig = {
   modelsDir: string;
   runtimeMode: "cuda" | "cpu" | "auto";
   diagnostics: boolean;
-  wakeWordEnabled: boolean;
+  /** The normalized wake phrase; null when wake detection is off. */
+  wakePhrase: string | null;
   initPayload: {
-    wakeWord: string;
     wakeSensitivity: number;
     endOfTurnSilenceMs: number;
     maxUtteranceMs: number;
@@ -397,7 +397,7 @@ export class VoiceSidecarManager extends EventEmitter<ManagerEvents> {
       modelsDir: this.cfg.modelsDir,
       runtimeMode: this.cfg.runtimeMode,
       diagnostics: this.cfg.diagnostics,
-      wakeWordEnabled: this.cfg.wakeWordEnabled,
+      wakePhrase: this.cfg.wakePhrase,
       ttsEnabled: this.cfg.initPayload.ttsEnabled,
     };
     let spawn: SpawnResult;
@@ -614,7 +614,6 @@ export class VoiceSidecarManager extends EventEmitter<ManagerEvents> {
           this.send({
             type: "init",
             protocol_version: PROTOCOL_VERSION,
-            wake_word: this.cfg.initPayload.wakeWord,
             wake_sensitivity: this.cfg.initPayload.wakeSensitivity,
             end_of_turn_silence_ms: this.cfg.initPayload.endOfTurnSilenceMs,
             max_utterance_ms: this.cfg.initPayload.maxUtteranceMs,

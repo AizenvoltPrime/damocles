@@ -101,6 +101,7 @@ beforeEach(() => {
     browser: () => browser,
     warn: (message) => warnings.push(message),
     searchEditorClosed: (documentId) => events.push(`searchEditorClosed:${documentId}`),
+    openChanges: async () => undefined,
   });
 });
 
@@ -778,3 +779,152 @@ async function waitUntil(condition: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 200 && !condition(); attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
   expect(condition()).toBe(true);
 }
+
+describe('source control tab actions', () => {
+  it('lists unsaved files on disk and saves the ones asked for, with the shell\'s last edits', async () => {
+    const file = write('a.ts', 'disk');
+    write('b.ts', 'clean');
+    const opened = await pane.openFromUser(project.key, 'a.ts');
+    await pane.openFromUser(project.key, 'b.ts');
+    if (!opened.ok) throw new Error('not opened');
+    const document = textOf(opened.tabId);
+    pane.edit(document.id, { version: document.version, seq: 1, text: 'saved', overReload: false });
+    const dirty = await pane.dirtyFiles();
+    expect(dirty).toEqual([{ documentId: document.id, path: file }]);
+    expect(await pane.saveDocuments([document.id])).toBe(true);
+    expect(fs.readFileSync(file, 'utf8')).toBe('saved');
+    expect(await pane.dirtyFiles()).toEqual([]);
+  });
+
+  it('opens files without taking the active tab, closes only clean text tabs of unchanged files, and closes source control\'s diffs of one repository', async () => {
+    write('a.ts', 'a');
+    write('b.ts', 'b');
+    write('c.ts', 'c');
+    const active = await pane.openFromUser(project.key, 'a.ts');
+    if (!active.ok) throw new Error('not opened');
+    await new Promise((resolve) => setImmediate(resolve));
+    const pushed = states.length;
+    await pane.openInBackground([path.join(projectDir, 'b.ts'), path.join(projectDir, 'c.ts')]);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(states.length - pushed).toBe(1);
+    expect(pane.state().tabs.map((tab) => tab.relativePath)).toEqual(['a.ts', 'b.ts', 'c.ts']);
+    expect(pane.activeTabId()).toBe(active.tabId);
+
+    await pane.showDiff((name) => `${name} (Working Tree)`, path.join(projectDir, 'b.ts'), { name: 'b.ts', content: 'old' }, { path: path.join(projectDir, 'b.ts') }, { focus: false, scm: { root: projectDir, repoId: 'repo-1' } });
+    await pane.showDiff((name) => `${name} (Other)`, path.join(projectDir, 'c.ts'), { name: 'c.ts', content: 'old' }, { path: path.join(projectDir, 'c.ts') }, { focus: false });
+    await pane.closeScmDiffs(path.join(root, 'elsewhere'));
+    expect(pane.state().tabs.filter((tab) => tab.kind === 'diff')).toHaveLength(2);
+    await pane.closeScmDiffs(projectDir);
+    expect(pane.state().tabs.filter((tab) => tab.kind === 'diff').map((tab) => tab.title)).toEqual(['c.ts (Other)']);
+
+    const c = pane.state().tabs.find((tab) => tab.relativePath === 'c.ts' && tab.kind === 'code')!;
+    const cText = textOf(c.id);
+    pane.edit(cText.id, { version: cText.version, seq: 1, text: 'unsaved', overReload: false });
+    await pane.closeUnmodified((file) => folderKey(file) === folderKey(path.join(projectDir, 'b.ts')));
+    expect(pane.state().tabs.map((tab) => `${tab.kind} ${tab.relativePath}`).sort()).toEqual(['code b.ts', 'code c.ts', 'diff c.ts']);
+    expect(asked).toEqual([]);
+  });
+
+  it('pushes a changes tab updated in place while it is active, and closes a repository\'s changes tabs without asking', async () => {
+    const entry = { path: 'a.ts', status: 'MODIFIED' as const, letter: 'M' as const, tone: 'modified' as const, strike: false };
+    const changes = { repoId: 'repo-1', source: { kind: 'workingTree' as const }, entries: [entry] };
+    const tabId = pane.showChanges({ title: 'proj: Changes', changes }, { focus: true });
+    pane.showChanges({ title: 'proj: Changes', changes: { repoId: 'repo-2', source: { kind: 'index' as const }, entries: [] } }, { focus: false });
+    pane.showChanges({ title: 'proj: Changes', changes: { ...changes, entries: [] } }, { focus: true });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(pane.activeTabId()).toBe(tabId);
+    const shown = (): ShellEditorTab | undefined => states.at(-1)!.tabs.find((tab) => tab.id === tabId);
+    expect(shown()?.changes?.entries).toEqual([]);
+    pane.showChanges({ title: 'proj: Changes', changes }, { focus: true });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(shown()?.changes?.entries).toEqual([entry]);
+
+    await pane.closeChanges('repo-1');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(states.at(-1)!.tabs.map((tab) => tab.changes?.repoId)).toEqual(['repo-2']);
+    expect(asked).toEqual([]);
+  });
+
+  it('closes a gone repository\'s diff tabs, turns one with unsaved edits into its file\'s tab in place, and leaves other tabs alone', async () => {
+    write('clean.ts', 'clean');
+    write('dirty.ts', 'disk');
+    write('shown.ts', 'disk');
+    write('other.ts', 'other');
+    const diff = (name: string, repoId: string) => pane.showDiff((file) => `${file} (Working Tree)`, path.join(projectDir, name), { name, content: 'old' }, { path: path.join(projectDir, name) }, { focus: false, scm: { root: projectDir, repoId } });
+    const plain = await pane.openFromUser(project.key, 'other.ts');
+    if (!plain.ok) throw new Error('not opened');
+    await diff('clean.ts', 'repo-1');
+    await diff('dirty.ts', 'repo-1');
+    const ownTab = await pane.openFromUser(project.key, 'shown.ts');
+    if (!ownTab.ok) throw new Error('not opened');
+    await diff('shown.ts', 'repo-1');
+    await diff('other.ts', 'repo-2');
+    await pane.showDiff((file) => `${file} (Compare)`, path.join(projectDir, 'clean.ts'), { name: 'clean.ts', content: 'x' }, { path: path.join(projectDir, 'clean.ts') }, { focus: false });
+    const tabs = pane.state().tabs;
+    const diffOf = (title: string): ShellEditorTab => tabs.find((tab) => tab.title === title)!;
+    const dirtyDiff = diffOf('dirty.ts (Working Tree)');
+    const shownDiff = diffOf('shown.ts (Working Tree)');
+    const edit = (tab: ShellEditorTab, text: string): void => {
+      const document = documents.get(tab.diff!.modifiedId) as TextDocument;
+      pane.edit(document.id, { version: document.version, seq: 1, text, overReload: false });
+    };
+    edit(dirtyDiff, 'unsaved edit');
+    edit(shownDiff, 'edited beside its tab');
+    await pane.tabAction('activate', dirtyDiff.id);
+    const order = tabs.map((tab) => tab.id);
+
+    await pane.closeChanges('repo-1');
+    await new Promise((resolve) => setImmediate(resolve));
+    const after = pane.state().tabs;
+    expect(after.map((tab) => `${tab.kind} ${tab.title}`)).toEqual(['code other.ts', 'code dirty.ts', 'code shown.ts', 'diff other.ts (Working Tree)', 'diff clean.ts (Compare)']);
+    const replaced = after[1]!;
+    expect(replaced.id).not.toBe(dirtyDiff.id);
+    expect(replaced.documentId).toBe(dirtyDiff.diff!.modifiedId);
+    expect(replaced.dirty).toBe(true);
+    expect((documents.get(replaced.documentId!) as TextDocument).text).toBe('unsaved edit');
+    expect(pane.activeTabId()).toBe(replaced.id);
+    expect(documents.get(dirtyDiff.diff!.originalId)).toBeUndefined();
+    expect((documents.get(shownDiff.diff!.modifiedId) as TextDocument).text).toBe('edited beside its tab');
+    expect(after.find((tab) => tab.id === ownTab.tabId)!.dirty).toBe(true);
+    expect(after.filter((tab) => order.includes(tab.id)).map((tab) => tab.id)).toEqual([plain.tabId, ownTab.tabId, order.at(-2), order.at(-1)]);
+    expect(asked).toEqual([]);
+  });
+
+  it('carries a side the editor does not show as text as a placeholder kind, offering to open only the file on disk', async () => {
+    const binary = path.join(projectDir, 'blob.bin');
+    fs.writeFileSync(binary, Buffer.from([0x00, 0x01, 0x02, 0x03]));
+    write('a.ts', 'text');
+    await pane.showDiff((name) => `${name} (Index)`, path.join(projectDir, 'a.ts'), { name: 'a.ts', notDisplayed: 'tooLarge' }, { path: path.join(projectDir, 'a.ts') }, { focus: false });
+    await pane.showDiff((name) => `${name} (Working Tree)`, binary, { name: 'blob.bin', notDisplayed: 'binary', bytes: 4 }, { path: binary }, { focus: false });
+    await pane.showDiff((name) => `${name} (Index)`, path.join(projectDir, 'a.ts'), { name: 'a.ts', content: 'old' }, { name: 'a.ts', notDisplayed: 'missing' }, { focus: false });
+    await pane.showDiff((name) => `${name} (Working Tree)`, path.join(projectDir, 'a.ts'), { name: 'a.ts', content: 'old' }, { path: path.join(projectDir, 'a.ts') }, { focus: false });
+    const diffs = pane.state().tabs.filter((tab) => tab.kind === 'diff');
+    expect(diffs.map((tab) => tab.diff!.sides)).toEqual([
+      { original: { kind: 'notDisplayed', reason: 'tooLarge', openable: false }, modified: { kind: 'text' } },
+      { original: { kind: 'notDisplayed', reason: 'binary', bytes: 4, openable: false }, modified: { kind: 'notDisplayed', reason: 'binary', bytes: 4, openable: true } },
+      { original: { kind: 'text' }, modified: { kind: 'notDisplayed', reason: 'missing', openable: false } },
+      undefined,
+    ]);
+    expect(pane.content(diffs[0]!.diff!.originalId)).toEqual({ kind: 'notDisplayed', documentId: diffs[0]!.diff!.originalId, reason: 'tooLarge' });
+
+    await pane.tabAction('openFile', diffs[1]!.id);
+    expect(pane.state().tabs.find((tab) => tab.id === pane.activeTabId())).toMatchObject({ kind: 'notDisplayed', relativePath: 'blob.bin' });
+    pane.openPlaceholder('logo.png (Deleted)', { name: 'logo.png', notDisplayed: 'binary', bytes: 8 });
+    const placeholder = pane.state().tabs.find((tab) => tab.id === pane.activeTabId())!;
+    expect(placeholder).toMatchObject({ kind: 'notDisplayed', title: 'logo.png (Deleted)', readOnly: true });
+    expect(pane.state().documents[placeholder.documentId!]).toEqual({ name: 'logo.png (Deleted)' });
+  });
+
+  it('closes the active tab, leaving a dirty one open when asked for clean tabs only', async () => {
+    write('a.ts', 'a');
+    const opened = await pane.openFromUser(project.key, 'a.ts');
+    if (!opened.ok) throw new Error('not opened');
+    const document = textOf(opened.tabId);
+    pane.edit(document.id, { version: document.version, seq: 1, text: 'edited', overReload: false });
+    await pane.closeActive({ cleanOnly: true });
+    expect(pane.state().tabs).toHaveLength(1);
+    answers = [1];
+    await pane.closeActive({ cleanOnly: false });
+    expect(pane.state().tabs).toHaveLength(0);
+  });
+});

@@ -11,6 +11,8 @@ import { TEAM_TOOL_LABELS } from '@shared/team-tool-labels';
 import { checkReviewActionPrecondition, checkSynthesisReadGate } from '../../team/review-gate';
 import { VERIFICATION_SECTION } from '../../team/scratchpad';
 import { execSafe } from '../checkpoints/exec';
+import { gitExecutable } from '../../git-executable';
+import { GIT_HARDENING_ARGS } from '../../compass/git';
 
 /**
  * Native pi tools backing the multi-agent team system. Tool NAMES are snake_case (`create_team`,
@@ -461,8 +463,15 @@ const teamRecordVerificationSchema = Type.Object(
   { additionalProperties: false },
 );
 
-/** Marks a ledger entry whose tree state could not be established (non-git cwd, or a git failure). */
+/** Marks a ledger entry whose tree state could not be established (untrusted or non-git cwd, or a git failure). */
 const UNVERIFIABLE_FINGERPRINT = 'unverifiable';
+
+/** The folder a team works in. `isTrusted` is read on every fingerprint, because trust can be granted mid-run. */
+export interface TeamToolWorkspace {
+  readonly cwd: string;
+  isTrusted(): boolean;
+}
+
 export const MAX_FINGERPRINTED_FILES = 2_000;
 
 /**
@@ -484,15 +493,20 @@ export const MAX_FINGERPRINTED_FILES = 2_000;
  * Directories are skipped explicitly rather than left to a swallowed read error, so a genuinely
  * unreadable file is not silently indistinguishable from a directory entry.
  *
- * Fail-soft by contract: a non-git cwd or any git error yields `UNVERIFIABLE_FINGERPRINT` rather than
+ * Git runs the repository's own config (`core.fsmonitor`, filter drivers) as commands, so an untrusted
+ * folder gets no git process at all, and a trusted one still overrides `core.fsmonitor` as Compass does.
+ *
+ * Fail-soft by contract: an untrusted or non-git cwd, or any git error, yields `UNVERIFIABLE_FINGERPRINT` rather than
  * throwing, so recording never breaks an agent's turn. Fail-soft means VISIBLY degraded. Exceeding
  * `MAX_FINGERPRINTED_FILES` also yields `UNVERIFIABLE_FINGERPRINT`, because a hash that silently
  * ignores everything past the cap looks exactly as authoritative as a complete one.
  */
-async function computeTreeFingerprint(cwd: string): Promise<string> {
-  const top = await execSafe('git', ['rev-parse', '--show-toplevel'], undefined, cwd);
-  const head = await execSafe('git', ['rev-parse', 'HEAD'], undefined, cwd);
-  const status = await execSafe('git', ['status', '--porcelain', '-uall', '-z'], undefined, cwd);
+async function computeTreeFingerprint({ cwd, isTrusted }: TeamToolWorkspace): Promise<string> {
+  if (!isTrusted()) return UNVERIFIABLE_FINGERPRINT;
+  const git = (args: string[]) => execSafe(gitExecutable, [...GIT_HARDENING_ARGS, ...args], undefined, cwd);
+  const top = await git(['rev-parse', '--show-toplevel']);
+  const head = await git(['rev-parse', 'HEAD']);
+  const status = await git(['status', '--porcelain', '-uall', '-z']);
   if (!top.ok || !head.ok || !status.ok) return UNVERIFIABLE_FINGERPRINT;
   const root = top.value.stdout.trim();
 
@@ -568,14 +582,14 @@ const teamSynthesizeResultSchema = Type.Object(
 );
 
 /**
- * Build every `team_*` tool a team agent can call, both roles, closing over its `AgentMcpContext`. `cwd`
- * is passed in (the `createEditTool(pi, cwd)` pattern) because `team_record_verification` computes its
- * own tree fingerprint from git state, the one team tool that needs to see the filesystem.
+ * Build every `team_*` tool a team agent can call, both roles, closing over its `AgentMcpContext`. The
+ * workspace is passed in (the `createEditTool(pi, cwd)` pattern) because `team_record_verification` computes
+ * its own tree fingerprint from git state, the one team tool that needs to see the filesystem.
  *
  * Production calls `buildTeamAgentPiTools`, which filters this set by role. Keeping the two apart lets a
  * caller supply the role it wants to test, and gives the registration guard one place to run.
  */
-export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpContext, cwd: string): ToolDefinition[] {
+export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpContext, workspace: TeamToolWorkspace): ToolDefinition[] {
   const tools = [
     pi.defineTool<typeof teamSendMessageSchema, undefined>({
       name: 'team_send_message',
@@ -640,7 +654,7 @@ export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpC
           ctx.scratchpad.recordReadOutcome(ctx.agentName, known ? 'marker' : 'full');
           const content = known ? unchangedMarker(entry.version) : entry.content;
           const read = { section: entry.section, content, author: entry.author, version: entry.version };
-          return textResult(JSON.stringify(entry.section === VERIFICATION_SECTION ? { ...read, currentFingerprint: await computeTreeFingerprint(cwd) } : read));
+          return textResult(JSON.stringify(entry.section === VERIFICATION_SECTION ? { ...read, currentFingerprint: await computeTreeFingerprint(workspace) } : read));
         }
         const all = ctx.scratchpad.getAll();
         if (all.length === 0) return textResult('Scratchpad is empty.');
@@ -648,7 +662,7 @@ export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpC
         const known = all.map((e) => ctx.scratchpad.hasCurrentRead(ctx.agentName, e.section));
         ctx.scratchpad.markAllRead(ctx.agentName);
         for (const wasKnown of known) ctx.scratchpad.recordReadOutcome(ctx.agentName, wasKnown ? 'marker' : 'full');
-        const currentFingerprint = all.some((e) => e.section === VERIFICATION_SECTION) ? await computeTreeFingerprint(cwd) : undefined;
+        const currentFingerprint = all.some((e) => e.section === VERIFICATION_SECTION) ? await computeTreeFingerprint(workspace) : undefined;
         const payload = all.map((e, i) => ({
           section: e.section,
           content: known[i] ? unchangedMarker(e.version) : e.content,
@@ -863,7 +877,7 @@ export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpC
         if (input.result === 'pass' && input.failures) {
           throw new TeamToolError('`failures` is only valid when `result` is "fail". A passing run has none. Drop the field, or record the run as "fail".');
         }
-        const fingerprint = await computeTreeFingerprint(cwd);
+        const fingerprint = await computeTreeFingerprint(workspace);
         const scope = isFullSuiteCommand(input.command) ? 'full-suite' : 'scoped';
         const failures = input.failures ? ` | failures: ${input.failures}` : '';
         const entry =
@@ -966,7 +980,7 @@ export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpC
  * The `team_*` tools this agent's role can call. The role guards in the execute bodies stay as defence
  * in depth, for any path that reaches a tool the builder did not hand out.
  */
-export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpContext, cwd: string): ToolDefinition[] {
+export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpContext, workspace: TeamToolWorkspace): ToolDefinition[] {
   const allowed = new Set(teamAgentPiToolNames(ctx));
-  return buildAllTeamAgentPiTools(pi, ctx, cwd).filter((tool) => allowed.has(tool.name));
+  return buildAllTeamAgentPiTools(pi, ctx, workspace).filter((tool) => allowed.has(tool.name));
 }

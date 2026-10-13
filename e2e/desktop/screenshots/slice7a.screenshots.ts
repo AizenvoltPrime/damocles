@@ -202,7 +202,7 @@ test('slice 7a captures', async ({ foreground: _foreground, home, launch }) => {
   }
 });
 
-test('slice 7a palette in Greek', async ({ launch }) => {
+test('slice 7a palette in Greek', async ({ foreground: _foreground, launch }) => {
   const { app } = await launch({ args: ['--lang=el-GR'] });
   const chat = await activeChat(app);
   await setContentSize(app, WIDTH, HEIGHT);

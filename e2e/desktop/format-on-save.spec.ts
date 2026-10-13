@@ -64,7 +64,7 @@ async function noticesMatching(app: ElectronApplication, text: string): Promise<
   return (await recordedToasts(app)).filter((notice) => notice.message.includes(text));
 }
 
-test('a trusted project\'s Prettier 3 formats a .ts file on Ctrl+S, and one Ctrl+Z undoes the format', async ({ home, launch }) => {
+test('a trusted project\'s Prettier 3 formats a .ts file on Ctrl+S, and one Ctrl+Z undoes the format', async ({ foreground: _foreground, home, launch }) => {
   installStub(home.project, '3.3.3');
   fs.writeFileSync(path.join(home.project, '.prettierrc'), JSON.stringify({ semi: false }));
   const file = write(home, 'src/a.ts', 'const a=1\n');
@@ -81,7 +81,7 @@ test('a trusted project\'s Prettier 3 formats a .ts file on Ctrl+S, and one Ctrl
   await expect(editorTab(shell, 'a.ts')).toHaveAttribute('data-dirty', 'true');
 });
 
-test('Save in the close prompt formats as Ctrl+S does', async ({ home, launch }) => {
+test('Save in the close prompt formats as Ctrl+S does', async ({ foreground: _foreground, home, launch }) => {
   installStub(home.project, '3.3.3');
   const file = write(home, 'a.ts', 'const a=1\n');
   const { app, shell } = await openFile(home, launch, 'a.ts');
@@ -92,7 +92,7 @@ test('Save in the close prompt formats as Ctrl+S does', async ({ home, launch })
   await expect(editorTab(shell, 'a.ts')).toHaveCount(0);
 });
 
-test('Prettier 2\'s synchronous format formats on save too', async ({ home, launch }) => {
+test('Prettier 2\'s synchronous format formats on save too', async ({ foreground: _foreground, home, launch }) => {
   installStub(home.project, '2.8.8');
   const file = write(home, 'a.ts', 'const a=1\n');
   const { app, shell } = await openFile(home, launch, 'a.ts');
@@ -101,7 +101,7 @@ test('Prettier 2\'s synchronous format formats on save too', async ({ home, laun
   await expect.poll(() => fs.readFileSync(file, 'utf8')).toBe('const a = 1;\nconst b = 2;\n');
 });
 
-test('in an untrusted project Ctrl+S saves the text unchanged, starts no formatter and says so once with Trust', async ({ home, launch }) => {
+test('in an untrusted project Ctrl+S saves the text unchanged, starts no formatter and says so once with Trust', async ({ foreground: _foreground, home, launch }) => {
   installStub(home.project, '3.3.3');
   const file = write(home, 'a.ts', 'const a=1\n');
   const { app, shell } = await openFile(home, launch, 'a.ts', { trusted: false });
@@ -129,7 +129,7 @@ test('in an untrusted project Ctrl+S saves the text unchanged, starts no formatt
   await expect.poll(() => fs.readFileSync(file, 'utf8')).toBe('const a = 1;\nconst b = 2;\nconst c = 3;\nconst d = 4;\n');
 });
 
-test('a Prettier that takes 5 s is stopped after 3 s, the file saves unformatted and Show Output opens the Format log', async ({ home, launch }) => {
+test('a Prettier that takes 5 s is stopped after 3 s, the file saves unformatted and Show Output opens the Format log', async ({ foreground: _foreground, home, launch }) => {
   installStub(home.project, '3.3.3', 5000);
   const file = write(home, 'a.ts', 'const a=1\n');
   const { app, shell } = await openFile(home, launch, 'a.ts');
@@ -151,7 +151,7 @@ test('a Prettier that takes 5 s is stopped after 3 s, the file saves unformatted
   await editorShows(shell, 'a.ts: Prettier 3.3.3 took longer than 3000 ms and was stopped');
 });
 
-test('a .prettierrc without an installed Prettier formats nothing, and the notice says why', async ({ home, launch }) => {
+test('a .prettierrc without an installed Prettier formats nothing, and the notice says why', async ({ foreground: _foreground, home, launch }) => {
   fs.writeFileSync(path.join(home.project, '.prettierrc'), '{}');
   const file = write(home, 'data.json', '{"a":1}');
   const { app, shell } = await openFile(home, launch, 'data.json');
@@ -162,7 +162,7 @@ test('a .prettierrc without an installed Prettier formats nothing, and the notic
     .toEqual(['Prettier is configured in this project but not installed, so data.json was not formatted. Install the project\'s dependencies to format it.']);
 });
 
-test('without Prettier a JSON file formats with Monaco\'s built-in formatter', async ({ home, launch }) => {
+test('without Prettier a JSON file formats with Monaco\'s built-in formatter', async ({ foreground: _foreground, home, launch }) => {
   const file = write(home, 'data.json', '{"a":1,"b":[1,2]}');
   const { desktop, app, shell } = await openFile(home, launch, 'data.json');
   await typeAtEnd(shell, ' ');
@@ -174,7 +174,7 @@ test('without Prettier a JSON file formats with Monaco\'s built-in formatter', a
   expect(logBeforeQuit(home)).not.toContain(HOST_STARTED);
 });
 
-test('without Prettier a .ts file formats with the TypeScript worker\'s built-in formatter', async ({ home, launch }) => {
+test('without Prettier a .ts file formats with the TypeScript worker\'s built-in formatter', async ({ foreground: _foreground, home, launch }) => {
   const file = write(home, 'a.ts', 'const a=1\n');
   const { desktop, app, shell } = await openFile(home, launch, 'a.ts');
   await typeAtEnd(shell, 'const b=[1,2]');
@@ -185,7 +185,7 @@ test('without Prettier a .ts file formats with the TypeScript worker\'s built-in
   expect(logBeforeQuit(home)).not.toContain('the built-in formatter failed');
 });
 
-test('a file listed in .prettierignore saves unchanged', async ({ home, launch }) => {
+test('a file listed in .prettierignore saves unchanged', async ({ foreground: _foreground, home, launch }) => {
   installStub(home.project, '3.3.3');
   fs.writeFileSync(path.join(home.project, '.prettierignore'), 'skip.ts\n');
   const file = write(home, 'skip.ts', 'const a=1\n');
@@ -208,7 +208,7 @@ test('auto save after delay never formats', async ({ home, launch }) => {
   expect(logBeforeQuit(home)).not.toContain(HOST_STARTED);
 });
 
-test('a Prettier in a parent folder of the project is not used, and the notice names its path', async ({ home, launch }) => {
+test('a Prettier in a parent folder of the project is not used, and the notice names its path', async ({ foreground: _foreground, home, launch }) => {
   const parentPrettier = installStub(path.dirname(home.project), '3.3.3');
   const file = write(home, 'a.ts', 'const a=1\n');
   const { desktop, app, shell } = await openFile(home, launch, 'a.ts');
@@ -221,7 +221,7 @@ test('a Prettier in a parent folder of the project is not used, and the notice n
   expect(logBeforeQuit(home)).not.toContain(HOST_STARTED);
 });
 
-test('a Prettier config found only in a parent folder never runs, and the notice names it', async ({ home, launch }) => {
+test('a Prettier config found only in a parent folder never runs, and the notice names it', async ({ foreground: _foreground, home, launch }) => {
   installStub(home.project, '3.3.3');
   const marker = path.join(path.dirname(home.project), 'config-ran');
   const parentConfig = path.join(path.dirname(home.project), 'prettier.config.js');
@@ -238,7 +238,7 @@ test('a Prettier config found only in a parent folder never runs, and the notice
   expect(logBeforeQuit(home)).not.toContain(HOST_STARTED);
 });
 
-test('a folder named .prettierrc is no config, so a parent folder\'s config behind it is refused and never runs', async ({ home, launch }) => {
+test('a folder named .prettierrc is no config, so a parent folder\'s config behind it is refused and never runs', async ({ foreground: _foreground, home, launch }) => {
   installStub(home.project, '3.3.3');
   fs.mkdirSync(path.join(home.project, '.prettierrc'));
   const marker = path.join(path.dirname(home.project), 'config-ran');
@@ -254,7 +254,7 @@ test('a folder named .prettierrc is no config, so a parent folder\'s config behi
 });
 
 for (const version of ['2.8.8', '3.3.3']) {
-  test(`Prettier ${version}: a plugin the project's config names that resolves outside the project never loads, and the notice names it`, async ({ home, launch }) => {
+  test(`Prettier ${version}: a plugin the project's config names that resolves outside the project never loads, and the notice names it`, async ({ foreground: _foreground, home, launch }) => {
     installStub(home.project, version);
     const parent = path.dirname(home.project);
     const pluginDir = path.join(parent, 'node_modules', 'prettier-plugin-outside');
@@ -275,7 +275,7 @@ for (const version of ['2.8.8', '3.3.3']) {
   });
 }
 
-test('Format Document (Shift+Alt+F) formats the buffer without saving it', async ({ home, launch }) => {
+test('Format Document (Shift+Alt+F) formats the buffer without saving it', async ({ foreground: _foreground, home, launch }) => {
   installStub(home.project, '3.3.3');
   const file = write(home, 'a.ts', 'const a=1\n');
   const { app, shell } = await openFile(home, launch, 'a.ts', { settings: { [FORMAT_ON_SAVE]: false } });

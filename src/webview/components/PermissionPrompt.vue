@@ -286,7 +286,7 @@ watch(() => props.toolUseId, resetState);
       <button
         v-if="canOpenDiff"
         type="button"
-        class="flex-none rounded-[0.375rem] px-1 text-xs whitespace-nowrap text-(--d-accent) hover:underline focus-visible:outline-2 focus-visible:outline-(--d-accent)"
+        class="flex-none rounded-6 px-1 text-xs whitespace-nowrap text-(--d-accent) hover:underline focus-visible:outline-2 focus-visible:outline-(--d-accent)"
         data-testid="permission-open-diff"
         @click="openDiff"
       >
@@ -386,7 +386,7 @@ watch(() => props.toolUseId, resetState);
             @select="handleSelect(option.value)"
           >
             <span
-              class="flex size-5 flex-none items-center justify-center rounded-[0.375rem] border border-(--d-border2) font-mono text-11 group-data-highlighted:border-(--d-accent) group-data-[state=checked]:border-(--d-accent)"
+              class="flex size-5 flex-none items-center justify-center rounded-6 border border-(--d-border2) font-mono text-11 group-data-highlighted:border-(--d-accent) group-data-[state=checked]:border-(--d-accent)"
               aria-hidden="true"
             >{{ option.key }}</span>
             <span class="min-w-0 flex-1 truncate font-medium">{{ option.label }}</span>

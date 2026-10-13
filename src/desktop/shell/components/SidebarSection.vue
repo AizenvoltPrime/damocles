@@ -60,6 +60,7 @@ defineExpose({ bodyHeight: (): number => body.value?.getBoundingClientRect().hei
             v-if="count !== undefined"
             class="font-mono text-10.5 text-(--d-faint)"
           >{{ count }}</span>
+          <slot name="badge" />
         </button>
       </h2>
       <slot name="actions" />

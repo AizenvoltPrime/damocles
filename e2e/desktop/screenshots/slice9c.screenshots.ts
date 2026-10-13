@@ -71,7 +71,7 @@ async function run(shell: Page, id: string, name: string, command: string): Prom
   await shell.keyboard.press('Enter');
 }
 
-test('slice 9c captures', async ({ home, launch }) => {
+test('slice 9c captures', async ({ foreground: _foreground, home, launch }) => {
   test.skip(!windows, 'The captures use Windows paths for the user profiles.');
   fs.mkdirSync(OUT, { recursive: true });
   for (const [file, text] of [['dev.js', DEV], ['test.js', TESTS], ['logs.js', LOGS]] as const) fs.writeFileSync(path.join(home.project, file), text);

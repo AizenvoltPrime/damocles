@@ -2,7 +2,7 @@
 
 These let us verify the wake -> VAD -> ASR -> TTS -> protocol orchestration
 without GPU, without model files, and without internet. Real engines live in
-``loader.py`` and load NeMo / OpenWakeWord / Silero / VibeVoice on demand.
+``loader.py`` and load NeMo / sherpa-onnx / Silero / VibeVoice on demand.
 """
 
 from __future__ import annotations
@@ -25,10 +25,12 @@ class MockWakeEngine(WakeEngine):
         fire_on_call: int = 5,
         confidence: float = 0.8,
         max_fires: int = 1,
+        samples_after_phrase: int = 0,
     ) -> None:
         self.fire_on_call = fire_on_call
         self.confidence = confidence
         self.max_fires = max_fires
+        self.samples_after_phrase = samples_after_phrase
         self._calls = 0
         self._times_fired = 0
         self._sensitivity = 0.5
@@ -37,7 +39,11 @@ class MockWakeEngine(WakeEngine):
         self._calls += 1
         if self._calls == self.fire_on_call and self._times_fired < self.max_fires:
             self._times_fired += 1
-            return WakeResult(detected=True, confidence=self.confidence)
+            return WakeResult(
+                detected=True,
+                confidence=self.confidence,
+                samples_after_phrase=self.samples_after_phrase,
+            )
         return WakeResult(detected=False, confidence=0.0)
 
     def reset(self) -> None:

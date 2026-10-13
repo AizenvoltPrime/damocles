@@ -28,7 +28,7 @@ import { settingsFolderOf } from '../../core/workspace-folders/folder-registry';
 import type { Disposable } from '../../platform/disposable';
 import type { PanelOptions } from '../../platform/window-service';
 import type { StoredSession } from '../../shared/types/session';
-import { MAX_OVERLAY_TAGS, OVERLAY_CHANNELS, type OverlayAnswer, type OverlayRequest } from '../preload/overlay-channels';
+import { MAX_OVERLAY_ITEMS, MAX_OVERLAY_TAGS, OVERLAY_CHANNELS, type OverlayAnswer, type OverlayRequest } from '../preload/overlay-channels';
 import type { NotificationProject } from '../preload/notifications';
 import { canCheck, type UpdateSnapshot, type VersionInfo } from '../preload/updates';
 import {
@@ -76,6 +76,7 @@ import {
   isDesktopSettingValue,
   NOTIFICATION_SOUND_SETTING,
   NOTIFICATIONS_SETTING,
+  UPDATE_CHECK_AUTOMATICALLY_SETTING,
   RESTORE_LAYOUT_SETTING,
   TERMINAL_DEFAULT_PROFILE_SETTING,
   TERMINAL_PROFILES_SETTING,
@@ -123,7 +124,7 @@ import { installCaCertificates } from './network/ca-certificates';
 import { installProxyDispatcher } from './network/proxy-dispatcher';
 import { DO_NOT_DISTURB_KEY, handleCenterChannels, NotificationCenter, runEntryAction, type ChatKey, type ChatRef, type EntryActionDeps } from './notification-center';
 import { NotifierHost } from './notifier';
-import { OverlayHost, overlayHtml } from './overlay';
+import { createInputAsker, OverlayHost, overlayHtml } from './overlay';
 import { OverlaySettings, writeDesktopSetting } from './overlay-settings';
 import type { SettingsTarget } from '../../shared/settings-sections';
 import { PanelStateStore } from './panel-state-store';
@@ -132,7 +133,7 @@ import { ptyHostPaths, quickOpenWorkerPath, unpackagedResourceRoot, type Desktop
 import type { ChatTabMessenger } from './platform/editor-service';
 import { createDesktopKeyValueState, type DesktopKeyValueState } from './platform/key-value-state';
 import { createDesktopLocalizationService, launchLanguage, readLanguageSetting, type DesktopLocalizationService } from './platform/localization-service';
-import { createDesktopLogSinkFactory } from './platform/log-sink';
+import { createDesktopLogSinkFactory, logFileName } from './platform/log-sink';
 import { Emitter } from './platform/emitter';
 import { createDesktopNotificationService } from './platform/notification-service';
 import { logUncaughtErrors } from './process-errors';
@@ -141,7 +142,12 @@ import { announceInstalledVersion, ReleaseNotesSource } from './release-notes';
 import { appResourceUri, handleAppProtocol, registerAppScheme } from './protocol';
 import { restrictPermissions, hardenWebContents } from './security';
 import { reportFailure, ShellHost, shellHtml, type ShellActions } from './shell';
-import { mergeLoginShellEnv, probeGit } from './shell-env';
+import { mergeLoginShellEnv, probeGit, type GitProbe } from './shell-env';
+import { backgroundCompletion, NO_SCM_MENU_STATE, ScmHost } from './scm/scm-host';
+import { createGitRunner } from '../../core/scm/git-runner';
+import { ScmService } from '../../core/scm/scm-service';
+import { PiRuntime } from '../../core/pi-session/pi-runtime';
+import { SUBCALL_USAGE_LEDGER_PATH } from '../../core/paths';
 import { TaskbarBadges } from './taskbar-badges';
 import { TaskbarCounter } from './taskbar-counter';
 import { currentTheme, currentThemeKind, followThemeSettings, LIGHT_THEME, onThemeChange, THEME_BACKGROUND } from './theme';
@@ -151,12 +157,14 @@ import { loadAutoUpdater, shellPlatform, UpdateService } from './updater';
 import { UsageWarningStore } from './usage-warning-store';
 import { PanelViews, type DesktopPanel, type ShowFocus } from './views';
 import {
+  boundsToPersist,
   clampToWorkAreas,
-  DEFAULT_WINDOW_HEIGHT,
-  DEFAULT_WINDOW_WIDTH,
+  defaultWindowBounds,
   MIN_WINDOW_HEIGHT,
   MIN_WINDOW_WIDTH,
   WindowLayoutStore,
+  type AppliedBounds,
+  type Rect,
 } from './window-layout-store';
 
 // electron-builder.yml appId: the Windows AppUserModelID, the macOS bundle id and the update identity. The unpackaged app's own
@@ -198,6 +206,26 @@ function windowStateOf(window: BrowserWindow | undefined): ShellWindowState {
   if (!window || window.isDestroyed()) return 'normal';
   if (window.isFullScreen()) return 'fullScreen';
   return window.isMaximized() ? 'maximized' : 'normal';
+}
+
+// Position and content size: getBounds reads a frameless Windows window a DIP larger than setBounds made it at 150%
+// (electron/electron#51572), its content size exactly.
+function normalBoundsOf(window: BrowserWindow): Rect {
+  const [x = 0, y = 0] = window.getPosition();
+  const [width = 0, height = 0] = window.getContentSize();
+  return { x, y, width, height };
+}
+
+// The bounds main applied to a window and its last read while neither maximized, minimized nor full screen.
+interface WindowBoundsTracker {
+  readonly applied: AppliedBounds | undefined;
+  normal: Rect;
+}
+
+// Read on every save as well as on 'resize' and 'move': X11 applies setBounds asynchronously, so those events can carry the
+// new position with the old size, and Linux emits no 'resized' or 'moved' to correct it.
+function refreshNormalBounds(window: BrowserWindow, tracker: WindowBoundsTracker): void {
+  if (!window.isMaximized() && !window.isMinimized() && !window.isFullScreen()) tracker.normal = normalBoundsOf(window);
 }
 
 function statusOf(activity: ChatActivity | undefined): ChatStatus {
@@ -341,6 +369,10 @@ class DesktopApp {
   private fileTree: FileTree | undefined;
   private quickOpenIndex: QuickOpenIndex | undefined;
   private search: SearchHost | undefined;
+  private scm: ScmHost | undefined;
+  // the git probeGit found at startup; source control spawns its absolute path
+  private gitProbe: GitProbe = { available: false, reason: '' };
+  // the e2e hooks' stand-in for the commit-message model (DAMOCLES_E2E_HOOKS, unpackaged only)
   private palette: CommandPalette | undefined;
   private editorPane: EditorPane | undefined;
   private formatter: FormatService | undefined;
@@ -473,6 +505,7 @@ class DesktopApp {
     this.localization = localization;
     const git = await probeGit(bootLog, (message, ...args) => localization.t(message, ...args));
     setCheckpointGitAvailability(git);
+    this.gitProbe = git;
     restrictPermissions(session.defaultSession);
     handleAppProtocol(resourceRoot, {
       panel: (panelId) => this.views?.htmlFor(panelId),
@@ -522,6 +555,7 @@ class DesktopApp {
       notifications: this.platform.notifications,
       shell: this.platform.shell,
       state: this.state.global,
+      checkAutomatically: () => this.platform?.settings.get<boolean>(UPDATE_CHECK_AUTOMATICALLY_SETTING, true) !== false,
       onResume: (listener) => {
         powerMonitor.on('resume', listener);
         return { dispose: () => powerMonitor.removeListener('resume', listener) };
@@ -553,6 +587,7 @@ class DesktopApp {
         this.shellStateChanged();
         this.fileTree?.projectsChanged();
         this.quickOpenIndex?.invalidate();
+        this.scm?.setProjects(this.desktopProjects());
       }),
       this.trust.onDidGrant(() => this.shellStateChanged()),
       this.platform.settings.onDidChange('damocles', (change) => {
@@ -561,6 +596,7 @@ class DesktopApp {
           this.refreshMenuState();
         }
         if (change.affects(NOTIFICATIONS_SETTING)) this.notificationCenter.popupPolicyChanged();
+        if (change.affects(UPDATE_CHECK_AUTOMATICALLY_SETTING)) this.updates?.checkAutomaticallyChanged();
         if (change.affects(FILES_EXCLUDE_SETTING)) {
           this.fileTree?.excludeChanged();
           this.quickOpenIndex?.invalidate();
@@ -797,9 +833,8 @@ class DesktopApp {
     this.states.unseal();
     this.windowLayout.unseal();
     const placement = this.windowLayout.window();
-    const bounds = placement
-      ? clampToWorkAreas(placement.bounds, screen.getAllDisplays().map((display) => display.workArea))
-      : { width: DEFAULT_WINDOW_WIDTH, height: DEFAULT_WINDOW_HEIGHT };
+    const restored = placement && clampToWorkAreas(placement.bounds, screen.getAllDisplays().map((display) => display.workArea));
+    const bounds = restored ?? defaultWindowBounds(screen.getPrimaryDisplay().workArea);
     const mac = process.platform === 'darwin';
     const window = new BrowserWindow({
       ...bounds,
@@ -821,6 +856,13 @@ class DesktopApp {
         spellcheck: false,
       },
     });
+    // The constructor sizes a frameless Windows window up to 4 DIP off its request at 150%; setContentSize sizes it exactly.
+    if (restored) window.setContentSize(restored.width, restored.height);
+    const read = normalBoundsOf(window);
+    const tracker: WindowBoundsTracker = { applied: restored && { bounds: restored, read }, normal: read };
+    const trackNormal = (): void => refreshNormalBounds(window, tracker);
+    window.on('resize', trackNormal);
+    window.on('move', trackNormal);
     // The menu's accelerators keep working with the menu bar hidden; the title bar logo pops the menu up.
     if (!mac) window.setMenuBarVisibility(false);
     if (placement?.maximized) window.maximize();
@@ -905,7 +947,7 @@ class DesktopApp {
     void Promise.all([this.profilesDetected, firstLoad]).then(() => {
       if (this.shell === shell) terminals.restore();
     });
-    const savePlacement = (): void => this.saveWindowPlacement(window);
+    const savePlacement = (): void => this.saveWindowPlacement(window, tracker);
     for (const event of ['resized', 'moved', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen'] as const) {
       window.on(event as 'resized', savePlacement);
     }
@@ -925,7 +967,7 @@ class DesktopApp {
         return;
       }
       overlaySettings.close();
-      this.sealPersistedState(window);
+      this.sealPersistedState(window, tracker);
       views.retainStatesOnClose(true);
       for (const panelId of views.panelIds()) views.panel(panelId)?.close();
     });
@@ -1046,8 +1088,7 @@ class DesktopApp {
     if (window && !window.isDestroyed()) {
       if (window.isFullScreen()) window.setFullScreen(false);
       if (window.isMaximized()) window.unmaximize();
-      window.setSize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT);
-      window.center();
+      window.setBounds(defaultWindowBounds(screen.getDisplayMatching(window.getBounds()).workArea));
     }
     this.terminals?.setListWidth(TERMINAL_LIST_DEFAULT_REM);
     this.shellStateChanged();
@@ -1055,16 +1096,18 @@ class DesktopApp {
   }
 
   // VS Code's onBeforeShutdown saves the window state, and a closing window does not rewrite it (windowsStateHandler.ts).
-  private sealPersistedState(window: BrowserWindow): void {
-    this.saveWindowPlacement(window);
+  private sealPersistedState(window: BrowserWindow, tracker: WindowBoundsTracker): void {
+    this.saveWindowPlacement(window, tracker);
     this.states.seal();
     this.windowLayout.seal();
   }
 
   // Normal bounds, so a maximized window restores to the size it had before it was maximized.
-  private saveWindowPlacement(window: BrowserWindow): void {
+  private saveWindowPlacement(window: BrowserWindow, tracker: WindowBoundsTracker): void {
     if (window.isDestroyed()) return;
-    this.windowLayout.setWindow({ bounds: window.getNormalBounds(), maximized: window.isMaximized(), fullScreen: window.isFullScreen() });
+    refreshNormalBounds(window, tracker);
+    const bounds = boundsToPersist(tracker.applied, tracker.normal);
+    this.windowLayout.setWindow({ bounds, maximized: window.isMaximized(), fullScreen: window.isFullScreen() });
   }
 
   private chatGaveUp(panel: DesktopPanel): void {
@@ -1748,6 +1791,17 @@ class DesktopApp {
         preview: (request) => this.requireSearch().preview(request),
         findInFolder: (folder) => this.requireSearch().findInFolder(folder),
       },
+      scm: {
+        state: () => this.requireScm().state(),
+        select: (raw) => this.requireScm().select(raw),
+        run: (raw) => this.requireScm().run(raw),
+        commit: (raw) => this.requireScm().commit(raw),
+        generateMessage: (raw) => this.requireScm().generateMessage(raw),
+        fileDiff: (raw) => this.requireScm().fileDiff(raw),
+        copy: (raw) => this.requireScm().copy(raw),
+        commitInput: (raw) => this.requireScm().commitInput(raw),
+        amend: (raw) => this.requireScm().amend(raw),
+      },
       searchEditor: {
         openNew: (request) => this.requireSearch().openNew(request),
         setConfig: (documentId, config) => this.requireSearch().setConfig(documentId, config),
@@ -1909,6 +1963,7 @@ class DesktopApp {
       reveal: (absolutePath) => platform.shell.revealPath(absolutePath),
       copy: (text) => platform.clipboard.writeText(text),
       changed: (change) => this.shell?.filesChanged(change),
+      ignored: (projectKey, relativeDir, entries) => this.scm?.ignored(projectKey, relativeDir, entries) ?? Promise.resolve(new Set()),
     });
     const quickOpenIndex = new QuickOpenIndex({
       projects,
@@ -1953,6 +2008,7 @@ class DesktopApp {
       browser: () => this.browserTabs,
       warn: (message) => void this.notifications.warn(message),
       searchEditorClosed: (documentId) => this.search?.searchEditorClosed(documentId),
+      openChanges: (absolutePath) => this.requireScm().openChangesOf(absolutePath),
     });
     const formatterHosts = new FormatterHosts({
       spawn: (root) => spawnFormatterHost(path.join(platform.paths.unpackedRoot, 'dist', 'formatter-host.js'), root),
@@ -2017,6 +2073,72 @@ class DesktopApp {
       lineDelimiter: process.platform === 'win32' ? '\r\n' : '\n',
     });
     documents.onDidChangeText((change) => search.documentChanged(change.documentId));
+    // Source control (AD4). The Git log records argv, duration and exit code, redacted as it is written; Show Git Output
+    // opens it as a log tab (D36).
+    const gitLog = this.logSinks.create('Git');
+    const git = this.gitProbe;
+    const scmService = new ScmService({
+      runner: git.available ? createGitRunner({ git: { path: git.path, version: git.version }, log: gitLog, isTrusted: (project) => platform.trust.isTrusted(project) }) : undefined,
+      trust: platform.trust,
+      watchers: platform.fileWatchers,
+      settings: platform.settings,
+      globalState: this.state.global,
+      ask: this.ask,
+      notify: (message, ...actions) => platform.notifications.info(message, ...actions),
+      trash: (absolutePath) => this.trashEntry(absolutePath),
+      t,
+      log: report,
+    });
+    const commitMessageCompletion = backgroundCompletion(() => PiRuntime.unlessRetired(), (key) => platform.secrets.get(key), report);
+    const scm = new ScmHost({
+      service: scmService,
+      settings: platform.settings,
+      projects,
+      selectedProjectKey: () => this.searchFolder()?.projectKey,
+      editorPane,
+      selection: { get: (projectKey) => this.windowLayout.scmSelected(projectKey), set: (projectKey, root) => this.windowLayout.setScmSelected(projectKey, root) },
+      notify: platform.notifications,
+      t,
+      showGitLog: () => gitLog.show(false),
+      copy: (text) => platform.clipboard.writeText(text),
+      reveal: (absolutePath) => platform.shell.revealPath(absolutePath),
+      openExternal: async (url) => {
+        if (!(await platform.shell.openExternal(url))) throw new Error('The link could not be opened');
+      },
+      pickFolder: (defaultPath) => platform.dialogs.pickFolder({ title: t('Open Repository'), defaultPath }),
+      quickPick: async (placeholder, items) => {
+        const overlay = this.overlay;
+        if (!overlay) return undefined;
+        const answer = await overlay.request({ kind: 'quickPick', placeholder, items: items.slice(0, MAX_OVERLAY_ITEMS) }, webContents.getFocusedWebContents() ?? undefined);
+        return answer.kind === 'quickPick' ? answer.itemId : undefined;
+      },
+      ask: this.ask,
+      askInput: createInputAsker({
+        overlay: () => this.overlay,
+        focused: () => webContents.getFocusedWebContents() ?? undefined,
+        unavailable: () => void platform.notifications.error(t('The text box could not be shown, so nothing was changed. Try again.')),
+        log: report,
+      }),
+      mention: (target) => this.mentionInSelectedChat(target),
+      complete: commitMessageCompletion,
+      send: {
+        view: (view) => this.shell?.scmView(view),
+        state: (snapshot) => this.shell?.scmState(snapshot),
+        decorations: (decorations) => this.shell?.scmDecorations(decorations),
+        settings: (settings) => this.shell?.scmSettings(settings),
+        command: (command) => this.shell?.scmCommand(command),
+        setInput: (input) => this.shell?.scmSetInput(input),
+        filesChanged: (projectKey) => this.shell?.filesChanged({ projectKey, relativeDirs: [] }),
+      },
+      menuChanged: () => this.refreshMenuState(),
+      log: report,
+      gitLog: (line) => gitLog.appendLine(line),
+      platform: process.platform,
+    });
+    scm.setProjects(this.desktopProjects());
+    this.scm = scm;
+    this.disposables.push(scm, scmService, gitLog);
+
     this.palette = new CommandPalette({
       commands: () => desktopCommands(this.projects.folders(), this.menuActions(), process.platform),
       l10n: localization,
@@ -2065,6 +2187,11 @@ class DesktopApp {
           };
           return hold;
         },
+        // Source control: the sub-call ledger path and the Git log as written.
+        scm: {
+          ledgerPath: () => SUBCALL_USAGE_LEDGER_PATH,
+          gitLog: () => fs.promises.readFile(path.join(this.logsDir, logFileName('Git')), 'utf8').catch((err: NodeJS.ErrnoException) => (err.code === 'ENOENT' ? '' : Promise.reject(err))),
+        },
         reloadCore: () => this.core.reload(),
         // reached turns true once a chat restore waits on the hold; fail makes every held restore reject
         holdChatRestore: () => {
@@ -2104,6 +2231,11 @@ class DesktopApp {
   private requireQuickOpenIndex(): QuickOpenIndex {
     if (!this.quickOpenIndex) throw new Error('Quick Open used before startup finished');
     return this.quickOpenIndex;
+  }
+
+  private requireScm(): ScmHost {
+    if (!this.scm) throw new Error('Source control used before startup finished');
+    return this.scm;
   }
 
   private requireSearch(): SearchHost {
@@ -2404,7 +2536,7 @@ class DesktopApp {
     if (!opened.ok) void this.requirePlatform().notifications.warn(this.requireLocalization().t('{0} could not be opened.', pick.relativePath));
   }
 
-  // Files' Mention in chat, the editor's mention button and Quick Open's @ mention in the selected chat.
+  // Files' and Source Control's Mention in chat, the editor's mention button and Quick Open's @ mention in the selected chat.
   // A chat still restoring is the chat the file goes to, once core registered it.
   private async mentionInSelectedChat(target: MentionTarget): Promise<void> {
     await this.core.run('Mention', async (core) => {
@@ -2613,6 +2745,7 @@ class DesktopApp {
       terminalSplit: this.terminals?.splitActive() === true,
       terminalInput: this.terminalInputHasFocus(),
       search: this.searchMenuState(),
+      scm: this.scm?.menuState() ?? NO_SCM_MENU_STATE,
     };
   }
 
@@ -2712,6 +2845,9 @@ class DesktopApp {
     const platform = this.requirePlatform();
     const report = (action: string) => this.report(action);
     return {
+      scmRun: (request) => this.scm?.paletteRun(request),
+      scmActiveFile: (op) => this.scm?.activeFile(op),
+      scmCommit: (variant) => this.scm?.paletteCommit(variant),
       addProject: () => { this.addProject().catch(report('Add Project')); },
       newChat: () => { this.newChat(undefined).catch(report('New Chat')); },
       openChat: () => { this.core.run('Open Chat', (core) => core.provider.show()).catch(report('Open Chat')); },

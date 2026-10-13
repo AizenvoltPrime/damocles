@@ -211,7 +211,7 @@ test('a terminal resized while its screen cannot be seen keeps following its out
   await expect(shell.getByTestId('terminal-scroll-to-end')).toHaveCount(0);
 });
 
-test('Ctrl+K reaches the pty while Ctrl+P and Ctrl+Shift+P reach the app', async ({ home, launch }) => {
+test('Ctrl+K reaches the pty while Ctrl+P and Ctrl+Shift+P reach the app', async ({ foreground: _foreground, home, launch }) => {
   const { app, shell } = await launchWithTerminal(home, launch);
   const overlay = await overlayPage(app);
   // A raw-mode reader prints the first byte the pty delivers.
@@ -536,7 +536,7 @@ test('Settings › Terminal applies the font family, line height and cursor blin
   expect(readUserSettings(home)).toMatchObject({ 'damocles.desktop.terminal.fontFamily': '"Courier New", monospace', 'damocles.desktop.terminal.lineHeight': 1.4, 'damocles.desktop.terminal.cursorBlinking': true });
 });
 
-test('the palette focuses the next and previous terminal and kills them all', async ({ home, launch }) => {
+test('the palette focuses the next and previous terminal and kills them all', async ({ foreground: _foreground, home, launch }) => {
   const { app, shell } = await launchWithTerminal(home, launch);
   await shell.getByTestId('terminal-new').click({ modifiers: ['Shift'] });
   await expect(terminalRows(shell)).toHaveCount(2);

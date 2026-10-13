@@ -115,7 +115,13 @@ async function switchBack(app: ElectronApplication): Promise<void> {
     BrowserWindow.getAllWindows().find((w) => w.webContents.getURL() === url)!.focus();
   }, SHELL_URL);
   await expect.poll(() => mainWindowFocused(app)).toBe(true);
-  await app.evaluate(() => (globalThis as unknown as { __e2eOther: Electron.BrowserWindow }).__e2eOther.destroy());
+  // Never destroy(): the inspector can run an evaluate inside that window's compositor frame, and destroying it there fails
+  // Chromium's CHECK(!inside_main_frame_) in ~LayerTreeHost (crbug.com/895883, Electron 44); close() destroys it in a later task.
+  await app.evaluate(() => new Promise<void>((resolve) => {
+    const other = (globalThis as unknown as { __e2eOther: Electron.BrowserWindow }).__e2eOther;
+    other.once('closed', () => resolve());
+    other.close();
+  }));
 }
 
 async function switchAwayAndBack(app: ElectronApplication): Promise<void> {
@@ -449,7 +455,7 @@ test('copy, paste and select all work in the chat input through the platform sho
   }
 });
 
-test('Find in Files, Replace in Files and Show All Commands work from the chat view and the editor; Find in Files seeds the editor\'s selection', async ({ home, launch }) => {
+test('Find in Files, Replace in Files and Show All Commands work from the chat view and the editor; Find in Files seeds the editor\'s selection', async ({ foreground: _foreground, home, launch }) => {
   fs.mkdirSync(path.join(home.project, 'src'), { recursive: true });
   fs.writeFileSync(path.join(home.project, 'src', 'a.ts'), 'const seededWord = 1;\n');
   const { app } = await launch();

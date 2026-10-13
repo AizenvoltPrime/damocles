@@ -29,6 +29,8 @@ export const EXPECTED_FUSES = {
 export const REPORTED_FUSES = ['LoadBrowserProcessSpecificV8Snapshot', 'WasmTrapHandlers'];
 
 const PUBLISH = { provider: 'github', owner: 'AizenvoltPrime', repo: 'damocles' };
+// Must equal win.signtoolOptions.publisherName in electron-builder.yml: the common name of the SignPath Foundation release certificate.
+export const WINDOWS_PUBLISHER = 'SignPath Foundation';
 // The scripts main runs in another process or thread: the worker threads, the shell sentinel, the formatter host and the pty host.
 const WORKERS = ['compass-worker.js', 'usage-stats-worker.js', 'quick-open-worker.js', 'watch-worker.js', 'sentinel.js', 'formatter-host.js', 'pty-host.js'];
 // The license notices electron-builder.yml ships inside app.asar (files) and beside it (extraResources).
@@ -111,17 +113,29 @@ export function checkUnpackedSet(files, patterns) {
   ];
 }
 
-/** The flat `key: value` lines of an electron-builder app-update.yml. */
+/** The flat `key: value` lines of an electron-builder app-update.yml, and the `- item` list under an empty key (Windows publisherName). */
 export function parseFlatYaml(text) {
   const out = {};
+  let listKey;
   for (const line of text.split(/\r?\n/)) {
+    const item = /^\s+-\s+(.*)$/.exec(line);
+    if (item && listKey !== undefined) {
+      out[listKey].push(unquote(item[1]));
+      continue;
+    }
     const match = /^([A-Za-z]+):\s*(.*)$/.exec(line);
-    if (match) out[match[1]] = match[2].replace(/^(['"])(.*)\1$/, '$2');
+    if (!match) continue;
+    listKey = match[2] === '' ? match[1] : undefined;
+    out[match[1]] = match[2] === '' ? [] : unquote(match[2]);
   }
   return out;
 }
 
-/** The update feed the installed app reads: the GitHub repo, and on Windows the per-arch channel the build flags set. */
+function unquote(value) {
+  return value.trim().replace(/^(['"])(.*)\1$/, '$2');
+}
+
+/** The update feed the installed app reads: the GitHub repo, and on Windows the per-arch channel the build flags set and the update publisher. */
 export function checkAppUpdate(text, platform, arch) {
   if (text === undefined) return [fail('app-update.yml', 'missing; the installed app would have no update feed')];
   const config = parseFlatYaml(text);
@@ -132,6 +146,10 @@ export function checkAppUpdate(text, platform, arch) {
   if (!config.updaterCacheDirName) problems.push('updaterCacheDirName is absent');
   const channel = platform === 'win32' ? `latest-${arch}` : undefined;
   if (config.channel !== channel) problems.push(`channel is ${config.channel ?? 'absent'}, expected ${channel ?? 'absent (the default feed)'}`);
+  const publisher = platform === 'win32' ? [WINDOWS_PUBLISHER] : undefined;
+  if (JSON.stringify(config.publisherName) !== JSON.stringify(publisher)) {
+    problems.push(`publisherName is ${JSON.stringify(config.publisherName) ?? 'absent'}, expected ${JSON.stringify(publisher) ?? 'absent'}`);
+  }
   return [problems.length === 0 ? pass('app-update.yml', Object.entries(config).map(([k, v]) => `${k}=${v}`).join(' ')) : fail('app-update.yml', problems.join('; '))];
 }
 
@@ -213,6 +231,30 @@ function checkSameFiles(check, sourceDir, packagedDir, filter) {
     ...(extra.length ? [`not in the repo: ${extra.join(', ')}`] : []),
   ];
   return problems.length === 0 ? pass(check, `${expected.length} identical to the repo: ${expected.join(', ')}`) : fail(check, problems.join('; '));
+}
+
+// The wake directory's own package files, which the fetch script neither writes nor removes.
+const WAKE_PACKAGE_FILES = new Set(['__init__.py', '.gitkeep']);
+
+/** The packaged wake directory holds exactly the files the manifest's `wake_model` lists, each at its listed size and SHA-256. */
+export function checkWakeModel(manifestPath, packagedDir) {
+  const check = 'wake model';
+  if (!existsSync(manifestPath)) return fail(check, `${manifestPath} is missing`);
+  const files = JSON.parse(readFileSync(manifestPath, 'utf8')).wake_model?.files;
+  if (!Array.isArray(files) || files.length === 0) return fail(check, `${manifestPath} lists no wake_model.files`);
+  const listed = new Set(files.map((file) => file.filename));
+  const missing = files.filter((file) => !existsSync(join(packagedDir, file.filename))).map((file) => file.filename);
+  const differ = files
+    .filter((file) => !missing.includes(file.filename))
+    .filter((file) => statSync(join(packagedDir, file.filename)).size !== file.bytes || sha256(join(packagedDir, file.filename)) !== file.sha256)
+    .map((file) => file.filename);
+  const extra = listFiles(packagedDir).filter((file) => !listed.has(file) && !WAKE_PACKAGE_FILES.has(file));
+  const problems = [
+    ...(missing.length ? [`missing ${missing.join(', ')}`] : []),
+    ...(differ.length ? [`differ from the manifest: ${differ.join(', ')}`] : []),
+    ...(extra.length ? [`not in the manifest: ${extra.join(', ')}`] : []),
+  ];
+  return problems.length === 0 ? pass(check, `${files.length} files match the manifest: ${[...listed].join(', ')}`) : fail(check, problems.join('; '));
 }
 
 // needsExecBit follows the package's target; a Windows host reads no exec bits, so it cannot check one there.
@@ -301,7 +343,7 @@ export async function verifyPackage({ platform, arch, app, repoRoot, readFuseWir
   const sidecar = join(unpacked, 'python', 'damocles_voice_sidecar', 'damocles_voice_sidecar');
   results.push(checkFile('python sidecar entry', join(sidecar, '__main__.py')));
   results.push(checkFile('python model manifest', join(sidecar, 'models', 'MODEL_MANIFEST.json')));
-  results.push(checkSameFiles('wake models', join(repoRoot, 'python', 'damocles_voice_sidecar', 'damocles_voice_sidecar', 'models', 'wake'), join(sidecar, 'models', 'wake'), (file) => file.endsWith('.onnx')));
+  results.push(checkWakeModel(join(repoRoot, 'python', 'damocles_voice_sidecar', 'damocles_voice_sidecar', 'models', 'MODEL_MANIFEST.json'), join(sidecar, 'models', 'wake')));
   const pythonJunk = listFiles(join(unpacked, 'python')).filter((file) => PYTHON_JUNK.test(file));
   results.push(pythonJunk.length === 0 ? pass('python package clean', 'no venvs, caches or tests') : fail('python package clean', pythonJunk.slice(0, 10).join(', ')));
 

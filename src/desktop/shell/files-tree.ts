@@ -10,7 +10,7 @@ export type TreeEdit =
 
 export type TreeRow =
   // position and setSize: 1-based among the folder's entries, for aria-posinset and aria-setsize (a virtualized tree must say them)
-  | { readonly kind: 'entry'; readonly path: string; readonly name: string; readonly directory: boolean; readonly depth: number; readonly expanded: boolean; readonly loading: boolean; readonly position: number; readonly setSize: number }
+  | { readonly kind: 'entry'; readonly path: string; readonly name: string; readonly directory: boolean; readonly depth: number; readonly expanded: boolean; readonly loading: boolean; readonly position: number; readonly setSize: number; readonly ignored: boolean }
   | { readonly kind: 'input'; readonly edit: TreeEdit; readonly depth: number; readonly name: string; readonly directory: boolean };
 
 export const childPath = (dir: string, name: string): string => (dir === '' ? name : `${dir}/${name}`);
@@ -39,7 +39,7 @@ export function flattenTree(listings: ReadonlyMap<string, Listing>, expanded: Re
       const directory = entry.kind === 'dir';
       const open = directory && expanded.has(path);
       if (edit?.mode === 'rename' && edit.path === path) rows.push({ kind: 'input', edit, depth, name: entry.name, directory });
-      else rows.push({ kind: 'entry', path, name: entry.name, directory, depth, expanded: open, loading: open && listings.get(path)?.state === 'loading', position: index + 1, setSize: listing.entries.length });
+      else rows.push({ kind: 'entry', path, name: entry.name, directory, depth, expanded: open, loading: open && listings.get(path)?.state === 'loading', position: index + 1, setSize: listing.entries.length, ignored: entry.ignored === true });
       if (open) walk(path, depth + 1);
     }
   };

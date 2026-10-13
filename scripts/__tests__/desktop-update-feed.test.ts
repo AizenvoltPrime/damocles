@@ -74,6 +74,12 @@ describe('app-update.yml override for an installed test app', () => {
     });
   });
 
+  it('drops the Windows publisher list, so the unsigned N+1 passes the installed app', () => {
+    const signed = `${PACKAGED_YML}publisherName:\n  - SignPath Foundation\n`;
+    expect(parseFlatYaml(signed).publisherName).toEqual(['SignPath Foundation']);
+    expect(parseFlatYaml(overrideYaml(signed, 'http://127.0.0.1:4567/'))).not.toHaveProperty('publisherName');
+  });
+
   it.each(['http://localhost:4567/', 'https://127.0.0.1:4567/', 'http://127.0.0.1/', 'http://127.0.0.1:4567/feed/', 'http://0.0.0.0:4567/', 'http://127.0.0.1:99999/', 'http://127.0.0.1:4567@evil.com/'])('refuses the feed URL %s', (url) => {
     expect(() => overrideYaml(PACKAGED_YML, url)).toThrow();
   });
@@ -81,7 +87,8 @@ describe('app-update.yml override for an installed test app', () => {
   it('refuses a file that is not the packaged github config', () => {
     expect(() => overrideYaml('provider: generic\nurl: http://127.0.0.1:1/\nupdaterCacheDirName: x\n', 'http://127.0.0.1:4567/')).toThrow(/provider/);
     expect(() => overrideYaml('provider: github\n', 'http://127.0.0.1:4567/')).toThrow(/updaterCacheDirName/);
-    expect(() => overrideYaml('provider: github\nlist:\n  - a\n', 'http://127.0.0.1:4567/')).toThrow(/Unexpected/);
+    expect(() => overrideYaml('provider: github\nmap:\n  key: a\n', 'http://127.0.0.1:4567/')).toThrow(/Unexpected/);
+    expect(() => overrideYaml('provider: github\n  - orphan\n', 'http://127.0.0.1:4567/')).toThrow(/Unexpected/);
   });
 
   it('writes only into an existing installed resources/app-update.yml', () => {

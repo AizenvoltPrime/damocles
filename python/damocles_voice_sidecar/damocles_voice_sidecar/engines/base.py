@@ -1,7 +1,7 @@
 """Engine ABCs — the pipeline talks to these, not to specific ML libraries.
 
 This indirection is what makes the pipeline testable without GPU and without
-NeMo/OpenWakeWord/etc installed. ``mock.py`` provides deterministic
+NeMo/sherpa-onnx/etc installed. ``mock.py`` provides deterministic
 implementations driven by the test fixtures.
 """
 
@@ -16,6 +16,8 @@ from typing import AsyncIterator, Literal
 class WakeResult:
     detected: bool
     confidence: float
+    # On detection: samples at SAMPLE_RATE fed after the phrase ended, through the detecting frame.
+    samples_after_phrase: int = 0
 
 
 class WakeEngine(ABC):

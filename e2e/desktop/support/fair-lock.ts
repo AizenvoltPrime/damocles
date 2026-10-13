@@ -4,8 +4,8 @@ import * as lockfile from 'proper-lockfile';
 
 // A holder refreshes its lock, and a waiter its ticket, every UPDATE_MS; one not refreshed for STALE_MS belongs to a worker
 // that died or hung, and is taken over.
-const STALE_MS = 10_000;
-const UPDATE_MS = 2_000;
+export const STALE_MS = 10_000;
+export const UPDATE_MS = 2_000;
 const RETRY_MS = 250;
 
 export function alive(pid: number): boolean {

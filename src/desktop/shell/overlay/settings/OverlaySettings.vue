@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, provide, ref, shallowRef } from 'vue';
-import { FileCode2, FolderSearch, Info, Palette, SquareTerminal } from 'lucide-vue-next';
+import { FileCode2, FolderSearch, GitBranch, Info, Palette, SquareTerminal } from 'lucide-vue-next';
 import type { SettingsAccountId, SettingsSectionId, SettingsTarget } from '@shared/settings-sections';
 import type { ExtensionToWebviewMessage, SettingsFileScope } from '@shared/types/messages';
 import SettingsModal from '@/components/settings/SettingsModal.vue';
@@ -17,6 +17,7 @@ import AboutSection from './AboutSection.vue';
 import AppearanceSection from './AppearanceSection.vue';
 import EditorSection from './EditorSection.vue';
 import FilesSearchSection from './FilesSearchSection.vue';
+import SourceControlSection from './SourceControlSection.vue';
 import TerminalSection from './TerminalSection.vue';
 import { EDIT_SETTINGS_FILE } from './settings-file-link';
 import LanguageRow from './LanguageRow.vue';
@@ -24,6 +25,7 @@ import NotifyRow from './NotifyRow.vue';
 import NotifySoundRow from './NotifySoundRow.vue';
 import type { OverlaySettingsBridge } from './overlay-bridge';
 import { provideDesktopPrefs } from './desktop-prefs';
+import { gitRowName } from './git-row-name';
 import {
   EDITOR_AUTO_SAVE_SETTING,
   EDITOR_FORMAT_ON_SAVE_SETTING,
@@ -34,6 +36,25 @@ import {
   EDITOR_TAB_SIZE_SETTING,
   EDITOR_WORD_WRAP_SETTING,
   FILES_EXCLUDE_SETTING,
+  GIT_ALLOW_NO_VERIFY_COMMIT_SETTING,
+  GIT_ALWAYS_SIGN_OFF_SETTING,
+  GIT_BRANCH_PREFIX_SETTING,
+  GIT_BRANCH_PROTECTION_PROMPT_SETTING,
+  GIT_BRANCH_PROTECTION_SETTING,
+  GIT_CONFIRM_EMPTY_COMMITS_SETTING,
+  GIT_CONFIRM_NO_VERIFY_COMMIT_SETTING,
+  GIT_ENABLE_COMMIT_SIGNING_SETTING,
+  GIT_ENABLE_SMART_COMMIT_SETTING,
+  GIT_INPUT_VALIDATION_LENGTH_SETTING,
+  GIT_INPUT_VALIDATION_SETTING,
+  GIT_INPUT_VALIDATION_SUBJECT_LENGTH_SETTING,
+  GIT_OPEN_REPOSITORY_IN_PARENT_FOLDERS_SETTING,
+  GIT_POST_COMMIT_COMMAND_SETTING,
+  GIT_PROMPT_TO_SAVE_FILES_BEFORE_COMMIT_SETTING,
+  GIT_REPOSITORY_SCAN_MAX_DEPTH_SETTING,
+  GIT_SMART_COMMIT_CHANGES_SETTING,
+  GIT_SUGGEST_SMART_COMMIT_SETTING,
+  GIT_UNTRACKED_CHANGES_SETTING,
   SEARCH_ACTIONS_POSITION_SETTING,
   SEARCH_COLLAPSE_RESULTS_SETTING,
   SEARCH_DEFAULT_VIEW_MODE_SETTING,
@@ -65,6 +86,7 @@ import {
   TERMINAL_PROFILES_SETTING,
   TERMINAL_SCROLLBACK_SETTING,
   TERMINAL_SHELL_INTEGRATION_SETTING,
+  UPDATE_CHECK_AUTOMATICALLY_SETTING,
 } from '../../../main/desktop-configuration';
 
 const props = defineProps<{
@@ -132,6 +154,29 @@ const TERMINAL_SETTINGS = (mac: boolean): string[] => [
   ...(mac ? [TERMINAL_MAC_OPTION_IS_META_SETTING] : []),
 ];
 
+// The Source control rows in the order SourceControlSection renders them; settingsHost.rows.git<Name> names each one's strings.
+const GIT_SETTINGS = [
+  GIT_POST_COMMIT_COMMAND_SETTING,
+  GIT_BRANCH_PROTECTION_SETTING,
+  GIT_BRANCH_PROTECTION_PROMPT_SETTING,
+  GIT_PROMPT_TO_SAVE_FILES_BEFORE_COMMIT_SETTING,
+  GIT_ALWAYS_SIGN_OFF_SETTING,
+  GIT_ENABLE_COMMIT_SIGNING_SETTING,
+  GIT_ALLOW_NO_VERIFY_COMMIT_SETTING,
+  GIT_CONFIRM_NO_VERIFY_COMMIT_SETTING,
+  GIT_CONFIRM_EMPTY_COMMITS_SETTING,
+  GIT_ENABLE_SMART_COMMIT_SETTING,
+  GIT_SUGGEST_SMART_COMMIT_SETTING,
+  GIT_SMART_COMMIT_CHANGES_SETTING,
+  GIT_INPUT_VALIDATION_SETTING,
+  GIT_INPUT_VALIDATION_SUBJECT_LENGTH_SETTING,
+  GIT_INPUT_VALIDATION_LENGTH_SETTING,
+  GIT_BRANCH_PREFIX_SETTING,
+  GIT_UNTRACKED_CHANGES_SETTING,
+  GIT_REPOSITORY_SCAN_MAX_DEPTH_SETTING,
+  GIT_OPEN_REPOSITORY_IN_PARENT_FOLDERS_SETTING,
+] as const;
+
 const DESKTOP = computed((): HostSettings => ({
   sections: [{
     id: 'appearance',
@@ -187,6 +232,16 @@ const DESKTOP = computed((): HostSettings => ({
       }),
     ],
   }, {
+    id: 'sourceControl',
+    label: 'settingsHost.sections.sourceControl.label',
+    subtitle: 'settingsHost.sections.sourceControl.subtitle',
+    icon: GitBranch,
+    component: SourceControlSection,
+    rows: GIT_SETTINGS.map((key) => {
+      const name = gitRowName(key);
+      return { id: key, section: 'sourceControl' as const, label: `settingsHost.rows.${name}.label`, description: `settingsHost.rows.${name}.description`, keys: [key] };
+    }),
+  }, {
     id: 'about',
     label: 'settingsHost.sections.about.label',
     subtitle: 'settingsHost.sections.about.subtitle',
@@ -194,6 +249,7 @@ const DESKTOP = computed((): HostSettings => ({
     component: AboutSection,
     rows: [
       { id: 'about-version', section: 'about', label: 'settingsHost.rows.aboutVersion.label', description: 'settingsHost.rows.aboutVersion.description' },
+      { id: UPDATE_CHECK_AUTOMATICALLY_SETTING, section: 'about', label: 'settingsHost.rows.updateCheckAutomatically.label', description: 'settingsHost.rows.updateCheckAutomatically.description', keys: [UPDATE_CHECK_AUTOMATICALLY_SETTING] },
       { id: 'about-whats-new', section: 'about', label: 'settingsHost.rows.whatsNew.label', description: 'settingsHost.rows.whatsNew.description' },
     ],
   }],

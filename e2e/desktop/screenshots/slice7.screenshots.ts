@@ -6,7 +6,7 @@ import type { ElectronApplication, Locator, Page } from '@playwright/test';
 import { expect, test } from '../support/fixtures';
 import { REPO_ROOT } from '../support/hermetic';
 import { menuItem, overlayMenu } from '../support/overlay';
-import { openProjectChat, settled, showTheme, THEMES, type Theme } from '../support/screenshots';
+import { closeWindowAt, openProjectChat, settled, showTheme, THEMES, type Theme } from '../support/screenshots';
 import { openSettingsModal, setContentSize } from '../support/settings';
 import { overlayPage, selectedProjectKey, SHELL_URL, shellPage } from '../support/shell';
 import { clickMenu } from '../support/ui';
@@ -129,9 +129,7 @@ async function shootReference(app: ElectronApplication, theme: Theme): Promise<B
     await settled(page);
     return await page.screenshot();
   } finally {
-    await app.evaluate(({ BrowserWindow }, target) => {
-      BrowserWindow.getAllWindows().find((win) => win.webContents.getURL().startsWith(target))?.destroy();
-    }, url);
+    await closeWindowAt(app, url);
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 }

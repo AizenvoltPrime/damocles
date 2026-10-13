@@ -13,10 +13,11 @@ import { chatGroupOf, chatListRows, tagCounts } from '../chat-list';
 import { avatarHue, avatarInitial } from '../project-avatar';
 import { providerLogoSvg } from '@/components/icons/provider-logos';
 import { createEditorStore, EDITOR_STORE } from '../editor/editor-store';
+import { createScmStore, SCM_STORE } from '../scm/scm-store';
 import { EDITOR_STATE, FakeResizeObserver, STATE, chat, fakeShellApi } from './fakes';
 
 // The sidebar's Files and Search sections read the editor store App provides.
-const sidebarGlobal = (api: DamoclesShellApi) => ({ plugins: [shellI18n], provide: { [EDITOR_STORE]: createEditorStore(api) } });
+const sidebarGlobal = (api: DamoclesShellApi) => ({ plugins: [shellI18n], provide: { [EDITOR_STORE]: createEditorStore(api), [SCM_STORE]: createScmStore(api.scm) } });
 
 const mounted: Array<VueWrapper> = [];
 function track<T extends VueWrapper>(wrapper: T): T {
@@ -773,8 +774,9 @@ describe('sidebar layout', () => {
     await wrapper.get('[data-testid="sidebar-projects"] button[aria-expanded]').trigger('click');
     expect(api.reportSidebarLayout).toHaveBeenLastCalledWith({
       sidebarWidth: 300,
-      sections: { projects: { collapsed: true, size: 60 }, chats: { collapsed: false }, files: { collapsed: false, size: 60 }, search: { collapsed: true, size: 260 } },
+      sections: { projects: { collapsed: true, size: 60 }, chats: { collapsed: false }, files: { collapsed: false, size: 60 }, search: { collapsed: true, size: 260 }, scm: { collapsed: true, size: 300 } },
       search: {},
+      scm: { viewMode: 'list', sortKey: 'path' },
     });
     expect(wrapper.find('[data-testid="projects-sash"]').exists()).toBe(false);
     // The report crosses the context bridge, which cannot clone a Vue proxy.
@@ -808,7 +810,7 @@ describe('sidebar layout', () => {
     await push({ collapsed: false, size: 120 });
     expect(size()).toBe('250');
     await sash.trigger('pointerup', { pointerId: 1 });
-    expect(api.reportSidebarLayout).toHaveBeenLastCalledWith(expect.objectContaining({ sections: { projects: { collapsed: false, size: 250 }, chats: { collapsed: false }, files: { collapsed: false, size: 230 }, search: { collapsed: true, size: 260 } } }));
+    expect(api.reportSidebarLayout).toHaveBeenLastCalledWith(expect.objectContaining({ sections: { projects: { collapsed: false, size: 250 }, chats: { collapsed: false }, files: { collapsed: false, size: 230 }, search: { collapsed: true, size: 260 }, scm: { collapsed: true, size: 300 } } }));
 
     // A push main made for another reason carries older sizes; only Restore default layout (a new revision) replaces them.
     await push({ collapsed: false, size: 120 });
@@ -817,6 +819,31 @@ describe('sidebar layout', () => {
     expect(size()).toBe('250');
     await push({ collapsed: false, size: 100 }, 1);
     expect(size()).toBe('100');
+  });
+
+  it('fits sections that overflow in proportion, and keeps a section the user expands at its size while the ones below give way first', async () => {
+    const api = fakeShellApi(CHATS);
+    const sections = { ...STATE.layout.sections, scm: { collapsed: false, size: 300 } };
+    const wrapper = track(mount(Sidebar, { props: { api, state: { ...STATE, layout: { ...STATE.layout, sections } } }, global: sidebarGlobal(api), attachTo: document.body }));
+    await flushPromises();
+    const sidebarSize = FakeResizeObserver.instances.find((observer) => observer.observed[0]?.getAttribute('data-testid') === 'sidebar')!;
+    (sidebarSize.callback as (entries: unknown[]) => void)([{ contentBoxSize: [{ inlineSize: 300, blockSize: 800 }] }]);
+    await flushPromises();
+    const value = (testId: string): number => Number(wrapper.get(`[data-testid="${testId}"]`).attributes('aria-valuenow'));
+    // A section may take the room less the other two open sections' 60px minimums.
+    const room = Number(wrapper.get('[data-testid="scm-sash"]').attributes('aria-valuemax')) + 2 * 60;
+    // 150 + 230 + 300 overflow an 800px sidebar, so all three shrink by the same factor.
+    const before = { projects: value('projects-sash'), files: value('files-sash'), scm: value('scm-sash') };
+    expect(before.projects + before.files + before.scm).toBeLessThanOrEqual(room);
+    expect(before.projects / 150).toBeCloseTo(before.scm / 300, 1);
+    expect(before.scm).toBeLessThan(300);
+
+    await wrapper.get('[data-testid="search-section"] button[aria-expanded]').trigger('click');
+
+    expect(value('search-sash')).toBe(260);
+    expect(value('scm-sash')).toBe(60);
+    expect(value('projects-sash')).toBe(before.projects);
+    expect(before.projects + value('files-sash') + 260 + 60).toBe(room);
   });
 
   it('drives the Projects sash with the grid sash, its value the Projects size above it', async () => {

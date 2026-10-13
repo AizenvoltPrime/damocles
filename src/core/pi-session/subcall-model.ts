@@ -18,6 +18,7 @@ export const SUBCALL_THINKING: Record<StructuredSubCallPurpose, 'off' | 'low'> =
   'memory-extract': 'low',
   'memory-profile': 'low',
   'memory-audit': 'low',
+  'commit-message': 'low',
 };
 
 export type ClampThinkingLevel = (model: Model<Api>, level: ModelThinkingLevel) => ModelThinkingLevel;

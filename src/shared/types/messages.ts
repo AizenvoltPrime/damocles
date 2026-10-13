@@ -668,7 +668,8 @@ export type ExtensionToWebviewMessage =
   | { type: "voiceRecordingStarted" }
   | { type: "transcriptionResult"; text: string }
   | { type: "transcriptionError"; message: string }
-  | { type: "voiceConfigUpdate"; config: VoiceConfig; hasApiKey: boolean }
+  /** `localRuntimeUnsupported` is the host's localized refusal when the Jarvis runtime cannot install on its platform, else null. */
+  | { type: "voiceConfigUpdate"; config: VoiceConfig; hasApiKey: boolean; localRuntimeUnsupported: string | null }
   | { type: "voiceSidecarStatus"; state: "stopped" | "loading" | "ready" | "error" | "restarting"; device?: "cuda" | "cpu"; vramMbFree?: number; modelsLoaded?: string[]; message?: string }
   | { type: "voiceWakeDetected"; confidence: number }
   | { type: "voiceWakeAborted"; reason: "no-speech" | "user-cancel" }

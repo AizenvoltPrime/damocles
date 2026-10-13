@@ -154,7 +154,7 @@ test('a markdown file offers Open preview and Open source; Mention in chat and a
   await expect(chatInput(chat)).toHaveValue('@NOTES.md ');
 });
 
-test('the active editor file is revealed in Files: its folders expand, its row is selected and scrolled into view, and focus stays in the editor', async ({ home, launch }) => {
+test('the active editor file is revealed in Files: its folders expand, its row is selected and scrolled into view, and focus stays in the editor', async ({ foreground: _foreground, home, launch }) => {
   // Sixty folders above src push its rows below the fold.
   for (let i = 0; i < 60; i++) fs.mkdirSync(path.join(home.project, `dir${String(i).padStart(2, '0')}`));
   fs.writeFileSync(path.join(home.project, 'dir00', 'a.ts'), 'export const a = 1;\n');

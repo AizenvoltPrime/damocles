@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseBudgetUsd, parseRetentionDays, parseTaskBudget } from '../parsers';
+import { parseBudgetUsd, parseRetentionDays, parseTaskBudget, parseWakePhraseInput } from '../parsers';
 
 const t = (key: string, named?: Record<string, unknown>): string => (named ? `${key} ${JSON.stringify(named)}` : key);
 
@@ -26,6 +26,14 @@ describe('settings input parsers', () => {
     expect(parseTaskBudget('1', t)).toEqual({ ok: true, value: 1 });
     for (const raw of ['0', '1.5', '-3']) {
       expect(parseTaskBudget(raw, t)).toEqual({ ok: false, error: 'settingsModal.invalid.positiveInteger' });
+    }
+  });
+
+  it('take a wake phrase of 1 to 4 words of letters and give it back normalized', () => {
+    expect(parseWakePhraseInput('hey_jarvis', t)).toEqual({ ok: true, value: 'hey jarvis' });
+    expect(parseWakePhraseInput('  Computer ', t)).toEqual({ ok: true, value: 'computer' });
+    for (const raw of ['', 'hey-jarvis', 'jarvis2', 'one two three four five', '/home/me/wake.onnx']) {
+      expect(parseWakePhraseInput(raw, t)).toEqual({ ok: false, error: 'settingsModal.invalid.wakePhrase' });
     }
   });
 });

@@ -28,13 +28,12 @@ from damocles_voice_sidecar.engines.mock import (
     MockWakeEngine,
 )
 from damocles_voice_sidecar.pipeline import (
-    POST_WAKE_OFFSET_MS,
     Pipeline,
     PipelineConfig,
     PipelineEvent,
     State,
 )
-from damocles_voice_sidecar.protocol import FRAME_BYTES, FRAME_DURATION_MS, RecoverableOomError
+from damocles_voice_sidecar.protocol import FRAME_BYTES, RecoverableOomError
 
 
 SILENCE_FRAME = b"\x00" * FRAME_BYTES
@@ -79,10 +78,6 @@ class FlakyAsrEngine(AsrEngine):
         return "cuda"
 
 
-def _frames_for(ms: int) -> int:
-    return ms // FRAME_DURATION_MS
-
-
 def _build(oom_count: int):
     captured: List[PipelineEvent] = []
 
@@ -102,8 +97,6 @@ def _build(oom_count: int):
 
 async def _drive_to_transcribe(pipeline) -> None:
     await pipeline.feed(SILENCE_FRAME)
-    for _ in range(_frames_for(POST_WAKE_OFFSET_MS)):
-        await pipeline.feed(SILENCE_FRAME)
     await pipeline.feed(SILENCE_FRAME)
     await pipeline.feed(SILENCE_FRAME)
 

@@ -1,9 +1,9 @@
-"""Real engine loader — Parakeet TDT + OpenWakeWord + Silero VAD + VibeVoice.
+"""Real engine loader — Parakeet TDT + sherpa-onnx KWS + Silero VAD + VibeVoice.
 
 This module is the single entry point that wires the four production
 engines into an ``EngineSet``. All ML-library imports are confined to
 the engine modules below; the loader itself never touches torch/NeMo/
-openwakeword/transformers directly so unit tests can import it without
+sherpa-onnx/transformers directly so unit tests can import it without
 the heavy deps installed.
 
 Failure mode contract:
@@ -32,11 +32,11 @@ def load_real_engines(cfg: SidecarConfig) -> EngineSet:
     vad = None
     asr = None
     if cfg.wake_word_enabled:
-        from .wake_openwakeword import OpenWakeWordEngine
+        from .wake_sherpa_kws import SherpaKwsWakeEngine
         from .vad_silero import SileroVadEngine
         from .asr_parakeet import ParakeetAsrEngine
 
-        wake = OpenWakeWordEngine(cfg)
+        wake = SherpaKwsWakeEngine(cfg)
         vad = SileroVadEngine(cfg)
         asr = ParakeetAsrEngine(cfg)
 

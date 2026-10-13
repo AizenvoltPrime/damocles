@@ -13,6 +13,7 @@ import EditorPane from './editor/EditorPane.vue';
 import FocusOverlay from './editor/FocusOverlay.vue';
 import { createEditorStore, EDITOR_STORE } from './editor/editor-store';
 import { createTerminalStore, TERMINAL_STORE } from './terminal/terminal-store';
+import { createScmStore, SCM_STORE } from './scm/scm-store';
 
 const props = defineProps<{ api: DamoclesShellApi }>();
 const { t } = useI18n();
@@ -26,6 +27,11 @@ const editor = createEditorStore(props.api);
 provide(EDITOR_STORE, editor);
 const terminals = createTerminalStore(props.api);
 provide(TERMINAL_STORE, terminals);
+const scm = createScmStore(props.api.scm);
+provide(SCM_STORE, scm);
+watch(() => state.value?.projects, (projects) => {
+  if (projects) scm.retainProjects(new Set(projects.map((project) => project.key)));
+});
 
 // Reveals waiting for main to show the sidebar they asked for.
 let sidebarWaiters: Array<() => void> = [];
@@ -67,7 +73,7 @@ onMounted(async () => {
   // A folder link in a terminal opens it in Files, as Reveal in Files does.
   stops.push(props.api.terminal.onRevealInFiles((file) => void revealInFiles(file)));
   applyState(await props.api.getState());
-  await Promise.all([editor.start(), terminals.start()]);
+  await Promise.all([editor.start(), terminals.start(), scm.start()]);
 });
 
 // Main lays the selected chat's view over exactly the chat slot's rectangle; the grid's panes are its neighbours, since a
@@ -105,6 +111,7 @@ onBeforeUnmount(() => {
   stopBounds?.();
   editor.stop();
   terminals.stop();
+  scm.stop();
 });
 </script>
 

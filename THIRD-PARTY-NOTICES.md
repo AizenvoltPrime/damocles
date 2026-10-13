@@ -168,16 +168,64 @@ The English ASR model used by the wake-word path is NVIDIA's
 - **License**: Apache License 2.0
 - **Use**: `engines/asr_parakeet.py` imports `nemo.collections.asr`.
 
-### OpenWakeWord — Apache-2.0
+### sherpa-onnx (k2-fsa) — Apache-2.0
 
-The wake-phrase detector. Model `hey_jarvis_v0.1.onnx` is bundled in
-`resources/voice/wake/`.
+The wake-phrase detector: streaming keyword spotting for the phrase set in
+`damocles.voice.wakeWord`. The `sherpa_onnx` Python package (pinned at
+1.13.8) is installed into the sidecar venv; its native libraries come from
+`sherpa-onnx-core`, below.
 
-- **Source**: https://github.com/dscripka/openWakeWord
+- **Source**: https://github.com/k2-fsa/sherpa-onnx
 - **License**: Apache License 2.0
-- **Bundled model**:
-  https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/hey_jarvis_v0.1.onnx
-- **Use**: `engines/wake_openwakeword.py`.
+- **Use**: the sidecar's wake engine imports `sherpa_onnx` and runs its
+  keyword spotter on the bundled model below.
+
+### sherpa-onnx-core (k2-fsa) — Apache-2.0
+
+The native half of sherpa-onnx, which `sherpa-onnx==1.13.8` requires at
+the same version: the sherpa-onnx C and C++ API libraries and their own
+build of onnxruntime (MIT, see below), installed into the sidecar venv.
+
+- **Source**: https://github.com/k2-fsa/sherpa-onnx
+- **Package**: https://pypi.org/project/sherpa-onnx-core/1.13.8/
+- **License**: Apache License 2.0 (`License: Apache-2.0` in the wheel's
+  metadata; the repository's `LICENSE` is the Apache License 2.0)
+- **Use**: loaded by `sherpa_onnx` when the wake engine creates its
+  keyword spotter.
+
+### SentencePiece (Google) — Apache-2.0
+
+The tokenizer that turns the wake phrase into the keyword-spotting
+model's BPE pieces.
+
+- **Source**: https://github.com/google/sentencepiece
+- **Package**: https://pypi.org/project/sentencepiece/0.2.2/ (pinned at
+  0.2.2)
+- **License**: Apache License 2.0 (`License-Expression: Apache-2.0` in the
+  wheel's metadata; the `LICENSE` at tag v0.2.2 is the Apache License 2.0)
+- **Use**: the wake engine encodes the phrase with the bundled
+  `bpe.model` through `sentencepiece.SentencePieceProcessor`.
+
+### sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01 — Apache-2.0
+
+The keyword-spotting model, a 3.3M-parameter streaming zipformer
+transducer. Its int8 encoder, decoder and joiner (`.onnx`), `tokens.txt`
+and `bpe.model` are extracted from the release archive at build time and
+bundled in
+`python/damocles_voice_sidecar/damocles_voice_sidecar/models/wake/`.
+
+- **Source**: https://github.com/k2-fsa/sherpa-onnx/releases/tag/kws-models
+- **Archive**:
+  https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2
+  (size and SHA-256 of the archive and of each file pinned in
+  `MODEL_MANIFEST.json`'s `wake_model`)
+- **License**: Apache License 2.0. The model's authors license the weights
+  under Apache-2.0.
+- **Training data**: trained on GigaSpeech XL
+  (https://github.com/SpeechColab/GigaSpeech), whose dataset terms permit
+  non-commercial research and education use. Those terms govern the
+  dataset; the released weights are licensed by their authors under
+  Apache-2.0.
 
 ### Silero VAD — MIT
 
@@ -263,12 +311,13 @@ PCM resampling routines.
 
 ### onnxruntime (Microsoft) — MIT
 
-Inference runtime for the ONNX wake-word and VAD models.
+Inference runtime for the ONNX VAD model, and the runtime the
+sherpa-onnx-core wheel carries for the keyword-spotting model.
 
 - **Source**: https://github.com/microsoft/onnxruntime
 - **License**: MIT
-- **Use**: loaded by `engines/wake_openwakeword.py` (OpenWakeWord
-  detector) and `engines/vad_silero.py` (Silero VAD).
+- **Use**: loaded by `engines/vad_silero.py` (Silero VAD); sherpa-onnx's
+  keyword spotter runs on its own bundled build.
 
 ### cuda-python (NVIDIA) — Apache-2.0
 
@@ -418,7 +467,7 @@ SOFTWARE.
 
 ## Visual Studio Code (Code - OSS)
 
-Parts of the desktop app adapt Visual Studio Code source, rewritten for Damocles: the Quick Open file scoring, the search view's case-preserving replace and query rules, the Search Editor's `.code-search` format and the grammar that colours its results, and the integrated terminal's shell detection, pty handling, flow control, link detection, paste warning, shell integration scripts, command marks and navigation.
+Parts of the desktop app adapt Visual Studio Code source, rewritten for Damocles: the Quick Open file scoring, the search view's case-preserving replace and query rules, the Search Editor's `.code-search` format and the grammar that colours its results, the integrated terminal's shell detection, pty handling, flow control, link detection, paste warning, shell integration scripts, command marks and navigation, the sidebar's section sizing, and source control's git output parsers, status groups, decorations, discard confirmations, repository discovery, list sorting, menus, commit flow and questions, commit message history and its recall keys, branch name input, settings and palette titles.
 
 - **Source**: https://github.com/microsoft/vscode
 - **Adapted code**:
@@ -454,6 +503,12 @@ Parts of the desktop app adapt Visual Studio Code source, rewritten for Damocles
   - `resources/shell-integration/` (`shellIntegration-bash.sh`, `shellIntegration-{env,profile,rc,login}.zsh`, `shellIntegration.fish`, `shellIntegration.ps1`) from `src/vs/workbench/contrib/terminal/common/scripts/`, each keeping VS Code's MIT header
   - `src/desktop/main/terminal/shell-integration-injection.ts` from `getShellIntegrationInjection` in `src/vs/platform/terminal/node/terminalEnvironment.ts`; `src/desktop/main/terminal/shell-integration.ts` (OSC 633 parsing and value escapes) from `src/vs/platform/terminal/common/xterm/shellIntegrationAddon.ts`; the kill confirmation wording from `src/vs/workbench/contrib/terminal/browser/terminalService.ts`
   - `src/desktop/shell/terminal/terminal-commands.ts`, `terminal-marks.ts` and the command items of `terminal-menu.ts` from `src/vs/workbench/contrib/terminal/browser/xterm/markNavigationAddon.ts`, `decorationAddon.ts` and `src/vs/platform/terminal/common/capabilities/` (command and partial command detection)
+  - `src/core/scm/parsers.ts` (`GitStatusParser`, `parseGitmodules`, the config section parser, the dubious-ownership match and `stripCommitMessageComments`) and its tests from `extensions/git/src/git.ts`, `extensions/git/src/model.ts` and `extensions/git/src/test/git.test.ts`; `splitInChunks` in `src/core/scm/git-runner.ts` from `extensions/git/src/util.ts`
+  - `src/core/scm/repository.ts` (the status groups, letters, colours and strike-through, the commit, reset and clean arguments, the operation-in-progress checks, the .gitignore append and the conflict-marker check) from `extensions/git/src/repository.ts`, `git.ts` and `commands.ts`; `src/core/scm/discovery.ts` (the scan, the parent and unsafe repository rules, submodules) from `extensions/git/src/model.ts`; `src/core/scm/scm-service.ts` (the discard and stage confirmations, the parent repository notice; the tracked discard's "This is IRREVERSIBLE!" warning is replaced by where the trash keeps the changes, since Damocles trashes them first) and `src/desktop/main/scm/scm-host.ts` (the diff sides, titles and group views) from `extensions/git/src/commands.ts`, `repository.ts` and `decorationProvider.ts`; the git palette titles and when clauses in `src/desktop/main/commands.ts` and the git settings in `src/desktop/main/desktop-configuration.ts` from `extensions/git/package.json` and `package.nls.json`; the commit flow and its questions in `src/core/scm/scm-service.ts` (`commit`, `undoLastCommit`), the commit options, template read and undo in `src/core/scm/repository.ts`, and the save-before-commit prompt, branch name input, rename, delete, Open All Changes and Close All Unmodified Editors in `src/desktop/main/scm/scm-host.ts` from `extensions/git/src/commands.ts` (`smartCommit`, `undoCommit`, `promptForBranchName`, `rename`, `delete`, `openChanges`, `closeUnmodifiedEditors`), `repository.ts` (`commit`, `isBranchProtected`) and `git.ts` (`commit`, `getCommitTemplate`); the history rules in `src/core/scm/commit-history.ts` from `src/vs/base/common/history.ts` (`HistoryNavigator2`) and `src/vs/workbench/contrib/scm/common/scmService.ts`
+  - `src/desktop/shell/scm/CommitBox.vue` (the history recall on Up and Down at the box's first and last position, and Alt to force it) from `src/vs/workbench/contrib/scm/browser/scm.contribution.ts` (`scm.viewPreviousCommit`, `scm.viewNextCommit`, `scm.forceViewPreviousCommit`, `scm.forceViewNextCommit`) and `src/vs/workbench/contrib/scm/browser/scmViewPane.ts` (`scmInputIsInFirstPosition`, `scmInputIsInLastPosition`)
+  - `src/desktop/shell/scm/scm-list.ts` (the list order by name, path or status, and the tree's folders first) from `src/vs/workbench/contrib/scm/browser/scmViewPane.ts` (`SCMTreeSorter`)
+  - `src/desktop/shell/scm/scm-menus.ts` (the `git.commit` submenu, the `scm/title` More Actions menu and the resource group and resource state menus and inline actions) from `extensions/git/package.json` (`menus`, `submenus`)
+  - `src/desktop/shell/layout/section-sizes.ts` (`fitSections`, `yieldTo`) from `src/vs/base/browser/ui/splitview/splitview.ts` (`SplitView.layout`, `onViewChange`)
   - `src/desktop/pty-host/sessions.ts` and the terminal channels' flow control from `src/vs/platform/terminal/node/terminalProcess.ts` and `src/vs/platform/terminal/common/terminal.ts` (the exit flush window, the conpty spawn and kill throttle, the ignored resize-after-exit errors, and the 100,000 / 5,000 / 5,000 watermarks)
 
 ```

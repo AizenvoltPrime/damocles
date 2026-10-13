@@ -4,9 +4,12 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { Readable } from 'node:stream';
 
+import { parseGitVersion, type GitVersion } from '../../core/scm/git-runner';
+import { resolveGitExecutable } from '../../core/git-executable';
+
 export type StartupLog = (line: string) => void;
 
-export type GitProbe = { readonly available: true } | { readonly available: false; readonly reason: string };
+export type GitProbe = { readonly available: true; readonly path: string; readonly version: GitVersion } | { readonly available: false; readonly reason: string };
 
 // A login shell that sources a slow profile (nvm, conda) can take seconds; VS Code allows 10.
 const SHELL_ENV_TIMEOUT_MS = 10_000;
@@ -163,21 +166,30 @@ export async function mergeLoginShellEnv(log: StartupLog, timeoutMs: number = SH
   }
 }
 
-/** Whether `git` runs from the resolved PATH; the reason is a localized sentence the user can act on. */
+/**
+ * The git `resolveGitExecutable` finds on the resolved PATH, with its version: source control spawns that absolute path,
+ * never a bare name, whose relative PATH entries would resolve against the repository folder. The reason is a localized
+ * sentence the user can act on.
+ */
 export function probeGit(log: StartupLog, t: (message: string, ...args: string[]) => string): Promise<GitProbe> {
+  const missing = (): GitProbe => ({ available: false, reason: t('Git was not found on PATH, so source control, checkpoints and rewind are turned off. Install Git and restart Damocles.') });
+  const gitPath = resolveGitExecutable();
+  if (gitPath === undefined) {
+    log('[git] not found on PATH');
+    return Promise.resolve(missing());
+  }
   return new Promise((resolve) => {
-    execFile('git', ['--version'], { timeout: GIT_PROBE_TIMEOUT_MS, windowsHide: true }, (err, stdout) => {
-      if (!err) {
-        log(`[git] ${stdout.trim()}`);
-        resolve({ available: true });
+    execFile(gitPath, ['--version'], { timeout: GIT_PROBE_TIMEOUT_MS, windowsHide: true }, (err, stdout) => {
+      const version = err ? undefined : parseGitVersion(stdout);
+      if (version) {
+        log(`[git] ${stdout.trim()} at ${gitPath}`);
+        resolve({ available: true, path: gitPath, version });
         return;
       }
-      const missing = (err as NodeJS.ErrnoException).code === 'ENOENT';
-      log(`[git] ${missing ? 'not found on PATH' : `could not run: ${err.message}`}`);
-      const reason = missing
-        ? t('Git was not found on PATH, so checkpoints and rewind are turned off. Install Git and restart Damocles.')
-        : t('Git could not run ({0}), so checkpoints and rewind are turned off.', err.message);
-      resolve({ available: false, reason });
+      const message = err ? err.message : `unreadable version ${JSON.stringify(stdout.trim().slice(0, 100))}`;
+      log(`[git] could not run: ${message}`);
+      resolve({ available: false, reason: t('Git could not run ({0}), so source control, checkpoints and rewind are turned off.', message) });
     });
   });
 }
+

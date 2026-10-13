@@ -2,25 +2,25 @@
 import { computed, ref, shallowRef, toRaw, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useElementSize, useWindowSize } from '@vueuse/core';
-import { MAX_SEARCH_VIEW_STATES, MIN_SECTION_SIZE, MIN_SIDEBAR_WIDTH, type DamoclesShellApi, type FileRef, type SearchViewState, type ShellLayout, type ShellSidebarLayout, type ShellState } from '../../preload/shell-channels';
+import { MAX_SEARCH_VIEW_STATES, MIN_SECTION_SIZE, MIN_SIDEBAR_WIDTH, type DamoclesShellApi, type FileRef, type SearchViewState, type ShellLayout, type ScmViewOptions, type ShellSidebarLayout, type ShellState } from '../../preload/shell-channels';
 import { remPx } from '@/composables/useRemPx';
 import { atRootFont, GRID_SASH_REM, ROW_SASH_OVERLAP_REM, ROW_SASH_REM, SASH_KEY_STEP_REM, SECTION_HEADER_REM } from '../layout';
 import ProjectsSection from './ProjectsSection.vue';
 import ChatsSection from './ChatsSection.vue';
 import FilesSection from './FilesSection.vue';
 import SearchSection from '../search/SearchSection.vue';
+import ScmSection from '../scm/ScmSection.vue';
 import Sash from '../layout/Sash.vue';
 import { COLUMN_MIN_PX, gridAreas, gridMinWidth } from '../layout/layout-model';
+import { fitSections, largestSection, SIZED_SECTIONS, yieldTo, type SectionSizes, type SizedSection } from '../layout/section-sizes';
 
 defineOptions({ name: 'ShellSidebar' });
 
 const props = defineProps<{ api: DamoclesShellApi; state: ShellState }>();
 const { t } = useI18n();
 
-// rem: four section headers plus the three row sashes between them.
-const SECTION_CHROME_REM = 4 * SECTION_HEADER_REM + 3 * (ROW_SASH_REM - 2 * ROW_SASH_OVERLAP_REM);
-
-type SizedSection = 'projects' | 'files' | 'search';
+// rem: five section headers plus the four row sashes between them.
+const SECTION_CHROME_REM = 5 * SECTION_HEADER_REM + 4 * (ROW_SASH_REM - 2 * ROW_SASH_OVERLAP_REM);
 
 const root = ref<HTMLElement | null>(null);
 const projects = ref<InstanceType<typeof ProjectsSection> | null>(null);
@@ -33,8 +33,8 @@ const { height: sidebarHeight } = useElementSize(root);
 // only when main replaced the layout itself, so a state push carrying older ones never undoes a change.
 // Shallow and raw: every change replaces the whole object, and the context bridge cannot clone a Vue proxy.
 const sidebarPart = (state: ShellLayout): ShellSidebarLayout => {
-  const { sidebarWidth, sections, search } = toRaw(state);
-  return { sidebarWidth, sections, search };
+  const { sidebarWidth, sections, search, scm } = toRaw(state);
+  return { sidebarWidth, sections, search, scm };
 };
 const layout = shallowRef<ShellSidebarLayout>(sidebarPart(props.state.layout));
 watch(() => props.state.layoutRevision, () => {
@@ -49,19 +49,23 @@ const minSection = computed(() => atRootFont(MIN_SECTION_SIZE));
 const gridMin = computed(() => gridMinWidth(gridAreas(props.state.layout.grid), atRootFont(COLUMN_MIN_PX), remPx(GRID_SASH_REM)));
 const maxWidth = computed(() => Math.max(minWidth.value, windowWidth.value - gridMin.value));
 const width = computed(() => Math.min(Math.max(layout.value.sidebarWidth, minWidth.value), maxWidth.value));
-// The first open section of Chats, Files, Search and Projects fills the height the others leave and keeps at least a
-// section's minimum; the other open sections keep their sizes.
+// The first open section of Chats, Files, Search, Projects and Source control fills the height the others leave and keeps at least a
+// section's minimum; the other open sections keep their sizes, shrinking in proportion when the sidebar is too short for them.
 const sections = computed(() => layout.value.sections);
-const filler = computed(() => (['chats', 'files', 'search', 'projects'] as const).find((name) => !sections.value[name].collapsed));
+const filler = computed(() => (['chats', 'files', 'search', 'projects', 'scm'] as const).find((name) => !sections.value[name].collapsed));
 const sectionRoom = computed(() => sidebarHeight.value - remPx(SECTION_CHROME_REM) - minSection.value);
-const fixedSize = (name: SizedSection, size: number): number => (sections.value[name].collapsed || filler.value === name ? 0 : size);
-const clampSize = (size: number, max: number): number => Math.min(Math.max(size, minSection.value), max);
-const maxProjectsSize = computed(() => Math.max(minSection.value, sectionRoom.value - fixedSize('files', sections.value.files.size) - fixedSize('search', sections.value.search.size)));
-const projectsSize = computed(() => clampSize(sections.value.projects.size, maxProjectsSize.value));
-const maxFilesSize = computed(() => Math.max(minSection.value, sectionRoom.value - fixedSize('projects', projectsSize.value) - fixedSize('search', sections.value.search.size)));
-const filesSize = computed(() => clampSize(sections.value.files.size, maxFilesSize.value));
-const maxSearchSize = computed(() => Math.max(minSection.value, sectionRoom.value - fixedSize('projects', projectsSize.value) - fixedSize('files', filesSize.value)));
-const searchSize = computed(() => clampSize(sections.value.search.size, maxSearchSize.value));
+const fixedSections = computed(() => SIZED_SECTIONS.filter((name) => !sections.value[name].collapsed && filler.value !== name));
+const sizes = computed(() => {
+  const stored = Object.fromEntries(SIZED_SECTIONS.map((name) => [name, sections.value[name].size])) as SectionSizes;
+  return fitSections(stored, fixedSections.value, sectionRoom.value, minSection.value);
+});
+const projectsSize = computed(() => sizes.value.projects);
+const filesSize = computed(() => sizes.value.files);
+const searchSize = computed(() => sizes.value.search);
+const scmSize = computed(() => sizes.value.scm);
+const maxSize = computed(() => largestSection(fixedSections.value, sectionRoom.value, minSection.value));
+// The sizes when a sash drag started: the drag resizes from them, so dragging back restores what it took from the others.
+let dragBase: SectionSizes | undefined;
 // Reference motion: the sidebar slides out by its own width; no transition while the user drags its edge.
 const slideStyle = computed(() => ({
   width: `${width.value}px`,
@@ -71,10 +75,12 @@ const slideStyle = computed(() => ({
 const projectsBody = computed(() => (filler.value === 'projects' ? undefined : projectsSize.value));
 const filesBody = computed(() => (filler.value === 'files' ? undefined : filesSize.value));
 const searchBody = computed(() => (filler.value === 'search' ? undefined : searchSize.value));
-// A sash sits on the side of a sized section that faces the filler: below Projects, above Files and Search.
+const scmBody = computed(() => (filler.value === 'scm' ? undefined : scmSize.value));
+// A sash sits on the side of a sized section that faces the filler: below Projects, above Files, Search and Source control.
 const projectsSashShown = computed(() => !sections.value.projects.collapsed && filler.value !== undefined && filler.value !== 'projects');
 const filesSashShown = computed(() => !sections.value.files.collapsed && filler.value !== 'files');
 const searchSashShown = computed(() => !sections.value.search.collapsed && filler.value !== 'search');
+const scmSashShown = computed(() => !sections.value.scm.collapsed && filler.value !== 'scm');
 
 const selectedProject = computed(() => props.state.projects.find((project) => project.key === props.state.selected.projectKey));
 
@@ -85,19 +91,45 @@ function report(): void {
   layout.value = {
     ...layout.value,
     sidebarWidth: width.value,
-    sections: { ...sections, projects: settled('projects', projectsSize.value), files: settled('files', filesSize.value), search: settled('search', searchSize.value) },
+    sections: { ...sections, projects: settled('projects', projectsSize.value), files: settled('files', filesSize.value), search: settled('search', searchSize.value), scm: settled('scm', scmSize.value) },
   };
   props.api.reportSidebarLayout(layout.value);
 }
 
 function toggleSection(name: SizedSection | 'chats'): void {
   const section = layout.value.sections[name];
+  const before = sizes.value;
   layout.value = { ...layout.value, sections: { ...layout.value.sections, [name]: { ...section, collapsed: !section.collapsed } } };
+  if (name !== 'chats' && section.collapsed) yieldSections(before, name, layout.value.sections[name].size);
   report();
 }
 
+// The user expanded or resized `name`: it keeps `size`, and the sizes the others give way to are stored.
+function yieldSections(base: SectionSizes, name: SizedSection, size: number): void {
+  if (sidebarHeight.value <= 0 || !fixedSections.value.includes(name)) return;
+  const next = yieldTo(base, fixedSections.value, sectionRoom.value, minSection.value, name, size);
+  const current = layout.value.sections;
+  layout.value = {
+    ...layout.value,
+    sections: { ...current, ...Object.fromEntries(SIZED_SECTIONS.map((each) => [each, { ...current[each], size: next[each] }])) },
+  };
+}
+
 function resizeSection(name: SizedSection, size: number): void {
-  layout.value = { ...layout.value, sections: { ...layout.value.sections, [name]: { ...layout.value.sections[name], size } } };
+  const current = layout.value.sections;
+  layout.value = { ...layout.value, sections: { ...current, [name]: { ...current[name], size } } };
+  yieldSections(dragBase ?? sizes.value, name, size);
+}
+
+function startRowDrag(): void {
+  rowDragging.value = true;
+  dragBase = sizes.value;
+}
+
+function endRowDrag(): void {
+  rowDragging.value = false;
+  dragBase = undefined;
+  report();
 }
 
 function expand(name: SizedSection): void {
@@ -109,6 +141,12 @@ function saveSearchView(projectKey: string, state: SearchViewState): void {
   const { [projectKey]: _previous, ...others } = layout.value.search;
   const kept = Object.entries(others).slice(-(MAX_SEARCH_VIEW_STATES - 1));
   layout.value = { ...layout.value, search: { ...Object.fromEntries(kept), [projectKey]: state } };
+  report();
+}
+
+// Source control's View & Sort, one choice for every project as in VS Code.
+function saveScmView(patch: Partial<ScmViewOptions>): void {
+  layout.value = { ...layout.value, scm: { ...layout.value.scm, ...patch } };
   report();
 }
 
@@ -197,10 +235,10 @@ defineExpose({
       :label="t('sidebar.resizeSections')"
       :value="projectsSize"
       :min="minSection"
-      :max="maxProjectsSize"
-      @start="rowDragging = true"
+      :max="maxSize"
+      @start="startRowDrag()"
       @resize="resizeSection('projects', $event)"
-      @commit="rowDragging = false; report()"
+      @commit="endRowDrag()"
     />
     <ChatsSection
       ref="chats"
@@ -223,10 +261,10 @@ defineExpose({
       :label="t('sidebar.resizeFiles')"
       :value="filesSize"
       :min="minSection"
-      :max="maxFilesSize"
-      @start="rowDragging = true"
+      :max="maxSize"
+      @start="startRowDrag()"
       @resize="resizeSection('files', $event)"
-      @commit="rowDragging = false; report()"
+      @commit="endRowDrag()"
     />
     <!-- Files lists an open project; the home folder a chat may run in is no project, so it shows the open-a-project hint. -->
     <FilesSection
@@ -249,10 +287,10 @@ defineExpose({
       :label="t('sidebar.resizeSearch')"
       :value="searchSize"
       :min="minSection"
-      :max="maxSearchSize"
-      @start="rowDragging = true"
+      :max="maxSize"
+      @start="startRowDrag()"
       @resize="resizeSection('search', $event)"
-      @commit="rowDragging = false; report()"
+      @commit="endRowDrag()"
     />
     <SearchSection
       :api="api"
@@ -268,6 +306,33 @@ defineExpose({
       @expand="expand('search')"
       @view-state="selectedProject && saveSearchView(selectedProject.key, $event)"
       @reveal-in-files="files?.reveal($event)"
+    />
+    <Sash
+      v-if="scmSashShown"
+      orientation="horizontal"
+      data-testid="scm-sash"
+      class="relative z-3 shrink-0"
+      :style="{ height: `${ROW_SASH_REM}rem`, marginBlock: `-${ROW_SASH_OVERLAP_REM}rem` }"
+      :label="t('sidebar.resizeScm')"
+      :value="scmSize"
+      :min="minSection"
+      :max="maxSize"
+      @start="startRowDrag()"
+      @resize="resizeSection('scm', $event)"
+      @commit="endRowDrag()"
+    />
+    <ScmSection
+      :api="api"
+      :project-key="selectedProject?.key"
+      :project-name="selectedProject?.name ?? t('projects.home')"
+      :platform="state.platform"
+      :view-mode="layout.scm.viewMode"
+      :sort-key="layout.scm.sortKey"
+      :collapsed="layout.sections.scm.collapsed"
+      :body-size="scmBody"
+      @toggle="toggleSection('scm')"
+      @expand="expand('scm')"
+      @view-options="saveScmView"
     />
     <!-- A sash: no shadcn part covers a resize handle. -->
     <div

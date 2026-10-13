@@ -25,7 +25,7 @@ const ORIGINAL = '{\n  "damocles.maxTurns": 40\n}\n';
 const MINE = '{\n  "damocles.maxTurns": 12\n}\n';
 const THEIRS = '{\n  "damocles.maxTurns": 40,\n  "damocles.taskBudget": 5000\n}\n';
 
-test('Edit settings.json opens a pane tab: the schema flags unknown keys, a valid save writes the text verbatim, text that does not parse is refused', async ({ home, launch }) => {
+test('Edit settings.json opens a pane tab: the schema flags unknown keys, a valid save writes the text verbatim, text that does not parse is refused', async ({ foreground: _foreground, home, launch }) => {
   const userFile = path.join(home.damoclesDir, 'settings.json');
   writeUserSettings(home, { 'damocles.maxTurns': 40, 'damocles.notARealSetting': true });
   const { app } = await launch();
