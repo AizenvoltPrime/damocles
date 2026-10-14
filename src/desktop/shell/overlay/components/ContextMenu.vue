@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { Check, ChevronRight, Search } from 'lucide-vue-next';
 import type { OverlayAnswer, OverlayMenuItem, OverlayRequest } from '../../../preload/overlay-channels';
@@ -211,7 +211,15 @@ onMounted(() => {
 });
 onBeforeUnmount(cancelHoverIntent);
 
+// A disabled item's reason describes it to assistive technology; the ids are per level and row.
+const menuId = useId();
+const reasonId = (level: 'menu' | 'submenu', index: number): string => `${menuId}-${level}-reason-${index}`;
+// A disabled item dims its icon, label and check, never its reason.
+const dimmed = (item: MenuEntry): string => (item.disabled ? 'opacity-50' : '');
+
 const rowClass = 'group/item flex cursor-pointer items-center gap-2.25 rounded-7 px-2.25 py-1.5 text-12.5 outline-none hover:bg-(--d-hover) focus:bg-(--d-hover)';
+// faint and faint-text both reach AA on the card and on a hovered or focused row (palette-contrast.test.ts)
+const reasonClass = 'shrink-0 whitespace-nowrap text-11 text-(--d-faint) group-hover/item:text-(--d-faint-text) group-focus/item:text-(--d-faint-text)';
 </script>
 
 <!-- DropdownMenu needs its trigger in this document; its anchor is in the shell view, so this menu places itself at the rect it is sent. -->
@@ -219,7 +227,7 @@ const rowClass = 'group/item flex cursor-pointer items-center gap-2.25 rounded-7
   <div
     ref="root"
     data-testid="overlay-menu"
-    class="fixed flex max-h-[min(32rem,calc(100vh-1rem))] w-max max-w-80 min-w-57.5 animate-[d-pop_.14s_ease-out] flex-col overflow-hidden rounded-11 border border-(--d-border2) bg-(--d-card) text-(--d-text) shadow-(--d-shadow)"
+    class="fixed flex max-h-[calc(100vh-1rem)] w-max max-w-80 min-w-57.5 animate-[d-pop_.14s_ease-out] flex-col overflow-hidden rounded-11 border border-(--d-border2) bg-(--d-card) text-(--d-text) shadow-(--d-shadow)"
     :style="{ left: `${position.left}px`, top: `${position.top}px` }"
   >
     <label
@@ -300,8 +308,9 @@ const rowClass = 'group/item flex cursor-pointer items-center gap-2.25 rounded-7
           :role="roleOf(row)"
           :aria-checked="row.checked"
           :aria-disabled="row.disabled || undefined"
+          :aria-describedby="row.disabled && row.disabledReason ? reasonId('menu', index) : undefined"
           tabindex="-1"
-          :class="[rowClass, row.danger ? 'text-(--d-danger) hover:text-(--d-danger-text) focus:text-(--d-danger-text)' : '', row.disabled ? 'cursor-default opacity-50' : '']"
+          :class="[rowClass, row.danger ? 'text-(--d-danger) hover:text-(--d-danger-text) focus:text-(--d-danger-text)' : '', row.disabled ? 'cursor-default' : '']"
           @click="choose(row)"
           @keydown="onItemKeydown($event, row)"
           @mousemove="onItemMouseMove($event, row)"
@@ -311,6 +320,7 @@ const rowClass = 'group/item flex cursor-pointer items-center gap-2.25 rounded-7
             v-if="row.glyph"
             aria-hidden="true"
             class="size-3.25 shrink-0"
+            :class="dimmed(row)"
             :style="{ color: glyphLook(row.glyph, row.color).color }"
           />
           <component
@@ -318,22 +328,33 @@ const rowClass = 'group/item flex cursor-pointer items-center gap-2.25 rounded-7
             v-else-if="row.icon"
             aria-hidden="true"
             class="size-3.25 shrink-0"
+            :class="dimmed(row)"
           />
           <span
             v-else-if="iconColumn"
             aria-hidden="true"
             class="size-3.25 shrink-0"
           />
-          <span class="min-w-0 flex-1 truncate">{{ row.label }}</span>
           <span
-            v-if="row.shortcut"
+            class="min-w-0 flex-1 truncate"
+            :class="dimmed(row)"
+          >{{ row.label }}</span>
+          <span
+            v-if="row.disabled && row.disabledReason"
+            :id="reasonId('menu', index)"
+            aria-hidden="true"
+            data-testid="overlay-menu-reason"
+            :class="reasonClass"
+          >{{ row.disabledReason }}</span>
+          <span
+            v-else-if="row.shortcut"
             class="shrink-0 font-mono text-10.5 text-(--d-faint) group-hover/item:text-(--d-faint-text) group-focus/item:text-(--d-faint-text)"
           >{{ row.shortcut }}</span>
           <Check
             v-if="row.checked !== undefined"
             aria-hidden="true"
             class="size-3 shrink-0 text-(--d-accent)"
-            :class="row.checked ? '' : 'invisible'"
+            :class="[row.checked ? '' : 'invisible', dimmed(row)]"
           />
         </div>
       </template>
@@ -353,7 +374,7 @@ const rowClass = 'group/item flex cursor-pointer items-center gap-2.25 rounded-7
     role="menu"
     data-testid="overlay-submenu"
     :aria-label="openSubmenu.entry.label"
-    class="fixed flex max-h-[min(32rem,calc(100vh-1rem))] w-max max-w-80 min-w-50 animate-[d-pop_.14s_ease-out] flex-col overflow-y-auto rounded-11 border border-(--d-border2) bg-(--d-card) p-1.25 text-(--d-text) shadow-(--d-shadow)"
+    class="fixed flex max-h-[calc(100vh-1rem)] w-max max-w-80 min-w-50 animate-[d-pop_.14s_ease-out] flex-col overflow-y-auto rounded-11 border border-(--d-border2) bg-(--d-card) p-1.25 text-(--d-text) shadow-(--d-shadow)"
     :class="openSubmenu.placed ? '' : 'invisible'"
     :style="{ left: `${openSubmenu.left}px`, top: `${openSubmenu.top}px` }"
     @mouseenter="cancelHoverIntent"
@@ -374,8 +395,9 @@ const rowClass = 'group/item flex cursor-pointer items-center gap-2.25 rounded-7
         :role="roleOf(row)"
         :aria-checked="row.checked"
         :aria-disabled="row.disabled || undefined"
+        :aria-describedby="row.disabled && row.disabledReason ? reasonId('submenu', index) : undefined"
         tabindex="-1"
-        :class="[rowClass, row.danger ? 'text-(--d-danger) hover:text-(--d-danger-text) focus:text-(--d-danger-text)' : '', row.disabled ? 'cursor-default opacity-50' : '']"
+        :class="[rowClass, row.danger ? 'text-(--d-danger) hover:text-(--d-danger-text) focus:text-(--d-danger-text)' : '', row.disabled ? 'cursor-default' : '']"
         @click="choose(row)"
         @keydown="onSubmenuKeydown($event, row)"
         @mousemove="onSubmenuItemMouseMove"
@@ -385,22 +407,33 @@ const rowClass = 'group/item flex cursor-pointer items-center gap-2.25 rounded-7
           v-if="row.icon"
           aria-hidden="true"
           class="size-3.25 shrink-0"
+          :class="dimmed(row)"
         />
         <span
           v-else-if="submenuIconColumn"
           aria-hidden="true"
           class="size-3.25 shrink-0"
         />
-        <span class="min-w-0 flex-1 truncate">{{ row.label }}</span>
         <span
-          v-if="row.shortcut"
+          class="min-w-0 flex-1 truncate"
+          :class="dimmed(row)"
+        >{{ row.label }}</span>
+        <span
+          v-if="row.disabled && row.disabledReason"
+          :id="reasonId('submenu', index)"
+          aria-hidden="true"
+          data-testid="overlay-menu-reason"
+          :class="reasonClass"
+        >{{ row.disabledReason }}</span>
+        <span
+          v-else-if="row.shortcut"
           class="shrink-0 font-mono text-10.5 text-(--d-faint) group-hover/item:text-(--d-faint-text) group-focus/item:text-(--d-faint-text)"
         >{{ row.shortcut }}</span>
         <Check
           v-if="row.checked !== undefined"
           aria-hidden="true"
           class="size-3 shrink-0 text-(--d-accent)"
-          :class="row.checked ? '' : 'invisible'"
+          :class="[row.checked ? '' : 'invisible', dimmed(row)]"
         />
       </div>
     </template>

@@ -1,4 +1,4 @@
-import type { ElectronApplication, Locator, Page } from '@playwright/test';
+import { expect, type ElectronApplication, type Locator, type Page } from '@playwright/test';
 import type { ShellChat, ShellChatList } from '../../../src/desktop/preload/shell-channels';
 import { selectedProjectKey, shellPage, shellState } from './shell';
 
@@ -43,8 +43,8 @@ export async function projectKeyOf(app: ElectronApplication, name: string): Prom
   return project.key;
 }
 
-// A CSS attribute-selector string; project keys are paths, whose backslashes would otherwise read as escapes.
-const cssString = (value: string): string => `"${value.replace(/[\\"]/g, (c) => `\\${c}`)}"`;
+/** A CSS attribute-selector string; project keys are paths, whose backslashes would otherwise read as escapes. */
+export const cssString = (value: string): string => `"${value.replace(/[\\"]/g, (c) => `\\${c}`)}"`;
 
 export const titleBar = (shell: Page): Locator => shell.getByTestId('title-bar');
 export const sidebar = (shell: Page): Locator => shell.getByTestId('sidebar');
@@ -53,6 +53,31 @@ export const projectRow = (shell: Page, key: string): Locator => shell.locator(`
 export const chatList = (shell: Page): Locator => shell.getByTestId('chat-list');
 export const chatRow = (shell: Page, chatId: string): Locator => shell.locator(`[role="option"][data-chat-id=${cssString(chatId)}]`);
 export const chatRows = (shell: Page): Locator => chatList(shell).getByRole('option');
+
+/** The sidebar section that holds `inner`. */
+export const sidebarSectionOf = (shell: Page, inner: Locator): Locator => shell.locator('section[data-section]').filter({ has: inner });
+
+/**
+ * A sidebar section's title action, shown as a user shows it: VS Code's rule hides the actions until the section is hovered
+ * or holds focus, so this hovers the section's header first. The pointer stays there only while this worker holds the
+ * OS foreground, so a test calling this takes the `foreground` fixture.
+ */
+export async function sectionAction(shell: Page, testId: string): Promise<Locator> {
+  const action = shell.getByTestId(testId);
+  const section = sidebarSectionOf(shell, action);
+  await section.getByTestId('sidebar-section-header').hover();
+  await expect(action).toBeVisible();
+  // the reveal's short entering transform moves the action, so callers measure and click it settled; a cancelled reveal rejects
+  await section.getByTestId('sidebar-section-actions').evaluate((actions) => Promise.all(actions.getAnimations({ subtree: true })
+    .filter((animation) => animation instanceof CSSAnimation && animation.animationName === 'd-actions-in')
+    .map((animation) => animation.finished.catch(() => undefined))));
+  return action;
+}
+
+/** Clicks a sidebar section's title action after hovering its section. */
+export async function clickSectionAction(shell: Page, testId: string): Promise<void> {
+  await (await sectionAction(shell, testId)).click();
+}
 
 /** Clicks a chat's row as a user does; main may refuse, so callers read the selection afterwards. */
 export async function clickChat(shell: Page, chatId: string): Promise<void> {

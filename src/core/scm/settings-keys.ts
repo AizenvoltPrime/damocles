@@ -21,6 +21,18 @@ export const SCM_SETTING_KEYS = {
   alwaysSignOff: 'damocles.desktop.git.alwaysSignOff',
   enableCommitSigning: 'damocles.desktop.git.enableCommitSigning',
   branchPrefix: 'damocles.desktop.git.branchPrefix',
+  autofetch: 'damocles.desktop.git.autofetch',
+  autofetchPeriod: 'damocles.desktop.git.autofetchPeriod',
+  allowForcePush: 'damocles.desktop.git.allowForcePush',
+  rebaseWhenSync: 'damocles.desktop.git.rebaseWhenSync',
+  followTagsWhenSync: 'damocles.desktop.git.followTagsWhenSync',
+  autoStash: 'damocles.desktop.git.autoStash',
+  pruneOnFetch: 'damocles.desktop.git.pruneOnFetch',
+  confirmSync: 'damocles.desktop.git.confirmSync',
+  defaultCloneDirectory: 'damocles.desktop.git.defaultCloneDirectory',
+  openAfterClone: 'damocles.desktop.git.openAfterClone',
+  pullBeforeCheckout: 'damocles.desktop.git.pullBeforeCheckout',
+  promptToSaveFilesBeforeStash: 'damocles.desktop.git.promptToSaveFilesBeforeStash',
 } as const;
 
 export type UntrackedChanges = 'mixed' | 'separate' | 'hidden';
@@ -29,3 +41,5 @@ export type SmartCommitChanges = 'all' | 'tracked';
 export type PostCommitCommand = 'none' | 'push' | 'sync';
 export type BranchProtectionPrompt = 'alwaysCommit' | 'alwaysCommitToNewBranch' | 'alwaysPrompt';
 export type PromptToSaveFilesBeforeCommit = 'always' | 'staged' | 'never';
+export type PromptToSaveFilesBeforeStash = 'always' | 'staged' | 'never';
+export type OpenAfterClone = 'always' | 'prompt';

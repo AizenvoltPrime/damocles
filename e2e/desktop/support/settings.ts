@@ -1,5 +1,7 @@
 import { expect, type ElectronApplication, type Locator, type Page } from '@playwright/test';
 import type { SettingsSectionId } from '../../../src/shared/settings-sections';
+import { writeUserSettings, type HermeticHome } from './hermetic';
+import { readyOverlay } from './overlay';
 import { OVERLAY_URL, overlayPage, shellPage } from './shell';
 
 export const settingsModal = (overlay: Page): Locator => overlay.getByTestId('settings-modal');
@@ -45,6 +47,18 @@ export async function closeSettingsModal(overlay: Page): Promise<void> {
 export async function chooseSegment(row: Locator, option: string): Promise<void> {
   await row.getByRole('button', { name: option, exact: true }).click();
   await expect(row.getByRole('button', { name: option, exact: true })).toHaveAttribute('aria-pressed', 'true');
+}
+
+/** Main's value of the damocles.desktop.* setting `key`, as its settings service reads it now. */
+export async function desktopSetting(app: ElectronApplication, key: string): Promise<unknown> {
+  const overlay = await readyOverlay(app);
+  return overlay.evaluate(async (name) => (await window.damoclesOverlay!.getPrefs()).values[name], key);
+}
+
+/** Merges `values` (damocles.desktop.* keys) into the user settings file and resolves once main reads each of them. */
+export async function applyUserSettings(app: ElectronApplication, h: HermeticHome, values: Record<string, unknown>): Promise<void> {
+  writeUserSettings(h, values);
+  for (const [key, value] of Object.entries(values)) await expect.poll(() => desktopSetting(app, key), key).toEqual(value);
 }
 
 /**

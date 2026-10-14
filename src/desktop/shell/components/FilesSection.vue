@@ -506,7 +506,7 @@ defineExpose({ reveal, startCreate, collapseAll });
 
 <template>
   <SidebarSection
-    :title="t('files.heading')"
+    section="files"
     :collapsed="collapsed"
     :body-size="bodySize"
     data-testid="files-section"
@@ -684,7 +684,7 @@ defineExpose({ reveal, startCreate, collapseAll });
               v-if="decoration(row).letter"
               data-testid="files-decoration"
               aria-hidden="true"
-              class="flex w-3 shrink-0 justify-center font-mono text-10.5 font-semibold"
+              class="flex w-4 shrink-0 justify-center text-11 font-semibold"
               :style="{ color: TONE_TEXT[decoration(row).own!.tone] }"
               :title="decoration(row).title"
             >
@@ -696,7 +696,7 @@ defineExpose({ reveal, startCreate, collapseAll });
               v-else-if="decoration(row).dot"
               data-testid="files-folder-dot"
               :data-tone="decoration(row).dot"
-              class="mx-0.75 size-1.5 shrink-0 rounded-full"
+              class="mx-1.25 size-1.5 shrink-0 rounded-full"
               :style="{ backgroundColor: TONE_TEXT[decoration(row).dot!] }"
             />
             <span

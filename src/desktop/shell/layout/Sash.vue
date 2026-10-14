@@ -5,7 +5,8 @@ import { remPx } from '@/composables/useRemPx';
 import { SASH_KEY_STEP_REM } from '../layout';
 
 // A sash: no shadcn part covers a resize handle. `value` is the size of the pane the sash controls, by default the one after
-// it (right of a vertical sash, below a horizontal one), so moving the sash towards that pane shrinks it.
+// it (right of a vertical sash, below a horizontal one), so moving the sash towards that pane shrinks it. It may be the
+// sash's position instead, which reads as pixels too unless `valueText` says otherwise.
 // The caller positions and stacks it (relative in a grid area, absolute over a pane edge); a class here would override that.
 defineOptions({ name: 'GridSash' });
 
@@ -19,6 +20,8 @@ const props = defineProps<{
   valueText?: string;
   // 'before': value sizes the pane left of or above the sash, which grows as the sash moves away from it
   pane?: 'before' | 'after';
+  // VS Code's SashState.Disabled: nothing on either side can give or take, so it takes no pointer or focus and has no value
+  disabled?: boolean;
 }>();
 const emit = defineEmits<{
   // a pointer drag began; the grid stops animating its tracks until commit
@@ -38,7 +41,7 @@ const clamp = (size: number): number => Math.round(Math.min(Math.max(size, props
 const coordinate = (event: PointerEvent): number => (vertical.value ? event.clientX : event.clientY);
 
 function onPointerDown(event: PointerEvent): void {
-  if (event.button !== 0) return;
+  if (event.button !== 0 || props.disabled) return;
   event.preventDefault();
   (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
   drag.value = { pointerId: event.pointerId, start: coordinate(event), startValue: props.value };
@@ -50,13 +53,26 @@ function onPointerMove(event: PointerEvent): void {
   emit('resize', clamp(drag.value.startValue + growth.value * (coordinate(event) - drag.value.start)));
 }
 
+// The release point is the drag's last position: the pointermove that reached it may not have been delivered first.
 function onPointerUp(event: PointerEvent): void {
   if (drag.value?.pointerId !== event.pointerId) return;
+  onPointerMove(event);
+  endDrag();
+}
+
+// A cancel carries no release point, so the drag ends at its last moved size.
+function onPointerCancel(event: PointerEvent): void {
+  if (drag.value?.pointerId !== event.pointerId) return;
+  endDrag();
+}
+
+function endDrag(): void {
   drag.value = null;
   emit('commit');
 }
 
 function onKeydown(event: KeyboardEvent): void {
+  if (props.disabled) return;
   const step = growth.value * remPx(SASH_KEY_STEP_REM);
   const keys: Record<string, number> = vertical.value
     ? { ArrowLeft: props.value - step, ArrowRight: props.value + step }
@@ -72,20 +88,21 @@ function onKeydown(event: KeyboardEvent): void {
 <template>
   <div
     role="separator"
-    tabindex="0"
+    :tabindex="disabled ? undefined : 0"
     :aria-orientation="orientation"
     :aria-label="label"
-    :aria-valuenow="value"
-    :aria-valuemin="min"
-    :aria-valuemax="upper()"
-    :aria-valuetext="valueText ?? t('sidebar.sizeValue', { size: value })"
+    :aria-valuenow="disabled ? undefined : value"
+    :aria-valuemin="disabled ? undefined : min"
+    :aria-valuemax="disabled ? undefined : upper()"
+    :aria-valuetext="disabled ? undefined : (valueText ?? t('sidebar.sizeValue', { size: value }))"
     :data-active="drag !== null || undefined"
+    :data-disabled="disabled || undefined"
     class="grid-sash group/sash flex touch-none outline-none"
-    :class="vertical ? 'cursor-col-resize justify-center' : 'cursor-row-resize items-center'"
+    :class="[vertical ? 'cursor-col-resize justify-center' : 'cursor-row-resize items-center', disabled ? 'pointer-events-none' : '']"
     @pointerdown="onPointerDown"
     @pointermove="onPointerMove"
     @pointerup="onPointerUp"
-    @pointercancel="onPointerUp"
+    @pointercancel="onPointerCancel"
     @keydown="onKeydown"
   >
     <div

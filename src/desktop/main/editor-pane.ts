@@ -419,9 +419,13 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     return { ok: true, tabId: tab.id };
   }
 
-  /** A group's multi-file diff: the tab already showing that repository's group, updated, else a new one; a user action focuses it. */
+  /**
+   * A multi-file diff: the tab already showing that repository's source (a group, a stash's commit, a commit pair), updated,
+   * else a new one; a user action focuses it.
+   */
   showChanges(state: ChangesTabState, opts: { readonly focus: boolean }): string {
-    const same = (tab: Tab): boolean => tab.changes?.changes.repoId === state.changes.repoId && tab.changes.changes.source.kind === state.changes.source.kind;
+    const key = (source: ScmChangesTab['source']): string => (source.kind === 'stash' ? `stash:${source.hash}` : source.kind === 'refs' ? `refs:${source.left}:${source.right}` : source.kind);
+    const same = (tab: Tab): boolean => tab.changes?.changes.repoId === state.changes.repoId && key(tab.changes.changes.source) === key(state.changes.source);
     const existing = this.tabs.find(same);
     if (existing) existing.changes = state;
     const tab = existing ?? this.addTab({ id: randomUUID(), kind: 'changes', changes: state });
@@ -445,6 +449,11 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       this.replaceWithFileTab(tab, edited);
     }
     await this.closeTabs(this.tabs.filter((tab) => tab.changes?.changes.repoId === repoId || repoDiff(tab)).map((tab) => tab.id), { ask: false });
+  }
+
+  /** Closes the changes tabs whose content matches, with no question: they hold no edits. */
+  async closeChangesTabs(matches: (changes: ScmChangesTab) => boolean): Promise<void> {
+    await this.closeTabs(this.tabs.filter((tab) => tab.changes !== undefined && matches(tab.changes.changes)).map((tab) => tab.id), { ask: false });
   }
 
   /** The open changes tabs, for their owner to keep current. */

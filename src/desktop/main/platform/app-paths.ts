@@ -1,4 +1,5 @@
 import * as path from 'node:path';
+import type { AskpassPaths } from '../../../core/scm/askpass/askpass-server';
 import type { AppPaths, WorkerName } from '../../../platform/app-paths';
 
 const WORKER_BUNDLES: Readonly<Record<WorkerName, string>> = {
@@ -54,5 +55,15 @@ export function ptyHostPaths(paths: AppPaths): PtyHostPaths {
     script: path.join(paths.unpackedRoot, 'dist', 'pty-host.js'),
     nodePty: path.join(paths.resourceRoot, 'node_modules', 'node-pty'),
     shellIntegration: path.join(paths.unpackedRoot, 'resources', 'shell-integration'),
+  };
+}
+
+// The askpass scripts git and ssh execute and the helper they run as Node, all real files (src/core/scm/askpass/askpass-server.ts).
+export function askpassPaths(paths: AppPaths, execPath: string): AskpassPaths {
+  return {
+    askpass: path.join(paths.unpackedRoot, 'dist', 'askpass', 'askpass.sh'),
+    sshAskpass: path.join(paths.unpackedRoot, 'dist', 'askpass', 'ssh-askpass.sh'),
+    node: execPath,
+    main: path.join(paths.unpackedRoot, 'dist', 'askpass-main.js'),
   };
 }

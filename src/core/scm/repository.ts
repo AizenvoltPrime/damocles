@@ -1,15 +1,16 @@
 // One open git repository: its status, the index writes and the reads the views need (plan AD4).
 // Group and letter rules follow VS Code's extensions/git/src/repository.ts and decorationProvider.ts.
-import { constants } from 'node:fs';
+import { constants, type Stats } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { hasUnsafeWindowsSegment, isRelativeFilePath } from '../../shared/relative-path';
 import { followsLocalLinksOnly } from '../local-links';
-import { gitAtLeast, MAX_CLI_LENGTH, RepoQueue, revision, splitInChunks, GitError, type GitCall, type GitRunner } from './git-runner';
+import { endOfOptions, MAX_CLI_LENGTH, RepoQueue, revision, splitInChunks, GitError, type GitCall, type GitResult, type GitRunner, type GitVersion } from './git-runner';
 import { isInside, readSubmodules, samePath } from './discovery';
 import { GitStatusParser, stripCommitMessageComments, type FileStatus } from './parsers';
+import { isRemoteName, isRemoteUrl, parseRemoteBranches, parseRemoteNames, parseRemotes, parseUpstream, type Remote } from './remotes';
 import type { UntrackedChanges } from './settings-keys';
 
 export type ChangeStatus =
@@ -58,6 +59,13 @@ export interface HeadCommitSummary {
   readonly subject: string;
 }
 
+export interface Upstream {
+  readonly remote: string;
+  readonly branch: string;
+  readonly ahead: number;
+  readonly behind: number;
+}
+
 export interface RepositoryStatus {
   readonly head: Head | null;
   // null on an unborn branch
@@ -68,6 +76,9 @@ export interface RepositoryStatus {
   readonly tooManyChanges: boolean;
   // submodule paths of the repository, repo-relative; decorated S
   readonly submodules: readonly string[];
+  readonly upstream: Upstream | null;
+  // remote names that pass isRemoteName, sorted
+  readonly remotes: readonly string[];
 }
 
 export const EMPTY_GROUPS: Groups = { merge: [], index: [], workingTree: [], untracked: [] };
@@ -197,6 +208,18 @@ export function groupStatus(entries: readonly FileStatus[], untrackedChanges: Un
 }
 
 
+/** A change between two commits (diff --name-status), marked as VS Code's parseGitChanges marks it. */
+export function commitChange(status: ChangeStatus, relativePath: string, originalPath?: string): Change {
+  return {
+    path: relativePath,
+    ...(originalPath !== undefined ? { originalPath } : {}),
+    status,
+    letter: letterOf(status),
+    tone: toneOf(status),
+    strike: STRUCK.has(status),
+  };
+}
+
 export class PathRefusedError extends Error {
   constructor() {
     super('Refused a path outside the repository');
@@ -209,7 +232,7 @@ function isRepoPath(relativePath: string): boolean {
   return isRelativeFilePath(relativePath) && !(process.platform === 'win32' && hasUnsafeWindowsSegment(relativePath));
 }
 
-function checkRepoPath(relativePath: string): void {
+export function checkRepoPath(relativePath: string): void {
   if (!isRepoPath(relativePath)) throw new PathRefusedError();
 }
 
@@ -223,7 +246,7 @@ export const MAX_MESSAGE_CHARS: number = 64 * 1024;
 // Characters of a commit object read: its headers (a signature included) and message.
 const MAX_COMMIT_OBJECT_CHARS = 1024 * 1024;
 // Every engine diff: no color, no external diff driver, and no index refresh, which would take the index lock.
-const DIFF = ['-c', 'diff.autoRefreshIndex=false', 'diff', '--no-color', '--no-ext-diff'];
+export const DIFF: readonly string[] = ['-c', 'diff.autoRefreshIndex=false', 'diff', '--no-color', '--no-ext-diff'];
 
 export interface RepositoryInfo {
   // the work tree's realpath, native separators
@@ -262,7 +285,60 @@ export interface CommitOptions {
   readonly branch?: string;
 }
 
+// What a caller of Repository.read and Repository.write may set on its call.
+export type GitCallOptions = Pick<GitCall, 'allowFailure' | 'maxOutputBytes' | 'literalPathspecs' | 'input'>;
+
+// english: LC_ALL=C, for a caller that tells one refusal from another by git's words
+export type WriteOptions = GitCallOptions & { readonly english?: boolean };
+
+export type PatchResult = { readonly kind: 'patch'; readonly patch: string } | { readonly kind: 'binary' | 'tooLarge' };
+
 export const PLAIN_COMMIT: CommitOptions = { all: false, amend: false, signoff: false, sign: false, empty: false, noVerify: false, restage: [] };
+
+// What a network call carries: its cancel and, when it may need credentials, the askpass registration's variables.
+export interface NetworkCall {
+  readonly signal: AbortSignal;
+  readonly askpassEnv?: Readonly<Record<string, string>>;
+  // LC_ALL=C, for a caller that tells a refusal from git's words
+  readonly english?: true;
+}
+
+// fenced stashes tracked changes only, as git's autostash does; includeUntracked is VS Code's maybeAutoStash
+export type StashMode = 'none' | 'fenced' | 'includeUntracked';
+
+export type SlotGit = (args: readonly string[], options?: WriteOptions & { readonly net?: NetworkCall }) => Promise<GitResult>;
+
+export interface StashSlot {
+  readonly mode: StashMode;
+  branch(): Promise<{ readonly head: Head | null; readonly upstream: Upstream | null }>;
+  // must run before a pull, merge or rebase under the fence, which the gate refuses otherwise
+  stash(): Promise<void>;
+  // the newest stash entry, read in this slot; undefined when the list is empty
+  newestStash(): Promise<NewestStash | undefined>;
+}
+
+export interface NewestStash {
+  readonly hash: string;
+  // the reflog message, which `stash list` shows after "stash@{n}: "
+  readonly message: string;
+}
+
+export interface StashedOutcome<T> {
+  readonly result: { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown };
+  readonly kept?: { readonly stash?: string; readonly error?: unknown };
+}
+
+// Only what the operation can create, so a cleanup never takes another git's index or HEAD lock.
+export interface LockScope {
+  readonly branches: readonly string[];
+  readonly workTree: boolean;
+}
+
+export interface LockRemoval {
+  // relative to the git dir, '/' separated
+  readonly removed: readonly string[];
+  readonly failed: ReadonlyArray<{ readonly path: string; readonly error: unknown }>;
+}
 
 export interface HeadCommit {
   readonly hash: string;
@@ -299,7 +375,8 @@ export class Repository {
   status(untrackedChanges: UntrackedChanges): Promise<RepositoryStatus> {
     return this.queue.status(async () => {
       const { entries, tooManyChanges } = await this.readStatus([untrackedChanges === 'hidden' ? '-uno' : '-uall']);
-      const [{ head, hash }, operation, submodules] = await Promise.all([this.head(), this.operation(), this.submodulePaths()]);
+      const [{ head, hash }, operation, submodules, remotes] = await Promise.all([this.head(), this.operation(), this.submodulePaths(), this.remoteNames()]);
+      const upstream = await this.upstreamOf(head);
       const mergeMessage = operation === 'merge' || operation === 'cherryPick' ? await this.readGitFile('MERGE_MSG') : undefined;
       const known = this.last?.commit;
       const commit = hash === undefined ? null : known?.hash === hash ? known : { hash, subject: subjectOf((await this.readCommit(hash)).message) };
@@ -311,6 +388,8 @@ export class Repository {
         groups: groupStatus(entries, untrackedChanges, new Set(submodules)),
         tooManyChanges,
         submodules,
+        upstream,
+        remotes,
       };
       this.last = status;
       return status;
@@ -497,6 +576,187 @@ export class Repository {
     });
   }
 
+  get gitVersion(): GitVersion {
+    return this.runner.git.version;
+  }
+
+  /** A read whose output a caller parses (LC_ALL=C), in the read queue; a non-zero exit throws unless allowFailure. */
+  read(args: readonly string[], options: GitCallOptions = {}): Promise<GitResult> {
+    return this.queue.read(() => this.runner.run({ ...this.call(args, 'read', true), ...options }));
+  }
+
+  /** A ref, stash or worktree write in the mutation queue; with english, the hooks it runs print in English too. */
+  write(args: readonly string[], options: WriteOptions = {}): Promise<GitResult> {
+    return this.mutate((git) => git(args, options));
+  }
+
+  /** Several git calls in one mutation slot, so nothing the engine runs comes between a check and the write it guards. */
+  mutate<T>(task: (git: (args: readonly string[], options?: WriteOptions) => Promise<GitResult>) => Promise<T>): Promise<T> {
+    return this.queue.mutation(() =>
+      task((args, options = {}) => {
+        const { english, ...call } = options;
+        return this.runner.run({ ...this.call(args, 'mutation', english === true), ...call });
+      }),
+    );
+  }
+
+  /** One file's unified diff from a diff's options and paths (DIFF is prepended), in the read queue. */
+  patch(args: readonly string[]): Promise<PatchResult> {
+    return this.queue.read(() => this.readPatch([...DIFF, ...args]));
+  }
+
+  /** A commit's parents and message (cat-file), in the read queue. */
+  commitObject(hash: string): Promise<HeadCommit> {
+    return this.queue.read(() => this.readCommit(hash));
+  }
+
+  /** Whether the index holds unmerged entries: a merge, rebase or stash apply stopped on conflicts. */
+  hasConflicts(): Promise<boolean> {
+    return this.queue.read(async () => (await this.runner.run(this.call(['ls-files', '--unmerged', '-z'], 'read', true))).stdout.length > 0);
+  }
+
+  /** --end-of-options from git 2.24, for the subcommands that parse it on every git the engine runs (never checkout or reset). */
+  endOfOptions(): string[] {
+    return endOfOptions(this.runner.git.version);
+  }
+
+  /**
+   * A fetch or push: its process tree dies when signal aborts or the repository closes, and only it gets the askpass
+   * registration's variables. It writes refs, each under git's own lock, and no index, so it takes no queue slot.
+   */
+  network(args: readonly string[], net: NetworkCall): Promise<GitResult> {
+    return this.runner.run(this.networkCall(args, net));
+  }
+
+  // Only the stash slot.stash() created is applied back, by its commit, so a stash made meanwhile is never taken.
+  withStash<T>(mode: () => StashMode, operation: (git: SlotGit, slot: StashSlot) => Promise<T>): Promise<StashedOutcome<T>> {
+    return this.queue.mutation(async () => {
+      const chosen = mode();
+      let marked = false;
+      let stashed: string | undefined;
+      // set when the push ran but refs/stash could not be read after it, so a stash may exist
+      let unread: { readonly error: unknown } | undefined;
+      const git: SlotGit = (args, options = {}) => {
+        const { english, net, ...rest } = options;
+        const call = net ? this.networkCall(args, { ...net, ...(english ? { english } : {}) }) : this.call(args, 'mutation', english === true);
+        return this.runner.run({ ...call, ...rest, ...(marked ? { fencedStash: true as const } : {}) });
+      };
+      const slot: StashSlot = {
+        mode: chosen,
+        branch: async () => {
+          const { head } = await this.head();
+          return { head, upstream: await this.upstreamOf(head) };
+        },
+        stash: async () => {
+          if (chosen === 'none' || marked) return;
+          const before = await this.stashCommit();
+          await this.run(chosen === 'fenced' ? ['stash', 'push'] : ['stash', 'push', '--include-untracked'], 'mutation');
+          marked = chosen === 'fenced';
+          try {
+            const after = await this.stashCommit();
+            if (after !== undefined && after !== before) stashed = after;
+          } catch (error) {
+            unread = { error };
+            throw error;
+          }
+        },
+        newestStash: async () => {
+          const hash = await this.stashCommit();
+          if (hash === undefined) return undefined;
+          const result = await this.runner.run(this.call(['log', '-g', '-1', '--format=%gs', 'refs/stash'], 'mutation', true));
+          return { hash, message: result.stdout.toString('utf8').trimEnd() };
+        },
+      };
+      let result: StashedOutcome<T>['result'];
+      try {
+        result = { ok: true, value: await operation(git, slot) };
+      } catch (error) {
+        result = { ok: false, error };
+      }
+      if (unread) return { result, kept: { error: unread.error } };
+      if (stashed === undefined) return { result };
+      try {
+        if ((await this.operation()) !== null) return { result, kept: { stash: stashed } };
+        // --quiet: otherwise git runs a status that enters every submodule, a declined project's included
+        const applied = await this.runner.run({ ...this.call(['stash', 'apply', '--index', '--quiet', ...this.endOfOptions(), stashed], 'mutation'), allowFailure: true });
+        if (applied.exitCode !== 0) return { result, kept: { stash: stashed, error: new GitError(`git stash exited with ${applied.exitCode}`, applied.exitCode, applied.stdout.toString('utf8'), applied.stderr) } };
+      } catch (error) {
+        return { result, kept: { stash: stashed, error } };
+      }
+      // the changes are back in the work tree, so a failed drop only leaves a copy in the list, and rejects
+      await this.dropStash(stashed);
+      return { result };
+    });
+  }
+
+  /** `git remote --verbose`: each remote isRemoteName accepts, with its URLs. */
+  remotes(): Promise<Remote[]> {
+    return this.queue.read(async () => {
+      const result = await this.runner.run({ ...this.call(['remote', '--verbose'], 'read', true), maxOutputBytes: 1024 * 1024 });
+      return parseRemotes(result.stdout.toString('utf8'));
+    });
+  }
+
+  /** The branches of remote this repository last fetched (refs/remotes/<remote>/*), HEAD left out. */
+  remoteBranches(remote: string): Promise<string[]> {
+    if (!isRemoteName(remote)) throw new Error('Refused a remote name that git could read as an option');
+    return this.queue.read(async () => {
+      const result = await this.runner.run({ ...this.call(['for-each-ref', '--format=%(refname)', `refs/remotes/${remote}/`], 'read', true), maxOutputBytes: 4 * 1024 * 1024 });
+      return parseRemoteBranches(result.stdout.toString('utf8'), remote);
+    });
+  }
+
+  addRemote(name: string, url: string): Promise<void> {
+    if (!isRemoteName(name) || !isRemoteUrl(url)) throw new Error('Refused a remote name or URL that git could read as an option');
+    return this.queue.mutation(() => this.run(['remote', 'add', '--', name, url], 'mutation').then(() => undefined));
+  }
+
+  removeRemote(name: string): Promise<void> {
+    if (!isRemoteName(name)) throw new Error('Refused a remote name that git could read as an option');
+    return this.queue.mutation(() => this.run(['remote', 'remove', '--', name], 'mutation').then(() => undefined));
+  }
+
+  async lockFiles(scope: LockScope): Promise<Set<string>> {
+    const found = new Set<string>();
+    const { gitDir, commonDir } = this.info;
+    const candidates: Array<readonly [string, readonly string[]]> = [
+      ...['packed-refs.lock', 'config.lock', 'shallow.lock'].map((name) => [commonDir, [name]] as const),
+      ...[...new Set([gitDir, commonDir])].map((dir) => [dir, ['FETCH_HEAD.lock']] as const),
+      ...scope.branches.map((branch) => [commonDir, ['refs', 'heads', ...`${branch}.lock`.split('/')]] as const),
+    ];
+    for (const [dir, segments] of candidates) {
+      const file = await plainFileUnder(dir, segments);
+      if (file !== undefined) found.add(file);
+    }
+    for (const folder of [['refs', 'remotes'], ['refs', 'tags']]) for (const file of await locksUnder(commonDir, folder, true)) found.add(file);
+    if (scope.workTree) {
+      for (const folder of [[], ['rebase-merge'], ['rebase-apply']]) for (const file of await locksUnder(gitDir, folder, false)) found.add(file);
+    }
+    return found;
+  }
+
+  // The caller holds the mutation slot of every repository sharing the common dir.
+  async removeLocksSince(scope: LockScope, since: number, before: ReadonlySet<string>): Promise<LockRemoval> {
+    const removed: string[] = [];
+    const failed: Array<{ path: string; error: unknown }> = [];
+    for (const lock of await this.lockFiles(scope)) {
+      if (before.has(lock)) continue;
+      const stat = await fs.lstat(lock).catch((err: NodeJS.ErrnoException) => {
+        if (err.code === 'ENOENT') return undefined;
+        throw err;
+      });
+      if (!stat?.isFile() || stat.mtimeMs < since) continue;
+      const shown = path.relative(isInside(this.info.gitDir, lock) ? this.info.gitDir : this.info.commonDir, lock).split(path.sep).join('/');
+      try {
+        await fs.rm(lock);
+        removed.push(shown);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') failed.push({ path: shown, error });
+      }
+    }
+    return { removed, failed };
+  }
+
   abort(operation: Operation): Promise<void> {
     const command = operation === 'merge' ? 'merge' : operation === 'rebase' ? 'rebase' : 'cherry-pick';
     return this.queue.mutation(() => this.run([command, '--abort'], 'mutation').then(() => undefined));
@@ -531,18 +791,20 @@ export class Repository {
           : group === 'merge'
             ? [...base, ...this.endOfOptions(), revision('HEAD'), '--', entry.path]
             : [...base, '--', ...paths];
-    return this.queue.read(async () => {
-      try {
-        // --no-index exits 1 when the files differ
-        const result = await this.runner.run({ ...this.call(args, 'read', true), literalPathspecs: true, allowFailure: true, maxOutputBytes: MAX_DIFF_BYTES });
-        if (result.exitCode > 1) throw new GitError(`git diff exited with ${result.exitCode}`, result.exitCode, '', result.stderr);
-        const patch = result.stdout.toString('utf8');
-        return /^Binary files .* differ$/m.test(patch) && !patch.includes('\n@@') ? { kind: 'binary' as const } : { kind: 'patch' as const, patch };
-      } catch (err) {
-        if (err instanceof Error && err.name === 'GitOutputTooLargeError') return { kind: 'tooLarge' as const };
-        throw err;
-      }
-    });
+    return this.queue.read(() => this.readPatch(args));
+  }
+
+  // --no-index exits 1 when the files differ; a diff of two commits exits 0
+  private async readPatch(args: readonly string[]): Promise<PatchResult> {
+    try {
+      const result = await this.runner.run({ ...this.call(args, 'read', true), literalPathspecs: true, allowFailure: true, maxOutputBytes: MAX_DIFF_BYTES });
+      if (result.exitCode > 1) throw new GitError(`git diff exited with ${result.exitCode}`, result.exitCode, '', result.stderr);
+      const patch = result.stdout.toString('utf8');
+      return /^Binary files .* differ$/m.test(patch) && !patch.includes('\n@@') ? { kind: 'binary' } : { kind: 'patch', patch };
+    } catch (err) {
+      if (err instanceof Error && err.name === 'GitOutputTooLargeError') return { kind: 'tooLarge' };
+      throw err;
+    }
   }
 
   /**
@@ -713,12 +975,45 @@ export class Repository {
   }
 
   private async head(): Promise<{ readonly head: Head | null; readonly hash: string | undefined }> {
-    const symbolic = await this.runner.run({ ...this.call(['symbolic-ref', '-q', '--short', 'HEAD'], 'read', true), allowFailure: true });
+    const [symbolic, commit] = await Promise.all([
+      this.runner.run({ ...this.call(['symbolic-ref', '-q', '--short', 'HEAD'], 'read', true), allowFailure: true }),
+      this.runner.run({ ...this.call(['rev-parse', '-q', '--verify', 'HEAD'], 'read', true), allowFailure: true }),
+    ]);
     const name = symbolic.exitCode === 0 ? symbolic.stdout.toString('utf8').trim() : undefined;
-    const commit = await this.runner.run({ ...this.call(['rev-parse', '-q', '--verify', 'HEAD'], 'read', true), allowFailure: true });
     const hash = commit.exitCode === 0 ? commit.stdout.toString('utf8').trim() : undefined;
     if (name !== undefined) return { head: hash === undefined ? { type: 'unborn', name } : { type: 'branch', name }, hash };
     return { head: hash === undefined ? null : { type: 'detached', commit: hash }, hash };
+  }
+
+  // for-each-ref's upstream fields of HEAD's branch; the pattern also matches refs below it, so the refname must equal it
+  private async upstreamOf(head: Head | null): Promise<Upstream | null> {
+    if (head?.type !== 'branch') return null;
+    const ref = `refs/heads/${head.name}`;
+    const result = await this.runner.run({
+      ...this.call(['for-each-ref', '--format=%(refname)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream:track,nobracket)', ref], 'read', true),
+      maxOutputBytes: 64 * 1024,
+    });
+    return parseUpstream(result.stdout.toString('utf8'), ref);
+  }
+
+  // `git remote`: one name per line; a name the engine would refuse to pass on (isRemoteName) is left out
+  private async remoteNames(): Promise<string[]> {
+    const result = await this.runner.run({ ...this.call(['remote'], 'read', true), maxOutputBytes: 1024 * 1024 });
+    return parseRemoteNames(result.stdout.toString('utf8'));
+  }
+
+  private async stashCommit(): Promise<string | undefined> {
+    const result = await this.runner.run({ ...this.call(['rev-parse', '-q', '--verify', 'refs/stash'], 'mutation', true), allowFailure: true });
+    return result.exitCode === 0 ? result.stdout.toString('utf8').trim() : undefined;
+  }
+
+  // stash@{n} is checked to still name commit right before the drop, whatever was stashed since.
+  private async dropStash(commit: string): Promise<void> {
+    const listed = await this.runner.run(this.call(['stash', 'list', '--format=%H'], 'mutation', true));
+    const index = listed.stdout.toString('utf8').split('\n').indexOf(commit);
+    if (index < 0) return;
+    const named = await this.runner.run({ ...this.call(['rev-parse', '-q', '--verify', `stash@{${index}}`], 'mutation', true), allowFailure: true });
+    if (named.exitCode === 0 && named.stdout.toString('utf8').trim() === commit) await this.run(['stash', 'drop', '--quiet', `stash@{${index}}`], 'mutation');
   }
 
   private async headHash(): Promise<string | undefined> {
@@ -814,8 +1109,8 @@ export class Repository {
     return readRegularFile(path.join(this.info.gitDir, name), MAX_MERGE_MESSAGE_BYTES);
   }
 
-  private endOfOptions(): string[] {
-    return gitAtLeast(this.runner.git.version, 2, 24) ? ['--end-of-options'] : [];
+  private networkCall(args: readonly string[], net: NetworkCall): GitCall {
+    return { ...this.call(args, 'mutation', net.english === true), signal: AbortSignal.any([net.signal, this.queue.signal]), ...(net.askpassEnv ? { askpassEnv: net.askpassEnv } : {}) };
   }
 
   // A read or status is killed with its process tree when the queue is disposed; an index write never is.
@@ -831,6 +1126,48 @@ export class Repository {
     for (const entry of paths) checkRepoPath(entry);
     for (const chunk of splitInChunks(paths, MAX_CLI_LENGTH)) await this.run([...base, '--', ...chunk], 'mutation', true);
   }
+}
+
+// No link or junction is followed, the folders on the way included; modules/ and reftable/ are not scanned (a residual).
+async function locksUnder(dir: string, segments: readonly string[], recursive: boolean): Promise<string[]> {
+  let folder = dir;
+  for (const segment of segments) {
+    folder = path.join(folder, segment);
+    if (!(await isRealFolder(folder))) return [];
+  }
+  const found: string[] = [];
+  const pending = [folder];
+  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    const entries = await fs.readdir(next, { withFileTypes: true }).catch((err: NodeJS.ErrnoException) => {
+      if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return [];
+      throw err;
+    });
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith('.lock')) found.push(path.join(next, entry.name));
+      else if (recursive && entry.isDirectory()) pending.push(path.join(next, entry.name));
+    }
+  }
+  return found;
+}
+
+async function lstatOrUndefined(file: string): Promise<Stats | undefined> {
+  return fs.lstat(file).catch((err: NodeJS.ErrnoException) => {
+    if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return undefined;
+    throw err;
+  });
+}
+
+const isRealFolder = async (folder: string): Promise<boolean> => (await lstatOrUndefined(folder))?.isDirectory() === true;
+
+async function plainFileUnder(dir: string, segments: readonly string[]): Promise<string | undefined> {
+  if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) return undefined;
+  let current = dir;
+  for (const [index, segment] of segments.entries()) {
+    current = path.join(current, segment);
+    const stat = await lstatOrUndefined(current);
+    if (!(index === segments.length - 1 ? stat?.isFile() : stat?.isDirectory())) return undefined;
+  }
+  return current;
 }
 
 function subjectOf(message: string): string {

@@ -30,7 +30,7 @@ const PassThrough = defineComponent({ template: '<div><slot /></div>' });
 
 function agent(over: Partial<TeamAgent> = {}): TeamAgent {
   return {
-    agentId: AGENT_ID, name: 'backend', role: 'specialist', specialization: 'build it', model: 'm', profileId: null, attempt: 0,
+    agentId: AGENT_ID, name: 'backend', role: 'specialist', description: 'build it', model: 'm', profileId: null, attempt: 0,
     status: 'running', activeMs: 0, runningSince: null, toolCount: 0, lastToolName: null,
     totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0,
     dollarBilled: true, effort: null, progressSummary: null, result: null, logFilePath: null,

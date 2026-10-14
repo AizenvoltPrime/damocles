@@ -237,7 +237,7 @@ describe('ShellHost', () => {
 
   it('accepts only the sender\'s own in-range layout fields and only the shell parts as focused part', () => {
     host();
-    const { sidebarWidth, sections, search, scm } = DEFAULT_SHELL_LAYOUT;
+    const { sidebarWidth, sections, sectionOrder, search, scm, repositories } = DEFAULT_SHELL_LAYOUT;
     ipc.listeners.get(SHELL_CHANNELS.sidebarLayout)!(own, { sidebarWidth: 100, sections, search });
     // A whole layout reaches main as the sidebar's fields alone, so a stale copy of the grid or the visibility never lands.
     ipc.listeners.get(SHELL_CHANNELS.sidebarLayout)!(own, { ...DEFAULT_SHELL_LAYOUT, sidebarVisible: false });
@@ -247,7 +247,7 @@ describe('ShellHost', () => {
     ipc.listeners.get(SHELL_CHANNELS.focusedPart)!(own, 'sidebar');
     ipc.listeners.get(SHELL_CHANNELS.focusedPart)!(own, 'editor');
     ipc.listeners.get(SHELL_CHANNELS.focusedPart)!(own, null);
-    expect(vi.mocked(actions.setSidebarLayout).mock.calls).toEqual([[{ sidebarWidth, sections, search, scm }]]);
+    expect(vi.mocked(actions.setSidebarLayout).mock.calls).toEqual([[{ sidebarWidth, sections, sectionOrder, search, scm, repositories }]]);
     expect(vi.mocked(actions.setGridSizes).mock.calls).toEqual([[{ sideWidth: 640, bottomHeight: 300 }]]);
     expect((actions.setFocusedPart as ReturnType<typeof vi.fn>).mock.calls).toEqual([['sidebar'], ['editor'], [null]]);
     expect(lines).toContain('[shell] ignoring a malformed sidebar layout');
@@ -641,13 +641,18 @@ describe('terminal channels', () => {
   const call = (channel: string, payload?: unknown, sender: unknown = own): Promise<unknown> => Promise.resolve(ipc.handlers.get(channel)!(sender, payload));
 
   it.each([
-    ['a cwd', { profileId: null, projectKey: 'p', cwd: 'C:\\Windows' }],
-    ['a shell path', { profileId: 'C:\\evil.exe', projectKey: 'p', file: 'C:\\evil.exe' }],
-    ['args', { profileId: 'pwsh', projectKey: 'p', args: ['-c', 'x'] }],
-    ['an environment', { profileId: 'pwsh', projectKey: 'p', env: {} }],
+    ['a cwd', { profileId: null, target: { project: 'p' }, cwd: 'C:\\Windows' }],
+    ['a shell path', { profileId: 'C:\\evil.exe', target: { project: 'p' }, file: 'C:\\evil.exe' }],
+    ['args', { profileId: 'pwsh', target: { project: 'p' }, args: ['-c', 'x'] }],
+    ['an environment', { profileId: 'pwsh', target: { project: 'p' }, env: {} }],
     ['a missing field', { profileId: 'pwsh' }],
-    ['a number', { profileId: 1, projectKey: 'p' }],
-    ['an empty key', { profileId: 'pwsh', projectKey: '' }],
+    ['a number', { profileId: 1, target: { project: 'p' } }],
+    ['an empty key', { profileId: 'pwsh', target: { project: '' } }],
+    ['a folder in the target', { profileId: 'pwsh', target: { project: 'p', cwd: 'C:\\Windows' } }],
+    ['two targets', { profileId: 'pwsh', target: { home: true, current: true } }],
+    ['a false target', { profileId: 'pwsh', target: { home: false } }],
+    ['a null target', { profileId: 'pwsh', target: null }],
+    ['a bare project key', { profileId: 'pwsh', projectKey: null }],
     ['an array', ['pwsh', 'p']],
   ])('refuses a create carrying %s before main sees it', async (_name, payload) => {
     expect(parseTerminalCreate(payload)).toBeUndefined();
@@ -655,10 +660,15 @@ describe('terminal channels', () => {
     expect(terminal['create']).not.toHaveBeenCalled();
   });
 
-  it('passes a create of a profile id and a project key, each possibly null, and nothing else', async () => {
-    await expect(call(TERMINAL_CHANNELS.create, { profileId: null, projectKey: null })).resolves.toEqual({ ok: true, id: 'term-1' });
-    await call(TERMINAL_CHANNELS.create, { profileId: 'wsl:Ubuntu', projectKey: 'c:\\work\\alpha' });
-    expect(terminal['create']!.mock.calls).toEqual([[{ profileId: null, projectKey: null }], [{ profileId: 'wsl:Ubuntu', projectKey: 'c:\\work\\alpha' }]]);
+  it('passes a create of a profile id, possibly null, and a project, home or current target, and nothing else', async () => {
+    await expect(call(TERMINAL_CHANNELS.create, { profileId: null, target: { current: true } })).resolves.toEqual({ ok: true, id: 'term-1' });
+    await call(TERMINAL_CHANNELS.create, { profileId: 'wsl:Ubuntu', target: { project: 'c:\\work\\alpha' } });
+    await call(TERMINAL_CHANNELS.create, { profileId: 'pwsh', target: { home: true } });
+    expect(terminal['create']!.mock.calls).toEqual([
+      [{ profileId: null, target: { current: true } }],
+      [{ profileId: 'wsl:Ubuntu', target: { project: 'c:\\work\\alpha' } }],
+      [{ profileId: 'pwsh', target: { home: true } }],
+    ]);
   });
 
   it('bounds input, resize, ack, ids and the list width, dropping and logging a malformed payload', () => {
@@ -1009,10 +1019,10 @@ describe('ShellHost source control channels', () => {
     ipc.handlers.clear();
     ipc.listeners.clear();
     contents.removeAllListeners();
-    const scm = Object.fromEntries(['state', 'select', 'run', 'commit', 'generateMessage', 'fileDiff', 'copy', 'commitInput', 'amend'].map((name) => [name, vi.fn(async () => ({ ok: true }))]));
+    const scm = Object.fromEntries(['state', 'select', 'run', 'commit', 'generateMessage', 'fileDiff', 'copy', 'commitInput', 'amend', 'artifacts'].map((name) => [name, vi.fn(async () => ({ ok: true }))]));
     new ShellHost(window, { scm } as unknown as ShellActions, () => undefined, () => undefined);
     const invokes = Object.values(SCM_CHANNELS).filter((channel) => ipc.handlers.has(channel));
-    expect(invokes).toHaveLength(9);
+    expect(invokes).toHaveLength(10);
     for (const channel of invokes) {
       for (const sender of foreigners) await expect(Promise.resolve(ipc.handlers.get(channel)!(sender, { repoId: 'repo-1' })), channel).rejects.toThrow('Rejected');
     }

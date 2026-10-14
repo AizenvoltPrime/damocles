@@ -31,7 +31,7 @@ import { DAMOCLES_AGENT_LAUNCH_ENTRY } from '../../pi-session/session-store/cons
 
 function makeAgent(name: string, role: TeamAgent['role']): TeamAgent {
   return {
-    agentId: `id-${name}`, teamId: 'team-1', name, role, attempt: 0, specialization: '',
+    agentId: `id-${name}`, teamId: 'team-1', name, role, attempt: 0, specialization: '', description: null,
     status: 'pending', model: 'test', profileId: null, activeMs: 0, runningSince: null,
     toolCallCount: 0, carriedToolCallCount: 0, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0,
     cacheCreationTokens: 0, costUsd: 0,
@@ -153,7 +153,7 @@ function makeWiring(specialistNames: string[], overrides?: { cwd?: string }): Wi
 function startSpecialist(w: Wiring, name: string): FakeSession {
   const session = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
   w.useSession(session);
-  w.runner.startSpecialist(name, `task for ${name} that is descriptive enough`);
+  w.runner.startSpecialist(name, 'Test label', `task for ${name} that is descriptive enough`);
   return session;
 }
 
@@ -725,7 +725,7 @@ describe('team wiring: a user /steer reaches one member through its note sink', 
   function startSteeredReporter(w: Wiring, name: string): FakeSession {
     const session = steeredReporter(w, name);
     w.useSession(session);
-    w.runner.startSpecialist(name, `task for ${name} that is descriptive enough`);
+    w.runner.startSpecialist(name, 'Test label', `task for ${name} that is descriptive enough`);
     return session;
   }
 
@@ -775,7 +775,7 @@ describe('team wiring: a user /steer reaches one member through its note sink', 
     const w = makeWiring(['A']);
     const first = new FakeSession({ onPrompt: (_t, s) => { if (s.prompts.length === 1) s.startStreaming(); } });
     w.useSession(first);
-    w.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    w.runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     await w.settle();
     expect(w.runner.steerMember('id-A', 'old ask')).toBe('steered');
     await first.whenPrompted(2);
@@ -784,7 +784,7 @@ describe('team wiring: a user /steer reaches one member through its note sink', 
     await until(() => w.runner.getMember('id-A')!.status === 'cancelled');
     const second = steeredReporter(w, 'A');
     w.useSession(second);
-    w.runner.redispatchSpecialist('A', 'second task for A that is descriptive enough');
+    w.runner.redispatchSpecialist('A', 'Test label', 'second task for A that is descriptive enough');
     await second.whenPrompted(1);
     expect(w.runner.steerMember('id-A', 'new ask')).toBe('steered');
     await until(() => w.runner.getMember('id-A')!.status === 'awaiting-review');
@@ -817,7 +817,7 @@ describe('team wiring: a user /steer reaches one member through its note sink', 
       },
     });
     w.useSession(session);
-    w.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    w.runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     return { session, release: () => held.release() };
   }
 
@@ -858,7 +858,7 @@ describe('team wiring: a user /steer reaches one member through its note sink', 
     w.useSession(new Promise<FakeSession>((r) => { open = r; }));
     // The opening turn keeps working: it never ends, so anything delivered after it arrived mid-turn.
     const a = new FakeSession({ onPrompt: (_t, s) => { if (s.prompts.length === 1) s.startStreaming(); } });
-    w.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    w.runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
 
     w.messageBus.send('B', 'A', 'peer note');
     expect(w.runner.listSteerTargets().map((t) => t.id)).toEqual(['id-A']);
@@ -912,7 +912,7 @@ describe('team wiring: a team_standby call parks the specialist, which still wak
       },
     });
     w.useSession(session);
-    w.runner.startSpecialist(name, `task for ${name} that is descriptive enough`);
+    w.runner.startSpecialist(name, 'Test label', `task for ${name} that is descriptive enough`);
     return { session, stops };
   }
 
@@ -1009,7 +1009,7 @@ describe('team wiring: a team_report_complete call parks the specialist with its
       },
     });
     w.useSession(session);
-    w.runner.startSpecialist(name, `task for ${name} that is descriptive enough`);
+    w.runner.startSpecialist(name, 'Test label', `task for ${name} that is descriptive enough`);
     return { session, stops };
   }
 
@@ -1140,7 +1140,7 @@ describe('team wiring: a redispatch is a fresh attempt, and each agent carries i
     expect(w.scratchpad.hasCurrentRead('A', 'mission-brief')).toBe(true);
 
     await cancelAndQueueRerun(w, 'A');
-    w.runner.redispatchSpecialist('A', 'second attempt at the same task');
+    w.runner.redispatchSpecialist('A', 'Test label', 'second attempt at the same task');
 
     expect(w.scratchpad.hasCurrentRead('A', 'mission-brief')).toBe(false);
     expect(w.scratchpad.getReadStats('A')).toEqual({ markerHits: 0, fullReturns: 0 });
@@ -1156,7 +1156,7 @@ describe('team wiring: a redispatch is a fresh attempt, and each agent carries i
     w.scratchpad.markAllRead('B');
 
     await cancelAndQueueRerun(w, 'A');
-    w.runner.redispatchSpecialist('A', 'second attempt at the same task');
+    w.runner.redispatchSpecialist('A', 'Test label', 'second attempt at the same task');
 
     expect(w.scratchpad.hasCurrentRead('B', 'mission-brief')).toBe(true);
   });
@@ -1172,7 +1172,7 @@ describe('team wiring: a redispatch is a fresh attempt, and each agent carries i
 
     agentOf(w, 'A').dollarBilled = false;
     await cancelAndQueueRerun(w, 'A');
-    w.runner.redispatchSpecialist('A', 'second attempt at the same task');
+    w.runner.redispatchSpecialist('A', 'Test label', 'second attempt at the same task');
 
     expect(agentOf(w, 'A').dollarBilled).toBe(true);
     expect(w.teamEntries.filter((e) => e['type'] === 'agent-spawned' && e['name'] === 'A')).toHaveLength(2);
@@ -1193,7 +1193,7 @@ describe('team wiring: a redispatch is a fresh attempt, and each agent carries i
     expect(billed()).toEqual([true]);
 
     await cancelAndQueueRerun(w, 'A');
-    w.runner.redispatchSpecialist('A', 'second attempt at the same task');
+    w.runner.redispatchSpecialist('A', 'Test label', 'second attempt at the same task');
 
     expect(billed()).toEqual([true, true]);
   });
@@ -1236,7 +1236,7 @@ describe('team wiring: the persisted usage totals are the run sum, not its last 
       },
     });
     w.useSession(session);
-    w.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    w.runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     await w.settle();
 
     w.runner.cancelSpecialist('A');
@@ -1270,7 +1270,7 @@ describe('team wiring: member pi session files', () => {
     const second = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
     second.sessionFile = '/members/a1.jsonl';
     w.useSession(second);
-    w.runner.redispatchSpecialist('A', 'second attempt at the same task');
+    w.runner.redispatchSpecialist('A', 'Test label', 'second attempt at the same task');
     await second.whenPrompted(1);
 
     expect(w.sessionOpts.map((o) => o['store'])).toEqual([
@@ -1290,7 +1290,7 @@ describe('team wiring: member pi session files', () => {
     const session = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
     session.sessionFile = '/members/2026_id-A.a0.jsonl';
     w.useSession(session);
-    w.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    w.runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     await session.whenPrompted(1);
 
     const links = w.webviewMessages.flatMap((m) => (m.type === 'teamAgentStatusUpdate' && m.logFilePath !== undefined ? [m.logFilePath] : []));

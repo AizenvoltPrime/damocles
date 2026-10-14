@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import type { FileWatcher } from '../../../platform/file-watcher';
-import type { GitCall, GitRunner } from '../git-runner';
+import type { GitCall, GitCloner, GitRunner } from '../git-runner';
 import { ScmService, type ScmQuestion } from '../scm-service';
 
 const sessionJobs = vi.hoisted(() => ({ created: [] as Array<{ disposed: number; dispose: () => void }> }));
@@ -38,7 +38,8 @@ function unsafeDeep(trusted: (folder: string) => boolean, onAsk: () => void = ()
   const owner = deep.replace(/\\/g, '/');
   const calls: GitCall[] = [];
   let safe = false;
-  const runner: GitRunner = {
+  const runner: GitRunner & GitCloner = {
+    clone: () => Promise.reject(new Error('This test clones nothing')),
     git: { path: '/usr/bin/git', version: { major: 2, minor: 45, patch: 0 } },
     envFor: () => ({}),
     run: async (call) => {
@@ -128,7 +129,8 @@ describe('scm service', () => {
   it('sends an unsafe repository above the project through the parent question before any safe.directory offer, from Open Repository too', async () => {
     const owner = sandbox.replace(/\\/g, '/');
     const calls: GitCall[] = [];
-    const runner: GitRunner = {
+    const runner: GitRunner & GitCloner = {
+      clone: () => Promise.reject(new Error('This test clones nothing')),
       git: { path: '/usr/bin/git', version: { major: 2, minor: 45, patch: 0 } },
       envFor: () => ({}),
       run: async (call) => {

@@ -84,7 +84,7 @@ function figures(agent: WebviewTeamAgent): AgentFigures {
 
 function makeAgent(name: string, role: TeamAgent['role']): TeamAgent {
   return {
-    agentId: `id-${name}`, teamId: TEAM_ID, name, role, attempt: 0, specialization: '',
+    agentId: `id-${name}`, teamId: TEAM_ID, name, role, attempt: 0, specialization: '', description: null,
     status: 'pending', model: 'test', profileId: null, activeMs: 0, runningSince: null,
     toolCallCount: 0, carriedToolCallCount: 0, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0,
     cacheCreationTokens: 0, costUsd: 0,
@@ -209,7 +209,7 @@ async function runCancelledThenRedispatched(cwd: string) {
   const h = await makeHarness(cwd);
 
   const first = h.queueSession();
-  h.runner.startSpecialist('alpha', TASK);
+  h.runner.startSpecialist('alpha', 'Test label', TASK);
   await first.whenPrompted(1);
   h.work(first, ATTEMPT_1);
   await h.settle();
@@ -222,7 +222,7 @@ async function runCancelledThenRedispatched(cwd: string) {
 
   const second = h.queueSession();
   vi.setSystemTime(new Date('2026-09-01T10:40:46.872Z'));
-  h.runner.redispatchSpecialist('alpha', TASK);
+  h.runner.redispatchSpecialist('alpha', 'Test label', TASK);
   await second.whenPrompted(1);
   h.work(second, ATTEMPT_2);
   await h.settle();
@@ -320,7 +320,7 @@ describe('a batch an abort cut short', () => {
     const read = (id: string) => ({ type: 'toolCall', id, name: 'read', arguments: { path: `/${id}.ts` } });
 
     const session = h.queueSession();
-    h.runner.startSpecialist('alpha', TASK);
+    h.runner.startSpecialist('alpha', 'Test label', TASK);
     await session.whenPrompted(1);
     session.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
     session.emit({ type: 'message_end', message: { role: 'assistant', content: [read('tc-ran'), read('tc-skipped')], stopReason: 'toolUse' } });
@@ -358,7 +358,7 @@ describe('a team agent effort', () => {
     const h = await makeHarness(cwd);
 
     const first = runningAt(h.queueSession(), 'high');
-    h.runner.startSpecialist('alpha', TASK);
+    h.runner.startSpecialist('alpha', 'Test label', TASK);
     await first.whenPrompted(1);
     await h.settle();
     await h.persistence.flush();
@@ -370,7 +370,7 @@ describe('a team agent effort', () => {
     await h.settle();
 
     const second = runningAt(h.queueSession(), 'medium');
-    h.runner.redispatchSpecialist('alpha', TASK);
+    h.runner.redispatchSpecialist('alpha', 'Test label', TASK);
     // The new attempt's session does not exist yet, so neither surface may keep the dead attempt's level.
     expect(h.liveAgent('alpha').effort).toBeNull();
     // Read synchronously, before the session the redispatch is creating can append its entry.
@@ -389,7 +389,7 @@ describe('a team agent effort', () => {
     const h = await makeHarness(join(DAMOCLES_HOME_DIR, 'effort-no-reasoning'));
 
     const session = runningAt(h.queueSession(), 'off', false);
-    h.runner.startSpecialist('alpha', TASK);
+    h.runner.startSpecialist('alpha', 'Test label', TASK);
     await session.whenPrompted(1);
     await h.settle();
     await h.persistence.flush();

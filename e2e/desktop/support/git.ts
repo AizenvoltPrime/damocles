@@ -8,15 +8,29 @@ const execFileAsync = promisify(execFile);
 
 export type GitHome = Pick<HermeticHome, 'root' | 'home'>;
 
+export interface GitOptions {
+  /** Variables set over the hermetic environment, such as GIT_COMMITTER_DATE. */
+  readonly env?: Readonly<Record<string, string>>;
+  /** Written to git's stdin, which is then closed. */
+  readonly input?: string;
+}
+
 /**
  * Runs git in `cwd` with the launched app's environment on `h`, so neither side reads the developer's or the system's git
  * config, as a fixed identity with commit signing off; resolves with its trimmed stdout. `init` copies in no template hooks.
  */
-export async function git(h: GitHome, cwd: string, ...args: string[]): Promise<string> {
+export async function git(h: GitHome, cwd: string, ...args: string[]): Promise<string>;
+export async function git(h: GitHome, cwd: string, options: GitOptions, ...args: string[]): Promise<string>;
+export async function git(h: GitHome, cwd: string, ...rest: Array<string | GitOptions>): Promise<string> {
+  const [first, ...others] = rest;
+  const options = typeof first === 'object' ? first : {};
+  const args = (typeof first === 'object' ? others : rest) as string[];
   const command = args[0] === 'init' ? ['init', '--template=', ...args.slice(1)] : args;
   // The app's git reads the same file through HOME; a missing file reads as empty.
-  const env = { ...hermeticEnv(h), GIT_CONFIG_GLOBAL: path.join(h.home, '.gitconfig') };
-  const { stdout } = await execFileAsync('git', ['-c', 'user.name=e2e', '-c', 'user.email=e2e@example.com', '-c', 'commit.gpgsign=false', ...command], { cwd, env, encoding: 'utf8' });
+  const env = { ...hermeticEnv(h), GIT_CONFIG_GLOBAL: path.join(h.home, '.gitconfig'), ...options.env };
+  const run = execFileAsync('git', ['-c', 'user.name=e2e', '-c', 'user.email=e2e@example.com', '-c', 'commit.gpgsign=false', ...command], { cwd, env, encoding: 'utf8' });
+  if (options.input !== undefined) run.child.stdin!.end(options.input);
+  const { stdout } = await run;
   return stdout.trim();
 }
 

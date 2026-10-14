@@ -1134,6 +1134,30 @@ describe('AgentRunner finalResponse', () => {
 
     expect(result.finalResponse).toBe('here is what I found');
   });
+
+  it.each([
+    ['no outcome when it never reported', null, null],
+    ['its reported summary', 'the sign-off', 'the sign-off'],
+  ] as const)('gives a stopped run %s, never its narration', async (_label, reported, expected) => {
+    const ac = new AbortController();
+    const fake = new FakeSession({
+      onPrompt: (_t, s) => s.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Now the trust integration test.' }] } }),
+    });
+    fake.getLastAssistantText = (): string => 'Now the trust integration test.';
+
+    const run = new AgentRunner().startAgent(baseConfig({
+      abortSignal: ac.signal,
+      createSession: async () => fake as never,
+      keepAlive: () => false,
+      getReportedSummary: () => reported,
+    }));
+    await vi.waitFor(() => expect(fake.prompts).toHaveLength(1));
+    ac.abort();
+    const result = await run;
+
+    expect(result.status).toBe('cancelled');
+    expect(result.finalResponse).toBe(expected);
+  });
 });
 
 /** Captures the undelivered-message taker the runner publishes, plus whether its teardown has run. */

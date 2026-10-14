@@ -10,6 +10,7 @@ import type { ChimeTone, NotificationBody, NotificationCenterState } from './not
 import type { ReleaseIndex, ReleaseNotes, UpdateSnapshot, VersionInfo } from './updates';
 import type { TerminalColor, TerminalGlyph, TerminalProfileOption, TerminalProfileReport, TerminalProjectOption } from './terminal-channels';
 import { INPUT_VALIDATIONS, MAX_INPUT_VALUE_LENGTH, inputProblem, type InputPlatform, type InputValidation } from '../../shared/input-validation';
+import { visibleText } from '../../shared/visible-text';
 
 export const OVERLAY_CHANNELS = {
   // renderer → main, invoke
@@ -59,6 +60,8 @@ export const OVERLAY_CHANNELS = {
   commandsList: 'damocles:overlay:commands:list',
   // {} → TerminalProfileReport for Settings › Terminal; answers closed unless the settings modal is open
   terminalProfiles: 'damocles:overlay:terminal:profiles',
+  // { value } → InputBrowseResult | null; answers closed unless an input request is open, null unless it has browse
+  inputBrowse: 'damocles:overlay:input:browse',
   // main → renderer
   // OverlayState after the UI language changed
   state: 'damocles:overlay:state',
@@ -94,16 +97,27 @@ export const OVERLAY_CHANNELS = {
 
 // Lucide names a request may carry; main rejects a request naming any other icon.
 export const OVERLAY_ICONS = [
+  'archive',
+  'archive-restore',
+  'arrow-down-to-line',
+  'arrow-down-up',
   'arrow-right-to-line',
+  'arrow-up-from-line',
+  'arrow-up-right',
   'at-sign',
   'check',
   'check-check',
   'chevrons-up-down',
+  'circle-dot',
   'circle-x',
   'clipboard-paste',
+  'cloud',
+  'cloud-download',
+  'cloud-upload',
   'code',
   'columns-2',
   'copy',
+  'copy-plus',
   'copy-x',
   'eraser',
   'eye',
@@ -121,8 +135,14 @@ export const OVERLAY_ICONS = [
   'folder-open',
   'folder-plus',
   'folder-search',
+  'folder-tree',
+  'git-branch',
+  'git-branch-plus',
   'git-commit-horizontal',
   'git-compare',
+  'git-merge',
+  'git-pull-request-arrow',
+  'hash',
   'history',
   'list',
   'list-filter',
@@ -161,6 +181,9 @@ export type OverlayIcon = (typeof OVERLAY_ICONS)[number];
 
 // Payload bounds; main rejects a request or answer outside them.
 export const MAX_OVERLAY_ITEMS = 100;
+// Items of a menu at both levels together (separators and submenu rows included); each level's list stays within
+// MAX_OVERLAY_ITEMS.
+export const MAX_MENU_ITEMS = 160;
 export const MAX_OVERLAY_LABEL_LENGTH = 200;
 export const MAX_OVERLAY_ID_LENGTH = 200;
 // A palette command id; an Open Chat in Project id carries the project's absolute path.
@@ -232,6 +255,8 @@ export type OverlayMenuItem =
       readonly shortcut?: string;
       readonly danger?: boolean;
       readonly disabled?: boolean;
+      // why the item is disabled, shown where the shortcut sits; only with disabled, within MAX_OVERLAY_LABEL_LENGTH
+      readonly disabledReason?: string;
       readonly checked?: boolean;
       // with checked: one of mutually exclusive choices (menuitemradio) rather than a toggle
       readonly radio?: boolean;
@@ -318,10 +343,11 @@ export type OverlayRequest =
   // limits the files to one folder of one project.
   | { readonly kind: 'quickOpen'; readonly mode: QuickOpenMode; readonly scope?: QuickOpenScope }
   // New Terminal (Ctrl+Shift+` or the terminal pane's +); only main opens it. Step 1 picks a profile; step 2 a project, skipped
-  // when projects has one entry. Shift+click or Shift+Enter on a profile answers with the current project.
+  // when projects has one entry, or none (the home folder). Shift+click or Shift+Enter on a profile answers with the current
+  // project.
   | { readonly kind: 'newTerminal'; readonly profiles: readonly TerminalProfileOption[]; readonly projects: readonly TerminalProjectOption[] }
-  // A list main offers (Change Icon..., Change Color..., Select Default Profile); only main opens it. The current item is
-  // focused first; filtering matches label and description.
+  // A list main offers (a terminal's icon, color or default profile, a ref, stash, tag, remote or worktree picker); only
+  // main opens it. Ungrouped, the current item is focused first; filtering matches label and description.
   | { readonly kind: 'quickPick'; readonly placeholder: string; readonly items: readonly OverlayQuickPickItem[] }
   // A text box main asks through askInput; only main opens it.
   | ({ readonly kind: 'input' } & InputRequest)
@@ -351,6 +377,17 @@ export interface InputRequest {
   readonly valueSelection?: readonly [number, number];
   // checked as the user types; Enter is refused while it fails, and main checks the answer again
   readonly validation?: InputValidation;
+  // a masked box with no autocomplete or spellcheck whose value is never logged; never together with validation or value
+  readonly password?: boolean;
+  // an inline folder button inside the box (VS Code's inline input button); its click asks main through inputBrowse, which
+  // runs the handler main keeps for the request. Never together with password.
+  readonly browse?: { readonly tooltip: string };
+}
+
+// The box's new value after its browse button, VS Code's value and valueSelection.
+export interface InputBrowseResult {
+  readonly value: string;
+  readonly valueSelection?: readonly [number, number];
 }
 
 function isRecordValue(value: unknown): value is Record<string, unknown> {
@@ -363,6 +400,13 @@ function own(record: Record<string, unknown>, key: string): unknown {
 
 const isOffset = (value: unknown, max: number): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= max;
 
+/** A [start, end) selection within a value of `length`, or undefined when it is not one. */
+export function parseValueSelection(raw: unknown, length: number): readonly [number, number] | undefined {
+  if (!Array.isArray(raw) || raw.length !== 2) return undefined;
+  const [start, end] = raw as unknown[];
+  return isOffset(start, length) && isOffset(end, length) && start <= end ? [start, end] : undefined;
+}
+
 /** A clean copy of an input request within the overlay's bounds, or undefined; main asks nothing it cannot show. */
 export function parseInputRequest(raw: unknown): Extract<OverlayRequest, { kind: 'input' }> | undefined {
   if (!isRecordValue(raw) || own(raw, 'kind') !== 'input') return undefined;
@@ -372,19 +416,26 @@ export function parseInputRequest(raw: unknown): Extract<OverlayRequest, { kind:
   const value = own(raw, 'value');
   const valueSelection = own(raw, 'valueSelection');
   const validation = own(raw, 'validation');
+  const password = own(raw, 'password');
+  const browse = own(raw, 'browse');
   const label = (text: unknown, max: number): boolean => typeof text === 'string' && text.length > 0 && text.length <= max;
   if (!label(prompt, MAX_OVERLAY_TEXT_LENGTH)) return undefined;
   if (title !== undefined && !label(title, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
   if (placeholder !== undefined && !label(placeholder, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
   if (value !== undefined && !(typeof value === 'string' && value.length <= MAX_INPUT_VALUE_LENGTH)) return undefined;
   if (validation !== undefined && !(INPUT_VALIDATIONS as readonly unknown[]).includes(validation)) return undefined;
+  if (password !== undefined && (typeof password !== 'boolean' || (password && (validation !== undefined || value !== undefined)))) return undefined;
+  let tooltip: string | undefined;
+  if (browse !== undefined) {
+    if (!isRecordValue(browse) || Object.keys(browse).length !== 1 || password === true) return undefined;
+    const text = own(browse, 'tooltip');
+    if (!label(text, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
+    tooltip = text as string;
+  }
   let selection: readonly [number, number] | undefined;
   if (valueSelection !== undefined) {
-    const length = typeof value === 'string' ? value.length : 0;
-    if (!Array.isArray(valueSelection) || valueSelection.length !== 2) return undefined;
-    const [start, end] = valueSelection as unknown[];
-    if (!isOffset(start, length) || !isOffset(end, length) || start > end) return undefined;
-    selection = [start, end];
+    selection = parseValueSelection(valueSelection, typeof value === 'string' ? value.length : 0);
+    if (!selection) return undefined;
   }
   return {
     kind: 'input',
@@ -394,6 +445,8 @@ export function parseInputRequest(raw: unknown): Extract<OverlayRequest, { kind:
     ...(value !== undefined ? { value } : {}),
     ...(selection ? { valueSelection: selection } : {}),
     ...(validation !== undefined ? { validation: validation as InputValidation } : {}),
+    ...(password === true ? { password: true } : {}),
+    ...(tooltip !== undefined ? { browse: { tooltip } } : {}),
   };
 }
 
@@ -404,7 +457,38 @@ export function parseInputAnswer(raw: Record<string, unknown>, request: Extract<
   return request.validation === undefined || inputProblem(request.validation, value, platform) === undefined ? value : undefined;
 }
 
-// At most MAX_OVERLAY_ITEMS per request; id and label within MAX_OVERLAY_ID_LENGTH and MAX_OVERLAY_LABEL_LENGTH.
+// One quick pick request's items and their serialized size, sized for about 50,000 ref rows (docs/invariants.md, "Source
+// control", ref pickers).
+export const MAX_QUICK_PICK_ITEMS = 50_000;
+export const MAX_QUICK_PICK_BYTES: number = 12 * 1024 * 1024;
+
+const utf8 = new TextEncoder();
+
+// The texts main shows escaped (parseQuickPickRequest), so an item is counted as the overlay receives it.
+const SHOWN_TEXTS: ReadonlySet<string> = new Set(['label', 'description', 'hint', 'group']);
+
+/** An item's share of MAX_QUICK_PICK_BYTES: its JSON in UTF-8, its shown texts escaped. */
+export function quickPickItemBytes(item: unknown): number {
+  return utf8.encode(JSON.stringify(item, (key, value: unknown) => (typeof value === 'string' && SHOWN_TEXTS.has(key) ? visibleText(value) : value))).byteLength;
+}
+
+/** Whether a quick pick of these items fits MAX_QUICK_PICK_ITEMS and MAX_QUICK_PICK_BYTES. */
+export function fitsQuickPick(items: readonly unknown[]): boolean {
+  if (items.length > MAX_QUICK_PICK_ITEMS) return false;
+  let bytes = 0;
+  for (const item of items) {
+    bytes += quickPickItemBytes(item);
+    if (bytes > MAX_QUICK_PICK_BYTES) return false;
+  }
+  return true;
+}
+
+// Lucide icons a quick pick item may lead with, by role; the overlay maps each to its glyph.
+export const OVERLAY_QUICK_PICK_ICONS = ['add', 'branch', 'remoteBranch', 'tag', 'detached', 'stash', 'worktree', 'remote'] as const;
+export type OverlayQuickPickIcon = (typeof OVERLAY_QUICK_PICK_ICONS)[number];
+
+// Within fitsQuickPick, ids unique; id within MAX_OVERLAY_ID_LENGTH, the texts within
+// MAX_OVERLAY_LABEL_LENGTH (main cuts a longer label to its tail); main checks them (parseQuickPickRequest in main/overlay.ts).
 export interface OverlayQuickPickItem {
   readonly id: string;
   readonly label: string;
@@ -414,6 +498,18 @@ export interface OverlayQuickPickItem {
   readonly color?: TerminalColor;
   // the current value, marked with a check
   readonly current?: boolean;
+  readonly icon?: OverlayQuickPickIcon;
+  // a short trailing hint main localizes: "local", "2↓ 1↑"
+  readonly hint?: string;
+  // a section label; items sharing it are contiguous and the picker heads each run with it, kept above its first visible item
+  readonly group?: string;
+  // shown whatever the filter, after the matching items (VS Code's QuickPickItem.alwaysShow); never on a grouped item
+  readonly alwaysShow?: true;
+  // while the filter holds text, the item's description is that text, trimmed and quoted (a create item that will use it);
+  // only with alwaysShow
+  readonly echoQuery?: true;
+  // a row that only informs ("N more refs not shown"): shown dimmed, never accepted
+  readonly info?: true;
 }
 
 export type OverlayAnswer =
@@ -431,10 +527,12 @@ export type OverlayAnswer =
   | { readonly kind: 'quickOpen'; readonly pick: QuickOpenPick | null }
   // a PaletteCommand id; main runs it only when it is listed and enabled for the captured focus context
   | { readonly kind: 'quickOpen'; readonly command: string }
-  // Escape answers dismissed; main refuses a profile or project the request did not offer
-  | { readonly kind: 'newTerminal'; readonly profileId: string; readonly projectKey: string }
-  // Escape answers dismissed; main refuses an id the request did not offer
-  | { readonly kind: 'quickPick'; readonly itemId: string }
+  // Escape answers dismissed; main refuses a profile or project the request did not offer; null projectKey: the request
+  // offered no project, so the terminal starts in the home folder
+  | { readonly kind: 'newTerminal'; readonly profileId: string; readonly projectKey: string | null }
+  // Escape answers dismissed; main refuses an id the request did not offer. query: the filter text as typed, within
+  // MAX_INPUT_VALUE_LENGTH
+  | { readonly kind: 'quickPick'; readonly itemId: string; readonly query: string }
   // Escape answers dismissed; main refuses a value its validation kind rejects
   | { readonly kind: 'input'; readonly value: string }
   // null: dropped outside every zone, or Escape
@@ -635,6 +733,8 @@ export interface DamoclesOverlayApi {
   getTerminalProfiles(): Promise<PopupAnswer<TerminalProfileReport>>;
   // returns the unsubscribe
   onTerminalProfiles(listener: (report: TerminalProfileReport) => void): () => void;
+  // the open input request's browse button; null leaves the box as it is; answers closed unless an input request is open
+  browseInput(value: string): Promise<PopupAnswer<InputBrowseResult | null>>;
   // the shell's pane drag while a dropZones request is open; returns the unsubscribe
   onDropZonesPointer(listener: (pointer: DropZonesPointer) => void): () => void;
 }

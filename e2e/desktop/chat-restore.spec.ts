@@ -6,7 +6,7 @@ import { activeChat, expect, test } from './support/fixtures';
 import { seedStubModel, type HermeticHome } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { shellState } from './support/shell';
-import { listChats, readyShell } from './support/shell-ui';
+import { clickSectionAction, listChats, readyShell } from './support/shell-ui';
 import { addProject, answerDialogs, answerOpenDialog, chatInput, clickMenu, hostMessages, postFromWebview, recordHostMessages, sendAndAwaitEcho, TRUST_PROMPT } from './support/ui';
 
 // AD8 keeps the selected chat and three idle ones, so four stored chats are all still loaded at quit.
@@ -33,7 +33,7 @@ async function replayed(page: Page | undefined, text: string): Promise<boolean> 
   return (await page.getByText(text, { exact: true }).count().catch(() => 0)) > 0;
 }
 
-test('AD8: a relaunch keeps every saved idle chat loaded and saved, and lists each restoring chat under its session, never as a new chat', async ({ home, launch }) => {
+test('AD8: a relaunch keeps every saved idle chat loaded and saved, and lists each restoring chat under its session, never as a new chat', async ({ foreground: _foreground, home, launch }) => {
   test.setTimeout(240_000);
   const stub = await startOpenAIStub();
   try {
@@ -51,7 +51,7 @@ test('AD8: a relaunch keeps every saved idle chat loaded and saved, and lists ea
     for (let i = 1; i <= SAVED_CHATS; i++) {
       if (i > 1) {
         const before = (await shellState(app)).selected.chatId;
-        await shell.getByTestId('new-chat').click();
+        await clickSectionAction(shell, 'new-chat');
         await expect.poll(async () => {
           const id = (await shellState(app)).selected.chatId;
           return id !== before && id?.startsWith('new:');

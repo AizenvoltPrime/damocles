@@ -93,7 +93,7 @@ test('slice 9b captures', async ({ clipboard: _clipboard, home, launch }) => {
 
     // Two terminals: one titled by its running command, one showing its working directory's folder.
     await runInTerminal(shell, 'cd src');
-    await shell.evaluate(() => window.damoclesShell!.terminal.create({ profileId: null, projectKey: null }));
+    await shell.evaluate(() => window.damoclesShell!.terminal.create({ profileId: null, target: { current: true } }));
     await expect(terminalRows(shell)).toHaveCount(2);
     await expect.poll(async () => (await shell.evaluate(() => window.damoclesShell!.terminal.getState())).terminals[1]?.integrated, { timeout: 30_000 }).toBe(true);
     await runInTerminal(shell, SLOW);

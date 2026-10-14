@@ -263,6 +263,10 @@ export interface ShellChatList {
 export type SelectChatResult = { readonly ok: true } | { readonly ok: false; readonly reason: 'leased' | 'missing' };
 export type ChatMutationResult = { readonly ok: true } | { readonly ok: false; readonly reason: 'leased' | 'missing' | 'failed' };
 
+// The sidebar's sections in their default order, top to bottom; Sidebar.vue's template lists them in the same order.
+export const SIDEBAR_SECTIONS = ['projects', 'chats', 'files', 'scm', 'repos', 'search'] as const;
+export type SidebarSectionId = (typeof SIDEBAR_SECTIONS)[number];
+
 export interface ShellSectionLayout {
   readonly collapsed: boolean;
   // CSS px, >= MIN_SECTION_SIZE
@@ -363,19 +367,52 @@ export interface ShellLayout {
   readonly sidebarVisible: boolean;
   // CSS px, >= MIN_SIDEBAR_WIDTH
   readonly sidebarWidth: number;
-  // The first open section of Chats, Files, Search and Projects takes the height the others leave, so Chats has no size.
+  // The first open section of Chats, Files, Search, Projects, Repositories and Source control takes the height the others
+  // leave wherever it sits, so Chats has no size.
   readonly sections: {
     readonly projects: ShellSectionLayout;
     readonly files: ShellSectionLayout;
     readonly search: ShellSectionLayout;
+    readonly repos: ShellSectionLayout;
     readonly scm: ShellSectionLayout;
     readonly chats: { readonly collapsed: boolean };
   };
+  // top to bottom, a permutation of SIDEBAR_SECTIONS
+  readonly sectionOrder: readonly SidebarSectionId[];
   readonly grid: ShellGridLayout;
   // by project key
   readonly search: { readonly [projectKey: string]: SearchViewState };
   // Source control's View & Sort, global as in VS Code
   readonly scm: ScmViewOptions;
+  // the Repositories section's expanded rows by project key (D58, AD8), as the ids repositories-tree.ts gives them
+  readonly repositories: { readonly [projectKey: string]: readonly string[] };
+}
+
+// Expanded Repositories rows the layout keeps per project, the length of one row id, the projects it keeps them for, and the
+// characters of every project key and row id together.
+export const MAX_EXPANDED_REPOSITORY_ROWS = 500;
+export const MAX_REPOSITORY_ROW_ID_LENGTH = 2048;
+export const MAX_REPOSITORY_VIEW_STATES = 100;
+export const MAX_REPOSITORY_VIEW_CHARS = 262_144;
+
+/**
+ * The Repositories expanded rows within the layout's bounds, newest last as the sidebar saves them: ids that are empty or too
+ * long are left out, each project keeps its newest rows, and the newest projects are kept while their keys and ids fit the
+ * character budget (the newest one at least partly). The shell reports only this, and main refuses a report that differs.
+ */
+export function boundRepositoryViewStates(states: { readonly [projectKey: string]: readonly string[] }): Record<string, string[]> {
+  const kept: Array<[string, string[]]> = [];
+  let room = MAX_REPOSITORY_VIEW_CHARS;
+  for (const [key, rows] of Object.entries(states).reverse()) {
+    if (kept.length === MAX_REPOSITORY_VIEW_STATES || key.length > room) break;
+    room -= key.length;
+    const ids = rows.filter((id) => id.length > 0 && id.length <= MAX_REPOSITORY_ROW_ID_LENGTH).slice(-MAX_EXPANDED_REPOSITORY_ROWS);
+    let first = ids.length;
+    while (first > 0 && ids[first - 1]!.length <= room) room -= ids[--first]!.length;
+    kept.push([key, ids.slice(first)]);
+    if (first > 0) break;
+  }
+  return Object.fromEntries(kept.reverse());
 }
 
 export const SCM_VIEW_MODES = ['list', 'tree'] as const;
@@ -386,7 +423,7 @@ export interface ScmViewOptions {
 }
 
 // The parts of the layout the shell writes, each reported by its owner alone; main owns the rest.
-export type ShellSidebarLayout = Pick<ShellLayout, 'sidebarWidth' | 'sections' | 'search' | 'scm'>;
+export type ShellSidebarLayout = Pick<ShellLayout, 'sidebarWidth' | 'sections' | 'sectionOrder' | 'search' | 'scm' | 'repositories'>;
 export type ShellGridSizes = Pick<ShellGridLayout, 'sideWidth' | 'bottomHeight'>;
 
 export type ShellFocusPart = 'sidebar' | 'editor' | 'terminal';
@@ -937,6 +974,12 @@ export interface ShellSearchSettings {
   readonly searchEditor: { readonly doubleClickBehaviour: (typeof SEARCH_EDITOR_DOUBLE_CLICK)[number]; readonly focusResultsOnSearch: boolean };
 }
 
+// damocles.desktop.sidebar.*, republished on every change
+export interface ShellSidebarSettings {
+  // section title actions show whenever the section is expanded, not only while it is hovered or holds focus
+  readonly alwaysShowHeaderActions: boolean;
+}
+
 export interface ShellState {
   // counts the states main gave this page; a chat list or search names the one its project key came from
   readonly revision: number;
@@ -969,6 +1012,7 @@ export interface ShellState {
   };
   readonly notifications: NotificationBell;
   readonly search: ShellSearchSettings;
+  readonly sidebar: ShellSidebarSettings;
 }
 
 // CSS px relative to the window's content area; main scales by the shell's zoom factor.

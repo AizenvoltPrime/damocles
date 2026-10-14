@@ -1402,6 +1402,91 @@
         "default": "",
         "description": "Prefix used when creating a new branch."
       },
+      "damocles.desktop.git.autofetch": {
+        "type": "boolean",
+        "default": true,
+        "description": "When enabled, commits are automatically fetched from the default remote of the selected project's repositories."
+      },
+      "damocles.desktop.git.autofetchPeriod": {
+        "type": "integer",
+        "default": 180,
+        "minimum": 1,
+        "maximum": 86400,
+        "description": "Duration in seconds between each automatic git fetch, when autofetch is enabled."
+      },
+      "damocles.desktop.git.allowForcePush": {
+        "type": "boolean",
+        "default": false,
+        "description": "Controls whether force push (with lease) is enabled."
+      },
+      "damocles.desktop.git.rebaseWhenSync": {
+        "type": "boolean",
+        "default": false,
+        "description": "Force Git to use rebase when running the sync command."
+      },
+      "damocles.desktop.git.followTagsWhenSync": {
+        "type": "boolean",
+        "default": false,
+        "description": "Push all annotated tags when running the sync command."
+      },
+      "damocles.desktop.git.autoStash": {
+        "type": "boolean",
+        "default": false,
+        "description": "Stash any changes before pulling and restore them after successful pull."
+      },
+      "damocles.desktop.git.pruneOnFetch": {
+        "type": "boolean",
+        "default": false,
+        "description": "Prune when fetching."
+      },
+      "damocles.desktop.git.confirmSync": {
+        "type": "boolean",
+        "default": true,
+        "description": "Confirm before synchronizing Git repositories."
+      },
+      "damocles.desktop.git.defaultCloneDirectory": {
+        "type": "string",
+        "default": "",
+        "description": "The default location to clone a Git repository, where Clone opens its folder picker. When empty, the picker opens at the home folder."
+      },
+      "damocles.desktop.git.openAfterClone": {
+        "type": "string",
+        "enum": [
+          "always",
+          "prompt"
+        ],
+        "enumDescriptions": [
+          "Always add the clone as a project.",
+          "Always prompt for action."
+        ],
+        "default": "prompt",
+        "description": "Controls whether to add a repository as a project automatically after cloning."
+      },
+      "damocles.desktop.git.pullBeforeCheckout": {
+        "type": "boolean",
+        "default": false,
+        "description": "Controls whether a branch that does not have outgoing commits is fast-forwarded before it is checked out."
+      },
+      "damocles.desktop.git.promptToSaveFilesBeforeStash": {
+        "type": "string",
+        "enum": [
+          "always",
+          "staged",
+          "never"
+        ],
+        "enumDescriptions": [
+          "Check for any unsaved files.",
+          "Check only for unsaved staged files.",
+          "Disable this check."
+        ],
+        "default": "always",
+        "description": "Controls whether Git should check for unsaved files before stashing changes."
+      },
+      "damocles.desktop.sidebar.alwaysShowHeaderActions": {
+        "type": "boolean",
+        "default": false,
+        "description": "Controls the visibility of sidebar section actions. Section actions may either be always visible, or only visible when that section is focused or hovered over."
+      },
       "permissions": {
         "type": "object",
         "description": "Permission rules for Damocles tools. More specific files win: local over project over user.",
@@ -2506,6 +2591,84 @@
         "errorMessage": "damocles.desktop.git.branchPrefix applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
         "doNotSuggest": true,
         "description": "damocles.desktop.git.branchPrefix applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nPrefix used when creating a new branch."
+      },
+      "damocles.desktop.git.autofetch": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.autofetch applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.autofetch applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nWhen enabled, commits are automatically fetched from the default remote of the selected project's repositories."
+      },
+      "damocles.desktop.git.autofetchPeriod": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.autofetchPeriod applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.autofetchPeriod applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nDuration in seconds between each automatic git fetch, when autofetch is enabled."
+      },
+      "damocles.desktop.git.allowForcePush": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.allowForcePush applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.allowForcePush applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls whether force push (with lease) is enabled."
+      },
+      "damocles.desktop.git.rebaseWhenSync": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.rebaseWhenSync applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.rebaseWhenSync applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nForce Git to use rebase when running the sync command."
+      },
+      "damocles.desktop.git.followTagsWhenSync": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.followTagsWhenSync applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.followTagsWhenSync applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nPush all annotated tags when running the sync command."
+      },
+      "damocles.desktop.git.autoStash": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.autoStash applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.autoStash applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nStash any changes before pulling and restore them after successful pull."
+      },
+      "damocles.desktop.git.pruneOnFetch": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.pruneOnFetch applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.pruneOnFetch applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nPrune when fetching."
+      },
+      "damocles.desktop.git.confirmSync": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.confirmSync applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.confirmSync applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nConfirm before synchronizing Git repositories."
+      },
+      "damocles.desktop.git.defaultCloneDirectory": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.defaultCloneDirectory applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.defaultCloneDirectory applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nThe default location to clone a Git repository, where Clone opens its folder picker. When empty, the picker opens at the home folder."
+      },
+      "damocles.desktop.git.openAfterClone": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.openAfterClone applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.openAfterClone applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls whether to add a repository as a project automatically after cloning."
+      },
+      "damocles.desktop.git.pullBeforeCheckout": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.pullBeforeCheckout applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.pullBeforeCheckout applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls whether a branch that does not have outgoing commits is fast-forwarded before it is checked out."
+      },
+      "damocles.desktop.git.promptToSaveFilesBeforeStash": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.promptToSaveFilesBeforeStash applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.promptToSaveFilesBeforeStash applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls whether Git should check for unsaved files before stashing changes."
+      },
+      "damocles.desktop.sidebar.alwaysShowHeaderActions": {
+        "not": {},
+        "errorMessage": "damocles.desktop.sidebar.alwaysShowHeaderActions applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.sidebar.alwaysShowHeaderActions applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls the visibility of sidebar section actions. Section actions may either be always visible, or only visible when that section is focused or hovered over."
       },
       "permissions": {
         "type": "object",

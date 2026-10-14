@@ -22,7 +22,7 @@ describe('teamAgentStatusUpdate', () => {
     teamStore.restoreTeamFromHistory({
       teamId: 'team-1', toolUseId: 'tc-1', title: 'Team', status: 'running', phase: 'working',
       agents: [{
-        agentId: 'agent-1', name: 'backend', role: 'specialist', specialization: '', model: 'm', profileId: null, attempt: 0,
+        agentId: 'agent-1', name: 'backend', role: 'specialist', description: null, model: 'm', profileId: null, attempt: 0,
         status: 'running', activeMs: 0, runningSince: 1_000, toolCount: 0, lastToolName: null,
         totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0,
         dollarBilled: true, effort: null, progressSummary: null, result: null, logFilePath: null,

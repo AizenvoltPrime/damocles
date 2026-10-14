@@ -16,6 +16,9 @@ export const FOREGROUND_WAIT_MS = 330_000;
 let holding = false;
 let opened = 0;
 
+/** Whether this worker holds the foreground now; the launch fixture parks the OS pointer for each app it opens meanwhile. */
+export const holdingForeground = (): boolean => holding;
+
 // Apps other workers have open. A worker that died leaves its files behind, and Windows reuses its pid, so a file counts only
 // while its worker refreshes it, as a lock ticket does.
 function othersOpen(): number {

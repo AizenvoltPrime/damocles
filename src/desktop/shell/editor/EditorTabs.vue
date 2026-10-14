@@ -369,7 +369,7 @@ function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
               v-if="decorationOf(tab)"
               data-testid="editor-tab-decoration"
               aria-hidden="true"
-              class="shrink-0 font-mono text-10 font-semibold"
+              class="shrink-0 text-11 font-semibold"
               :style="{ color: decorationOf(tab)!.color }"
               :title="decorationOf(tab)!.title"
             >

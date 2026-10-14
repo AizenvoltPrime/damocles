@@ -7,7 +7,7 @@ import { seedStubModel } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { selectedProjectKey, shellState } from './support/shell';
 import { addProject, chatInput, hostMessages, postFromWebview, recordHostMessages, sendAndAwaitEcho } from './support/ui';
-import { chatEntry, chatList, chatRow, clickChat, clickRowAction, listChats, projectKeyOf, projectRow, readyShell, renameInline } from './support/shell-ui';
+import { chatEntry, chatList, chatRow, clickChat, clickRowAction, clickSectionAction, listChats, projectKeyOf, projectRow, readyShell, renameInline, sectionAction } from './support/shell-ui';
 import { answerConfirm, answerTagPicker, confirmDialog, focusedMenuItem, overlayMenu, overlayViewState, readyOverlay } from './support/overlay';
 
 type RewindItem = { messageId: string; content: string };
@@ -40,7 +40,7 @@ const selectedChatId = async (app: ElectronApplication): Promise<string | undefi
 async function newStoredChat(app: ElectronApplication, shell: Page, prompt: string): Promise<string> {
   const before = await selectedChatId(app);
   if (!before?.startsWith('new:')) {
-    await shell.getByTestId('new-chat').click();
+    await clickSectionAction(shell, 'new-chat');
     await expect.poll(async () => {
       const id = await selectedChatId(app);
       return id !== before && id?.startsWith('new:');
@@ -67,7 +67,7 @@ async function loadedIds(app: ElectronApplication): Promise<string[]> {
   return (await listChats(app)).chats.filter((chat) => chat.loaded).map((chat) => chat.id);
 }
 
-test('chat retention: six stored chats keep at most the selected, the active and three idle chats loaded; a running chat stays loaded; an unloaded chat resumes with its history', async ({ home, launch }) => {
+test('chat retention: six stored chats keep at most the selected, the active and three idle chats loaded; a running chat stays loaded; an unloaded chat resumes with its history', async ({ foreground: _foreground, home, launch }) => {
   test.setTimeout(300_000);
   const stub = await startOpenAIStub();
   let release!: () => void;
@@ -194,7 +194,7 @@ test('sidebar edits: rename, tag and delete change the session files for loaded 
   }
 });
 
-test('chats across projects: per-chat model and thinking, fork with replayed history, and a restart that restores projects, selection and conversation', async ({ home, launch }) => {
+test('chats across projects: per-chat model and thinking, fork with replayed history, and a restart that restores projects, selection and conversation', async ({ foreground: _foreground, home, launch }) => {
   test.setTimeout(240_000);
   const stub = await startOpenAIStub();
   try {
@@ -267,7 +267,7 @@ test('the New button stays in place on hover, and enabled controls in the shell,
   const { app } = await launch();
   const shell = await openProject(app, home.project);
 
-  const newButton = shell.getByTestId('new-chat');
+  const newButton = await sectionAction(shell, 'new-chat');
   const before = await newButton.boundingBox();
   await newButton.hover();
   await expect(newButton).toHaveCSS('cursor', 'pointer');

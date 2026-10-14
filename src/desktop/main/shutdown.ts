@@ -7,6 +7,8 @@ export interface ShutdownSteps {
   readonly disposeTerminals: () => Promise<void>;
   // stops every file watch and settles once no native watcher work is running, which must not outlive the quit
   readonly closeWatchers: () => Promise<void>;
+  // closes main's IPC servers (askpass), whose POSIX socket folder is removed only once the close finishes
+  readonly closeServers: () => Promise<void>;
   // the share of timeoutMs closeWindows may take; the rest always goes to the dispose and the flush
   readonly closeTimeoutMs: number;
   readonly timeoutMs: number;
@@ -36,12 +38,12 @@ export async function bounded(work: Promise<unknown>, ms: number, onTimeout: () 
 /**
  * The quit's teardown once nothing can cancel it. The windows close first, so no page can call into a service being
  * disposed (VS Code's onWillShutdown fires only after the last window closed, lifecycleMainService.ts); then the core, the
- * terminals and the file watchers, and the stores last. Both the teardown and its wait for the windows are bounded, so a
+ * terminals, the file watchers and the IPC servers, and the stores last. Both the teardown and its wait for the windows are bounded, so a
  * hung step cannot block quitting and a request that never settles cannot skip the dispose and the flush.
  */
 export async function shutDown(steps: ShutdownSteps): Promise<void> {
   const closed = bounded(steps.closeWindows(), steps.closeTimeoutMs, () => steps.log(`[shutdown] the window's requests did not settle within ${steps.closeTimeoutMs} ms; disposing anyway`));
-  const disposed = closed.then(() => Promise.all([steps.disposeCore().finally(() => steps.flushStores()), steps.disposeTerminals(), steps.closeWatchers()]));
+  const disposed = closed.then(() => Promise.all([steps.disposeCore().finally(() => steps.flushStores()), steps.disposeTerminals(), steps.closeWatchers(), steps.closeServers()]));
   await bounded(disposed, steps.timeoutMs, () => steps.log(`[shutdown] teardown did not finish within ${steps.timeoutMs} ms; quitting anyway`));
 }
 

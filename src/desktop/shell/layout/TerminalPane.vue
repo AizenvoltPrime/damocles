@@ -9,7 +9,7 @@ import { MAX_TERMINAL_GROUP_PANES, type TerminalInfo } from '../../preload/termi
 import { groupPanes, TERMINAL_STORE } from '../terminal/terminal-store';
 import { terminalGlyph } from '../terminal/terminal-icons';
 import { isShiftF10, isXtermInput } from '../terminal/terminal-keys';
-import { openTabMenu, terminalStatusLabel } from '../terminal/terminal-menu';
+import { openTabMenu, terminalProjectLabel, terminalStatusLabel } from '../terminal/terminal-menu';
 import TerminalPanel from '../terminal/TerminalPanel.vue';
 import TerminalRename from '../terminal/TerminalRename.vue';
 import PaneGrip from './PaneGrip.vue';
@@ -31,16 +31,18 @@ const tab = ref<HTMLElement | null>(null);
 const newGroup = ref<HTMLElement | null>(null);
 const newMenuOpen = ref(false);
 // role="tab" makes the tab's content presentational, so it names itself without its Kill button's label.
-const tabLabel = computed(() => (active.value ? [active.value.title, active.value.description, active.value.projectName, terminalStatusLabel(active.value, t)].filter((part) => part).join(', ') : ''));
+const activeProject = computed(() => (active.value ? terminalProjectLabel(active.value, t) : ''));
+const tabLabel = computed(() => (active.value ? [active.value.title, active.value.description, activeProject.value, terminalStatusLabel(active.value, t)].filter((part) => part).join(', ') : ''));
 const canSplit = computed(() => active.value !== null && groupPanes(store.state.value, active.value.id) < MAX_TERMINAL_GROUP_PANES);
 
-// Shift+click starts the default profile in the current project; a plain click opens the new-terminal quick pick.
+// Shift+click starts the default profile in the current project, else the home folder; a plain click opens the new-terminal
+// quick pick.
 async function onNew(event: MouseEvent): Promise<void> {
   if (!event.shiftKey) {
     props.api.terminal.openNew();
     return;
   }
-  const result = await props.api.terminal.create({ profileId: null, projectKey: null });
+  const result = await props.api.terminal.create({ profileId: null, target: { current: true } });
   if (result.ok) store.requestFocus(result.id);
 }
 
@@ -93,8 +95,8 @@ function onTabKeydown(event: KeyboardEvent, terminal: TerminalInfo): void {
   event.preventDefault();
 }
 
-// The New Terminal button's dropdown (VS Code's launch profile menu): each detected shell starts in the current project,
-// and Select Default Profile... asks main's quick pick.
+// The New Terminal button's dropdown (VS Code's launch profile menu): each detected shell starts in the current project, else
+// the home folder, and Select Default Profile... asks main's quick pick.
 async function openNewMenu(): Promise<void> {
   const group = newGroup.value;
   const profiles = store.state.value?.profiles ?? [];
@@ -115,7 +117,7 @@ async function openNewMenu(): Promise<void> {
     }
     const profile = profiles.find((option) => `profile:${option.id}` === answer.itemId);
     if (!profile) return;
-    const result = await props.api.terminal.create({ profileId: profile.id, projectKey: null });
+    const result = await props.api.terminal.create({ profileId: profile.id, target: { current: true } });
     if (result.ok) store.requestFocus(result.id);
   } finally {
     newMenuOpen.value = false;
@@ -167,7 +169,7 @@ async function openNewMenu(): Promise<void> {
               tabindex="0"
               data-testid="terminal-tab"
               :data-terminal-id="active.id"
-              :title="[active.title, active.description, active.projectName].filter((part) => part).join(' · ')"
+              :title="[active.title, active.description, activeProject].filter((part) => part).join(' · ')"
               class="terminal-tab group/tab relative flex max-w-60 min-w-0 cursor-pointer items-center gap-1.75 border-x border-(--d-border) bg-(--d-bg) pr-1.5 pl-3 text-(--d-text) outline-none select-none"
               @click="focusTab(active.id)"
               @keydown="onTabKeydown($event, active)"
@@ -206,7 +208,7 @@ async function openNewMenu(): Promise<void> {
               <span
                 data-testid="terminal-tab-project"
                 class="shrink-0 truncate font-mono text-10.5 text-(--d-faint-text)"
-              >{{ active.projectName }}</span>
+              >{{ activeProject }}</span>
               <Button
                 variant="ghost"
                 size="icon"
@@ -238,7 +240,7 @@ async function openNewMenu(): Promise<void> {
               v-if="active.description"
               class="shrink-0 truncate text-10.5 text-(--d-muted)"
             >{{ active.description }}</span>
-            <span class="shrink-0 font-mono text-10.5 text-(--d-faint-text)">{{ active.projectName }}</span>
+            <span class="shrink-0 font-mono text-10.5 text-(--d-faint-text)">{{ activeProject }}</span>
             <span class="shrink-0 text-10.5 text-(--d-faint-text)">· {{ t('terminal.count', { count: terminals.length }, terminals.length) }}</span>
           </p>
         </Transition>
@@ -260,7 +262,7 @@ async function openNewMenu(): Promise<void> {
             data-testid="terminal-new"
             :disabled="!canCreate"
             :aria-label="t('terminal.new')"
-            :title="t('terminal.newTitle', { shortcut: state.shortcuts.newTerminal })"
+            :title="t(state.projects.length === 0 ? 'terminal.newTitleHome' : 'terminal.newTitle', { shortcut: state.shortcuts.newTerminal })"
             @click="onNew"
           >
             <Plus aria-hidden="true" />

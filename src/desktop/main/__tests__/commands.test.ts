@@ -25,9 +25,9 @@ const actions = new Proxy({} as MenuActions, {
 });
 
 const PROJECTS = [{ fsPath: 'C:\\work\\alpha', name: 'alpha' }] as never;
-const CHAT: MenuState = { chat: true, editor: false, browser: true, page: false, focus: 'chat', updateCheck: true, project: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE };
+const CHAT: MenuState = { chat: true, editor: false, browser: true, page: false, focus: 'chat', updateCheck: true, terminalCreate: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE };
 const EDITOR: MenuState = { ...CHAT, editor: true, focus: 'editor' };
-const NONE: MenuState = { chat: false, editor: false, browser: false, page: false, focus: undefined, updateCheck: false, project: false, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE };
+const NONE: MenuState = { chat: false, editor: false, browser: false, page: false, focus: undefined, updateCheck: false, terminalCreate: false, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE };
 const PLATFORMS = ['win32', 'linux', 'darwin'] as const;
 
 const en = createDesktopLocalizationService(process.cwd(), 'en', () => undefined);
@@ -37,8 +37,10 @@ function palette(l10n = en, platform: NodeJS.Platform = 'win32'): CommandPalette
   return new CommandPalette({ commands: () => desktopCommands(PROJECTS, actions, platform), l10n, english: en, platform, log: () => undefined });
 }
 
+// the force push commands leave the menu while allowForcePush is off, and Stash Staged below git 2.35, so the menu is
+// built with both on
 function menuItems(platform: NodeJS.Platform): MenuItemConstructorOptions[] {
-  installApplicationMenu(PROJECTS, actions, en, CHAT, platform);
+  installApplicationMenu(PROJECTS, actions, en, { ...CHAT, scm: { ...CHAT.scm, allowForcePush: true, stashStaged: true } }, platform);
   const flatten = (items: readonly MenuItemConstructorOptions[]): MenuItemConstructorOptions[] =>
     items.flatMap((item) => [item, ...(Array.isArray(item.submenu) ? flatten(item.submenu) : [])]);
   return flatten(electron.template);

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue';
 import { useI18n } from 'vue-i18n';
-import type { DamoclesOverlayApi, OverlayAnswer, OverlayRequest, OverlayState, PaletteCommand, QuickOpenResponse, QuickOpenScope } from '../../preload/overlay-channels';
+import type { DamoclesOverlayApi, InputBrowseResult, OverlayAnswer, OverlayRequest, OverlayState, PaletteCommand, QuickOpenResponse, QuickOpenScope } from '../../preload/overlay-channels';
 import type { ShellPlatform } from '../../preload/shell-channels';
 import { applyShellLocale } from '../i18n';
 import { answerOf } from './popup-answer';
@@ -136,6 +136,9 @@ function pickQuickOpen(id: string, itemId: string): void {
   answer(id, { kind: 'quickOpen', pick: { projectKey: result.projectKey, relativePath: result.relativePath, mention: response.mention, ...(line === undefined ? {} : { line }) } });
 }
 
+// An input box's folder button; undefined when main answered that the box closed.
+const browseInput = (value: string): Promise<InputBrowseResult | null | undefined> => answerOf(props.api.browseInput(value));
+
 function onKeydown(event: KeyboardEvent): void {
   const top = open.value[open.value.length - 1];
   if (event.key !== 'Escape' || !top || OWN_ESCAPE.has(top.request.kind)) return;
@@ -267,6 +270,7 @@ onBeforeUnmount(() => {
             v-else-if="entry.request.kind === 'input'"
             :request="entry.request"
             :platform="platform"
+            :browse="entry.request.browse ? browseInput : undefined"
             @answer="answer(entry.id, $event)"
           />
         </div>

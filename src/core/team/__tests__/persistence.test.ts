@@ -447,6 +447,28 @@ describe('TeamPersistence team state round trip', () => {
     expect(state?.agents.map(a => [a.name, a.dollarBilled])).toEqual([['lead', false], ['dev', true]]);
   });
 
+  it('shows the card label a spawn recorded, and none for a spawn written before labels', async () => {
+    const persistence = new TeamPersistence(join(DAMOCLES_HOME_DIR, 'team-description'), SESSION_ID);
+    persistence.initTeamFile(TEAM_ID);
+    persistence.appendTeamEntry({
+      type: 'team-created', teamId: TEAM_ID, title: 'Slice 3', toolUseId: 'tu-1',
+      agents: [{ name: 'old', role: 'specialist' }, { name: 'dev', role: 'specialist' }],
+      timestamp: '2026-08-26T00:00:00.000Z',
+    });
+    persistence.appendTeamEntry({
+      type: 'agent-spawned', teamId: TEAM_ID, agentId: AGENT_ID, name: 'old',
+      specialization: 'You are the implementor for a long task, described in full', model: 'opus', timestamp: '2026-08-26T00:00:01.000Z',
+    });
+    persistence.appendTeamEntry({
+      type: 'agent-spawned', teamId: TEAM_ID, agentId: 'agent-2', name: 'dev', description: 'Build the parser',
+      specialization: 'You are the implementor for a long task, described in full', model: 'opus', timestamp: '2026-08-26T00:00:02.000Z',
+    });
+
+    const state = await persistence.loadTeamState(TEAM_ID);
+
+    expect(state?.agents.map(a => [a.name, a.description])).toEqual([['old', null], ['dev', 'Build the parser']]);
+  });
+
   it('sums the usage of both attempts of a re-dispatched agent, taking its work fields from the last', async () => {
     // Every figure here is the one the observed run recorded for the specialist it cancelled and re-ran.
     const persistence = new TeamPersistence(join(DAMOCLES_HOME_DIR, 'team-redispatch'), SESSION_ID);

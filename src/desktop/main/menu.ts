@@ -73,8 +73,8 @@ export interface MenuState {
   readonly page: boolean;
   readonly focus: FocusPart | undefined;
   readonly updateCheck: boolean;
-  // a project is open, so a terminal can start
-  readonly project: boolean;
+  // a terminal can start (TerminalService.canCreate)
+  readonly terminalCreate: boolean;
   // the active terminal's status; undefined without a terminal
   readonly terminal: TerminalStatus | undefined;
   // the active terminal group has more than one pane (VS Code's splitTerminalActive)

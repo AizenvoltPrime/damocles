@@ -44,6 +44,9 @@ import type { UpdateSnapshot } from './updates';
 import {
   SCM_CHANNELS,
   type DamoclesScmApi,
+  type ScmArtifactsChanged,
+  type ScmArtifactsResult,
+  type ScmCloneState,
   type ScmCommitInput,
   type ScmCommitResult,
   type ScmDecorations,
@@ -110,7 +113,7 @@ const terminal: DamoclesTerminalApi = {
   onRequestPaste: (listener) => subscribe<{ id: string }>(TERMINAL_CHANNELS.requestPaste, (message) => listener(message.id)),
   onRevealInFiles: (listener) => subscribe<FileRef>(TERMINAL_CHANNELS.revealInFiles, listener),
   onRunAction: (listener) => subscribe<TerminalRunAction>(TERMINAL_CHANNELS.runAction, listener),
-  create: (request) => ipcRenderer.invoke(TERMINAL_CHANNELS.create, { profileId: request.profileId, projectKey: request.projectKey }) as Promise<TerminalCreateResult>,
+  create: (request) => ipcRenderer.invoke(TERMINAL_CHANNELS.create, { profileId: request.profileId, target: { ...request.target } }) as Promise<TerminalCreateResult>,
   openNew: () => {
     ipcRenderer.send(TERMINAL_CHANNELS.new);
   },
@@ -184,11 +187,14 @@ const scm: DamoclesScmApi = {
   onSettings: (listener) => subscribe<ScmSettings>(SCM_CHANNELS.settings, listener),
   onCommand: (listener) => subscribe<ScmShellCommand>(SCM_CHANNELS.command, listener),
   onSetInput: (listener) => subscribe<ScmSetInput>(SCM_CHANNELS.setInput, listener),
+  onClone: (listener) => subscribe<ScmCloneState>(SCM_CHANNELS.clone, listener),
+  onArtifactsChanged: (listener) => subscribe<ScmArtifactsChanged>(SCM_CHANNELS.artifactsChanged, listener),
+  artifacts: (request) => ipcRenderer.invoke(SCM_CHANNELS.artifacts, { repoId: request.repoId, group: request.group }) as Promise<ScmArtifactsResult>,
   select: (request) => ipcRenderer.invoke(SCM_CHANNELS.select, { projectKey: request.projectKey, repoId: request.repoId }) as Promise<void>,
   run: (request) => ipcRenderer.invoke(SCM_CHANNELS.run, plain(request)) as Promise<ScmRunResult>,
-  commit: (request) => ipcRenderer.invoke(SCM_CHANNELS.commit, { repoId: request.repoId, message: request.message, variant: plain(request.variant) }) as Promise<ScmCommitResult>,
+  commit: (request) => ipcRenderer.invoke(SCM_CHANNELS.commit, { repoId: request.repoId, message: request.message, variant: plain(request.variant), ...(request.postCommit !== undefined ? { postCommit: request.postCommit } : {}) }) as Promise<ScmCommitResult>,
   generateMessage: (repoId) => ipcRenderer.invoke(SCM_CHANNELS.generateMessage, { repoId }) as Promise<ScmGenerateResult>,
-  fileDiff: (request) => ipcRenderer.invoke(SCM_CHANNELS.fileDiff, { repoId: request.repoId, source: { kind: request.source.kind }, path: request.path }) as Promise<ScmFileDiffResult>,
+  fileDiff: (request) => ipcRenderer.invoke(SCM_CHANNELS.fileDiff, { repoId: request.repoId, source: plain(request.source), path: request.path }) as Promise<ScmFileDiffResult>,
   copy: (request) => ipcRenderer.invoke(SCM_CHANNELS.copy, { repoId: request.repoId, kind: request.kind, value: request.value }) as Promise<void>,
   commitInput: (repoId) => ipcRenderer.invoke(SCM_CHANNELS.commitInput, { repoId }) as Promise<ScmCommitInput>,
   reportAmend: (report) => ipcRenderer.invoke(SCM_CHANNELS.amend, { repoId: report.repoId, amending: report.amending }) as Promise<void>,
@@ -223,7 +229,7 @@ const api: DamoclesShellApi = {
     ipcRenderer.send(SHELL_CHANNELS.contentBounds, { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height });
   },
   reportSidebarLayout: (layout) => {
-    ipcRenderer.send(SHELL_CHANNELS.sidebarLayout, { sidebarWidth: layout.sidebarWidth, sections: layout.sections, search: layout.search });
+    ipcRenderer.send(SHELL_CHANNELS.sidebarLayout, { sidebarWidth: layout.sidebarWidth, sections: layout.sections, sectionOrder: layout.sectionOrder, search: layout.search, scm: layout.scm, repositories: layout.repositories });
   },
   reportGridSizes: (sizes) => {
     ipcRenderer.send(SHELL_CHANNELS.gridSizes, { sideWidth: sizes.sideWidth, bottomHeight: sizes.bottomHeight });

@@ -206,7 +206,7 @@ export class TeamPersistence implements TeamPersistenceWriter {
                 agentId: '',
                 name: spec.name,
                 role: spec.role as 'lead' | 'specialist',
-                specialization: '',
+                description: null,
                 model: spec.model ?? '',
                 profileId: null,
                 attempt: 0,
@@ -233,7 +233,7 @@ export class TeamPersistence implements TeamPersistenceWriter {
             const agent = agents.find(a => a.name === entry['name']);
             if (agent) {
               agent.agentId = entry['agentId'] as string;
-              agent.specialization = (entry['specialization'] as string) ?? '';
+              agent.description = typeof entry['description'] === 'string' ? entry['description'] : null;
               agent.model = (entry['model'] as string) ?? '';
               if (typeof entry['dollarBilled'] === 'boolean') agent.dollarBilled = entry['dollarBilled'];
               agent.profileId = (entry['profileId'] as string) ?? null;
@@ -311,6 +311,8 @@ export class TeamPersistence implements TeamPersistenceWriter {
             if (agent) {
               agent.status = entry['status'] as WebviewTeamAgent['status'];
               agent.progressSummary = null;
+              // A resumed member is live again, and only its next settle records a result.
+              agent.result = null;
               if (typeof entry['attempt'] === 'number') agent.attempt = entry['attempt'];
               agent.logFilePath = memberFiles.get(agent.agentId)?.find((f) => f.attempt === agent.attempt)?.path ?? null;
             }
@@ -563,6 +565,7 @@ export function parseTeamEventLog(teamId: string, content: string): TeamEventLog
           throw new TeamLogError(teamId, lineNo, '"reviews" is invalid');
         }
         const profileId = e['profileId'];
+        const description = e['description'];
         const name = str('name');
         lastResults.delete(name);
         spawns.push({
@@ -570,6 +573,7 @@ export function parseTeamEventLog(teamId: string, content: string): TeamEventLog
           name,
           role,
           specialization: str('specialization'),
+          description: isString(description) ? description : null,
           model: str('model'),
           dollarBilled: e['dollarBilled'] === true,
           profileId: isString(profileId) ? profileId : null,

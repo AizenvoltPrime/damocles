@@ -6,6 +6,7 @@ import {
   MAX_COMMAND_ID_LENGTH,
   MAX_OVERLAY_ID_LENGTH,
   MAX_OVERLAY_ITEMS,
+  MAX_MENU_ITEMS,
   MAX_OVERLAY_LABEL_LENGTH,
   MAX_OVERLAY_TAGS,
   MAX_MESSAGE_ACTIONS,
@@ -16,6 +17,10 @@ import {
   OVERLAY_CHANNELS,
   OVERLAY_CLIPBOARD_ACTIONS,
   OVERLAY_ICONS,
+  OVERLAY_QUICK_PICK_ICONS,
+  fitsQuickPick,
+  type OverlayQuickPickIcon,
+  type OverlayQuickPickItem,
   type OverlayAnswer,
   type OverlayClipboardAction,
   type OverlayIcon,
@@ -27,14 +32,18 @@ import {
   type OverlayRequest,
   type OverlayState,
   type PopupAnswer,
+  type InputBrowseResult,
   type InputRequest,
   parseInputAnswer,
   parseInputRequest,
+  parseValueSelection,
 } from '../preload/overlay-channels';
+import { MAX_INPUT_VALUE_LENGTH } from '../../shared/input-validation';
 import type { PanelTheme } from '../preload/panel-channels';
 import { TERMINAL_COLORS, TERMINAL_CUSTOM_ICONS, TERMINAL_ICONS, type TerminalColor, type TerminalGlyph } from '../preload/terminal-channels';
 import { DEFAULT_GRID_LAYOUT, GRID_PANES, GRID_SLOTS, MAX_EDITOR_LINE, MAX_TAG_LENGTH, type GridPane, type GridSlot } from '../preload/shell-channels';
 import { isRelativeFilePath } from '../../shared/relative-path';
+import { visibleText } from '../../shared/visible-text';
 import { validPng } from './notification-art';
 import { APP_ORIGIN, OVERLAY_PAGE_URL } from './protocol';
 import { loadAppPage, loggableUrl, mainFrameLoadFailed } from './security';
@@ -138,12 +147,14 @@ function parseMenuItem(raw: unknown): OverlayMenuItem | undefined {
   if (glyph !== undefined && !(typeof glyph === 'string' && GLYPHS.has(glyph))) return undefined;
   if (color !== undefined && !(TERMINAL_COLORS as readonly unknown[]).includes(color)) return undefined;
   if (shortcut !== undefined && !isText(shortcut, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
+  const disabledReason = field(raw, 'disabledReason');
   const danger = optionalFlag(raw, 'danger');
   const disabled = optionalFlag(raw, 'disabled');
   const checked = optionalFlag(raw, 'checked');
   const radio = optionalFlag(raw, 'radio');
   if (!danger.ok || !disabled.ok || !checked.ok || !radio.ok) return undefined;
   if (radio.value !== undefined && checked.value === undefined) return undefined;
+  if (disabledReason !== undefined && (disabled.value !== true || !isNonEmptyText(disabledReason, MAX_OVERLAY_LABEL_LENGTH))) return undefined;
   return {
     kind: 'item',
     id,
@@ -155,12 +166,13 @@ function parseMenuItem(raw: unknown): OverlayMenuItem | undefined {
     ...(shortcut !== undefined ? { shortcut } : {}),
     ...(danger.value !== undefined ? { danger: danger.value } : {}),
     ...(disabled.value !== undefined ? { disabled: disabled.value } : {}),
+    ...(disabledReason !== undefined ? { disabledReason } : {}),
     ...(checked.value !== undefined ? { checked: checked.value } : {}),
     ...(radio.value !== undefined ? { radio: radio.value } : {}),
   };
 }
 
-// A menu's items with one level of submenus. Every item at both levels counts against MAX_OVERLAY_ITEMS before a nested
+// A menu's items with one level of submenus. Every item at both levels counts against MAX_MENU_ITEMS before a nested
 // list is walked, ids are unique across levels, and a submenu holds no clipboard item, which askShellMenu checks only at
 // the top level.
 function parseMenuItems(rawItems: unknown): OverlayMenuItem[] | undefined {
@@ -186,7 +198,7 @@ function parseMenuItems(rawItems: unknown): OverlayMenuItem[] | undefined {
         if (icon !== undefined && !(typeof icon === 'string' && ICONS.has(icon))) return undefined;
         if (!Array.isArray(children) || children.length === 0) return undefined;
         total += children.length;
-        if (total > MAX_OVERLAY_ITEMS) return undefined;
+        if (children.length > MAX_OVERLAY_ITEMS || total > MAX_MENU_ITEMS) return undefined;
         const parsed = parseLevel(children as unknown[], true);
         if (!parsed) return undefined;
         items.push({ kind: 'submenu', id, label, ...(icon !== undefined ? { icon: icon as OverlayIcon } : {}), items: parsed });
@@ -322,6 +334,79 @@ export function parseOverlayRequest(raw: unknown): OverlayRequest | undefined {
   }
 }
 
+// Quick pick text can come from a repository (a ref name, a commit subject, a path), so its control and bidi characters show
+// as escapes, before the cut so the bound holds for the text shown.
+function shownText(value: unknown): string | undefined {
+  return typeof value === 'string' ? shownLabel(visibleText(value)) : undefined;
+}
+
+/**
+ * A quick pick main asks, within the overlay's bounds, or undefined. Labels, descriptions, hints and groups show their control
+ * and bidi characters as escapes; labels, descriptions and hints past their bound keep their tail behind '…' (a path keeps its
+ * folder name); a group's items must be contiguous, so the picker heads each group once.
+ */
+export function parseQuickPickRequest(placeholder: string, rawItems: readonly unknown[]): Extract<OverlayRequest, { kind: 'quickPick' }> | undefined {
+  if (!isNonEmptyText(placeholder, MAX_OVERLAY_LABEL_LENGTH) || rawItems.length === 0 || !fitsQuickPick(rawItems)) return undefined;
+  const ids = new Set<string>();
+  const groups = new Set<string>();
+  let lastGroup: string | undefined;
+  const items: OverlayQuickPickItem[] = [];
+  for (const raw of rawItems) {
+    if (!isRecord(raw)) return undefined;
+    const id = field(raw, 'id');
+    const label = shownText(field(raw, 'label'));
+    const description = field(raw, 'description');
+    const glyph = field(raw, 'glyph');
+    const color = field(raw, 'color');
+    const current = optionalFlag(raw, 'current');
+    const icon = field(raw, 'icon');
+    const hint = field(raw, 'hint');
+    const rawGroup = field(raw, 'group');
+    const group = typeof rawGroup === 'string' ? visibleText(rawGroup) : rawGroup;
+    const alwaysShow = field(raw, 'alwaysShow');
+    const echoQuery = field(raw, 'echoQuery');
+    const info = field(raw, 'info');
+    if (alwaysShow !== undefined && (alwaysShow !== true || group !== undefined)) return undefined;
+    if (echoQuery !== undefined && (echoQuery !== true || alwaysShow !== true)) return undefined;
+    if (info !== undefined && info !== true) return undefined;
+    if (!isNonEmptyText(id, MAX_OVERLAY_ID_LENGTH) || ids.has(id) || label === undefined || label === '' || !current.ok) return undefined;
+    if (description !== undefined && typeof description !== 'string') return undefined;
+    if (glyph !== undefined && !(typeof glyph === 'string' && GLYPHS.has(glyph))) return undefined;
+    if (color !== undefined && !(TERMINAL_COLORS as readonly unknown[]).includes(color)) return undefined;
+    if (icon !== undefined && !(OVERLAY_QUICK_PICK_ICONS as readonly unknown[]).includes(icon)) return undefined;
+    if (hint !== undefined && !(typeof hint === 'string' && hint !== '')) return undefined;
+    if (group !== undefined && !isNonEmptyText(group, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
+    if (group !== lastGroup) {
+      if (group !== undefined && groups.has(group)) return undefined;
+      if (group !== undefined) groups.add(group);
+      lastGroup = group;
+    }
+    ids.add(id);
+    items.push({
+      id,
+      label,
+      ...(description !== undefined && description !== '' ? { description: shownText(description)! } : {}),
+      ...(glyph !== undefined ? { glyph: glyph as TerminalGlyph } : {}),
+      ...(color !== undefined ? { color: color as TerminalColor } : {}),
+      ...(current.value === true ? { current: true } : {}),
+      ...(icon !== undefined ? { icon: icon as OverlayQuickPickIcon } : {}),
+      ...(hint !== undefined ? { hint: shownText(hint)! } : {}),
+      ...(group !== undefined ? { group } : {}),
+      ...(alwaysShow === true ? { alwaysShow: true as const } : {}),
+      ...(echoQuery === true ? { echoQuery: true as const } : {}),
+      ...(info === true ? { info: true as const } : {}),
+    });
+  }
+  return { kind: 'quickPick', placeholder, items };
+}
+
+/** The box's current value an inputBrowse call carries, exactly `{ value }`; throws on anything else. */
+export function parseBrowseCall(raw: unknown): string {
+  const value = isRecord(raw) && Object.keys(raw).length === 1 ? field(raw, 'value') : undefined;
+  if (!isText(value, MAX_INPUT_VALUE_LENGTH)) throw new Error('Malformed input browse call');
+  return value;
+}
+
 function isIndexBelow(value: unknown, length: number): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value < length;
 }
@@ -404,12 +489,15 @@ export function parseOverlayAnswer(raw: unknown, request: OverlayRequest): Overl
   if (request.kind === 'newTerminal') {
     const profileId = field(raw, 'profileId');
     const projectKey = field(raw, 'projectKey');
-    const offered = request.profiles.some((profile) => profile.id === profileId) && request.projects.some((project) => project.key === projectKey);
-    return offered ? { kind: 'newTerminal', profileId: profileId as string, projectKey: projectKey as string } : undefined;
+    const projectOffered = projectKey === null ? request.projects.length === 0 : request.projects.some((project) => project.key === projectKey);
+    const offered = request.profiles.some((profile) => profile.id === profileId) && projectOffered;
+    return offered ? { kind: 'newTerminal', profileId: profileId as string, projectKey: projectKey as string | null } : undefined;
   }
   if (request.kind === 'quickPick') {
     const itemId = field(raw, 'itemId');
-    return request.items.some((item) => item.id === itemId) ? { kind: 'quickPick', itemId: itemId as string } : undefined;
+    const query = field(raw, 'query');
+    if (!isText(query, MAX_INPUT_VALUE_LENGTH)) return undefined;
+    return request.items.some((item) => item.id === itemId && !item.info) ? { kind: 'quickPick', itemId: itemId as string, query } : undefined;
   }
   if (request.kind === 'input') {
     const value = parseInputAnswer(raw, request, { windows: process.platform === 'win32' });
@@ -425,11 +513,21 @@ export function parseOverlayAnswer(raw: unknown, request: OverlayRequest): Overl
   return isTag(tag) ? { kind: 'tagPicker', tag: tag.trim() } : undefined;
 }
 
-/** Asks for a line of text in the overlay's QuickInput; resolves the value, or undefined for Escape or when it cannot ask. */
-export type AskInput = (request: InputRequest) => Promise<string | undefined>;
+/** What a box's browse button does in main: the box's new value from the current one, or undefined to leave it as it is. */
+export type InputBrowseHandler = (value: string) => Promise<InputBrowseResult | undefined>;
+
+// An input request as main's flows ask it: its browse button carries the handler main keeps and never sends.
+export type AskInputRequest = Omit<InputRequest, 'browse'> & { readonly browse?: { readonly tooltip: string; readonly pick: InputBrowseHandler } };
+
+/**
+ * Asks for a line of text in the overlay's QuickInput; resolves the value, or undefined for Escape, when it cannot ask, or once
+ * signal aborts, which withdraws the box.
+ */
+export type AskInput = (request: AskInputRequest, signal?: AbortSignal) => Promise<string | undefined>;
 
 export interface InputOverlay {
-  request(request: OverlayRequest, returnFocus: WebContents | undefined): Promise<OverlayAnswer>;
+  request(request: OverlayRequest, returnFocus: WebContents | undefined, shown?: () => void, browse?: InputBrowseHandler): Promise<OverlayAnswer>;
+  dismiss(kind: OverlayRequest['kind']): void;
 }
 
 export interface InputAskerDeps {
@@ -448,11 +546,59 @@ export interface InputAskerDeps {
  * validation kind, so a value the overlay should have refused never reaches the caller: the request settles dismissed.
  */
 export function createInputAsker(deps: InputAskerDeps): AskInput {
-  return async (input) => {
-    const request = parseInputRequest({ ...input, kind: 'input' });
+  return async ({ browse, ...input }, signal) => {
+    if (signal?.aborted) return undefined;
+    const request = parseInputRequest({ ...input, ...(browse ? { browse: { tooltip: browse.tooltip } } : {}), kind: 'input' });
     const overlay = deps.overlay();
     if (!request || !overlay) {
       deps.log(`[input] ${request ? 'no overlay to ask in' : 'the request exceeds the overlay bounds'}; nothing asked`);
+      deps.unavailable();
+      return undefined;
+    }
+    // one box shows at a time, so the open input request is this one
+    const withdraw = (): void => overlay.dismiss('input');
+    signal?.addEventListener('abort', withdraw, { once: true });
+    let answer: OverlayAnswer;
+    try {
+      answer = await overlay.request(request, deps.focused(), undefined, browse?.pick);
+    } catch (err) {
+      deps.log(`[input] the overlay could not ask (${err instanceof Error ? err.message : String(err)})`);
+      deps.unavailable();
+      return undefined;
+    } finally {
+      signal?.removeEventListener('abort', withdraw);
+    }
+    return answer.kind === 'input' && !signal?.aborted ? answer.value : undefined;
+  };
+}
+
+/** Asks a quick pick in the overlay; resolves the picked id and the filter text as typed, or undefined for Escape or when it cannot ask. */
+export type AskQuickPick = (placeholder: string, items: readonly unknown[]) => Promise<{ readonly id: string; readonly query: string } | undefined>;
+
+export interface QuickPickAskerDeps {
+  // undefined while no window holds an overlay
+  readonly overlay: () => InputOverlay | undefined;
+  // where keyboard focus returns once the list closes
+  readonly focused: () => WebContents | undefined;
+  // the list could not show (no overlay, a failed page, a malformed request); the caller tells the user
+  readonly unavailable: () => void;
+  // the list is past fitsQuickPick's bounds, which asking again cannot change; the caller tells the user
+  readonly tooLarge: () => void;
+  readonly log: (line: string) => void;
+}
+
+/** The quick pick asker main's flows use; like the QuickInput asker it settles every failure here, telling the user once. */
+export function createQuickPickAsker(deps: QuickPickAskerDeps): AskQuickPick {
+  return async (placeholder, items) => {
+    const overlay = deps.overlay();
+    if (!fitsQuickPick(items)) {
+      deps.log(`[quick pick] ${items.length} items exceed the overlay's bounds; nothing asked`);
+      deps.tooLarge();
+      return undefined;
+    }
+    const request = parseQuickPickRequest(placeholder, items);
+    if (!request || !overlay) {
+      deps.log(`[quick pick] ${request ? 'no overlay to ask in' : 'the request is malformed'}; nothing asked`);
       deps.unavailable();
       return undefined;
     }
@@ -460,11 +606,11 @@ export function createInputAsker(deps: InputAskerDeps): AskInput {
     try {
       answer = await overlay.request(request, deps.focused());
     } catch (err) {
-      deps.log(`[input] the overlay could not ask (${err instanceof Error ? err.message : String(err)})`);
+      deps.log(`[quick pick] the overlay could not ask (${err instanceof Error ? err.message : String(err)})`);
       deps.unavailable();
       return undefined;
     }
-    return answer.kind === 'input' ? answer.value : undefined;
+    return answer.kind === 'quickPick' ? { id: answer.itemId, query: answer.query } : undefined;
   };
 }
 
@@ -495,6 +641,10 @@ interface OpenRequest {
   readonly resolve: (answer: OverlayAnswer) => void;
   readonly reject: (err: Error) => void;
   readonly shown: (() => void) | undefined;
+  // an input request's browse button
+  readonly browse: InputBrowseHandler | undefined;
+  // its browse handler is running, so a second call shows no second dialog
+  browsing: boolean;
   readonly sentAt: number;
   cancelAckDeadline: (() => void) | undefined;
   acknowledgedAt: number | undefined;
@@ -506,6 +656,8 @@ interface HeldRequest {
   readonly request: OverlayRequest;
   readonly returnFocus: WebContents | undefined;
   readonly shown: (() => void) | undefined;
+  readonly browse: InputBrowseHandler | undefined;
+  readonly signal: AbortSignal | undefined;
   readonly resolve: (answer: OverlayAnswer) => void;
   readonly reject: (err: Error) => void;
 }
@@ -572,6 +724,31 @@ export class OverlayHost {
     deps.window.on('resize', this.onResize);
 
     this.handle(OVERLAY_CHANNELS.getState, () => this.deps.state());
+    // The native dialog a browse handler shows takes keyboard focus, so the overlay takes it back for the box, as a request
+    // does: at once while the window is focused, else once it activates. The page is untrusted, so a call while the handler
+    // runs answers null rather than stack a second dialog.
+    this.handleWhileOpen(OVERLAY_CHANNELS.inputBrowse, () => this.isOpen('input'), async (raw): Promise<InputBrowseResult | null> => {
+      const value = parseBrowseCall(raw);
+      const open = this.open.find((entry) => entry.request.kind === 'input');
+      if (!open?.browse || open.browsing) return null;
+      open.browsing = true;
+      let result: InputBrowseResult | undefined;
+      try {
+        result = await open.browse(value);
+      } finally {
+        open.browsing = false;
+      }
+      if (!this.open.includes(open)) return null;
+      if (this.deps.window.isFocused()) this.focus();
+      else this.deps.awaitActivation();
+      if (!result) return null;
+      const valueSelection = result.valueSelection === undefined ? undefined : parseValueSelection(result.valueSelection, result.value.length);
+      if (result.value.length > MAX_INPUT_VALUE_LENGTH || (result.valueSelection !== undefined && !valueSelection)) {
+        this.deps.log('[overlay] a browse result exceeds the input bounds; the box is left as it is');
+        return null;
+      }
+      return { value: result.value, ...(valueSelection ? { valueSelection } : {}) };
+    });
     this.on(OVERLAY_CHANNELS.ack, (requestId) => {
       const open = this.openById(requestId);
       if (!open || open.acknowledgedAt !== undefined) return;
@@ -723,13 +900,14 @@ export class OverlayHost {
    * Shows a validated popup and resolves with the user's answer; a request made while the page loads waits for it. Rejects
    * when no page is loaded or loading, or the page misses the OVERLAY_ACK_TIMEOUT_MS acknowledgement, crashes, reloads or
    * fails to load; `shown` runs once the overlay has rendered it. Focus returns to returnFocus once every open request has
-   * closed.
+   * closed. An aborted signal withdraws this request alone: it settles dismissed and closes in the page.
    */
-  request(request: OverlayRequest, returnFocus: WebContents | undefined, shown?: () => void): Promise<OverlayAnswer> {
+  request(request: OverlayRequest, returnFocus: WebContents | undefined, shown?: () => void, browse?: InputBrowseHandler, signal?: AbortSignal): Promise<OverlayAnswer> {
+    if (signal?.aborted) return Promise.resolve({ kind: 'dismissed' });
     if (this.disposed || this.page === 'none' || this.view.webContents.isDestroyed()) {
       return Promise.reject(new Error('The overlay is not available'));
     }
-    if (this.page === 'loading' || this.navigating) return this.hold(request, returnFocus, shown);
+    if (this.page === 'loading' || this.navigating) return this.hold(request, returnFocus, shown, browse, signal);
     if (this.view.webContents.isCrashed()) return Promise.reject(new Error('The overlay is not available'));
     // Focus returns where it was before the first of the requests that are open together.
     if (this.open.length === 0) this.returnFocus = returnFocus === this.view.webContents ? undefined : returnFocus;
@@ -737,7 +915,28 @@ export class OverlayHost {
       for (const previous of this.open.filter((entry) => entry.request.kind !== 'message')) this.settle(previous, { kind: 'dismissed' }, { keepFocus: true });
     }
     return new Promise<OverlayAnswer>((resolve, reject) => {
-      const open: OpenRequest = { id: randomUUID(), request, resolve, reject, shown, sentAt: Date.now(), cancelAckDeadline: undefined, acknowledgedAt: undefined, shownAt: undefined };
+      const withdraw = (): void => this.withdraw(open);
+      const detach = (): void => signal?.removeEventListener('abort', withdraw);
+      const open: OpenRequest = {
+        id: randomUUID(),
+        request,
+        resolve: (answer) => {
+          detach();
+          resolve(answer);
+        },
+        reject: (err) => {
+          detach();
+          reject(err);
+        },
+        shown,
+        browse,
+        browsing: false,
+        sentAt: Date.now(),
+        cancelAckDeadline: undefined,
+        acknowledgedAt: undefined,
+        shownAt: undefined,
+      };
+      signal?.addEventListener('abort', withdraw, { once: true });
       open.cancelAckDeadline = tickDeadline(OVERLAY_ACK_TIMEOUT_MS, () => {
         if (!this.open.includes(open)) return;
         this.deps.log(`[overlay] the overlay did not acknowledge a ${request.kind} request within ${OVERLAY_ACK_TIMEOUT_MS} ms; hiding it`);
@@ -751,7 +950,7 @@ export class OverlayHost {
     });
   }
 
-  /** Its window is closing: every open or held request of `kind` settles as dismissed, an open one closing in the page. */
+  /** Every open or held request of `kind` settles as dismissed, an open one closing in the page: its window closes, or its asker withdrew it. */
   dismiss(kind: OverlayRequest['kind']): void {
     const held = this.held.filter((entry) => entry.request.kind === kind);
     this.held = this.held.filter((entry) => entry.request.kind !== kind);
@@ -759,6 +958,13 @@ export class OverlayHost {
     const dismissed = this.open.filter((entry) => entry.request.kind === kind);
     if (dismissed.length === 0) return;
     for (const open of dismissed) this.settle(open, { kind: 'dismissed' }, { keepFocus: true });
+    this.applyMode();
+  }
+
+  // One request settles dismissed and closes in the page; dismiss(kind) would also close another of its kind, such as an unrelated question.
+  private withdraw(open: OpenRequest): void {
+    if (!this.open.includes(open)) return;
+    this.settle(open, { kind: 'dismissed' }, { keepFocus: true });
     this.applyMode();
   }
 
@@ -829,21 +1035,27 @@ export class OverlayHost {
   }
 
   // Held as they would be open: a later request dismisses every earlier one but a message dialog.
-  private hold(request: OverlayRequest, returnFocus: WebContents | undefined, shown: (() => void) | undefined): Promise<OverlayAnswer> {
+  private hold(request: OverlayRequest, returnFocus: WebContents | undefined, shown: (() => void) | undefined, browse: InputBrowseHandler | undefined, signal: AbortSignal | undefined): Promise<OverlayAnswer> {
     if (request.kind !== 'message') {
       const replaced = this.held.filter((entry) => entry.request.kind !== 'message');
       this.held = this.held.filter((entry) => entry.request.kind === 'message');
       for (const entry of replaced) entry.resolve({ kind: 'dismissed' });
     }
     return new Promise<OverlayAnswer>((resolve, reject) => {
-      this.held = [...this.held, { request, returnFocus, shown, resolve, reject }];
+      const entry: HeldRequest = { request, returnFocus, shown, browse, signal, resolve, reject };
+      this.held = [...this.held, entry];
+      signal?.addEventListener('abort', () => {
+        if (!this.held.includes(entry)) return;
+        this.held = this.held.filter((held) => held !== entry);
+        resolve({ kind: 'dismissed' });
+      }, { once: true });
     });
   }
 
   private sendHeld(): void {
     const held = this.held;
     this.held = [];
-    for (const entry of held) this.request(entry.request, entry.returnFocus, entry.shown).then(entry.resolve, entry.reject);
+    for (const entry of held) this.request(entry.request, entry.returnFocus, entry.shown, entry.browse, entry.signal).then(entry.resolve, entry.reject);
   }
 
   private failHeld(err: Error): void {

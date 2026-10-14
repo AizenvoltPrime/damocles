@@ -25,7 +25,7 @@ import {
   WINDOW_LAYOUT_FILE,
   WindowLayoutStore,
 } from '../window-layout-store';
-import { DEFAULT_GRID_LAYOUT, moveGridPane, toggleGridMaximize, toggleGridPane } from '../../preload/shell-channels';
+import { DEFAULT_GRID_LAYOUT, MAX_REPOSITORY_ROW_ID_LENGTH, MAX_REPOSITORY_VIEW_CHARS, moveGridPane, toggleGridMaximize, toggleGridPane } from '../../preload/shell-channels';
 import { TERMINAL_LIST_DEFAULT_REM, TERMINAL_LIST_MAX_REM, TERMINAL_LIST_MIN_REM } from '../../preload/terminal-channels';
 import { DEFAULT_PERSISTED_TERMINALS } from '../terminal/terminal-service';
 import { flushAcrossHeldRename } from '../../../__mocks__/held-rename';
@@ -139,9 +139,78 @@ describe('parseShellLayout', () => {
 // Each shell part reports only its own fields, so neither report can carry a stale copy of the other's.
 describe('shell reports', () => {
   it('reads the sidebar\'s fields alone from a report', () => {
-    const { sidebarWidth, sections, search, scm } = DEFAULT_SHELL_LAYOUT;
-    expect(parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, sidebarVisible: false })).toEqual({ sidebarWidth, sections, search, scm });
+    const { sidebarWidth, sections, sectionOrder, search, scm, repositories } = DEFAULT_SHELL_LAYOUT;
+    expect(parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, sidebarVisible: false })).toEqual({ sidebarWidth, sections, sectionOrder, search, scm, repositories });
     expect(parseSidebarLayout({ sidebarWidth: 100, sections, search })).toBeUndefined();
+  });
+
+  it('keeps the section order the user chose across a relaunch, and refuses one that does not name every section once', async () => {
+    const moved = ['scm', 'projects', 'files', 'chats', 'search', 'repos'] as const;
+    expect(parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, sectionOrder: moved })?.sectionOrder).toEqual(moved);
+    for (const malformed of [['scm', 'scm', 'files', 'chats', 'search', 'repos'], ['scm', 'projects', 'files', 'chats', 'search'], [...moved, 'terminal'], ['scm', 'projects', 'files', 'chats', 'search', 'other'], 'scm']) {
+      expect(parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, sectionOrder: malformed })).toBeUndefined();
+      expect(parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, sectionOrder: malformed }, log)?.sectionOrder).toEqual(DEFAULT_SHELL_LAYOUT.sectionOrder);
+    }
+    expect(lines).toContain('[layout] dropping the malformed section order');
+    // a layout written before sections could move keeps the default order
+    const { sectionOrder: _order, ...older } = DEFAULT_SHELL_LAYOUT;
+    expect(parseSidebarLayout(older)?.sectionOrder).toEqual(['projects', 'chats', 'files', 'scm', 'repos', 'search']);
+
+    lines = [];
+    const store = new WindowLayoutStore(dir, log);
+    store.setSidebar({ ...DEFAULT_SHELL_LAYOUT, sectionOrder: moved });
+    await store.flush();
+    expect(new WindowLayoutStore(dir, log).sidebar().sectionOrder).toEqual(moved);
+    // Restore default layout puts the sections back
+    store.reset();
+    await store.flush();
+    expect(new WindowLayoutStore(dir, log).sidebar().sectionOrder).toEqual(DEFAULT_SHELL_LAYOUT.sectionOrder);
+    expect(lines).toEqual([]);
+  });
+
+  it('keeps each project\'s expanded Repositories rows, bounded, and drops a malformed entry alone', () => {
+    const rows = ['["group","","branches"]', '["folder","","branches","feat"]'];
+    const layout = parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, repositories: { p1: rows, p2: 'x', p3: [1], '': rows, p4: Array.from({ length: 501 }, (_, i) => String(i)), p5: ['x'.repeat(2049)], p6: [''] } }, log);
+    expect(layout?.repositories).toEqual({ p1: rows });
+    // a report from the shell with a malformed field is refused whole; a file falls back to no expanded rows
+    expect(parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, repositories: [] })).toBeUndefined();
+    expect(parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, repositories: [] }, log)?.repositories).toEqual({});
+    expect(lines).toContain('[layout] dropping the malformed Repositories expanded rows');
+    // a layout written before the section existed opens it collapsed
+    const { repos: _repos, ...older } = DEFAULT_SHELL_LAYOUT.sections;
+    expect(parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, sections: older })?.sections.repos).toEqual({ collapsed: true, size: 220 });
+  });
+
+  it('takes the shell\'s expanded rows only whole within their bounds, and trims a file to the newest projects', () => {
+    const projects = (count: number, rows: readonly string[] = ['["group","","tags"]']) => Object.fromEntries(Array.from({ length: count }, (_, index) => [`p${index}`, rows]));
+    const report = (repositories: unknown) => parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, repositories });
+    expect(report(projects(100))?.repositories).toEqual(projects(100));
+    // the shell bounds every report it sends, so one past a bound is refused whole, as a malformed field is
+    expect(report(projects(101))).toBeUndefined();
+    expect(report({ p1: ['["group","","tags"]', 'x'.repeat(MAX_REPOSITORY_ROW_ID_LENGTH + 1)] })).toBeUndefined();
+    // 500 ids of 2048 characters keep a project's bounds, never the character budget
+    const long = Array.from({ length: 500 }, (_, index) => `${index}`.padEnd(MAX_REPOSITORY_ROW_ID_LENGTH, 'x'));
+    expect(report({ p1: long })).toBeUndefined();
+
+    // the file keeps the newest 100 projects and the newest ids that fit, and logs what it drops
+    const read = parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, repositories: projects(101) }, log)?.repositories;
+    expect(Object.keys(read ?? {})).toEqual(Object.keys(projects(101)).slice(1));
+    const trimmed = parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, repositories: { old: ['["group","","tags"]'], p1: long } }, log)?.repositories;
+    expect(Object.keys(trimmed ?? {})).toEqual(['p1']);
+    expect(trimmed?.['p1']).toEqual(long.slice(-Math.floor((MAX_REPOSITORY_VIEW_CHARS - 2) / MAX_REPOSITORY_ROW_ID_LENGTH)));
+    expect(lines.filter((line) => line === '[layout] dropping the oldest Repositories expanded rows past the layout\'s bounds')).toHaveLength(2);
+  });
+
+  it('keeps a project keyed "__proto__" as an entry of the Search states and expanded rows, never as their prototype', () => {
+    const view = { pattern: 'a', isRegex: false, matchCase: false, wholeWord: false, useExcludeSettingsAndIgnoreFiles: true, replaceOpen: false, include: '', exclude: '' };
+    // JSON.parse defines "__proto__" as an own key, as reading the file does
+    const search: unknown = JSON.parse(`{"__proto__":${JSON.stringify(view)}}`);
+    const repositories: unknown = JSON.parse('{"__proto__":["a"],"p1":[]}');
+    const layout = parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, search, repositories });
+    expect(Object.getPrototypeOf(layout?.repositories)).toBe(Object.prototype);
+    expect(Object.keys(layout?.repositories ?? {})).toEqual(['__proto__', 'p1']);
+    expect(Object.getPrototypeOf(layout?.search)).toBe(Object.prototype);
+    expect(Object.keys(layout?.search ?? {})).toEqual(['__proto__']);
   });
 
   it('reads the grid\'s sash sizes alone from a report and rejects one out of range', () => {
@@ -180,10 +249,12 @@ describe('grid layout', () => {
     writeFile({ version: 1, sidebar: v1Sidebar });
     expect(new WindowLayoutStore(dir, log).sidebar()).toEqual({
       ...v1Sidebar,
-      sections: { ...v1Sidebar.sections, files: DEFAULT_SHELL_LAYOUT.sections.files, search: DEFAULT_SHELL_LAYOUT.sections.search, scm: DEFAULT_SHELL_LAYOUT.sections.scm },
+      sections: { ...v1Sidebar.sections, files: DEFAULT_SHELL_LAYOUT.sections.files, search: DEFAULT_SHELL_LAYOUT.sections.search, repos: DEFAULT_SHELL_LAYOUT.sections.repos, scm: DEFAULT_SHELL_LAYOUT.sections.scm },
+      sectionOrder: DEFAULT_SHELL_LAYOUT.sectionOrder,
       grid: DEFAULT_GRID_LAYOUT,
       search: {},
       scm: DEFAULT_SHELL_LAYOUT.scm,
+      repositories: {},
     });
     expect(lines).toEqual([]);
   });
@@ -444,6 +515,11 @@ describe('saved terminals', () => {
     expect(lines.filter((line) => line === '[layout] dropping a malformed terminal')).toHaveLength(3);
     expect(parsePersistedTerminals({ terminals: [], active: 0, listWidthRem: 0 }, log)).toEqual({ terminals: [], active: null, listWidthRem: TERMINAL_LIST_MIN_REM, groups: [] });
     expect(parsePersistedTerminals('x', log)).toEqual(DEFAULT_PERSISTED_TERMINALS);
+  });
+
+  it('keeps a home folder terminal, whose project key is null', () => {
+    const parsed = parsePersistedTerminals({ terminals: [{ profileId: 'pwsh', projectKey: null }, { profileId: 'cmd', projectKey: 7 }], active: 0, listWidthRem: 12 }, log);
+    expect(parsed.terminals).toEqual([{ profileId: 'pwsh', projectKey: null, name: null, customIcon: null, color: null }]);
   });
 
   it('drops a stored name, icon or color main would refuse now, and keeps the terminal', () => {

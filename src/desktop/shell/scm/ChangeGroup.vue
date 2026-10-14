@@ -1,23 +1,43 @@
 <script setup lang="ts">
+import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { ChevronRight, GitCompare, Minus, Plus, Undo2 } from 'lucide-vue-next';
+import { Archive, ChevronRight, GitCompare, Minus, Plus, Undo2 } from 'lucide-vue-next';
 import type { Component } from 'vue';
 import { Button } from '@/components/ui/button';
 import type { GroupInlineAction } from './scm-menus';
 import type { ScmRow } from './scm-list';
 
-defineProps<{
-  row: Extract<ScmRow, { kind: 'group' }>;
+const props = defineProps<{
+  row: Extract<ScmRow, { kind: 'group' | 'stashGroup' }>;
   id: string;
   current: boolean;
   height: number;
   actions: readonly GroupInlineAction[];
   busy: boolean;
+  // grows each time the count rose live, so the number bumps; a mount by scroll plays nothing
+  bump?: number | undefined;
 }>();
 const emit = defineEmits<{ toggle: []; action: [action: GroupInlineAction['action']]; menu: [event: MouseEvent]; focus: [] }>();
 const { t } = useI18n();
 
-const ACTION_ICONS: Readonly<Record<GroupInlineAction['icon'], Component>> = { 'git-compare': GitCompare, plus: Plus, minus: Minus, 'undo-2': Undo2 };
+const ACTION_ICONS: Readonly<Record<GroupInlineAction['icon'], Component>> = { 'git-compare': GitCompare, plus: Plus, minus: Minus, 'undo-2': Undo2, archive: Archive };
+
+const name = computed(() => t(`scm.group.${props.row.kind === 'stashGroup' ? 'stashes' : props.row.group}`));
+const groupId = computed(() => (props.row.kind === 'stashGroup' ? 'stashes' : props.row.group));
+
+// Restarted across a reflow, so a bump that lands while the last one still plays replays it.
+const count = ref<HTMLElement | null>(null);
+watch(() => props.bump, () => {
+  const element = count.value;
+  if (!element) return;
+  element.classList.remove('d-count-bump');
+  void element.offsetWidth;
+  element.classList.add('d-count-bump');
+}, { flush: 'post' });
+
+function endBump(event: AnimationEvent): void {
+  if (event.target === event.currentTarget) (event.currentTarget as HTMLElement).classList.remove('d-count-bump');
+}
 </script>
 
 <template>
@@ -26,12 +46,12 @@ const ACTION_ICONS: Readonly<Record<GroupInlineAction['icon'], Component>> = { '
     role="treeitem"
     :data-row-key="row.key"
     data-testid="scm-group"
-    :data-group="row.group"
+    :data-group="groupId"
     aria-level="1"
     :aria-posinset="row.position"
     :aria-setsize="row.setSize"
     :aria-expanded="row.expanded"
-    :aria-label="t('scm.groupAria', { name: t(`scm.group.${row.group}`), count: row.count })"
+    :aria-label="row.count === null ? name : t('scm.groupAria', { name, count: row.count })"
     :tabindex="current ? 0 : -1"
     class="flex cursor-pointer items-center gap-1.5 rounded-6 pr-1 pl-0.5 outline-none select-none focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent)]"
     :style="{ height: `${height}px` }"
@@ -46,9 +66,14 @@ const ACTION_ICONS: Readonly<Record<GroupInlineAction['icon'], Component>> = { '
     />
     <span
       class="truncate text-11.5 font-semibold"
-      :class="row.group === 'merge' ? 'text-(--d-danger-text)' : 'text-(--d-muted)'"
-    >{{ t(`scm.group.${row.group}`) }}</span>
-    <span class="relative inline-flex font-mono text-11.5 text-(--d-faint) tabular-nums">
+      :class="groupId === 'merge' ? 'text-(--d-danger-text)' : 'text-(--d-muted)'"
+    >{{ name }}</span>
+    <span
+      v-if="row.count !== null"
+      ref="count"
+      class="relative inline-flex font-mono text-11.5 text-(--d-faint) tabular-nums"
+      @animationend="endBump"
+    >
       <Transition
         name="t-swap"
         mode="out-in"

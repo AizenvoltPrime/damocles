@@ -1,12 +1,14 @@
 import { createHash } from 'crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 // @ts-expect-error -- plain .mjs script, no types
 import {
+  ASKPASS_SCRIPTS,
   checkAppUpdate,
   checkAsarEntries,
+  checkAskpassScripts,
   checkChangelog,
   checkFuses,
   checkNodePtyLayout,
@@ -152,6 +154,28 @@ describe('checkShellIntegrationScripts', () => {
   });
 });
 
+describe('checkAskpassScripts', () => {
+  const lf = Buffer.from('#!/bin/sh\nexec x\n');
+  const mode = (value: number) => () => ({ mode: value });
+  it('requires both scripts, LF and exactly 0755 where modes are kept', () => {
+    expect(failures(checkAskpassScripts(() => lf, mode(0o100755), true))).toEqual([]);
+    expect(failures(checkAskpassScripts(() => lf, mode(0o100644), false))).toEqual([]);
+    expect(failures(checkAskpassScripts(() => lf, mode(0o100644), true))).toEqual(['askpass mode']);
+    expect(failures(checkAskpassScripts(() => lf, mode(0o100775), true))).toEqual(['askpass mode']);
+    expect(failures(checkAskpassScripts((file: string) => (file === 'ssh-askpass.sh' ? undefined : lf), () => undefined, true))).toEqual(['askpass scripts']);
+    expect(failures(checkAskpassScripts(() => Buffer.from('#!/bin/sh\r\n'), mode(0o100755), true))).toEqual(['askpass line endings']);
+  });
+
+  it('names every script in resources/askpass, which the desktop build copies', () => {
+    expect([...ASKPASS_SCRIPTS].sort()).toEqual(readdirSync(join(__dirname, '..', '..', 'resources', 'askpass')).sort());
+  });
+
+  it('passes the repository\'s own scripts for line endings', () => {
+    const dir = join(__dirname, '..', '..', 'resources', 'askpass');
+    expect(failures(checkAskpassScripts((file: string) => readFileSync(join(dir, file)), mode(0o100755), true))).toEqual([]);
+  });
+});
+
 describe('checkSpawnHelperMode', () => {
   it('requires exactly 0755', () => {
     expect(failures([checkSpawnHelperMode(0o100755)])).toEqual([]);
@@ -245,6 +269,15 @@ describe('checkChangelog', () => {
     expect(checkChangelog(changelog.replace('notes', 'old'), changelog, '2.36.0')[0]!.detail).toBe("differs from the repo's CHANGELOG.md");
     expect(checkChangelog(changelog, changelog, '2.37.0')[0]!.detail).toBe('has no ## [2.37.0] section');
   });
+
+  // An empty section would fail release-notes after Windows is signed; this check runs before signing.
+  it('fails a section with no notes before the next heading', () => {
+    const empty = ['# Changelog', '', '## [2.37.0] - 2026-02-01', '  ', '## [2.36.0] - 2026-01-02', '- notes', ''].join('\n');
+    expect(checkChangelog(empty, empty, '2.37.0')[0]!.detail).toBe('has an empty ## [2.37.0] section');
+    const last = ['# Changelog', '', '## [2.37.0] - 2026-02-01', ''].join('\n');
+    expect(checkChangelog(last, last, '2.37.0')[0]!.detail).toBe('has an empty ## [2.37.0] section');
+    expect(failures(checkChangelog(empty, empty, '2.36.0'))).toEqual([]);
+  });
 });
 
 describe('verifyPackage', () => {
@@ -258,6 +291,7 @@ describe('verifyPackage', () => {
     put(join(repoRoot, 'package.json'), JSON.stringify({ version: '2.36.0' }));
     put(join(repoRoot, 'CHANGELOG.md'), CHANGELOG);
     put(join(repoRoot, 'resources', 'grammars', 'tree-sitter-go.wasm'), 'go-grammar');
+    for (const file of ASKPASS_SCRIPTS) put(join(repoRoot, 'resources', 'askpass', file));
     put(join(repoRoot, 'python', 'damocles_voice_sidecar', 'damocles_voice_sidecar', 'models', 'MODEL_MANIFEST.json'), WAKE_MANIFEST);
     put(platform === 'win32' ? join(app, 'Damocles.exe') : join(app, 'Contents', 'MacOS', 'Damocles'), 'binary');
     put(join(resources, 'monaco-editor-ThirdPartyNotices.txt'), 'notices');
@@ -271,6 +305,8 @@ describe('verifyPackage', () => {
       'dist/pty-host.js',
       'dist/quick-open-worker.js',
       'dist/watch-worker.js',
+      'dist/askpass-main.js',
+      ...ASKPASS_SCRIPTS.map((file) => `dist/askpass/${file}`),
       'resources/grammars/tree-sitter-go.wasm',
       ...SHELL_INTEGRATION_FILES.map((file) => `resources/shell-integration/${file}`),
       'python/damocles_voice_sidecar/damocles_voice_sidecar/__main__.py',
@@ -285,6 +321,8 @@ describe('verifyPackage', () => {
       ),
     ];
     for (const file of unpackedFiles) put(join(unpacked, file));
+    // the desktop build gives the askpass scripts 0755 for every target, and a POSIX host checks it
+    for (const file of ASKPASS_SCRIPTS) chmodSync(join(unpacked, 'dist', 'askpass', file), 0o755);
     if (platform === 'darwin') {
       chmodSync(join(app, 'Contents', 'MacOS', 'Damocles'), 0o755);
       chmodSync(join(unpacked, 'node_modules', '@vscode', `ripgrep-${target}`, 'bin', 'rg'), 0o755);
@@ -356,6 +394,13 @@ describe('verifyPackage', () => {
     const results: Result[] = await verifyPackage({ platform: 'win32', arch: 'x64', app, repoRoot, readFuseWire: async () => EXPECTED_WIRE });
     // The removed worker also leaves its ASAR_UNPACK glob matching nothing.
     expect(failures(results)).toEqual(['unpacked globs', 'worker sentinel.js', 'grammars', 'app-update.yml']);
+  });
+
+  it('fails a packaged askpass script that differs from resources/askpass, as a stale dist/askpass would', async () => {
+    const { repoRoot, app, unpacked } = fakeApp('win32');
+    put(join(unpacked, 'dist', 'askpass', ASKPASS_SCRIPTS[0]!), 'stale');
+    const results: Result[] = await verifyPackage({ platform: 'win32', arch: 'x64', app, repoRoot, readFuseWire: async () => EXPECTED_WIRE });
+    expect(failures(results)).toEqual(['askpass script contents']);
   });
 
   it.skipIf(process.platform === 'win32')('fails a Linux binary without the exec bit', async () => {

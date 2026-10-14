@@ -11,9 +11,9 @@ import * as ts from 'typescript';
  */
 
 const ROOT = join(__dirname, '..', '..');
-// Support helpers that report native focus, or move the pointer onto an element and keep it there.
+// Support helpers that report native focus, and the calls that move the pointer onto an element and keep it there.
 const FOCUS_HELPERS = new Set(['viewFocused']);
-const HOVER_CALLS = new Set(['hover', 'hoverTerminalText', 'holdToast']);
+const HOVER = ['hover', 'hoverTerminalText', 'holdToast'];
 // Chromium runs an application-menu accelerator only while its window is active (View::CanHandleAccelerators), so a key
 // pressKeys sends is lost when another worker's app takes the foreground before main dispatches it.
 const KEY_PRESS = 'pressKeys';
@@ -43,7 +43,7 @@ function needOf(node: ts.Node, readers: ReadonlySet<string>): string | undefined
     if (name === 'isFocused' && ts.isPropertyAccessExpression(node.expression)) return 'reads isFocused()';
     if (name !== undefined && FOCUS_HELPERS.has(name)) return `reads native focus through ${name}`;
     if (name !== undefined && readers.has(name)) return `needs the foreground through ${name}`;
-    if (name !== undefined && HOVER_CALLS.has(name)) return `relies on hover through ${name}`;
+    if (name !== undefined && hoverCalls().has(name)) return `relies on hover through ${name}`;
     if (name !== undefined && keyCalls().has(name)) return `presses keys through ${name}`;
   }
   if (ts.isPropertyAccessExpression(node) && FOCUS_FIELDS.has(node.name.text) && !(ts.isCallExpression(node.parent) && node.parent.expression === node)) return `reads native focus through .${node.name.text}`;
@@ -72,12 +72,10 @@ function namedFunctions(file: ts.SourceFile): Map<string, ts.Node> {
 const callsAny = (node: ts.Node, names: ReadonlySet<string>): boolean =>
   (ts.isCallExpression(node) && names.has(calleeName(node) ?? '')) || (ts.forEachChild(node, (child) => callsAny(child, names) || undefined) ?? false);
 
-let keyCallNames: ReadonlySet<string> | undefined;
-// pressKeys and every support helper that calls it, directly or through another.
-function keyCalls(): ReadonlySet<string> {
-  if (keyCallNames) return keyCallNames;
+// `seeds` and every support helper that calls one, directly or through another.
+function supportCallersOf(seeds: readonly string[]): ReadonlySet<string> {
   const helpers = supportFiles().flatMap((file) => [...namedFunctions(file)]);
-  const names = new Set([KEY_PRESS]);
+  const names = new Set(seeds);
   for (let grew = true; grew;) {
     grew = false;
     for (const [name, body] of helpers) {
@@ -86,8 +84,13 @@ function keyCalls(): ReadonlySet<string> {
       grew = true;
     }
   }
-  return (keyCallNames = names);
+  return names;
 }
+
+let keyCallNames: ReadonlySet<string> | undefined;
+const keyCalls = (): ReadonlySet<string> => (keyCallNames ??= supportCallersOf([KEY_PRESS]));
+let hoverCallNames: ReadonlySet<string> | undefined;
+const hoverCalls = (): ReadonlySet<string> => (hoverCallNames ??= supportCallersOf(HOVER));
 
 // The file's functions that need the foreground, directly or through each other.
 function readersOf(file: ts.SourceFile): Set<string> {
@@ -159,6 +162,8 @@ describe('e2e foreground', () => {
       "test('t', async ({ launch }) => { await pressKeys(app, '/shell/', 'F', [PRIMARY, 'shift']); });",
       "async function openSearch(app) { await pressKeys(app, '/shell/', 'F'); }\ntest('t', async ({ launch }) => { await openSearch(app); });",
       "test('t', async ({ launch }) => { await quickOpen(app, 'a.ts'); });",
+      "test('t', async ({ launch }) => { await clickSectionAction(shell, 'new-chat'); });",
+      "async function moreActions(shell) { await (await sectionAction(shell, 'scm-more-actions')).click(); }\ntest('t', async ({ launch }) => { await moreActions(shell); });",
       "test('t', async ({ foreground: _foreground, clipboard, launch }) => { await launch(); });",
     ];
     for (const sample of needs) expect(foregroundFindings('sample.spec.ts', sample), sample).not.toEqual([]);

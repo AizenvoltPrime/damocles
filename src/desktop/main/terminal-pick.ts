@@ -8,6 +8,7 @@ import {
   type TerminalIcon,
   type TerminalProfileOption,
   type TerminalProjectOption,
+  type TerminalTarget,
 } from '../preload/terminal-channels';
 
 export interface TerminalPickOverlay {
@@ -16,12 +17,13 @@ export interface TerminalPickOverlay {
 
 export interface TerminalPick {
   readonly profileId: string;
-  readonly projectKey: string;
+  // home: no project was open
+  readonly target: Exclude<TerminalTarget, { readonly current: true }>;
 }
 
 /**
- * New Terminal's quick pick in the overlay: a profile, then a project (skipped with one project, or by Shift on a profile).
- * Resolves the choice, which parseOverlayAnswer has checked is one the request offered, or undefined for Escape.
+ * New Terminal's quick pick in the overlay: a profile, then a project (skipped with no project or one, or by Shift on a
+ * profile). Resolves the choice, which parseOverlayAnswer has checked is one the request offered, or undefined for Escape.
  */
 export async function pickNewTerminal(
   overlay: TerminalPickOverlay,
@@ -29,10 +31,11 @@ export async function pickNewTerminal(
   projects: readonly TerminalProjectOption[],
   returnFocus: WebContents | undefined,
 ): Promise<TerminalPick | undefined> {
-  if (profiles.length === 0 || projects.length === 0) return undefined;
+  if (profiles.length === 0) return undefined;
   const request: OverlayRequest = { kind: 'newTerminal', profiles: profiles.slice(0, MAX_OVERLAY_ITEMS), projects: projects.slice(0, MAX_OVERLAY_ITEMS) };
   const answer = await overlay.request(request, returnFocus);
-  return answer.kind === 'newTerminal' ? { profileId: answer.profileId, projectKey: answer.projectKey } : undefined;
+  if (answer.kind !== 'newTerminal') return undefined;
+  return { profileId: answer.profileId, target: answer.projectKey === null ? { home: true } : { project: answer.projectKey } };
 }
 
 // The quick pick row that clears a custom icon or color; no icon or color has this name.

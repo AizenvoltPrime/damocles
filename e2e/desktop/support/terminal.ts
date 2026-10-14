@@ -21,7 +21,7 @@ export const terminalPane = (shell: Page): Locator => shell.getByTestId('termina
 export const activeTerminal = (shell: Page): Locator => shell.locator('[data-testid="terminal-view"]:visible');
 export const terminalRows = (shell: Page): Locator => shell.getByTestId('terminal-row');
 
-/** Toggle Terminal from the menu: with no terminal it starts one in the current project and focuses it. */
+/** Toggle Terminal from the menu: with no terminal it starts one in the current project (else the home folder) and focuses it. */
 export async function openTerminal(app: ElectronApplication): Promise<Page> {
   const shell = await shellPage(app);
   await clickMenu(app, 'damocles.toggleTerminal');

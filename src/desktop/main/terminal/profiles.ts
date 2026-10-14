@@ -18,9 +18,12 @@ export interface TerminalProfile {
 export interface ProfileProbe {
   readonly platform: NodeJS.Platform;
   readonly env: Readonly<Record<string, string | undefined>>;
+  // os.homedir(), the user profile folder on Windows where dotnet and Scoop install, as VS Code's powershell.ts probes; not
+  // homeDirectory(), which prefers $HOME
   readonly homedir: string;
   // Windows' build number, 0 elsewhere
   readonly windowsBuild: number;
+  // isFile, readDir and readText reject on an error other than a missing entry; detection logs that entry and skips it
   isFile(file: string): Promise<boolean>;
   // a missing directory lists nothing
   readDir(dir: string): Promise<string[]>;
@@ -42,8 +45,21 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+// An entry the probe cannot read (EACCES or EPERM on one PATH folder) counts as absent, so it never hides every other shell.
+async function orAbsent<T>(probe: ProfileProbe, entry: string, read: () => Promise<T>, absent: T): Promise<T> {
+  try {
+    return await read();
+  } catch (err) {
+    probe.log(`[terminal] skipping ${entry} while detecting shells: ${errorText(err)}`);
+    return absent;
+  }
+}
+
+const fileExists = (probe: ProfileProbe, file: string): Promise<boolean> => orAbsent(probe, file, () => probe.isFile(file), false);
+const listDir = (probe: ProfileProbe, dir: string): Promise<string[]> => orAbsent(probe, dir, () => probe.readDir(dir), []);
+
 async function firstFile(probe: ProfileProbe, candidates: readonly string[]): Promise<string | undefined> {
-  for (const candidate of candidates) if (await probe.isFile(candidate)) return candidate;
+  for (const candidate of candidates) if (await fileExists(probe, candidate)) return candidate;
   return undefined;
 }
 
@@ -54,14 +70,14 @@ async function findPwsh(probe: ProfileProbe): Promise<string | undefined> {
   const installed = async (programFiles: string | undefined): Promise<string | undefined> => {
     if (!programFiles) return undefined;
     const base = win.join(programFiles, 'PowerShell');
-    const majors = (await probe.readDir(base)).filter((name) => /^\d+$/.test(name)).sort((a, b) => Number(b) - Number(a));
+    const majors = (await listDir(probe, base)).filter((name) => /^\d+$/.test(name)).sort((a, b) => Number(b) - Number(a));
     return firstFile(probe, majors.map((major) => win.join(base, major, 'pwsh.exe')));
   };
   const store = async (): Promise<string | undefined> => {
     const localAppData = probe.env['LOCALAPPDATA'];
     if (!localAppData) return undefined;
     const apps = win.join(localAppData, 'Microsoft', 'WindowsApps');
-    const dir = (await probe.readDir(apps)).find((name) => /^Microsoft\.PowerShell_/.test(name));
+    const dir = (await listDir(probe, apps)).find((name) => /^Microsoft\.PowerShell_/.test(name));
     return dir === undefined ? undefined : firstFile(probe, [win.join(apps, dir, 'pwsh.exe')]);
   };
   return (await installed(probe.env['ProgramFiles']))
@@ -90,7 +106,7 @@ export function parseWslList(stdout: Buffer): string[] {
 }
 
 async function findWslDistros(probe: ProfileProbe, wsl: string): Promise<string[]> {
-  if (probe.windowsBuild < MIN_WSL_BUILD || !(await probe.isFile(wsl))) return [];
+  if (probe.windowsBuild < MIN_WSL_BUILD || !(await fileExists(probe, wsl))) return [];
   try {
     // WSL_UTF8=1 in the user's environment would switch the list to UTF-8.
     return parseWslList(await probe.run(wsl, ['-l', '-q'], { ...probe.env, WSL_UTF8: '0' }));
@@ -125,8 +141,8 @@ async function windowsProfiles(probe: ProfileProbe): Promise<TerminalProfile[]> 
   const [pwsh, gitBash, hasWindowsPowerShell, hasCmd, distros] = await Promise.all([
     findPwsh(probe),
     findGitBash(probe),
-    probe.isFile(windowsPowerShell),
-    probe.isFile(cmd),
+    fileExists(probe, windowsPowerShell),
+    fileExists(probe, cmd),
     findWslDistros(probe, win.join(system32, 'wsl.exe')),
   ]);
   const profiles: TerminalProfile[] = [];
@@ -145,7 +161,7 @@ function posixIcon(name: string): TerminalIcon {
 // $SHELL first, then zsh, bash and fish from /etc/shells or PATH; one profile per shell name. macOS terminals start login shells.
 async function posixProfiles(probe: ProfileProbe): Promise<TerminalProfile[]> {
   const posix = path.posix;
-  const listed = ((await probe.readText('/etc/shells')) ?? '').split('\n').map((line) => line.trim()).filter((line) => line.startsWith('/'));
+  const listed = ((await orAbsent(probe, '/etc/shells', () => probe.readText('/etc/shells'), undefined)) ?? '').split('\n').map((line) => line.trim()).filter((line) => line.startsWith('/'));
   const onPath = searchPathEntries(probe.platform, probe.env);
   const args = probe.platform === 'darwin' ? ['-l'] : [];
   const profiles: TerminalProfile[] = [];
@@ -154,7 +170,7 @@ async function posixProfiles(probe: ProfileProbe): Promise<TerminalProfile[]> {
     if (!profiles.some((profile) => profile.id === name)) profiles.push({ id: name, name, file, args, icon: posixIcon(name) });
   };
   const loginShell = probe.env['SHELL'];
-  if (loginShell && posix.isAbsolute(loginShell) && (await probe.isFile(loginShell))) add(loginShell);
+  if (loginShell && posix.isAbsolute(loginShell) && (await fileExists(probe, loginShell))) add(loginShell);
   for (const name of POSIX_SHELLS) {
     const file = await firstFile(probe, [...listed.filter((entry) => posix.basename(entry) === name), ...onPath.map((entry) => posix.join(entry, name))]);
     if (file) add(file);

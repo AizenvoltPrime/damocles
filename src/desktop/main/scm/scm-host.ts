@@ -1,28 +1,41 @@
 // Source control in main (plan AD4, "Who does what"): the damocles:scm:* requests, the user flows keyed by op, the selected
 // repository per project, the pushes to the shell, the editor tabs and the palette's entry points.
+import * as os from 'node:os';
 import * as path from 'node:path';
 import type { SettingsStore } from '../../../platform/settings-store';
 import { UNREACHABLE, type StructuredCompletionRequest, type StructuredCompletionResult } from '../../../core/pi-session/structured-completion';
 import { generateCommitMessage, type CommitMessageComplete } from '../../../core/scm/commit-message';
 import { isInside, samePath } from '../../../core/scm/discovery';
-import { redactUrls, GitError } from '../../../core/scm/git-runner';
+import { redactUrls } from '../../../core/scm/git-runner';
+import { isRemoteName, isRemoteUrl, type Remote } from '../../../core/scm/remotes';
+import { isObjectName, type CommitPairDiff, type StashArtifact } from '../../../core/scm/artifacts';
 import type { Change, ChangeGroup, Repository } from '../../../core/scm/repository';
-import type { ProjectView, ScmService } from '../../../core/scm/scm-service';
-import { SCM_SETTING_KEYS, type PromptToSaveFilesBeforeCommit } from '../../../core/scm/settings-keys';
+import { gitErrorText, RemoteCancelledError, StashKeptError, SyncBranchChangedError, type ProjectView, type ScmService, type SyncBranch } from '../../../core/scm/scm-service';
+import { SCM_SETTING_KEYS, type OpenAfterClone, type PostCommitCommand, type PromptToSaveFilesBeforeCommit } from '../../../core/scm/settings-keys';
+import { canStashStaged } from '../../../core/scm/stash';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { inputProblem } from '../../../shared/input-validation';
 import type { FileRef } from '../../preload/shell-channels';
 import {
   parseScmAmend,
+  parseScmArtifacts,
   parseScmCommit,
   parseScmCopy,
   parseScmFileDiff,
   parseScmRepoRef,
   parseScmRun,
   parseScmSelect,
+  type ScmArtifactGroup,
+  type ScmCopyKind,
+  type ScmCopyRequest,
+  type ScmArtifactsChanged,
+  type ScmArtifactsResult,
+  type ScmCapabilities,
+  type ScmDiffSource,
   type ScmChangesTab,
   type ScmCommitInput,
   type ScmCommitResult,
+  type ScmCloneState,
   type ScmCommitVariant,
   type ScmDecorations,
   type ScmFileDiffResult,
@@ -35,9 +48,12 @@ import {
   type ScmSetInput,
   type ScmSettings,
   type ScmShellCommand,
+  type ScmStashScope,
   type ScmShellState,
   type ScmView,
+  type ScmPostCommit,
   type SCM_DISCARD_ALL_SCOPES,
+  type SCM_FETCH_SCOPES,
   type SCM_STAGE_ALL_SCOPES,
 } from '../../preload/scm-channels';
 import { isDesktopSettingValue } from '../desktop-configuration';
@@ -45,12 +61,22 @@ import type { Project } from '../documents/confine';
 import type { EditorPane, NotShownSide } from '../editor-pane';
 import type { AskMessage } from '../message-dialog';
 import type { AskInput } from '../overlay';
+import { MAX_OVERLAY_LABEL_LENGTH, type OverlayQuickPickIcon } from '../../preload/overlay-channels';
 import { decodeDocument } from '../platform/editor-document';
+import { CANCELLED, OK, pickEntry, RefFlows, remote, TOLD, type PickEntry } from './ref-flows';
 
+// OverlayQuickPickItem's fields main's pickers use
 export interface ScmQuickPickItem {
   readonly id: string;
   readonly label: string;
   readonly description?: string;
+  readonly icon?: OverlayQuickPickIcon;
+  readonly hint?: string;
+  readonly group?: string;
+  readonly current?: boolean;
+  readonly alwaysShow?: true;
+  readonly echoQuery?: true;
+  readonly info?: true;
 }
 
 export interface ScmHostDeps {
@@ -72,8 +98,18 @@ export interface ScmHostDeps {
   readonly copy: (text: string) => Promise<void>;
   readonly reveal: (absolutePath: string) => Promise<void>;
   readonly openExternal: (url: string) => Promise<void>;
-  readonly pickFolder: (defaultPath: string) => Promise<string | undefined>;
-  readonly quickPick: (placeholder: string, items: readonly ScmQuickPickItem[]) => Promise<string | undefined>;
+  // the OS folder picker; title names what the folder is for, buttonLabel its confirm button
+  readonly pickFolder: (defaultPath: string, title?: string, buttonLabel?: string) => Promise<string | undefined>;
+  // adds a folder to the project list, asking for trust as any added project does (Clone, a worktree's Open)
+  readonly addProject: (folder: string) => Promise<void>;
+  // selects a project of the list, as its Projects row does (a worktree's Open)
+  readonly selectProject: (projectKey: string) => Promise<void>;
+  // removes a project as its Projects row does, keeping its chats (a deleted worktree's project); not ok: the reason it stays
+  readonly removeProject: (projectKey: string) => Promise<{ readonly ok: true } | { readonly ok: false; readonly reason: string }>;
+  // git was found, whatever any project's trust (Clone's palette clause)
+  readonly gitFound: boolean;
+  // the picked item's id and the filter text as typed; undefined for Escape, or when it could not show (its asker told the user)
+  readonly quickPick: (placeholder: string, items: readonly ScmQuickPickItem[]) => Promise<{ readonly id: string; readonly query: string } | undefined>;
   // a question main's own flows ask (the save-before-commit prompt): the overlay dialog (D41)
   readonly ask: AskMessage;
   // the overlay QuickInput; undefined for Escape, or when it could not show (its asker told the user)
@@ -87,6 +123,8 @@ export interface ScmHostDeps {
     settings(settings: ScmSettings): void;
     command(command: ScmShellCommand): void;
     setInput(input: ScmSetInput): void;
+    clone(state: ScmCloneState): void;
+    artifactsChanged(changed: ScmArtifactsChanged): void;
     // the Files tree lists the project's shown folders again, so their ignored flags follow git
     filesChanged(projectKey: string): void;
   };
@@ -105,7 +143,18 @@ export type ScmPaletteRequest =
   | { readonly op: 'closeRepository' | 'closeOtherRepositories' | 'refresh' | 'unstageAll' | 'abortOperation' | 'undoLastCommit' }
   | { readonly op: 'stageAll'; readonly scope: (typeof SCM_STAGE_ALL_SCOPES)[number] }
   | { readonly op: 'discardAll'; readonly scope: (typeof SCM_DISCARD_ALL_SCOPES)[number] }
-  | { readonly op: 'openGroupChanges'; readonly group: ChangeGroup };
+  | { readonly op: 'openGroupChanges'; readonly group: ChangeGroup }
+  | { readonly op: 'fetch'; readonly scope: (typeof SCM_FETCH_SCOPES)[number] }
+  | { readonly op: 'pull' | 'sync'; readonly rebase: boolean }
+  | { readonly op: 'pullFrom' | 'publish' | 'addRemote' | 'removeRemote' }
+  | { readonly op: 'push'; readonly to: boolean; readonly force: boolean; readonly followTags: boolean }
+  | { readonly op: 'clone'; readonly recursive: boolean }
+  | { readonly op: 'checkout'; readonly detached: boolean }
+  | { readonly op: 'createBranch'; readonly from: boolean }
+  | { readonly op: 'renameBranch' | 'deleteBranch' | 'deleteRemoteBranch' | 'merge' | 'rebase' | 'stashDropAll' | 'createTag' | 'deleteTag' | 'deleteRemoteTag' | 'pushTags' | 'createWorktree' | 'deleteWorktree' }
+  | { readonly op: 'stash'; readonly scope: ScmStashScope }
+  | { readonly op: 'stashApply'; readonly pop: boolean; readonly target: 'latest' | 'pick' }
+  | { readonly op: 'stashDrop' | 'viewStash'; readonly target: 'pick' };
 export type ScmActiveFileOp = 'stage' | 'unstage' | 'discard' | 'openChanges' | 'openFile' | 'openFileHead' | 'addToGitignore' | 'rename' | 'delete';
 
 export interface ScmMenuState {
@@ -129,6 +178,14 @@ export interface ScmMenuState {
   readonly allowNoVerifyCommit: boolean;
   // the selected repository's commit box is in amend mode, so every commit command amends
   readonly amending: boolean;
+  // git was found, whatever the selected project's trust (VS Code's !git.missing), which Clone needs alone
+  readonly gitFound: boolean;
+  // config.git.allowForcePush: the force push commands exist
+  readonly allowForcePush: boolean;
+  // a remote operation runs on the selected repository (VS Code's operationInProgress for the remote commands)
+  readonly remoteRunning: boolean;
+  // git 2.35 or later: Stash Staged is listed (VS Code's gitVersion2.35)
+  readonly stashStaged: boolean;
 }
 
 // Before startup finished: nothing open.
@@ -145,14 +202,16 @@ export const NO_SCM_MENU_STATE: ScmMenuState = {
   activeEditorFile: false,
   allowNoVerifyCommit: false,
   amending: false,
+  gitFound: false,
+  allowForcePush: false,
+  remoteRunning: false,
+  stashStaged: false,
 };
 
 type Flow<K extends ScmOp> = (host: ScmHost, request: Extract<ScmRunRequest, { op: K }>) => Promise<ScmRunResult>;
 type FlowRegistry = { readonly [K in ScmOp]: Flow<K> };
 
-const OK: ScmRunResult = { ok: true };
 const SCM_GROUP_NAMES: readonly ChangeGroup[] = ['merge', 'index', 'workingTree', 'untracked'];
-const CANCELLED: ScmRunResult = { ok: false, reason: 'cancelled' };
 
 const GIT_DOWNLOAD: Readonly<Partial<Record<NodeJS.Platform, string>>> = { win32: 'https://git-scm.com/download/win', darwin: 'https://git-scm.com/download/mac' };
 
@@ -233,11 +292,52 @@ const FLOWS: FlowRegistry = {
     host.deps.send.setInput({ repoId: request.repoId, message: template ?? '', cause: 'template' });
     return OK;
   },
+  fetch: (host, request) => host.fetch(request.repoId, request.scope),
+  pull: (host, request) => host.pull(request.repoId, request.rebase),
+  pullFrom: (host, request) => host.pullFrom(request.repoId),
+  push: (host, request) => host.push(request.repoId, request),
+  sync: (host, request) => host.sync(request.repoId, request.rebase),
+  publish: (host, request) => host.publish(request.repoId),
+  addRemote: async (host, request) => {
+    const added = await host.addRemote(request.repoId);
+    return typeof added === 'string' ? OK : added;
+  },
+  removeRemote: (host, request) => host.removeRemote(request.repoId),
+  clone: (host, request) => host.clone(request.recursive),
+  cancel: async (host, request) => {
+    host.deps.service.cancel(request.repoId);
+    return OK;
+  },
+  cancelClone: async (host) => {
+    host.deps.service.cancelClone();
+    return OK;
+  },
+  checkout: (host, request) => host.refs.checkout(request.repoId, request.detached, request.ref),
+  createBranch: (host, request) => host.refs.createBranch(request.repoId, request.from, request.ref),
+  renameBranch: (host, request) => host.refs.renameBranch(request.repoId),
+  deleteBranch: (host, request) => host.refs.deleteBranch(request.repoId, request.ref),
+  deleteRemoteBranch: (host, request) => host.refs.deleteRemoteBranch(request.repoId),
+  merge: (host, request) => host.refs.integrate(request.repoId, 'merge', request.ref),
+  rebase: (host, request) => host.refs.integrate(request.repoId, 'rebase', request.ref),
+  stash: (host, request) => host.refs.stash(request.repoId, request.scope),
+  stashChanges: (host, request) => host.refs.stashChanges(request.repoId, request.paths),
+  stashApply: (host, request) => host.refs.stashApply(request.repoId, request.pop, request.target),
+  stashDrop: (host, request) => host.refs.stashDrop(request.repoId, request.target),
+  stashDropAll: (host, request) => host.refs.stashDropAll(request.repoId),
+  viewStash: (host, request) => host.refs.viewStash(request.repoId, request.target),
+  createTag: (host, request) => host.refs.createTag(request.repoId),
+  deleteTag: (host, request) => host.refs.deleteTag(request.repoId, request.ref),
+  deleteRemoteTag: (host, request) => host.refs.deleteRemoteTag(request.repoId),
+  pushTags: (host, request) => host.refs.pushTags(request.repoId, () => void host.runRequest({ op: 'addRemote', repoId: request.repoId })),
+  createWorktree: (host, request) => host.refs.createWorktree(request.repoId),
+  deleteWorktree: (host, request) => host.refs.deleteWorktree(request.repoId, request.path),
+  compareRef: (host, request) => host.refs.compareRef(request.repoId, request.ref),
+  openWorktree: (host, request) => host.openWorktree(request.repoId, request.path),
 };
 
-function errorText(err: unknown): string {
-  if (err instanceof GitError) return redactUrls(err.stderr.trim().split('\n').find((line) => line.trim() !== '') ?? err.message);
-  return err instanceof Error ? err.message : String(err);
+// VS Code's ~ expansion of git.defaultCloneDirectory.
+function expandHome(folder: string): string {
+  return folder.replace(/^~(?=$|[/\\])/, os.homedir());
 }
 
 // A deleted change's folder may be gone, so its lexical path under the root names it; never opened, only shown or copied.
@@ -281,9 +381,12 @@ export function backgroundCompletion(runtime: () => SubCallRuntime | null, getSe
 
 export class ScmHost {
   readonly deps: ScmHostDeps;
-  private readonly pending = { views: new Set<string>(), repos: new Set<string>(), decorations: new Set<string>(), ignores: new Set<string>() };
+  private readonly pending = { views: new Set<string>(), repos: new Set<string>(), decorations: new Set<string>(), ignores: new Set<string>(), artifacts: new Map<string, Set<ScmArtifactGroup>>(), clone: false };
+  readonly refs: RefFlows;
+  // the commit pairs of View Stash and Compare tabs, by pairKey, dropped once no open tab holds them; commits never change, so
+  // an entry stays valid
+  private readonly pairs = new Map<string, CommitPairDiff>();
   private flushScheduled = false;
-  private postCommitNoted = false;
   private disposed = false;
   // the repository whose commit box amends, from the shell's last report; cleared wherever the box leaves amend mode
   private amendingRepoId: string | undefined;
@@ -291,11 +394,26 @@ export class ScmHost {
 
   constructor(deps: ScmHostDeps) {
     this.deps = deps;
+    this.refs = new RefFlows({
+      deps,
+      repo: (repoId) => this.repo(repoId),
+      setting: (key, fallback) => this.read(key, fallback),
+      closeStashTabs: (repoId, hash) => this.closeStashTabs(repoId, hash),
+      openStash: (repoId, stash) => this.openStash(repoId, stash),
+      openRefsChanges: (repoId, left, right) => this.openRefsChanges(repoId, left, right),
+      worktreeProject: (repoId, worktreePath) => this.worktreeProject(repoId, worktreePath),
+    });
     this.subscriptions = [
       deps.service.onDidChange((event) => {
         if (event.kind === 'view') this.pending.views.add(event.projectKey);
         else if (event.kind === 'repository') this.pending.repos.add(event.repoId);
         else if (event.kind === 'ignores') this.pending.ignores.add(event.projectKey);
+        else if (event.kind === 'clone') this.pending.clone = true;
+        else if (event.kind === 'artifacts') {
+          const groups = this.pending.artifacts.get(event.repoId) ?? new Set<ScmArtifactGroup>();
+          for (const group of event.groups) groups.add(group);
+          this.pending.artifacts.set(event.repoId, groups);
+        }
         else this.pending.decorations.add(event.projectKey);
         this.scheduleFlush();
       }),
@@ -309,6 +427,17 @@ export class ScmHost {
 
   setProjects(projects: readonly Project[]): void {
     this.deps.service.setProjects(projects.map((project) => ({ key: project.key, path: project.fsPath })));
+    this.selectedProjectChanged();
+  }
+
+  /** Autofetch follows the selected project (AD4). */
+  selectedProjectChanged(): void {
+    this.deps.service.setAutofetchProject(this.deps.selectedProjectKey());
+  }
+
+  /** One autofetch round of the selected project now; only the gated e2e hook calls it. */
+  autofetchNow(): void {
+    this.deps.service.autofetchNow();
   }
 
   state(): ScmShellState {
@@ -320,7 +449,7 @@ export class ScmHost {
       const snapshot = this.snapshot(repo.repoId);
       return snapshot ? [snapshot] : [];
     }));
-    return { views, snapshots, decorations: views.map((view) => this.decorations(view.projectKey)), settings: this.settings() };
+    return { views, snapshots, decorations: views.map((view) => this.decorations(view.projectKey)), settings: this.settings(), clone: this.deps.service.cloneState(), capabilities: this.capabilities() };
   }
 
   /** Selects a repository; the view naming it follows through the coalesced flush, after this returns. */
@@ -359,10 +488,44 @@ export class ScmHost {
     try {
       return await flow(this, request as never);
     } catch (err) {
+      // a repository closed while its flow waited (a picker, a question) is answered as one main no longer has
+      if ('repoId' in request && !this.deps.service.repository(request.repoId)) return { ok: false, reason: 'unknown' };
       this.deps.log(`[scm] ${request.op} failed: ${err instanceof Error ? err.message : String(err)}`);
-      this.failed(errorText(err));
-      return { ok: false, reason: 'failed' };
+      if (err instanceof StashKeptError && 'repoId' in request) return this.stashKept(request.repoId, err);
+      if (err instanceof SyncBranchChangedError) {
+        void this.deps.notify.warn(this.syncBranchChanged(err));
+        return TOLD;
+      }
+      this.failed(gitErrorText(err));
+      return TOLD;
     }
+  }
+
+  // The engine's stash or git's autostash could not be applied back: the operation's failure or conflict first, then where the
+  // changes are, with View Stash when the stash is still listed.
+  private async stashKept(repoId: string, err: StashKeptError): Promise<ScmRunResult> {
+    const t = this.deps.t;
+    if (err.outcome === 'failed') this.failed(gitErrorText(err.cause ?? err));
+    else if (err.outcome === 'conflict') void this.deps.notify.warn(t('There are merge conflicts. Please resolve them before committing your changes.'));
+    const listed = err.stash === undefined || !this.deps.service.repository(repoId) ? undefined : await this.deps.service.artifacts(repoId, 'stashes').catch(() => undefined);
+    const stash = listed?.group === 'stashes' ? listed.rows.find((row) => row.hash === err.stash) : undefined;
+    if (!stash) {
+      void this.deps.notify.warn(err.message);
+      return TOLD;
+    }
+    const view = t('View Stash');
+    void this.deps.notify.warn(t('Your changes were stashed for this operation and could not be applied back, so they are kept in the stash list as stash #{0}: {1}.', stash.index, stash.description), view).then((choice) => {
+      if (choice === view) void this.runRequest({ op: 'viewStash', repoId, target: { index: stash.index, hash: stash.hash } });
+    });
+    return TOLD;
+  }
+
+  private syncBranchChanged(err: SyncBranchChangedError): string {
+    const t = this.deps.t;
+    const named = (branch: SyncBranch | null): string => (branch ? t('"{0}" tracking "{1}/{2}"', branch.branch, branch.remote, branch.upstreamBranch) : t('no branch with an upstream'));
+    return err.stage === 'pull'
+      ? t('The sync was confirmed for {0}, but the repository is now on {1}, so nothing was pulled or pushed.', named(err.confirmed), named(err.found))
+      : t('The sync was confirmed for {0}, but after the pull the repository is on {1}, so nothing was pushed.', named(err.confirmed), named(err.found));
   }
 
   /**
@@ -381,16 +544,16 @@ export class ScmHost {
       if (saved === undefined) return { ok: false, reason: 'cancelled' };
       const outcome = await this.deps.service.commit(request.repoId, request.message, request.variant, { saved, branchName: () => this.askBranchName() });
       if (!outcome.ok) {
-        if (outcome.reason === 'failed') this.failed(errorText(outcome.error));
+        if (outcome.reason === 'failed') this.failed(gitErrorText(outcome.error));
         return { ok: false, reason: outcome.reason };
       }
       this.leaveAmend(request.repoId);
       const commitInput = await this.freshCommitInput(request.repoId);
-      this.runPostCommitCommand();
+      this.runPostCommitCommand(request.repoId, request.postCommit);
       return { ok: true, message: commitInput?.template ?? '', ...(commitInput ? { commitInput } : {}) };
     } catch (err) {
       this.deps.log(`[scm] commit failed: ${err instanceof Error ? err.message : String(err)}`);
-      this.failed(errorText(err));
+      this.failed(gitErrorText(err));
       return { ok: false, reason: 'failed' };
     }
   }
@@ -431,24 +594,95 @@ export class ScmHost {
     const request = parseScmFileDiff(raw);
     if (!request) throw new Error('Malformed diff request from the shell');
     const repo = this.deps.service.repository(request.repoId)?.repo;
-    return repo ? repo.diff(request.source.kind, request.path) : { kind: 'missing' };
+    const source = request.source;
+    if (!repo) return { kind: 'missing' };
+    if (source.kind === 'stash' || source.kind === 'refs') return this.pairPatch(request.repoId, source, request.path);
+    return repo.diff(source.kind, request.path);
   }
 
-  /** Copies a path of a change; nothing for a repository main no longer has. */
+  /**
+   * Copies a path of a change, or a field of a stash, branch, tag or worktree row (VS Code's git.repositories.* copy commands);
+   * nothing for a repository main no longer has. A copy that fails (a git read, or a row that changed since the shell listed
+   * it) is told as a failed run is, since the page cannot show it; only a malformed request rejects.
+   */
   async copy(raw: unknown): Promise<void> {
     const request = parseScmCopy(raw);
     if (!request) throw new Error('Malformed copy from the shell');
     const repo = this.deps.service.repository(request.repoId)?.repo;
     if (!repo) return;
+    try {
+      await this.copyField(repo, request);
+    } catch (err) {
+      this.deps.log(`[scm] copy failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.failed(gitErrorText(err));
+    }
+  }
+
+  private async copyField(repo: Repository, request: ScmCopyRequest): Promise<void> {
+    if (request.kind !== 'path' && request.kind !== 'relativePath') {
+      const text = await this.rowText(request.repoId, request.kind, request.value);
+      // gone meanwhile (a terminal, another window): its row is about to leave the list
+      if (text === undefined) {
+        const t = this.deps.t;
+        void this.deps.notify.info(isObjectName(request.value) ? t('The stash is no longer in this repository.') : t('"{0}" is no longer in this repository.', request.value));
+        return;
+      }
+      await this.deps.copy(text);
+      return;
+    }
     // only a path of the repository's own status, so the text is main's data and never a renderer's
     const groups = repo.lastStatus?.groups;
     const known = groups !== undefined && SCM_GROUP_NAMES.some((group) => groups[group].some((change) => change.path === request.value || change.originalPath === request.value));
-    // eslint-disable-next-line no-control-regex
-    if (!known || /[\u0000-\u001f\u007f]/.test(request.value)) throw new Error('Copy names a path that is not a change of the repository');
+    if (!known) throw new Error('Copy names a path that is not a change of the repository');
     const absolute = await entryOrLexical(repo, request.value);
     const ref = this.fileRefOf(absolute);
     const relative = ref ? ref.relativePath : request.value;
     await this.deps.copy(request.kind === 'path' ? absolute : relative.split('/').join(path.sep));
+  }
+
+  // The copied field of the row a stash hash, a full refname or a worktree path names, read from main's fresh list; undefined
+  // when the row is gone. The validator matched each kind to the forms it may name.
+  private async rowText(repoId: string, kind: Exclude<ScmCopyKind, 'path' | 'relativePath'>, value: string): Promise<string | undefined> {
+    const service = this.deps.service;
+    if (isObjectName(value)) {
+      const listed = await service.artifacts(repoId, 'stashes');
+      const stash = listed.group === 'stashes' ? listed.rows.find((row) => row.hash === value) : undefined;
+      if (!stash) return undefined;
+      if (kind === 'stashName') return stash.description;
+      if (stash.branch === null) throw new Error('Copy names a stash made on no branch');
+      return stash.branch;
+    }
+    if (value.startsWith('refs/')) {
+      const listed = await service.artifacts(repoId, value.startsWith('refs/tags/') ? 'tags' : 'branches');
+      const row = listed.group === 'branches' || listed.group === 'tags' ? listed.rows.find((candidate) => candidate.ref === value) : undefined;
+      if (!row) return undefined;
+      if (kind !== 'commitHash') return row.name;
+      if (!row.commit) throw new Error('Copy names a ref with no commit');
+      return row.commit.hash;
+    }
+    const listed = await service.artifacts(repoId, 'worktrees');
+    const worktree = listed.group === 'worktrees' ? listed.rows.find((row) => samePath(row.path, value)) : undefined;
+    if (!worktree) return undefined;
+    if (kind === 'worktreePath') return worktree.path;
+    const text = kind === 'commitHash' ? worktree.commit?.hash : worktree.branch;
+    if (text === undefined || text === null) throw new Error(`Copy names a worktree with no ${kind === 'commitHash' ? 'commit' : 'branch'}`);
+    return text;
+  }
+
+  /** One group's rows, read fresh; a failure was logged to the Git output by the runner and answers failed. */
+  async artifacts(raw: unknown): Promise<ScmArtifactsResult> {
+    const request = parseScmArtifacts(raw);
+    if (!request) throw new Error('Malformed artifacts request from the shell');
+    if (!this.deps.service.repository(request.repoId)) return { ok: false, reason: 'unknown' };
+    try {
+      const artifacts = await this.deps.service.artifacts(request.repoId, request.group);
+      if (artifacts.group !== 'worktrees') return { ok: true, artifacts };
+      const rows = artifacts.rows.map((row) => ({ ...row, opens: this.worktreeProject(request.repoId, row.path) === undefined ? 'addProject' as const : 'project' as const }));
+      return { ok: true, artifacts: { group: 'worktrees', rows } };
+    } catch (err) {
+      this.deps.log(`[scm] reading ${request.group} failed: ${gitErrorText(err)}`);
+      return { ok: false, reason: 'failed' };
+    }
   }
 
   /** The Files tree's ignored entries for one listed folder. */
@@ -460,6 +694,7 @@ export class ScmHost {
     const view = this.selectedView();
     const selected = view?.selectedRepoId ?? null;
     const active = this.activeResource();
+    const settings = this.settings();
     return {
       available: view !== undefined && view.state !== 'untrusted' && view.state !== 'gitMissing',
       openRepositoryCount: view?.repos.length ?? 0,
@@ -467,12 +702,16 @@ export class ScmHost {
       operation: selected ? (this.snapshot(selected)?.operation ?? null) : null,
       unsafeRepositoryCount: view?.unsafePaths.length ?? 0,
       parentRepositoryCount: view?.parentCount ?? 0,
-      untrackedChanges: this.settings().untrackedChanges,
+      untrackedChanges: settings.untrackedChanges,
       activeFileHasChanges: active?.group !== undefined,
       activeFileInRepository: active !== undefined,
       activeEditorFile: this.deps.editorPane.activeContext()?.filePath !== undefined,
-      allowNoVerifyCommit: this.settings().allowNoVerifyCommit,
+      allowNoVerifyCommit: settings.allowNoVerifyCommit,
       amending: selected !== null && this.amendingRepoId === selected && this.deps.service.repository(selected) !== undefined,
+      gitFound: this.deps.gitFound,
+      allowForcePush: settings.allowForcePush,
+      remoteRunning: selected !== null && (this.deps.service.snapshot(selected)?.running ?? null) !== null,
+      stashStaged: this.capabilities().stashStaged,
     };
   }
 
@@ -497,6 +736,9 @@ export class ScmHost {
         if (projectKey !== undefined) void this.runRequest({ op: request.op, projectKey });
         return;
       }
+      case 'clone':
+        void this.runRequest(request);
+        return;
     }
     const repoId = this.selectedView()?.selectedRepoId ?? undefined;
     if (repoId === undefined) {
@@ -553,6 +795,206 @@ export class ScmHost {
 
   // flows
 
+  // VS Code's git.fetch, fetchPrune and fetchAll: with several remotes, Fetch picks one or all of them.
+  async fetch(repoId: string, scope: (typeof SCM_FETCH_SCOPES)[number]): Promise<ScmRunResult> {
+    const t = this.deps.t;
+    const remotes = await this.deps.service.remotes(repoId);
+    if (remotes.length === 0) {
+      void this.deps.notify.warn(t('This repository has no remotes configured to fetch from.'));
+      return TOLD;
+    }
+    if (scope === 'prune') return remote(() => this.deps.service.fetch(repoId, { prune: true }));
+    if (scope === 'all' || remotes.length === 1) return remote(() => this.deps.service.fetch(repoId, { all: scope === 'all' }));
+    const upstreamRemote = this.repo(repoId).lastStatus?.upstream?.remote;
+    const ordered = [...remotes.filter((entry) => entry.name === upstreamRemote), ...remotes.filter((entry) => entry.name !== upstreamRemote)];
+    const ALL = { kind: 'all' } as const;
+    const picked = await this.pick<Remote | typeof ALL>(t('Select a remote to fetch'), [
+      ...ordered.map((entry) => remoteEntry(entry, 'fetch')),
+      { value: ALL, item: { label: t('Fetch From All Remotes') } },
+    ]);
+    if (picked === undefined) return CANCELLED;
+    if (picked === ALL) return remote(() => this.deps.service.fetch(repoId, { all: true }));
+    const chosen = picked as Remote;
+    return remote(() => this.deps.service.fetch(repoId, { remote: chosen.name }));
+  }
+
+  async pull(repoId: string, rebase: boolean): Promise<ScmRunResult> {
+    if (!(await this.hasRemotes(repoId, 'pull'))) return TOLD;
+    return remote(() => this.deps.service.pull(repoId, { rebase }));
+  }
+
+  // VS Code's git.pullFrom: a remote (skipped with one), then one of its fetched branches.
+  async pullFrom(repoId: string): Promise<ScmRunResult> {
+    const t = this.deps.t;
+    const remotes = (await this.deps.service.remotes(repoId)).filter((entry) => entry.fetchUrl !== undefined);
+    if (remotes.length === 0) {
+      void this.deps.notify.warn(t('Your repository has no remotes configured to pull from.'));
+      return TOLD;
+    }
+    const chosen = remotes.length === 1 ? remotes[0] : await this.pick(t('Pick a remote to pull the branch from'), remotes.map((entry) => remoteEntry(entry, 'fetch')));
+    if (!chosen) return CANCELLED;
+    const branches = await this.deps.service.remoteBranches(repoId, chosen.name);
+    if (branches.length === 0) {
+      void this.deps.notify.warn(t('The remote "{0}" has no fetched branches. Fetch it first.', chosen.name));
+      return TOLD;
+    }
+    const branch = await this.pick(t('Pick a branch to pull from'), branches.map((name) => ({ value: name, item: { label: `${chosen.name}/${name}` } })));
+    if (branch === undefined) return CANCELLED;
+    return remote(() => this.deps.service.pull(repoId, { rebase: false, remote: chosen.name, branch }));
+  }
+
+  // VS Code's _push: Push to the upstream, Push to... a picked remote, Push (Follow Tags) as push.default says, each with its
+  // force variant, which is refused unless allowForcePush and always confirmed. A branch with no upstream offers Publish.
+  async push(repoId: string, request: { readonly to: boolean; readonly force: boolean; readonly followTags: boolean }): Promise<ScmRunResult> {
+    const t = this.deps.t;
+    if (request.force && !this.settings().allowForcePush) {
+      void this.deps.notify.error(t('Force push is not allowed, please enable it with the "Allow force push" setting.'));
+      return TOLD;
+    }
+    const remotes = await this.deps.service.remotes(repoId);
+    if (remotes.length === 0) {
+      const add = t('Add Remote');
+      void this.deps.notify.warn(t('Your repository has no remotes configured to push to.'), add).then((choice) => {
+        if (choice === add) void this.runRequest({ op: 'addRemote', repoId });
+      });
+      return TOLD;
+    }
+    const base = { setUpstream: false, followTags: false, force: request.force };
+    if (request.followTags && !request.to) return remote(() => this.deps.service.push(repoId, { ...base, followTags: true }));
+    const status = this.repo(repoId).lastStatus;
+    const head = status?.head;
+    if (head?.type !== 'branch') {
+      void this.deps.notify.warn(t('Please check out a branch to push to a remote.'));
+      return TOLD;
+    }
+    if (!request.to) {
+      const upstream = status?.upstream;
+      if (upstream) return remote(() => this.deps.service.push(repoId, { ...base, remote: upstream.remote, branch: head.name, toBranch: upstream.branch }));
+      const choice = await this.deps.ask({ severity: 'warning', message: t('The branch "{0}" has no remote branch. Would you like to publish this branch?', head.name), actions: [t('OK')], cancelLabel: t('Cancel'), defaultAction: 0 });
+      return choice === 0 ? this.publish(repoId) : CANCELLED;
+    }
+    const target = await this.pickPushRemote(repoId, remotes.filter((entry) => entry.pushUrl !== undefined), head.name);
+    if (typeof target !== 'string') return target;
+    return remote(() => this.deps.service.push(repoId, { ...base, remote: target, branch: head.name }));
+  }
+
+  // VS Code's _sync: a detached HEAD or a branch without an upstream pushes (which warns, or offers Publish); otherwise core's
+  // confirmSync, pull and push.
+  async sync(repoId: string, rebase: boolean): Promise<ScmRunResult> {
+    const status = this.repo(repoId).lastStatus;
+    if (status?.head?.type !== 'branch' || !status.upstream) return this.push(repoId, { to: false, force: false, followTags: false });
+    return remote(() => this.deps.service.sync(repoId, rebase));
+  }
+
+  // VS Code's git.publish: push -u to the one remote, or to a picked one (or one Add Remote... creates).
+  async publish(repoId: string): Promise<ScmRunResult> {
+    const t = this.deps.t;
+    const head = this.repo(repoId).lastStatus?.head;
+    if (head?.type !== 'branch') {
+      void this.deps.notify.warn(t('Please check out a branch to push to a remote.'));
+      return TOLD;
+    }
+    const remotes = await this.deps.service.remotes(repoId);
+    if (remotes.length === 0) {
+      void this.deps.notify.warn(t('Your repository has no remotes configured to publish to.'));
+      return TOLD;
+    }
+    const target = remotes.length === 1 ? remotes[0]!.name : await this.pickPushRemote(repoId, remotes, head.name);
+    if (typeof target !== 'string') return target;
+    return remote(() => this.deps.service.push(repoId, { remote: target, branch: head.name, setUpstream: true, followTags: false, force: false }));
+  }
+
+  // VS Code's git.addRemote: a URL, then a name, then a fetch of the new remote. Resolves the name, or the result when nothing
+  // was added: cancelled, or told when the user was told why.
+  async addRemote(repoId: string): Promise<string | ScmRunResult> {
+    const t = this.deps.t;
+    const url = (await this.deps.askInput({ title: t('Add Remote'), prompt: t('Provide repository URL'), placeholder: t('Repository URL') }))?.trim();
+    if (!url) return CANCELLED;
+    if (!isRemoteUrl(url)) {
+      void this.deps.notify.warn(t('"{0}" is not a repository URL Damocles can use.', redactUrls(url)));
+      return TOLD;
+    }
+    const name = (await this.deps.askInput({ title: t('Add Remote'), prompt: t('Please provide a remote name'), placeholder: t('Remote name'), validation: 'remoteName' }))?.trim();
+    if (!name) return CANCELLED;
+    if (!isRemoteName(name)) {
+      void this.deps.notify.warn(t('Remote name format invalid'));
+      return TOLD;
+    }
+    if ((await this.deps.service.remotes(repoId)).some((entry) => entry.name === name)) {
+      void this.deps.notify.warn(t('Remote "{0}" already exists.', name));
+      return TOLD;
+    }
+    await this.deps.service.addRemote(repoId, name, url);
+    await this.deps.service.fetch(repoId, { remote: name }).catch((err: unknown) => {
+      if (!(err instanceof RemoteCancelledError)) throw err;
+    });
+    return name;
+  }
+
+  async removeRemote(repoId: string): Promise<ScmRunResult> {
+    const t = this.deps.t;
+    const remotes = await this.deps.service.remotes(repoId);
+    if (remotes.length === 0) {
+      void this.deps.notify.error(t('Your repository has no remotes.'));
+      return TOLD;
+    }
+    const chosen = await this.pick(t('Pick a remote to remove'), remotes.map((entry) => remoteEntry(entry, 'fetch')));
+    if (!chosen) return CANCELLED;
+    await this.deps.service.removeRemote(repoId, chosen.name);
+    return OK;
+  }
+
+  // VS Code's clone: a URL, a folder from the OS picker opened at defaultCloneDirectory (else the home folder), the clone, then
+  // openAfterClone. Clone runs no code of an existing repository, so no project's trust decides it; the clone joins the
+  // projects untrusted, and adding it asks for trust as any added project does.
+  async clone(recursive: boolean): Promise<ScmRunResult> {
+    const t = this.deps.t;
+    const typed = (await this.deps.askInput({ title: recursive ? t('Clone (Recursive)') : t('Clone'), prompt: t('Provide repository URL'), placeholder: t('Repository URL') }))?.trim();
+    const url = typed?.replace(/^git\s+clone\s+/, '');
+    if (!url) return CANCELLED;
+    if (!isRemoteUrl(url)) {
+      void this.deps.notify.warn(t('"{0}" is not a repository URL Damocles can use.', redactUrls(url)));
+      return TOLD;
+    }
+    const configured = expandHome(this.read(SCM_SETTING_KEYS.defaultCloneDirectory, '').trim());
+    const opensAt = path.isAbsolute(configured) ? configured : os.homedir();
+    const parent = await this.deps.pickFolder(opensAt, t('Choose a folder to clone {0} into', redactUrls(url)), t('Select as Repository Destination'));
+    if (parent === undefined) return CANCELLED;
+    let target: string;
+    try {
+      target = await this.deps.service.clone(url, parent, recursive);
+    } catch (err) {
+      if (err instanceof RemoteCancelledError) return CANCELLED;
+      throw err;
+    }
+    const mode = this.read<OpenAfterClone>(SCM_SETTING_KEYS.openAfterClone, 'prompt');
+    if (mode === 'prompt') {
+      const choice = await this.deps.ask({ severity: 'info', message: t('Would you like to open the cloned repository?'), detail: target, actions: [t('Add Project')], cancelLabel: t('Cancel'), defaultAction: 0 });
+      if (choice !== 0) return OK;
+    }
+    await this.deps.addProject(target);
+    return OK;
+  }
+
+  // Push to... and Publish's remote picker; Add a new remote... adds one first. Resolves the remote's name, or the result
+  // when there is none.
+  private async pickPushRemote(repoId: string, remotes: readonly Remote[], branch: string): Promise<string | ScmRunResult> {
+    const t = this.deps.t;
+    const ADD = { kind: 'add' } as const;
+    const picked = await this.pick<Remote | typeof ADD>(placeholderNaming(t, 'Pick a remote to publish the branch "{0}" to:', branch), [
+      ...remotes.map((entry) => remoteEntry(entry, 'push')),
+      { value: ADD, item: { label: t('Add a new remote...') } },
+    ]);
+    if (picked === undefined) return CANCELLED;
+    return picked === ADD ? this.addRemote(repoId) : (picked as Remote).name;
+  }
+
+  private async hasRemotes(repoId: string, purpose: 'pull'): Promise<boolean> {
+    if ((await this.deps.service.remotes(repoId)).length > 0) return true;
+    if (purpose === 'pull') void this.deps.notify.warn(this.deps.t('Your repository has no remotes configured to pull from.'));
+    return false;
+  }
+
   // VS Code's undoCommit: the undone commit's message goes back in the box.
   async undoLastCommit(repoId: string): Promise<ScmRunResult> {
     const outcome = await this.deps.service.undoLastCommit(repoId);
@@ -570,7 +1012,7 @@ export class ScmHost {
   // Read after the change landed, which already happened: a failed read is logged and the shell reads the input again.
   private freshCommitInput(repoId: string): Promise<ScmCommitInput | undefined> {
     return this.deps.service.commitInput(repoId).catch((err: unknown) => {
-      this.deps.log(`[scm] reading the commit input after a commit or undo failed: ${errorText(err)}`);
+      this.deps.log(`[scm] reading the commit input after a commit or undo failed: ${gitErrorText(err)}`);
       return undefined;
     });
   }
@@ -659,9 +1101,7 @@ export class ScmHost {
   async reopenClosed(projectKey: string): Promise<ScmRunResult> {
     const closed = this.deps.service.view(projectKey)?.closedRoots ?? [];
     if (closed.length === 0) return OK;
-    const picked = await this.deps.quickPick(this.deps.t('Pick a repository to reopen'), closed.map((root) => ({ id: root, label: path.basename(root), description: root })));
-    if (picked === undefined) return CANCELLED;
-    const root = closed.find((candidate) => candidate === picked);
+    const root = await this.pick(this.deps.t('Pick a repository to reopen'), closed.map((entry) => ({ value: entry, item: { label: path.basename(entry), description: entry } })));
     if (root === undefined) return CANCELLED;
     await this.deps.service.reopen(projectKey, [root]);
     return OK;
@@ -670,10 +1110,9 @@ export class ScmHost {
   async manageUnsafe(projectKey: string): Promise<ScmRunResult> {
     const unsafe = this.deps.service.view(projectKey)?.unsafe ?? [];
     if (unsafe.length === 0) return OK;
-    const picked = unsafe.length === 1
+    const chosen = unsafe.length === 1
       ? unsafe[0]
-      : await this.deps.quickPick(this.deps.t('Pick a repository to mark as safe and open'), unsafe.map((root) => ({ id: root, label: path.basename(root), description: root })));
-    const chosen = unsafe.find((candidate) => candidate === picked);
+      : await this.pick(this.deps.t('Pick a repository to mark as safe and open'), unsafe.map((root) => ({ value: root, item: { label: path.basename(root), description: root } })));
     if (chosen === undefined) return CANCELLED;
     return (await this.deps.service.trustUnsafe(projectKey, chosen)) ? OK : CANCELLED;
   }
@@ -745,6 +1184,105 @@ export class ScmHost {
     }
     this.deps.editorPane.showChanges({ title: this.changesTitle(target.repo, group), changes: { repoId, source: { kind: group }, entries: entries.map(toScmChange) } }, { focus: true });
     return OK;
+  }
+
+  /**
+   * Compare with...'s tab: the files that differ between two commits, as one multi-file diff tab titled
+   * "left ↔ right" (VS Code's _openChangesBetweenRefs); the labels name the refs the user picked.
+   */
+  async openRefsChanges(repoId: string, left: { readonly hash: string; readonly label: string }, right: { readonly hash: string; readonly label: string }): Promise<ScmRunResult> {
+    const diff = await this.deps.service.diffRefs(repoId, left.hash, right.hash);
+    if (diff.entries.length === 0) {
+      void this.deps.notify.info(this.deps.t('There are no changes between "{0}" and "{1}".', left.label, right.label));
+      return OK;
+    }
+    const source: ScmDiffSource = { kind: 'refs', left: left.hash, right: right.hash };
+    this.keepPair(pairKey(repoId, source), diff);
+    this.deps.editorPane.showChanges({ title: `${left.label} \u2194 ${right.label}`, changes: { repoId, source, entries: diff.entries.map((entry) => toScmChange(entry.change)) } }, { focus: true });
+    return OK;
+  }
+
+  /**
+   * A worktree row's Open (D58, in place of VS Code's Open Worktree): the project whose folder the worktree holds is selected;
+   * any other worktree is added as a project, which asks for trust as any added project does.
+   */
+  async openWorktree(repoId: string, worktreePath: string): Promise<ScmRunResult> {
+    const listed = await this.deps.service.artifacts(repoId, 'worktrees');
+    const worktree = listed.group === 'worktrees' ? listed.rows.find((row) => samePath(row.path, worktreePath)) : undefined;
+    if (!worktree) {
+      void this.deps.notify.warn(this.deps.t('"{0}" is no longer in this repository.', worktreePath));
+      return TOLD;
+    }
+    const project = this.worktreeProject(repoId, worktree.path);
+    if (project !== undefined) await this.deps.selectProject(project.key);
+    else await this.deps.addProject(worktree.path);
+    return OK;
+  }
+
+  // The project a worktree's Open selects: the repository's own project when the worktree holds its folder, else a project
+  // whose folder lies in the worktree, so Open never adds a folder the list already has.
+  private worktreeProject(repoId: string, worktreePath: string): Project | undefined {
+    const own = this.deps.service.repository(repoId)?.projectKey;
+    const holds = (project: Project): boolean => this.projectFolders(project).some((folder) => isInside(worktreePath, folder));
+    const projects = this.deps.projects();
+    return projects.find((project) => project.key === own && holds(project)) ?? projects.find(holds);
+  }
+
+  // VS Code's _viewStash: the stash's files against its base, titled as VS Code titles it.
+  private async openStash(repoId: string, stash: StashArtifact): Promise<ScmRunResult> {
+    const diff = await this.deps.service.diffStash(repoId, stash.hash);
+    if (diff.entries.length === 0) return OK;
+    const source: ScmDiffSource = { kind: 'stash', index: stash.index, hash: stash.hash };
+    this.keepPair(pairKey(repoId, source), diff);
+    this.deps.editorPane.showChanges({ title: this.deps.t('Git Stash #{0}: {1}', stash.index, stash.description), changes: { repoId, source, entries: diff.entries.map((entry) => toScmChange(entry.change)) } }, { focus: true });
+    return OK;
+  }
+
+  // One file of an open View Stash or Compare tab: only a tab main opened names the pair, and only a file it lists.
+  private async pairPatch(repoId: string, source: Extract<ScmDiffSource, { kind: 'stash' | 'refs' }>, relativePath: string): Promise<ScmFileDiffResult> {
+    const key = pairKey(repoId, source);
+    const open = this.deps.editorPane.changesTabs().some(({ state }) => state.changes.repoId === repoId && pairKey(repoId, state.changes.source) === key);
+    if (!open) return { kind: 'missing' };
+    let diff = this.pairs.get(key);
+    if (!diff) {
+      diff = source.kind === 'stash' ? await this.deps.service.diffStash(repoId, source.hash) : await this.deps.service.diffRefs(repoId, source.left, source.right);
+      this.keepPair(key, diff);
+    }
+    const entry = diff.entries.find((candidate) => candidate.change.path === relativePath);
+    return entry ? this.deps.service.entryPatch(repoId, diff.left, entry) : { kind: 'missing' };
+  }
+
+  // A pair's diff, cached for its tab's files; pairs no open tab holds any longer are dropped first.
+  private keepPair(key: string, diff: CommitPairDiff): void {
+    const open = new Set(this.deps.editorPane.changesTabs().map(({ state }) => pairKey(state.changes.repoId, state.changes.source)));
+    for (const held of this.pairs.keys()) if (!open.has(held)) this.pairs.delete(held);
+    this.pairs.set(key, diff);
+  }
+
+  // A picker over values main holds, answered by index.
+  private async pick<T>(placeholder: string, entries: ReadonlyArray<PickEntry<T>>): Promise<T | undefined> {
+    return (await pickEntry(this.deps.quickPick, placeholder, entries))?.value;
+  }
+
+  // A stash that left the list (popped, dropped, cleared, or dropped in a terminal) closes its View Stash tabs.
+  private async closeDroppedStashTabs(repoId: string): Promise<void> {
+    const open = this.deps.editorPane.changesTabs().filter(({ state }) => state.changes.repoId === repoId && state.changes.source.kind === 'stash');
+    if (open.length === 0 || !this.deps.service.repository(repoId)) return;
+    const listed = await this.deps.service.artifacts(repoId, 'stashes');
+    const kept = new Set(listed.group === 'stashes' ? listed.rows.map((row) => row.hash) : []);
+    for (const { state } of open) {
+      const source = state.changes.source;
+      if (source.kind === 'stash' && !kept.has(source.hash)) await this.closeStashTabs(repoId, source.hash);
+    }
+  }
+
+  private async closeStashTabs(repoId: string, hash: string): Promise<void> {
+    this.pairs.delete(pairKey(repoId, { kind: 'stash', index: 0, hash }));
+    await this.deps.editorPane.closeChangesTabs((changes) => changes.repoId === repoId && changes.source.kind === 'stash' && changes.source.hash === hash);
+  }
+
+  private capabilities(): ScmCapabilities {
+    return { stashStaged: canStashStaged(this.deps.service.gitVersion()) };
   }
 
   repo(repoId: string): Repository {
@@ -860,13 +1398,12 @@ export class ScmHost {
     });
   }
 
-  // The post-commit command's one place. Push and sync need remote operations the engine does not have yet, so they act as
-  // none, and the Git log says so once per run.
-  private runPostCommitCommand(): void {
-    const command = this.read(SCM_SETTING_KEYS.postCommitCommand, 'none');
-    if (command === 'none' || this.postCommitNoted) return;
-    this.postCommitNoted = true;
-    this.deps.gitLog(`[scm] postCommitCommand is "${command}", which runs nothing yet: it acts as "none"`);
+  // The post-commit command's one place: Commit & Push and Commit & Sync name theirs, otherwise postCommitCommand decides. It
+  // runs after the commit's reply, as its own flow with its own questions and notices.
+  private runPostCommitCommand(repoId: string, override: ScmPostCommit | undefined): void {
+    const command = override ?? this.read<PostCommitCommand>(SCM_SETTING_KEYS.postCommitCommand, 'none');
+    if (command === 'push') void this.runRequest({ op: 'push', repoId, to: false, force: false, followTags: false });
+    else if (command === 'sync') void this.runRequest({ op: 'sync', repoId, rebase: false });
   }
 
   // A flow main starts itself (a palette command): a failure gets the notice runRequest gives.
@@ -875,7 +1412,7 @@ export class ScmHost {
       await flow();
     } catch (err) {
       this.deps.log(`[scm] ${op} failed: ${err instanceof Error ? err.message : String(err)}`);
-      this.failed(errorText(err));
+      this.failed(gitErrorText(err));
     }
   }
 
@@ -905,6 +1442,7 @@ export class ScmHost {
       inputValidationSubjectLength: this.read(SCM_SETTING_KEYS.inputValidationSubjectLength, 50),
       inputValidationLength: this.read(SCM_SETTING_KEYS.inputValidationLength, 72),
       allowNoVerifyCommit: this.read(SCM_SETTING_KEYS.allowNoVerifyCommit, false),
+      allowForcePush: this.read(SCM_SETTING_KEYS.allowForcePush, false),
     };
   }
 
@@ -964,6 +1502,10 @@ export class ScmHost {
       },
       tooManyChanges: status?.tooManyChanges ?? false,
       busy: snapshot.busy,
+      upstream: status?.upstream ?? null,
+      remotes: status?.remotes ?? [],
+      running: snapshot.running,
+      lastRemote: snapshot.lastRemote,
     };
   }
 
@@ -1014,6 +1556,15 @@ export class ScmHost {
     }
     for (const projectKey of decorations) this.deps.send.decorations(this.decorations(projectKey));
     for (const projectKey of ignores) this.deps.send.filesChanged(projectKey);
+    if (this.pending.clone) this.deps.send.clone(this.deps.service.cloneState());
+    for (const [repoId, groups] of this.pending.artifacts) {
+      if (!this.deps.service.repository(repoId)) continue;
+      const changed: ScmArtifactsChanged = { repoId, groups: [...groups] };
+      this.deps.send.artifactsChanged(changed);
+      if (groups.has('stashes')) void this.closeDroppedStashTabs(repoId).catch((err: unknown) => this.deps.log(`[scm] closing the tabs of dropped stashes failed: ${gitErrorText(err)}`));
+    }
+    this.pending.artifacts.clear();
+    this.pending.clone = false;
     if (repos.size > 0) this.refreshChangesTabs(repos);
     if (views.size > 0 || repos.size > 0) this.deps.menuChanged();
     views.clear();
@@ -1027,12 +1578,13 @@ export class ScmHost {
     for (const repoId of repoIds) {
       if (this.deps.service.repository(repoId)) continue;
       if (this.amendingRepoId === repoId) this.amendingRepoId = undefined;
-      void this.deps.editorPane.closeChanges(repoId).catch((err: unknown) => this.deps.log(`[scm] closing a closed repository's tabs failed: ${errorText(err)}`));
+      void this.deps.editorPane.closeChanges(repoId).catch((err: unknown) => this.deps.log(`[scm] closing a closed repository's tabs failed: ${gitErrorText(err)}`));
     }
     for (const { tabId, state } of this.deps.editorPane.changesTabs()) {
       const repo = repoIds.has(state.changes.repoId) ? this.deps.service.repository(state.changes.repoId)?.repo : undefined;
       if (!repo) continue;
       const source = state.changes.source;
+      if (source.kind === 'stash' || source.kind === 'refs') continue;
       const entries = (repo.lastStatus?.groups[source.kind] ?? []).map(toScmChange);
       const changes: ScmChangesTab = { repoId: state.changes.repoId, source, entries };
       this.deps.editorPane.updateChanges(tabId, { title: state.title, changes });
@@ -1041,6 +1593,19 @@ export class ScmHost {
 }
 
 type GitSide = { readonly name: string; readonly content: string } | NotShownSide;
+
+// A remote in a picker: its name, and its URL without userinfo, since a token can ride in it.
+function remoteEntry(entry: Remote, url: 'fetch' | 'push'): PickEntry<Remote> {
+  const shown = url === 'fetch' ? entry.fetchUrl : entry.pushUrl;
+  return { value: entry, item: { label: entry.name, ...(shown !== undefined ? { description: redactUrls(shown) } : {}) } };
+}
+
+// A placeholder naming user data, which the overlay bounds: the value keeps its tail behind '…', as a cut label does.
+function placeholderNaming(t: ScmHostDeps['t'], template: string, value: string): string {
+  const whole = t(template, value);
+  const over = whole.length - MAX_OVERLAY_LABEL_LENGTH;
+  return over <= 0 ? whole : t(template, `…${value.slice(over + 1)}`);
+}
 
 function toScmChange(change: Change): ScmRepoSnapshot['groups']['merge'][number] {
   return {
@@ -1052,6 +1617,11 @@ function toScmChange(change: Change): ScmRepoSnapshot['groups']['merge'][number]
     strike: change.strike,
     ...(change.submodule ? { submodule: true as const } : {}),
   };
+}
+
+// A View Stash tab is its commit, whatever index it showed at; a Compare tab its two commits.
+function pairKey(repoId: string, source: ScmDiffSource): string {
+  return source.kind === 'stash' ? `${repoId}\0stash\0${source.hash}` : source.kind === 'refs' ? `${repoId}\0refs\0${source.left}\0${source.right}` : `${repoId}\0${source.kind}`;
 }
 
 // VS Code's Repository.getTitle, for the file's current name.

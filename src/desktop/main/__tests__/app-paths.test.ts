@@ -7,7 +7,7 @@ import { parse } from 'yaml';
 vi.mock('electron', () => ({ app: { getVersion: () => '9.8.7' } }));
 
 import { createDesktopAppInfo } from '../platform/app-info';
-import { createDesktopAppPaths, ptyHostPaths, quickOpenWorkerPath, unpackagedResourceRoot, watchWorkerPath } from '../platform/app-paths';
+import { askpassPaths, createDesktopAppPaths, ptyHostPaths, quickOpenWorkerPath, unpackagedResourceRoot, watchWorkerPath } from '../platform/app-paths';
 import { ASAR_UNPACK, asarUnpackFor, WATCHER_UNPACK } from '../platform/unpacked-assets';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
@@ -32,6 +32,12 @@ describe('desktop AppPaths', () => {
       nodePty: path.join(REPO_ROOT, 'node_modules', 'node-pty'),
       shellIntegration: path.join(REPO_ROOT, 'resources', 'shell-integration'),
     });
+    expect(askpassPaths(paths, '/bin/electron')).toEqual({
+      askpass: path.join(REPO_ROOT, 'dist', 'askpass', 'askpass.sh'),
+      sshAskpass: path.join(REPO_ROOT, 'dist', 'askpass', 'ssh-askpass.sh'),
+      node: '/bin/electron',
+      main: path.join(REPO_ROOT, 'dist', 'askpass-main.js'),
+    });
   });
 
   it('reads bundled files from app.asar and runs workers from its app.asar.unpacked sibling when packaged', () => {
@@ -45,6 +51,17 @@ describe('desktop AppPaths', () => {
     expect(paths.workerEntry('sentinel')).toBe(path.join(unpacked, 'dist', 'sentinel.js'));
     expect(quickOpenWorkerPath(paths)).toBe(path.join(unpacked, 'dist', 'quick-open-worker.js'));
     expect(watchWorkerPath(paths)).toBe(path.join(unpacked, 'dist', 'watch-worker.js'));
+  });
+
+  it('runs the askpass scripts and helper from app.asar.unpacked when packaged, since git executes them as real files', () => {
+    const asarPath = path.join(os.tmpdir(), 'Damocles', 'resources', 'app.asar');
+    const unpacked = `${asarPath}.unpacked`;
+    expect(askpassPaths(createDesktopAppPaths({ packaged: true, asarPath }), '/opt/Damocles/damocles')).toEqual({
+      askpass: path.join(unpacked, 'dist', 'askpass', 'askpass.sh'),
+      sshAskpass: path.join(unpacked, 'dist', 'askpass', 'ssh-askpass.sh'),
+      node: '/opt/Damocles/damocles',
+      main: path.join(unpacked, 'dist', 'askpass-main.js'),
+    });
   });
 
   it('runs the pty host from app.asar.unpacked and requires node-pty from app.asar when packaged', () => {
@@ -88,6 +105,7 @@ describe('ASAR_UNPACK', () => {
       ptyHostPaths(paths).script,
       quickOpenWorkerPath(paths),
       watchWorkerPath(paths),
+      ...Object.values(askpassPaths(paths, '/x')).filter((file) => file !== '/x'),
       path.join(paths.unpackedRoot, 'resources', 'grammars', 'tree-sitter-typescript.wasm'),
       path.join(paths.unpackedRoot, 'python', 'damocles_voice_sidecar', 'damocles_voice_sidecar', 'models', 'MODEL_MANIFEST.json'),
     ].map((p) => path.relative(paths.unpackedRoot, p).split(path.sep).join('/'));

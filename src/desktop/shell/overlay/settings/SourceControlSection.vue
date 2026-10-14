@@ -10,23 +10,38 @@ import type { InputParse } from '@/components/settings/controls/SettingInput.vue
 import { useSettingsPage } from '@/components/settings/settings-view';
 import {
   DESKTOP_CONFIGURATION,
+  GIT_ALLOW_FORCE_PUSH_SETTING,
   GIT_ALLOW_NO_VERIFY_COMMIT_SETTING,
   GIT_ALWAYS_SIGN_OFF_SETTING,
+  GIT_AUTOFETCH_PERIOD_SETTING,
+  GIT_AUTOFETCH_SETTING,
+  GIT_AUTO_STASH_SETTING,
   GIT_BRANCH_PREFIX_SETTING,
   GIT_BRANCH_PROTECTION_PROMPT_SETTING,
   GIT_BRANCH_PROTECTION_PROMPTS,
   GIT_BRANCH_PROTECTION_SETTING,
   GIT_CONFIRM_EMPTY_COMMITS_SETTING,
   GIT_CONFIRM_NO_VERIFY_COMMIT_SETTING,
+  GIT_CONFIRM_SYNC_SETTING,
+  GIT_DEFAULT_CLONE_DIRECTORY_SETTING,
   GIT_ENABLE_COMMIT_SIGNING_SETTING,
   GIT_ENABLE_SMART_COMMIT_SETTING,
+  GIT_FOLLOW_TAGS_WHEN_SYNC_SETTING,
   GIT_INPUT_VALIDATION_LENGTH_SETTING,
   GIT_INPUT_VALIDATION_SETTING,
   GIT_INPUT_VALIDATION_SUBJECT_LENGTH_SETTING,
+  GIT_OPEN_AFTER_CLONE,
+  GIT_OPEN_AFTER_CLONE_SETTING,
   GIT_OPEN_REPOSITORY_IN_PARENT_FOLDERS,
   GIT_OPEN_REPOSITORY_IN_PARENT_FOLDERS_SETTING,
   GIT_POST_COMMIT_COMMAND_SETTING,
+  GIT_POST_COMMIT_COMMANDS,
   GIT_PROMPT_TO_SAVE_FILES_BEFORE_COMMIT,
+  GIT_PROMPT_TO_SAVE_FILES_BEFORE_STASH,
+  GIT_PROMPT_TO_SAVE_FILES_BEFORE_STASH_SETTING,
+  GIT_PRUNE_ON_FETCH_SETTING,
+  GIT_PULL_BEFORE_CHECKOUT_SETTING,
+  GIT_REBASE_WHEN_SYNC_SETTING,
   GIT_PROMPT_TO_SAVE_FILES_BEFORE_COMMIT_SETTING,
   GIT_REPOSITORY_SCAN_MAX_DEPTH_SETTING,
   GIT_SMART_COMMIT_CHANGES,
@@ -50,17 +65,27 @@ const parentFolders = computed(() => GIT_OPEN_REPOSITORY_IN_PARENT_FOLDERS.find(
 const scanDepth = computed(() => String(valueOf(GIT_REPOSITORY_SCAN_MAX_DEPTH_SETTING)));
 const subjectLength = computed(() => String(valueOf(GIT_INPUT_VALIDATION_SUBJECT_LENGTH_SETTING)));
 const lineLength = computed(() => String(valueOf(GIT_INPUT_VALIDATION_LENGTH_SETTING)));
+const autofetchPeriod = computed(() => String(valueOf(GIT_AUTOFETCH_PERIOD_SETTING)));
 
 const parseScanDepth = integerSetting(GIT_REPOSITORY_SCAN_MAX_DEPTH_SETTING, t);
 const parseSubjectLength = integerSetting(GIT_INPUT_VALIDATION_SUBJECT_LENGTH_SETTING, t);
 const parseLineLength = integerSetting(GIT_INPUT_VALIDATION_LENGTH_SETTING, t);
+const parseAutofetchPeriod = integerSetting(GIT_AUTOFETCH_PERIOD_SETTING, t);
 
-// Post-commit command offers only None while there are no remote operations; a stored push or sync acts as none.
-const postCommitOptions = computed(() => [{ value: 'none' as const, label: t('settingsHost.git.postCommit.none') }]);
+const postCommit = computed(() => GIT_POST_COMMIT_COMMANDS.find((value) => value === valueOf(GIT_POST_COMMIT_COMMAND_SETTING)) ?? 'none');
+const postCommitOptions = computed(() => GIT_POST_COMMIT_COMMANDS.map((value) => ({ value, label: t(`settingsHost.git.postCommit.${value}`) })));
+const openAfterClone = computed(() => GIT_OPEN_AFTER_CLONE.find((value) => value === valueOf(GIT_OPEN_AFTER_CLONE_SETTING)) ?? 'prompt');
+const openAfterCloneOptions = computed(() => GIT_OPEN_AFTER_CLONE.map((value) => ({ value, label: t(`settingsHost.git.openAfterClone.${value}`) })));
+const cloneDirectory = computed(() => {
+  const value = valueOf(GIT_DEFAULT_CLONE_DIRECTORY_SETTING);
+  return typeof value === 'string' ? value : '';
+});
 const protectionPrompt = computed(() => GIT_BRANCH_PROTECTION_PROMPTS.find((value) => value === valueOf(GIT_BRANCH_PROTECTION_PROMPT_SETTING)) ?? 'alwaysPrompt');
 const protectionPromptOptions = computed(() => GIT_BRANCH_PROTECTION_PROMPTS.map((value) => ({ value, label: t(`settingsHost.git.protectionPrompt.${value}`) })));
 const saveBeforeCommit = computed(() => GIT_PROMPT_TO_SAVE_FILES_BEFORE_COMMIT.find((value) => value === valueOf(GIT_PROMPT_TO_SAVE_FILES_BEFORE_COMMIT_SETTING)) ?? 'always');
 const saveBeforeCommitOptions = computed(() => GIT_PROMPT_TO_SAVE_FILES_BEFORE_COMMIT.map((value) => ({ value, label: t(`settingsHost.git.saveBeforeCommit.${value}`) })));
+const saveBeforeStash = computed(() => GIT_PROMPT_TO_SAVE_FILES_BEFORE_STASH.find((value) => value === valueOf(GIT_PROMPT_TO_SAVE_FILES_BEFORE_STASH_SETTING)) ?? 'always');
+const saveBeforeStashOptions = computed(() => GIT_PROMPT_TO_SAVE_FILES_BEFORE_STASH.map((value) => ({ value, label: t(`settingsHost.git.saveBeforeStash.${value}`) })));
 const smartChanges = computed(() => GIT_SMART_COMMIT_CHANGES.find((value) => value === valueOf(GIT_SMART_COMMIT_CHANGES_SETTING)) ?? 'all');
 const smartChangesOptions = computed(() => GIT_SMART_COMMIT_CHANGES.map((value) => ({ value, label: t(`settingsHost.git.smartChanges.${value}`) })));
 const protectedBranches = computed(() => {
@@ -74,6 +99,19 @@ const branchPrefix = computed(() => {
 // appendix C: one comma-separated input; an empty one stores an empty list
 const parseBranchList: InputParse<string[]> = (raw) => ({ ok: true, value: raw.split(',').map((name) => name.trim()).filter((name) => name !== '') });
 const parseText: InputParse<string> = (raw) => ({ ok: true, value: raw });
+// an empty folder stores '' so Clone asks; a path is stored trimmed, and main checks it when Clone uses it
+const parseFolder: InputParse<string> = (raw) => ({ ok: true, value: raw.trim() });
+
+// Fetch and sync, in the prototype's order; Autofetch period sits after Autofetch.
+const SYNC_SWITCHES = [
+  GIT_PRUNE_ON_FETCH_SETTING,
+  GIT_CONFIRM_SYNC_SETTING,
+  GIT_REBASE_WHEN_SYNC_SETTING,
+  GIT_FOLLOW_TAGS_WHEN_SYNC_SETTING,
+  GIT_ALLOW_FORCE_PUSH_SETTING,
+  GIT_AUTO_STASH_SETTING,
+  GIT_PULL_BEFORE_CHECKOUT_SETTING,
+] as const;
 
 const SWITCHES = [
   GIT_ALWAYS_SIGN_OFF_SETTING,
@@ -93,13 +131,47 @@ const parentOptions = computed(() => GIT_OPEN_REPOSITORY_IN_PARENT_FOLDERS.map((
   <div
     v-if="!page.query"
     class="sm-group-head"
+    data-testid="settings-group-fetch-sync"
+  >
+    {{ t('settingsHost.groups.fetchSync') }}
+  </div>
+  <SettingsRow :id="GIT_AUTOFETCH_SETTING">
+    <SettingSwitch
+      :model-value="valueOf(GIT_AUTOFETCH_SETTING) === true"
+      :label="t('settingsHost.rows.gitAutofetch.label')"
+      @update:model-value="(value) => prefs.set(GIT_AUTOFETCH_SETTING, value)"
+    />
+  </SettingsRow>
+  <SettingsRow :id="GIT_AUTOFETCH_PERIOD_SETTING">
+    <SettingInput
+      :model-value="autofetchPeriod"
+      :parse="parseAutofetchPeriod"
+      :label="t('settingsHost.rows.gitAutofetchPeriod.label')"
+      inputmode="numeric"
+      @commit="(value: number) => prefs.set(GIT_AUTOFETCH_PERIOD_SETTING, value)"
+    />
+  </SettingsRow>
+  <SettingsRow
+    v-for="key in SYNC_SWITCHES"
+    :id="key"
+    :key="key"
+  >
+    <SettingSwitch
+      :model-value="valueOf(key) === true"
+      :label="t(`settingsHost.rows.${gitRowName(key)}.label`)"
+      @update:model-value="(value) => prefs.set(key, value)"
+    />
+  </SettingsRow>
+  <div
+    v-if="!page.query"
+    class="sm-group-head"
     data-testid="settings-group-commit"
   >
     {{ t('settingsHost.groups.commit') }}
   </div>
   <SettingsRow :id="GIT_POST_COMMIT_COMMAND_SETTING">
     <SettingSeg
-      model-value="none"
+      :model-value="postCommit"
       :options="postCommitOptions"
       :label="t('settingsHost.rows.gitPostCommitCommand.label')"
       @update:model-value="(value) => prefs.set(GIT_POST_COMMIT_COMMAND_SETTING, value)"
@@ -129,6 +201,14 @@ const parentOptions = computed(() => GIT_OPEN_REPOSITORY_IN_PARENT_FOLDERS.map((
       :options="saveBeforeCommitOptions"
       :label="t('settingsHost.rows.gitPromptToSaveFilesBeforeCommit.label')"
       @update:model-value="(value) => prefs.set(GIT_PROMPT_TO_SAVE_FILES_BEFORE_COMMIT_SETTING, value)"
+    />
+  </SettingsRow>
+  <SettingsRow :id="GIT_PROMPT_TO_SAVE_FILES_BEFORE_STASH_SETTING">
+    <SettingSeg
+      :model-value="saveBeforeStash"
+      :options="saveBeforeStashOptions"
+      :label="t('settingsHost.rows.gitPromptToSaveFilesBeforeStash.label')"
+      @update:model-value="(value) => prefs.set(GIT_PROMPT_TO_SAVE_FILES_BEFORE_STASH_SETTING, value)"
     />
   </SettingsRow>
   <SettingsRow
@@ -214,6 +294,31 @@ const parentOptions = computed(() => GIT_OPEN_REPOSITORY_IN_PARENT_FOLDERS.map((
       :options="parentOptions"
       :label="t('settingsHost.rows.gitOpenRepositoryInParentFolders.label')"
       @update:model-value="(value) => prefs.set(GIT_OPEN_REPOSITORY_IN_PARENT_FOLDERS_SETTING, value)"
+    />
+  </SettingsRow>
+  <div
+    v-if="!page.query"
+    class="sm-group-head"
+    data-testid="settings-group-clone"
+  >
+    {{ t('settingsHost.groups.clone') }}
+  </div>
+  <SettingsRow :id="GIT_DEFAULT_CLONE_DIRECTORY_SETTING">
+    <SettingInput
+      :model-value="cloneDirectory"
+      :parse="parseFolder"
+      :label="t('settingsHost.rows.gitDefaultCloneDirectory.label')"
+      :placeholder="t('settingsHost.git.askEachTime')"
+      wide
+      @commit="(value: string) => prefs.set(GIT_DEFAULT_CLONE_DIRECTORY_SETTING, value)"
+    />
+  </SettingsRow>
+  <SettingsRow :id="GIT_OPEN_AFTER_CLONE_SETTING">
+    <SettingSeg
+      :model-value="openAfterClone"
+      :options="openAfterCloneOptions"
+      :label="t('settingsHost.rows.gitOpenAfterClone.label')"
+      @update:model-value="(value) => prefs.set(GIT_OPEN_AFTER_CLONE_SETTING, value)"
     />
   </SettingsRow>
 </template>

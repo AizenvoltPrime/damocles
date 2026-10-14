@@ -1,14 +1,16 @@
 import { spawn } from "node:child_process";
 import { access, constants as fsConstants } from "node:fs/promises";
+import * as path from "node:path";
+import { executablePathForm } from "../../executable-path";
+import { findOnAbsolutePath, windowsSystemDirectory } from "../../system-tools";
 
 export type CudaInfo = {
   kind: "cuda";
   driverVersion: string;
   torchWheelChannel: "cu121" | "cu118";
   /**
-   * Path that successfully returned the driver version. Either `"nvidia-smi"`
-   * (resolved through PATH) or the WSL2 canonical passthrough binary at
-   * `/usr/lib/wsl/lib/nvidia-smi`. Surfaced for log diagnostics.
+   * Absolute path that successfully returned the driver version (see
+   * nvidiaSmiCandidates). Surfaced for log diagnostics.
    */
   smiPath: string;
 };
@@ -72,22 +74,38 @@ function parseDriverMajor(version: string): number | null {
   return major;
 }
 
+/**
+ * Where nvidia-smi may be, in order, every one absolute: the first absolute PATH
+ * folder holding it, then on Windows System32 (current drivers) and NVSMI (older
+ * drivers), and on Linux the WSL2 passthrough binary.
+ */
+export function nvidiaSmiCandidates(platform: NodeJS.Platform, env: Readonly<Record<string, string | undefined>>): string[] {
+  const windows = platform === "win32";
+  const onPath = findOnAbsolutePath(windows ? "nvidia-smi.exe" : "nvidia-smi", platform, env);
+  const programFiles = env["ProgramFiles"];
+  const installed = windows
+    ? [
+        path.win32.join(windowsSystemDirectory(env), "nvidia-smi.exe"),
+        ...(programFiles !== undefined && executablePathForm(programFiles, "win32").kind === "absolute"
+          ? [path.win32.join(programFiles, "NVIDIA Corporation", "NVSMI", "nvidia-smi.exe")]
+          : []),
+      ]
+    : platform === "linux" ? [WSL_NVIDIA_SMI_PATH] : [];
+  return [...new Set([...(onPath !== undefined ? [onPath] : []), ...installed])];
+}
+
 async function findWorkingNvidiaSmi(): Promise<{ stdout: string; smiPath: string } | null> {
-  const pathStdout = await runSpecificNvidiaSmi("nvidia-smi");
-  if (pathStdout !== null) return { stdout: pathStdout, smiPath: "nvidia-smi" };
-  if (process.platform === "linux") {
-    const wslExists = await isExecutable(WSL_NVIDIA_SMI_PATH);
-    if (wslExists) {
-      const wslStdout = await runSpecificNvidiaSmi(WSL_NVIDIA_SMI_PATH);
-      if (wslStdout !== null) return { stdout: wslStdout, smiPath: WSL_NVIDIA_SMI_PATH };
-    }
+  for (const smiPath of nvidiaSmiCandidates(process.platform, process.env)) {
+    if (!(await isExecutable(smiPath))) continue;
+    const stdout = await runSpecificNvidiaSmi(smiPath);
+    if (stdout !== null) return { stdout, smiPath };
   }
   return null;
 }
 
-async function isExecutable(path: string): Promise<boolean> {
+async function isExecutable(file: string): Promise<boolean> {
   try {
-    await access(path, fsConstants.X_OK);
+    await access(file, fsConstants.X_OK);
     return true;
   } catch {
     return false;

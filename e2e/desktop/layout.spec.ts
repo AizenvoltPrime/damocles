@@ -4,9 +4,12 @@ import type { ElectronApplication, Page } from '@playwright/test';
 import { expect, test } from './support/fixtures';
 import { overlayPage, selectedProjectKey, shellPage, shellState } from './support/shell';
 import { chooseMenuItem, overlayMenu } from './support/overlay';
-import { openSettingsModal, setContentSize, settingsRow } from './support/settings';
+import { closeSettingsModal, openSettingsModal, setContentSize, settingsRow } from './support/settings';
 import { openProjectChat, settled } from './support/screenshots';
 import { activeTabTopRow, openInEditor, toggleTerminal } from './support/editor';
+import { initRepo } from './support/git';
+import { openScmProject, scmSection } from './support/scm';
+import { sectionAction } from './support/shell-ui';
 import { DEFAULT_GRID_LAYOUT, type GridPane, type GridSlot } from '../../src/desktop/preload/shell-channels';
 
 async function slots(app: ElectronApplication): Promise<Record<GridSlot, GridPane>> {
@@ -176,6 +179,142 @@ async function dragSash(shell: Page, testId: string, dx: number, dy: number): Pr
   await settled(shell);
 }
 
+/**
+ * Drags a sidebar section by its header and drops it `y` px below the top of another section. Playwright's dragTo starts no
+ * HTML5 drag in Electron, so the pointer goes through the DevTools protocol: Chromium starts the drag from the header itself
+ * (draggable, dragstart, the data it set), hands the drag data back, and the drop is dispatched with that data.
+ */
+async function dragSection(app: ElectronApplication, shell: Page, from: string, to: string, y: number): Promise<void> {
+  // The sidebar slides and its sections grow in at launch: measure once they rest, or the press misses the header.
+  await expect(shell.locator(`section[data-section="${to}"]`)).toBeVisible();
+  await settled(shell);
+  const header = (await shell.locator(`section[data-section="${from}"] [data-testid="sidebar-section-header"]`).boundingBox())!;
+  const target = (await shell.locator(`section[data-section="${to}"]`).boundingBox())!;
+  const cdp = await app.context().newCDPSession(shell);
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await cdp.send('Input.setInterceptDrags', { enabled: true });
+    const intercepted = new Promise<{ items: Array<{ mimeType: string; data: string }>; dragOperationsMask: number }>((resolve) => cdp.once('Input.dragIntercepted', (event) => resolve(event.data)));
+    const mouse = (type: 'mouseMoved' | 'mousePressed' | 'mouseReleased', x: number, atY: number) =>
+      cdp.send('Input.dispatchMouseEvent', { type, x, y: atY, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1 });
+    const start = { x: header.x + 30, y: header.y + header.height / 2 };
+    await mouse('mouseMoved', start.x, start.y);
+    await mouse('mousePressed', start.x, start.y);
+    for (let step = 1; step <= 5; step++) await mouse('mouseMoved', start.x, start.y - step * 10);
+    const data = await Promise.race([intercepted, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`no drag started from the ${from} header`)), 5000);
+    })]);
+    const drop = { x: target.x + 40, y: target.y + y };
+    for (const type of ['dragEnter', 'dragOver', 'drop'] as const) await cdp.send('Input.dispatchDragEvent', { type, ...drop, data });
+    await mouse('mouseReleased', drop.x, drop.y);
+  } finally {
+    clearTimeout(timer);
+    try {
+      await cdp.send('Input.setInterceptDrags', { enabled: false });
+    } finally {
+      await cdp.detach();
+    }
+  }
+}
+test('a sidebar section dragged by its header lands on the half it is dropped on, keeps its place after a restart, and its header menu moves and resets it', async ({ launch }) => {
+  const header = (shell: Page, name: string) => shell.locator(`section[data-section="${name}"] [data-testid="sidebar-section-header"]`);
+  const visualOrder = async (shell: Page): Promise<string[]> => {
+    const tops = await shell.locator('section[data-section]').evaluateAll((nodes) => nodes.map((node) => [node.getAttribute('data-section')!, node.getBoundingClientRect().top] as const));
+    return [...tops].sort((a, b) => a[1] - b[1]).map(([name]) => name);
+  };
+  const moved = ['projects', 'scm', 'chats', 'files', 'repos', 'search'];
+  {
+    const { app, close } = await launch();
+    const shell = await shellPage(app);
+    // A native HTML5 drag: Source control's header onto the upper half of Chats.
+    await dragSection(app, shell, 'scm', 'chats', 6);
+    await expect.poll(() => visualOrder(shell)).toEqual(moved);
+    await expect(shell.getByTestId('sidebar-announcement')).toHaveText('Source control moved to position 2 of 6');
+    // Tab follows the order on screen (reading-flow), not the DOM's. Collapsing Projects makes its rows inert and disables the
+    // projects and scm sash, so Tab from Projects' header lands on Source control's.
+    expect(await shell.getByTestId('sidebar').evaluate((nav) => getComputedStyle(nav).getPropertyValue('reading-flow'))).toBe('flex-visual');
+    await header(shell, 'projects').locator('button[aria-expanded]').click();
+    await header(shell, 'projects').locator('button[aria-expanded]').focus();
+    await shell.keyboard.press('Tab');
+    await expect(header(shell, 'scm').locator('button[aria-expanded]')).toBeFocused();
+    await close();
+  }
+  const { app } = await launch();
+  const shell = await shellPage(app);
+  // main read the order the shell reported back from window-layout.json
+  expect((await shellState(app)).layout.sectionOrder).toEqual(moved);
+  await expect.poll(() => visualOrder(shell)).toEqual(moved);
+
+  // Shift+F10 on a header opens its menu; Move Down swaps it with the section below.
+  await header(shell, 'scm').locator('button[aria-expanded]').focus();
+  await shell.keyboard.press('Shift+F10');
+  await chooseMenuItem(app, 'down');
+  await expect.poll(() => visualOrder(shell)).toEqual(['projects', 'chats', 'scm', 'files', 'repos', 'search']);
+  await header(shell, 'files').click({ button: 'right' });
+  await chooseMenuItem(app, 'reset');
+  await expect.poll(() => visualOrder(shell)).toEqual(['projects', 'chats', 'files', 'scm', 'repos', 'search']);
+});
+
+test('a sash sits in every gap between sidebar sections wherever they are, and one beside collapsed sections moves the open ones past them', async ({ launch }) => {
+  const { app } = await launch();
+  const shell = await shellPage(app);
+  // within the 1024x768 displays of the macOS and Windows runners, whose work areas cap the height
+  await setContentSize(app, 1000, 660);
+  await settled(shell);
+  const height = (name: string): Promise<number> => shell.locator(`section[data-section="${name}"]`).evaluate((node) => Math.round(node.getBoundingClientRect().height));
+  // Each gap's sash: centred on the top of the section below it, and the element the pointer hits there unless disabled.
+  const gaps = (): Promise<Array<{ between: string; atGap: boolean; hit: boolean; disabled: boolean }>> => shell.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>('[data-testid="section-sash"]')].map((sash) => {
+      const rect = sash.getBoundingClientRect();
+      const below = sash.dataset['between']!.split(' ')[1]!;
+      const top = document.querySelector(`section[data-section="${below}"]`)!.getBoundingClientRect().top;
+      const centre = rect.top + rect.height / 2;
+      return { between: sash.dataset['between']!, atGap: Math.abs(centre - top) <= 2, hit: sash.contains(document.elementFromPoint(rect.left + rect.width / 2, centre)), disabled: sash.hasAttribute('data-disabled') };
+    }));
+  const dragSectionSash = async (between: string, dy: number): Promise<void> => {
+    const box = (await shell.locator(`[data-testid="section-sash"][data-between="${between}"]`).boundingBox())!;
+    await shell.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await shell.mouse.down();
+    await shell.mouse.move(box.x + box.width / 2, box.y + box.height / 2 + dy, { steps: 6 });
+    await shell.mouse.up();
+    await settled(shell);
+  };
+  const enabledAtEveryGap = (between: string[]) => between.map((pair) => ({ between: pair, atGap: true, hit: true, disabled: false }));
+
+  const toggle = (name: string) => shell.locator(`section[data-section="${name}"] [data-testid="sidebar-section-header"] button[aria-expanded]`);
+  // Repositories and Search are collapsed below Source control by default and can give or take nothing: VS Code disables
+  // those two sashes.
+  expect(await gaps()).toEqual([
+    ...enabledAtEveryGap(['projects chats', 'chats files', 'files scm']),
+    { between: 'scm repos', atGap: true, hit: false, disabled: true },
+    { between: 'repos search', atGap: true, hit: false, disabled: true },
+  ]);
+  // With Search open, the sash above collapsed Repositories moves Source control and Search past it.
+  await toggle('search').click();
+  await settled(shell);
+  await expect.poll(gaps).toEqual(enabledAtEveryGap(['projects chats', 'chats files', 'files scm', 'scm repos', 'repos search']));
+  const scm = await height('scm');
+  const search = await height('search');
+  await dragSectionSash('scm repos', 40);
+  expect(await height('scm')).toBe(scm + 40);
+  expect(await height('search')).toBe(search - 40);
+
+  await toggle('search').click();
+  await settled(shell);
+  await dragSection(app, shell, 'scm', 'projects', 6);
+  await expect.poll(gaps).toEqual([
+    ...enabledAtEveryGap(['scm projects', 'projects chats', 'chats files']),
+    { between: 'files repos', atGap: true, hit: false, disabled: true },
+    { between: 'repos search', atGap: true, hit: false, disabled: true },
+  ]);
+  // Up, so Source control gives back part of the 40 px it took above; below it Projects may already be at its minimum.
+  const projects = await height('projects');
+  const scmOnTop = await height('scm');
+  await dragSectionSash('scm projects', -30);
+  expect(await height('scm')).toBe(scmOnTop - 30);
+  expect(await height('projects')).toBe(projects + 30);
+});
+
 test('a sash drag keeps the size it was released at through later state pushes, and main saves it', async ({ home, launch }) => {
   const { app } = await launch();
   await openProjectChat(app, home.project);
@@ -234,4 +373,59 @@ test('the focus overlay fits the window content area with the reference insets a
   }
   await shell.keyboard.press('Escape');
   await expect(shell.getByTestId('editor-pane')).not.toHaveAttribute('data-focus-overlay', 'on');
+});
+
+test('section titles read in full at rest; title actions show on hover or keyboard focus, and always with Always show section actions', async ({ foreground: _foreground, home, launch }) => {
+  await initRepo(home, home.project);
+  const { app } = await launch();
+  const shell = await openScmProject(app, home.project);
+  const title = scmSection(shell).getByTestId('sidebar-section-title');
+  const actions = scmSection(shell).getByTestId('sidebar-section-actions');
+  const header = scmSection(shell).getByTestId('sidebar-section-header');
+
+  // the pointer away from the sidebar and focus elsewhere: nothing claims the title's room
+  await shell.mouse.move(1200, 600);
+  await shell.locator('body').evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await expect(actions).toBeHidden();
+  await expect(title).toHaveText(/^source control$/i);
+  expect(await title.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+
+  await header.hover();
+  await expect(actions).toBeVisible();
+  await expect(scmSection(shell).getByTestId('scm-more-actions')).toBeVisible();
+  await shell.mouse.move(1200, 600);
+  await expect(actions).toBeHidden();
+
+  // the keyboard: focusing the header button shows them, and Tab reaches the first
+  await scmSection(shell).locator('h2 button').focus();
+  await expect(actions).toBeVisible();
+  await shell.keyboard.press('Tab');
+  await expect(scmSection(shell).getByTestId('scm-view-mode')).toBeFocused();
+
+  // a collapsed section shows none, even focused
+  await scmSection(shell).locator('h2 button').focus();
+  await shell.keyboard.press('Enter');
+  await expect(scmSection(shell).locator('h2 button')).toHaveAttribute('aria-expanded', 'false');
+  await expect(actions).toBeHidden();
+  await shell.keyboard.press('Enter');
+  await expect(scmSection(shell).locator('h2 button')).toHaveAttribute('aria-expanded', 'true');
+
+  // Settings › Appearance › Always show section actions: shown at rest while on, and off again hides them
+  const settings = await openSettingsModal(app, 'appearance');
+  const row = settingsRow(settings, 'damocles.desktop.sidebar.alwaysShowHeaderActions');
+  await expect(row).toContainText('Always show section actions');
+  await row.getByRole('switch').click();
+  await closeSettingsModal(settings);
+  await shell.mouse.move(1200, 600);
+  await shell.locator('body').evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await expect(actions).toBeVisible();
+  await expect(shell.getByTestId('files-section').getByTestId('sidebar-section-actions')).toBeVisible();
+  const again = await openSettingsModal(app, 'appearance');
+  await settingsRow(again, 'damocles.desktop.sidebar.alwaysShowHeaderActions').getByRole('switch').click();
+  await closeSettingsModal(again);
+  await shell.mouse.move(1200, 600);
+  await shell.locator('body').evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await expect(actions).toBeHidden();
+  // hovering the section still shows them
+  await sectionAction(shell, 'scm-refresh');
 });

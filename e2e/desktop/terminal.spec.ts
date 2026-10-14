@@ -1,3 +1,5 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { ElectronApplication, Locator, Page } from '@playwright/test';
 import { activeChat, expect, test } from './support/fixtures';
 import { openProjectChat } from './support/screenshots';
@@ -299,6 +301,42 @@ test('the new-terminal quick pick lists the profiles with the default marked, an
   await expect(quickPick(overlay)).toBeVisible();
   await defaultRow.click();
   await expect(terminalRows(shell)).toHaveCount(2);
+});
+
+test('with no project open a terminal starts in the home folder and stays there once a project opens, where the next one starts', async ({ home, launch }) => {
+  useTestProfile(home);
+  const { app } = await launch();
+  const shell = await openTerminal(app);
+  // The command's own text has no `cwd=`, so only the shell's answer matches. A path wider than the terminal wraps onto the
+  // next rows, so it is read between brackets and the row breaks are dropped.
+  const cwd = async (): Promise<string> => {
+    await runInTerminal(shell, windows ? 'echo c^wd=[%CD%]' : 'echo c\'\'wd="[$PWD]"');
+    return (await readFromTerminal(shell, /cwd=\[([^\]]+)\]/)).replace(/\n/g, '');
+  };
+  // Windows and macOS file systems ignore case by default; Linux's do not.
+  const folded = (folder: string): string => (process.platform === 'win32' || process.platform === 'darwin' ? folder.toLowerCase() : folder);
+  const sameFolder = (a: string, b: string): boolean => folded(fs.realpathSync.native(a.trim())) === folded(fs.realpathSync.native(b));
+  expect(sameFolder(await cwd(), home.home)).toBe(true);
+  await expect(shell.getByTestId('terminal-tab-project')).toHaveText('Home folder');
+
+  // New Terminal with no project open skips the project step.
+  const overlay = await overlayPage(app);
+  await clickMenu(app, 'damocles.terminal.new');
+  await expect(quickPick(overlay)).toBeVisible();
+  await overlay.locator(`[data-testid="quick-pick-item"][data-item-id="${TEST_PROFILE}"]`).click();
+  await expect(terminalRows(shell)).toHaveCount(2);
+  expect(sameFolder(await cwd(), home.home)).toBe(true);
+
+  const homeIds = await terminalRows(shell).evaluateAll((rows) => rows.map((row) => row.getAttribute('data-terminal-id')!));
+  await openProjectChat(app, home.project);
+  await expect(terminalRows(shell)).toHaveCount(2);
+  expect(await terminalRows(shell).evaluateAll((rows) => rows.map((row) => row.getAttribute('data-terminal-id')!))).toEqual(homeIds);
+  await expect(shell.locator('[data-testid="terminal-view"][data-status="running"]')).toHaveCount(2);
+
+  await shell.getByTestId('terminal-new').click({ modifiers: ['Shift'] });
+  await expect(terminalRows(shell)).toHaveCount(3);
+  expect(sameFolder(await cwd(), home.project)).toBe(true);
+  await expect(terminalRows(shell).getByTestId('terminal-row-project')).toHaveText(['Home folder', 'Home folder', path.basename(home.project)]);
 });
 
 test('a relaunch restores the terminal list with live shells, and keyboard focus goes only to the selected chat\'s composer', async ({ foreground: _foreground, home, launch }) => {

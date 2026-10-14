@@ -4,7 +4,8 @@ import type { ElectronApplication, Locator, Page } from '@playwright/test';
 import { expect, test } from './support/fixtures';
 import { overlayPage, pressKeys, PRIMARY, recordedToasts, recordToasts, shellPage, shellState } from './support/shell';
 import { menuItem, overlayMenu, readyOverlay } from './support/overlay';
-import { openProjectChat } from './support/screenshots';
+import { commitMessage, gitLog, ledgerPath, moreActions, openScmProject, scmSection } from './support/scm';
+import { openProjectChat, settled } from './support/screenshots';
 import { addProject, answerDialogs, answerOpenDialog, askedDialogs, TRUST_PROMPT } from './support/ui';
 import { diffEditor, editorTab, filesRow, quickPick } from './support/editor';
 import { openSettingsModal, settingsRow, chooseSegment, closeSettingsModal } from './support/settings';
@@ -16,61 +17,32 @@ import { COMMIT_MESSAGE_OUTPUT_TOOL } from '../../src/core/scm/commit-message';
 // Source control (plan slice 10): every acceptance criterion of the slice, against real git in the hermetic home.
 const HOOKS = { DAMOCLES_E2E_HOOKS: '1' };
 
-// main's source control hooks (DAMOCLES_E2E_HOOKS=1, unpackaged only)
-type ScmGlobals = { __damoclesE2e: { scm: {
-  ledgerPath(): string;
-  gitLog(): Promise<string>;
-} } };
-const ledgerPath = (app: ElectronApplication): Promise<string> => app.evaluate(() => (globalThis as unknown as ScmGlobals).__damoclesE2e.scm.ledgerPath());
-const gitLog = (app: ElectronApplication): Promise<string> => app.evaluate(() => (globalThis as unknown as ScmGlobals).__damoclesE2e.scm.gitLog());
-
-const section = (shell: Page): Locator => shell.getByTestId('scm-section');
-const state = (shell: Page): Locator => section(shell).getByTestId('scm-state');
+const state = (shell: Page): Locator => scmSection(shell).getByTestId('scm-state');
 const changeRow = (shell: Page, group: string, file: string): Locator =>
-  section(shell).locator(`[data-testid="scm-change"][data-group="${group}"][data-path="${file}"]`);
-const groupRow = (shell: Page, group: string): Locator => section(shell).locator(`[data-testid="scm-group"][data-group="${group}"]`);
-const commitMessage = (shell: Page): Locator => section(shell).getByTestId('scm-commit-message');
+  scmSection(shell).locator(`[data-testid="scm-change"][data-group="${group}"][data-path="${file}"]`);
+const groupRow = (shell: Page, group: string): Locator => scmSection(shell).locator(`[data-testid="scm-group"][data-group="${group}"]`);
 
-/** Adds `dir` as a trusted project and waits until Source control shows its changes. */
-async function openScmProject(app: ElectronApplication, dir: string): Promise<Page> {
-  await openProjectChat(app, dir);
-  const shell = await shellPage(app);
-  await expect(commitMessage(shell)).toBeVisible({ timeout: 30_000 });
-  return shell;
-}
-
-/** Runs a source control row or group action through its inline button; Playwright clicks it while its fade leaves it at opacity 0. */
+/** Runs a source control row or group action through its inline button, which a change row shows while hovered or focused. */
 async function inline(row: Locator, action: string): Promise<void> {
+  // focus, not hover: the list can still scroll under a resting pointer, which ends a hover and hides the actions
+  await row.focus();
   await row.getByTestId(action).click();
-}
-
-/** Opens More Actions and chooses `itemId`, inside `submenu` when given. */
-async function moreActions(app: ElectronApplication, shell: Page, itemId: string, submenu?: string): Promise<void> {
-  const overlay = await readyOverlay(app);
-  // A menu answered a moment ago may still be playing its exit.
-  await expect(overlayMenu(overlay)).toHaveCount(0);
-  await section(shell).getByTestId('scm-more-actions').click();
-  await expect(overlayMenu(overlay)).toBeVisible();
-  if (submenu !== undefined) {
-    await menuItem(overlay, `submenu:${submenu}`).click();
-    await overlay.locator(`[data-submenu-item][data-item-id="${itemId}"]`).click();
-  } else await menuItem(overlay, itemId).click();
 }
 
 /** Opens the repository picker's menu once any earlier menu has played its exit. */
 async function openPicker(app: ElectronApplication, shell: Page): Promise<Page> {
   const overlay = await readyOverlay(app);
   await expect(overlayMenu(overlay)).toHaveCount(0);
-  await section(shell).getByTestId('scm-repo-picker').click();
+  await scmSection(shell).getByTestId('scm-repo-picker').click();
   await expect(overlayMenu(overlay)).toBeVisible();
   return overlay;
 }
 
-/** Chooses the quick pick item main listed under `id`, such as a closed repository's root. */
-async function pickQuickItem(app: ElectronApplication, id: string): Promise<void> {
+/** Chooses the quick pick item whose text holds `text`, such as a closed repository's root; main's ids are indices. */
+async function pickQuickItem(app: ElectronApplication, text: string): Promise<void> {
   const overlay = await readyOverlay(app);
   await expect(quickPick(overlay)).toBeVisible();
-  await overlay.locator(`[data-testid="quick-pick-item"][data-item-id=${JSON.stringify(id)}]`).click();
+  await quickPick(overlay).getByTestId('quick-pick-item').filter({ hasText: text }).click();
   await expect(quickPick(overlay)).toHaveCount(0);
 }
 
@@ -86,7 +58,7 @@ async function runCommand(app: ElectronApplication, query: string, id: string): 
   await expect(quickPick(overlay)).toHaveCount(0);
 }
 
-test('a project with a nested repository and a submodule lists three repositories; an edit shows M, Stage moves it and Ctrl+Enter commits it', async ({ home, launch }) => {
+test('a project with a nested repository and a submodule lists three repositories; an edit shows M, Stage moves it and Ctrl+Enter commits it', async ({ foreground: _foreground, home, launch }) => {
   const outside = path.join(home.root, 'sub-origin');
   await initRepo(home, outside, { 'lib.ts': 'export {};\n' });
   await initRepo(home, home.project, { 'a.ts': 'export const a = 1;\n', 'b.ts': 'export const b = 1;\n', '.gitignore': 'ignored.log\n' });
@@ -100,7 +72,7 @@ test('a project with a nested repository and a submodule lists three repositorie
   const shell = await openScmProject(app, home.project);
 
   // The picker lists the project's repository, the nested one and the submodule.
-  const picker = section(shell).getByTestId('scm-repo-picker');
+  const picker = scmSection(shell).getByTestId('scm-repo-picker');
   await expect(picker).toContainText('1 of 3');
   await picker.click();
   const overlay = await readyOverlay(app);
@@ -193,18 +165,18 @@ test('the commit box: the length warning follows inputValidation, Generate fills
 
     // Off by default: no warning.
     await commitMessage(shell).fill(subject);
-    await expect(section(shell).getByTestId('scm-length-warning')).toHaveCount(0);
+    await expect(scmSection(shell).getByTestId('scm-length-warning')).toHaveCount(0);
     // On, from Settings › Source control: the subject over 50 is named.
     const overlay = await openSettingsModal(app, 'sourceControl');
     await settingsRow(overlay, 'damocles.desktop.git.inputValidation').getByRole('switch').click();
     await closeSettingsModal(overlay);
     await commitMessage(shell).click();
     await commitMessage(shell).press('End');
-    await expect(section(shell).getByTestId('scm-length-warning')).toHaveText(`${subject.length - 50} characters over 50 in current line`);
+    await expect(scmSection(shell).getByTestId('scm-length-warning')).toHaveText(`${subject.length - 50} characters over 50 in current line`);
 
     // Generate: the box takes the model's message, and the ledger gets one commit-message line from the stub model for the project folder.
     stub.subCallReplies.set(COMMIT_MESSAGE_OUTPUT_TOOL, [{ chunks: [], toolCalls: [{ name: COMMIT_MESSAGE_OUTPUT_TOOL, arguments: { message: 'Bump a to 2\n\nThe tests expect it.' } }] }]);
-    await section(shell).getByTestId('scm-generate').click();
+    await scmSection(shell).getByTestId('scm-generate').click();
     await expect(commitMessage(shell)).toHaveValue('Bump a to 2\n\nThe tests expect it.');
     const ledger = await ledgerPath(app);
     type LedgerLine = { purpose?: string; provider?: string; model?: string; cwd?: string };
@@ -213,20 +185,20 @@ test('the commit box: the length warning follows inputValidation, Generate fills
 
     // A reply without a message leaves the box as it was and says so.
     stub.subCallReplies.set(COMMIT_MESSAGE_OUTPUT_TOOL, [{ chunks: ['No message today.'] }]);
-    await section(shell).getByTestId('scm-generate').click();
+    await scmSection(shell).getByTestId('scm-generate').click();
     await expect.poll(async () => (await recordedToasts(app)).map((notice) => notice.message)).toContain("Couldn't generate a commit message. The model gave no usable message.");
     await expect(commitMessage(shell)).toHaveValue('Bump a to 2\n\nThe tests expect it.');
 
     // No user.name or user.email in git: Commit names them and commits nothing.
-    await section(shell).getByTestId('scm-commit').click();
-    await expect(section(shell).getByTestId('scm-commit-feedback')).toHaveText('Make sure you configure your "user.name" and "user.email" in git.');
+    await scmSection(shell).getByTestId('scm-commit').click();
+    await expect(scmSection(shell).getByTestId('scm-commit-feedback')).toHaveText('Make sure you configure your "user.name" and "user.email" in git.');
     expect(await git(home, home.project, 'rev-list', '--count', 'HEAD')).toBe('1');
   } finally {
     await stub.close();
   }
 });
 
-test('a merge in progress shows Commit Merge and Abort Merge; a rebase shows Continue Rebase and Abort Rebase and continues without an editor', async ({ home, launch }) => {
+test('a merge in progress shows Commit Merge and Abort Merge; a rebase shows Continue Rebase and Abort Rebase and continues without an editor', async ({ foreground: _foreground, home, launch }) => {
   await initRepo(home, home.project, { 'a.ts': 'base\n' });
   await git(home, home.project, 'checkout', '-b', 'feat');
   fs.writeFileSync(path.join(home.project, 'a.ts'), 'feat\n');
@@ -238,29 +210,60 @@ test('a merge in progress shows Commit Merge and Abort Merge; a rebase shows Con
 
   const { app } = await launch({ env: HOOKS });
   const shell = await openScmProject(app, home.project);
-  await expect(section(shell).getByTestId('scm-operation')).toHaveAttribute('data-operation', 'merge');
+  await expect(scmSection(shell).getByTestId('scm-operation')).toHaveAttribute('data-operation', 'merge');
   await expect(changeRow(shell, 'merge', 'a.ts')).toHaveAttribute('data-letter', '!');
-  await expect(section(shell).getByTestId('scm-commit')).toContainText('Commit Merge');
+  await expect(scmSection(shell).getByTestId('scm-commit')).toContainText('Commit Merge');
   await expect(commitMessage(shell)).toHaveValue(/Merge branch 'feat'/);
-  await section(shell).getByTestId('scm-commit').click();
-  await expect(section(shell).getByTestId('scm-commit-feedback')).toHaveText('Resolve the merge conflicts before committing');
-  await section(shell).getByTestId('scm-abort').click();
-  await expect(section(shell).getByTestId('scm-operation')).toHaveCount(0);
+  await scmSection(shell).getByTestId('scm-commit').click();
+  await expect(scmSection(shell).getByTestId('scm-commit-feedback')).toHaveText('Resolve the merge conflicts before committing');
+  await scmSection(shell).getByTestId('scm-abort').click();
+  await expect(scmSection(shell).getByTestId('scm-operation')).toHaveCount(0);
   expect(fs.existsSync(path.join(home.project, '.git', 'MERGE_HEAD'))).toBe(false);
 
   // A rebase of feat onto main stops on the conflict; resolving, staging and Continue Rebase finish it.
   await git(home, home.project, 'checkout', 'feat');
   await git(home, home.project, 'rebase', 'main').catch(() => undefined);
-  await expect(section(shell).getByTestId('scm-operation')).toHaveAttribute('data-operation', 'rebase');
-  await expect(section(shell).getByTestId('scm-commit')).toContainText('Continue Rebase');
-  await expect(section(shell).getByTestId('scm-abort')).toHaveText('Abort Rebase');
+  await expect(scmSection(shell).getByTestId('scm-operation')).toHaveAttribute('data-operation', 'rebase');
+  await expect(scmSection(shell).getByTestId('scm-commit')).toContainText('Continue Rebase');
+  await expect(scmSection(shell).getByTestId('scm-abort')).toHaveText('Abort Rebase');
   fs.writeFileSync(path.join(home.project, 'a.ts'), 'resolved\n');
   await inline(changeRow(shell, 'merge', 'a.ts'), 'scm-row-stage');
   await expect(changeRow(shell, 'index', 'a.ts')).toBeVisible();
-  await section(shell).getByTestId('scm-commit').click();
-  await expect(section(shell).getByTestId('scm-operation')).toHaveCount(0, { timeout: 20_000 });
+  await scmSection(shell).getByTestId('scm-commit').click();
+  await expect(scmSection(shell).getByTestId('scm-operation')).toHaveCount(0, { timeout: 20_000 });
   expect(fs.existsSync(path.join(home.project, '.git', 'rebase-merge'))).toBe(false);
   expect(await git(home, home.project, 'log', '-1', '--format=%s')).toBe('Feat edit');
+});
+
+test('Source control shorter than its branch row and commit box scrolls them with its changes, so a change stays in reach of the pointer and the keys', async ({ foreground: _foreground, home, launch }) => {
+  await initRepo(home, home.project, { 'a.ts': 'export const a = 1;\n' });
+  fs.writeFileSync(path.join(home.project, 'a.ts'), 'export const a = 2;\n');
+  const { app } = await launch({ env: HOOKS });
+  const shell = await openScmProject(app, home.project);
+  await expect(changeRow(shell, 'workingTree', 'a.ts')).toBeVisible();
+
+  // End on the sash above Source control leaves it its minimum, as a short display does
+  await shell.locator('[data-testid="section-sash"][data-between="files scm"]').press('End');
+  await settled(shell);
+  const body = scmSection(shell).getByTestId('scm-body');
+  expect(await body.evaluate((node) => node.scrollHeight > node.clientHeight)).toBe(true);
+  const inBody = (row: Locator): Promise<boolean> => row.evaluate((node) => {
+    const view = node.closest('[data-testid="scm-body"]')!.getBoundingClientRect();
+    const box = node.getBoundingClientRect();
+    return box.top >= view.top && box.bottom <= view.bottom;
+  });
+
+  // ArrowDown from the group's row, scrolled out of view, brings the change into the body
+  await groupRow(shell, 'workingTree').focus();
+  await body.evaluate((node) => { node.scrollTop = 0; });
+  expect(await inBody(changeRow(shell, 'workingTree', 'a.ts'))).toBe(false);
+  await shell.keyboard.press('ArrowDown');
+  await expect(changeRow(shell, 'workingTree', 'a.ts')).toBeFocused();
+  expect(await inBody(changeRow(shell, 'workingTree', 'a.ts'))).toBe(true);
+
+  await body.evaluate((node) => { node.scrollTop = 0; });
+  await inline(changeRow(shell, 'workingTree', 'a.ts'), 'scm-row-stage');
+  await expect(changeRow(shell, 'index', 'a.ts')).toBeVisible();
 });
 
 test('an untrusted project runs no git, and granting trust activates Source control with its nested repository and submodule, without a reload', async ({ home, launch }) => {
@@ -283,7 +286,7 @@ test('an untrusted project runs no git, and granting trust activates Source cont
   await answerDialogs(app, { [TRUST_PROMPT]: 'Trust Folder' });
   await state(shell).getByTestId('scm-state-action').click();
   await expect(commitMessage(shell)).toBeVisible({ timeout: 30_000 });
-  await expect(section(shell).getByTestId('scm-repo-picker')).toContainText('1 of 3');
+  await expect(scmSection(shell).getByTestId('scm-repo-picker')).toContainText('1 of 3');
   // The same log read shows git once trust allows it, so the empty read above is no blind spot.
   await expect.poll(() => gitLog(app)).toContain('> git ');
   expect((await askedDialogs(app)).filter((dialog) => dialog.message.startsWith(TRUST_PROMPT))).toHaveLength(2);
@@ -297,8 +300,8 @@ test('more than 10,000 changes shows the status limit warning', async ({ home, l
 
   const { app } = await launch({ env: HOOKS });
   const shell = await openScmProject(app, home.project);
-  await expect(section(shell).getByTestId('scm-too-many')).toHaveText('Too many changes were detected. Only the first 10000 changes will be shown below.', { timeout: 60_000 });
-  await expect(section(shell).getByTestId('scm-count')).toHaveText('10000');
+  await expect(scmSection(shell).getByTestId('scm-too-many')).toHaveText('Too many changes were detected. Only the first 10000 changes will be shown below.', { timeout: 60_000 });
+  await expect(scmSection(shell).getByTestId('scm-count')).toHaveText('10000');
 });
 
 test('a folder without a repository offers Initialize Repository, which runs git init there and activates the view', async ({ home, launch }) => {
@@ -324,13 +327,13 @@ test('Close Repository hides a nested repository, Reopen brings it back, the clo
 
   let desktop = await launch({ env: HOOKS });
   let shell = await openScmProject(desktop.app, home.project);
-  const picker = section(shell).getByTestId('scm-repo-picker');
+  const picker = scmSection(shell).getByTestId('scm-repo-picker');
   await expect(picker).toContainText('1 of 2');
 
   // The picker's menu: select the nested repository, close it, and reopen it from More Actions › Repositories.
   let overlay = await openPicker(desktop.app, shell);
   await overlayMenu(overlay).locator('[data-item-id^="repo:"]').nth(1).click();
-  await expect(section(shell).getByTestId('scm-repo-name')).toHaveText('nested');
+  await expect(scmSection(shell).getByTestId('scm-repo-name')).toHaveText('nested');
   overlay = await openPicker(desktop.app, shell);
   await menuItem(overlay, 'closeRepository').click();
   await expect(picker).toHaveCount(0);
@@ -341,7 +344,7 @@ test('Close Repository hides a nested repository, Reopen brings it back, the clo
   // Closed again, it stays closed after a restart.
   overlay = await openPicker(desktop.app, shell);
   await overlayMenu(overlay).locator('[data-item-id^="repo:"]').nth(1).click();
-  await expect(section(shell).getByTestId('scm-repo-name')).toHaveText('nested');
+  await expect(scmSection(shell).getByTestId('scm-repo-name')).toHaveText('nested');
   await moreActions(desktop.app, shell, 'closeRepository', 'repositories');
   await expect(picker).toHaveCount(0);
   await desktop.close();
@@ -349,16 +352,16 @@ test('Close Repository hides a nested repository, Reopen brings it back, the clo
   await recordToasts(desktop.app);
   shell = await shellPage(desktop.app);
   await expect(commitMessage(shell)).toBeVisible({ timeout: 30_000 });
-  await expect(section(shell).getByTestId('scm-repo-picker')).toHaveCount(0);
+  await expect(scmSection(shell).getByTestId('scm-repo-picker')).toHaveCount(0);
 
   // Open Repository: a folder below the scan depth opens; one outside the project folder is refused.
   await answerOpenDialog(desktop.app, deep);
   await runCommand(desktop.app, 'open repository', 'damocles.git.openRepository');
-  await expect(section(shell).getByTestId('scm-repo-picker')).toContainText('of 2');
+  await expect(scmSection(shell).getByTestId('scm-repo-picker')).toContainText('of 2');
   await answerOpenDialog(desktop.app, outside);
   await runCommand(desktop.app, 'open repository', 'damocles.git.openRepository');
   await expect.poll(async () => (await recordedToasts(desktop.app)).map((notice) => notice.message)).toContain('Open Repository opens a repository inside the project folder only.');
-  await expect(section(shell).getByTestId('scm-repo-picker')).toContainText('of 2');
+  await expect(scmSection(shell).getByTestId('scm-repo-picker')).toContainText('of 2');
 });
 
 test('a linked worktree found while scanning stays closed, and a project that is itself a linked worktree opens its own repository', async ({ home, launch }) => {
@@ -369,14 +372,14 @@ test('a linked worktree found while scanning stays closed, and a project that is
 
   const { app } = await launch({ env: HOOKS });
   const shell = await openScmProject(app, home.project);
-  await expect(section(shell).getByTestId('scm-repo-picker')).toHaveCount(0);
+  await expect(scmSection(shell).getByTestId('scm-repo-picker')).toHaveCount(0);
 
   await openScmProject(app, outsideTree);
   await expect(commitMessage(shell)).toHaveAttribute('placeholder', /beta-branch/);
   await expect.poll(async () => (await shellState(app)).projects.find((project) => project.fsPath === outsideTree)?.branch).toBe('beta-branch');
 });
 
-test('untracked changes apart: Stage All Untracked stages only them, Discard All Tracked leaves them, discarding one trashes it, and hidden shows none', async ({ home, launch }) => {
+test('untracked changes apart: Stage All Untracked stages only them, Discard All Tracked leaves them, discarding one trashes it, and hidden shows none', async ({ foreground: _foreground, home, launch }) => {
   await initRepo(home, home.project, { 'a.ts': 'export const a = 1;\n' });
   writeUserSettings(home, { 'damocles.desktop.git.untrackedChanges': 'separate' });
   fs.writeFileSync(path.join(home.project, 'a.ts'), 'export const a = 2;\n');
@@ -424,20 +427,20 @@ test('untracked changes apart: Stage All Untracked stages only them, Discard All
   await chooseSegment(settingsRow(overlay, 'damocles.desktop.git.untrackedChanges'), 'Hidden');
   await closeSettingsModal(overlay);
   await expect(groupRow(shell, 'untracked')).toHaveCount(0);
-  await expect(section(shell).locator('[data-testid="scm-change"][data-path="new.ts"]')).toHaveCount(0);
+  await expect(scmSection(shell).locator('[data-testid="scm-change"][data-path="new.ts"]')).toHaveCount(0);
   await expect.poll(async () => (await gitLog(app)).includes('-uno')).toBe(true);
 });
 
-test('a long change list scrolls to its last row and stays there', async ({ home, launch }) => {
+test('a long change list scrolls to its last row and stays there', async ({ foreground: _foreground, home, launch }) => {
   const files = Object.fromEntries(Array.from({ length: 150 }, (_, i) => [`f${String(i).padStart(3, '0')}.ts`, 'a\n']));
   await initRepo(home, home.project, files);
   for (const name of Object.keys(files)) fs.writeFileSync(path.join(home.project, name), 'b\n');
   const { app } = await launch({ env: HOOKS });
   const shell = await openScmProject(app, home.project);
-  const tree = section(shell).getByTestId('scm-tree');
+  const tree = scmSection(shell).getByTestId('scm-tree');
   await expect(changeRow(shell, 'workingTree', 'f000.ts')).toBeVisible();
-  const box = (await tree.boundingBox())!;
-  await shell.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  // hover, not the box's centre: on a short display the body scrolls and the list's box runs past the section's bottom
+  await tree.hover();
   const gap = (): Promise<number> => tree.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
 
   // Scrolling unmounts rows as it goes; a row that lingers for its leave transition lets scroll anchoring pull the list back.

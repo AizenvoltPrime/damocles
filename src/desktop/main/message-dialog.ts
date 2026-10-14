@@ -1,6 +1,6 @@
 import { dialog, type BrowserWindow, type MessageBoxOptions, type WebContents } from 'electron';
 import type { MessageSeverity, OverlayAnswer, OverlayRequest } from '../preload/overlay-channels';
-import { parseMessageRequest } from './overlay';
+import { parseMessageRequest, type InputBrowseHandler } from './overlay';
 
 export interface MessageQuestion {
   readonly severity: MessageSeverity;
@@ -15,11 +15,11 @@ export interface MessageQuestion {
   readonly preview?: readonly string[];
 }
 
-/** Asks the user; resolves the index of the chosen action, or undefined for Cancel. */
-export type AskMessage = (question: MessageQuestion) => Promise<number | undefined>;
+/** Asks the user; resolves the index of the chosen action, or undefined for Cancel or once signal aborts, which withdraws the question. */
+export type AskMessage = (question: MessageQuestion, signal?: AbortSignal) => Promise<number | undefined>;
 
 export interface MessageOverlay {
-  request(request: OverlayRequest, returnFocus: WebContents | undefined): Promise<OverlayAnswer>;
+  request(request: OverlayRequest, returnFocus: WebContents | undefined, shown?: () => void, browse?: InputBrowseHandler, signal?: AbortSignal): Promise<OverlayAnswer>;
 }
 
 export interface MessageAskerDeps {
@@ -45,7 +45,7 @@ function errorText(err: unknown): string {
  * overlay's bounds, except once a quit closes the window.
  */
 export function createMessageAsker(deps: MessageAskerDeps): AskMessage {
-  const native = async (question: MessageQuestion): Promise<number | undefined> => {
+  const native = async (question: MessageQuestion, signal: AbortSignal | undefined): Promise<number | undefined> => {
     const detail = [question.detail, ...(question.preview ?? [])].filter((part) => part !== undefined && part !== '').join('\n');
     const options: MessageBoxOptions = {
       type: NATIVE_TYPE[question.severity],
@@ -59,11 +59,18 @@ export function createMessageAsker(deps: MessageAskerDeps): AskMessage {
       noLink: true,
     };
     const parent = deps.window();
-    const { response } = await (parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options));
-    return response < question.actions.length ? response : undefined;
+    const unclosable = (): void => deps.log('[dialog] a withdrawn question shows in the OS message box, which cannot be closed; its answer is ignored');
+    signal?.addEventListener('abort', unclosable, { once: true });
+    try {
+      const { response } = await (parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options));
+      return response < question.actions.length && !signal?.aborted ? response : undefined;
+    } finally {
+      signal?.removeEventListener('abort', unclosable);
+    }
   };
 
-  return async (question) => {
+  return async (question, signal) => {
+    if (signal?.aborted) return undefined;
     if (deps.closing()) {
       deps.log('[dialog] the window is closing for a quit; the question is dismissed');
       return undefined;
@@ -72,19 +79,20 @@ export function createMessageAsker(deps: MessageAskerDeps): AskMessage {
     const overlay = deps.overlay();
     if (!request || !overlay) {
       deps.log(`[dialog] ${request ? 'no overlay to ask in' : 'the question exceeds the overlay dialog bounds'}; asking with the OS message box`);
-      return native(question);
+      return native(question, signal);
     }
     let answer: OverlayAnswer;
     try {
-      answer = await overlay.request(request, deps.focused());
+      answer = await overlay.request(request, deps.focused(), undefined, undefined, signal);
     } catch (err) {
       if (deps.closing()) {
         deps.log('[dialog] the window closed for a quit; the question is dismissed');
         return undefined;
       }
+      if (signal?.aborted) return undefined;
       deps.log(`[dialog] the overlay could not ask (${errorText(err)}); asking with the OS message box`);
-      return native(question);
+      return native(question, signal);
     }
-    return answer.kind === 'message' && answer.action !== null ? answer.action : undefined;
+    return answer.kind === 'message' && answer.action !== null && !signal?.aborted ? answer.action : undefined;
   };
 }

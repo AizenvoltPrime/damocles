@@ -210,17 +210,18 @@ describe('icon and colour', () => {
   });
 
   it('lists main\'s picker items with glyphs, the current one checked and active first', () => {
+    const quote = (query: string): string => `"${query}"`;
     const items: OverlayQuickPickItem[] = [
       { id: 'default', label: 'Default', glyph: 'cmd' },
       { id: 'red', label: 'Red', glyph: 'cmd', color: 'red' },
       { id: 'blue', label: 'Blue', glyph: 'cmd', color: 'blue', current: true },
     ];
-    const model = overlayPickModel(items, '');
+    const model = overlayPickModel(items, '', quote);
     expect(model.activeId).toBe('blue');
     const blue = model.rows[2];
     expect(blue?.kind === 'item' && blue.item).toMatchObject({ checked: true, iconColor: 'var(--terminal-tint-4)' });
-    expect(overlayPickModel(items, 're').rows.map((row) => (row.kind === 'item' ? row.item.id : ''))).toEqual(['red']);
-    expect(overlayPickModel([{ id: 'pwsh', label: 'PowerShell', description: 'C:/pwsh.exe' }], 'pwsh.exe').rows).toHaveLength(1);
+    expect(overlayPickModel(items, 're', quote).rows.map((row) => (row.kind === 'item' ? row.item.id : ''))).toEqual(['red']);
+    expect(overlayPickModel([{ id: 'pwsh', label: 'PowerShell', description: 'C:/pwsh.exe' }], 'pwsh.exe', quote).rows).toHaveLength(1);
   });
 });
 

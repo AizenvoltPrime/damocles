@@ -27,7 +27,7 @@ type Launch = () => Promise<{ app: ElectronApplication; close: () => Promise<voi
 const state = (shell: Page): Promise<TerminalState> => shell.evaluate(() => window.damoclesShell!.terminal.getState());
 const profileNames = async (shell: Page): Promise<string[]> => (await state(shell)).profiles.map((profile) => profile.name);
 // The renderer's own create, which takes a profile id only; main resolves it against the profiles it lists.
-const create = (shell: Page, profileId: string): Promise<TerminalCreateResult> => shell.evaluate((id) => window.damoclesShell!.terminal.create({ profileId: id, projectKey: null }), profileId);
+const create = (shell: Page, profileId: string): Promise<TerminalCreateResult> => shell.evaluate((id) => window.damoclesShell!.terminal.create({ profileId: id, target: { current: true } }), profileId);
 
 function writeSettings(home: HermeticHome, profiles: unknown): void {
   writeUserSettings(home, { 'damocles.desktop.terminal.defaultProfile': TEST_PROFILE, 'damocles.desktop.terminal.confirmOnKill': 'never', [PROFILES]: profiles });

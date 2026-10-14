@@ -7,6 +7,7 @@ import SettingSeg from '@/components/settings/controls/SettingSeg.vue';
 import SettingSwitch from '@/components/settings/controls/SettingSwitch.vue';
 import SettingButton from '@/components/settings/controls/SettingButton.vue';
 import { useSettingsPage } from '@/components/settings/settings-view';
+import { SIDEBAR_ALWAYS_SHOW_HEADER_ACTIONS_SETTING } from '../../../main/desktop-configuration';
 import { ran } from '../popup-answer';
 import { useDesktopPrefs } from './desktop-prefs';
 
@@ -73,6 +74,13 @@ async function resetLayout(): Promise<void> {
       :model-value="prefs.values.value['damocles.desktop.restoreLayout'] !== false"
       :label="t('settingsHost.rows.restoreLayout.label')"
       @update:model-value="(value) => prefs.set('damocles.desktop.restoreLayout', value)"
+    />
+  </SettingsRow>
+  <SettingsRow :id="SIDEBAR_ALWAYS_SHOW_HEADER_ACTIONS_SETTING">
+    <SettingSwitch
+      :model-value="prefs.values.value[SIDEBAR_ALWAYS_SHOW_HEADER_ACTIONS_SETTING] === true"
+      :label="t('settingsHost.rows.alwaysShowHeaderActions.label')"
+      @update:model-value="(value) => prefs.set(SIDEBAR_ALWAYS_SHOW_HEADER_ACTIONS_SETTING, value)"
     />
   </SettingsRow>
   <SettingsRow

@@ -84,40 +84,40 @@ describe('team_spawn_specialist — brief read-gate', () => {
     const ctx = leadCtx({ checkBriefReadGate: () => ({ ok: false, error: 'read the `mission-brief` section first' }) });
     const spawn = toolMap(ctx).get('team_spawn_specialist')!;
     await expect(
-      spawn.execute('id', { name: 'Dev', task: 'do a well-described task here', kind: 'implementor' }),
+      spawn.execute('id', { name: 'Dev', description: 'Build the parser', task: 'do a well-described task here', kind: 'implementor' }),
     ).rejects.toThrow(/mission-brief/);
   });
 
-  it('spawns after the brief read-gate passes, forwarding name/task/profile/kind/reviews (no model)', async () => {
+  it('spawns after the brief read-gate passes, forwarding name/description/task/profile/kind/reviews (no model)', async () => {
     const calls: unknown[][] = [];
     const ctx = leadCtx({
       checkBriefReadGate: () => ({ ok: true }),
       startSpecialist: (...args: unknown[]) => { calls.push(args); return 'spec-id'; },
     });
     const spawn = toolMap(ctx).get('team_spawn_specialist')!;
-    await spawn.execute('id', { name: 'Dev', task: 'do a well-described task here', kind: 'reviewer', profile: 'engineering-code-reviewer', reviews: ['Backend'] });
-    expect(calls).toEqual([['Dev', 'do a well-described task here', 'engineering-code-reviewer', 'reviewer', ['Backend']]]);
+    await spawn.execute('id', { name: 'Dev', description: 'Build the parser', task: 'do a well-described task here', kind: 'reviewer', profile: 'engineering-code-reviewer', reviews: ['Backend'] });
+    expect(calls).toEqual([['Dev', 'Build the parser', 'do a well-described task here', 'engineering-code-reviewer', 'reviewer', ['Backend']]]);
   });
 
   it('rejects a specialist calling spawn (lead-only) before touching the gate', async () => {
     const spawn = guardedTool('team_spawn_specialist', 'specialist');
     await expect(
-      spawn.execute('id', { name: 'Dev', task: 'do a well-described task here', kind: 'implementor' }),
+      spawn.execute('id', { name: 'Dev', description: 'Build the parser', task: 'do a well-described task here', kind: 'implementor' }),
     ).rejects.toThrow(/Only the lead/);
   });
 });
 
 describe('team_spawn_specialist — schema has NO `model` property', () => {
-  it('exposes only name/task/kind/profile/reviews (the model arg is removed)', () => {
+  it('exposes only name/description/task/kind/profile/reviews (the model arg is removed)', () => {
     const spawn = toolMap(leadCtx()).get('team_spawn_specialist')!;
     const props = (spawn.parameters as unknown as { properties: Record<string, unknown> }).properties;
     expect(props).not.toHaveProperty('model');
-    expect(Object.keys(props).sort()).toEqual(['kind', 'name', 'profile', 'reviews', 'task']);
+    expect(Object.keys(props).sort()).toEqual(['description', 'kind', 'name', 'profile', 'reviews', 'task']);
   });
 
   it('takes reviews as an optional list of non-empty names, [] included', () => {
     const spawn = toolMap(leadCtx()).get('team_spawn_specialist')!;
-    const base = { name: 'Rev', task: 'review the backend work in detail', kind: 'reviewer' };
+    const base = { name: 'Rev', description: 'Review the backend', task: 'review the backend work in detail', kind: 'reviewer' };
     expect(Value.Check(spawn.parameters, { ...base, reviews: ['Backend', 'Frontend'] })).toBe(true);
     expect(Value.Check(spawn.parameters, { ...base, reviews: [] })).toBe(true);
     expect(Value.Check(spawn.parameters, base)).toBe(true);
@@ -126,19 +126,31 @@ describe('team_spawn_specialist — schema has NO `model` property', () => {
   });
 });
 
+describe('team_spawn_specialist and team_redispatch_specialist — card description', () => {
+  it.each(['team_spawn_specialist', 'team_redispatch_specialist'])('%s requires a description of 1 to 60 characters', (name) => {
+    const tool = toolMap(leadCtx()).get(name)!;
+    const base = { name: 'Dev', task: 'do a well-described task here', kind: 'implementor' };
+    expect(Value.Check(tool.parameters, { ...base, description: 'Build the parser' })).toBe(true);
+    expect(Value.Check(tool.parameters, { ...base, description: 'x'.repeat(60) })).toBe(true);
+    expect(Value.Check(tool.parameters, base)).toBe(false);
+    expect(Value.Check(tool.parameters, { ...base, description: '' })).toBe(false);
+    expect(Value.Check(tool.parameters, { ...base, description: 'x'.repeat(61) })).toBe(false);
+  });
+});
+
 describe('team_redispatch_specialist — lead-only re-run (Slice C)', () => {
   it('is registered as a team agent tool', () => {
     expect(toolMap(leadCtx()).has('team_redispatch_specialist')).toBe(true);
   });
 
-  it('calls ctx.redispatchSpecialist with (name, task, profile, kind) and reports success (lead)', async () => {
+  it('calls ctx.redispatchSpecialist with (name, description, task, profile, kind) and reports success (lead)', async () => {
     const calls: unknown[][] = [];
     const ctx = leadCtx({
       redispatchSpecialist: (...args: unknown[]) => { calls.push(args); return 're-id'; },
     });
     const redispatch = toolMap(ctx).get('team_redispatch_specialist')!;
-    const res = await redispatch.execute('id', { name: 'Dev', task: 'redo the task with more detail here', kind: 'reviewer', profile: 'engineering-code-reviewer', reviews: [] });
-    expect(calls).toEqual([['Dev', 'redo the task with more detail here', 'engineering-code-reviewer', 'reviewer', []]]);
+    const res = await redispatch.execute('id', { name: 'Dev', description: 'Build the parser', task: 'redo the task with more detail here', kind: 'reviewer', profile: 'engineering-code-reviewer', reviews: [] });
+    expect(calls).toEqual([['Dev', 'Build the parser', 'redo the task with more detail here', 'engineering-code-reviewer', 'reviewer', []]]);
     expect(res.content[0]!.text).toMatch(/re-dispatched/);
   });
 
@@ -148,14 +160,14 @@ describe('team_redispatch_specialist — lead-only re-run (Slice C)', () => {
       redispatchSpecialist: (...args: unknown[]) => { calls.push(args); return 're-id'; },
     });
     const redispatch = toolMap(ctx).get('team_redispatch_specialist')!;
-    await redispatch.execute('id', { name: 'Dev', task: 'redo the task with more detail here', kind: 'implementor' });
-    expect(calls).toEqual([['Dev', 'redo the task with more detail here', undefined, 'implementor', undefined]]);
+    await redispatch.execute('id', { name: 'Dev', description: 'Build the parser', task: 'redo the task with more detail here', kind: 'implementor' });
+    expect(calls).toEqual([['Dev', 'Build the parser', 'redo the task with more detail here', undefined, 'implementor', undefined]]);
   });
 
   it('rejects a specialist calling redispatch (lead-only)', async () => {
     const redispatch = guardedTool('team_redispatch_specialist', 'specialist');
     await expect(
-      redispatch.execute('id', { name: 'Dev', task: 'redo the task with more detail here', kind: 'implementor' }),
+      redispatch.execute('id', { name: 'Dev', description: 'Build the parser', task: 'redo the task with more detail here', kind: 'implementor' }),
     ).rejects.toThrow(/Only the lead/);
   });
 
@@ -165,7 +177,7 @@ describe('team_redispatch_specialist — lead-only re-run (Slice C)', () => {
     });
     const redispatch = toolMap(ctx).get('team_redispatch_specialist')!;
     await expect(
-      redispatch.execute('id', { name: 'Dev', task: 'redo the task with more detail here', kind: 'implementor' }),
+      redispatch.execute('id', { name: 'Dev', description: 'Build the parser', task: 'redo the task with more detail here', kind: 'implementor' }),
     ).rejects.toThrow(/approved work is final/);
   });
 });
@@ -173,27 +185,27 @@ describe('team_redispatch_specialist — lead-only re-run (Slice C)', () => {
 describe('team_redispatch_specialist — schema mirrors team_spawn_specialist', () => {
   const redispatch = toolMap(leadCtx()).get('team_redispatch_specialist')!;
 
-  it('exposes exactly name/task/kind/profile/reviews (no model)', () => {
+  it('exposes exactly name/description/task/kind/profile/reviews (no model)', () => {
     const props = (redispatch.parameters as unknown as { properties: Record<string, unknown> }).properties;
     expect(props).not.toHaveProperty('model');
-    expect(Object.keys(props).sort()).toEqual(['kind', 'name', 'profile', 'reviews', 'task']);
+    expect(Object.keys(props).sort()).toEqual(['description', 'kind', 'name', 'profile', 'reviews', 'task']);
   });
 
   it('accepts a valid redispatch call (name, task ≥ MIN_TASK_LENGTH, kind; optional profile)', () => {
-    expect(Value.Check(redispatch.parameters, { name: 'Dev', task: 'redo the task with more detail here', kind: 'implementor' })).toBe(true);
-    expect(Value.Check(redispatch.parameters, { name: 'Dev', task: 'redo the task with more detail here', kind: 'reviewer', profile: 'p' })).toBe(true);
+    expect(Value.Check(redispatch.parameters, { name: 'Dev', description: 'Build the parser', task: 'redo the task with more detail here', kind: 'implementor' })).toBe(true);
+    expect(Value.Check(redispatch.parameters, { name: 'Dev', description: 'Build the parser', task: 'redo the task with more detail here', kind: 'reviewer', profile: 'p' })).toBe(true);
   });
 
   it('rejects a task below MIN_TASK_LENGTH', () => {
-    expect(Value.Check(redispatch.parameters, { name: 'Dev', task: 'too short', kind: 'implementor' })).toBe(false);
+    expect(Value.Check(redispatch.parameters, { name: 'Dev', description: 'Build the parser', task: 'too short', kind: 'implementor' })).toBe(false);
   });
 
   it('rejects a missing kind (kind is REQUIRED)', () => {
-    expect(Value.Check(redispatch.parameters, { name: 'Dev', task: 'redo the task with more detail here' })).toBe(false);
+    expect(Value.Check(redispatch.parameters, { name: 'Dev', description: 'Build the parser', task: 'redo the task with more detail here' })).toBe(false);
   });
 
   it('rejects an unknown kind value', () => {
-    expect(Value.Check(redispatch.parameters, { name: 'Dev', task: 'redo the task with more detail here', kind: 'observer' })).toBe(false);
+    expect(Value.Check(redispatch.parameters, { name: 'Dev', description: 'Build the parser', task: 'redo the task with more detail here', kind: 'observer' })).toBe(false);
   });
 });
 

@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { COMMIT_HISTORY_KEY } from '../commit-history';
-import { createGitRunner, GitError, parseGitVersion, type GitRunner } from '../git-runner';
+import { createGitRunner, GitError, parseGitVersion, type GitCloner, type GitRunner } from '../git-runner';
 import { SCM_SETTING_KEYS } from '../settings-keys';
 import { folder, freshStatus, git, GIT_PATH, harness, HAS_GIT, makeRepo, MapMemento, ready, sandbox, statusOf, useGitSandbox, waitFor, write, type Harness } from './git-harness';
 
@@ -60,7 +60,7 @@ describe.skipIf(!HAS_GIT)('writes that act on what the user confirmed', { timeou
     commitAll(project, 'second');
     const plain = createGitRunner({ git: { path: GIT_PATH!, version: parseGitVersion(git(['--version'], sandbox))! }, log: { appendLine: () => undefined }, isTrusted: () => true });
     let raced = '';
-    const runner: GitRunner = {
+    const runner: GitRunner & GitCloner = {
       ...plain,
       run: (call) => {
         if (call.args.includes('update-ref') && raced === '') {

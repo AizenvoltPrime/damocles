@@ -157,7 +157,7 @@ test('Git Bash commands get marks with their exit codes too', async ({ clipboard
   const { app, shell, overlay } = await launchWith(home, launch);
   const detected = (await shell.evaluate(() => window.damoclesShell!.terminal.getState())).profiles.some((profile) => profile.id === 'git-bash');
   test.skip(!detected, 'Git Bash is not installed');
-  await shell.evaluate(() => window.damoclesShell!.terminal.create({ profileId: 'git-bash', projectKey: null }));
+  await shell.evaluate(() => window.damoclesShell!.terminal.create({ profileId: 'git-bash', target: { current: true } }));
   await expect.poll(async () => (await active(shell)).profileId).toBe('git-bash');
   await markScenario(app, shell, overlay, POSIX, clipboard);
 });
@@ -169,7 +169,7 @@ for (const shellName of ['zsh', 'fish']) {
     const { app, shell, overlay } = await launchWith(home, launch);
     const detected = (await shell.evaluate(() => window.damoclesShell!.terminal.getState())).profiles.some((profile) => profile.id === shellName);
     test.skip(!detected, `${shellName} is not installed`);
-    await shell.evaluate((profileId) => window.damoclesShell!.terminal.create({ profileId, projectKey: null }), shellName);
+    await shell.evaluate((profileId) => window.damoclesShell!.terminal.create({ profileId, target: { current: true } }), shellName);
     await expect.poll(async () => (await active(shell)).profileId).toBe(shellName);
     await markScenario(app, shell, overlay, POSIX, clipboard);
   });

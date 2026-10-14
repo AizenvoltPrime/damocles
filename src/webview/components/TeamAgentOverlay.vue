@@ -208,7 +208,7 @@ watch(() => selectedAgent.value?.status, (newStatus, oldStatus) => {
         :icon-class="color.text"
         :value-class="color.text"
         :value="t(`overlays.team.role.${selectedAgent.role}`)"
-        :title="selectedAgent.specialization || undefined"
+        :title="selectedAgent.description ?? undefined"
       />
       <AgentChip
         v-if="model"
@@ -406,6 +406,19 @@ watch(() => selectedAgent.value?.status, (newStatus, oldStatus) => {
             aria-hidden="true"
           />
           {{ selectedAgent.progressSummary || t(chip.labelKey) }}
+        </div>
+        <div
+          v-else-if="selectedAgent.status === 'cancelled' && !selectedAgent.result && chip"
+          class="flex items-center gap-2 p-0.5 text-12.5"
+          :class="chip.color"
+          data-testid="agent-stopped-unreported"
+        >
+          <component
+            :is="chip.icon"
+            class="size-3.5"
+            aria-hidden="true"
+          />
+          {{ t('overlays.agent.stoppedBeforeReporting') }}
         </div>
       </div>
 

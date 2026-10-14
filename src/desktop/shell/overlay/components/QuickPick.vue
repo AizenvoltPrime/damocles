@@ -22,14 +22,19 @@ const props = defineProps<{
   emptyText?: string | undefined;
   // the project folder main limited the list to, shown as a chip before the query
   scope?: { readonly project: string; readonly label: string } | undefined;
+  // characters the query may hold, where the answer carries it
+  maxLength?: number | undefined;
 }>();
-// shift: the row was taken with Shift+Enter or Shift+click, which the new-terminal pick reads as the current project
-const emit = defineEmits<{ accept: [id: string, shift: boolean]; cancel: [] }>();
+// shift: the row was taken with Shift+Enter or Shift+click, which the new-terminal pick reads as the current project; query:
+// the text typed when it was taken
+const emit = defineEmits<{ accept: [id: string, shift: boolean, query: string]; cancel: [] }>();
 const { t } = useI18n();
 
 // rem of an item row (the reference's 28px) and a group label row.
 const ITEM_REM = 1.75;
 const SEPARATOR_REM = 1.625;
+// rem of an unlabelled rule, which sets a picker's commands apart from the matches while filtering
+const RULE_REM = 0.5625;
 
 const query = ref(props.initialQuery ?? '');
 const model = shallowRef<QuickPickModel>({ rows: [] });
@@ -42,7 +47,7 @@ let generation = 0;
 const rows = computed(() => model.value.rows);
 const itemIndices = computed(() => rows.value.flatMap((row, index) => (row.kind === 'item' ? [index] : [])));
 const activeRow = computed(() => itemIndices.value[active.value]);
-const rowHeight = (row: QuickPickRow | undefined): number => remPx(row?.kind === 'separator' ? SEPARATOR_REM : ITEM_REM);
+const rowHeight = (row: QuickPickRow | undefined): number => remPx(row?.kind === 'separator' ? (row.label === '' ? RULE_REM : SEPARATOR_REM) : ITEM_REM);
 const { list: visible, containerProps, wrapperProps } = useVirtualList(rows, { itemHeight: (index) => rowHeight(rows.value[index]), overscan: 6 });
 
 // The keyboard and pointer position slides between rows as one indicator; it is measured among the rendered rows.
@@ -100,7 +105,7 @@ function move(to: number): void {
 
 function accept(rowIndex: number | undefined, shift: boolean): void {
   const row = rowIndex === undefined ? undefined : rows.value[rowIndex];
-  if (row?.kind === 'item' && !row.item.disabled) emit('accept', row.item.id, shift);
+  if (row?.kind === 'item' && !row.item.disabled) emit('accept', row.item.id, shift, query.value);
 }
 
 // A command's label: its "Category: " prefix quieter than its title, with the match highlights cut across both.
@@ -113,6 +118,14 @@ function labelParts(item: QuickPickItem): Array<{ text: string; match: boolean; 
     if (start >= split) return [{ ...segment, category: false }];
     return [{ text: segment.text.slice(0, split - start), match: segment.match, category: true }, { text: segment.text.slice(split - start), match: segment.match, category: false }];
   });
+}
+
+// An option's accessible name: its texts, and on a group's first option the group's label, as VS Code's quick pick names
+// it, since the separator itself is presentational.
+function optionName(item: QuickPickItem, rowIndex: number): string {
+  const previous = rows.value[rowIndex - 1];
+  const group = previous?.kind === 'separator' ? previous.label : '';
+  return [item.label, item.badge, item.description, item.hint, item.project, group].filter((part) => part !== undefined && part !== '').join(', ');
 }
 
 function onKeydown(event: KeyboardEvent): void {
@@ -193,6 +206,7 @@ onMounted(() => {
         :aria-activedescendant="activeDescendant"
         :aria-label="label"
         :placeholder="placeholder"
+        :maxlength="maxLength"
         class="min-w-0 flex-1 border-0 bg-transparent text-13 text-(--d-text) outline-none placeholder:text-(--d-faint)"
         @keydown="onKeydown"
       >
@@ -237,6 +251,7 @@ onMounted(() => {
           <div
             v-if="row.kind === 'separator'"
             role="presentation"
+            :data-testid="row.label === '' ? 'quick-pick-rule' : 'quick-pick-group'"
             class="flex items-end border-t border-(--d-border) px-2 pb-0.5 text-10.5 text-(--d-faint-text)"
             :class="index === 0 ? 'border-t-0' : ''"
             :style="{ height: `${rowHeight(row)}px` }"
@@ -250,6 +265,7 @@ onMounted(() => {
             data-quick-pick-item
             data-testid="quick-pick-item"
             :data-item-id="row.item.id"
+            :aria-label="optionName(row.item, index)"
             :aria-selected="index === activeRow"
             :aria-disabled="row.item.disabled ? 'true' : undefined"
             :aria-keyshortcuts="row.item.shortcut ? ariaKeyshortcuts(row.item.shortcut) : undefined"
@@ -268,7 +284,10 @@ onMounted(() => {
               class="size-3.25 shrink-0"
               :style="{ color: row.item.iconColor }"
             />
-            <span class="shrink-0 text-12.5 whitespace-nowrap">
+            <span
+              class="shrink-0 whitespace-nowrap"
+              :class="row.item.mono ? 'font-mono text-12' : 'text-12.5'"
+            >
               <template
                 v-for="(segment, segmentIndex) in labelParts(row.item)"
                 :key="segmentIndex"
@@ -299,6 +318,11 @@ onMounted(() => {
                 class="quick-pick-match"
               >{{ segment.text }}</mark><template v-else>{{ segment.text }}</template></template>
             </span>
+            <span
+              v-if="row.item.hint"
+              data-testid="quick-pick-item-hint"
+              class="shrink-0 font-mono text-10.5 text-(--d-faint-text)"
+            >{{ row.item.hint }}</span>
             <ProjectAvatar
               v-if="row.item.project"
               :name="row.item.project"

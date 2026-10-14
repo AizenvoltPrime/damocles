@@ -6,7 +6,7 @@ import { terminalProfilesModel, terminalProjectsModel, type QuickPickModel } fro
 import QuickPick from './QuickPick.vue';
 
 // The new-terminal quick pick: a shell profile, then the project whose folder it starts in. Shift+Enter or Shift+click on a
-// profile starts it in the current project, and one open project skips the second step.
+// profile starts it in the current project; one open project skips the second step, and so does none (the home folder).
 const props = defineProps<{ request: Extract<OverlayRequest, { kind: 'newTerminal' }> }>();
 const emit = defineEmits<{ answer: [answer: OverlayAnswer] }>();
 const { t } = useI18n();
@@ -27,9 +27,9 @@ function onAccept(id: string, shift: boolean): void {
     emit('answer', { kind: 'newTerminal', profileId: profileId.value, projectKey: id });
     return;
   }
-  const only = props.request.projects.length === 1 ? props.request.projects[0] : undefined;
-  const direct = only ?? (shift ? current.value : undefined);
-  if (direct) emit('answer', { kind: 'newTerminal', profileId: id, projectKey: direct.key });
+  const { projects } = props.request;
+  if (projects.length <= 1) emit('answer', { kind: 'newTerminal', profileId: id, projectKey: projects[0]?.key ?? null });
+  else if (shift && current.value) emit('answer', { kind: 'newTerminal', profileId: id, projectKey: current.value.key });
   else profileId.value = id;
 }
 </script>

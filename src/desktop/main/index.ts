@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { app, BrowserWindow, clipboard, dialog, Menu, powerMonitor, screen, session, shell as electronShell, webContents, WebContentsView, type WebContents } from 'electron';
@@ -24,11 +23,11 @@ import { PROVIDER_SECRET_KEYS } from '../../core/pi-session/explore-providers';
 import { setCheckpointGitAvailability } from '../../core/pi-session/checkpoints';
 import { DAMOCLES_HOME_DIR } from '../../core/paths';
 import { folderKey } from '../../core/workspace-folders/folder-key';
-import { settingsFolderOf } from '../../core/workspace-folders/folder-registry';
+import { homeDirectory, settingsFolderOf } from '../../core/workspace-folders/folder-registry';
 import type { Disposable } from '../../platform/disposable';
 import type { PanelOptions } from '../../platform/window-service';
 import type { StoredSession } from '../../shared/types/session';
-import { MAX_OVERLAY_ITEMS, MAX_OVERLAY_TAGS, OVERLAY_CHANNELS, type OverlayAnswer, type OverlayRequest } from '../preload/overlay-channels';
+import { MAX_OVERLAY_TAGS, OVERLAY_CHANNELS, type OverlayAnswer, type OverlayRequest } from '../preload/overlay-channels';
 import type { NotificationProject } from '../preload/notifications';
 import { canCheck, type UpdateSnapshot, type VersionInfo } from '../preload/updates';
 import {
@@ -78,6 +77,7 @@ import {
   NOTIFICATIONS_SETTING,
   UPDATE_CHECK_AUTOMATICALLY_SETTING,
   RESTORE_LAYOUT_SETTING,
+  SIDEBAR_ALWAYS_SHOW_HEADER_ACTIONS_SETTING,
   TERMINAL_DEFAULT_PROFILE_SETTING,
   TERMINAL_PROFILES_SETTING,
   THEME_SETTING,
@@ -119,17 +119,18 @@ import {
   type MenuActions,
   type MenuState,
 } from './menu';
+import { createAskpassBridge } from './askpass-bridge';
 import { createMessageAsker, type AskMessage } from './message-dialog';
 import { installCaCertificates } from './network/ca-certificates';
 import { installProxyDispatcher } from './network/proxy-dispatcher';
 import { DO_NOT_DISTURB_KEY, handleCenterChannels, NotificationCenter, runEntryAction, type ChatKey, type ChatRef, type EntryActionDeps } from './notification-center';
 import { NotifierHost } from './notifier';
-import { createInputAsker, OverlayHost, overlayHtml } from './overlay';
+import { createInputAsker, createQuickPickAsker, OverlayHost, overlayHtml } from './overlay';
 import { OverlaySettings, writeDesktopSetting } from './overlay-settings';
 import type { SettingsTarget } from '../../shared/settings-sections';
 import { PanelStateStore } from './panel-state-store';
 import { createDesktopPlatform, type DesktopPlatform } from './platform';
-import { ptyHostPaths, quickOpenWorkerPath, unpackagedResourceRoot, type DesktopLayout } from './platform/app-paths';
+import { askpassPaths, ptyHostPaths, quickOpenWorkerPath, unpackagedResourceRoot, type DesktopLayout } from './platform/app-paths';
 import type { ChatTabMessenger } from './platform/editor-service';
 import { createDesktopKeyValueState, type DesktopKeyValueState } from './platform/key-value-state';
 import { createDesktopLocalizationService, launchLanguage, readLanguageSetting, type DesktopLocalizationService } from './platform/localization-service';
@@ -144,6 +145,7 @@ import { restrictPermissions, hardenWebContents } from './security';
 import { reportFailure, ShellHost, shellHtml, type ShellActions } from './shell';
 import { mergeLoginShellEnv, probeGit, type GitProbe } from './shell-env';
 import { backgroundCompletion, NO_SCM_MENU_STATE, ScmHost } from './scm/scm-host';
+import { createAskpassServer, type AskpassServer } from '../../core/scm/askpass/askpass-server';
 import { createGitRunner } from '../../core/scm/git-runner';
 import { ScmService } from '../../core/scm/scm-service';
 import { PiRuntime } from '../../core/pi-session/pi-runtime';
@@ -259,9 +261,9 @@ class DesktopApp {
     log: (line) => log(line),
   });
   // A close or quit asks in a window it shows first, since one hidden to the tray or minimized hides the question.
-  private readonly ask: AskMessage = (question) => {
+  private readonly ask: AskMessage = (question, signal) => {
     if (this.lifecycle.releasing) this.revealWindow();
-    return this.askMessage(question);
+    return this.askMessage(question, signal);
   };
   private readonly lifecycle = new QuitLifecycle({
     app,
@@ -370,6 +372,7 @@ class DesktopApp {
   private quickOpenIndex: QuickOpenIndex | undefined;
   private search: SearchHost | undefined;
   private scm: ScmHost | undefined;
+  private askpass: AskpassServer | undefined;
   // the git probeGit found at startup; source control spawns its absolute path
   private gitProbe: GitProbe = { available: false, reason: '' };
   // the e2e hooks' stand-in for the commit-message model (DAMOCLES_E2E_HOOKS, unpackaged only)
@@ -382,6 +385,10 @@ class DesktopApp {
   private terminalProfiles: TerminalProfileCatalog | undefined;
   // settles once the shells were detected and the user's profiles validated, after which the window restores its terminals
   private profilesDetected: Promise<void> = Promise.resolve();
+  // profilesDetected has settled, so an empty profile list means no shell was found
+  private profilesReady = false;
+  // settles once the window restored the window layout's terminals
+  private terminalsRestored: Promise<void> = Promise.resolve();
   // damocles.desktop.language as read at launch; a change applies after a restart (D23)
   private languageSetting: DesktopLanguageSetting = 'system';
   // damocles.desktop.restoreLayout as read at launch
@@ -581,7 +588,7 @@ class DesktopApp {
       }),
       this.projects.onDidChange(() => {
         this.formatterHosts?.retain(this.desktopProjects().map((project) => project.key));
-        this.terminals?.retain(this.desktopProjects().map((project) => project.key));
+        this.terminals?.projectsChanged(this.desktopProjects().map((project) => project.key));
         this.terminalLinks.clear();
         this.installMenu();
         this.shellStateChanged();
@@ -602,7 +609,7 @@ class DesktopApp {
           this.quickOpenIndex?.invalidate();
         }
         if (change.affects(SEARCH_EXCLUDE_SETTING)) this.quickOpenIndex?.invalidate();
-        if (change.affects('damocles.desktop.search') || change.affects('damocles.desktop.searchEditor')) this.shellStateChanged();
+        if (change.affects('damocles.desktop.search') || change.affects('damocles.desktop.searchEditor') || change.affects('damocles.desktop.sidebar')) this.shellStateChanged();
         if (change.affects('damocles.desktop.terminal')) this.terminals?.publish();
         if (change.affects(TERMINAL_PROFILES_SETTING)) this.terminalProfiles?.refresh().catch((err: unknown) => log(`[terminal] validating the user's profiles failed: ${errorText(err)}`));
       }),
@@ -736,17 +743,26 @@ class DesktopApp {
       log: (line) => log(line),
       onDidChange: () => {
         this.terminals?.publish();
+        this.refreshMenuState();
         this.overlaySettings?.terminalProfilesChanged();
       },
     });
     this.terminalProfiles = catalog;
-    this.profilesDetected = detectProfiles(systemProfileProbe(process.env, (line) => log(line))).then((profiles) => {
+    // A detection that fails still validates the user's own profiles, against no detected shell.
+    this.profilesDetected = detectProfiles(systemProfileProbe(process.env, (line) => log(line))).catch((err: unknown) => {
+      log(`[terminal] detecting the shells failed: ${errorText(err)}`);
+      return [];
+    }).then((profiles) => {
       log(`[terminal] detected shells: ${profiles.map((profile) => profile.id).join(', ') || 'none'}`);
       return catalog.setDetected(profiles);
-    }).catch((err: unknown) => log(`[terminal] detecting the shells or validating the user's profiles failed: ${errorText(err)}`));
+    }).catch((err: unknown) => log(`[terminal] validating the user's terminal profiles failed: ${errorText(err)}`)).finally(() => {
+      this.profilesReady = true;
+      this.terminals?.publish();
+    });
     return new TerminalService({
       spawnHost: () => spawnPtyHost(host.script, host.nodePty),
       profiles: () => catalog.profiles(),
+      profilesReady: () => this.profilesReady,
       isDirectory: (folder) => fs.promises.stat(folder).then((stat) => stat.isDirectory(), (err: unknown) => {
         const code = (err as NodeJS.ErrnoException).code;
         if (code !== 'ENOENT' && code !== 'ENOTDIR') log(`[terminal] cannot read the folder a shell reported: ${code ?? errorText(err)}`);
@@ -771,7 +787,8 @@ class DesktopApp {
       log: (line) => log(line),
       platform: process.platform,
       scriptsDir: host.shellIntegration,
-      homedir: os.homedir(),
+      // the chats' home target, so a terminal started with no project open is in the folder the breadcrumb names
+      homedir: homeDirectory(),
       zshDotDir,
       // A few kilobytes, copied only as a zsh starts, as VS Code does; the folder is the user's alone.
       copyFiles: (files) => {
@@ -944,9 +961,10 @@ class DesktopApp {
     terminals.attach({ state: (state) => shell.terminalState(state), data: (data) => shell.terminalData(data), focus: (id) => shell.focusTerminal(id) });
     // A restored shell's first output (its banner and prompt) is pushed only to a loaded page, after ShellHost's own load handler.
     const firstLoad = new Promise<void>((resolve) => window.webContents.once('did-finish-load', () => resolve()));
-    void Promise.all([this.profilesDetected, firstLoad]).then(() => {
+    // Toggle Terminal awaits it, so it always resolves.
+    this.terminalsRestored = Promise.all([this.profilesDetected, firstLoad]).then(() => {
       if (this.shell === shell) terminals.restore();
-    });
+    }).catch((err: unknown) => log(`[terminal] restoring the window layout's terminals failed: ${errorText(err)}`));
     const savePlacement = (): void => this.saveWindowPlacement(window, tracker);
     for (const event of ['resized', 'moved', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen'] as const) {
       window.on(event as 'resized', savePlacement);
@@ -1268,6 +1286,11 @@ class DesktopApp {
     const platform = this.requirePlatform();
     const folder = await platform.dialogs.pickFolder({ title: platform.localization.t('Add Project') });
     if (folder === undefined) return;
+    await this.addProjectAt(folder);
+  }
+
+  // A folder joins the project list untrusted unless trusted already; the trust question follows, then a chat opens there.
+  private async addProjectAt(folder: string): Promise<void> {
     await this.projects.add(folder);
     if (!this.trust.isTrusted(folder)) await this.trust.requestTrust(folder);
     await this.newChat(folderKey(folder));
@@ -1390,7 +1413,10 @@ class DesktopApp {
     if (projectKey === undefined) return;
     const projectChanged = projectKey !== this.selectedProjectKey;
     this.selectedProjectKey = projectKey;
-    if (projectChanged) this.search?.stopAll();
+    if (projectChanged) {
+      this.search?.stopAll();
+      this.scm?.selectedProjectChanged();
+    }
     this.lastChatByProject.set(projectKey, this.chatIdOf(panel));
     const sessionId = this.sessionIdOf(panel);
     this.states.select({ projectKey, panelId: panel.panelId, ...(sessionId !== undefined ? { sessionId } : {}) });
@@ -1801,6 +1827,7 @@ class DesktopApp {
         copy: (raw) => this.requireScm().copy(raw),
         commitInput: (raw) => this.requireScm().commitInput(raw),
         amend: (raw) => this.requireScm().amend(raw),
+        artifacts: (raw) => this.requireScm().artifacts(raw),
       },
       searchEditor: {
         openNew: (request) => this.requireSearch().openNew(request),
@@ -1882,9 +1909,10 @@ class DesktopApp {
           this.refreshMenuState();
         },
         resolveLinks: (request) => {
-          const base = this.requireTerminals().linkBase(request.id);
-          if (!base) throw new Error('Unknown terminal');
-          return this.terminalLinks.resolveAll(request.paths, base);
+          const terminals = this.requireTerminals();
+          if (!terminals.has(request.id)) throw new Error('Unknown terminal');
+          const base = terminals.linkBase(request.id);
+          return base ? this.terminalLinks.resolveAll(request.paths, base) : Promise.resolve(request.paths.map(() => null));
         },
         openLink: (request) => { this.openTerminalLink(request).catch(this.report('Open Link')); },
         rename: (id, name) => this.requireTerminals().rename(id, name),
@@ -2077,8 +2105,17 @@ class DesktopApp {
     // opens it as a log tab (D36).
     const gitLog = this.logSinks.create('Git');
     const git = this.gitProbe;
+    const askInput = createInputAsker({
+      overlay: () => this.overlay,
+      focused: () => webContents.getFocusedWebContents() ?? undefined,
+      unavailable: () => void platform.notifications.error(t('The text box could not be shown, so nothing was changed. Try again.')),
+      log: report,
+    });
+    const askpass = createAskpassServer({ paths: askpassPaths(platform.paths, process.execPath), prompt: createAskpassBridge({ ask: this.ask, askInput, t }), log: (line) => gitLog.appendLine(line) });
+    this.askpass = askpass;
     const scmService = new ScmService({
       runner: git.available ? createGitRunner({ git: { path: git.path, version: git.version }, log: gitLog, isTrusted: (project) => platform.trust.isTrusted(project) }) : undefined,
+      askpass,
       trust: platform.trust,
       watchers: platform.fileWatchers,
       settings: platform.settings,
@@ -2105,20 +2142,20 @@ class DesktopApp {
       openExternal: async (url) => {
         if (!(await platform.shell.openExternal(url))) throw new Error('The link could not be opened');
       },
-      pickFolder: (defaultPath) => platform.dialogs.pickFolder({ title: t('Open Repository'), defaultPath }),
-      quickPick: async (placeholder, items) => {
-        const overlay = this.overlay;
-        if (!overlay) return undefined;
-        const answer = await overlay.request({ kind: 'quickPick', placeholder, items: items.slice(0, MAX_OVERLAY_ITEMS) }, webContents.getFocusedWebContents() ?? undefined);
-        return answer.kind === 'quickPick' ? answer.itemId : undefined;
-      },
-      ask: this.ask,
-      askInput: createInputAsker({
+      pickFolder: (defaultPath, title, buttonLabel) => platform.dialogs.pickFolder({ title: title ?? t('Open Repository'), defaultPath, ...(buttonLabel !== undefined ? { buttonLabel } : {}) }),
+      addProject: (folder) => this.addProjectAt(folder),
+      selectProject: (projectKey) => this.selectProject(projectKey),
+      removeProject: (projectKey) => this.removeProject(projectKey),
+      gitFound: git.available,
+      quickPick: createQuickPickAsker({
         overlay: () => this.overlay,
         focused: () => webContents.getFocusedWebContents() ?? undefined,
-        unavailable: () => void platform.notifications.error(t('The text box could not be shown, so nothing was changed. Try again.')),
+        unavailable: () => void platform.notifications.error(t('The list could not be shown, so nothing was changed. Try again.')),
+        tooLarge: () => void platform.notifications.error(t('The list has too many entries to show, so nothing was changed.')),
         log: report,
       }),
+      ask: this.ask,
+      askInput,
       mention: (target) => this.mentionInSelectedChat(target),
       complete: commitMessageCompletion,
       send: {
@@ -2128,6 +2165,8 @@ class DesktopApp {
         settings: (settings) => this.shell?.scmSettings(settings),
         command: (command) => this.shell?.scmCommand(command),
         setInput: (input) => this.shell?.scmSetInput(input),
+        clone: (state) => this.shell?.scmClone(state),
+        artifactsChanged: (changed) => this.shell?.scmArtifactsChanged(changed),
         filesChanged: (projectKey) => this.shell?.filesChanged({ projectKey, relativeDirs: [] }),
       },
       menuChanged: () => this.refreshMenuState(),
@@ -2137,7 +2176,8 @@ class DesktopApp {
     });
     scm.setProjects(this.desktopProjects());
     this.scm = scm;
-    this.disposables.push(scm, scmService, gitLog);
+    // Disposed in reverse, so the Git log outlives everything that writes to it; the quit closes the askpass server (closeServers).
+    this.disposables.push(gitLog, scm, scmService);
 
     this.palette = new CommandPalette({
       commands: () => desktopCommands(this.projects.folders(), this.menuActions(), process.platform),
@@ -2189,6 +2229,8 @@ class DesktopApp {
         },
         // Source control: the sub-call ledger path and the Git log as written.
         scm: {
+          // one autofetch round of the selected project now, as if the period had elapsed
+          autofetchNow: () => this.requireScm().autofetchNow(),
           ledgerPath: () => SUBCALL_USAGE_LEDGER_PATH,
           gitLog: () => fs.promises.readFile(path.join(this.logsDir, logFileName('Git')), 'utf8').catch((err: NodeJS.ErrnoException) => (err.code === 'ENOENT' ? '' : Promise.reject(err))),
         },
@@ -2316,13 +2358,22 @@ class DesktopApp {
       return;
     }
     if (!shown) this.toggleGridPane('terminal');
+    this.focusShownTerminal().catch(this.report('Toggle Terminal'));
+  }
+
+  // Once the shells are detected (VS Code's profilesReady) and the saved terminals restored, so a restored terminal is the
+  // one focused rather than a new one started ahead of it; nothing when the pane was hidden meanwhile.
+  private async focusShownTerminal(): Promise<void> {
+    await Promise.all([this.profilesDetected, this.terminalsRestored]);
+    if (!this.windowLayout.sidebar().grid.visible.terminal) return;
     const terminals = this.requireTerminals();
     const id = terminals.ensureTerminal();
     if (id !== undefined) terminals.focus(id);
   }
 
-  // New Terminal: the overlay's quick pick, then the terminal in the shown pane, focused.
+  // New Terminal: the overlay's quick pick of the detected shells, then the terminal in the shown pane, focused.
   private async newTerminal(): Promise<void> {
+    await this.profilesDetected;
     const overlay = this.overlay;
     const terminals = this.requireTerminals();
     if (!overlay) return;
@@ -2454,7 +2505,8 @@ class DesktopApp {
   }
 
   // G25: the shell's selection or a command's output becomes a pending attachment of the current chat (the selected one, else
-  // a new chat in the terminal's project), labelled from main's own facts and bounded again here; its composer takes focus.
+  // a new chat in the terminal's project, or the default target for a home folder terminal), labelled from main's own facts
+  // and bounded again here; its composer takes focus.
   private async addTerminalOutputToChat(request: TerminalAddToChat): Promise<void> {
     const terminals = this.requireTerminals();
     const title = terminals.titleOf(request.id);
@@ -2471,7 +2523,7 @@ class DesktopApp {
       omittedLines: Math.min(request.omittedLines + capped.omittedLines, MAX_TERMINAL_ATTACHMENT_OMITTED_LINES),
     };
     await this.core.run('Add to Chat', async (core) => {
-      if (!this.views?.selected()) await this.newChatIn(core, this.isKnownProject(projectKey, core) ? projectKey : undefined);
+      if (!this.views?.selected()) await this.newChatIn(core, projectKey !== null && this.isKnownProject(projectKey, core) ? projectKey : undefined);
       const panel = this.views?.selected();
       // A chat still restoring is the chat the output goes to, once core registered it.
       const restored = panel ? await this.restoredCorePanel(panel) : undefined;
@@ -2664,6 +2716,7 @@ class DesktopApp {
       shortcuts: shellShortcutLabels(),
       notifications: this.notificationCenter.bell(),
       search: shellSearchSettings(this.requirePlatform().settings),
+      sidebar: { alwaysShowHeaderActions: this.requirePlatform().settings.get<unknown>(SIDEBAR_ALWAYS_SHOW_HEADER_ACTIONS_SETTING) === true },
     };
   }
 
@@ -2740,7 +2793,7 @@ class DesktopApp {
       page: this.browserTabs?.activePage() !== undefined,
       focus: this.focusedPart(),
       updateCheck: this.updates !== undefined && canCheck(this.updates.snapshot().state),
-      project: this.projects.folders().length > 0,
+      terminalCreate: this.terminals?.canCreate() === true,
       terminal: this.terminals?.activeStatus(),
       terminalSplit: this.terminals?.splitActive() === true,
       terminalInput: this.terminalInputHasFocus(),
@@ -2971,6 +3024,7 @@ class DesktopApp {
       flushStores: () => this.flushStores(),
       disposeTerminals: async () => this.terminals?.dispose(),
       closeWatchers: async () => this.platform?.fileWatchers.close(),
+      closeServers: async () => this.askpass?.dispose(),
       closeTimeoutMs: CLOSE_TIMEOUT_MS,
       timeoutMs: DISPOSE_TIMEOUT_MS,
       log: (line) => log(line),

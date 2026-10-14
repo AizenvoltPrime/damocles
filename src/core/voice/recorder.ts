@@ -3,6 +3,7 @@ import * as path from "path";
 import * as os from "os";
 import * as fs from "fs";
 import { log } from "../logger";
+import { posixTool, windowsPowerShell } from "../system-tools";
 
 export interface RecordingResult {
   audioBuffer: Buffer;
@@ -155,7 +156,7 @@ $saveCmd = 'save dmrec "' + $outFile + '"'
 [WinMM]::mciSendString("close dmrec", $sb, 256, [IntPtr]::Zero)
 Write-Output "RECORDING_SAVED"`;
 
-  return spawnRecorder("powershell.exe", [
+  return spawnRecorder(windowsPowerShell(), [
     "-NoProfile",
     "-NonInteractive",
     "-Command",
@@ -210,7 +211,8 @@ do {
   );
   fs.writeFileSync(tempScriptPath, swiftScript);
 
-  return spawnRecorder("swift", [tempScriptPath, outputPath]).catch((err) => {
+  // macOS's own shim, which runs the Command Line Tools' swift or offers to install them
+  return spawnRecorder("/usr/bin/swift", [tempScriptPath, outputPath]).catch((err) => {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       throw new Error(
         "Swift not found. Install Xcode Command Line Tools: xcode-select --install",
@@ -246,7 +248,9 @@ wait $RECORDER_PID 2>/dev/null
 trap - EXIT
 echo "RECORDING_SAVED"`;
 
-  return spawnRecorder("bash", ["-c", script, "_", outputPath]);
+  const bash = posixTool("bash");
+  if (bash === undefined) return Promise.reject(new Error("bash was not found"));
+  return spawnRecorder(bash, ["-c", script, "_", outputPath]);
 }
 
 function stopActiveProcess(): Promise<void> {

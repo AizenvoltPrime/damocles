@@ -22,6 +22,14 @@ describe('desktop dialog service', () => {
     expect(dialog.showOpenDialog).toHaveBeenNthCalledWith(1, window, { properties: ['openDirectory', 'createDirectory'], title: 'Add Project', defaultPath: '/w' });
   });
 
+  it('names the folder picker\'s confirm button as Electron\'s buttonLabel', async () => {
+    dialog.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: ['/w/clones'] });
+    const dialogs = createDesktopDialogService(() => window as never, () => undefined);
+
+    await dialogs.pickFolder({ title: 'Choose a folder', defaultPath: '/w', buttonLabel: 'Select as Repository Destination' });
+    expect(dialog.showOpenDialog).toHaveBeenCalledWith(window, { properties: ['openDirectory', 'createDirectory'], title: 'Choose a folder', defaultPath: '/w', buttonLabel: 'Select as Repository Destination' });
+  });
+
   it('passes file filters as Electron filter entries, and opens unparented with no window', async () => {
     dialog.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: ['/w/key.json'] });
     const dialogs = createDesktopDialogService(() => undefined, () => undefined);

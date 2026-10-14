@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createGitRunner, GitError, parseGitVersion, type GitRunner } from '../git-runner';
+import { createGitRunner, GitError, parseGitVersion, type GitCloner, type GitRunner } from '../git-runner';
 import { folder, freshStatus, git, GIT_PATH, harness, HAS_GIT, makeRepo, ready, sandbox, statusOf, useGitSandbox, waitFor, write, type Harness } from './git-harness';
 
 /**
@@ -27,7 +27,7 @@ async function listed(h: Harness, repoId: string): Promise<string[]> {
   return (await freshStatus(h, repoId)).groups.workingTree.map((change) => `${change.status} ${change.path}`);
 }
 
-function plainRunner(): GitRunner {
+function plainRunner(): GitRunner & GitCloner {
   return createGitRunner({ git: { path: GIT_PATH!, version: parseGitVersion(git(['--version'], sandbox))! }, log: { appendLine: () => undefined }, isTrusted: () => true });
 }
 
@@ -53,7 +53,7 @@ describe.skipIf(!HAS_GIT)('discarding tracked changes to the trash', { timeout: 
     write(path.join(project, 'a.txt'), 'changed\n');
     const plain = plainRunner();
     let edited = false;
-    const runner: GitRunner = {
+    const runner: GitRunner & GitCloner = {
       ...plain,
       run: async (call) => {
         const result = await plain.run(call);

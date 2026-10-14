@@ -2,11 +2,13 @@
 
 import { hasUnsafeWindowsSegment } from './relative-path';
 
-export const INPUT_VALIDATIONS = ['branchName', 'path'] as const;
+export const INPUT_VALIDATIONS = ['branchName', 'tagName', 'path', 'remoteName'] as const;
 export type InputValidation = (typeof INPUT_VALIDATIONS)[number];
 
 // Must stay equal to MAX_RELATIVE_PATH_LENGTH in src/shared/relative-path.ts.
 export const MAX_INPUT_VALUE_LENGTH = 4096;
+// A remote name's characters, which core's isRemoteName (src/core/scm/remotes.ts) checks too.
+export const MAX_REMOTE_NAME_LENGTH = 100;
 
 // Each code has a message under quickInput.invalid in the shell locales; char names the offending text.
 export type InputProblem =
@@ -25,7 +27,7 @@ const REF_FORBIDDEN = /[~^:?*[\\]/;
 // ASCII control characters, DEL included
 const hasControl = (value: string): boolean => [...value].some((character) => character.charCodeAt(0) < 0x20 || character.charCodeAt(0) === 0x7f);
 
-/** git check-ref-format's rules (refs.c check_refname_format) for the part after refs/heads/. */
+/** git check-ref-format's rules (refs.c check_refname_format) for the part after refs/heads/ or refs/tags/. */
 function refNameProblem(name: string): InputProblem | undefined {
   if (hasControl(name)) return { code: 'control' };
   if (SPACE.test(name)) return { code: 'space' };
@@ -54,6 +56,24 @@ function pathProblem(value: string, platform: InputPlatform): InputProblem | und
   return undefined;
 }
 
+/**
+ * A remote name the engine accepts, stricter than git: an ASCII letter or digit, then letters, digits, '.', '_' or '-', never
+ * '..', a trailing '.' or '.lock', so it can never be read as an option or a refspec. Must match isRemoteName in
+ * src/core/scm/remotes.ts.
+ */
+function remoteNameProblem(name: string): InputProblem | undefined {
+  if (name.length > MAX_REMOTE_NAME_LENGTH) return { code: 'tooLong' };
+  if (hasControl(name)) return { code: 'control' };
+  if (SPACE.test(name)) return { code: 'space' };
+  if (name.startsWith('-')) return { code: 'leadingDash' };
+  const forbidden = /^[^A-Za-z0-9]|[^A-Za-z0-9._-]/.exec(name);
+  if (forbidden) return { code: 'char', char: forbidden[0] };
+  if (name.includes('..')) return { code: 'doubleDot' };
+  if (name.endsWith('.lock')) return { code: 'lockPart' };
+  if (name.endsWith('.')) return { code: 'trailingDot' };
+  return undefined;
+}
+
 /** What is wrong with `value` for `kind` on `platform`, or undefined when it is valid. */
 export function inputProblem(kind: InputValidation, value: string, platform: InputPlatform): InputProblem | undefined {
   if (value.length === 0) return { code: 'empty' };
@@ -61,10 +81,16 @@ export function inputProblem(kind: InputValidation, value: string, platform: Inp
   switch (kind) {
     case 'path':
       return pathProblem(value, platform);
+    case 'remoteName':
+      return remoteNameProblem(value);
     case 'branchName':
       // strbuf_check_branch_ref refuses a leading '-' and HEAD
       if (value.startsWith('-')) return { code: 'leadingDash' };
       if (value === 'HEAD') return { code: 'head' };
+      return refNameProblem(value);
+    case 'tagName':
+      // a leading '-' could read as an option where the engine names the tag
+      if (value.startsWith('-')) return { code: 'leadingDash' };
       return refNameProblem(value);
   }
 }

@@ -27,6 +27,8 @@ import { GIT_HARDENING_ARGS } from '../../compass/git';
  */
 
 const MIN_TASK_LENGTH = 20;
+// The card shows the description on one line.
+const MAX_DESCRIPTION_LENGTH = 60;
 const MIN_SUMMARY_LENGTH = 20;
 const MAX_MESSAGE_CONTENT_LENGTH = 32_768;
 const MAX_SCRATCHPAD_CONTENT_LENGTH = 65_536;
@@ -347,9 +349,16 @@ const reviewsParam = Type.Optional(Type.Array(Type.String({ minLength: 1 }), {
   description: "Reviewer only, and required for one: the roster implementors whose work this reviewer reviews and signs off. Its verdicts gate their approval. Pass [] for a reviewer of no implementor's code. Omit it for an implementor.",
 }));
 
+const descriptionParam = Type.String({
+  minLength: 1,
+  maxLength: MAX_DESCRIPTION_LENGTH,
+  description: "A short (3-5 word) label for the specialist's card, e.g. \"Fix trust fence gaps\". The user sees it; the specialist does not.",
+});
+
 const teamSpawnSpecialistSchema = Type.Object(
   {
     name: Type.String({ description: 'Specialist name from the team roster' }),
+    description: descriptionParam,
     task: Type.String({ minLength: MIN_TASK_LENGTH, description: 'Self-contained task assignment with file paths, what to change, and done criteria' }),
     // REQUIRED (not optional): the lead must consciously classify every specialist. An omitted `kind`
     // fails schema validation so the model self-corrects on retry. The resolver defaults to 'implementor'
@@ -367,6 +376,7 @@ const teamSpawnSpecialistSchema = Type.Object(
 const teamRedispatchSpecialistSchema = Type.Object(
   {
     name: Type.String({ description: 'Specialist name from the team roster' }),
+    description: descriptionParam,
     task: Type.String({ minLength: MIN_TASK_LENGTH, description: 'Self-contained task assignment with file paths, what to change, and done criteria' }),
     // REQUIRED (not optional): re-dispatch is a conscious re-classification of the specialist. An omitted
     // `kind` fails schema validation so the model self-corrects on retry. Mirrors team_spawn_specialist.
@@ -709,7 +719,7 @@ export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpC
         if (!briefGate.ok) {
           throw new TeamToolError(briefGate.error ?? 'Read the mission-brief section before spawning.');
         }
-        const agentId = ctx.startSpecialist(input.name, input.task, input.profile, input.kind, input.reviews);
+        const agentId = ctx.startSpecialist(input.name, input.description, input.task, input.profile, input.kind, input.reviews);
         return textResult(`Specialist '${input.name}' spawned (id: ${agentId})${input.profile ? ` with profile '${input.profile}'` : ''}`);
       },
     }),
@@ -727,7 +737,7 @@ export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpC
         if (!briefGate.ok) {
           throw new TeamToolError(briefGate.error ?? 'Read the mission-brief section before spawning.');
         }
-        const agentId = ctx.redispatchSpecialist(input.name, input.task, input.profile, input.kind, input.reviews);
+        const agentId = ctx.redispatchSpecialist(input.name, input.description, input.task, input.profile, input.kind, input.reviews);
         return textResult(`Specialist '${input.name}' re-dispatched (id: ${agentId})${input.profile ? ` with profile '${input.profile}'` : ''}`);
       },
     }),

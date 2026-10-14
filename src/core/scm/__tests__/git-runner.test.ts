@@ -200,6 +200,23 @@ describe('git runner', () => {
     }
   });
 
+  it('lets an askpass registration set its own variables over inherited ones, never over the engine\'s safety variables', () => {
+    const saved = { GIT_ASKPASS: process.env['GIT_ASKPASS'], SSH_ASKPASS: process.env['SSH_ASKPASS'] };
+    process.env['GIT_ASKPASS'] = '/inherited/askpass';
+    process.env['SSH_ASKPASS'] = '/inherited/ssh-askpass';
+    try {
+      const askpassEnv = { GIT_ASKPASS: '/app/askpass.sh', SSH_ASKPASS: '/app/ssh-askpass.sh', SSH_ASKPASS_REQUIRE: 'force', GIT_TERMINAL_PROMPT: '1', GIT_EDITOR: 'vim', GIT_MERGE_AUTOEDIT: 'yes', GIT_ALLOW_PROTOCOL: 'ext', LC_ALL: 'de_DE', GIT_OPTIONAL_LOCKS: '1', GIT_LITERAL_PATHSPECS: '0' };
+      const env = gitEnv({ kind: 'status', parsed: true, localOnly: true, literalPathspecs: true, askpassEnv });
+      expect(env).toMatchObject({ GIT_ASKPASS: '/app/askpass.sh', SSH_ASKPASS: '/app/ssh-askpass.sh', SSH_ASKPASS_REQUIRE: 'force' });
+      expect(env).toMatchObject({ GIT_TERMINAL_PROMPT: '0', GIT_EDITOR: 'true', GIT_MERGE_AUTOEDIT: 'no', GIT_ALLOW_PROTOCOL: 'none', LC_ALL: 'C', GIT_OPTIONAL_LOCKS: '0', GIT_LITERAL_PATHSPECS: '1' });
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it('rejects a cancelled call with the signal\'s reason, even one whose failure is an answer, and spawns none once aborted', async () => {
     const { spawned, instance } = runner();
     const controller = new AbortController();

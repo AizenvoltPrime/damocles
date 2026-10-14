@@ -1,6 +1,19 @@
 import type { OverlayIcon, OverlayMenuItem } from '../../preload/overlay-channels';
 import { tidyMenu } from '../../preload/overlay-channels';
-import type { ScmChange, ScmCommitVariant, ScmGroup, ScmOperation, ScmSettings } from '../../preload/scm-channels';
+import type {
+  ScmBranchArtifact,
+  ScmChange,
+  ScmCommitVariant,
+  ScmCopyRequest,
+  ScmGroup,
+  ScmHead,
+  ScmOperation,
+  ScmRunRequest,
+  ScmSettings,
+  ScmStashArtifact,
+  ScmTagArtifact,
+  ScmWorktreeArtifact,
+} from '../../preload/scm-channels';
 
 // Source control's menus, as VS Code's extensions/git/package.json `menus` lays them out.
 
@@ -57,7 +70,45 @@ export type ScmAction =
   | 'closeRepository' | 'closeOtherRepositories' | 'reopenClosed' | 'showOutput'
   | 'openChanges' | 'openFile' | 'openFileHead' | 'stage' | 'unstage' | 'discard' | 'addToGitignore'
   | 'copyPath' | 'copyRelativePath' | 'reveal' | 'mention'
-  | ScmCommitAction | 'undoLastCommit' | 'abortRebase' | 'restoreCommitTemplate' | 'toggleAmend';
+  | ScmCommitAction | 'undoLastCommit' | 'abortRebase' | 'restoreCommitTemplate' | 'toggleAmend' | 'commitPush' | 'commitSync'
+  | RemoteAction | 'clone' | RefAction | StashAction | StashRowAction | 'stashChanges' | ArtifactAction;
+
+// A Repositories branch, tag or worktree row's actions (D58, VS Code's scm/artifact/context), each on that row.
+export type ArtifactAction =
+  | 'checkoutRef' | 'checkoutRefDetached' | 'mergeRef' | 'rebaseRef' | 'createBranchFromRef' | 'deleteRef' | 'compareRef'
+  | 'copyBranchName' | 'copyTagName' | 'copyCommitHash' | 'openWorktree' | 'deleteWorktreeRow' | 'copyWorktreePath';
+
+// The commands of VS Code's git.pullpush and git.remotes submenus.
+export type RemoteAction =
+  | 'sync' | 'syncRebase' | 'pull' | 'pullRebase' | 'pullFrom' | 'push' | 'pushForce' | 'pushTo' | 'pushToForce'
+  | 'fetch' | 'fetchPrune' | 'fetchAll' | 'addRemote' | 'removeRemote';
+
+// The commands of VS Code's git.branch, git.tags and git.worktrees submenus, and Checkout to...
+export type RefAction =
+  | 'checkout' | 'merge' | 'rebase' | 'createBranch' | 'createBranchFrom' | 'renameBranch' | 'deleteBranch' | 'deleteRemoteBranch' | 'publish'
+  | 'createTag' | 'deleteTag' | 'deleteRemoteTag' | 'pushTags' | 'createWorktree' | 'deleteWorktree';
+
+// The commands of VS Code's git.stash submenu; the pickers (Apply Stash... and the like) ask main for the stash.
+export type StashAction =
+  | 'stash' | 'stashIncludeUntracked' | 'stashStaged' | 'stashApplyLatest' | 'stashApply' | 'stashPopLatest' | 'stashPop'
+  | 'stashDrop' | 'stashDropAll' | 'stashView';
+
+// A stash row's actions (D58, VS Code's scm/artifact/context for a stash), each on that row's stash.
+export type StashRowAction = 'applyStash' | 'viewStash' | 'popStash' | 'dropStash' | 'copyBranchName' | 'copyStashName';
+
+// Why a menu entry is disabled; each is a key under scm.disabled in the shell locales, shown beside the entry.
+export type ScmDisabledReason =
+  | 'noCommits'
+  | 'noRemotes'
+  | 'noStashes'
+  | 'detachedHead'
+  | 'noRebase'
+  | 'mergeInProgress'
+  | 'rebaseInProgress'
+  | 'cherryPickInProgress'
+  | 'checkedOut'
+  | 'mainWorktree'
+  | 'currentWorktree';
 
 export interface ScmMenuEntry {
   readonly action: ScmAction;
@@ -68,29 +119,58 @@ export interface ScmMenuEntry {
   readonly checked?: boolean;
   // with checked: one of mutually exclusive choices
   readonly radio?: true;
-  readonly disabled?: boolean;
+  // present: the entry is disabled, for this reason
+  readonly disabled?: ScmDisabledReason;
 }
-export type ScmMenuNode = ScmMenuEntry | { readonly separator: true } | { readonly submenu: 'viewSort' | 'commit' | 'changes' | 'repositories'; readonly icon: OverlayIcon; readonly items: readonly ScmMenuNode[] };
+
+const OPERATION_REASONS: Readonly<Record<ScmOperation, ScmDisabledReason>> = {
+  merge: 'mergeInProgress',
+  rebase: 'rebaseInProgress',
+  cherryPick: 'cherryPickInProgress',
+};
+
+// The entry's disabled field: the first reason that holds, or none.
+const disabledBy = (...reasons: ReadonlyArray<ScmDisabledReason | false>): { readonly disabled?: ScmDisabledReason } => {
+  const reason = reasons.find((candidate): candidate is ScmDisabledReason => candidate !== false);
+  return reason === undefined ? {} : { disabled: reason };
+};
+
+// HEAD is not on a branch: before the first commit, or detached; null (no status yet) claims neither
+const notOnBranch = (head: ScmHead['type'] | null): ScmDisabledReason | false => (head === 'unborn' ? 'noCommits' : head === 'detached' && 'detachedHead');
+export type ScmMenuNode =
+  | ScmMenuEntry
+  | { readonly separator: true }
+  | {
+    readonly submenu: 'viewSort' | 'commit' | 'changes' | 'pullPush' | 'branch' | 'remote' | 'stash' | 'tags' | 'worktrees' | 'repositories';
+    readonly icon: OverlayIcon;
+    readonly items: readonly ScmMenuNode[];
+    // its items' overlay ids are `<submenu>:<action>`: the overlay wants ids unique across a menu's levels, and this submenu
+    // repeats commands the menu's top level has (VS Code lists Pull, Push and Fetch in both)
+    readonly scoped?: true;
+  };
 
 const SEPARATOR = { separator: true } as const;
 
-/** The overlay menu for a node list, labelled by `label`; empty submenus drop out. */
+/** The action an overlay menu answer names: an item id is the action, or `<submenu>:<action>` inside a scoped submenu. */
+export const actionOf = (itemId: string): ScmAction => itemId.slice(itemId.indexOf(':') + 1) as ScmAction;
+
+/** The overlay menu for a node list, labelled by `label` (a disabled entry's reason too); empty submenus drop out. */
 export function toOverlayMenu(nodes: readonly ScmMenuNode[], label: (key: string) => string): OverlayMenuItem[] {
-  const convert = (node: ScmMenuNode): OverlayMenuItem | undefined => {
+  const convert = (node: ScmMenuNode, scope?: string): OverlayMenuItem | undefined => {
     if ('separator' in node) return { kind: 'separator' };
     if ('submenu' in node) {
-      const items = tidyMenu(node.items.flatMap((child) => convert(child) ?? []));
+      const items = tidyMenu(node.items.flatMap((child) => convert(child, node.scoped ? node.submenu : undefined) ?? []));
       return items.length === 0 ? undefined : { kind: 'submenu', id: `submenu:${node.submenu}`, label: label(`submenu.${node.submenu}`), icon: node.icon, items };
     }
     return {
       kind: 'item',
-      id: node.action,
+      id: scope === undefined ? node.action : `${scope}:${node.action}`,
       label: label(`action.${node.label}`),
       ...(node.icon ? { icon: node.icon } : {}),
       ...(node.danger ? { danger: true } : {}),
       ...(node.checked !== undefined ? { checked: node.checked } : {}),
       ...(node.radio ? { radio: true } : {}),
-      ...(node.disabled ? { disabled: true } : {}),
+      ...(node.disabled !== undefined ? { disabled: true, disabledReason: label(`disabled.${node.disabled}`) } : {}),
     };
   };
   return tidyMenu(nodes.flatMap((node) => convert(node) ?? []));
@@ -103,6 +183,17 @@ export interface MoreActionsContext {
   readonly openRepos: number;
   readonly closedCount: number;
   readonly commit: CommitMenuContext;
+  readonly remote: RemoteMenuContext;
+  readonly refs: RefMenuContext;
+}
+
+export interface RefMenuContext {
+  // what HEAD is on, null before the status says; Rename Branch..., Publish Branch... and Sync need a branch with a commit
+  readonly head: ScmHead['type'] | null;
+  // git 2.35 or later (ScmCapabilities.stashStaged)
+  readonly stashStaged: boolean;
+  // the repository's stash count once the Stashes group read it; null before
+  readonly stashes: number | null;
 }
 
 export interface CommitMenuContext {
@@ -125,15 +216,15 @@ export function commitMenu(context: CommitMenuContext): ScmMenuNode[] {
   const noVerify = context.allowNoVerifyCommit;
   const entry = (action: AmendableAction, icon: OverlayIcon): ScmMenuEntry => commitEntry(action, icon, context.amending);
   // git cannot amend while a merge, rebase or cherry-pick is in progress, nor before the first commit
-  const amendable = context.hasCommit && context.operation === null;
-  const amend = (action: ScmCommitAction, icon: OverlayIcon = 'pencil-line'): ScmMenuEntry => ({ action, label: action, icon, ...(amendable ? {} : { disabled: true }) });
+  const notAmendable = disabledBy(!context.hasCommit && 'noCommits', context.operation !== null && OPERATION_REASONS[context.operation]);
+  const amend = (action: ScmCommitAction, icon: OverlayIcon = 'pencil-line'): ScmMenuEntry => ({ action, label: action, icon, ...notAmendable });
   return [
     entry('commit', 'check'),
     entry('commitStaged', 'check'),
     entry('commitAll', 'check-check'),
-    { action: 'undoLastCommit', label: 'undoLastCommit', icon: 'undo-2', ...(context.hasCommit ? {} : { disabled: true }) },
+    { action: 'undoLastCommit', label: 'undoLastCommit', icon: 'undo-2', ...disabledBy(!context.hasCommit && 'noCommits') },
     ...(context.hasTemplate ? [{ action: 'restoreCommitTemplate', label: 'restoreCommitTemplate', icon: 'file-text' } as const] : []),
-    { action: 'abortRebase', label: 'abortRebase', icon: 'x', ...(context.operation === 'rebase' ? {} : { disabled: true }) },
+    { action: 'abortRebase', label: 'abortRebase', icon: 'x', ...disabledBy(context.operation !== 'rebase' && 'noRebase') },
     ...(noVerify ? [SEPARATOR, entry('commitNoVerify', 'shield-off'), entry('commitStagedNoVerify', 'shield-off'), entry('commitAllNoVerify', 'shield-off')] : []),
     ...(context.amending
       ? []
@@ -152,26 +243,287 @@ export function commitMenu(context: CommitMenuContext): ScmMenuNode[] {
   ];
 }
 
-/** The commit box's split button menu (prototype). Commit (Amend) enters amend mode, which Escape or the banner leaves. */
-export function splitButtonMenu(context: Pick<CommitMenuContext, 'operation' | 'hasCommit' | 'amending'>): ScmMenuNode[] {
+/**
+ * The commit box's split button menu (prototype). Commit (Amend) enters amend mode, which Escape or the banner leaves. Commit &
+ * Push and Commit & Sync are left out in amend mode, where a plain push of the rewritten commit would be refused, and off where
+ * main would refuse the push after the commit landed: no remote, or a detached HEAD (an unborn branch has one once it commits).
+ */
+export function splitButtonMenu(context: Pick<CommitMenuContext, 'operation' | 'hasCommit' | 'amending'> & Pick<RefMenuContext, 'head'> & Pick<RemoteMenuContext, 'hasRemotes'>): ScmMenuNode[] {
+  const pushes = disabledBy(!context.hasRemotes && 'noRemotes', context.head === 'detached' && 'detachedHead');
   return [
     commitEntry('commit', 'check', context.amending),
     ...(context.amending
       ? []
-      : [{
-          action: 'toggleAmend',
-          label: 'commitAmend',
-          icon: 'pencil-line',
-          ...(context.hasCommit && context.operation === null ? {} : { disabled: true }),
-        } as const]),
+      : [
+          {
+            action: 'toggleAmend',
+            label: 'commitAmend',
+            icon: 'pencil-line',
+            ...disabledBy(!context.hasCommit && 'noCommits', context.operation !== null && OPERATION_REASONS[context.operation]),
+          } as const,
+          SEPARATOR,
+          { action: 'commitPush', label: 'commitPush', icon: 'cloud-upload', ...pushes } as const,
+          { action: 'commitSync', label: 'commitSync', icon: 'refresh-cw', ...pushes } as const,
+        ]),
     SEPARATOR,
     commitEntry('commitSigned', 'signature', context.amending),
   ];
 }
 
-/** Views and More Actions… (VS Code's scm/title `...` menu with git's submenus). */
+export interface RemoteMenuContext {
+  // the repository has at least one remote; every item but Add Remote... needs one
+  readonly hasRemotes: boolean;
+  // force variants exist only while damocles.desktop.git.allowForcePush is on
+  readonly allowForcePush: boolean;
+  readonly operation: ScmOperation | null;
+}
+
+/** Pull, Push › (VS Code's git.pullpush submenu, its groups in order). Sync needs a branch with a commit, as main's push does. */
+export function pullPushMenu(context: RemoteMenuContext & Pick<RefMenuContext, 'head'>): ScmMenuNode[] {
+  const noRemotes = !context.hasRemotes && 'noRemotes';
+  const entry = (action: RemoteAction, icon: OverlayIcon, ...reasons: ReadonlyArray<ScmDisabledReason | false>): ScmMenuEntry => ({ action, label: action, icon, ...disabledBy(noRemotes, ...reasons) });
+  const branch = notOnBranch(context.head);
+  return [
+    entry('sync', 'refresh-cw', branch),
+    // VS Code's when-clause gitState == idle: no merge, rebase or cherry-pick in progress
+    entry('syncRebase', 'refresh-cw', branch, context.operation !== null && OPERATION_REASONS[context.operation]),
+    SEPARATOR,
+    entry('pull', 'arrow-down-to-line'),
+    entry('pullRebase', 'arrow-down-to-line'),
+    entry('pullFrom', 'arrow-down-to-line'),
+    SEPARATOR,
+    entry('push', 'arrow-up-from-line'),
+    ...(context.allowForcePush ? [entry('pushForce', 'arrow-up-from-line')] : []),
+    entry('pushTo', 'arrow-up-from-line'),
+    ...(context.allowForcePush ? [entry('pushToForce', 'arrow-up-from-line')] : []),
+    SEPARATOR,
+    entry('fetch', 'cloud-download'),
+    entry('fetchPrune', 'cloud-download'),
+    entry('fetchAll', 'cloud-download'),
+  ];
+}
+
+/** Remote › (VS Code's git.remotes submenu). */
+export function remoteMenu(context: Pick<RemoteMenuContext, 'hasRemotes'>): ScmMenuNode[] {
+  return [
+    { action: 'addRemote', label: 'addRemote', icon: 'plus' },
+    { action: 'removeRemote', label: 'removeRemote', icon: 'minus', ...disabledBy(!context.hasRemotes && 'noRemotes') },
+  ];
+}
+
+/** Branch › (VS Code's git.branch submenu, its groups in order). */
+export function branchMenu(context: Pick<RefMenuContext, 'head'> & Pick<RemoteMenuContext, 'hasRemotes'>): ScmMenuNode[] {
+  const needsBranch = disabledBy(notOnBranch(context.head));
+  const needsRemote = disabledBy(!context.hasRemotes && 'noRemotes');
+  return [
+    { action: 'merge', label: 'merge', icon: 'git-merge' },
+    { action: 'rebase', label: 'rebase', icon: 'git-pull-request-arrow' },
+    SEPARATOR,
+    { action: 'createBranch', label: 'createBranch', icon: 'git-branch-plus' },
+    { action: 'createBranchFrom', label: 'createBranchFrom', icon: 'git-branch-plus' },
+    SEPARATOR,
+    { action: 'renameBranch', label: 'renameBranch', icon: 'pencil', ...needsBranch },
+    { action: 'deleteBranch', label: 'deleteBranch', icon: 'trash-2' },
+    { action: 'deleteRemoteBranch', label: 'deleteRemoteBranch', icon: 'trash-2', ...needsRemote },
+    SEPARATOR,
+    { action: 'publish', label: 'publish', icon: 'cloud-upload', ...disabledBy(notOnBranch(context.head), !context.hasRemotes && 'noRemotes') },
+  ];
+}
+
+/** Stash › (VS Code's git.stash submenu); Stash Staged only with git 2.35 or later, and the stash pickers off with no stashes. */
+export function stashMenu(context: Pick<RefMenuContext, 'stashStaged' | 'stashes'>): ScmMenuNode[] {
+  const needsStash = disabledBy(context.stashes === 0 && 'noStashes');
+  return [
+    { action: 'stash', label: 'stash', icon: 'archive' },
+    { action: 'stashIncludeUntracked', label: 'stashIncludeUntracked', icon: 'archive' },
+    ...(context.stashStaged ? [{ action: 'stashStaged', label: 'stashStaged', icon: 'archive' } as const] : []),
+    SEPARATOR,
+    { action: 'stashApplyLatest', label: 'stashApplyLatest', icon: 'archive-restore', ...needsStash },
+    { action: 'stashApply', label: 'stashApply', icon: 'archive-restore', ...needsStash },
+    SEPARATOR,
+    { action: 'stashPopLatest', label: 'stashPopLatest', icon: 'arrow-up-from-line', ...needsStash },
+    { action: 'stashPop', label: 'stashPop', icon: 'arrow-up-from-line', ...needsStash },
+    SEPARATOR,
+    { action: 'stashDrop', label: 'stashDrop', icon: 'trash-2', ...needsStash },
+    { action: 'stashDropAll', label: 'stashDropAll', icon: 'trash-2', danger: true, ...needsStash },
+    SEPARATOR,
+    { action: 'stashView', label: 'stashView', icon: 'eye', ...needsStash },
+  ];
+}
+
+/** Tags › (VS Code's git.tags submenu). */
+export function tagsMenu(context: Pick<RemoteMenuContext, 'hasRemotes'>): ScmMenuNode[] {
+  const needsRemote = disabledBy(!context.hasRemotes && 'noRemotes');
+  return [
+    { action: 'createTag', label: 'createTag', icon: 'tag' },
+    { action: 'deleteTag', label: 'deleteTag', icon: 'trash-2' },
+    { action: 'deleteRemoteTag', label: 'deleteRemoteTag', icon: 'trash-2', ...needsRemote },
+    SEPARATOR,
+    { action: 'pushTags', label: 'pushTags', icon: 'cloud-upload', ...needsRemote },
+  ];
+}
+
+/** Worktrees › (VS Code's git.worktrees submenu). */
+export function worktreesMenu(): ScmMenuNode[] {
+  return [
+    { action: 'createWorktree', label: 'createWorktree', icon: 'folder-plus' },
+    { action: 'deleteWorktree', label: 'deleteWorktree', icon: 'trash-2' },
+  ];
+}
+
+/**
+ * A stash row's menu (D58), shared by Source control's Stashes group and the Repositories section's stash rows: Apply Stash is
+ * also the row's inline action. Copy Branch Name only for a stash that names its branch.
+ */
+export function stashRowMenu(stash: Pick<ScmStashArtifact, 'branch'>): ScmMenuNode[] {
+  return [
+    { action: 'applyStash', label: 'applyStash', icon: 'archive-restore' },
+    { action: 'viewStash', label: 'viewStash', icon: 'eye' },
+    { action: 'popStash', label: 'popStash', icon: 'arrow-up-from-line' },
+    { action: 'dropStash', label: 'dropStash', icon: 'trash-2', danger: true },
+    SEPARATOR,
+    ...(stash.branch === null ? [] : [{ action: 'copyBranchName', label: 'copyBranchName', icon: 'copy' } as const]),
+    { action: 'copyStashName', label: 'copyStashName', icon: 'copy' },
+  ];
+}
+
+/** What a row action calls: the damocles:scm:* operation Source control's menus call for the same action. */
+export type ScmRowCall = { readonly run: ScmRunRequest } | { readonly copy: ScmCopyRequest };
+
+/** A stash row's action on that row's stash (D58), pinned by its hash so a shifted index never reaches another stash. */
+export function stashRowCall(action: StashRowAction, repoId: string, stash: Pick<ScmStashArtifact, 'index' | 'hash'>): ScmRowCall {
+  const target = { index: stash.index, hash: stash.hash };
+  switch (action) {
+    case 'applyStash': return { run: { op: 'stashApply', repoId, pop: false, target } };
+    case 'popStash': return { run: { op: 'stashApply', repoId, pop: true, target } };
+    case 'dropStash': return { run: { op: 'stashDrop', repoId, target } };
+    case 'viewStash': return { run: { op: 'viewStash', repoId, target } };
+    case 'copyBranchName': return { copy: { repoId, kind: 'branchName', value: stash.hash } };
+    case 'copyStashName': return { copy: { repoId, kind: 'stashName', value: stash.hash } };
+  }
+}
+
+const STASH_ROW_ACTIONS: ReadonlySet<ScmAction> = new Set<StashRowAction>(['applyStash', 'viewStash', 'popStash', 'dropStash', 'copyBranchName', 'copyStashName']);
+export const isStashRowAction = (action: ScmAction): action is StashRowAction => STASH_ROW_ACTIONS.has(action);
+
+/**
+ * A branch row's menu (VS Code's scm/artifact/context for branches, its groups in order). Checkout and Delete are off on the
+ * branch HEAD is on (VS Code's !scmArtifactIsHistoryItemRef).
+ */
+export function branchRowMenu(branch: Pick<ScmBranchArtifact, 'current' | 'commit'>): ScmMenuNode[] {
+  const head = disabledBy(branch.current && 'checkedOut');
+  return [
+    { action: 'checkoutRef', label: 'checkoutRef', icon: 'check', ...head },
+    { action: 'checkoutRefDetached', label: 'checkoutRefDetached', icon: 'circle-dot' },
+    SEPARATOR,
+    { action: 'mergeRef', label: 'mergeRef', icon: 'git-merge' },
+    { action: 'rebaseRef', label: 'rebaseRef', icon: 'git-pull-request-arrow' },
+    SEPARATOR,
+    { action: 'createBranchFromRef', label: 'createBranchFromRef', icon: 'git-branch-plus' },
+    { action: 'deleteRef', label: 'deleteRef', icon: 'trash-2', danger: true, ...head },
+    SEPARATOR,
+    { action: 'compareRef', label: 'compareRef', icon: 'git-compare' },
+    SEPARATOR,
+    { action: 'copyBranchName', label: 'copyBranchName', icon: 'copy' },
+    ...(branch.commit ? [{ action: 'copyCommitHash', label: 'copyCommitHash', icon: 'hash' } as const] : []),
+  ];
+}
+
+/** A tag row's menu (VS Code's scm/artifact/context for tags). */
+export function tagRowMenu(tag: Pick<ScmTagArtifact, 'current' | 'commit'>): ScmMenuNode[] {
+  const head = disabledBy(tag.current && 'checkedOut');
+  return [
+    { action: 'checkoutRef', label: 'checkoutRef', icon: 'check', ...head },
+    { action: 'checkoutRefDetached', label: 'checkoutRefDetached', icon: 'circle-dot' },
+    SEPARATOR,
+    { action: 'deleteRef', label: 'deleteRef', icon: 'trash-2', danger: true, ...head },
+    SEPARATOR,
+    { action: 'compareRef', label: 'compareRef', icon: 'git-compare' },
+    SEPARATOR,
+    { action: 'copyTagName', label: 'copyTagName', icon: 'copy' },
+    ...(tag.commit ? [{ action: 'copyCommitHash', label: 'copyCommitHash', icon: 'hash' } as const] : []),
+  ];
+}
+
+/**
+ * A worktree row's menu (D58: Open in place of VS Code's two Open Worktree commands). Delete is off on the main worktree and
+ * on the repository's own, which git cannot remove; the copies need a branch and a commit.
+ */
+export function worktreeRowMenu(worktree: Pick<ScmWorktreeArtifact, 'main' | 'current' | 'branch' | 'commit'>): ScmMenuNode[] {
+  return [
+    { action: 'openWorktree', label: 'openWorktree', icon: 'arrow-up-right' },
+    SEPARATOR,
+    { action: 'deleteWorktreeRow', label: 'deleteRef', icon: 'trash-2', danger: true, ...disabledBy(worktree.main && 'mainWorktree', worktree.current && 'currentWorktree') },
+    SEPARATOR,
+    ...(worktree.branch === null ? [] : [{ action: 'copyBranchName', label: 'copyBranchName', icon: 'copy' } as const]),
+    ...(worktree.commit ? [{ action: 'copyCommitHash', label: 'copyCommitHash', icon: 'hash' } as const] : []),
+    { action: 'copyWorktreePath', label: 'copyWorktreePath', icon: 'copy' },
+  ];
+}
+
+/** A repository row's menu (VS Code's repository context menu). */
+export function repositoryRowMenu(openRepos: number): ScmMenuNode[] {
+  return [
+    { action: 'closeRepository', label: 'closeRepository', icon: 'x' },
+    ...(openRepos > 1 ? [{ action: 'closeOtherRepositories', label: 'closeOtherRepositories', icon: 'copy-x' } as const] : []),
+  ];
+}
+
+/** The Stashes group's Stash menu in the Repositories section (VS Code's git.repositories.stash submenu). */
+export function repositoryStashMenu(stashStaged: boolean): ScmMenuNode[] {
+  return [
+    { action: 'stash', label: 'stash', icon: 'archive' },
+    SEPARATOR,
+    ...(stashStaged ? [{ action: 'stashStaged', label: 'stashStaged', icon: 'archive' } as const] : []),
+    { action: 'stashIncludeUntracked', label: 'stashIncludeUntracked', icon: 'archive' },
+  ];
+}
+
+/** A Repositories group's inline action (VS Code's scm/artifactGroup/context inline group); Stash opens its menu. */
+export const REPOSITORY_GROUP_ACTIONS: Readonly<Record<'branches' | 'stashes' | 'tags' | 'worktrees', GroupInlineAction>> = {
+  branches: { action: 'createBranch', label: 'createBranch', icon: 'plus' },
+  stashes: { action: 'stash', label: 'stash', icon: 'archive' },
+  tags: { action: 'createTag', label: 'createTag', icon: 'plus' },
+  worktrees: { action: 'createWorktree', label: 'createWorktree', icon: 'plus' },
+};
+
+/** A branch, tag or worktree row's action as the operation it calls; the row's full refname or path names it to main. */
+export function artifactRowCall(
+  action: ArtifactAction,
+  repoId: string,
+  row: { readonly kind: 'branch'; readonly branch: Pick<ScmBranchArtifact, 'ref'> } | { readonly kind: 'tag'; readonly tag: Pick<ScmTagArtifact, 'ref'> } | { readonly kind: 'worktree'; readonly worktree: Pick<ScmWorktreeArtifact, 'path'> },
+): ScmRowCall | undefined {
+  if (row.kind === 'worktree') {
+    const path = row.worktree.path;
+    switch (action) {
+      case 'openWorktree': return { run: { op: 'openWorktree', repoId, path } };
+      case 'deleteWorktreeRow': return { run: { op: 'deleteWorktree', repoId, path } };
+      case 'copyBranchName': return { copy: { repoId, kind: 'branchName', value: path } };
+      case 'copyCommitHash': return { copy: { repoId, kind: 'commitHash', value: path } };
+      case 'copyWorktreePath': return { copy: { repoId, kind: 'worktreePath', value: path } };
+      default: return undefined;
+    }
+  }
+  const ref = row.kind === 'branch' ? row.branch.ref : row.tag.ref;
+  switch (action) {
+    case 'checkoutRef': return { run: { op: 'checkout', repoId, detached: false, ref } };
+    case 'checkoutRefDetached': return { run: { op: 'checkout', repoId, detached: true, ref } };
+    case 'mergeRef': return { run: { op: 'merge', repoId, ref } };
+    case 'rebaseRef': return { run: { op: 'rebase', repoId, ref } };
+    case 'createBranchFromRef': return { run: { op: 'createBranch', repoId, from: true, ref } };
+    case 'deleteRef': return { run: row.kind === 'branch' ? { op: 'deleteBranch', repoId, ref } : { op: 'deleteTag', repoId, ref } };
+    case 'compareRef': return { run: { op: 'compareRef', repoId, ref } };
+    case 'copyBranchName': return row.kind === 'branch' ? { copy: { repoId, kind: 'branchName', value: ref } } : undefined;
+    case 'copyTagName': return row.kind === 'tag' ? { copy: { repoId, kind: 'tagName', value: ref } } : undefined;
+    case 'copyCommitHash': return { copy: { repoId, kind: 'commitHash', value: ref } };
+    default: return undefined;
+  }
+}
+
+/** Views and More Actions… (VS Code's scm/title `...` menu with git's submenus, in its 1_header, 2_main and 3_footer groups). */
 export function moreActionsMenu(context: MoreActionsContext): ScmMenuNode[] {
   const separate = context.untrackedChanges === 'separate';
+  const needsRemote = disabledBy(!context.remote.hasRemotes && 'noRemotes');
   return [
     {
       submenu: 'viewSort',
@@ -190,6 +542,12 @@ export function moreActionsMenu(context: MoreActionsContext): ScmMenuNode[] {
           : []),
       ],
     },
+    SEPARATOR,
+    { action: 'pull', label: 'pull', icon: 'arrow-down-to-line', ...needsRemote },
+    { action: 'push', label: 'push', icon: 'arrow-up-from-line', ...needsRemote },
+    { action: 'clone', label: 'clone', icon: 'copy-plus' },
+    { action: 'checkout', label: 'checkout', icon: 'git-branch' },
+    { action: 'fetch', label: 'fetch', icon: 'cloud-download', ...needsRemote },
     SEPARATOR,
     { submenu: 'commit', icon: 'git-commit-horizontal', items: commitMenu(context.commit) },
     {
@@ -210,6 +568,12 @@ export function moreActionsMenu(context: MoreActionsContext): ScmMenuNode[] {
           : []),
       ],
     },
+    { submenu: 'pullPush', icon: 'arrow-down-up', items: pullPushMenu({ ...context.remote, head: context.refs.head }), scoped: true },
+    { submenu: 'branch', icon: 'git-branch', items: branchMenu({ head: context.refs.head, hasRemotes: context.remote.hasRemotes }) },
+    { submenu: 'remote', icon: 'cloud', items: remoteMenu(context.remote) },
+    { submenu: 'stash', icon: 'archive', items: stashMenu(context.refs) },
+    { submenu: 'tags', icon: 'tag', items: tagsMenu(context.remote) },
+    { submenu: 'worktrees', icon: 'folder-tree', items: worktreesMenu() },
     { submenu: 'repositories', icon: 'folder-git-2', items: repositoryItems(context) },
     SEPARATOR,
     { action: 'showOutput', label: 'showOutput', icon: 'square-terminal' },
@@ -232,9 +596,12 @@ export function pickerMenu(context: Pick<MoreActionsContext, 'openRepos' | 'clos
 export interface GroupInlineAction {
   readonly action: ScmAction;
   readonly label: ScmMenuEntry['label'];
-  readonly icon: 'git-compare' | 'minus' | 'plus' | 'undo-2';
+  readonly icon: 'git-compare' | 'minus' | 'plus' | 'undo-2' | 'archive';
   readonly danger?: true;
 }
+
+/** The Stashes group's inline action (A.3). */
+export const STASH_GROUP_ACTIONS: readonly GroupInlineAction[] = [{ action: 'stashIncludeUntracked', label: 'stashIncludeUntracked', icon: 'archive' }];
 
 /** A group header's inline actions (scm/resourceGroup/inline), in VS Code's order. */
 export function groupActions(group: ScmGroup, untrackedChanges: ScmSettings['untrackedChanges']): GroupInlineAction[] {
@@ -293,6 +660,9 @@ export function rowMenu(group: ScmGroup, change: ScmChange): ScmMenuNode[] {
         ? [{ action: 'stage', label: 'stageMerge', icon: 'plus' } as const]
         : [{ action: 'stage', label: 'stage', icon: 'plus' } as const, { action: 'discard', label: 'discard', icon: 'undo-2', danger: true } as const]),
     SEPARATOR,
+    // a conflicted file cannot be stashed
+    ...(group === 'merge' ? [] : [{ action: 'stashChanges', label: 'stashChanges', icon: 'archive' } as const]),
+    SEPARATOR,
     ...(group === 'workingTree' || group === 'untracked' ? [{ action: 'addToGitignore', label: 'addToGitignore', icon: 'eye-off' } as const] : []),
     SEPARATOR,
     { action: 'copyPath', label: 'copyPath', icon: 'copy' },
@@ -312,5 +682,10 @@ export function folderMenu(group: ScmGroup): ScmMenuNode[] {
 
 /** A group header's context menu: its inline actions as menu items. */
 export function groupMenu(group: ScmGroup, untrackedChanges: ScmSettings['untrackedChanges']): ScmMenuNode[] {
-  return groupActions(group, untrackedChanges).map((entry) => ({ action: entry.action, label: entry.label, icon: entry.icon, ...(entry.danger ? { danger: true as const } : {}) }));
+  return actionsMenu(groupActions(group, untrackedChanges));
+}
+
+/** Inline actions as menu items, for a header's context menu. */
+export function actionsMenu(actions: readonly GroupInlineAction[]): ScmMenuNode[] {
+  return actions.map((entry) => ({ action: entry.action, label: entry.label, icon: entry.icon, ...(entry.danger ? { danger: true as const } : {}) }));
 }

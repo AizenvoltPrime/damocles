@@ -200,6 +200,21 @@ describe('overlay settings', () => {
     expect(document.querySelector('[data-testid="settings-row-damocles.desktop.reduceMotion"] [data-testid="setting-error"]')!.textContent).toContain('not allowed');
   });
 
+  it('lists Always show section actions in Appearance, off by default, with its strings in English and Greek, and writes its key', async () => {
+    await openSettings(1, 'appearance');
+    await flushPromises();
+    const row = document.querySelector<HTMLElement>('[data-testid="settings-row-damocles.desktop.sidebar.alwaysShowHeaderActions"]')!;
+    expect(row.querySelector('[id^="settings-row-label-"]')!.textContent!.trim()).toBe('Always show section actions');
+    const toggle = row.querySelector<HTMLElement>('[role="switch"]')!;
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    toggle.click();
+    expect(api.setPref).toHaveBeenCalledWith('damocles.desktop.sidebar.alwaysShowHeaderActions', true);
+    for (const part of ['label', 'description']) {
+      const key = `settingsHost.rows.alwaysShowHeaderActions.${part}`;
+      expect(shellI18n.global.te(key, 'en') && shellI18n.global.te(key, 'el'), key).toBe(true);
+    }
+  });
+
   it('reverts a preference whose write call fails and says so in the user\'s language, never with the invoke error', async () => {
     await openSettings(1, 'appearance');
     await flushPromises();

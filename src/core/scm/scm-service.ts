@@ -16,7 +16,18 @@ import { createShellSessionJob, type ShellSessionJob } from '../pi-session/tools
 import { folderKey } from '../workspace-folders/folder-key';
 import { commitHistory, recordCommitMessage } from './commit-history';
 import { discover, inspectFolder, isInside, samePath, type FoundRepository } from './discovery';
-import { GitQueueDisposedError, GitUntrustedError, subcommandIndex, type GitCall, type GitRunner } from './git-runner';
+import type { AskpassRegistration, AskpassServer } from './askpass/askpass-server';
+import { autofetchPeriodSeconds, Autofetcher, type AutofetchTarget } from './autofetch';
+import { cloneArgs, cloneFolderName, freeCloneTarget, removeCloneTarget } from './clone';
+import { GitError, GitQueueDisposedError, GitUntrustedError, logText, MAX_CLI_LENGTH, revision, gitAtLeast, subcommandIndex, type GitCall, type GitCloner, type GitResult, type GitRunner, type GitVersion, type RepoQueue } from './git-runner';
+import type { Remote } from './remotes';
+import { diffRefs, diffStash, entryPatch, readArtifacts, type ArtifactGroup, type Artifacts, type CommitPairDiff, type CommitPairEntry } from './artifacts';
+import { checkout, createBranchArgs, deleteBranch, deleteRemoteRefArgs, fastForwardArgs, integrate, renameBranchArgs, type CheckoutTarget } from './branches';
+import { stashApply, stashClear, stashDrop, stashPush, type StashScope, type StashTarget } from './stash';
+import { createTagArgs, deleteTagArgs, parseRemoteTags, PUSH_TAGS_ARGS, remoteTagsArgs, type RemoteTag } from './tags';
+import { addWorktree, removeWorktree } from './worktrees';
+import { recordWorktreeRoot, worktreeRoot } from './worktree-roots';
+import { fetchArgs, needsStashAroundPull, pullArgs, pullTarget, pushArgs, type FetchOptions } from './sync';
 import { updateSerially } from './serial-update';
 import {
   EMPTY_GROUPS,
@@ -31,8 +42,17 @@ import {
   type CommitOutcome,
   type DiscardFailure,
   type DiscardOutcome,
+  type Head,
+  type LockScope,
+  type NetworkCall,
+  type NewestStash,
+  type PatchResult,
   type RepoKind,
   type RepositoryStatus,
+  type StashedOutcome,
+  type StashMode,
+  type StashSlot,
+  type Upstream,
 } from './repository';
 import { SCM_SETTING_KEYS, type BranchProtectionPrompt, type OpenRepositoryInParentFolders, type SmartCommitChanges, type UntrackedChanges } from './settings-keys';
 
@@ -40,8 +60,21 @@ import { SCM_SETTING_KEYS, type BranchProtectionPrompt, type OpenRepositoryInPar
 export const WATCH_DEBOUNCE_MS = 500;
 const CLOSED_REPOSITORIES_KEY = 'damocles.scm.closedRepositories';
 const PARENT_REPOSITORIES_KEY = 'damocles.scm.parentRepositories';
-// git dir entries whose change can change what status, HEAD or the operation in progress shows (AD4's .git watcher)
-const GIT_DIR_WATCHED = /^(HEAD|index|packed-refs|FETCH_HEAD|MERGE_HEAD|REBASE_HEAD|CHERRY_PICK_HEAD|MERGE_MSG)$|^(refs|rebase-merge|rebase-apply|worktrees)[\\/]/;
+// git dir entries whose change can change a ref, stash or worktree list, relative to the git dir or the common dir, '/' separated
+const ARTIFACT_PATHS: ReadonlyArray<readonly [RegExp, readonly ArtifactGroup[]]> = [
+  [/^HEAD$/, ['branches', 'tags', 'worktrees']],
+  [/^packed-refs$/, ['branches', 'remoteBranches', 'tags']],
+  [/^refs\/heads\//, ['branches', 'worktrees']],
+  // a branch row's ahead and behind follow its upstream's ref and the branch's config
+  [/^refs\/remotes\//, ['remoteBranches', 'branches']],
+  [/^config$/, ['branches']],
+  [/^refs\/tags\//, ['tags']],
+  // dropping stash@{1} rewrites only the reflog
+  [/^(logs\/)?refs\/stash$/, ['stashes']],
+  [/^worktrees\//, ['worktrees']],
+];
+// git dir entries whose change can change what status, HEAD, the upstream, the remotes or the operation in progress shows (AD4's .git watcher)
+const GIT_DIR_WATCHED = /^(HEAD|index|packed-refs|FETCH_HEAD|MERGE_HEAD|REBASE_HEAD|CHERRY_PICK_HEAD|MERGE_MSG|config)$|^(refs|rebase-merge|rebase-apply|worktrees)[\\/]/;
 
 export type ScmQuestionSeverity = 'info' | 'warning' | 'danger';
 
@@ -60,7 +93,9 @@ export type ScmAsk = (question: ScmQuestion) => Promise<number | undefined>;
 
 export interface ScmServiceDeps {
   // undefined: git was not found, and the view says so
-  readonly runner: GitRunner | undefined;
+  readonly runner: (GitRunner & GitCloner) | undefined;
+  // the askpass server credential-capable calls register with; without one git gets no askpass and prompts nowhere
+  readonly askpass?: AskpassServer;
   readonly trust: TrustService;
   readonly watchers: FileWatcherFactory;
   readonly settings: SettingsStore;
@@ -105,6 +140,87 @@ export interface RepoSnapshot {
   readonly projectKey: string;
   readonly status: RepositoryStatus | undefined;
   readonly busy: boolean;
+  readonly running: RemoteOp | null;
+  readonly lastRemote: RemoteOutcome | null;
+}
+
+// The interactive remote operations a user can cancel; publish and Push Tags run as push, Add Remote's fetch as fetch and a
+// pullBeforeCheckout fast-forward as pull.
+export type RemoteOp = 'fetch' | 'pull' | 'push' | 'sync' | 'deleteRemoteBranch' | 'deleteRemoteTag';
+export type RemoteOutcomeKind = 'ok' | 'failed' | 'cancelled';
+export interface RemoteOutcome {
+  readonly op: RemoteOp;
+  readonly outcome: RemoteOutcomeKind;
+  // the changes stashed around the operation's pull could not be applied back and stay in the stash list (StashKeptError)
+  readonly stashKept: boolean;
+  readonly seq: number;
+}
+
+/**
+ * The outcome a remote operation records when its pull kept the stash: a pull that went through finished, while a sync stops
+ * before its push.
+ */
+export function keptStashOutcome(op: RemoteOp, pull: StashKeptOutcome): RemoteOutcomeKind {
+  if (pull === 'cancelled') return 'cancelled';
+  return op === 'pull' && pull === 'ok' ? 'ok' : 'failed';
+}
+
+export interface CloneState {
+  // the folder name being cloned into
+  readonly running: { readonly name: string } | null;
+  readonly last: { readonly outcome: RemoteOutcomeKind; readonly seq: number } | null;
+}
+
+// The user cancelled a running fetch, pull, push, sync or clone: its process tree is dead and nothing tells the user.
+export class RemoteCancelledError extends Error {
+  constructor() {
+    super('The remote operation was cancelled');
+    this.name = 'RemoteCancelledError';
+  }
+}
+
+export type StashKeptOutcome = 'ok' | 'conflict' | 'failed' | 'cancelled';
+
+// Thrown instead of the operation's own outcome, so the user always learns the changes stay in the stash list.
+export class StashKeptError extends Error {
+  readonly outcome: StashKeptOutcome;
+  // undefined when refs/stash could not be read after the push
+  readonly stash: string | undefined;
+  constructor(message: string, outcome: StashKeptOutcome, stash: string | undefined, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = 'StashKeptError';
+    this.outcome = outcome;
+    this.stash = stash;
+  }
+}
+
+export interface SyncBranch {
+  readonly branch: string;
+  readonly remote: string;
+  readonly upstreamBranch: string;
+}
+
+export class SyncBranchChangedError extends Error {
+  readonly stage: 'pull' | 'push';
+  readonly confirmed: SyncBranch;
+  readonly found: SyncBranch | null;
+  constructor(message: string, stage: 'pull' | 'push', confirmed: SyncBranch, found: SyncBranch | null) {
+    super(message);
+    this.name = 'SyncBranchChangedError';
+    this.stage = stage;
+    this.confirmed = confirmed;
+    this.found = found;
+  }
+}
+
+// A push: VS Code's push, push to and publish (pushTo with setUpstream) and the force and follow-tags variants.
+export interface PushRequest {
+  readonly remote?: string;
+  readonly branch?: string;
+  readonly toBranch?: string;
+  readonly setUpstream: boolean;
+  readonly followTags: boolean;
+  readonly force: boolean;
 }
 
 export interface Decoration {
@@ -122,7 +238,11 @@ export type ScmEvent =
   | { readonly kind: 'repository'; readonly repoId: string }
   | { readonly kind: 'decorations'; readonly projectKey: string }
   // what git ignores in the project may have changed (its repositories, a .gitignore, info/exclude): listings ask again
-  | { readonly kind: 'ignores'; readonly projectKey: string };
+  | { readonly kind: 'ignores'; readonly projectKey: string }
+  // the clone state changed (cloneState())
+  | { readonly kind: 'clone' }
+  // the repository's ref, stash or worktree lists of these groups may have changed: the watcher (debounced) or an engine write
+  | { readonly kind: 'artifacts'; readonly repoId: string; readonly groups: readonly ArtifactGroup[] };
 
 export type OpenFolderOutcome = 'opened' | 'outside' | 'notRepository' | 'parent' | 'unsafe';
 
@@ -163,6 +283,11 @@ interface RepoEntry {
   status: RepositoryStatus | undefined;
   timer: NodeJS.Timeout | undefined;
   readonly disposables: Array<() => void>;
+  running: { readonly op: RemoteOp; readonly controller: AbortController } | undefined;
+  lastRemote: RemoteOutcome | undefined;
+  // the watcher's artifact groups waiting on the debounce
+  readonly artifactGroups: Set<ArtifactGroup>;
+  artifactTimer: NodeJS.Timeout | undefined;
 }
 
 interface ProjectEntry {
@@ -208,11 +333,25 @@ export class ScmService implements Disposable {
   // still runs. Index writes never join it.
   private readonly sessionJob: ShellSessionJob | undefined;
   private readonly gitRunner: GitRunner | undefined;
+  private remoteSeq = 0;
+  private cloning: { readonly name: string; readonly controller: AbortController } | undefined;
+  private lastClone: CloneState['last'] = null;
+  // the selected project, whose repositories autofetch fetches (D10, AD4)
+  private autofetchProject: string | undefined;
+  private autofetchReady = false;
+  private readonly autofetcher: Autofetcher;
 
   constructor(deps: ScmServiceDeps) {
     this.deps = deps;
     this.sessionJob = deps.runner ? createShellSessionJob() : undefined;
     this.gitRunner = deps.runner && this.gate(deps.runner, []);
+    this.autofetcher = new Autofetcher({
+      enabled: () => this.gitRunner !== undefined && this.flag(SCM_SETTING_KEYS.autofetch, true),
+      periodMs: () => autofetchPeriodSeconds(this.deps.settings.get<unknown>(SCM_SETTING_KEYS.autofetchPeriod)) * 1000,
+      targets: () => this.autofetchTargets(),
+      log: (line) => deps.log(line),
+      describe: gitErrorText,
+    });
     this.subscriptions = [
       deps.trust.onDidGrantTrust((folders) => this.rediscoverAround(folders.map((folder) => path.resolve(folder)), [])),
       deps.settings.onDidChange('damocles.desktop.git', (change) => {
@@ -220,6 +359,7 @@ export class ScmService implements Disposable {
         if (change.affects(SCM_SETTING_KEYS.repositoryScanMaxDepth) || change.affects(SCM_SETTING_KEYS.openRepositoryInParentFolders)) {
           for (const project of this.projects.values()) void this.discoverProject(project);
         }
+        if (change.affects(SCM_SETTING_KEYS.autofetch) || change.affects(SCM_SETTING_KEYS.autofetchPeriod)) this.autofetcher.start();
       }),
     ];
   }
@@ -287,7 +427,9 @@ export class ScmService implements Disposable {
 
   snapshot(repoId: string): RepoSnapshot | undefined {
     const entry = this.entry(repoId);
-    return entry ? { repoId, projectKey: entry.projectKey, status: entry.status, busy: entry.repo.queue.busy } : undefined;
+    return entry
+      ? { repoId, projectKey: entry.projectKey, status: entry.status, busy: entry.repo.queue.busy, running: entry.running?.op ?? null, lastRemote: entry.lastRemote ?? null }
+      : undefined;
   }
 
   /** The repository and its project's path, for main's flows; undefined for an id this run never issued or that closed. */
@@ -455,7 +597,7 @@ export class ScmService implements Disposable {
     const merge = new Set((entry.status?.groups.merge ?? []).map((change) => change.path));
     if (!(await this.confirmUnresolved(entry, paths.filter((candidate) => merge.has(candidate))))) return false;
     await entry.repo.stage(paths);
-    this.scheduleStatus(entry, 0);
+    await this.wrote(entry);
     return true;
   }
 
@@ -463,14 +605,14 @@ export class ScmService implements Disposable {
     const entry = this.requireRepo(repoId);
     if (scope === 'merge' && !(await this.confirmUnresolved(entry, (entry.status?.groups.merge ?? []).map((change) => change.path)))) return false;
     await entry.repo.stageAll(scope, this.untrackedChanges());
-    this.scheduleStatus(entry, 0);
+    await this.wrote(entry);
     return true;
   }
 
   async unstage(repoId: string, paths: readonly string[] | 'all'): Promise<void> {
     const entry = this.requireRepo(repoId);
     await entry.repo.unstage(paths);
-    this.scheduleStatus(entry, 0);
+    await this.wrote(entry);
   }
 
   /** Discard Changes on these paths of the working tree or untracked group, after VS Code's confirmation. */
@@ -524,7 +666,7 @@ export class ScmService implements Disposable {
     if (outcome.ok && status.operation !== 'rebase') {
       await recordCommitMessage(this.deps.globalState, entry.repo.root, message).catch((err: unknown) => this.deps.log(`[scm] the commit message history was not saved: ${errorText(err)}`));
     }
-    this.scheduleStatus(entry, 0);
+    await this.wrote(entry);
     return outcome;
   }
 
@@ -554,7 +696,7 @@ export class ScmService implements Disposable {
     try {
       undone = await entry.repo.undoCommit(head);
     } finally {
-      this.scheduleStatus(entry, 0);
+      await this.wrote(entry);
     }
     if (undone === 'moved') throw new Error(t('The last commit changed after you asked to undo it, so nothing was undone.'));
     if (undone === 'merging') throw new Error(t('Can\'t undo the last commit while a merge is in progress or files have merge conflicts.'));
@@ -567,7 +709,7 @@ export class ScmService implements Disposable {
     try {
       await entry.repo.move(from, to);
     } finally {
-      this.scheduleStatus(entry, 0);
+      await this.wrote(entry);
     }
   }
 
@@ -577,7 +719,7 @@ export class ScmService implements Disposable {
     try {
       await entry.repo.remove(paths);
     } finally {
-      this.scheduleStatus(entry, 0);
+      await this.wrote(entry);
     }
   }
 
@@ -586,19 +728,394 @@ export class ScmService implements Disposable {
     const operation = entry.status?.operation;
     if (!operation) return;
     await entry.repo.abort(operation);
-    this.scheduleStatus(entry, 0);
+    await this.wrote(entry);
   }
 
   async addToGitignore(repoId: string, paths: readonly string[]): Promise<string> {
     const entry = this.requireRepo(repoId);
     const file = await entry.repo.appendGitignore(paths);
-    this.scheduleStatus(entry, 0);
+    await this.wrote(entry);
     return file;
+  }
+
+  /** The git the engine runs, for the version checks of features (Stash Staged needs 2.35); undefined when git was not found. */
+  gitVersion(): GitVersion | undefined {
+    return this.deps.runner?.git.version;
+  }
+
+  /** One group's rows (AD4's damocles:scm:artifacts), read fresh from git. */
+  artifacts(repoId: string, group: ArtifactGroup): Promise<Artifacts> {
+    return readArtifacts(this.requireRepo(repoId).repo, group);
+  }
+
+  /** dirty: the checkout would overwrite local changes, and git changed nothing. */
+  async checkout(repoId: string, target: CheckoutTarget): Promise<'ok' | 'dirty'> {
+    const entry = this.requireRepo(repoId);
+    try {
+      return await checkout(entry.repo, target);
+    } finally {
+      await this.wrote(entry, ['branches', 'tags', 'worktrees']);
+    }
+  }
+
+  /**
+   * pullBeforeCheckout's fast-forward of a local branch from its upstream (VS Code's fastForwardBranch), as a cancellable
+   * pull. rejected: git refused it, because the branch has commits the upstream lacks or is checked out in another worktree,
+   * and the branch is as it was (VS Code's BranchFastForwardRejected, which its checkout ignores); that is no failure.
+   */
+  async fastForward(repoId: string, branch: string, upstream: { readonly remote: string; readonly branch: string }): Promise<'ok' | 'rejected'> {
+    // before the lock scan takes the branch as a path
+    revision(`refs/heads/${branch}`);
+    const entry = this.requireRepo(repoId);
+    const outcome = await this.remoteOp(entry, 'pull', async (net) => {
+      try {
+        await entry.repo.network(fastForwardArgs(upstream.remote, upstream.branch, branch, entry.repo.gitVersion), { ...net, english: true });
+        return 'ok' as const;
+      } catch (err) {
+        if (err instanceof GitError && FAST_FORWARD_REFUSED.test(err.stderr)) return 'rejected' as const;
+        throw err;
+      }
+    }, { branches: [branch], workTree: false });
+    this.listsChanged(entry, ['branches', 'remoteBranches']);
+    return outcome;
+  }
+
+  /** VS Code's branch with checkout: a new branch at start (HEAD, a full refname or a commit), checked out. */
+  async createBranch(repoId: string, name: string, start: string): Promise<void> {
+    const entry = this.requireRepo(repoId);
+    try {
+      await entry.repo.write(createBranchArgs(name, start));
+    } finally {
+      await this.wrote(entry, ['branches', 'worktrees']);
+    }
+  }
+
+  /** Renames the checked-out branch. */
+  async renameBranch(repoId: string, name: string): Promise<void> {
+    const entry = this.requireRepo(repoId);
+    try {
+      await entry.repo.write(renameBranchArgs(name, entry.repo.gitVersion));
+    } finally {
+      await this.wrote(entry, ['branches', 'worktrees']);
+    }
+  }
+
+  /** unmerged: `branch -d` refused, and the caller asks before forcing. */
+  async deleteBranch(repoId: string, name: string, force: boolean): Promise<'ok' | 'unmerged'> {
+    const entry = this.requireRepo(repoId);
+    try {
+      return await deleteBranch(entry.repo, name, force);
+    } finally {
+      await this.wrote(entry, ['branches']);
+    }
+  }
+
+  /** Delete Remote Branch... and Delete Remote Tag...: `push --delete`, a cancellable remote operation. */
+  async deleteRemoteRef(repoId: string, remote: string, ref: string): Promise<void> {
+    const op: RemoteOp = ref.startsWith('refs/tags/') ? 'deleteRemoteTag' : 'deleteRemoteBranch';
+    const entry = this.requireRepo(repoId);
+    await this.remoteOp(entry, op, async (net) => {
+      await entry.repo.network(deleteRemoteRefArgs(remote, ref, entry.repo.gitVersion), net);
+    }, REMOTE_LOCKS);
+    this.listsChanged(entry, op === 'deleteRemoteBranch' ? ['remoteBranches'] : []);
+  }
+
+  /** A remote's tags (`ls-remote --tags`), listed as Delete Remote Tag's remoteOp, which may need credentials. */
+  remoteTags(repoId: string, remote: string): Promise<RemoteTag[]> {
+    const entry = this.requireRepo(repoId);
+    return this.remoteOp(entry, 'deleteRemoteTag', async (net) => parseRemoteTags((await entry.repo.network(remoteTagsArgs(remote), net)).stdout.toString('utf8')));
+  }
+
+  async integrate(repoId: string, command: 'merge' | 'rebase', name: string): Promise<'ok' | 'conflict'> {
+    const entry = this.requireRepo(repoId);
+    try {
+      const stashed = await integrate(entry.repo, command, name, () => (this.declinedInside(entry.repo.root).length > 0 ? 'fenced' : 'none'));
+      return this.settleStash(stashed, (result) => (result.ok ? result.value : 'failed'));
+    } finally {
+      await this.wrote(entry, ['branches', 'worktrees']);
+    }
+  }
+
+  /** Stash, Stash (Include Untracked), Stash Staged and Stash Changes (paths). */
+  async stash(repoId: string, scope: StashScope, message: string, paths: readonly string[] = []): Promise<'ok' | 'noCommits' | 'noChanges'> {
+    const entry = this.requireRepo(repoId);
+    // one stash takes every path in one call, so the paths must fit one command line
+    if (paths.reduce((length, candidate) => length + candidate.length + 3, 0) > MAX_CLI_LENGTH) throw new Error(this.deps.t('Too many files to stash at once. Stash fewer files, or stash all changes.'));
+    try {
+      return await stashPush(entry.repo, scope, message, paths);
+    } finally {
+      await this.wrote(entry, ['stashes']);
+    }
+  }
+
+  async stashApply(repoId: string, target: StashTarget, pop: boolean): Promise<'ok' | 'conflict' | 'moved'> {
+    const entry = this.requireRepo(repoId);
+    try {
+      return await stashApply(entry.repo, target, pop);
+    } finally {
+      await this.wrote(entry, pop ? ['stashes'] : []);
+    }
+  }
+
+  async stashDrop(repoId: string, target: StashTarget): Promise<'ok' | 'moved'> {
+    const entry = this.requireRepo(repoId);
+    try {
+      return await stashDrop(entry.repo, target);
+    } finally {
+      await this.wrote(entry, ['stashes']);
+    }
+  }
+
+  async stashClear(repoId: string): Promise<void> {
+    const entry = this.requireRepo(repoId);
+    try {
+      await stashClear(entry.repo);
+    } finally {
+      await this.wrote(entry, ['stashes']);
+    }
+  }
+
+  /** View Stash's files: the stash against its base, its untracked files added. */
+  diffStash(repoId: string, hash: string): Promise<CommitPairDiff> {
+    return diffStash(this.requireRepo(repoId).repo, hash);
+  }
+
+  /** The files that differ between two commits (Compare with...). */
+  diffRefs(repoId: string, left: string, right: string): Promise<CommitPairDiff> {
+    return diffRefs(this.requireRepo(repoId).repo, left, right);
+  }
+
+  entryPatch(repoId: string, left: string, entry: CommitPairEntry): Promise<PatchResult> {
+    return entryPatch(this.requireRepo(repoId).repo, left, entry);
+  }
+
+  /** Create Tag at HEAD; a message makes it annotated, and goes in on stdin. */
+  async createTag(repoId: string, name: string, message: string): Promise<void> {
+    const entry = this.requireRepo(repoId);
+    try {
+      await entry.repo.write(createTagArgs(name, message !== '', entry.repo.gitVersion), message !== '' ? { input: message } : {});
+    } finally {
+      await this.wrote(entry, ['tags']);
+    }
+  }
+
+  async deleteTag(repoId: string, name: string): Promise<void> {
+    const entry = this.requireRepo(repoId);
+    try {
+      await entry.repo.write(deleteTagArgs(name, entry.repo.gitVersion));
+    } finally {
+      await this.wrote(entry, ['tags']);
+    }
+  }
+
+  /** Push Tags: every tag, to the remote git picks, as a cancellable push. */
+  pushTags(repoId: string): Promise<void> {
+    const entry = this.requireRepo(repoId);
+    return this.remoteOp(entry, 'push', async (net) => {
+      await entry.repo.network(PUSH_TAGS_ARGS, net);
+    }, REMOTE_LOCKS);
+  }
+
+  /**
+   * Create Worktree: a linked worktree at an absolute path, on a new branch from commitish or on commitish itself. The
+   * folder it was created in becomes the root's worktree folder.
+   */
+  async addWorktree(repoId: string, worktreePath: string, commitish: string, branch: string | undefined): Promise<void> {
+    const entry = this.requireRepo(repoId);
+    try {
+      await addWorktree(entry.repo, worktreePath, commitish, branch);
+    } finally {
+      await this.wrote(entry, branch !== undefined ? ['worktrees', 'branches'] : ['worktrees']);
+    }
+    // the worktree exists either way, so a failed write is logged and the creation still reported
+    await recordWorktreeRoot(this.deps.globalState, entry.repo.root, path.dirname(worktreePath)).catch((err: unknown) => this.deps.log(`[scm] the worktree folder was not remembered: ${errorText(err)}`));
+  }
+
+  /** The folder the repository's last worktree was created in, or undefined before its first. */
+  worktreeFolder(repoId: string): string | undefined {
+    return worktreeRoot(this.deps.globalState, this.requireRepo(repoId).repo.root);
+  }
+
+  /** dirty: the worktree holds modified or untracked files, and the caller asks before forcing. */
+  async removeWorktree(repoId: string, worktreePath: string, force: boolean): Promise<'ok' | 'dirty'> {
+    const entry = this.requireRepo(repoId);
+    try {
+      return await removeWorktree(entry.repo, worktreePath, force);
+    } finally {
+      await this.wrote(entry, ['worktrees']);
+    }
+  }
+
+  /** The window's clone: the one running and how the last one ended. */
+  cloneState(): CloneState {
+    return { running: this.cloning ? { name: this.cloning.name } : null, last: this.lastClone };
+  }
+
+  setAutofetchProject(projectKey: string | undefined): void {
+    if (this.autofetchProject === projectKey) return;
+    this.autofetchProject = projectKey;
+    this.autofetcher.stop();
+    this.autofetchReady = false;
+    this.autofetchWhenReady();
+  }
+
+  /** One autofetch round now, as if the period had elapsed; only the gated e2e hook calls it (ScmHost.autofetchNow). */
+  autofetchNow(): void {
+    this.autofetcher.runNow();
+  }
+
+  /** Cancels the repository's running remote operation; its call then rejects with RemoteCancelledError. */
+  cancel(repoId: string): void {
+    this.entry(repoId)?.running?.controller.abort();
+  }
+
+  cancelClone(): void {
+    this.cloning?.controller.abort();
+  }
+
+  /** The repository's remotes with their URLs, for the pickers. */
+  remotes(repoId: string): Promise<Remote[]> {
+    return this.requireRepo(repoId).repo.remotes();
+  }
+
+  /** The branches of a remote as last fetched, for Pull from... */
+  remoteBranches(repoId: string, remote: string): Promise<string[]> {
+    return this.requireRepo(repoId).repo.remoteBranches(remote);
+  }
+
+  async addRemote(repoId: string, name: string, url: string): Promise<void> {
+    const entry = this.requireRepo(repoId);
+    try {
+      await entry.repo.addRemote(name, url);
+    } finally {
+      await this.wrote(entry);
+    }
+  }
+
+  async removeRemote(repoId: string, name: string): Promise<void> {
+    const entry = this.requireRepo(repoId);
+    try {
+      await entry.repo.removeRemote(name);
+    } finally {
+      await this.wrote(entry);
+    }
+  }
+
+  /** VS Code's _fetch: pruneOnFetch adds --prune when the caller did not ask for it. */
+  fetch(repoId: string, options: Omit<FetchOptions, 'prune'> & { readonly prune?: boolean }): Promise<void> {
+    const prune = options.prune === true || this.flag(SCM_SETTING_KEYS.pruneOnFetch, false);
+    const entry = this.requireRepo(repoId);
+    return this.remoteOp(entry, 'fetch', async (net) => {
+      await entry.repo.network(fetchArgs({ ...options, prune }, entry.repo.gitVersion), net);
+    }, REMOTE_LOCKS);
+  }
+
+  pull(repoId: string, options: { readonly rebase: boolean; readonly remote?: string; readonly branch?: string }): Promise<void> {
+    const entry = this.requireRepo(repoId);
+    const from = options.remote !== undefined && options.branch !== undefined ? { remote: options.remote, branch: options.branch } : undefined;
+    return this.remoteOp(entry, 'pull', (net) => this.runPull(entry, net, options.rebase, from));
+  }
+
+  /**
+   * A push. A force push is refused while allowForcePush is off and always confirmed first (danger, Cancel focused); false: the
+   * user said no. It uses --force-with-lease, plus --force-if-includes from git 2.30, never a plain --force.
+   */
+  async push(repoId: string, request: PushRequest): Promise<boolean> {
+    const t = this.deps.t;
+    if (request.force) {
+      if (!this.flag(SCM_SETTING_KEYS.allowForcePush, false)) throw new Error(t('Force push is not allowed, please enable it with the "Allow force push" setting.'));
+      const choice = await this.deps.ask({
+        severity: 'danger',
+        message: t('You are about to force push your changes, this can be destructive and could inadvertently overwrite changes made by others.'),
+        detail: t('Are you sure to continue?'),
+        actions: [t('Force Push')],
+        cancelLabel: t('Cancel'),
+      });
+      if (choice !== 0) return false;
+    }
+    const entry = this.requireRepo(repoId);
+    await this.remoteOp(entry, 'push', async (net) => {
+      await entry.repo.network(pushArgs(request, entry.repo.gitVersion), net);
+    }, REMOTE_LOCKS);
+    return true;
+  }
+
+  // The pull and the push each run only while HEAD keeps the branch and upstream the question named.
+  async sync(repoId: string, rebase: boolean): Promise<boolean> {
+    const entry = this.requireRepo(repoId);
+    const confirmed = syncBranchOf(entry.status?.head ?? null, entry.status?.upstream ?? null);
+    if (!confirmed) throw new Error('Sync needs a branch with an upstream');
+    const t = this.deps.t;
+    if (this.flag(SCM_SETTING_KEYS.confirmSync, true)) {
+      const choice = await this.deps.ask({
+        severity: 'warning',
+        message: t('This action will pull and push commits from and to "{0}/{1}".', confirmed.remote, confirmed.upstreamBranch),
+        actions: [t('OK'), t('OK, Don\'t Show Again')],
+        cancelLabel: t('Cancel'),
+        defaultAction: 0,
+      });
+      if (choice === undefined) return false;
+      if (choice === 1) await this.deps.settings.update(SCM_SETTING_KEYS.confirmSync, false, 'user');
+    }
+    const useRebase = rebase || this.flag(SCM_SETTING_KEYS.rebaseWhenSync, false);
+    await this.remoteOp(entry, 'sync', async (net) => {
+      await this.runPull(entry, net, useRebase, undefined, confirmed);
+      const fresh = await entry.repo.status(this.untrackedChanges());
+      if (this.isLive(entry)) entry.status = fresh;
+      const found = syncBranchOf(fresh.head, fresh.upstream);
+      if (!sameSyncBranch(found, confirmed)) throw this.syncBranchChanged('push', confirmed, found);
+      if ((fresh.upstream?.ahead ?? 0) === 0) return;
+      const followTags = this.flag(SCM_SETTING_KEYS.followTagsWhenSync, false);
+      const target = pullTarget(fresh.upstream!);
+      const request = target ? { remote: target.remote, branch: confirmed.branch, toBranch: target.branch } : {};
+      await entry.repo.network(pushArgs({ ...request, setUpstream: false, followTags, force: false }, entry.repo.gitVersion), net);
+    }, REMOTE_LOCKS);
+    return true;
+  }
+
+  // No trust decides a clone, which runs no code of an existing repository; the clone's project starts untrusted.
+  async clone(url: string, parent: string, recursive: boolean): Promise<string> {
+    const t = this.deps.t;
+    const runner = this.deps.runner;
+    if (!runner) throw new Error(t('Git was not found'));
+    if (this.cloning) throw new Error(t('A clone is already running.'));
+    const name = cloneFolderName(url);
+    if (name === undefined) throw new Error(t('The repository URL names no folder to clone into.'));
+    const controller = new AbortController();
+    this.cloning = { name, controller };
+    this.emit({ kind: 'clone' });
+    let outcome: RemoteOutcomeKind = 'failed';
+    let registration: AskpassRegistration | undefined;
+    let target: string | undefined;
+    try {
+      await fs.mkdir(parent, { recursive: true });
+      // the clone's project starts untrusted, so a folder name the trust store still lists is skipped
+      target = await freeCloneTarget(parent, name, (folder) => this.deps.trust.isTrusted(folder));
+      if (target === undefined) throw new Error(t('Every folder name for the clone already exists in {0}.', parent));
+      registration = await this.register('clone');
+      await runner.clone({ cwd: parent, args: cloneArgs(url, target, recursive), signal: controller.signal, ...(this.sessionJob ? { session: this.sessionJob } : {}), ...(registration ? { askpassEnv: registration.env } : {}) });
+      outcome = 'ok';
+      return target;
+    } catch (err) {
+      if (controller.signal.aborted) outcome = 'cancelled';
+      if (target !== undefined) {
+        await removeCloneTarget(target).catch((cleanup: unknown) => this.deps.log(`[scm] the folder of a ${outcome} clone was not removed: ${errorText(cleanup)}`));
+      }
+      if (outcome === 'cancelled') throw new RemoteCancelledError();
+      throw err;
+    } finally {
+      registration?.dispose();
+      this.cloning = undefined;
+      this.lastClone = { outcome, seq: ++this.remoteSeq };
+      this.emit({ kind: 'clone' });
+    }
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.autofetcher.stop();
+    this.cloning?.controller.abort();
     for (const subscription of this.subscriptions) subscription.dispose();
     for (const project of this.projects.values()) this.disposeProject(project);
     this.projects.clear();
@@ -706,6 +1223,181 @@ export class ScmService implements Disposable {
         ...(branch !== undefined ? { branch } : {}),
       },
     };
+  }
+
+  // One per common dir, which linked worktrees share; a pull passes no locks and cleans up in its own slot.
+  private async remoteOp<T>(entry: RepoEntry, op: RemoteOp, work: (net: NetworkCall) => Promise<T>, locks?: LockScope): Promise<T> {
+    const commonDir = folderKey(entry.repo.info.commonDir);
+    if (this.remoteRunningIn(commonDir)) throw new Error(this.deps.t('Another remote operation is running in this repository.'));
+    const controller = new AbortController();
+    entry.running = { op, controller };
+    this.emit({ kind: 'repository', repoId: entry.id });
+    const started = Date.now() - LOCK_TIME_SLACK_MS;
+    let outcome: RemoteOutcomeKind = 'failed';
+    let stashKept = false;
+    let registration: AskpassRegistration | undefined;
+    let before: ReadonlySet<string> = new Set();
+    try {
+      await this.autofetcher.yieldTo(commonDir);
+      if (locks) before = await entry.repo.lockFiles(locks);
+      registration = await this.register(op);
+      const result = await work({ signal: controller.signal, ...(registration ? { askpassEnv: registration.env } : {}) });
+      outcome = 'ok';
+      return result;
+    } catch (err) {
+      if (locks && (controller.signal.aborted || entry.repo.queue.signal.aborted)) await this.removeKilledLocks(entry, op, locks, started, before, false);
+      if (err instanceof StashKeptError) {
+        stashKept = true;
+        outcome = keptStashOutcome(op, err.outcome);
+        throw err;
+      }
+      if (err instanceof SyncBranchChangedError || !controller.signal.aborted) throw err;
+      outcome = 'cancelled';
+      throw new RemoteCancelledError();
+    } finally {
+      registration?.dispose();
+      entry.running = undefined;
+      entry.lastRemote = { op, outcome, stashKept, seq: ++this.remoteSeq };
+      if (this.isLive(entry)) this.emit({ kind: 'repository', repoId: entry.id });
+      await this.wrote(entry);
+    }
+  }
+
+  private remoteRunningIn(commonDir: string): boolean {
+    for (const entry of this.allRepos()) if (entry.running && folderKey(entry.repo.info.commonDir) === commonDir) return true;
+    return false;
+  }
+
+  // None when the server cannot start, and one line says so; the call then runs as with no server.
+  private async register(label: string): Promise<AskpassRegistration | undefined> {
+    try {
+      return await this.deps.askpass?.register('interactive', label);
+    } catch (err) {
+      this.deps.log(`[scm] credential prompts are unavailable for this ${label}: ${errorText(err)}`);
+      return undefined;
+    }
+  }
+
+  // Holds every sharing repository's mutation slot, so no engine write's lock is taken; never throws over the outcome.
+  private async removeKilledLocks(entry: RepoEntry, label: string, scope: LockScope, since: number, before: ReadonlySet<string>, holding: boolean): Promise<void> {
+    const commonDir = folderKey(entry.repo.info.commonDir);
+    const sharing = [...this.allRepos()].filter((other) => other !== entry && folderKey(other.repo.info.commonDir) === commonDir);
+    const queues = [...(holding ? [] : [entry]), ...sharing].sort((a, b) => a.id.localeCompare(b.id)).map((other) => other.repo.queue);
+    await holdingAll(queues, async () => {
+      try {
+        const { removed, failed } = await entry.repo.removeLocksSince(scope, since, before);
+        if (removed.length > 0) this.deps.log(`[scm] removed the lock files a killed ${label} left: ${removed.map(logText).join(', ')}`);
+        for (const failure of failed) this.deps.log(`[scm] a lock file a killed ${label} left could not be removed: ${logText(failure.path)}: ${errorText(failure.error)}`);
+      } catch (err) {
+        this.deps.log(`[scm] the lock files a killed ${label} left could not be checked: ${errorText(err)}`);
+      }
+    });
+  }
+
+  // The target is read in the pull's own mutation slot, never from the snapshot, which may predate a checkout.
+  private async runPull(entry: RepoEntry, net: NetworkCall, rebase: boolean, from?: { readonly remote: string; readonly branch: string }, confirmed?: SyncBranch): Promise<void> {
+    const version = entry.repo.gitVersion;
+    const autoStash = this.flag(SCM_SETTING_KEYS.autoStash, false);
+    const mode = (): StashMode => (this.declinedInside(entry.repo.root).length > 0 ? 'fenced' : needsStashAroundPull(version, autoStash) ? 'includeUntracked' : 'none');
+    let keptAutostash: string | undefined;
+    const stashed = await entry.repo.withStash(mode, async (git, slot) => {
+      const { head, upstream } = await slot.branch();
+      if (confirmed) {
+        const found = syncBranchOf(head, upstream);
+        if (!sameSyncBranch(found, confirmed)) throw this.syncBranchChanged('pull', confirmed, found);
+      }
+      const target = from ?? (head?.type === 'branch' && upstream ? pullTarget(upstream) : undefined);
+      const scope: LockScope = { branches: head?.type === 'branch' ? [head.name] : [], workTree: true };
+      const started = Date.now() - LOCK_TIME_SLACK_MS;
+      const before = await entry.repo.lockFiles(scope);
+      await slot.stash();
+      // git 2.27 and later, with no stash of the engine's own
+      const gitAutostash = autoStash && slot.mode === 'none';
+      const newestBefore = gitAutostash ? await slot.newestStash() : undefined;
+      try {
+        await git(pullArgs({ rebase, autoStash: gitAutostash, ...target }, version), { net });
+      } catch (err) {
+        if (net.signal.aborted || entry.repo.queue.signal.aborted) await this.removeKilledLocks(entry, 'pull', scope, started, before, true);
+        throw err;
+      } finally {
+        if (gitAutostash) keptAutostash = await this.keptAutostash(slot, newestBefore);
+      }
+    });
+    const outcomeOf = (result: StashedOutcome<void>['result']): StashKeptOutcome => (result.ok ? 'ok' : net.signal.aborted ? 'cancelled' : 'failed');
+    this.settleStash(keptAutostash === undefined ? stashed : { ...stashed, kept: { stash: keptAutostash } }, outcomeOf);
+  }
+
+  // git keeps its autostash in the list and exits 0 when it cannot apply it back; the entry's reflog message is git's untranslated
+  // "autostash". Never throws, so the pull keeps its own outcome.
+  private async keptAutostash(slot: StashSlot, before: NewestStash | undefined): Promise<string | undefined> {
+    try {
+      const after = await slot.newestStash();
+      return after && after.hash !== before?.hash && after.message === 'autostash' ? after.hash : undefined;
+    } catch (err) {
+      this.deps.log(`[scm] the stash list could not be read after the pull, so an autostash git kept is not reported: ${errorText(err)}`);
+      return undefined;
+    }
+  }
+
+  // A kept stash wins over the operation's own outcome, so the user is told where the changes are.
+  private settleStash<T>(stashed: StashedOutcome<T>, outcomeOf: (result: StashedOutcome<T>['result']) => StashKeptOutcome): T {
+    const { result, kept } = stashed;
+    if (kept) {
+      const message = this.deps.t('Your changes were stashed for this operation and could not be applied back, so they are kept in the stash list.');
+      throw new StashKeptError(message, outcomeOf(result), kept.stash, result.ok ? kept.error : result.error);
+    }
+    if (!result.ok) throw result.error;
+    return result.value;
+  }
+
+  private syncBranchChanged(stage: 'pull' | 'push', confirmed: SyncBranch, found: SyncBranch | null): SyncBranchChangedError {
+    const t = this.deps.t;
+    const message = stage === 'pull'
+      ? t('The branch or its upstream changed after you confirmed the sync, so nothing was pulled or pushed.')
+      : t('The branch or its upstream changed during the sync, so nothing was pushed.');
+    return new SyncBranchChangedError(message, stage, confirmed, found);
+  }
+
+  // The autofetch project's repositories that have a remote, one per common dir; trust is the project's (D8).
+  private autofetchTargets(): AutofetchTarget[] {
+    const project = this.autofetchProject === undefined ? undefined : this.projects.get(this.autofetchProject);
+    if (!project || project.disposed || !this.deps.trust.isTrusted(project.path)) return [];
+    const byCommonDir = new Map<string, RepoEntry[]>();
+    for (const entry of project.repos.values()) {
+      const key = folderKey(entry.repo.info.commonDir);
+      byCommonDir.set(key, [...(byCommonDir.get(key) ?? []), entry]);
+    }
+    return [...byCommonDir].flatMap(([key, entries]) => {
+      const entry = entries.find((candidate) => (candidate.status?.remotes.length ?? 0) > 0);
+      if (!entry) return [];
+      return [{ key, idle: () => !this.remoteRunningIn(key), fetch: (signal: AbortSignal) => this.backgroundFetch(entry, entries, signal) }];
+    });
+  }
+
+  // The first round waits for a repository with a remote and a status, which the first rounds at selection never had.
+  private autofetchWhenReady(): void {
+    const ready = this.autofetchTargets().length > 0;
+    if (ready && !this.autofetchReady) this.autofetcher.start();
+    this.autofetchReady = ready;
+  }
+
+  // English, so AUTHENTICATION_FAILED matches; a failed registration fails the fetch, since an inherited askpass could prompt.
+  private async backgroundFetch(entry: RepoEntry, sharing: readonly RepoEntry[], signal: AbortSignal): Promise<void> {
+    const started = Date.now() - LOCK_TIME_SLACK_MS;
+    let registration: AskpassRegistration | undefined;
+    try {
+      registration = await this.deps.askpass?.register('background', 'autofetch');
+      const before = await entry.repo.lockFiles(REMOTE_LOCKS);
+      try {
+        await entry.repo.network(fetchArgs({ prune: this.flag(SCM_SETTING_KEYS.pruneOnFetch, false) }, entry.repo.gitVersion), { signal, english: true, ...(registration ? { askpassEnv: registration.env } : {}) });
+      } catch (err) {
+        if (signal.aborted || entry.repo.queue.signal.aborted) await this.removeKilledLocks(entry, 'autofetch', REMOTE_LOCKS, started, before, false);
+        throw err;
+      }
+    } finally {
+      registration?.dispose();
+      for (const repo of sharing) if (this.isLive(repo)) this.scheduleStatus(repo, 0);
+    }
   }
 
   // VS Code's isBranchProtected for the branchProtection setting: one picomatch over the trimmed, non-empty globs.
@@ -822,7 +1514,7 @@ export class ScmService implements Disposable {
     try {
       outcome = await entry.repo.discard(changes, this.deps.trash);
     } finally {
-      this.scheduleStatus(entry, 0);
+      await this.wrote(entry);
     }
     if (outcome.kind === 'changed') throw new Error(this.deps.t('The files changed after you confirmed, so nothing was discarded. Review the changes and try again.'));
     if (outcome.failed.length > 0) throw new Error(this.notTrashedMessage(outcome.failed));
@@ -869,20 +1561,31 @@ export class ScmService implements Disposable {
 
   // Every git call: the nearest registered project above its folder, and above each of folders, must be trusted when the call
   // starts, git searches up into no refused folder, and an untrusted project inside the folder is fenced off (fence()).
-  // A call waits until every registered project's realpath has settled; the checks and the spawn then share one tick.
+  // A call waits until every registered project's realpath has settled; the checks and the spawn then share one tick, so the
+  // fence's inputs, read before them, are read again whenever the untrusted projects inside the folder changed meanwhile.
   private gate(runner: GitRunner, folders: readonly string[]): GitRunner {
-    return {
+    const gated: GitRunner = {
       git: runner.git,
       envFor: (call) => runner.envFor(call),
       run: async (call) => {
-        while (this.realpathPending()) await this.realpathsSettled(call.signal);
-        const declined = this.declinedInside(call.cwd);
-        const fenced = declined.length > 0 ? fence(call, declined) : call;
-        if (!fenced || ![call.cwd, ...folders].every((folder) => this.mayRunIn(folder))) throw new GitUntrustedError();
-        const ceiling = this.ceilingFor(call.cwd);
-        return runner.run({ ...fenced, ...(ceiling !== undefined ? { ceilingDirectories: [ceiling] } : {}), ...(this.sessionJob ? { session: this.sessionJob } : {}) });
+        for (;;) {
+          while (this.realpathPending()) await this.realpathsSettled(call.signal);
+          const declined = this.declinedInside(call.cwd);
+          if (declined.length === 0) return this.spawnGated(runner, folders, call, call);
+          const roots = await enclosingRepositories(call.cwd, declined);
+          const names = COARSE_SUBCOMMANDS.has(call.args[subcommandIndex(call.args)] ?? '') ? await submoduleNames(gated, call) : [];
+          if (this.realpathPending() || !sameMembers(this.declinedInside(call.cwd), declined)) continue;
+          return this.spawnGated(runner, folders, call, fence(call, roots, names, runner.git.version));
+        }
       },
     };
+    return gated;
+  }
+
+  private spawnGated(runner: GitRunner, folders: readonly string[], call: GitCall, fenced: GitCall | undefined): Promise<GitResult> {
+    if (!fenced || ![call.cwd, ...folders].every((folder) => this.mayRunIn(folder))) throw new GitUntrustedError();
+    const ceiling = this.ceilingFor(call.cwd);
+    return runner.run({ ...fenced, ...(ceiling !== undefined ? { ceilingDirectories: [ceiling] } : {}), ...(this.sessionJob ? { session: this.sessionJob } : {}) });
   }
 
   // Resolves project's realpath off the main thread; projects whose folders hold or lie inside it are rediscovered.
@@ -1132,7 +1835,7 @@ export class ScmService implements Disposable {
 
   private openRepo(project: ProjectEntry, key: string, found: FoundRepository, kind: RepoKind): void {
     const repo = new Repository({ root: found.root, gitDir: found.gitDir, commonDir: found.commonDir, kind, project: project.path }, this.gate(this.deps.runner!, [found.gitDir, found.commonDir]));
-    const entry: RepoEntry = { id: `repo-${++this.nextRepoId}`, projectKey: project.key, repo, kind, status: undefined, timer: undefined, disposables: [] };
+    const entry: RepoEntry = { id: `repo-${++this.nextRepoId}`, projectKey: project.key, repo, kind, status: undefined, timer: undefined, disposables: [], running: undefined, lastRemote: undefined, artifactGroups: new Set(), artifactTimer: undefined };
     entry.disposables.push(repo.queue.onIdleChange(() => this.emit({ kind: 'repository', repoId: entry.id })));
     // a git dir outside the project folder (a linked worktree's, a parent's) gets its own watch; the project's watch covers the rest
     const projectReal = project.real!;
@@ -1151,6 +1854,11 @@ export class ScmService implements Disposable {
 
   private gitDirEvent(entry: RepoEntry, fsPath: string): void {
     const info = entry.repo.info;
+    for (const dir of new Set([info.gitDir, info.commonDir])) {
+      if (!isInside(dir, fsPath)) continue;
+      const relative = path.relative(dir, fsPath).split(path.sep).join('/');
+      for (const [pattern, groups] of ARTIFACT_PATHS) if (pattern.test(relative)) this.scheduleArtifacts(entry, groups);
+    }
     for (const dir of [info.gitDir, info.commonDir]) {
       if (!isInside(dir, fsPath)) continue;
       const relative = path.relative(dir, fsPath);
@@ -1223,17 +1931,19 @@ export class ScmService implements Disposable {
     if (entry.timer) clearTimeout(entry.timer);
     entry.timer = setTimeout(() => {
       entry.timer = undefined;
-      this.runStatus(entry);
+      void this.runStatus(entry);
     }, delayMs);
   }
 
-  private runStatus(entry: RepoEntry): void {
-    entry.repo.status(this.untrackedChanges()).then(
+  // Never rejects, so an operation awaiting it keeps its own outcome.
+  private runStatus(entry: RepoEntry): Promise<void> {
+    return entry.repo.status(this.untrackedChanges()).then(
       (status) => {
         if (!this.isLive(entry)) return;
         entry.status = status;
         this.emit({ kind: 'repository', repoId: entry.id });
         this.emit({ kind: 'decorations', projectKey: entry.projectKey });
+        if (entry.projectKey === this.autofetchProject) this.autofetchWhenReady();
       },
       (err: unknown) => {
         if (!this.isLive(entry) || err instanceof GitQueueDisposedError || err instanceof GitUntrustedError) return;
@@ -1242,6 +1952,31 @@ export class ScmService implements Disposable {
         if (project) this.scheduleRediscovery(project);
       },
     );
+  }
+
+  // The watcher's changes, coalesced over WATCH_DEBOUNCE_MS like status.
+  private scheduleArtifacts(entry: RepoEntry, groups: readonly ArtifactGroup[]): void {
+    for (const group of groups) entry.artifactGroups.add(group);
+    if (entry.artifactTimer) clearTimeout(entry.artifactTimer);
+    entry.artifactTimer = setTimeout(() => {
+      entry.artifactTimer = undefined;
+      const changed = [...entry.artifactGroups];
+      entry.artifactGroups.clear();
+      if (this.isLive(entry)) this.emit({ kind: 'artifacts', repoId: entry.id, groups: changed });
+    }, WATCH_DEBOUNCE_MS);
+  }
+
+  // Every operation awaits this, so a caller reading the snapshot next sees what the operation left (VS Code's Repository.run).
+  private async wrote(entry: RepoEntry, groups: readonly ArtifactGroup[] = []): Promise<void> {
+    if (!this.isLive(entry)) return;
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = undefined;
+    await this.runStatus(entry);
+    this.listsChanged(entry, groups);
+  }
+
+  private listsChanged(entry: RepoEntry, groups: readonly ArtifactGroup[]): void {
+    if (groups.length > 0 && this.isLive(entry)) this.emit({ kind: 'artifacts', repoId: entry.id, groups });
   }
 
   private isLive(entry: RepoEntry): boolean {
@@ -1265,10 +2000,13 @@ export class ScmService implements Disposable {
   private disposeRepo(project: ProjectEntry, entry: RepoEntry): void {
     if (entry.timer) clearTimeout(entry.timer);
     entry.timer = undefined;
+    if (entry.artifactTimer) clearTimeout(entry.artifactTimer);
+    entry.artifactTimer = undefined;
     for (const dispose of entry.disposables.splice(0)) dispose();
     entry.repo.dispose();
     for (const [key, candidate] of project.repos) if (candidate === entry) project.repos.delete(key);
     this.emit({ kind: 'repository', repoId: entry.id });
+    if (project.key === this.autofetchProject) this.autofetchWhenReady();
   }
 
   private disposeProject(project: ProjectEntry): void {
@@ -1294,49 +2032,153 @@ export class ScmService implements Disposable {
   }
 }
 
+// a second of slack for file systems whose times are coarser than Date.now()
+const LOCK_TIME_SLACK_MS = 1000;
+const REMOTE_LOCKS: LockScope = { branches: [], workTree: false };
+// Before git 2.35 the checked-out refusal read "Refusing to fetch into current branch"; matched in LC_ALL=C.
+const FAST_FORWARD_REFUSED = /\(non-fast-forward\)|refusing to fetch into (current )?branch|can't fetch into checked-out branch/i;
+
+function syncBranchOf(head: Head | null, upstream: Upstream | null): SyncBranch | null {
+  return head?.type === 'branch' && upstream ? { branch: head.name, remote: upstream.remote, upstreamBranch: upstream.branch } : null;
+}
+
+function sameSyncBranch(found: SyncBranch | null, confirmed: SyncBranch): boolean {
+  return found !== null && found.branch === confirmed.branch && found.remote === confirmed.remote && found.upstreamBranch === confirmed.upstreamBranch;
+}
+
+// A queue disposed before its slot came is skipped, so a closed repository never blocks the cleanup.
+async function holdingAll(queues: readonly RepoQueue[], task: () => Promise<void>): Promise<void> {
+  const [first, ...rest] = queues;
+  if (!first) return task();
+  let held = false;
+  await first.mutation(async () => {
+    held = true;
+    await holdingAll(rest, task);
+  }).catch((err: unknown) => {
+    if (held || !(err instanceof GitQueueDisposedError)) throw err;
+  });
+  if (!held) await holdingAll(rest, task);
+}
+
 // The project folder as registered and, when it exists, its realpath: repository roots and git's cwds are realpaths.
 function rootsOf(project: ProjectEntry): string[] {
   const lexical = path.resolve(project.path);
   return project.real === undefined || samePath(project.real, lexical) ? [lexical] : [lexical, project.real];
 }
 
-// The engine's subcommands whose arguments after `--` are pathspecs; checkout-index and mv take plain paths.
+// The engine's subcommands whose arguments after `--` are pathspecs, and stash push; checkout-index and mv take plain paths.
 const PATHSPEC_SUBCOMMANDS: ReadonlySet<string> = new Set(['status', 'diff', 'add', 'reset', 'rm', 'ls-files']);
-// Subcommands that take no pathspec yet enter every gitlink, each with the setting that stops it (scm-trust.integration.test.ts).
-// commit prints a full status when it has nothing to commit, and only that status reads diff.ignoreSubmodules; rebase
-// --continue runs a child commit whose message template holds a status, which GIT_EDITOR=true means nobody reads.
+// pull.autoStash (git 2.51) beats the other two, as pull passes it on as --autostash (scm-trust.integration.test.ts).
+const NO_AUTOSTASH = ['-c', 'rebase.autoStash=false', '-c', 'merge.autoStash=false', '-c', 'pull.autoStash=false'];
+// A printed status (commit with nothing to commit, a pending autostash's apply) enters every gitlink unless these say otherwise;
+// status.submoduleSummary's summary runs git log in each.
+const QUIET_STATUS = ['-c', 'diff.ignoreSubmodules=all', '-c', 'status.submoduleSummary=false'];
+// Each subcommand that enters every gitlink with no pathspec, and the settings that stop it (scm-trust.integration.test.ts):
+// rebase --continue's child commit also prints a status into its message template. Each also gets submodule.<name>.ignore=all
+// for every name (fence()), as a per-name setting beats diff.ignoreSubmodules in a printed status and in a real merge's
+// stash create, which a pull's merge runs too.
 const COARSE_SUBCOMMANDS: ReadonlyMap<string, readonly string[]> = new Map([
-  ['commit', ['-c', 'diff.ignoreSubmodules=all']],
-  ['rebase', ['-c', 'commit.status=false']],
+  ['commit', QUIET_STATUS],
+  ['rebase', ['-c', 'commit.status=false', ...QUIET_STATUS, ...NO_AUTOSTASH]],
+  ['merge', [...QUIET_STATUS, ...NO_AUTOSTASH]],
+  ['cherry-pick', QUIET_STATUS],
+  ['pull', NO_AUTOSTASH],
 ]);
+const OPERATION_CONTROLS: ReadonlySet<string> = new Set(['--abort', '--continue', '--quit', '--skip']);
 
-/**
- * While an untrusted project lies inside the call's folder (declined, '/' paths relative to it), git enters none of it: a path
- * the call names at, inside or holding one is refused and so is submodule with no path; every pathspec call excludes each
- * declined path, so git never examines those entries and other submodules keep their changes; and every call runs with
- * submodule.recurse=false, since a user's submodule.recurse=true makes a work-tree write recurse into every gitlink; a
- * COARSE_SUBCOMMANDS call also gets its own setting. Undefined: refused.
- */
-function fence(call: GitCall, declined: readonly string[]): GitCall | undefined {
-  const subcommand = call.args[subcommandIndex(call.args)] ?? '';
+// submodule.recurse=false: a user's submodule.recurse=true makes a work-tree write recurse into every gitlink. A starting pull,
+// merge or rebase needs the engine's fenced stash first (GitCall.fencedStash): a real merge runs `stash create`, which enters them.
+// declined must hold no root inside a folder that holds a .git, which git would enter whole (enclosingRepositories()).
+function fence(call: GitCall, declined: readonly string[], names: readonly string[], version: GitVersion): GitCall | undefined {
+  const at = subcommandIndex(call.args);
+  const subcommand = call.args[at] ?? '';
   const separator = call.args.indexOf('--');
   const paths = separator < 0 ? [] : call.args.slice(separator + 1);
   // a submodule command with no path acts on every submodule
   if (subcommand === 'submodule' && (paths.length === 0 || paths.includes('.'))) return undefined;
+  if ((separator < 0 ? call.args : call.args.slice(0, separator)).includes('--autostash')) return undefined;
+  const starts = subcommand === 'pull' || ((subcommand === 'merge' || subcommand === 'rebase') && !call.args.slice(at + 1).some((arg) => OPERATION_CONTROLS.has(arg)));
+  if (starts && call.fencedStash !== true) return undefined;
   // folded on macOS too, whose volumes are case-insensitive by default; over-refusing on a case-sensitive one is harmless
   const folded = process.platform === 'win32' || process.platform === 'darwin';
   const key = (relative: string): string => (folded ? relative.toLowerCase() : relative);
   const within = (outer: string, inner: string): boolean => key(inner) === key(outer) || key(inner).startsWith(`${key(outer)}/`);
-  if (paths.some((named) => named !== '.' && declined.some((root) => within(root, named) || within(named, root)))) return undefined;
-  const fenced = { ...call, args: ['-c', 'submodule.recurse=false', ...(COARSE_SUBCOMMANDS.get(subcommand) ?? []), ...call.args] };
+  // remote add's and remove's operands are a name and a URL; every other operand after -- is a path
+  const named = subcommand === 'remote' ? [] : paths;
+  if (named.some((entry) => entry !== '.' && declined.some((root) => within(root, entry) || within(entry, root)))) return undefined;
+  // GIT_CONFIG_COUNT pairs (git 2.31) keep hundreds of names off the command line; -c splits a name at its first '='
+  const pairs = gitAtLeast(version, 2, 31);
+  if (!pairs && names.some((name) => name.includes('='))) return undefined;
+  const ignored = pairs ? [] : names.flatMap((name) => ['-c', `submodule.${name}.ignore=all`]);
+  const config = pairs ? names.map((name): [string, string] => [`submodule.${name}.ignore`, 'all']) : [];
+  const fenced = { ...call, args: ['-c', 'submodule.recurse=false', ...(COARSE_SUBCOMMANDS.get(subcommand) ?? []), ...ignored, ...call.args], ...(config.length > 0 ? { config: [...(call.config ?? []), ...config] } : {}) };
   // --no-index compares two files and takes no pathspec
-  if (!PATHSPEC_SUBCOMMANDS.has(subcommand) || call.args.includes('--no-index')) return fenced;
+  // stash push checks every gitlink for changes (a status inside each submodule) unless its pathspec excludes it
+  const pathspecs = PATHSPEC_SUBCOMMANDS.has(subcommand) || (subcommand === 'stash' && call.args[at + 1] === 'push');
+  if (!pathspecs || call.args.includes('--no-index')) return fenced;
   // exclude magic needs pathspec magic on, so each named path keeps its literal meaning through :(literal) instead
   const { literalPathspecs: _literal, ...rest } = fenced;
   const magic = folded ? 'exclude,literal,icase' : 'exclude,literal';
-  const named = paths.map((entry) => (entry === '.' ? entry : `:(literal)${entry}`));
+  const literal = paths.map((entry) => (entry === '.' ? entry : `:(literal)${entry}`));
   const head = separator < 0 ? [...rest.args, '--'] : rest.args.slice(0, rest.args.indexOf('--') + 1);
-  return { ...rest, args: [...head, ...named, ...declined.map((root) => `:(${magic})${root}`)] };
+  return { ...rest, args: [...head, ...literal, ...declined.map((root) => `:(${magic})${root}`)] };
+}
+
+// Each declined root, or the outermost folder between cwd and it that holds a .git: git sees that repository only as a gitlink
+// and enters all of it, so only excluding the whole gitlink keeps git out of the root. An lstat failing but by absence counts as one.
+async function enclosingRepositories(cwd: string, declined: readonly string[]): Promise<string[]> {
+  const roots = await Promise.all(
+    declined.map(async (root) => {
+      const segments = root.split('/');
+      const between = segments.slice(1).map((_segment, index) => segments.slice(0, index + 1).join('/'));
+      const holds = await Promise.all(between.map((folder) => holdsGitEntry(path.join(cwd, ...folder.split('/')))));
+      return between[holds.indexOf(true)] ?? root;
+    }),
+  );
+  return [...new Set(roots)];
+}
+
+async function holdsGitEntry(folder: string): Promise<boolean> {
+  try {
+    await fs.lstat(path.join(folder, '.git'));
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return code !== 'ENOENT' && code !== 'ENOTDIR';
+  }
+}
+
+// The submodule names of the .gitmodules git reads: the work tree's, else the index's or HEAD's. While the work tree's does not
+// parse (conflict markers), every one an abort may restore. A .gitmodules that does not parse names nothing, as git dies reading it.
+async function submoduleNames(runner: GitRunner, call: GitCall): Promise<string[]> {
+  const inTree = await fs.stat(path.join(call.cwd, '.gitmodules')).then(
+    () => true,
+    (err: NodeJS.ErrnoException) => {
+      if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return false;
+      throw err;
+    },
+  );
+  const read = async (source: readonly string[]): Promise<string[] | undefined> => {
+    const args = ['config', '-z', '--name-only', ...source, '--get-regexp', '^submodule\\.'];
+    const result = await runner.run({ project: call.project, cwd: call.cwd, args, kind: 'read', parsed: true, allowFailure: true, ...(call.signal ? { signal: call.signal } : {}) });
+    // 1: no such key, or no such blob; 3 and 128: a file that does not parse. Anything else (a kill) fails the call.
+    if (result.exitCode === 3 || result.exitCode === 128) return undefined;
+    if (result.exitCode !== 0 && result.exitCode !== 1) throw new GitError(`git config exited with ${result.exitCode}`, result.exitCode, '', result.stderr);
+    return result.stdout.toString('utf8').split('\0').flatMap((key) => {
+      const last = key.lastIndexOf('.');
+      return last > 'submodule.'.length ? [key.slice('submodule.'.length, last)] : [];
+    });
+  };
+  const found = inTree ? await read(['--file', '.gitmodules']) : undefined;
+  if (found) return [...new Set(found)];
+  const blobs = inTree ? [':.gitmodules', ':1:.gitmodules', ':2:.gitmodules', ':3:.gitmodules', 'HEAD:.gitmodules', 'ORIG_HEAD:.gitmodules'] : [':.gitmodules', 'HEAD:.gitmodules'];
+  const names = new Set<string>();
+  for (const blob of blobs) for (const name of (await read(['--blob', blob])) ?? []) names.add(name);
+  return [...names];
+}
+
+function sameMembers(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((entry) => b.includes(entry));
 }
 
 // A folder that does not exist has no realpath; one whose realpath fails otherwise is logged and matched by its path alone.
@@ -1356,5 +2198,16 @@ function order(kind: RepoKind): number {
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+// git's own words for a failed call, fit for a notice and a log line (logText): its error and fatal lines, else its first
+// stderr lines (progress and hints come first), else the error's message
+export function gitErrorText(err: unknown): string {
+  if (err instanceof GitError) {
+    const lines = err.stderr.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
+    const errors = lines.filter((line) => /^(error|fatal):/.test(line));
+    if (lines.length > 0) return logText((errors.length > 0 ? errors : lines).slice(0, 3).join(' '));
+  }
+  return logText(errorText(err));
 }
 

@@ -349,11 +349,12 @@ describe('the release attaches every desktop artifact', () => {
   });
 
   it('waits for the desktop build, signing, end-to-end suite, install and update checks', () => {
-    expect(workflow.jobs.release!.needs).toEqual(expect.arrayContaining(['package', 'package-desktop', 'sign-windows', 'e2e-desktop', 'verify-desktop-install', 'desktop-update-test', 'attest']));
-    expect(workflow.jobs.attest!.needs).toEqual(expect.arrayContaining(['package', 'package-desktop', 'sign-windows', 'e2e-desktop', 'verify-desktop-install', 'desktop-update-test']));
+    const checks = ['package', 'package-desktop', 'sign-windows', 'e2e-desktop', 'verify-desktop-install', 'verify-desktop-install-windows', 'desktop-update-test', 'desktop-update-test-windows'];
+    expect(workflow.jobs.release!.needs).toEqual(expect.arrayContaining([...checks, 'attest']));
+    expect(workflow.jobs.attest!.needs).toEqual(expect.arrayContaining(checks));
   });
 
-  // A manual run signs with the test certificate, whose files must never be attested or released.
+  // A manual run's Windows files are unsigned or test signed, and must never be attested or released.
   it('attests and releases only on a tag push', () => {
     expect(workflow.jobs.attest!.if).toBe("github.event_name == 'push'");
     expect(workflow.jobs.release!.if).toBe("github.event_name == 'push'");
@@ -373,7 +374,7 @@ describe('the release attaches every desktop artifact', () => {
 
   it('builds an update feed for every leg the update test downloads', () => {
     const feeds = include('package-desktop').filter((leg) => leg.updateFeed).map((leg) => leg.target).sort();
-    expect(include('desktop-update-test').map((leg) => leg.target).sort()).toEqual(feeds);
+    expect([...include('desktop-update-test'), ...include('desktop-update-test-windows')].map((leg) => leg.target).sort()).toEqual(feeds);
   });
 });
 
@@ -386,6 +387,17 @@ describe('sign-windows signs the Windows legs (docs/desktop-signing.md)', () => 
     const requests = job.steps.filter((step) => step.uses?.startsWith('signpath/github-action-submit-signing-request@'));
     expect(requests.map((step) => step.with!['artifact-configuration-slug'])).toEqual(['app-executables', 'installers']);
     for (const step of requests) expect(step.with!['signing-policy-slug']).toBe('${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}');
+  });
+
+  // Every signing spends SignPath's yearly artifact quota, so a manual run signs only when asked.
+  it('signs every tag, and a manual run only with its sign input on, which defaults to off', () => {
+    const sign = (parse(workflowText) as { on: { workflow_dispatch: { inputs: Record<string, { type: string; default: boolean }> } } }).on.workflow_dispatch.inputs.sign;
+    expect(sign).toMatchObject({ type: 'boolean', default: false });
+    expect(job.env?.SIGN_WINDOWS).toBe("${{ github.event_name == 'push' || inputs.sign }}");
+    const signPathSteps = job.steps.filter((step) =>
+      step.uses?.startsWith('signpath/') || step.with?.name?.startsWith('unsigned-win-') || step.run?.includes('check-authenticode.ps1') || step.run?.includes('signed-windows-feed.mjs --rewrite') || step.id === 'collect-executables');
+    expect(signPathSteps).toHaveLength(8);
+    for (const step of signPathSteps) expect({ name: step.name, if: step.if }).toEqual({ name: step.name, if: "env.SIGN_WINDOWS == 'true'" });
   });
 
   it('passes both requests the package.json version, which the artifact configurations enforce as each file\'s product version', () => {
@@ -421,8 +433,19 @@ describe('sign-windows signs the Windows legs (docs/desktop-signing.md)', () => 
   });
 
   it('is waited on by every job that installs or attaches a Windows installer', () => {
-    for (const name of ['verify-desktop-install', 'desktop-update-test', 'attest', 'release']) {
-      expect({ name, needs: workflow.jobs[name]!.needs }).toEqual({ name, needs: expect.arrayContaining(['sign-windows']) });
+    for (const name of ['verify-desktop-install-windows', 'desktop-update-test-windows', 'attest', 'release']) {
+      expect({ name, needs: [workflow.jobs[name]!.needs].flat() }).toEqual({ name, needs: expect.arrayContaining(['sign-windows']) });
+    }
+  });
+
+  // The macOS and Linux install and update tests run before signing, so their failures spend no quota.
+  it('splits the install and update tests at the Windows legs, with the same steps on both sides', () => {
+    for (const [before, after, artifact] of [['verify-desktop-install', 'verify-desktop-install-windows', 'artifact'], ['desktop-update-test', 'desktop-update-test-windows', 'target']] as const) {
+      expect(include(before).filter((leg) => String(leg[artifact]).includes('win'))).toEqual([]);
+      expect(include(after).length).toBeGreaterThan(0);
+      expect(include(after).every((leg) => String(leg[artifact]).includes('win'))).toBe(true);
+      expect(workflow.jobs[after]!.steps).toEqual(workflow.jobs[before]!.steps);
+      expect(workflow.jobs['sign-windows']!.needs).toContain(before);
     }
   });
 

@@ -78,7 +78,8 @@ export interface TerminalProject {
 // A terminal as the window layout keeps it; restored at launch when its profile and project still exist.
 export interface PersistedTerminal {
   readonly profileId: string;
-  readonly projectKey: string;
+  // null: the home folder
+  readonly projectKey: string | null;
   readonly name: string | null;
   readonly customIcon: TerminalCustomIcon | null;
   readonly color: TerminalColor | null;
@@ -150,6 +151,8 @@ export interface TerminalServiceDeps {
   readonly spawnHost: () => PtyHostProcess;
   // the visible detected shells and the valid user profiles, in quick pick order
   readonly profiles: () => readonly LaunchProfile[];
+  // shell detection has settled (TerminalState.profilesReady)
+  readonly profilesReady: () => boolean;
   // whether a folder a shell reported still exists, for a split that starts in it; never blocks main on a slow share
   readonly isDirectory: (folder: string) => Promise<boolean>;
   readonly projects: () => readonly TerminalProject[];
@@ -175,7 +178,8 @@ export interface TerminalServiceDeps {
   readonly log: (line: string) => void;
   // picks how a terminal's shell writes paths (terminal links)
   readonly platform: NodeJS.Platform;
-  // the app's own shell-integration scripts (resources, unpacked); the user's home, the default ZDOTDIR
+  // the app's own shell-integration scripts (resources, unpacked); the user's home, the default ZDOTDIR and the folder a
+  // terminal starts in while no project is open
   readonly scriptsDir: string;
   readonly homedir: string;
   // zsh's ZDOTDIR in the user's app data, and the synchronous copy of its startup files there (throws on failure)
@@ -248,10 +252,11 @@ interface Terminal {
   readonly id: string;
   // re-read from the listed profiles at each restart
   profile: LaunchProfile;
-  readonly projectKey: string;
-  // the project folder, which titles and descriptions compare against
+  // null: the home folder, where a terminal started while no project was open stays (VS Code keeps a terminal's folder)
+  readonly projectKey: string | null;
+  // the project or home folder, which titles and descriptions compare against
   readonly startCwd: string;
-  // the folder each spawn starts in: the project folder, or for a split the folder its source reported
+  // the folder each spawn starts in: startCwd, or for a split the folder its source reported
   readonly launchCwd: string;
   shell: ShellSession;
   // commandId → facts, insertion ordered, at most TRACKED_COMMANDS
@@ -374,12 +379,18 @@ export class TerminalService {
         macOptionIsMeta: settings.macOptionIsMeta,
         decorationsEnabled: settings.decorationsEnabled,
       },
-      canCreate: this.deps.profiles().length > 0 && projects.length > 0,
+      canCreate: this.canCreate(),
+      profilesReady: this.deps.profilesReady(),
       passKeys: [...this.deps.passKeys(this.splitActive())],
       profiles: this.profileOptions(),
       screenReader: this.deps.screenReader(),
       windowsBuild: this.deps.windowsBuild,
     };
+  }
+
+  /** A terminal can start: a profile is listed. Without a project it starts in the home folder. */
+  canCreate(): boolean {
+    return this.deps.profiles().length > 0;
   }
 
   /** The listed profiles for the quick pick and Settings › Terminal, the default marked. */
@@ -399,7 +410,7 @@ export class TerminalService {
     }));
   }
 
-  /** The open projects for the quick pick, the current one first. */
+  /** The open projects for the quick pick, the current one first; none while no project is open (the home folder). */
   projectOptions(): TerminalProjectOption[] {
     const current = this.deps.currentProjectKey();
     const options = this.deps.projects().map((project) => ({ key: project.key, name: project.name, path: project.fsPath, current: project.key === current }));
@@ -429,11 +440,13 @@ export class TerminalService {
   }
 
   /**
-   * Starts a terminal in a known project with a detected profile; null picks the default profile and the current project.
-   * focus: a user's action in main, after which the new terminal takes keyboard focus.
+   * Starts a terminal with a detected profile, null for the default one, in its target's folder. focus: a user's action in
+   * main, after which the new terminal takes keyboard focus.
    */
   create(request: TerminalCreateRequest, focus: boolean): TerminalCreateResult {
-    const started = this.start(request);
+    const { target } = request;
+    const projectKey = 'project' in target ? target.project : 'home' in target ? null : this.deps.currentProjectKey() ?? null;
+    const started = this.start(request.profileId, projectKey);
     if (!started.ok) return started;
     this.groups.push(this.newGroup([started.id]));
     this.activeId = started.id;
@@ -443,23 +456,28 @@ export class TerminalService {
   }
 
   // A new terminal at the end of the terminal array, in no group yet, with its process starting; the caller groups it and
-  // publishes the change.
-  private start(request: TerminalCreateRequest): TerminalCreateResult {
-    const profile = request.profileId === null ? this.defaultProfile() : this.listedProfile(request.profileId);
-    if (!profile) return { ok: false, reason: request.profileId === null ? 'noProfile' : 'unknownProfile' };
-    const projectKey = request.projectKey ?? this.deps.currentProjectKey();
-    if (projectKey === undefined) return { ok: false, reason: 'noProject' };
-    const project = this.deps.projects().find((candidate) => candidate.key === projectKey);
-    if (!project) return { ok: false, reason: 'unknownProject' };
-    return { ok: true, id: this.launch(profile, project, project.fsPath).id };
+  // publishes the change. A null profileId is the default profile; a null projectKey the home folder.
+  private start(profileId: string | null, projectKey: string | null): TerminalCreateResult {
+    const profile = profileId === null ? this.defaultProfile() : this.listedProfile(profileId);
+    if (!profile) return { ok: false, reason: profileId === null ? 'noProfile' : 'unknownProfile' };
+    const folder = this.folderOf(projectKey);
+    if (folder === undefined) return { ok: false, reason: 'unknownProject' };
+    return { ok: true, id: this.launch(profile, projectKey, folder, folder).id };
   }
 
-  private launch(profile: LaunchProfile, project: TerminalProject, launchCwd: string): Terminal {
+  // The folder a terminal of projectKey starts in: the open project's folder, or the home folder for null; undefined for a
+  // project that is not open.
+  private folderOf(projectKey: string | null): string | undefined {
+    if (projectKey === null) return this.deps.homedir;
+    return this.deps.projects().find((project) => project.key === projectKey)?.fsPath;
+  }
+
+  private launch(profile: LaunchProfile, projectKey: string | null, startCwd: string, launchCwd: string): Terminal {
     const terminal: Terminal = {
       id: `term-${this.nextId++}`,
       profile,
-      projectKey: project.key,
-      startCwd: project.fsPath,
+      projectKey,
+      startCwd,
       launchCwd,
       shell: newShellSession(launchCwd),
       commands: new Map(),
@@ -496,7 +514,7 @@ export class TerminalService {
       let activePaneId: string | undefined;
       for (let pane = 0; pane < savedGroup.panes; pane++, index++) {
         const entry = saved.terminals[index]!;
-        const created = this.start({ profileId: entry.profileId, projectKey: entry.projectKey });
+        const created = this.start(entry.profileId, entry.projectKey);
         if (!created.ok) {
           this.deps.log(`[terminal] not restoring a ${entry.profileId} terminal: ${created.reason}`);
           continue;
@@ -524,10 +542,10 @@ export class TerminalService {
     this.changed(true);
   }
 
-  /** The active terminal, starting one with the default profile in the current project when there is none. */
+  /** The active terminal, starting one with the default profile in the current project (else the home folder) when there is none. */
   ensureTerminal(): string | undefined {
     if (this.activeId !== null) return this.activeId;
-    const created = this.create({ profileId: null, projectKey: null }, false);
+    const created = this.create({ profileId: null, target: { current: true } }, false);
     return created.ok ? created.id : undefined;
   }
 
@@ -578,10 +596,13 @@ export class TerminalService {
     return terminal && { icon: terminal.profile.icon, customIcon: terminal.customIcon, color: terminal.color };
   }
 
-  /** What the terminal's links resolve against: its project, its tracked working directory, and how its shell writes paths. */
+  /**
+   * What the terminal's links resolve against: its project, its tracked working directory, and how its shell writes paths;
+   * undefined for a home folder terminal, whose links resolve to nothing because main opens files only inside a project.
+   */
   linkBase(id: string): LinkBase | undefined {
     const terminal = this.find(id);
-    const project = terminal && this.deps.projects().find((candidate) => candidate.key === terminal.projectKey);
+    const project = terminal && terminal.projectKey !== null ? this.deps.projects().find((candidate) => candidate.key === terminal.projectKey) : undefined;
     return terminal && project && { project, baseDir: terminal.shell.cwd, style: this.pathStyle(terminal) };
   }
 
@@ -641,7 +662,7 @@ export class TerminalService {
 
   /**
    * Split Terminal (VS Code's terminalGroup.ts addInstance): a new pane right of id with its profile, in the folder its shell
-   * reported, else its project folder; the sizes are shared equally, and the new pane is active and takes focus.
+   * reported, else its project or home folder; the sizes are shared equally, and the new pane is active and takes focus.
    */
   async split(id: string): Promise<void> {
     const found = this.find(id);
@@ -652,12 +673,12 @@ export class TerminalService {
     if (!source || this.splitRefused(id)) return;
     const group = this.groupOf(id)!;
     const profile = this.listedProfile(source.profile.id);
-    const project = this.deps.projects().find((candidate) => candidate.key === source.projectKey);
-    if (!profile || !project) {
+    const open = this.folderOf(source.projectKey) !== undefined;
+    if (!profile || !open) {
       this.deps.log(`[terminal] not splitting ${id}: ${profile ? 'its project is closed' : `its profile ${source.profile.id} is no longer listed`}`);
       return;
     }
-    const pane = this.launch(profile, project, cwd);
+    const pane = this.launch(profile, source.projectKey, source.startCwd, cwd);
     group.paneIds.splice(group.paneIds.indexOf(id) + 1, 0, pane.id);
     group.sizes = equalPaneSizes(group.paneIds.length);
     group.activePaneId = pane.id;
@@ -731,8 +752,8 @@ export class TerminalService {
   }
 
   /**
-   * A new process for an exited terminal, with its id, project and launch folder (its project folder once that is gone, as
-   * a split falls back), while its profile is still listed.
+   * A new process for an exited terminal, with its id, project and launch folder (its project or home folder once that is
+   * gone, as a split falls back), while its profile is still listed.
    */
   async restart(id: string): Promise<void> {
     const terminal = this.find(id);
@@ -781,11 +802,15 @@ export class TerminalService {
     this.publish();
   }
 
-  /** Kills the terminals of every project not in projectKeys, as when a project is removed. */
-  retain(projectKeys: readonly string[]): void {
+  /**
+   * The open projects are now projectKeys: the terminals of every other project are killed, home folder terminals stay, and
+   * the state, which names each terminal's project, is published again.
+   */
+  projectsChanged(projectKeys: readonly string[]): void {
     const keep = new Set(projectKeys);
-    const gone = this.terminals.filter((terminal) => !keep.has(terminal.projectKey));
+    const gone = this.terminals.filter((terminal) => terminal.projectKey !== null && !keep.has(terminal.projectKey));
     for (const terminal of gone) this.kill(terminal.id);
+    this.publish();
   }
 
   /** The window closed: every terminal is killed, and the window layout keeps the list for the next window or launch. */
@@ -865,17 +890,17 @@ export class TerminalService {
     return true;
   }
 
-  // The folder the source's shell last reported while it still exists, else the source's project folder.
+  // The folder the source's shell last reported while it still exists, else the source's project or home folder.
   private async splitCwd(source: Terminal): Promise<string> {
     const reported = source.shell.cwd;
     if (reported !== null && (await this.deps.isDirectory(reported))) return reported;
-    this.deps.log(`[terminal] starting a split of ${source.id} in its project folder: ${reported === null ? 'the folder its shell reported was refused' : `${reported} no longer exists`}`);
+    this.deps.log(`[terminal] starting a split of ${source.id} in its start folder: ${reported === null ? 'the folder its shell reported was refused' : `${reported} no longer exists`}`);
     return source.startCwd;
   }
 
   private async restartCwd(terminal: Terminal): Promise<string> {
     if (terminal.launchCwd === terminal.startCwd || (await this.deps.isDirectory(terminal.launchCwd))) return terminal.launchCwd;
-    this.deps.log(`[terminal] restarting ${terminal.id} in its project folder: ${terminal.launchCwd} no longer exists`);
+    this.deps.log(`[terminal] restarting ${terminal.id} in its start folder: ${terminal.launchCwd} no longer exists`);
     return terminal.startCwd;
   }
 

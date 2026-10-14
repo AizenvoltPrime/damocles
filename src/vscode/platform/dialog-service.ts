@@ -25,6 +25,7 @@ export function createVsCodeDialogService(): DialogService {
         canSelectMany: false,
         ...(opts.title !== undefined ? { title: opts.title } : {}),
         ...(opts.defaultPath !== undefined ? { defaultUri: vscode.Uri.file(opts.defaultPath) } : {}),
+        ...(opts.buttonLabel !== undefined ? { openLabel: opts.buttonLabel } : {}),
       });
       return picked?.[0]?.fsPath;
     },

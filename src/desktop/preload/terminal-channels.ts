@@ -134,7 +134,8 @@ export interface TerminalInfo {
   readonly icon: TerminalIcon;
   readonly customIcon: TerminalCustomIcon | null;
   readonly color: TerminalColor | null;
-  readonly projectKey: string;
+  // null: the home folder, whose projectName is ''
+  readonly projectKey: string | null;
   readonly projectName: string;
   readonly status: TerminalStatus;
   readonly exitCode: number | null;
@@ -184,8 +185,10 @@ export interface TerminalState {
   readonly activeId: string | null;
   readonly listWidthRem: number;
   readonly settings: TerminalSettings;
-  // a project is open and a profile was detected
+  // a profile is listed; with no project open a terminal starts in the home folder
   readonly canCreate: boolean;
+  // shell detection has settled, so canCreate false means no shell was found rather than none detected yet
+  readonly profilesReady: boolean;
   // Electron accelerators of the commands that fire while a terminal has focus (the skip list, from the command registry);
   // xterm leaves exactly these keys unhandled so they reach the application menu. Focus Previous and Next Pane are in it
   // only while the active group has more than one pane.
@@ -204,15 +207,19 @@ export interface TerminalResizePanes {
   readonly sizes: readonly number[];
 }
 
-// null profileId: the default profile setting, else the first detected; null projectKey: the selected project
+// Where a new terminal starts: an open project's folder, the home folder, or the selected project (the home folder while no
+// project is open).
+export type TerminalTarget = { readonly project: string } | { readonly home: true } | { readonly current: true };
+
+// null profileId: the default profile setting, else the first detected
 export interface TerminalCreateRequest {
   readonly profileId: string | null;
-  readonly projectKey: string | null;
+  readonly target: TerminalTarget;
 }
 
 export type TerminalCreateResult =
   | { readonly ok: true; readonly id: string }
-  | { readonly ok: false; readonly reason: 'noProject' | 'unknownProject' | 'unknownProfile' | 'noProfile' };
+  | { readonly ok: false; readonly reason: 'unknownProject' | 'unknownProfile' | 'noProfile' };
 
 export interface TerminalRef {
   readonly id: string;

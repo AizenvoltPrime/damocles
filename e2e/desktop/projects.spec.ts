@@ -5,10 +5,10 @@ import { seedStubModel } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { selectedProjectKey, shellState } from './support/shell';
 import { addProject, answerDialogs, answerOpenDialog, chatInput, askedDialogs, clickMenu, TRUST_PROMPT } from './support/ui';
-import { chatRow, listChats, projectKeyOf, projectRow, readyShell } from './support/shell-ui';
+import { chatRow, clickSectionAction, listChats, projectKeyOf, projectRow, readyShell } from './support/shell-ui';
 import { chooseMenuItem, confirmDialog, readyOverlay } from './support/overlay';
 
-test('projects: the sidebar adds, trusts, selects and removes projects, shows their activity, and refuses removal while a chat runs', async ({ home, launch }) => {
+test('projects: the sidebar adds, trusts, selects and removes projects, shows their activity, and refuses removal while a chat runs', async ({ foreground: _foreground, home, launch }) => {
   test.setTimeout(180_000);
   const stub = await startOpenAIStub();
   try {
@@ -40,7 +40,7 @@ test('projects: the sidebar adds, trusts, selects and removes projects, shows th
     // Add project (folder-plus) opens the folder picker; the new project becomes the selected one.
     await answerOpenDialog(app, beta);
     await answerDialogs(app, { [TRUST_PROMPT]: 'Trust Folder' });
-    await shell.getByTestId('add-project').click();
+    await clickSectionAction(shell, 'add-project');
     await expect.poll(async () => (await shellState(app)).projects.map((p) => p.name)).toEqual(['alpha', 'beta']);
     const betaKey = await projectKeyOf(app, 'beta');
     await expect.poll(async () => (await shellState(app)).selected.projectKey).toBe(betaKey);

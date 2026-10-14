@@ -8,3 +8,5 @@ build/linux/** text eol=lf
 resources/shell-integration/*.sh text eol=lf
 resources/shell-integration/*.fish text eol=lf
 resources/shell-integration/*.zsh text eol=lf
+# The askpass helper scripts run under sh (Git for Windows' sh included), which reads CR as part of a line.
+resources/askpass/*.sh text eol=lf

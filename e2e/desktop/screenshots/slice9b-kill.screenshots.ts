@@ -45,7 +45,7 @@ test('slice 9b kill confirmation captures', async ({ home, launch }) => {
   await expect(dialog).toHaveCount(0);
 
   // A second terminal running the same program: Kill All asks once, listing both.
-  await shell.evaluate(() => window.damoclesShell!.terminal.create({ profileId: null, projectKey: null }));
+  await shell.evaluate(() => window.damoclesShell!.terminal.create({ profileId: null, target: { current: true } }));
   await expect.poll(async () => (await shell.evaluate(() => window.damoclesShell!.terminal.getState())).terminals[1]?.integrated).toBe(true);
   await runInTerminal(shell, LONG_RUNNING);
   await expect.poll(() => runningCount(shell)).toBe(2);

@@ -117,6 +117,17 @@ describe('Windows profiles', () => {
     expect(await ids(probe('win32', WINDOWS_ENV, { files, wsl }))).toEqual(['cmd', 'wsl:Ubuntu']);
   });
 
+  it('finds the other shells when a Program Files folder or a PATH entry cannot be read', async () => {
+    const machine = probe('win32', WINDOWS_ENV, { files: [`${SYSTEM32}\\cmd.exe`, 'C:\\tools\\git.exe', 'C:\\bin\\bash.exe'] });
+    const deny = (): Promise<never> => Promise.reject(Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' }));
+    const blocked: ProfileProbe = {
+      ...machine,
+      readDir: (dir) => (dir === 'C:\\Program Files\\PowerShell' ? deny() : machine.readDir(dir)),
+      isFile: (file) => (file.startsWith('C:\\Windows\\system32\\git.exe') || file.endsWith('powershell.exe') ? deny() : machine.isFile(file)),
+    };
+    expect((await detectProfiles(blocked)).map((profile) => profile.id)).toEqual(['cmd', 'git-bash']);
+  });
+
   it('reaches the 64-bit System32 through Sysnative from a 32-bit process', async () => {
     const env = { ...WINDOWS_ENV, PROCESSOR_ARCHITEW6432: 'AMD64' };
     const profiles = await detectProfiles(probe('win32', env, { files: ['C:\\Windows\\Sysnative\\cmd.exe'] }));
@@ -179,6 +190,23 @@ describe('macOS and Linux profiles', () => {
     const machine = probe('linux', { SHELL: 'bash', PATH: '/bin' }, { files: ['/bin/bash'] });
     expect((await detectProfiles(machine)).map((profile) => profile.file)).toEqual(['/bin/bash']);
     expect(await detectProfiles(probe('linux', { SHELL: '/bin/zsh' }, {}))).toEqual([]);
+  });
+
+  it('skips and logs a PATH folder, $SHELL or /etc/shells it cannot read, and still finds the other shells', async () => {
+    const denied = new Set(['/root/bin/zsh', '/root/bin/bash', '/root/bin/fish', '/etc/shells', '/usr/local/bin/fish']);
+    const deny = (entry: string): Error => Object.assign(new Error(`EACCES: permission denied, lstat '${entry}'`), { code: 'EACCES' });
+    const logs: string[] = [];
+    const machine = probe('linux', { SHELL: '/usr/local/bin/fish', PATH: '/root/bin:/usr/bin' }, { files: ['/usr/bin/zsh', '/usr/bin/bash'] });
+    const blocked: ProfileProbe = {
+      ...machine,
+      isFile: (file) => (denied.has(file) ? Promise.reject(deny(file)) : machine.isFile(file)),
+      readText: (file) => (denied.has(file) ? Promise.reject(deny(file)) : machine.readText(file)),
+      log: (line) => logs.push(line),
+    };
+    expect((await detectProfiles(blocked)).map((profile) => profile.file)).toEqual(['/usr/bin/zsh', '/usr/bin/bash']);
+    expect(logs).toContain("[terminal] skipping /root/bin/zsh while detecting shells: EACCES: permission denied, lstat '/root/bin/zsh'");
+    expect(logs).toContain("[terminal] skipping /etc/shells while detecting shells: EACCES: permission denied, lstat '/etc/shells'");
+    expect(logs.filter((line) => line.startsWith('[terminal] skipping '))).toHaveLength(5);
   });
 });
 

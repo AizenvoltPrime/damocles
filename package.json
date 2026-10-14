@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "Damocles",
   "description": "An AI coding agent that runs as a standalone desktop app for Windows, macOS and Linux, and as a VS Code extension. Chat with Claude, GPT and other models, approve diffs, rewind checkpoints, and use persistent memory, subagents, teams and MCP, powered by the Pi agent runtime.",
-  "version": "3.8.0",
+  "version": "3.9.0",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",

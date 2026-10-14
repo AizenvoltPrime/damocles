@@ -98,6 +98,7 @@ import {
   type TerminalAction,
   type TerminalAddToChat,
   type TerminalCreateRequest,
+  type TerminalTarget,
   type TerminalCreateResult,
   type TerminalData,
   type TerminalLinkKind,
@@ -116,6 +117,9 @@ import {
   type ScmGenerateResult,
   type ScmRepoSnapshot,
   type ScmRunResult,
+  type ScmArtifactsChanged,
+  type ScmArtifactsResult,
+  type ScmCloneState,
   type ScmSetInput,
   type ScmSettings,
   type ScmShellCommand,
@@ -197,6 +201,7 @@ export interface ShellScmActions {
   copy(raw: unknown): Promise<void>;
   commitInput(raw: unknown): Promise<ScmCommitInput>;
   amend(raw: unknown): void;
+  artifacts(raw: unknown): Promise<ScmArtifactsResult>;
 }
 
 // User input main observed in the shell page (before-input-event, before-mouse-event), never a renderer's report.
@@ -320,12 +325,19 @@ function exactFields(raw: unknown, keys: readonly string[]): Record<string, unkn
 
 const isKeyOrNull = (value: unknown): value is string | null => value === null || isShellId(value);
 
-/** terminal:create from the shell: a profile id and a project key, each null for the default, and nothing else. */
+function parseTerminalTarget(raw: unknown): TerminalTarget | undefined {
+  const project = exactFields(raw, ['project'])?.['project'];
+  if (isShellId(project)) return { project };
+  if (exactFields(raw, ['home'])?.['home'] === true) return { home: true };
+  return exactFields(raw, ['current'])?.['current'] === true ? { current: true } : undefined;
+}
+
+/** terminal:create from the shell: a profile id, null for the default, and a target, and nothing else. */
 export function parseTerminalCreate(raw: unknown): TerminalCreateRequest | undefined {
-  const value = exactFields(raw, ['profileId', 'projectKey']);
+  const value = exactFields(raw, ['profileId', 'target']);
   const profileId = value?.['profileId'];
-  const projectKey = value?.['projectKey'];
-  return isKeyOrNull(profileId) && isKeyOrNull(projectKey) ? { profileId, projectKey } : undefined;
+  const target = parseTerminalTarget(value?.['target']);
+  return isKeyOrNull(profileId) && target ? { profileId, target } : undefined;
 }
 
 export function parseTerminalInputFocus(raw: unknown): boolean | undefined {
@@ -1349,6 +1361,7 @@ export class ShellHost {
     this.handle(SCM_CHANNELS.copy, (raw) => scm.copy(raw));
     this.handle(SCM_CHANNELS.commitInput, (raw) => scm.commitInput(raw));
     this.handle(SCM_CHANNELS.amend, (raw) => scm.amend(raw));
+    this.handle(SCM_CHANNELS.artifacts, (raw) => scm.artifacts(raw));
   }
 
   scmView(view: ScmView): void {
@@ -1369,6 +1382,14 @@ export class ShellHost {
 
   scmSetInput(input: ScmSetInput): void {
     this.send(SCM_CHANNELS.setInput, input);
+  }
+
+  scmClone(state: ScmCloneState): void {
+    this.send(SCM_CHANNELS.clone, state);
+  }
+
+  scmArtifactsChanged(changed: ScmArtifactsChanged): void {
+    this.send(SCM_CHANNELS.artifactsChanged, changed);
   }
 
   // Palette Commit, a user's action: keyboard focus moves to the window's own page, whose commit box holds the draft.

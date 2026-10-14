@@ -7,6 +7,7 @@ import { menuItem, overlayMenu } from './support/overlay';
 import { openProjectChat } from './support/screenshots';
 import { activeTab, editorState, editorTab, filesRow, saveWithKeyboard } from './support/editor';
 import { writeUserSettings } from './support/hermetic';
+import { clickSectionAction } from './support/shell-ui';
 
 // The primary modifier as Playwright names it in the page: Control, or Meta on macOS.
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control';
@@ -36,7 +37,7 @@ async function bodyLines(shell: Page): Promise<string[]> {
 async function newSearchEditor(app: ElectronApplication): Promise<Page> {
   const shell = await shellPage(app);
   await pressKeys(app, '/shell/', 'F', [PRIMARY, 'shift']);
-  await shell.getByTestId('search-new-editor').click();
+  await clickSectionAction(shell, 'search-new-editor');
   await expect(searchEditor(shell)).toBeVisible();
   await expect(body(shell)).toHaveAttribute('data-monaco-ready', 'true');
   return shell;

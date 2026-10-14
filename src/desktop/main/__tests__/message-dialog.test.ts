@@ -96,3 +96,42 @@ describe('a question with a preview', () => {
     expect(H.showMessageBox.mock.calls[0]![0]).toMatchObject({ detail: 'Preview:\necho 1\necho 2', buttons: ['Paste', 'Cancel'] });
   });
 });
+
+describe('a withdrawn question', () => {
+  const HOST_KEY: MessageQuestion = { severity: 'danger', message: 'Are you sure you want to continue connecting?', actions: ['Yes'], cancelLabel: 'No' };
+
+  it('passes its signal to the overlay and answers Cancel once withdrawn, whatever the overlay answers later', async () => {
+    const signals: Array<AbortSignal | undefined> = [];
+    let answer!: (value: OverlayAnswer) => void;
+    const ask = asker({ request: (_request, _focus, _shown, _browse, signal) => { signals.push(signal); return new Promise((resolve) => (answer = resolve)); } });
+    const withdrawn = new AbortController();
+    const asked = ask(HOST_KEY, withdrawn.signal);
+    withdrawn.abort();
+    answer({ kind: 'message', action: 0 });
+    await expect(asked).resolves.toBeUndefined();
+    expect(signals).toEqual([withdrawn.signal]);
+  });
+
+  it('asks nothing when already withdrawn', async () => {
+    const request = vi.fn();
+    const gone = new AbortController();
+    gone.abort();
+    await expect(asker({ request })(HOST_KEY, gone.signal)).resolves.toBeUndefined();
+    expect(request).not.toHaveBeenCalled();
+    expect(H.showMessageBox).not.toHaveBeenCalled();
+  });
+
+  it('logs that the OS message box cannot be withdrawn, and ignores its answer', async () => {
+    const lines: string[] = [];
+    let respond!: (value: { response: number }) => void;
+    H.showMessageBox.mockReturnValue(new Promise((resolve) => (respond = resolve)));
+    const ask = createMessageAsker({ overlay: () => undefined, window: () => undefined, focused: () => undefined, closing: () => false, log: (line) => lines.push(line) });
+    const withdrawn = new AbortController();
+    const asked = ask(HOST_KEY, withdrawn.signal);
+    await vi.waitFor(() => expect(H.showMessageBox).toHaveBeenCalledOnce());
+    withdrawn.abort();
+    respond({ response: 0 });
+    await expect(asked).resolves.toBeUndefined();
+    expect(lines).toContain('[dialog] a withdrawn question shows in the OS message box, which cannot be closed; its answer is ignored');
+  });
+});

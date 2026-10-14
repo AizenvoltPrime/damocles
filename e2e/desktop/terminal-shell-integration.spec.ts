@@ -139,7 +139,7 @@ test('killing a terminal that runs a program asks first, once; an idle shell and
   await expect.poll(async () => (await terminals(shell)).length).toBe(0);
   await expect(messageDialog(overlay)).toHaveCount(0);
 
-  await shell.evaluate(() => window.damoclesShell!.terminal.create({ profileId: null, projectKey: null }));
+  await shell.evaluate(() => window.damoclesShell!.terminal.create({ profileId: null, target: { current: true } }));
   await expect.poll(async () => (await terminals(shell)).length).toBe(1);
   await expect.poll(async () => (await active(shell)).integrated).toBe(true);
   await runInTerminal(shell, 'node -e "setInterval(()=>{},1000)"');
@@ -175,7 +175,7 @@ test('Git Bash reports its commands and its working directory too', async ({ hom
   test.skip(!windows, 'Git Bash is Windows only');
   const { shell } = await launchWith(home, launch, 'cmd');
   test.skip(!(await profileDetected(shell, 'git-bash')), 'Git Bash is not installed');
-  await shell.evaluate(() => window.damoclesShell!.terminal.create({ profileId: 'git-bash', projectKey: null }));
+  await shell.evaluate(() => window.damoclesShell!.terminal.create({ profileId: 'git-bash', target: { current: true } }));
   await expect.poll(async () => (await active(shell)).profileId).toBe('git-bash');
   await expect.poll(async () => (await active(shell)).integrated, { timeout: 30_000 }).toBe(true);
   await runInTerminal(shell, 'cd src && sleep 3');

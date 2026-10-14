@@ -11,7 +11,7 @@ import { answerTagPicker, confirmDialog, overlayMenu, readyOverlay, tagPicker } 
 import { openProjectChat, setPageSize, settled, showTheme, THEMES } from '../support/screenshots';
 import { openSettingsModal, setContentSize, settingsModal } from '../support/settings';
 import { NOTIFIER_URL, popupPage, SHELL_URL, setWindowFocused, shellPage, shellState } from '../support/shell';
-import { chatRow, clickChat, clickRowAction, listChats, readyShell } from '../support/shell-ui';
+import { chatRow, clickChat, clickRowAction, clickSectionAction, listChats, readyShell } from '../support/shell-ui';
 import { addProject, answerOpenDialog, chatInput, clickMenu, sendAndAwaitEcho } from '../support/ui';
 import { pushUpdateState, snapshotOf } from '../support/updates';
 
@@ -90,7 +90,7 @@ async function storeChat(app: ElectronApplication, page: Page, prompt: string): 
 async function newChat(app: ElectronApplication, shell: Page, known: Page[]): Promise<Page> {
   const before = await selectedChatId(app);
   const opened = nextChat(app, known);
-  await shell.getByTestId('new-chat').click();
+  await clickSectionAction(shell, 'new-chat');
   await expect.poll(async () => {
     const id = await selectedChatId(app);
     return id !== before && id.startsWith('new:');
@@ -233,14 +233,14 @@ test('the shell, its title bar, sidebar states, update pill, menus, pickers, dia
     await showTheme(app, shell, 'dark');
 
     // The sidebar's search, tag filter, inline rename and a collapsed Projects section.
-    await shell.getByTestId('chat-search-toggle').click();
+    await clickSectionAction(shell, 'chat-search-toggle');
     await expect(shell.getByTestId('chat-search')).toBeVisible();
     await shoot(shell, 'sidebar-search-open-dark', shell.getByTestId('sidebar'));
     await shell.getByTestId('chat-search').fill('zzzz');
     await expect(shell.getByTestId('chats-no-match')).toBeVisible();
     await shoot(shell, 'sidebar-search-no-match-dark', shell.getByTestId('sidebar'));
     await shell.getByTestId('chat-search').fill('');
-    await shell.getByTestId('chat-search-toggle').click();
+    await clickSectionAction(shell, 'chat-search-toggle');
     await expect(shell.getByTestId('chat-search')).toHaveCount(0);
     await shell.getByTestId('tag-chip').first().click();
     await expect(shell.getByTestId('tag-chip').first()).toHaveAttribute('aria-pressed', 'true');
@@ -296,7 +296,7 @@ test('the shell, its title bar, sidebar states, update pill, menus, pickers, dia
   }
 });
 
-test('the notification bell, its center, the popup toast stack and the trust dialog', async ({ home, launch }) => {
+test('the notification bell, its center, the popup toast stack and the trust dialog', async ({ foreground: _foreground, home, launch }) => {
   test.setTimeout(300_000);
   const stub = await startOpenAIStub();
   try {

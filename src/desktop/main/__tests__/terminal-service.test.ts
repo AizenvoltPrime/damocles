@@ -12,6 +12,8 @@ import {
   type TerminalData,
   type TerminalState,
 } from '../../preload/terminal-channels';
+import type { OverlayAnswer } from '../../preload/overlay-channels';
+import { pickNewTerminal } from '../terminal-pick';
 import type { TerminalProfile } from '../terminal/profiles';
 import { detectedProfile, type LaunchProfile } from '../terminal/user-profiles';
 import {
@@ -94,7 +96,7 @@ const SETTINGS: TerminalServiceSettings = {
   shellIntegration: false,
   confirmOnKill: 'running',
 };
-const stored = (profileId: string, projectKey: string): PersistedTerminal => ({ profileId, projectKey, name: null, customIcon: null, color: null });
+const stored = (profileId: string, projectKey: string | null): PersistedTerminal => ({ profileId, projectKey, name: null, customIcon: null, color: null });
 
 interface Harness {
   readonly service: TerminalService;
@@ -110,6 +112,7 @@ interface Harness {
   answer: boolean;
   settings: Partial<TerminalServiceSettings>;
   profiles: Array<TerminalProfile | LaunchProfile>;
+  profilesReady: boolean;
   // folders that exist, for a split's inherited working directory
   readonly directories: Set<string>;
   projects: TerminalProject[];
@@ -142,6 +145,7 @@ function harness(options: { saved?: PersistedTerminals; throttleConpty?: boolean
     answer: true,
     settings: {},
     profiles: [PWSH, BASH],
+    profilesReady: true,
     directories: new Set([ALPHA.fsPath, BETA.fsPath]),
     projects: [ALPHA, BETA],
     current: ALPHA.key,
@@ -197,6 +201,7 @@ function harness(options: { saved?: PersistedTerminals; throttleConpty?: boolean
   const service = new TerminalService({
     spawnHost,
     profiles: () => h.profiles.map((profile) => ('source' in profile ? profile : detectedProfile(profile))),
+    profilesReady: () => h.profilesReady,
     isDirectory: (folder) => Promise.resolve(h.directories.has(folder)),
     projects: () => h.projects,
     currentProjectKey: () => h.current,
@@ -246,8 +251,8 @@ afterEach(() => {
 describe('create validation', () => {
   it('issues term-<n> ids and starts the profile in the project folder main resolved from the key', async () => {
     const h = harness();
-    expect(h.service.create({ profileId: 'git-bash', projectKey: BETA.key }, false)).toEqual({ ok: true, id: 'term-1' });
-    expect(h.service.create({ profileId: null, projectKey: null }, false)).toEqual({ ok: true, id: 'term-2' });
+    expect(h.service.create({ profileId: 'git-bash', target: { project: BETA.key } }, false)).toEqual({ ok: true, id: 'term-1' });
+    expect(h.service.create({ profileId: null, target: { current: true } }, false)).toEqual({ ok: true, id: 'term-2' });
     await settle();
     expect(h.ptys.map((pty) => [pty.file, pty.args, pty.options.cwd])).toEqual([
       [BASH.file, ['--login', '-i'], BETA.fsPath],
@@ -260,26 +265,87 @@ describe('create validation', () => {
 
   it('refuses a profile it did not detect and a project that is not open, and starts nothing', async () => {
     const h = harness();
-    expect(h.service.create({ profileId: 'C:\\Windows\\System32\\cmd.exe', projectKey: ALPHA.key }, false)).toEqual({ ok: false, reason: 'unknownProfile' });
-    expect(h.service.create({ profileId: 'pwsh', projectKey: 'C:\\Windows' }, false)).toEqual({ ok: false, reason: 'unknownProject' });
-    expect(h.service.create({ profileId: 'pwsh', projectKey: ALPHA.fsPath }, false)).toEqual({ ok: false, reason: 'unknownProject' });
-    h.current = undefined;
-    expect(h.service.create({ profileId: 'pwsh', projectKey: null }, false)).toEqual({ ok: false, reason: 'noProject' });
+    expect(h.service.create({ profileId: 'C:\\Windows\\System32\\cmd.exe', target: { project: ALPHA.key } }, false)).toEqual({ ok: false, reason: 'unknownProfile' });
+    expect(h.service.create({ profileId: 'pwsh', target: { project: 'C:\\Windows' } }, false)).toEqual({ ok: false, reason: 'unknownProject' });
+    expect(h.service.create({ profileId: 'pwsh', target: { project: ALPHA.fsPath } }, false)).toEqual({ ok: false, reason: 'unknownProject' });
     h.profiles = [];
-    h.current = ALPHA.key;
-    expect(h.service.create({ profileId: null, projectKey: null }, false)).toEqual({ ok: false, reason: 'noProfile' });
+    expect(h.service.create({ profileId: null, target: { current: true } }, false)).toEqual({ ok: false, reason: 'noProfile' });
+    expect(h.service.canCreate()).toBe(false);
     await settle();
     expect(h.hosts.count).toBe(0);
     expect(h.ptys).toHaveLength(0);
   });
 
+  it('starts a terminal in the home folder while no project is open, and saves it as a home folder terminal', async () => {
+    const h = harness();
+    h.projects = [];
+    h.current = undefined;
+    expect(h.service.canCreate()).toBe(true);
+    expect(h.service.projectOptions()).toEqual([]);
+    expect(h.service.ensureTerminal()).toBe('term-1');
+    await settle();
+    expect(h.ptys.map((pty) => pty.options.cwd)).toEqual(['C:\\Users\\me']);
+    expect(lastState(h)).toMatchObject({ canCreate: true, terminals: [{ id: 'term-1', projectKey: null, projectName: '', status: 'running' }] });
+    expect(h.persisted.at(-1)!.terminals).toEqual([stored('pwsh', null)]);
+    expect(h.service.linkBase('term-1')).toBeUndefined();
+  });
+
+  it('keeps a home folder terminal in the home folder when a project opens, and starts the next terminal in the project', async () => {
+    const h = harness();
+    h.projects = [];
+    h.current = undefined;
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    await settle();
+    h.projects = [ALPHA];
+    h.current = ALPHA.key;
+    h.service.projectsChanged([ALPHA.key]);
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    await h.service.split('term-1');
+    await settle();
+    expect(h.ptys.map((pty) => [pty.options.cwd, pty.killed])).toEqual([['C:\\Users\\me', false], [ALPHA.fsPath, false], ['C:\\Users\\me', false]]);
+    expect(lastState(h).terminals.map((terminal) => [terminal.id, terminal.projectKey])).toEqual([['term-1', null], ['term-3', null], ['term-2', ALPHA.key]]);
+    h.projects = [];
+    h.current = undefined;
+    h.service.projectsChanged([]);
+    await settle();
+    expect(h.ptys.map((pty) => pty.killed)).toEqual([false, true, false]);
+  });
+
+  it('starts a home folder pick in the home folder when a project opened while the pick was showing', async () => {
+    const h = harness();
+    h.projects = [];
+    h.current = undefined;
+    let answer!: (value: OverlayAnswer) => void;
+    const overlay = { request: () => new Promise<OverlayAnswer>((resolve) => (answer = resolve)) };
+    const picked = pickNewTerminal(overlay, h.service.profileOptions(), h.service.projectOptions(), undefined);
+    h.projects = [ALPHA];
+    h.current = ALPHA.key;
+    h.service.projectsChanged([ALPHA.key]);
+    answer({ kind: 'newTerminal', profileId: 'pwsh', projectKey: null });
+    const pick = (await picked)!;
+    expect(pick.target).toEqual({ home: true });
+    expect(h.service.create(pick, true)).toEqual({ ok: true, id: 'term-1' });
+    await settle();
+    expect(h.ptys.map((pty) => pty.options.cwd)).toEqual(['C:\\Users\\me']);
+    expect(lastState(h).terminals.map((terminal) => terminal.projectKey)).toEqual([null]);
+  });
+
+  it('restores a saved home folder terminal in the home folder while projects are open', async () => {
+    const saved: PersistedTerminals = { terminals: [stored('pwsh', null), stored('git-bash', ALPHA.key)], active: 0, listWidthRem: 12, groups: [{ panes: 1, activePane: 0, sizes: [1] }, { panes: 1, activePane: 0, sizes: [1] }] };
+    const h = harness({ saved });
+    h.service.restore();
+    await settle();
+    expect(h.ptys.map((pty) => [pty.file, pty.options.cwd])).toEqual([[PWSH.file, 'C:\\Users\\me'], [BASH.file, ALPHA.fsPath]]);
+    expect(lastState(h).terminals.map((terminal) => terminal.projectKey)).toEqual([null, ALPHA.key]);
+  });
+
   it('uses the default profile setting when it names a detected shell, else the first one', () => {
     const h = harness({ defaultProfile: 'git-bash' });
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     expect(lastState(h).terminals[0]!.profileId).toBe('git-bash');
     expect(h.service.profileOptions().map((option) => [option.id, option.isDefault])).toEqual([['pwsh', false], ['git-bash', true]]);
     const other = harness({ defaultProfile: 'fish' });
-    other.service.create({ profileId: null, projectKey: null }, false);
+    other.service.create({ profileId: null, target: { current: true } }, false);
     expect(lastState(other).terminals[0]!.profileId).toBe('pwsh');
   });
 
@@ -294,9 +360,9 @@ describe('create validation', () => {
 
   it('focuses a terminal only when a user action in main created it', () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     expect(h.focused).toEqual([]);
-    h.service.create({ profileId: null, projectKey: null }, true);
+    h.service.create({ profileId: null, target: { current: true } }, true);
     expect(h.focused).toEqual(['term-2']);
   });
 });
@@ -304,7 +370,7 @@ describe('create validation', () => {
 describe('terminal platform state', () => {
   it('publishes Chromium\'s accessibility support as it changes, and the Windows build', () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     expect(lastState(h)).toMatchObject({ screenReader: false, windowsBuild: 19045 });
     h.screenReader = true;
     h.service.publish();
@@ -315,7 +381,7 @@ describe('terminal platform state', () => {
 describe('output batching and flow control', () => {
   it('batches output every 5 ms and sends 64 KB batches at once, never splitting a surrogate pair', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await settle();
     const pty = h.ptys[0]!;
     pty.emit('a');
@@ -331,7 +397,7 @@ describe('output batching and flow control', () => {
 
   it('pauses the pty above 100,000 unacknowledged characters and resumes it below 5,000 as the shell acknowledges', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await settle();
     const pty = h.ptys[0]!;
     pty.emit('x'.repeat(TERMINAL_HIGH_WATERMARK_CHARS));
@@ -348,7 +414,7 @@ describe('output batching and flow control', () => {
 
   it('forgets unacknowledged output when the shell page loads again, which resumes a paused pty', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await settle();
     h.ptys[0]!.emit('z'.repeat(TERMINAL_HIGH_WATERMARK_CHARS + 1));
     expect(h.ptys[0]!.paused).toBe(true);
@@ -360,7 +426,7 @@ describe('output batching and flow control', () => {
 
   it('forwards input and resizes to a live pty only, and starts a restarted pty at the last size', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await settle();
     h.service.input('term-1', 'echo hi\r');
     h.service.resize('term-1', 120, 40);
@@ -379,7 +445,7 @@ describe('output batching and flow control', () => {
 
   it('ignores a resize that races the pty\'s exit, and keeps serving the next requests', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await settle();
     h.ptys[0]!.resizeError = new Error('Cannot resize a pty that has already exited');
     h.service.resize('term-1', 100, 30);
@@ -393,7 +459,7 @@ describe('exit, kill and restart', () => {
   it('reports a Windows pty running only once its first output brings the pid', async () => {
     const h = harness();
     FakePty.next = 0;
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await settle();
     expect(lastState(h).terminals[0]!.status).toBe('starting');
     h.ptys[0]!.pid = 4242;
@@ -406,7 +472,7 @@ describe('exit, kill and restart', () => {
 
   it('reports the exit code after the output that followed the exit, and restarts the terminal with its id', async () => {
     const h = harness();
-    h.service.create({ profileId: 'git-bash', projectKey: BETA.key }, false);
+    h.service.create({ profileId: 'git-bash', target: { project: BETA.key } }, false);
     await settle();
     h.ptys[0]!.exit(3);
     h.ptys[0]!.emit('bye');
@@ -422,7 +488,7 @@ describe('exit, kill and restart', () => {
 
   it('restarts only an exited terminal', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await settle();
     h.service.restart('term-1');
     await settle();
@@ -431,8 +497,8 @@ describe('exit, kill and restart', () => {
 
   it('kills the process when its terminal closes, and the next terminal becomes active', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     h.service.select('term-1');
     await settle();
     h.service.kill('term-1');
@@ -448,21 +514,31 @@ describe('exit, kill and restart', () => {
 
   it('kills the terminals of a removed project and drops them from the saved list', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: ALPHA.key }, false);
-    h.service.create({ profileId: null, projectKey: BETA.key }, false);
+    h.service.create({ profileId: null, target: { project: ALPHA.key } }, false);
+    h.service.create({ profileId: null, target: { project: BETA.key } }, false);
     await settle();
     h.projects = [BETA];
-    h.service.retain([BETA.key]);
+    h.service.projectsChanged([BETA.key]);
     await settle();
     expect(h.ptys.map((pty) => pty.killed)).toEqual([true, false]);
     expect(lastState(h).terminals.map((terminal) => terminal.projectKey)).toEqual([BETA.key]);
     expect(h.persisted.at(-1)).toEqual({ terminals: [{ profileId: 'pwsh', projectKey: BETA.key, name: null, customIcon: null, color: null }], active: 0, listWidthRem: DEFAULT_PERSISTED_TERMINALS.listWidthRem, groups: [{ panes: 1, activePane: 0, sizes: [1] }] });
   });
 
+  it('publishes the state again when the projects change, though no terminal was killed', () => {
+    const h = harness();
+    h.service.create({ profileId: null, target: { project: ALPHA.key } }, false);
+    const published = h.states.length;
+    h.projects = [{ ...ALPHA, name: 'alpha (renamed)' }, BETA];
+    h.service.projectsChanged([ALPHA.key, BETA.key]);
+    expect(h.states).toHaveLength(published + 1);
+    expect(lastState(h).terminals[0]!.projectName).toBe('alpha (renamed)');
+  });
+
   it('kills every terminal when the window closes and keeps the saved list for the next window', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
-    h.service.create({ profileId: 'git-bash', projectKey: BETA.key }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    h.service.create({ profileId: 'git-bash', target: { project: BETA.key } }, false);
     await settle();
     const saved = h.persisted.at(-1);
     h.service.closeWindow();
@@ -474,15 +550,15 @@ describe('exit, kill and restart', () => {
 
   it('marks every live terminal exited with no code when the host dies, and the next create starts a new host', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await settle();
     h.ptys[1]!.exit(0);
     await settle(EXIT_FLUSH_MS);
     h.crashHost();
     expect(lastState(h).terminals.map((terminal) => [terminal.status, terminal.exitCode])).toEqual([['exited', null], ['exited', 0]]);
     h.service.restart('term-1');
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await settle();
     expect(h.hosts.count).toBe(2);
     expect(lastState(h).terminals.map((terminal) => [terminal.id, terminal.status])).toEqual([['term-1', 'running'], ['term-2', 'exited'], ['term-3', 'running']]);
@@ -490,11 +566,11 @@ describe('exit, kill and restart', () => {
 
   it('logs why the host ended: its exit code, the reason Electron gave and the last error it printed', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await settle();
     h.crashHost({ code: 1, reason: 'killed', error: 'Error: the pty host received a malformed request\n    at handle (pty-host.js:12:9)' });
     expect(h.logs).toContain('[terminal] the pty host exited with code 1 (killed); last error: "Error: the pty host received a malformed request\\n    at handle (pty-host.js:12:9)"');
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await settle();
     h.crashHost({ code: 3, reason: null, error: null });
     expect(h.logs).toContain('[terminal] the pty host exited with code 3');
@@ -502,7 +578,7 @@ describe('exit, kill and restart', () => {
 
   it('stops a host that sends a message outside the contract', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await settle();
     h.hostSend({ type: 'data', id: 'term-1', data: 'x'.repeat(TERMINAL_BATCH_CHARS + 1) });
     expect(h.hosts.killed).toBe(1);
@@ -511,7 +587,7 @@ describe('exit, kill and restart', () => {
 
   it('shows why a shell could not start and marks its terminal exited', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await settle();
     h.hostSend({ type: 'error', id: 'term-1', message: 'File not found' });
     expect(h.data).toEqual([{ id: 'term-1', data: 'The shell could not start: File not found\r\n' }]);
@@ -522,7 +598,7 @@ describe('exit, kill and restart', () => {
     const h = harness();
     for (let index = 0; index < 4; index++) {
       FakePty.next = 0;
-      h.service.create({ profileId: null, projectKey: null }, false);
+      h.service.create({ profileId: null, target: { current: true } }, false);
       await settle();
     }
     h.ptys[2]!.pid = 4242;
@@ -542,7 +618,7 @@ describe('exit, kill and restart', () => {
     expect(lastState(h).terminals.map((terminal) => [terminal.status, terminal.exitCode])).toEqual([['exited', 267], ['exited', 193], ['exited', 267], ['exited', 1]]);
     const linux = harness({ platform: 'linux' });
     FakePty.next = 0;
-    linux.service.create({ profileId: null, projectKey: null }, false);
+    linux.service.create({ profileId: null, target: { current: true } }, false);
     await settle();
     linux.ptys[0]!.exit(267);
     await settle(EXIT_FLUSH_MS);
@@ -553,13 +629,13 @@ describe('exit, kill and restart', () => {
   it('starts a shell without the environment variables the host refuses, naming them in the log, and keeps the host', async () => {
     const h = harness();
     h.env = { PATH: 'C:\\bin', HUGE: 'x'.repeat(MAX_HOST_ENV_CHARS), 'A=B': '1', NUL: 'a\0b', '': 'empty', FITS: 'y'.repeat(MAX_HOST_ENV_CHARS - 4) };
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await settle();
     expect(h.ptys[0]!.options.env).toEqual({ PATH: 'C:\\bin', FITS: 'y'.repeat(MAX_HOST_ENV_CHARS - 4) });
     expect(lastState(h).terminals[0]!.status).toBe('running');
     expect(h.logs).toContain('[terminal] starting C:\\pwsh\\pwsh.exe without 4 environment variables the pty host refuses: "HUGE", "A=B", "NUL", ""');
     h.env = Object.fromEntries(Array.from({ length: MAX_HOST_ENV_ENTRIES + 2 }, (_, index) => [`V${index}`, '1']));
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await settle();
     expect(Object.keys(h.ptys[1]!.options.env)).toHaveLength(MAX_HOST_ENV_ENTRIES);
     expect(h.hosts).toEqual({ count: 1, killed: 0 });
@@ -567,8 +643,8 @@ describe('exit, kill and restart', () => {
 
   it('spaces conpty starts and kills 250 ms apart on Windows', async () => {
     const h = harness({ throttleConpty: true });
-    h.service.create({ profileId: null, projectKey: null }, false);
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await settle();
     expect(h.ptys).toHaveLength(1);
     await settle(CONPTY_THROTTLE_MS);
@@ -584,9 +660,9 @@ describe('exit, kill and restart', () => {
 
   it('serves input, resizes and acks of one terminal while another\'s conpty start or kill waits', async () => {
     const h = harness({ throttleConpty: true });
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await settle();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     h.service.input('term-1', 'a');
     h.service.resize('term-1', 100, 30);
     await settle();
@@ -609,9 +685,9 @@ describe('exit, kill and restart', () => {
 
   it('delivers input and a resize sent while a terminal\'s own start waits once it starts, in order, and a kill sent then finds its pty', async () => {
     const h = harness({ throttleConpty: true });
-    h.service.create({ profileId: null, projectKey: null }, false);
-    h.service.create({ profileId: null, projectKey: null }, false);
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     h.service.input('term-2', 'one');
     h.service.resize('term-2', 90, 20);
     h.service.input('term-2', 'two');
@@ -625,9 +701,9 @@ describe('exit, kill and restart', () => {
 
   it('kills every pty at once when the window closes, starts none whose start was waiting, and quits within the shutdown timeout', async () => {
     const h = harness({ throttleConpty: true });
-    for (let index = 0; index < 5; index++) h.service.create({ profileId: null, projectKey: null }, false);
+    for (let index = 0; index < 5; index++) h.service.create({ profileId: null, target: { current: true } }, false);
     await settle(4 * (CONPTY_THROTTLE_MS + CONPTY_SPACING_MS));
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await settle();
     expect(h.ptys).toHaveLength(5);
     h.service.closeWindow();
@@ -647,7 +723,7 @@ describe('exit, kill and restart', () => {
     const project: TerminalProject = { key: '/work/alpha', name: 'alpha', fsPath: '/work/alpha' };
     h.projects = [project];
     h.profiles = [{ id: 'bash', name: 'bash', file: '/usr/bin/bash', args: [], icon: 'bash' }];
-    h.service.create({ profileId: 'bash', projectKey: project.key }, false);
+    h.service.create({ profileId: 'bash', target: { project: project.key } }, false);
     await settle();
     const pty = h.ptys[0]!;
     pty.process = 'vim';
@@ -663,7 +739,7 @@ describe('exit, kill and restart', () => {
 
   it('shuts the host down on quit, killing every pty, and kills a host that does not end in time', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await settle();
     const quit = h.service.dispose();
     await settle();
@@ -676,7 +752,7 @@ describe('exit, kill and restart', () => {
   it('ends the host on quit only once a Windows pty killed before its first output has run that kill', async () => {
     const h = harness();
     FakePty.next = 0;
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await settle();
     FakePty.next = 100;
     const pty = h.ptys[0]!;
@@ -702,8 +778,8 @@ describe('exit, kill and restart', () => {
 describe('window layout', () => {
   it('saves the list, the active terminal and the clamped list width', () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
-    h.service.create({ profileId: 'git-bash', projectKey: BETA.key }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    h.service.create({ profileId: 'git-bash', target: { project: BETA.key } }, false);
     h.service.select('term-1');
     h.service.setListWidth(1000);
     expect(h.persisted.at(-1)).toEqual({
@@ -755,13 +831,16 @@ describe('window layout', () => {
     expect(h.ptys).toHaveLength(3);
   });
 
-  it('cannot create without a project or without a detected shell', () => {
+  it('can create without a project, but not without a detected shell, and says whether detection has settled', () => {
     const h = harness();
     h.projects = [];
-    expect(h.service.state().canCreate).toBe(false);
-    h.projects = [ALPHA];
+    h.current = undefined;
+    expect(h.service.state().canCreate).toBe(true);
     h.profiles = [];
-    expect(h.service.state().canCreate).toBe(false);
+    h.profilesReady = false;
+    expect(h.service.state()).toMatchObject({ canCreate: false, profilesReady: false });
+    h.profilesReady = true;
+    expect(h.service.state()).toMatchObject({ canCreate: false, profilesReady: true });
   });
 });
 
@@ -792,7 +871,7 @@ describe('rename, icon and color', () => {
 
   it('shows a name as the title, keeps the icon and color, and saves all three with the terminal', () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     h.service.rename('term-1', 'server');
     h.service.setCustomIcon('term-1', 'server');
     h.service.setColor('term-1', 'cyan');
@@ -816,7 +895,7 @@ describe('palette actions and state', () => {
   it('walks the list from the active terminal, wrapping, and kills every terminal at once', async () => {
     const h = harness();
     expect(h.service.relative(1)).toBeUndefined();
-    for (let index = 0; index < 3; index++) h.service.create({ profileId: null, projectKey: null }, false);
+    for (let index = 0; index < 3; index++) h.service.create({ profileId: null, target: { current: true } }, false);
     h.service.select('term-3');
     expect(h.service.relative(1)).toBe('term-1');
     expect(h.service.relative(-1)).toBe('term-2');
@@ -829,7 +908,7 @@ describe('palette actions and state', () => {
 
   it('publishes the detected profiles and every terminal setting the shell applies, and keeps main-only ones out', () => {
     const h = harness({ defaultProfile: 'git-bash' });
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     const state = lastState(h);
     expect(state.profiles.map((profile) => [profile.id, profile.isDefault])).toEqual([['pwsh', false], ['git-bash', true]]);
     expect(state.settings).toEqual({ fontSize: 13, scrollback: 1000, cursorStyle: 'block', fontFamily: 'Cascadia Code', lineHeight: 1.2, cursorBlinking: false, macOptionIsMeta: false, decorationsEnabled: true });
@@ -837,7 +916,7 @@ describe('palette actions and state', () => {
 
   it('writes a paste larger than one host message in pieces, never splitting a surrogate pair, to a live pty only', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await settle();
     const data = `${'a'.repeat(MAX_TERMINAL_INPUT_CHARS - 1)}😀${'b'.repeat(10)}`;
     h.service.write('term-1', data);
@@ -854,14 +933,14 @@ describe('palette actions and state', () => {
 
   it('resolves links against the project folder, in the path style of the shell', () => {
     const h = harness();
-    h.service.create({ profileId: 'git-bash', projectKey: BETA.key }, false);
+    h.service.create({ profileId: 'git-bash', target: { project: BETA.key } }, false);
     h.profiles = [...h.profiles, { id: 'wsl:Ubuntu', name: 'Ubuntu', file: 'C:\\Windows\\System32\\wsl.exe', args: ['-d', 'Ubuntu'], icon: 'wsl' }];
-    h.service.create({ profileId: 'wsl:Ubuntu', projectKey: ALPHA.key }, false);
+    h.service.create({ profileId: 'wsl:Ubuntu', target: { project: ALPHA.key } }, false);
     expect(h.service.linkBase('term-1')).toEqual({ project: BETA, baseDir: BETA.fsPath, style: 'win32' });
     expect(h.service.linkBase('term-2')).toEqual({ project: ALPHA, baseDir: ALPHA.fsPath, style: 'wsl' });
     expect(h.service.linkBase('term-9')).toBeUndefined();
     h.profiles = [...h.profiles, { id: 'user:Distro', name: 'Distro', file: 'C:\\Windows\\System32\\wsl.exe', args: ['-d', 'Debian'], icon: 'wsl', source: 'user', customIcon: null, color: null }];
-    h.service.create({ profileId: 'user:Distro', projectKey: ALPHA.key }, false);
+    h.service.create({ profileId: 'user:Distro', target: { project: ALPHA.key } }, false);
     expect(h.service.linkBase('term-3')).toMatchObject({ style: 'wsl' });
     h.projects = [ALPHA];
     expect(h.service.linkBase('term-1')).toBeUndefined();
@@ -876,7 +955,7 @@ const ackedByMain = (h: Harness): number => h.posted.filter((message): message i
 async function integrated(): Promise<{ h: Harness; nonce: string; emit: (data: string) => Promise<void> }> {
   const h = harness();
   h.settings = { shellIntegration: true };
-  h.service.create({ profileId: 'pwsh', projectKey: ALPHA.key }, false);
+  h.service.create({ profileId: 'pwsh', target: { project: ALPHA.key } }, false);
   await settle();
   const emit = async (data: string): Promise<void> => {
     h.ptys[0]!.emit(data);
@@ -890,7 +969,7 @@ describe('shell integration', () => {
     const h = harness();
     h.settings = { shellIntegration: true };
     h.profiles = [PWSH, BASH, CMD];
-    for (const profileId of ['pwsh', 'git-bash', 'cmd']) h.service.create({ profileId, projectKey: ALPHA.key }, false);
+    for (const profileId of ['pwsh', 'git-bash', 'cmd']) h.service.create({ profileId, target: { project: ALPHA.key } }, false);
     await settle();
     const [pwsh, bash, cmd] = h.ptys;
     expect(pwsh!.args).toEqual(['-noexit', '-command', 'try { . $env:DAMOCLES_SHELL_INTEGRATION_SCRIPT } catch {}']);
@@ -917,7 +996,7 @@ describe('shell integration', () => {
     h.projects = [project];
     h.profiles = [{ id: 'zsh', name: 'zsh', file: '/bin/zsh', args: ['-l'], icon: 'zsh' }];
     h.settings = { shellIntegration: true };
-    h.service.create({ profileId: 'zsh', projectKey: project.key }, false);
+    h.service.create({ profileId: 'zsh', target: { project: project.key } }, false);
     await settle();
     expect(h.ptys[0]!.args).toEqual(['-il']);
     expect(h.ptys[0]!.options.env['ZDOTDIR']).toBe('C:\\Users\\me\\AppData\\Roaming\\Damocles\\shell-integration\\zsh');
@@ -929,7 +1008,7 @@ describe('shell integration', () => {
     (failing as { copied: string[] }).copied.push = () => {
       throw new Error('EACCES');
     };
-    failing.service.create({ profileId: 'zsh', projectKey: project.key }, false);
+    failing.service.create({ profileId: 'zsh', target: { project: project.key } }, false);
     await settle();
     expect(failing.ptys[0]!.args).toEqual(['-l']);
     expect(failing.ptys[0]!.options.env).not.toHaveProperty('DAMOCLES_NONCE');
@@ -937,7 +1016,7 @@ describe('shell integration', () => {
 
   it('starts every shell as it is when the setting is off', async () => {
     const h = harness();
-    h.service.create({ profileId: 'git-bash', projectKey: ALPHA.key }, false);
+    h.service.create({ profileId: 'git-bash', target: { project: ALPHA.key } }, false);
     await settle();
     expect(h.ptys[0]!.args).toEqual(['--login', '-i']);
     expect(h.ptys[0]!.options.env).toEqual({ PATH: 'C:\\bin', TERM_TEST: '1' });
@@ -1031,7 +1110,7 @@ describe('shell integration', () => {
     const project: TerminalProject = { key: '/work/alpha', name: 'alpha', fsPath: '/work/alpha' };
     h.projects = [project];
     h.profiles = [{ id: 'bash', name: 'bash', file: '/usr/bin/bash', args: [], icon: 'bash' }];
-    h.service.create({ profileId: 'bash', projectKey: project.key }, false);
+    h.service.create({ profileId: 'bash', target: { project: project.key } }, false);
     await settle();
     const pty = h.ptys[0]!;
     pty.process = '/usr/bin/bash';
@@ -1052,9 +1131,9 @@ describe('confirm before kill', () => {
     const h = harness();
     h.settings = { shellIntegration: true };
     h.profiles = [PWSH, CMD];
-    h.service.create({ profileId: 'pwsh', projectKey: ALPHA.key }, false);
-    h.service.create({ profileId: 'cmd', projectKey: ALPHA.key }, false);
-    h.service.create({ profileId: 'pwsh', projectKey: ALPHA.key }, false);
+    h.service.create({ profileId: 'pwsh', target: { project: ALPHA.key } }, false);
+    h.service.create({ profileId: 'cmd', target: { project: ALPHA.key } }, false);
+    h.service.create({ profileId: 'pwsh', target: { project: ALPHA.key } }, false);
     await settle();
     h.ptys[0]!.emit(`${osc(`E;node -e "setInterval(()=>{},1000)";${nonceOf(h, 0)}`)}${osc(`C;${nonceOf(h, 0)}`)}`);
     await settle(TERMINAL_BATCH_MS);
@@ -1076,8 +1155,8 @@ describe('confirm before kill', () => {
   it('asks about every live terminal with always, and about none with never or for an exited one', async () => {
     const h = harness();
     h.profiles = [PWSH, CMD];
-    h.service.create({ profileId: 'pwsh', projectKey: ALPHA.key }, false);
-    h.service.create({ profileId: 'cmd', projectKey: BETA.key }, false);
+    h.service.create({ profileId: 'pwsh', target: { project: ALPHA.key } }, false);
+    h.service.create({ profileId: 'cmd', target: { project: BETA.key } }, false);
     await settle();
     h.settings = { confirmOnKill: 'always' };
     h.answer = false;
@@ -1102,8 +1181,8 @@ const idsOf = (h: Harness): string[] => lastState(h).terminals.map((terminal) =>
 describe('split groups', () => {
   it('starts each new terminal in its own group at the end of the list', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
-    h.service.create({ profileId: 'git-bash', projectKey: BETA.key }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    h.service.create({ profileId: 'git-bash', target: { project: BETA.key } }, false);
     expect(lastState(h).groups).toEqual([
       { id: 'group-1', paneIds: ['term-1'], activePaneId: 'term-1', sizes: [1] },
       { id: 'group-2', paneIds: ['term-2'], activePaneId: 'term-2', sizes: [1] },
@@ -1112,8 +1191,8 @@ describe('split groups', () => {
 
   it('puts a split right of its source with the source\'s profile and project, shares the sizes equally and focuses it', async () => {
     const h = harness();
-    h.service.create({ profileId: 'git-bash', projectKey: BETA.key }, false);
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: 'git-bash', target: { project: BETA.key } }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await h.service.split('term-1');
     await settle();
     expect(lastState(h).terminals.map((terminal) => [terminal.id, terminal.profileId, terminal.projectKey])).toEqual([
@@ -1167,7 +1246,7 @@ describe('split groups', () => {
     expect(lastState(h).terminals[1]).toMatchObject({ id: 'term-2', status: 'starting' });
     await settle();
     expect(h.ptys[2]!.options.cwd).toBe(ALPHA.fsPath);
-    expect(h.logs).toContain(`[terminal] restarting term-2 in its project folder: ${src} no longer exists`);
+    expect(h.logs).toContain(`[terminal] restarting term-2 in its start folder: ${src} no longer exists`);
   });
 
   it('keeps what is typed and pasted while a restart checks its folder, and sends it to the restarted shell in order', async () => {
@@ -1189,7 +1268,7 @@ describe('split groups', () => {
 
   it('refuses a split past the pane cap, of an unknown terminal, and of one whose profile is no longer listed', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     for (let index = 1; index < MAX_TERMINAL_GROUP_PANES; index++) await h.service.split('term-1');
     expect(lastState(h).groups[0]!.paneIds).toHaveLength(MAX_TERMINAL_GROUP_PANES);
     const terminals = idsOf(h);
@@ -1198,7 +1277,7 @@ describe('split groups', () => {
     expect(idsOf(h)).toEqual(terminals);
     expect(h.logs).toContain(`[terminal] not splitting term-1: its group has ${MAX_TERMINAL_GROUP_PANES} panes`);
     const other = harness();
-    other.service.create({ profileId: 'git-bash', projectKey: null }, false);
+    other.service.create({ profileId: 'git-bash', target: { current: true } }, false);
     other.profiles = [PWSH];
     await other.service.split('term-1');
     expect(idsOf(other)).toEqual(['term-1']);
@@ -1207,7 +1286,7 @@ describe('split groups', () => {
 
   it('restarts an exited pane only while its profile is still listed', async () => {
     const h = harness();
-    h.service.create({ profileId: 'git-bash', projectKey: null }, false);
+    h.service.create({ profileId: 'git-bash', target: { current: true } }, false);
     await settle();
     h.ptys[0]!.exit(1);
     await settle(EXIT_FLUSH_MS);
@@ -1220,7 +1299,7 @@ describe('split groups', () => {
 
   it('takes a killed pane out of its group, shares the sizes again and activates the pane at its index, else the last', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await h.service.split('term-1');
     await h.service.split('term-2');
     h.service.resizePanes('group-1', [0.5, 0.3, 0.2]);
@@ -1236,10 +1315,10 @@ describe('split groups', () => {
 
   it('removes a group with its last pane and activates the next group\'s active pane, else the previous one\'s', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await h.service.split('term-1');
-    h.service.create({ profileId: null, projectKey: null }, false);
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     h.service.select('term-3');
     h.service.kill('term-3');
     expect(lastState(h).activeId).toBe('term-4');
@@ -1249,9 +1328,9 @@ describe('split groups', () => {
 
   it('unsplits a pane into a new group at the end of the list, keeping its process and moving no focus', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await h.service.split('term-1');
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     h.service.select('term-2');
     await settle();
     h.service.unsplit('term-2');
@@ -1268,9 +1347,9 @@ describe('split groups', () => {
 
   it('makes a selected pane its group\'s active pane and its group the active group', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await h.service.split('term-1');
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     h.service.select('term-1');
     expect(lastState(h).activeId).toBe('term-1');
     expect(groupsOf(h)[0]![1]).toBe('term-1');
@@ -1278,7 +1357,7 @@ describe('split groups', () => {
 
   it('focuses the previous and next pane of the active group, wrapping, and selects it', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await h.service.split('term-1');
     await h.service.split('term-2');
     h.focused.length = 0;
@@ -1291,16 +1370,16 @@ describe('split groups', () => {
 
   it('walks groups for Focus Next and Previous Terminal, landing on each group\'s active pane', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await h.service.split('term-1');
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     expect(h.service.relative(1)).toBe('term-2');
     expect(h.service.relative(-1)).toBe('term-2');
   });
 
   it('takes pane sizes within the bounds, rescales a sum within epsilon, and refuses any other', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await h.service.split('term-1');
     await h.service.split('term-2');
     h.service.resizePanes('group-1', [0.5, 0.25, 0.25]);
@@ -1316,13 +1395,13 @@ describe('split groups', () => {
 
   it('publishes the pane keys only while the active group has more than one pane', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     expect(lastState(h).passKeys).toEqual(['CmdOrCtrl+P']);
     expect(h.service.splitActive()).toBe(false);
     await h.service.split('term-1');
     expect(lastState(h).passKeys).toEqual(['CmdOrCtrl+P', 'Alt+Left', 'Alt+Right']);
     expect(h.service.splitActive()).toBe(true);
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     expect(lastState(h).passKeys).toEqual(['CmdOrCtrl+P']);
   });
 });
@@ -1330,9 +1409,9 @@ describe('split groups', () => {
 describe('split groups in the window layout', () => {
   it('saves each group\'s pane count, active pane and sizes with the list', async () => {
     const h = harness();
-    h.service.create({ profileId: null, projectKey: null }, false);
+    h.service.create({ profileId: null, target: { current: true } }, false);
     await h.service.split('term-1');
-    h.service.create({ profileId: 'git-bash', projectKey: BETA.key }, false);
+    h.service.create({ profileId: 'git-bash', target: { project: BETA.key } }, false);
     h.service.resizePanes('group-1', [0.7, 0.3]);
     expect(h.persisted.at(-1)).toEqual({
       terminals: [stored('pwsh', ALPHA.key), stored('pwsh', ALPHA.key), stored('git-bash', BETA.key)],
@@ -1411,7 +1490,7 @@ describe('profile options', () => {
     expect(h.service.profileOptions().at(-1)).toEqual({
       id: 'user:Dev', name: 'Dev', path: 'C:\\tools\\evilexe.txt', args: ['-ab'], source: 'user', icon: 'powershell', customIcon: 'code', color: 'magenta', isDefault: false,
     });
-    h.service.create({ profileId: 'user:Dev', projectKey: null }, false);
+    h.service.create({ profileId: 'user:Dev', target: { current: true } }, false);
     await settle();
     expect(h.ptys[0]!.file).toBe(file);
     expect(lastState(h).terminals[0]).toMatchObject({ customIcon: 'code', color: 'magenta' });

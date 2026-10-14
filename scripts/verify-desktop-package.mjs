@@ -31,8 +31,9 @@ export const REPORTED_FUSES = ['LoadBrowserProcessSpecificV8Snapshot', 'WasmTrap
 const PUBLISH = { provider: 'github', owner: 'AizenvoltPrime', repo: 'damocles' };
 // Must equal win.signtoolOptions.publisherName in electron-builder.yml: the common name of the SignPath Foundation release certificate.
 export const WINDOWS_PUBLISHER = 'SignPath Foundation';
-// The scripts main runs in another process or thread: the worker threads, the shell sentinel, the formatter host and the pty host.
-const WORKERS = ['compass-worker.js', 'usage-stats-worker.js', 'quick-open-worker.js', 'watch-worker.js', 'sentinel.js', 'formatter-host.js', 'pty-host.js'];
+// The scripts that run outside the main process: the worker threads, the shell sentinel, the formatter and pty hosts, the Quick
+// Open and watch workers, and the askpass helper git and ssh start.
+const WORKERS = ['compass-worker.js', 'usage-stats-worker.js', 'quick-open-worker.js', 'watch-worker.js', 'sentinel.js', 'formatter-host.js', 'pty-host.js', 'askpass-main.js'];
 // The license notices electron-builder.yml ships inside app.asar (files) and beside it (extraResources).
 const PACKED_NOTICES = ['LICENSE', 'THIRD-PARTY-NOTICES.md'];
 const RESOURCE_NOTICES = ['monaco-editor-ThirdPartyNotices.txt'];
@@ -156,9 +157,14 @@ export function checkAppUpdate(text, platform, arch) {
 /** The packed CHANGELOG.md is the repo's, and has a section for the packaged version. */
 export function checkChangelog(packed, repo, version) {
   if (packed === undefined) return [fail('changelog', `${PACKED_CHANGELOG} is not in app.asar`)];
+  // The release-notes job publishes this section's body, up to the next "## " heading, as the release notes.
+  const lines = packed.split(/\r?\n/);
+  const heading = lines.findIndex((line) => line.startsWith(`## [${version}] - `));
+  const next = lines.findIndex((line, index) => index > heading && line.startsWith('## '));
+  const body = lines.slice(heading + 1, next === -1 ? undefined : next);
   const problems = [
     ...(packed === repo ? [] : ["differs from the repo's CHANGELOG.md"]),
-    ...(packed.split(/\r?\n/).some((line) => line.startsWith(`## [${version}] - `)) ? [] : [`has no ## [${version}] section`]),
+    ...(heading === -1 ? [`has no ## [${version}] section`] : body.some((line) => line.trim() !== '') ? [] : [`has an empty ## [${version}] section`]),
   ];
   return [problems.length === 0 ? pass('changelog', `${PACKED_CHANGELOG} has the ${version} section`) : fail('changelog', problems.join('; '))];
 }
@@ -278,6 +284,30 @@ export const SHELL_INTEGRATION_FILES = [
   'shellIntegration-login.zsh',
 ];
 
+// The askpass scripts git and ssh execute (src/core/scm/askpass/askpass-server.ts): every file in resources/askpass, which the
+// desktop build copies with 0755.
+export const ASKPASS_SCRIPTS = ['askpass.sh', 'ssh-askpass.sh'];
+
+/**
+ * Each askpass script exists, holds no CR (sh reads it as part of a line) and is exactly
+ * 0755 where the file system keeps modes; `read` and `stat` answer undefined for a missing file.
+ */
+export function checkAskpassScripts(read, stat, keepsModes) {
+  const missing = ASKPASS_SCRIPTS.filter((file) => (read(file)?.length ?? 0) === 0);
+  const crlf = ASKPASS_SCRIPTS.filter((file) => read(file)?.includes(0x0d));
+  const modes = !keepsModes ? [] : ASKPASS_SCRIPTS.flatMap((file) => {
+    const mode = stat(file)?.mode;
+    return mode !== undefined && (mode & 0o777) !== 0o755 ? [`${file} 0${(mode & 0o777).toString(8)}`] : [];
+  });
+  return [
+    missing.length === 0 ? pass('askpass scripts', ASKPASS_SCRIPTS.join(', ')) : fail('askpass scripts', `missing or empty: ${missing.join(', ')}`),
+    crlf.length === 0 ? pass('askpass line endings', 'LF') : fail('askpass line endings', `CR in ${crlf.join(', ')}`),
+    !keepsModes
+      ? pass('askpass mode', 'not kept on a Windows file system')
+      : modes.length === 0 ? pass('askpass mode', '0755') : fail('askpass mode', `${modes.join(', ')}, expected 0755`),
+  ];
+}
+
 /** Each script exists and is not empty, and none but the PowerShell one holds a CR; `read` answers undefined for a missing file. */
 export function checkShellIntegrationScripts(read) {
   const missing = SHELL_INTEGRATION_FILES.filter((file) => (read(file)?.length ?? 0) === 0);
@@ -339,6 +369,13 @@ export async function verifyPackage({ platform, arch, app, repoRoot, readFuseWir
   results.push(checkSameFiles('grammars', join(repoRoot, 'resources', 'grammars'), join(unpacked, 'resources', 'grammars'), (file) => file.endsWith('.wasm')));
   const shellIntegration = join(unpacked, 'resources', 'shell-integration');
   results.push(...checkShellIntegrationScripts((file) => (existsSync(join(shellIntegration, file)) ? readFileSync(join(shellIntegration, file)) : undefined)));
+  const askpass = join(unpacked, 'dist', 'askpass');
+  results.push(...checkAskpassScripts(
+    (file) => (existsSync(join(askpass, file)) ? readFileSync(join(askpass, file)) : undefined),
+    (file) => (existsSync(join(askpass, file)) ? statSync(join(askpass, file)) : undefined),
+    process.platform !== 'win32',
+  ));
+  results.push(checkSameFiles('askpass script contents', join(repoRoot, 'resources', 'askpass'), askpass, () => true));
 
   const sidecar = join(unpacked, 'python', 'damocles_voice_sidecar', 'damocles_voice_sidecar');
   results.push(checkFile('python sidecar entry', join(sidecar, '__main__.py')));

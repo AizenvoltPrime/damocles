@@ -67,6 +67,19 @@ export const GIT_PROMPT_TO_SAVE_FILES_BEFORE_COMMIT_SETTING = 'damocles.desktop.
 export const GIT_ALWAYS_SIGN_OFF_SETTING = 'damocles.desktop.git.alwaysSignOff';
 export const GIT_ENABLE_COMMIT_SIGNING_SETTING = 'damocles.desktop.git.enableCommitSigning';
 export const GIT_BRANCH_PREFIX_SETTING = 'damocles.desktop.git.branchPrefix';
+export const GIT_AUTOFETCH_SETTING = 'damocles.desktop.git.autofetch';
+export const GIT_AUTOFETCH_PERIOD_SETTING = 'damocles.desktop.git.autofetchPeriod';
+export const GIT_ALLOW_FORCE_PUSH_SETTING = 'damocles.desktop.git.allowForcePush';
+export const GIT_REBASE_WHEN_SYNC_SETTING = 'damocles.desktop.git.rebaseWhenSync';
+export const GIT_FOLLOW_TAGS_WHEN_SYNC_SETTING = 'damocles.desktop.git.followTagsWhenSync';
+export const GIT_AUTO_STASH_SETTING = 'damocles.desktop.git.autoStash';
+export const GIT_PRUNE_ON_FETCH_SETTING = 'damocles.desktop.git.pruneOnFetch';
+export const GIT_CONFIRM_SYNC_SETTING = 'damocles.desktop.git.confirmSync';
+export const GIT_DEFAULT_CLONE_DIRECTORY_SETTING = 'damocles.desktop.git.defaultCloneDirectory';
+export const GIT_OPEN_AFTER_CLONE_SETTING = 'damocles.desktop.git.openAfterClone';
+export const GIT_PULL_BEFORE_CHECKOUT_SETTING = 'damocles.desktop.git.pullBeforeCheckout';
+export const GIT_PROMPT_TO_SAVE_FILES_BEFORE_STASH_SETTING = 'damocles.desktop.git.promptToSaveFilesBeforeStash';
+export const SIDEBAR_ALWAYS_SHOW_HEADER_ACTIONS_SETTING = 'damocles.desktop.sidebar.alwaysShowHeaderActions';
 
 export const EDITOR_WORD_WRAPS = ['off', 'on'] as const;
 export const EDITOR_RENDER_WHITESPACES = ['none', 'boundary', 'selection', 'trailing', 'all'] as const;
@@ -92,6 +105,10 @@ export const GIT_SMART_COMMIT_CHANGES = ['all', 'tracked'] as const;
 export const GIT_POST_COMMIT_COMMANDS = ['none', 'push', 'sync'] as const;
 export const GIT_BRANCH_PROTECTION_PROMPTS = ['alwaysCommit', 'alwaysCommitToNewBranch', 'alwaysPrompt'] as const;
 export const GIT_PROMPT_TO_SAVE_FILES_BEFORE_COMMIT = ['always', 'staged', 'never'] as const;
+// VS Code's git.promptToSaveFilesBeforeStash values.
+export const GIT_PROMPT_TO_SAVE_FILES_BEFORE_STASH = ['always', 'staged', 'never'] as const;
+// VS Code's git.openAfterClone values that apply to a project list: no new window and no "when no folder is open".
+export const GIT_OPEN_AFTER_CLONE = ['always', 'prompt'] as const;
 // Must stay equal to MAX_SEARCH_RESULTS and MAX_CONTEXT_LINES in src/shared/text-search.ts.
 export const SEARCH_MAX_RESULTS = 20000;
 export const SEARCH_EDITOR_MAX_CONTEXT_LINES = 100;
@@ -688,6 +705,90 @@ export const DESKTOP_CONFIGURATION: Readonly<Record<string, DesktopSettingProper
     default: '',
     scope: 'application',
     description: 'Prefix used when creating a new branch.',
+  },
+  [GIT_AUTOFETCH_SETTING]: {
+    type: 'boolean',
+    default: true,
+    scope: 'application',
+    description: 'When enabled, commits are automatically fetched from the default remote of the selected project\'s repositories.',
+  },
+  [GIT_AUTOFETCH_PERIOD_SETTING]: {
+    type: 'integer',
+    default: 180,
+    minimum: 1,
+    maximum: 86400,
+    scope: 'application',
+    description: 'Duration in seconds between each automatic git fetch, when autofetch is enabled.',
+  },
+  [GIT_ALLOW_FORCE_PUSH_SETTING]: {
+    type: 'boolean',
+    default: false,
+    scope: 'application',
+    description: 'Controls whether force push (with lease) is enabled.',
+  },
+  [GIT_REBASE_WHEN_SYNC_SETTING]: {
+    type: 'boolean',
+    default: false,
+    scope: 'application',
+    description: 'Force Git to use rebase when running the sync command.',
+  },
+  [GIT_FOLLOW_TAGS_WHEN_SYNC_SETTING]: {
+    type: 'boolean',
+    default: false,
+    scope: 'application',
+    description: 'Push all annotated tags when running the sync command.',
+  },
+  [GIT_AUTO_STASH_SETTING]: {
+    type: 'boolean',
+    default: false,
+    scope: 'application',
+    description: 'Stash any changes before pulling and restore them after successful pull.',
+  },
+  [GIT_PRUNE_ON_FETCH_SETTING]: {
+    type: 'boolean',
+    default: false,
+    scope: 'application',
+    description: 'Prune when fetching.',
+  },
+  [GIT_CONFIRM_SYNC_SETTING]: {
+    type: 'boolean',
+    default: true,
+    scope: 'application',
+    description: 'Confirm before synchronizing Git repositories.',
+  },
+  [GIT_DEFAULT_CLONE_DIRECTORY_SETTING]: {
+    type: 'string',
+    default: '',
+    scope: 'application',
+    description: 'The default location to clone a Git repository, where Clone opens its folder picker. When empty, the picker opens at the home folder.',
+  },
+  [GIT_OPEN_AFTER_CLONE_SETTING]: {
+    type: 'string',
+    enum: GIT_OPEN_AFTER_CLONE,
+    enumDescriptions: ['Always add the clone as a project.', 'Always prompt for action.'],
+    default: 'prompt',
+    scope: 'application',
+    description: 'Controls whether to add a repository as a project automatically after cloning.',
+  },
+  [GIT_PULL_BEFORE_CHECKOUT_SETTING]: {
+    type: 'boolean',
+    default: false,
+    scope: 'application',
+    description: 'Controls whether a branch that does not have outgoing commits is fast-forwarded before it is checked out.',
+  },
+  [GIT_PROMPT_TO_SAVE_FILES_BEFORE_STASH_SETTING]: {
+    type: 'string',
+    enum: GIT_PROMPT_TO_SAVE_FILES_BEFORE_STASH,
+    enumDescriptions: ['Check for any unsaved files.', 'Check only for unsaved staged files.', 'Disable this check.'],
+    default: 'always',
+    scope: 'application',
+    description: 'Controls whether Git should check for unsaved files before stashing changes.',
+  },
+  [SIDEBAR_ALWAYS_SHOW_HEADER_ACTIONS_SETTING]: {
+    type: 'boolean',
+    default: false,
+    scope: 'application',
+    description: 'Controls the visibility of sidebar section actions. Section actions may either be always visible, or only visible when that section is focused or hovered over.',
   },
 };
 

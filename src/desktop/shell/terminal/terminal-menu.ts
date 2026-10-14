@@ -142,6 +142,11 @@ export function terminalStatusLabel(terminal: Pick<TerminalInfo, 'status' | 'exi
   return terminal.exitCode === null ? t('terminal.hostStopped') : t('terminal.exited', { code: terminal.exitCode });
 }
 
+/** Where the terminal runs: its project's name, or the home folder's label for one started while no project was open. */
+export function terminalProjectLabel(terminal: Pick<TerminalInfo, 'projectKey' | 'projectName'>, t: (key: string) => string): string {
+  return terminal.projectKey === null ? t('projects.home') : terminal.projectName;
+}
+
 /** A list row's or the single tab's menu: the terminal menu without its clipboard group, run on that terminal. */
 export async function openTabMenu(
   deps: { readonly api: Pick<DamoclesShellApi, 'requestOverlay' | 'terminal'>; readonly store: Pick<TerminalStore, 'startRename'>; readonly t: (key: string, values?: Record<string, unknown>) => string; readonly platform: ShellPlatform },

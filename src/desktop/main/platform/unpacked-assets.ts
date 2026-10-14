@@ -11,6 +11,9 @@ export const ASAR_UNPACK: readonly string[] = [
   'dist/pty-host.js',
   'dist/quick-open-worker.js',
   'dist/watch-worker.js',
+  // git and ssh execute the askpass scripts, which run the helper under the app's binary as Node.
+  'dist/askpass-main.js',
+  'dist/askpass/**',
   'resources/grammars/**',
   // bash, zsh, fish and PowerShell read their integration scripts as real files.
   'resources/shell-integration/**',

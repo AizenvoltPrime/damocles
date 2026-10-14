@@ -2,21 +2,19 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication, Locator, Page } from '@playwright/test';
 import { expect, test } from './support/fixtures';
-import { overlayPage, pressKeys, PRIMARY, selectedProjectKey, shellPage } from './support/shell';
+import { overlayPage, pressKeys, PRIMARY, selectedProjectKey } from './support/shell';
 import { menuItem, overlayMenu, readyOverlay } from './support/overlay';
-import { openProjectChat } from './support/screenshots';
+import { commitMessage, gitLog, openScmProject, quickInput, scmSection, submenuItem } from './support/scm';
 import { answerDialogs, askedDialogs } from './support/ui';
 import { codeEditor, editorShows, editorTab, openInEditor, quickPick, DOCUMENT_END } from './support/editor';
 import { closeSettingsModal, openSettingsModal, settingsRow } from './support/settings';
 import { git, initRepo } from './support/git';
 import { readUserSettings, writeUserSettings, type HermeticHome } from './support/hermetic';
+import { clickSectionAction } from './support/shell-ui';
 
 // Commit variants and commit behaviour the shell can reach, against real git in the hermetic home. Core's tests cover each
-// variant's argv; scm-host.test.ts covers the push/sync note main logs once per run.
+// variant's argv; scm-host.test.ts covers the push or sync after a commit, and scm-remote.spec.ts runs one against a bare remote.
 const HOOKS = { DAMOCLES_E2E_HOOKS: '1' };
-
-type ScmGlobals = { __damoclesE2e: { scm: { gitLog(): Promise<string> } } };
-const gitLog = (app: ElectronApplication): Promise<string> => app.evaluate(() => (globalThis as unknown as ScmGlobals).__damoclesE2e.scm.gitLog());
 
 const SMART_COMMIT = 'There are no staged changes to commit';
 const NO_VERIFY = 'without verification';
@@ -24,20 +22,11 @@ const EMPTY_COMMIT = 'create an empty commit';
 const PROTECTED = 'You are trying to commit to a protected branch';
 const UNSAVED = 'unsaved changes';
 
-const section = (shell: Page): Locator => shell.getByTestId('scm-section');
-const commitMessage = (shell: Page): Locator => section(shell).getByTestId('scm-commit-message');
-const commitButton = (shell: Page): Locator => section(shell).getByTestId('scm-commit');
+const commitButton = (shell: Page): Locator => scmSection(shell).getByTestId('scm-commit');
 const changeRow = (shell: Page, group: string, file: string): Locator =>
-  section(shell).locator(`[data-testid="scm-change"][data-group="${group}"][data-path="${file}"]`);
+  scmSection(shell).locator(`[data-testid="scm-change"][data-group="${group}"][data-path="${file}"]`);
 const subject = (home: HermeticHome): Promise<string> => git(home, home.project, 'log', '-1', '--format=%s');
 const commitCount = async (home: HermeticHome): Promise<number> => Number(await git(home, home.project, 'rev-list', '--count', 'HEAD'));
-
-async function openScmProject(app: ElectronApplication, dir: string): Promise<Page> {
-  await openProjectChat(app, dir);
-  const shell = await shellPage(app);
-  await expect(commitMessage(shell)).toBeVisible({ timeout: 30_000 });
-  return shell;
-}
 
 /** Writes `text` to `file` in the project and stages it with the git CLI, then waits for Source control to list it as staged. */
 async function stageEdit(shell: Page, home: HermeticHome, file: string, text: string): Promise<void> {
@@ -50,7 +39,7 @@ async function stageEdit(shell: Page, home: HermeticHome, file: string, text: st
 async function commitMenu(app: ElectronApplication, shell: Page, itemId: string): Promise<void> {
   const overlay = await readyOverlay(app);
   await expect(overlayMenu(overlay)).toHaveCount(0);
-  await section(shell).getByTestId('scm-commit-menu').click();
+  await scmSection(shell).getByTestId('scm-commit-menu').click();
   await expect(overlayMenu(overlay)).toBeVisible();
   await menuItem(overlay, itemId).click();
   await expect(overlayMenu(overlay)).toHaveCount(0);
@@ -60,16 +49,16 @@ async function commitMenu(app: ElectronApplication, shell: Page, itemId: string)
 async function openCommitSubmenu(app: ElectronApplication, shell: Page): Promise<Page> {
   const overlay = await readyOverlay(app);
   await expect(overlayMenu(overlay)).toHaveCount(0);
-  await section(shell).getByTestId('scm-more-actions').click();
+  await clickSectionAction(shell, 'scm-more-actions');
   await expect(overlayMenu(overlay)).toBeVisible();
   await menuItem(overlay, 'submenu:commit').click();
-  await expect(overlay.locator('[data-submenu-item][data-item-id="commit"]')).toBeVisible();
+  await expect(submenuItem(overlay, 'commit')).toBeVisible();
   return overlay;
 }
 
 async function moreCommit(app: ElectronApplication, shell: Page, itemId: string): Promise<void> {
   const overlay = await openCommitSubmenu(app, shell);
-  await overlay.locator(`[data-submenu-item][data-item-id="${itemId}"]`).click();
+  await submenuItem(overlay, itemId).click();
   await expect(overlayMenu(overlay)).toHaveCount(0);
 }
 
@@ -96,9 +85,8 @@ async function runCommand(app: ElectronApplication, query: string, id: string): 
   await expect(quickPick(overlay)).toHaveCount(0);
 }
 
-const quickInput = (overlay: Page): Locator => overlay.getByTestId('quick-input');
 
-test('amend rewrites HEAD, Signed Off adds the trailer, Up and Down recall earlier messages, and Undo Last Commit puts the message back', async ({ home, launch }) => {
+test('amend rewrites HEAD, Signed Off adds the trailer, Up and Down recall earlier messages, and Undo Last Commit puts the message back', async ({ foreground: _foreground, home, launch }) => {
   await initRepo(home, home.project);
   const { app } = await launch({ env: HOOKS });
   const shell = await openScmProject(app, home.project);
@@ -112,20 +100,20 @@ test('amend rewrites HEAD, Signed Off adds the trailer, Up and Down recall earli
   // Commit (Amend) from the split button: the banner names HEAD's subject, the empty box takes HEAD's message, and the
   // commit rewrites HEAD instead of adding one.
   await commitMenu(app, shell, 'toggleAmend');
-  await expect(section(shell).getByTestId('scm-amend-banner')).toContainText('Amending “First change”');
+  await expect(scmSection(shell).getByTestId('scm-amend-banner')).toContainText('Amending “First change”');
   await expect(commitButton(shell)).toContainText('Commit (Amend)');
   await expect(commitMessage(shell)).toHaveValue('First change');
   // Cancel restores the draft held before, and entering again with a draft keeps it.
-  await section(shell).getByTestId('scm-amend-cancel').click();
+  await scmSection(shell).getByTestId('scm-amend-cancel').click();
   await expect(commitMessage(shell)).toHaveValue('');
-  await expect(section(shell).getByTestId('scm-amend-banner')).toHaveCount(0);
+  await expect(scmSection(shell).getByTestId('scm-amend-banner')).toHaveCount(0);
   await commitMessage(shell).fill('First change, reworded');
   await commitMenu(app, shell, 'toggleAmend');
   await expect(commitMessage(shell)).toHaveValue('First change, reworded');
   await commitButton(shell).click();
   await expect.poll(() => subject(home)).toBe('First change, reworded');
   expect(await commitCount(home)).toBe(2);
-  await expect(section(shell).getByTestId('scm-amend-banner')).toHaveCount(0);
+  await expect(scmSection(shell).getByTestId('scm-amend-banner')).toHaveCount(0);
   await expect(commitButton(shell)).not.toContainText('Amend');
 
   // In amend mode every commit action amends: the split button's Signed Off item rewrites HEAD with git's trailer.
@@ -134,7 +122,7 @@ test('amend rewrites HEAD, Signed Off adds the trailer, Up and Down recall earli
   await commitMenu(app, shell, 'commitSigned');
   await expect.poll(() => git(home, home.project, 'log', '-1', '--format=%B')).toContain('Signed-off-by: Scm Tester <scm@example.com>');
   expect(await commitCount(home)).toBe(2);
-  await expect(section(shell).getByTestId('scm-amend-banner')).toHaveCount(0);
+  await expect(scmSection(shell).getByTestId('scm-amend-banner')).toHaveCount(0);
 
   // Commit (Signed Off) from the split button adds git's trailer.
   await stageEdit(shell, home, 'a.ts', 'export const a = 3;\n');
@@ -178,7 +166,7 @@ test('in amend mode the palette and View › Source Control title the commit com
   expect(await menuLabel('damocles.git.commit')).toBe('Commit');
 
   await commitMenu(app, shell, 'toggleAmend');
-  await expect(section(shell).getByTestId('scm-amend-banner')).toBeVisible();
+  await expect(scmSection(shell).getByTestId('scm-amend-banner')).toBeVisible();
   await expect.poll(() => menuLabel('damocles.git.commit')).toBe('Commit (Amend)');
   expect(await menuLabel('damocles.git.commitStagedSigned')).toBe('Commit Staged (Amend, Signed Off)');
   expect(await menuLabel('damocles.git.commitAmend')).toBeUndefined();
@@ -191,7 +179,7 @@ test('in amend mode the palette and View › Source Control title the commit com
   // Escape in the box leaves amend mode, and the titles follow.
   await commitMessage(shell).click();
   await commitMessage(shell).press('Escape');
-  await expect(section(shell).getByTestId('scm-amend-banner')).toHaveCount(0);
+  await expect(scmSection(shell).getByTestId('scm-amend-banner')).toHaveCount(0);
   await expect.poll(() => menuLabel('damocles.git.commit')).toBe('Commit');
   expect(await menuLabel('damocles.git.commitAmend')).toBe('Commit (Amend)');
   overlay = await palette(app, 'Git: Commit Staged');
@@ -204,6 +192,8 @@ test('in amend mode the palette and View › Source Control title the commit com
   // The palette's Commit, titled as the amend, rewrites HEAD, and the mode ends with the commit.
   await commitMenu(app, shell, 'toggleAmend');
   await expect.poll(() => menuLabel('damocles.git.commit')).toBe('Commit (Amend)');
+  // The empty box takes HEAD's message when main answers; a fill before that lands its text after the message.
+  await expect(commitMessage(shell)).toHaveValue('First change');
   await commitMessage(shell).fill('First change, amended');
   await runCommand(app, 'Git: Commit (Amend)', 'damocles.git.commit');
   await expect.poll(() => subject(home)).toBe('First change, amended');
@@ -369,7 +359,7 @@ test('commit.template fills the box and comes back after a commit and with Resto
   await expect.poll(() => gitLog(app)).toMatch(/ mv /);
 });
 
-test('a dirty editor of a changed file asks to save before committing; alwaysSignOff and enableCommitSigning put --signoff and -S on the commit; the Post-commit row offers only None', async ({ home, launch }) => {
+test('a dirty editor of a changed file asks to save before committing; alwaysSignOff and enableCommitSigning put --signoff and -S on the commit; the Post-commit row offers None, Push and Sync, None selected', async ({ home, launch }) => {
   await initRepo(home, home.project);
   // -S fails the same way on every machine, and no gpg agent or keyboxd starts in the home.
   await git(home, home.project, 'config', 'gpg.program', path.join(home.root, 'no-such-gpg'));
@@ -379,7 +369,7 @@ test('a dirty editor of a changed file asks to save before committing; alwaysSig
 
   const overlay = await openSettingsModal(app, 'sourceControl');
   const postCommit = settingsRow(overlay, 'damocles.desktop.git.postCommitCommand');
-  await expect(postCommit.locator('[aria-pressed]')).toHaveCount(1);
+  await expect(postCommit.locator('[aria-pressed]')).toHaveText(['None', 'Push', 'Sync']);
   await expect(postCommit.locator('[aria-pressed="true"]')).toHaveText('None');
   await closeSettingsModal(overlay);
 

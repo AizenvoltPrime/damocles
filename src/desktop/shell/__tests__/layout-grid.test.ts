@@ -218,7 +218,7 @@ describe('a sash sizing the pane before it', () => {
     await sash.trigger('pointerdown', { button: 0, pointerId: 1, clientY: 200 });
     await sash.trigger('pointermove', { pointerId: 1, clientY: 250 });
     expect(sash.emitted('resize')!.at(-1)).toEqual([200]);
-    await sash.trigger('pointerup', { pointerId: 1 });
+    await sash.trigger('pointerup', { pointerId: 1, clientY: 250 });
     await sash.trigger('keydown', { key: 'ArrowDown' });
     await sash.trigger('keydown', { key: 'ArrowUp' });
     const [down, up] = sash.emitted('resize')!.slice(-2).map(([size]) => size as number);
@@ -232,5 +232,23 @@ describe('a sash sizing the pane before it', () => {
     await sash.trigger('pointermove', { pointerId: 1, clientY: 250 });
     expect(sash.emitted('resize')!.at(-1)).toEqual([100]);
     expect(sash.classes()).not.toContain('z-2');
+  });
+
+  it('ends a drag at the release point even when the last move before it never arrived, then commits', async () => {
+    const sash = mountSash('before');
+    await sash.trigger('pointerdown', { button: 0, pointerId: 1, clientY: 200 });
+    await sash.trigger('pointermove', { pointerId: 1, clientY: 233 });
+    await sash.trigger('pointerup', { pointerId: 1, clientY: 240 });
+    expect(sash.emitted('resize')!.at(-1)).toEqual([190]);
+    expect(sash.emitted('commit')).toHaveLength(1);
+  });
+
+  it('commits a cancelled drag at the last moved size, since a cancel has no release point', async () => {
+    const sash = mountSash('before');
+    await sash.trigger('pointerdown', { button: 0, pointerId: 1, clientY: 200 });
+    await sash.trigger('pointermove', { pointerId: 1, clientY: 233 });
+    await sash.trigger('pointercancel', { pointerId: 1, clientY: 0 });
+    expect(sash.emitted('resize')).toEqual([[183]]);
+    expect(sash.emitted('commit')).toHaveLength(1);
   });
 });

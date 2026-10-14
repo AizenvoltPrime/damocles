@@ -1,7 +1,10 @@
 import { computed, shallowRef, triggerRef, type InjectionKey } from 'vue';
 import type {
   DamoclesScmApi,
+  ScmArtifactsChanged,
+  ScmCapabilities,
   ScmChange,
+  ScmCloneState,
   ScmCommitInput,
   ScmDecoration,
   ScmRepoSnapshot,
@@ -27,7 +30,11 @@ export function createScmStore(api: DamoclesScmApi) {
   const views = shallowRef(new Map<string, ScmView>());
   const snapshots = shallowRef(new Map<string, ScmRepoSnapshot>());
   const decorations = shallowRef(new Map<string, Readonly<Record<string, ScmDecoration>>>());
-  const settings = shallowRef<ScmSettings>({ untrackedChanges: 'mixed', inputValidation: false, inputValidationSubjectLength: 50, inputValidationLength: 72, allowNoVerifyCommit: false });
+  const settings = shallowRef<ScmSettings>({ untrackedChanges: 'mixed', inputValidation: false, inputValidationSubjectLength: 50, inputValidationLength: 72, allowNoVerifyCommit: false, allowForcePush: false });
+  // the window's clone, whatever the project, and how the last one ended
+  const clone = shallowRef<ScmCloneState>({ running: null, last: null });
+  // what the window's git can do; read once, since git does not change under a running app
+  const capabilities = shallowRef<ScmCapabilities>({ stashStaged: false });
   const drafts = shallowRef(new Map<string, string>());
   // repositories in amend mode, with the draft held before entering it, which cancel restores
   const amending = shallowRef(new Map<string, string>());
@@ -44,6 +51,7 @@ export function createScmStore(api: DamoclesScmApi) {
   // the operation each repository's draft was prefilled for, so MERGE_MSG fills an empty box once per merge
   const prefilled = new Map<string, string>();
   const commandListeners = new Set<(command: ScmShellCommand) => void>();
+  const artifactListeners = new Set<(changed: ScmArtifactsChanged) => void>();
   const stops: Array<() => void> = [];
 
   const openRepos = (): Set<string> => new Set([...views.value.values()].flatMap((each) => each.repos.map((repo) => repo.repoId)));
@@ -156,7 +164,7 @@ export function createScmStore(api: DamoclesScmApi) {
 
   async function start(): Promise<void> {
     // Subscribed before the first read, so a change between the two is not lost; the read never overwrites a newer push.
-    const pushed = { views: new Set<string>(), snapshots: new Set<string>(), decorations: new Set<string>(), settings: false };
+    const pushed = { views: new Set<string>(), snapshots: new Set<string>(), decorations: new Set<string>(), settings: false, clone: false };
     stops.push(api.onView((view) => {
       pushed.views.add(view.projectKey);
       setView(view);
@@ -173,7 +181,14 @@ export function createScmStore(api: DamoclesScmApi) {
       pushed.settings = true;
       settings.value = next;
     }));
+    stops.push(api.onClone((next) => {
+      pushed.clone = true;
+      clone.value = next;
+    }));
     stops.push(api.onSetInput(applySetInput));
+    stops.push(api.onArtifactsChanged((changed) => {
+      for (const listener of artifactListeners) listener(changed);
+    }));
     stops.push(api.onCommand((command) => {
       for (const listener of commandListeners) listener(command);
     }));
@@ -184,11 +199,14 @@ export function createScmStore(api: DamoclesScmApi) {
     for (const snapshot of initial.snapshots) if (!pushed.snapshots.has(snapshot.repoId) && open.has(snapshot.repoId)) setSnapshot(snapshot);
     for (const { projectKey, files } of initial.decorations) if (!pushed.decorations.has(projectKey)) setDecorations(projectKey, files);
     if (!pushed.settings) settings.value = initial.settings;
+    if (!pushed.clone) clone.value = initial.clone;
+    capabilities.value = initial.capabilities;
   }
 
   function stop(): void {
     for (const each of stops.splice(0)) each();
     commandListeners.clear();
+    artifactListeners.clear();
     setInputListeners.clear();
   }
 
@@ -197,6 +215,8 @@ export function createScmStore(api: DamoclesScmApi) {
     views,
     snapshots,
     settings,
+    clone,
+    capabilities,
     drafts,
     amending,
     committing,
@@ -220,6 +240,11 @@ export function createScmStore(api: DamoclesScmApi) {
     onCommand(listener: (command: ScmShellCommand) => void): () => void {
       commandListeners.add(listener);
       return () => commandListeners.delete(listener);
+    },
+    // main's artifactsChanged: a repository's refs, stashes or worktrees changed, and lists showing them read again
+    onArtifactsChanged(listener: (changed: ScmArtifactsChanged) => void): () => void {
+      artifactListeners.add(listener);
+      return () => artifactListeners.delete(listener);
     },
     // previous: the box's text before main replaced it, for the swap's outgoing copy
     applyCommitted: (repoId: string, message: string, commitInput: ScmCommitInput | undefined): void =>

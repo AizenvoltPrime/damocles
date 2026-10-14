@@ -4,6 +4,7 @@ import type { PanelTheme } from './panel-channels';
 import {
   OVERLAY_CHANNELS,
   type DamoclesOverlayApi,
+  type InputBrowseResult,
   type OverlayPrefs,
   type OverlayPrefWrite,
   type OverlayRasterRequest,
@@ -107,6 +108,7 @@ const api: DamoclesOverlayApi = {
   getTerminalProfiles: () => ipcRenderer.invoke(OVERLAY_CHANNELS.terminalProfiles, {}) as Promise<PopupAnswer<TerminalProfileReport>>,
   onTerminalProfiles: (listener) => subscribe<TerminalProfileReport>(OVERLAY_CHANNELS.terminalProfilesChanged, listener),
   onDropZonesPointer: (listener) => subscribe<DropZonesPointer>(OVERLAY_CHANNELS.dropZonesPointer, listener),
+  browseInput: (value) => ipcRenderer.invoke(OVERLAY_CHANNELS.inputBrowse, { value }) as Promise<PopupAnswer<InputBrowseResult | null>>,
 };
 
 contextBridge.exposeInMainWorld('damoclesOverlay', api);

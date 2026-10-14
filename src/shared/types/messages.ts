@@ -717,7 +717,7 @@ export type ExtensionToWebviewMessage =
   // A partial delta. An absent field means the sender has nothing new to say about it, not a reset.
   // `attempt` rides only on a launch, and an advance is what tells the card its work fields start over.
   // `result` is what the settle recorded in `agent-completed`, so the card matches a reload.
-  | { type: "teamAgentStatusUpdate"; teamId: string; agentId: string; status: import('./team').TeamAgentStatus; progressSummary?: string; logFilePath?: string | null; model?: string; dollarBilled?: boolean; attempt?: number; effort?: import('../effort-badge').EffortBadgeLevel | null; stopwatch?: import('../team-stopwatch').Stopwatch; result?: string | null }
+  | { type: "teamAgentStatusUpdate"; teamId: string; agentId: string; status: import('./team').TeamAgentStatus; description?: string | null; progressSummary?: string; logFilePath?: string | null; model?: string; dollarBilled?: boolean; attempt?: number; effort?: import('../effort-badge').EffortBadgeLevel | null; stopwatch?: import('../team-stopwatch').Stopwatch; result?: string | null }
   | { type: "teamAgentToolCall"; teamId: string; agentId: string; toolName: string; toolInput: Record<string, unknown> }
   | { type: "teamMessage"; teamId: string; message: import('./team').TeamMessage }
   | { type: "teamScratchpadUpdate"; teamId: string; entry: import('./team').ScratchpadEntry }

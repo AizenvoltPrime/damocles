@@ -42,6 +42,15 @@ describe('parseInputRequest', () => {
     ];
     for (const raw of refused) expect(parseInputRequest(raw), JSON.stringify(raw)).toBeUndefined();
   });
+
+  it('takes a password box, but never with a validation kind or a prefilled value', () => {
+    const password = { kind: 'input', title: 'Git Authentication', prompt: "Password for 'https://example.com':", placeholder: 'Password', password: true };
+    expect(parseInputRequest(password)).toEqual(password);
+    expect(parseInputRequest({ kind: 'input', prompt: 'Name', password: false })).toEqual({ kind: 'input', prompt: 'Name' });
+    expect(parseInputRequest({ ...password, validation: 'branchName' })).toBeUndefined();
+    expect(parseInputRequest({ ...password, value: 'hunter2' })).toBeUndefined();
+    expect(parseInputRequest({ ...password, password: 'yes' })).toBeUndefined();
+  });
 });
 
 describe('parseInputAnswer', () => {

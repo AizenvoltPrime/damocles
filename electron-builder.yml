@@ -24,10 +24,14 @@ files:
   - dist/pty-host.js
   - dist/quick-open-worker.js
   - dist/watch-worker.js
+  # The askpass scripts ship from dist/askpass, where the desktop build set their mode; resources/askpass is their source.
+  - dist/askpass-main.js
+  - dist/askpass/**
   # Nothing loads source maps at runtime (no --enable-source-maps); they were a quarter of app.asar.
   - '!**/*.map'
   - l10n/**
   - resources/**
+  - '!resources/askpass{,/**}'
   - python/**
   - '!python/**/.venv{,/**}'
   - '!python/**/__pycache__{,/**}'
@@ -78,6 +82,8 @@ asarUnpack:
   - dist/pty-host.js
   - dist/quick-open-worker.js
   - dist/watch-worker.js
+  - dist/askpass-main.js
+  - dist/askpass/**
   - resources/grammars/**
   - resources/shell-integration/**
   - python/**

@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication, Page } from '@playwright/test';
 import { activeChat, expect, nextChat, test } from './support/fixtures';
-import { DEFAULT_GRID_LAYOUT } from '../../src/desktop/preload/shell-channels';
+import { DEFAULT_GRID_LAYOUT, SIDEBAR_SECTIONS } from '../../src/desktop/preload/shell-channels';
 import { seedStubModel, writeAuth, writeUserSettings, type HermeticHome } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { listChats, projectKeyOf } from './support/shell-ui';
@@ -329,10 +329,12 @@ test('Restore default layout resets window-layout.json, and with Reopen where I 
     await expect.poll(() => readLayout(home.userData)).toEqual({
       sidebarVisible: true,
       sidebarWidth: 264,
-      sections: { projects: { collapsed: false, size: 180 }, chats: { collapsed: false }, files: { collapsed: false, size: 230 }, search: { collapsed: true, size: 260 }, scm: { collapsed: false, size: 300 } },
+      sections: { projects: { collapsed: false, size: 180 }, chats: { collapsed: false }, files: { collapsed: false, size: 230 }, search: { collapsed: true, size: 260 }, repos: { collapsed: true, size: 220 }, scm: { collapsed: false, size: 300 } },
+      sectionOrder: SIDEBAR_SECTIONS,
       grid: DEFAULT_GRID_LAYOUT,
       search: {},
       scm: { viewMode: 'list', sortKey: 'path' },
+      repositories: {},
     });
     await expect.poll(async () => (await shellState(desktop.app)).layout.sidebarVisible).toBe(true);
 

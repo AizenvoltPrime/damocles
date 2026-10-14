@@ -8,6 +8,7 @@ import { openProjectChat, settled, showTheme, THEMES } from '../support/screensh
 import { closeSettingsModal, openSettingsModal, setContentSize } from '../support/settings';
 import { overlayPage, pressKeys, PRIMARY, selectedProjectKey, SHELL_URL, shellPage } from '../support/shell';
 import { codeEditor, editorShows, editorTab, filesRow, openInEditor } from '../support/editor';
+import { clickSectionAction, sectionAction } from '../support/shell-ui';
 
 // Review captures for Search's VS Code parity and the Search Editor, saved to DAMOCLES_SCREENSHOT_DIR, dark and light.
 const OUT = process.env.DAMOCLES_SCREENSHOT_DIR ?? path.join(process.env.USERPROFILE ?? REPO_ROOT, '.damocles', 'screenshots', 'search-parity');
@@ -107,7 +108,7 @@ async function setOpen(button: Locator, open: boolean): Promise<void> {
 }
 
 async function setViewMode(shell: Page, mode: 'list' | 'tree'): Promise<void> {
-  const button = shell.getByTestId('search-view-mode');
+  const button = await sectionAction(shell, 'search-view-mode');
   if ((await button.getAttribute('data-view-mode')) !== mode) await button.click();
   await expect(button).toHaveAttribute('data-view-mode', mode);
 }
@@ -190,12 +191,12 @@ test('search parity captures', async ({ foreground: _foreground, home, launch })
     await searchQuery(shell).fill('signupLimiter');
     await expect(shell.getByTestId('search-cancel')).toBeVisible();
     await shot(shell, t('cancel-running'), sidebar);
-    await shell.getByTestId('search-cancel').click();
+    await clickSectionAction(shell, 'search-cancel');
     await expect(shell.getByTestId('search-no-results')).toContainText('Search was canceled');
     await shot(shell, t('cancel-done'), sidebar);
 
     // The Search Editor with two context lines and its match highlights.
-    await shell.getByTestId('search-new-editor').click();
+    await clickSectionAction(shell, 'search-new-editor');
     const editor = shell.getByTestId('search-editor');
     await expect(editor).toBeVisible();
     await editor.getByTestId('search-editor-query').fill('Limiter');

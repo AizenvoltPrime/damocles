@@ -1,4 +1,4 @@
-import type { ScmChange, ScmGroup, ScmRepoSnapshot, ScmTone } from '../../preload/scm-channels';
+import type { ScmChange, ScmGroup, ScmRepoSnapshot, ScmStashArtifact, ScmTone } from '../../preload/scm-channels';
 import type { ScmSortKey, ScmViewMode } from './scm-menus';
 
 // The Source control view's visible rows, one flat list for the virtualized tree: each group's header, then its folders (tree
@@ -13,7 +13,20 @@ export type ScmRow = Sibling & (
   | { readonly kind: 'empty'; readonly key: string; readonly group: ScmGroup; readonly text: 'noUnstaged' | 'clean'; readonly level: 2 }
   | { readonly kind: 'folder'; readonly key: string; readonly group: ScmGroup; readonly path: string; readonly name: string; readonly count: number; readonly expanded: boolean; readonly level: number }
   | { readonly kind: 'change'; readonly key: string; readonly group: ScmGroup; readonly change: ScmChange; readonly name: string; readonly dir: string; readonly level: number }
+  // the Stashes group (A.3) after the change groups; count is null until its first read answers
+  | { readonly kind: 'stashGroup'; readonly key: string; readonly count: number | null; readonly expanded: boolean; readonly level: 1 }
+  | { readonly kind: 'stash'; readonly key: string; readonly stash: ScmStashArtifact; readonly level: 2 }
+  | { readonly kind: 'stashNote'; readonly key: string; readonly text: 'none' | 'failed'; readonly level: 2 }
 );
+
+// The Stashes group's rows as the shell holds them: loading until the first read of the repository answers.
+export type StashList =
+  | { readonly state: 'loading' }
+  | { readonly state: 'ready'; readonly rows: readonly ScmStashArtifact[] }
+  | { readonly state: 'failed' };
+
+export const STASH_GROUP_KEY = 'group:stashes';
+export const stashKey = (stash: Pick<ScmStashArtifact, 'hash'>): string => `stash:${stash.hash}`;
 
 export interface ScmListOptions {
   readonly viewMode: ScmViewMode;
@@ -37,15 +50,6 @@ export const TONE_TEXT: Readonly<Record<ScmTone, string>> = {
   submodule: 'var(--d-info-text)',
   ignored: 'var(--d-faint-text)',
 };
-
-// C0 and C1 controls, the bidi marks, embeddings, overrides and isolates, the zero-width characters and the line and paragraph
-// separators, which can make a file name read as another.
-// eslint-disable-next-line no-control-regex
-const HIDDEN_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060\u2066-\u2069\ufeff]/g;
-
-/** Git text (a path, a branch) as the shell shows it: each control or bidi character as its visible `\u{…}` escape. */
-export const visibleText = (text: string): string =>
-  text.replace(HIDDEN_CHARACTERS, (char) => `\\u{${char.codePointAt(0)!.toString(16).toUpperCase()}}`);
 
 const nameOf = (path: string): string => path.slice(path.lastIndexOf('/') + 1);
 const dirOf = (path: string): string => path.slice(0, Math.max(0, path.lastIndexOf('/')));
@@ -108,13 +112,15 @@ export function visibleGroups(snapshot: ScmRepoSnapshot): ScmGroup[] {
   return GROUP_ORDER.filter((group) => group === 'workingTree' || snapshot.groups[group].length > 0);
 }
 
-export function flattenChanges(snapshot: ScmRepoSnapshot, options: ScmListOptions): ScmRow[] {
+/** The view's rows: the change groups, then the Stashes group when `stashes` is given. */
+export function flattenChanges(snapshot: ScmRepoSnapshot, options: ScmListOptions, stashes?: StashList): ScmRow[] {
   const rows: ScmRow[] = [];
   const groups = visibleGroups(snapshot);
+  const setSize = groups.length + (stashes ? 1 : 0);
   for (const [index, group] of groups.entries()) {
     const changes = snapshot.groups[group];
     const expanded = !options.collapsed.has(groupKey(group));
-    rows.push({ kind: 'group', key: groupKey(group), group, count: changes.length, expanded, level: 1, position: index + 1, setSize: groups.length });
+    rows.push({ kind: 'group', key: groupKey(group), group, count: changes.length, expanded, level: 1, position: index + 1, setSize });
     if (!expanded) continue;
     if (changes.length === 0) {
       const others = snapshot.groups.merge.length + snapshot.groups.index.length + snapshot.groups.untracked.length;
@@ -126,7 +132,38 @@ export function flattenChanges(snapshot: ScmRepoSnapshot, options: ScmListOption
       }
     }
   }
+  if (stashes) {
+    const expanded = !options.collapsed.has(STASH_GROUP_KEY);
+    const list = stashes.state === 'ready' ? stashes.rows : [];
+    rows.push({ kind: 'stashGroup', key: STASH_GROUP_KEY, count: stashes.state === 'ready' ? list.length : null, expanded, level: 1, position: setSize, setSize });
+    if (expanded && stashes.state === 'failed') rows.push({ kind: 'stashNote', key: 'stashes:note', text: 'failed', level: 2, position: 1, setSize: 1 });
+    else if (expanded && stashes.state === 'ready' && list.length === 0) rows.push({ kind: 'stashNote', key: 'stashes:note', text: 'none', level: 2, position: 1, setSize: 1 });
+    else if (expanded) for (const [index, stash] of list.entries()) rows.push({ kind: 'stash', key: stashKey(stash), stash, level: 2, position: index + 1, setSize: list.length });
+  }
   return rows;
+}
+
+const TIME_UNITS: ReadonlyArray<readonly [Intl.RelativeTimeFormatUnit, number]> = [['year', 31_536_000], ['month', 2_592_000], ['week', 604_800], ['day', 86_400], ['hour', 3600], ['minute', 60]];
+
+// Built once per locale: a list of thousands of refs formats an age per row on every rebuild.
+const relativeFormats = new Map<string, { readonly auto: Intl.RelativeTimeFormat; readonly always: Intl.RelativeTimeFormat }>();
+
+function relativeFormatsOf(locale: string): { readonly auto: Intl.RelativeTimeFormat; readonly always: Intl.RelativeTimeFormat } {
+  let formats = relativeFormats.get(locale);
+  if (!formats) {
+    formats = { auto: new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }), always: new Intl.RelativeTimeFormat(locale, { numeric: 'always' }) };
+    relativeFormats.set(locale, formats);
+  }
+  return formats;
+}
+
+/** "5 minutes ago", "2 days ago" (VS Code's fromNow with its suffix) in the shell's language; under a minute is "now". */
+export function fromNow(date: number, now: number, locale: string): string {
+  const seconds = Math.max(0, Math.floor((now - date) / 1000));
+  const unit = TIME_UNITS.find(([, size]) => seconds >= size);
+  const formats = relativeFormatsOf(locale);
+  if (!unit) return formats.auto.format(0, 'second');
+  return formats.always.format(-Math.floor(seconds / unit[1]), unit[0]);
 }
 
 /** Every change of the snapshot, for the header's count (VS Code counts every resource of every group). */

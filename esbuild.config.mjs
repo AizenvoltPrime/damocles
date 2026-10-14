@@ -1,5 +1,5 @@
 import * as esbuild from 'esbuild';
-import { copyFileSync, existsSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { EXTENSION_EXTERNALS } from './scripts/extension-externals.mjs';
 import { DESKTOP_EXTERNALS } from './scripts/desktop-externals.mjs';
 
@@ -177,12 +177,30 @@ const watchWorkerOptions = {
   outfile: 'dist/watch-worker.js',
 };
 
+/** @type {esbuild.BuildOptions} */
+const askpassMainOptions = {
+  ...formatterHostOptions,
+  entryPoints: ['src/desktop/askpass/askpass-main.ts'],
+  outfile: 'dist/askpass-main.js',
+};
+
+// git and ssh execute the askpass scripts, so the packaged mode comes from here, never from the checkout's file mode. The
+// folder is the list: verify-desktop-package.mjs's ASKPASS_SCRIPTS is tested against it.
+function copyAskpassScripts() {
+  mkdirSync('dist/askpass', { recursive: true });
+  for (const name of readdirSync('resources/askpass')) {
+    copyFileSync(`resources/askpass/${name}`, `dist/askpass/${name}`);
+    chmodSync(`dist/askpass/${name}`, 0o755);
+  }
+}
+
 async function buildDesktop() {
   await Promise.all([
     esbuild.build(formatterHostOptions),
     esbuild.build(ptyHostOptions),
     esbuild.build(quickOpenWorkerOptions),
     esbuild.build(watchWorkerOptions),
+    esbuild.build(askpassMainOptions),
     esbuild.build(desktopMainOptions),
     esbuild.build(desktopPreloadOptions),
     esbuild.build(desktopShellPreloadOptions),
@@ -193,7 +211,8 @@ async function buildDesktop() {
   ]);
   // Settings › About's What's new reads it next to main.js (src/desktop/main/release-notes.ts).
   copyFileSync('CHANGELOG.md', 'dist/desktop/CHANGELOG.md');
-  console.log('Desktop main + preload + formatter host + pty host + workers + sentinel build complete');
+  copyAskpassScripts();
+  console.log('Desktop main + preload + formatter host + pty host + askpass helper + workers + sentinel build complete');
 }
 
 async function build() {

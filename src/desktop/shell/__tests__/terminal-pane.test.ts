@@ -4,6 +4,7 @@ import { mount, type VueWrapper } from '@vue/test-utils';
 import { computed, defineComponent, h, inject, nextTick, shallowRef } from 'vue';
 import type { TerminalInfo, TerminalState } from '../../preload/terminal-channels';
 import TerminalPane from '../layout/TerminalPane.vue';
+import TerminalPanel from '../terminal/TerminalPanel.vue';
 import { TERMINAL_STORE, type TerminalStore } from '../terminal/terminal-store';
 import { shellI18n } from '../i18n';
 import { STATE, TERMINAL_STATE, fakeShellApi } from './fakes';
@@ -96,6 +97,18 @@ describe('terminal pane header', () => {
     expect(after.textContent).toContain('Ubuntu-24.04');
     expect(after).toBe(before);
   });
+  it('names a home folder terminal\'s place, and says New Terminal starts in the home folder while no project is open', () => {
+    const home = { ...info('term-1', 'PowerShell'), projectKey: null, projectName: '' };
+    const store = fakeStore({ ...TERMINAL_STATE, terminals: [home], groups: [{ id: 'group-1', paneIds: ['term-1'], activePaneId: 'term-1', sizes: [1] }], activeId: 'term-1' });
+    wrapper = mount(TerminalPane, {
+      props: { api: fakeShellApi(), state: { ...STATE, projects: [] }, maximized: false, hideShortcut: 'Ctrl+`' },
+      global: { plugins: [shellI18n], provide: { [TERMINAL_STORE as symbol]: store }, stubs: { transition: true, TerminalPanel: true, PaneGrip: true } },
+    });
+    expect(wrapper.get('[data-testid="terminal-tab-project"]').text()).toBe('Home folder');
+    expect(wrapper.get('[data-testid="terminal-tab"]').attributes('aria-label')).toBe('PowerShell, Home folder, Running');
+    expect(wrapper.get('[data-testid="terminal-new"]').attributes('title')).toContain('Shift+click starts one in your home folder.');
+  });
+
   it('lists a user profile in the New Terminal dropdown with its own icon and colour', async () => {
     const api = fakeShellApi();
     const profiles = [
@@ -130,5 +143,34 @@ describe('terminal pane header', () => {
     store.state.value = { ...TERMINAL_STATE, terminals: ids.map((id) => info(id, id)), groups: [{ id: 'group-1', paneIds: ids, activePaneId: 'term-2', sizes: ids.map(() => 1 / 8) }], activeId: 'term-2' };
     await wrapper.vm.$nextTick();
     expect(wrapper.get('[data-testid="terminal-split"]').attributes('disabled')).toBeDefined();
+  });
+});
+
+describe('the terminal empty state', () => {
+  function mountPanel(state: TerminalState): VueWrapper {
+    wrapper = mount(TerminalPanel, {
+      props: { api: fakeShellApi(), state: STATE },
+      global: { plugins: [shellI18n], provide: { [TERMINAL_STORE as symbol]: fakeStore(state) }, stubs: { transition: true, TerminalPanes: true, TerminalList: true } },
+    });
+    return wrapper;
+  }
+
+  it('says quietly that shells are being detected, as a status, and holds back that none was found', () => {
+    const panel = mountPanel({ ...TERMINAL_STATE, canCreate: false, profilesReady: false });
+    const detecting = panel.get('[data-testid="terminal-detecting"]');
+    expect(detecting.text()).toBe('Detecting shells…');
+    expect(detecting.attributes('role')).toBe('status');
+    expect(panel.find('[data-testid="terminal-no-shell"]').exists()).toBe(false);
+    expect(panel.find('[data-testid="terminal-empty-new"]').exists()).toBe(false);
+  });
+
+  it('says no shell was found once detection settled with none, and offers New Terminal once one was', () => {
+    const none = mountPanel({ ...TERMINAL_STATE, canCreate: false, profilesReady: true });
+    expect(none.get('[data-testid="terminal-no-shell"]').text()).toBe('No shell was found on this computer');
+    expect(none.find('[data-testid="terminal-detecting"]').exists()).toBe(false);
+    none.unmount();
+    const found = mountPanel({ ...TERMINAL_STATE, canCreate: true, profilesReady: true });
+    expect(found.find('[data-testid="terminal-empty-new"]').exists()).toBe(true);
+    expect(found.find('[data-testid="terminal-detecting"]').exists()).toBe(false);
   });
 });

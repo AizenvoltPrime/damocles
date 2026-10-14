@@ -8,8 +8,9 @@ import { openProjectChat } from './support/screenshots';
 import { chatInput } from './support/ui';
 import { activeTab, bufferText, codeEditor, DOCUMENT_END, editorShows, editorTab, filesRow, filesTree, openInEditor, quickOpen, quickPick, saveWithKeyboard } from './support/editor';
 import { FILE_DRAG_MIME } from '../../src/shared/file-drag';
+import { clickSectionAction } from './support/shell-ui';
 
-test('the Files tree lists the project lazily, hides files.exclude matches, and opens a file in the editor on click', async ({ home, launch }) => {
+test('the Files tree lists the project lazily, hides files.exclude matches, and opens a file in the editor on click', async ({ foreground: _foreground, home, launch }) => {
   fs.mkdirSync(path.join(home.project, '.git'), { recursive: true });
   fs.writeFileSync(path.join(home.project, '.git', 'HEAD'), 'ref: refs/heads/main\n');
   fs.mkdirSync(path.join(home.project, 'src', 'deep'), { recursive: true });
@@ -39,7 +40,7 @@ test('the Files tree lists the project lazily, hides files.exclude matches, and 
   await expect(filesRow(shell, 'src/deep')).toHaveAttribute('aria-expanded', 'false');
   await expect(filesTree(shell).locator('[role="treeitem"][tabindex="0"]')).toHaveCount(1);
 
-  await shell.getByTestId('files-collapse-all').click();
+  await clickSectionAction(shell, 'files-collapse-all');
   await expect(filesRow(shell, 'src')).toHaveAttribute('aria-expanded', 'false');
 });
 
@@ -52,7 +53,7 @@ test('New file, New folder and Rename use inline inputs, Delete moves to the tra
 
   await filesRow(shell, 'src').click();
   await filesRow(shell, 'src').focus();
-  await shell.getByTestId('files-new-file').click();
+  await clickSectionAction(shell, 'files-new-file');
   const input = shell.getByTestId('files-edit-input');
   await expect(input).toBeFocused();
   await input.fill('fresh.ts');
@@ -64,7 +65,7 @@ test('New file, New folder and Rename use inline inputs, Delete moves to the tra
   await expect(shell.getByTestId('code-editor').locator('.monaco-editor')).toHaveClass(/focused/);
 
   await filesRow(shell, 'src').focus();
-  await shell.getByTestId('files-new-folder').click();
+  await clickSectionAction(shell, 'files-new-folder');
   await shell.getByTestId('files-edit-input').fill('nested');
   await shell.getByTestId('files-edit-input').press('Enter');
   await expect.poll(() => fs.statSync(path.join(home.project, 'src', 'nested'), { throwIfNoEntry: false })?.isDirectory()).toBe(true);
@@ -321,7 +322,7 @@ test('a failed move to the trash offers Delete Permanently after a confirmation,
   await expect(toast).toHaveCount(1);
 });
 
-test('New file in a folder that cannot be listed opens no name box, is one toast naming the folder, and the tree takes keys again', async ({ home, launch }) => {
+test('New file in a folder that cannot be listed opens no name box, is one toast naming the folder, and the tree takes keys again', async ({ foreground: _foreground, home, launch }) => {
   // A junction to a folder outside the project lists as a folder, and main refuses to list what it points to.
   const outside = path.join(path.dirname(home.project), 'outside');
   fs.mkdirSync(outside, { recursive: true });
@@ -333,7 +334,7 @@ test('New file in a folder that cannot be listed opens no name box, is one toast
 
   await expect(filesRow(shell, 'linked')).toBeVisible();
   await filesRow(shell, 'linked').focus();
-  await shell.getByTestId('files-new-file').click();
+  await clickSectionAction(shell, 'files-new-file');
   const toast = popupToasts(await popupPage(app)).filter({ hasText: 'Damocles could not open the folder' });
   await expect(toast).toHaveCount(1);
   await expect(toast).toContainText('Damocles could not open the folder linked: That location is outside the project.');

@@ -9,6 +9,7 @@ import { addProject } from './support/ui';
 import { codeEditor, diffEditor, DOCUMENT_END, editorShows, editorState, editorTab, filesRow, openInEditor } from './support/editor';
 import { writeUserSettings } from './support/hermetic';
 import { selectedProjectKey } from './support/shell';
+import { clickSectionAction, sectionAction } from './support/shell-ui';
 
 const searchQuery = (shell: Page): Locator => shell.getByTestId('search-query');
 const fileRow = (shell: Page, relativePath: string): Locator => shell.locator(`[data-testid="search-row"][data-row-kind="file"][data-path="${relativePath}"]`);
@@ -510,7 +511,7 @@ test('View as Tree groups by folder in the sort order from settings; Collapse Al
   await search(shell, 'hit');
   await expect.poll(() => treePaths(shell)).toEqual(['src/two.ts', 'z.ts', 'src/app/one.ts']);
 
-  const viewMode = shell.getByTestId('search-view-mode');
+  const viewMode = await sectionAction(shell, 'search-view-mode');
   await expect(viewMode).toHaveAttribute('aria-label', 'View as Tree');
   await viewMode.click();
   await expect(viewMode).toHaveAttribute('aria-label', 'View as List');
@@ -539,7 +540,7 @@ test('Restrict Search to Folder, Exclude Folder, Exclude and Include File Type r
   await openProjectChat(app, home.project);
   const shell = await openSearch(app);
   await search(shell, 'needle');
-  await shell.getByTestId('search-view-mode').click();
+  await clickSectionAction(shell, 'search-view-mode');
   await expect(resultFiles(shell)).toHaveCount(3);
 
   await chooseFromMenu(app, folderRow(shell, 'src'), 'restrict');
@@ -573,7 +574,7 @@ test('Replace All in a folder\'s menu replaces that folder\'s files only', async
   const shell = await openSearch(app, true);
   await search(shell, 'foo');
   await shell.getByTestId('search-replace').fill('bar');
-  await shell.getByTestId('search-view-mode').click();
+  await clickSectionAction(shell, 'search-view-mode');
   await chooseFromMenu(app, folderRow(shell, 'src'), 'replace');
   // Main writes the folder's files one at a time, src/deep/b.ts first, and drops their matches after the last write.
   await expect(resultFiles(shell)).toHaveCount(1);
@@ -590,7 +591,7 @@ test('Cancel Search stops a run and offers Search again; Escape in the query can
   await openProjectChat(app, home.project);
   const shell = await openSearch(app);
   await searchQuery(shell).fill('needle');
-  const cancel = shell.getByTestId('search-cancel');
+  const cancel = await sectionAction(shell, 'search-cancel');
   await expect(cancel).toBeVisible();
   await expect(shell.getByTestId('search-refresh')).toHaveCount(0);
   await cancel.click();

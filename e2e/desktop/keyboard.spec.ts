@@ -24,7 +24,7 @@ import {
   viewFocused,
 } from './support/shell';
 import { addProject, answerDialogs, askedDialogs, chatInput, clickMenu, hostMessages, postFromWebview, recordHostMessages, sendAndAwaitEcho, TRUST_PROMPT } from './support/ui';
-import { chatList, chatRow, listChats, projectKeyOf, readyShell } from './support/shell-ui';
+import { chatList, chatRow, clickSectionAction, listChats, projectKeyOf, readyShell } from './support/shell-ui';
 import { outsideActivation, outsideRestore } from './support/window-activation';
 
 const selectedChat = async (app: ElectronApplication): Promise<string | undefined> => (await shellState(app)).selected.chatId;
@@ -225,7 +225,7 @@ test('restoring the minimized window returns keyboard focus to the chat composer
 // A CDP key press never reaches before-input-event, where main sees the user's keys, so the key goes through pressKeys.
 for (const [action, act] of [
   ['a click', async (_app: ElectronApplication, shell: Page) => {
-    await shell.getByTestId('chat-search-toggle').click();
+    await clickSectionAction(shell, 'chat-search-toggle');
     await expect(shell.getByTestId('chat-search')).toBeFocused();
   }],
   ['a key', async (app: ElectronApplication, shell: Page) => {

@@ -21,6 +21,7 @@ function makeAgent(partial: Partial<TeamAgent> & { name: string; role: TeamAgent
     teamId: 'team-1',
     attempt: 0,
     specialization: '',
+    description: null,
     status: 'running',
     model: 'test',
     profileId: null,
@@ -626,7 +627,7 @@ describe('TeamRunner — per-agent browser scope disposal (success-only auto-clo
     // meaningful because the fixture allocates a fresh object per call — against the shared empty
     // singleton it used to use, identity held across independent reads and the assertion could not fail.
     const { runner, runs, factoryMcpSnapshots, toolsetSnapshots, sessionOpts } = makeWiringRunner(['A']);
-    runner.startSpecialist('A', 'task for A that is descriptive enough');
+    runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     await settle();
     // The runner composes the spawn INSIDE `createSession`; the stubbed AgentRunner never calls it, so
     // drive the real closure the runner built — that is the object literal under test.
@@ -652,7 +653,7 @@ describe('TeamRunner — per-agent browser scope disposal (success-only auto-clo
       const { runner, webview } = makeWiringRunner(['A']);
       const entries: Array<Record<string, unknown>> = [];
       (runner as unknown as { persistence: { appendTeamEntry: (e: Record<string, unknown>) => void } }).persistence.appendTeamEntry = (e) => { entries.push(e); };
-      runner.startSpecialist('A', 'task for A that is descriptive enough');
+      runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
       await settle();
       vi.advanceTimersByTime(5_000);
       // A's run never settles, so only the drain timeout and the 2 s abort window end the team.
@@ -686,7 +687,7 @@ describe('TeamRunner — per-agent browser scope disposal (success-only auto-clo
       const { runner, webview } = makeWiringRunner(['A']);
       const entries: Array<Record<string, unknown>> = [];
       (runner as unknown as { persistence: { appendTeamEntry: (e: Record<string, unknown>) => void } }).persistence.appendTeamEntry = (e) => { entries.push(e); };
-      runner.startSpecialist('A', 'task for A that is descriptive enough');
+      runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
       await settle();
       Object.assign(runner as unknown as Record<string, unknown>, { status: 'failed', leadFailure: { kind: 'model', message: '529 overloaded_error' } });
       const finalize = (runner as unknown as { awaitCompletionAndFinalize: (p: Promise<string>) => Promise<unknown> })
@@ -704,8 +705,8 @@ describe('TeamRunner — per-agent browser scope disposal (success-only auto-clo
 
   it("hands each spawn's kind to the toolset and that toolset's readOnly to the gate factory", async () => {
     const { runner, runs, mcpContexts, factoryReadOnly } = makeWiringRunner(['R', 'I']);
-    runner.startSpecialist('R', 'review the implementation for defects', undefined, 'reviewer', []);
-    runner.startSpecialist('I', 'implement the change described in the brief', undefined, 'implementor');
+    runner.startSpecialist('R', 'Test label', 'review the implementation for defects', undefined, 'reviewer', []);
+    runner.startSpecialist('I', 'Test label', 'implement the change described in the brief', undefined, 'implementor');
     await settle();
     await runs.get('R')!.config.createSession();
     await runs.get('I')!.config.createSession();
@@ -716,7 +717,7 @@ describe('TeamRunner — per-agent browser scope disposal (success-only auto-clo
     // A redispatch re-declares the kind, and the new attempt's toolset reads it.
     runs.get('R')!.resolve(result('failed', agentOf(runner, 'R').agentId));
     await settle();
-    runner.redispatchSpecialist('R', 'review the implementation for defects again', undefined, 'reviewer', []);
+    runner.redispatchSpecialist('R', 'Test label', 'review the implementation for defects again', undefined, 'reviewer', []);
     await settle();
     await runs.get('R')!.config.createSession();
     expect(mcpContexts.at(-1)!.kind).toBe('reviewer');
@@ -725,7 +726,7 @@ describe('TeamRunner — per-agent browser scope disposal (success-only auto-clo
 
   it('closes a specialist\'s tab(s) on successful completion (closeTabs=true)', async () => {
     const { runner, runs, disposedScopes } = makeWiringRunner(['A']);
-    runner.startSpecialist('A', 'task for A that is descriptive enough');
+    runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     await settle();
     const agent = agentOf(runner, 'A');
 
@@ -737,7 +738,7 @@ describe('TeamRunner — per-agent browser scope disposal (success-only auto-clo
 
   it('KEEPS a failed specialist\'s tab(s) open (closeTabs=false)', async () => {
     const { runner, runs, disposedScopes } = makeWiringRunner(['A']);
-    runner.startSpecialist('A', 'task for A that is descriptive enough');
+    runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     await settle();
     const agent = agentOf(runner, 'A');
 
@@ -750,7 +751,7 @@ describe('TeamRunner — per-agent browser scope disposal (success-only auto-clo
 
   it('gives a redispatched specialist a FRESH scope, so a retry never adopts or closes the failed attempt\'s tabs', async () => {
     const { runner, runs, disposedScopes, boundScopes } = makeWiringRunner(['A']);
-    runner.startSpecialist('A', 'task for A that is descriptive enough');
+    runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     await settle();
     const agent = agentOf(runner, 'A');
     const firstScope = `${agent.agentId}#0`;
@@ -763,7 +764,7 @@ describe('TeamRunner — per-agent browser scope disposal (success-only auto-clo
     await settle();
     expect(disposedScopes).toContainEqual([firstScope, false]); // attempt 0's tabs kept for inspection
 
-    runner.redispatchSpecialist('A', 'retry the task with a fresh attempt');
+    runner.redispatchSpecialist('A', 'Test label', 'retry the task with a fresh attempt');
     await settle();
     await buildTools();
     expect(agentOf(runner, 'A').agentId).toBe(agent.agentId); // the card/transcript key is preserved
@@ -784,7 +785,7 @@ describe('TeamRunner — per-agent browser scope disposal (success-only auto-clo
    */
   it('withdraws a completed specialist\'s panel dialogs, keyed by agentId (not the browser scope id)', async () => {
     const { runner, runs, cancelledDialogs } = makeWiringRunner(['A']);
-    runner.startSpecialist('A', 'task for A that is descriptive enough');
+    runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     await settle();
     const agent = agentOf(runner, 'A');
 
@@ -799,7 +800,7 @@ describe('TeamRunner — per-agent browser scope disposal (success-only auto-clo
 
   it('withdraws a FAILED specialist\'s dialogs too — the exit path most likely to have one open', async () => {
     const { runner, runs, cancelledDialogs } = makeWiringRunner(['A']);
-    runner.startSpecialist('A', 'task for A that is descriptive enough');
+    runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     await settle();
     const agent = agentOf(runner, 'A');
 
@@ -811,13 +812,13 @@ describe('TeamRunner — per-agent browser scope disposal (success-only auto-clo
 
   it('withdraws each attempt\'s dialogs on redispatch, so a retry never inherits a stale modal', async () => {
     const { runner, runs, cancelledDialogs } = makeWiringRunner(['A']);
-    runner.startSpecialist('A', 'task for A that is descriptive enough');
+    runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     await settle();
     const agent = agentOf(runner, 'A');
 
     runs.get('A')!.resolve(result('failed'));
     await settle();
-    runner.redispatchSpecialist('A', 'retry the task with a fresh attempt');
+    runner.redispatchSpecialist('A', 'Test label', 'retry the task with a fresh attempt');
     await settle();
     runs.get('A')!.resolve(result('completed'));
     await settle();
@@ -830,7 +831,7 @@ describe('TeamRunner — per-agent browser scope disposal (success-only auto-clo
     // branch is the one that gets forgotten — and a crashed specialist is precisely the case where a
     // dialog is still on screen with the call behind it already dead.
     const { runner, runs, cancelledDialogs, disposedScopes } = makeWiringRunner(['A']);
-    runner.startSpecialist('A', 'task for A that is descriptive enough');
+    runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     await settle();
     const agent = agentOf(runner, 'A');
 
@@ -846,7 +847,7 @@ describe('TeamRunner — per-agent browser scope disposal (success-only auto-clo
     // Attribution is only useful if it identifies the agent the USER sees in the team panel. The name
     // here is the roster name; `teamId` is what lets the webview tie the modal back to the team card.
     const { runner, runs, mcpContexts } = makeWiringRunner(['A']);
-    runner.startSpecialist('A', 'task for A that is descriptive enough');
+    runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     await settle();
     await runs.get('A')!.config.createSession();
     const agent = agentOf(runner, 'A');
@@ -861,7 +862,7 @@ describe('TeamRunner — per-agent browser scope disposal (success-only auto-clo
     // The whole point is an interruption the user can ANSWER; cancelling a live agent's prompt would
     // hand the server a cancel it never earned — the defect this slice removes, reintroduced downstream.
     const { runner, runs, cancelledDialogs } = makeWiringRunner(['A']);
-    runner.startSpecialist('A', 'task for A that is descriptive enough');
+    runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     await settle();
 
     expect(cancelledDialogs).toEqual([]);
@@ -874,8 +875,8 @@ describe('TeamRunner — per-agent browser scope disposal (success-only auto-clo
 describe('TeamRunner settle-path wiring (recovery reaches every branch)', () => {
   it('recovers a stranded standby when the LAST peer settles via report_complete (awaiting-review onTurnEnd branch)', async () => {
     const { runner, runs, sentToLead } = makeWiringRunner(['A', 'B']);
-    runner.startSpecialist('A', 'task for A that is descriptive enough');
-    runner.startSpecialist('B', 'task for B that is descriptive enough');
+    runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
+    runner.startSpecialist('B', 'Test label', 'task for B that is descriptive enough');
     // startAgent is invoked inside initPromise.then(...) — let the init microtask resolve first.
     await Promise.resolve();
     await Promise.resolve();
@@ -927,7 +928,7 @@ describe('TeamRunner settle-path wiring (recovery reaches every branch)', () => 
     let completion: string | null = null;
     (runner as unknown as { completionResolve: (r: string) => void }).completionResolve = (r) => { completion = r; };
 
-    runner.startSpecialist('Scout', 'task for Scout that is descriptive enough');
+    runner.startSpecialist('Scout', 'Test label', 'task for Scout that is descriptive enough');
     await Promise.resolve();
     await Promise.resolve();
     const scout = runs.get('Scout')!;
@@ -989,7 +990,7 @@ describe('TeamRunner terminal-contract wiring (bare turn-end recovery)', () => {
     const { runner, runs, sentToLead, messageBus } = makeWiringRunner(['Solo']);
     const soloMsgs: string[] = [];
     messageBus.subscribe((m) => { if (m.to === 'Solo') soloMsgs.push(m.content); });
-    runner.startSpecialist('Solo', 'task for Solo that is descriptive enough');
+    runner.startSpecialist('Solo', 'Test label', 'task for Solo that is descriptive enough');
     await Promise.resolve();
     await Promise.resolve();
     const solo = runs.get('Solo')!;
@@ -1040,7 +1041,7 @@ describe('TeamRunner terminal-contract wiring (bare turn-end recovery)', () => {
 
   it('DISCHARGE: after nudge + resume, a grace turn calling team_report_complete settles via the normal onTurnEnd path (no spurious convert)', async () => {
     const { runner, runs, sentToLead } = makeWiringRunner(['Solo']);
-    runner.startSpecialist('Solo', 'task for Solo that is descriptive enough');
+    runner.startSpecialist('Solo', 'Test label', 'task for Solo that is descriptive enough');
     await Promise.resolve();
     await Promise.resolve();
     const solo = runs.get('Solo')!;
@@ -1072,7 +1073,7 @@ describe('TeamRunner terminal-contract wiring (bare turn-end recovery)', () => {
 
   it('CEILING: a specialist at MAX_SPECIALIST_REVIEW_ROUNDS ending bare gets no nudge, no convert (completes as designed)', async () => {
     const { runner, runs, sentToLead } = makeWiringRunner(['Solo']);
-    runner.startSpecialist('Solo', 'task for Solo that is descriptive enough');
+    runner.startSpecialist('Solo', 'Test label', 'task for Solo that is descriptive enough');
     await Promise.resolve();
     await Promise.resolve();
     const solo = runs.get('Solo')!;
@@ -1098,7 +1099,7 @@ describe('TeamRunner terminal-contract wiring (bare turn-end recovery)', () => {
 
   it('MUTUAL EXCLUSION: a specialist in standby keeps keepAlive true via pendingStandby (reconcile is never reached); enterStandby/reportComplete each clear owedTerminalAction', async () => {
     const { runner, runs } = makeWiringRunner(['Solo']);
-    runner.startSpecialist('Solo', 'task for Solo that is descriptive enough');
+    runner.startSpecialist('Solo', 'Test label', 'task for Solo that is descriptive enough');
     await Promise.resolve();
     await Promise.resolve();
     const solo = runs.get('Solo')!;
@@ -1132,8 +1133,8 @@ describe('TeamRunner terminal-contract wiring (bare turn-end recovery)', () => {
     const { runner, runs, sentToLead, messageBus } = makeWiringRunner(['A', 'B']);
     const aMsgs: string[] = [];
     messageBus.subscribe((m) => { if (m.to === 'A') aMsgs.push(m.content); });
-    runner.startSpecialist('A', 'task for A that is descriptive enough');
-    runner.startSpecialist('B', 'task for B that is descriptive enough');
+    runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
+    runner.startSpecialist('B', 'Test label', 'task for B that is descriptive enough');
     await Promise.resolve();
     await Promise.resolve();
     const a = runs.get('A')!;
@@ -1169,7 +1170,7 @@ describe('TeamRunner terminal-contract wiring (bare turn-end recovery)', () => {
     const { runner, runs, messageBus } = makeWiringRunner(['Solo']);
     const soloMsgs: string[] = [];
     messageBus.subscribe((m) => { if (m.to === 'Solo') soloMsgs.push(m.content); });
-    runner.startSpecialist('Solo', 'task for Solo that is descriptive enough');
+    runner.startSpecialist('Solo', 'Test label', 'task for Solo that is descriptive enough');
     await Promise.resolve();
     await Promise.resolve();
     const solo = runs.get('Solo')!;
@@ -1275,7 +1276,7 @@ describe('TeamRunner role-model resolution wiring', () => {
         : { modelLabel: role === 'lead' ? 'lead-model' : 'impl-model' },
     );
 
-    runner.startSpecialist('Rev', 'review task descriptive enough', undefined, 'reviewer', []);
+    runner.startSpecialist('Rev', 'Test label', 'review task descriptive enough', undefined, 'reviewer', []);
     await Promise.resolve();
     await Promise.resolve();
 
@@ -1295,7 +1296,7 @@ describe('TeamRunner role-model resolution wiring', () => {
         : { modelLabel: 'ok' },
     );
 
-    expect(() => runner.startSpecialist('Rev', 'review task descriptive enough', undefined, 'reviewer', []))
+    expect(() => runner.startSpecialist('Rev', 'Test label', 'review task descriptive enough', undefined, 'reviewer', []))
       .toThrow('damocles.team.reviewerModel');
   });
 
@@ -1306,7 +1307,7 @@ describe('TeamRunner role-model resolution wiring', () => {
         : { modelLabel: 'ok' },
     );
 
-    expect(() => runner.startSpecialist('Rev', 'review task descriptive enough', undefined, 'reviewer', [])).toThrow();
+    expect(() => runner.startSpecialist('Rev', 'Test label', 'review task descriptive enough', undefined, 'reviewer', [])).toThrow();
 
     // Resolution runs BEFORE any state mutation, so the failed spawn must not strand a running agent:
     // status stays 'pending', it is not counted active, and re-spawn is not blocked by 'already spawned'.
@@ -1418,7 +1419,7 @@ function makeRedispatchHarness(names: string[]): RedispatchHarness {
 /** Drive a real fresh spawn (so the fresh agent-spawned entry is recorded), then settle it
  *  into the terminal `failed` state exactly as the runner's promise-.catch handler would. */
 async function driveToFailed(h: RedispatchHarness, name: string): Promise<void> {
-  h.runner.startSpecialist(name, `task for ${name} that is descriptive enough`);
+  h.runner.startSpecialist(name, 'Test label', `task for ${name} that is descriptive enough`);
   await Promise.resolve();
   await Promise.resolve();
   const agent = h.agents.get(name)!;
@@ -1431,26 +1432,26 @@ async function driveToFailed(h: RedispatchHarness, name: string): Promise<void> 
 describe('TeamRunner.redispatchSpecialist — guards (exact engine-contract strings)', () => {
   it('unknown agent → throws "Unknown agent"', () => {
     const h = makeRedispatchHarness(['A']);
-    expect(() => h.runner.redispatchSpecialist('Ghost', 'a well-described redispatch task'))
+    expect(() => h.runner.redispatchSpecialist('Ghost', 'Test label', 'a well-described redispatch task'))
       .toThrow('Unknown agent: Ghost');
   });
 
   it('non-specialist (lead) → throws "is not a specialist"', () => {
     const h = makeRedispatchHarness(['A']);
-    expect(() => h.runner.redispatchSpecialist('Lead', 'a well-described redispatch task'))
+    expect(() => h.runner.redispatchSpecialist('Lead', 'Test label', 'a well-described redispatch task'))
       .toThrow('Agent "Lead" is not a specialist');
   });
 
   it('pending → throws pointing at team_spawn_specialist', () => {
     const h = makeRedispatchHarness(['A']); // A seeded as pending
-    expect(() => h.runner.redispatchSpecialist('A', 'a well-described redispatch task'))
+    expect(() => h.runner.redispatchSpecialist('A', 'Test label', 'a well-described redispatch task'))
       .toThrow('Agent "A" has never been dispatched (status: pending) — use team_spawn_specialist to start it');
   });
 
   it('completed → throws the "approved work is final" message (NOT the "still active" one)', () => {
     const h = makeRedispatchHarness(['A']);
     h.agents.get('A')!.status = 'completed';
-    expect(() => h.runner.redispatchSpecialist('A', 'a well-described redispatch task'))
+    expect(() => h.runner.redispatchSpecialist('A', 'Test label', 'a well-described redispatch task'))
       .toThrow('Agent "A" is completed: its work is final, its session has ended and no tool reopens it. Give follow-up work to a pending roster specialist or record it as remaining work, not a redispatch');
   });
 
@@ -1459,7 +1460,7 @@ describe('TeamRunner.redispatchSpecialist — guards (exact engine-contract stri
     (status) => {
       const h = makeRedispatchHarness(['A']);
       h.agents.get('A')!.status = status;
-      expect(() => h.runner.redispatchSpecialist('A', 'a well-described redispatch task'))
+      expect(() => h.runner.redispatchSpecialist('A', 'Test label', 'a well-described redispatch task'))
         .toThrow(`Agent "A" is still active (status: ${status}) — only failed or cancelled specialists can be re-dispatched`);
     },
   );
@@ -1468,7 +1469,7 @@ describe('TeamRunner.redispatchSpecialist — guards (exact engine-contract stri
     const h = makeRedispatchHarness(['R1', 'R2', 'R3', 'R4', 'R5', 'F']);
     for (const r of ['R1', 'R2', 'R3', 'R4', 'R5']) h.agents.get(r)!.status = 'running';
     h.agents.get('F')!.status = 'failed';
-    expect(() => h.runner.redispatchSpecialist('F', 'a well-described redispatch task'))
+    expect(() => h.runner.redispatchSpecialist('F', 'Test label', 'a well-described redispatch task'))
       .toThrow('Max 5 concurrent agents reached');
   });
 });
@@ -1477,23 +1478,23 @@ describe('TeamRunner.startSpecialist — improved already-spawned guard (Slice C
   it('a failed agent → throws naming team_redispatch_specialist and the status', () => {
     const h = makeRedispatchHarness(['A']);
     h.agents.get('A')!.status = 'failed';
-    expect(() => h.runner.startSpecialist('A', 'a well-described task here'))
+    expect(() => h.runner.startSpecialist('A', 'Test label', 'a well-described task here'))
       .toThrow('Agent "A" already spawned (status: failed) — use team_redispatch_specialist to re-run it');
   });
 
   it('a cancelled agent → throws naming team_redispatch_specialist and the status', () => {
     const h = makeRedispatchHarness(['A']);
     h.agents.get('A')!.status = 'cancelled';
-    expect(() => h.runner.startSpecialist('A', 'a well-described task here'))
+    expect(() => h.runner.startSpecialist('A', 'Test label', 'a well-described task here'))
       .toThrow('Agent "A" already spawned (status: cancelled) — use team_redispatch_specialist to re-run it');
   });
 
   it('a running agent → throws with the status but WITHOUT the redispatch hint', () => {
     const h = makeRedispatchHarness(['A']);
     h.agents.get('A')!.status = 'running';
-    expect(() => h.runner.startSpecialist('A', 'a well-described task here'))
+    expect(() => h.runner.startSpecialist('A', 'Test label', 'a well-described task here'))
       .toThrow('Agent "A" already spawned (status: running)');
-    expect(() => h.runner.startSpecialist('A', 'a well-described task here'))
+    expect(() => h.runner.startSpecialist('A', 'Test label', 'a well-described task here'))
       .not.toThrow(/team_redispatch_specialist/);
   });
 });
@@ -1511,7 +1512,7 @@ describe('TeamRunner.redispatchSpecialist — fresh-attempt reset (failed and ca
       agent.finalResponse = 'stale';
       agent.toolCallCount = 9;
 
-      const returnedId = h.runner.redispatchSpecialist('A', 'the new redispatch task, described');
+      const returnedId = h.runner.redispatchSpecialist('A', 'Test label', 'the new redispatch task, described');
 
       expect(returnedId).toBe(originalId);
       expect(agent.agentId).toBe(originalId);
@@ -1547,7 +1548,7 @@ describe('TeamRunner.redispatchSpecialist — fresh-attempt reset (failed and ca
     (h.map('cancellationTimestamps') as Map<string, number>).set('A', Date.now());
     (h.runner as unknown as { flagBriefConflict: (n: string, d: string) => void }).flagBriefConflict('A', 'brief mandates async; attempt was sync');
 
-    h.runner.redispatchSpecialist('A', 'the fresh attempt task, described');
+    h.runner.redispatchSpecialist('A', 'Test label', 'the fresh attempt task, described');
 
     expect((h.map('specialistReviewRounds') as Map<string, number>).get('A')).toBeUndefined();
     for (const key of ['reviewedSpecialists', 'confirmedComplete', 'pendingStandby', 'nudgeScheduled', 'nudgeDelivered', 'owedTerminalAction', 'terminalNudgeScheduled', 'terminalNudgeDelivered']) {
@@ -1577,7 +1578,7 @@ describe('TeamRunner.redispatchSpecialist — one session file per attempt', () 
     expect(freshSpawn!.reattempt).toBeUndefined();
 
     const entriesBefore = h.teamEntries.length;
-    h.runner.redispatchSpecialist('A', 'the fresh redispatch task, described');
+    h.runner.redispatchSpecialist('A', 'Test label', 'the fresh redispatch task, described');
 
     // Redispatch: attempt 1 gets a new file beside attempt 0's, which is left untouched.
     await h.runs.get('A')!.config.createSession();
@@ -1614,7 +1615,7 @@ describe('TeamRunner.redispatchSpecialist — review-round gate cycle', () => {
     expect(api.getNonSettledSpecialistDetails()).toEqual([]);
 
     // Redispatch B → it becomes running (non-settled): the gate CLOSES.
-    h.runner.redispatchSpecialist('B', 'the fresh redispatch task, described');
+    h.runner.redispatchSpecialist('B', 'Test label', 'the fresh redispatch task, described');
     expect(api.getNonSettledSpecialistDetails().map((d) => d.name)).toEqual(['B']);
     expect(api.isReviewRoundReady()).toBe(false);
 
@@ -1643,7 +1644,7 @@ describe('TeamRunner.redispatchSpecialist — end-to-end wiring', () => {
     await driveToFailed(h, 'A');
     expect(h.agents.get('A')!.status).toBe('failed');
 
-    h.runner.redispatchSpecialist('A', 'the fresh redispatch task, described');
+    h.runner.redispatchSpecialist('A', 'Test label', 'the fresh redispatch task, described');
     expect(h.agents.get('A')!.status).toBe('running');
 
     // The re-attempt starts (launchSpecialist → agentRunner.startAgent captured after the init microtask).
@@ -1998,7 +1999,7 @@ describe('TeamRunner stranded-lead review liveness (Slice D)', () => {
     let completion: string | null = null;
     (runner as unknown as { completionResolve: (r: string) => void }).completionResolve = (r) => { completion = r; };
 
-    runner.startSpecialist('Solo', 'task for Solo that is descriptive enough');
+    runner.startSpecialist('Solo', 'Test label', 'task for Solo that is descriptive enough');
     await Promise.resolve();
     await Promise.resolve();
     const solo = runs.get('Solo')!;
@@ -2064,14 +2065,14 @@ describe('TeamRunner — leadReviewStalls resets on every lead progress action',
     const h = makeRedispatchHarness(['A']);
     h.runner.cancelSpecialist('A');
     inject(h.runner as unknown as Record<string, unknown>, 'leadReviewStalls', 2);
-    h.runner.redispatchSpecialist('A', 'a well-described redispatch task');
+    h.runner.redispatchSpecialist('A', 'Test label', 'a well-described redispatch task');
     expect(stallsOf(h.runner)).toBe(0);
   });
 
   it('startSpecialist resets the stall budget (spawning work is progress, not a stall)', () => {
     const h = makeRedispatchHarness(['A']);
     inject(h.runner as unknown as Record<string, unknown>, 'leadReviewStalls', 2);
-    h.runner.startSpecialist('A', 'a well-described task here');
+    h.runner.startSpecialist('A', 'Test label', 'a well-described task here');
     expect(stallsOf(h.runner)).toBe(0);
   });
 
@@ -2086,7 +2087,7 @@ describe('TeamRunner — leadReviewStalls resets on every lead progress action',
   it('a guard-throwing call does NOT reset the budget (only real progress counts)', () => {
     const h = makeRedispatchHarness(['A']); // A is pending — redispatch must throw
     inject(h.runner as unknown as Record<string, unknown>, 'leadReviewStalls', 2);
-    expect(() => h.runner.redispatchSpecialist('A', 'a well-described redispatch task')).toThrow();
+    expect(() => h.runner.redispatchSpecialist('A', 'Test label', 'a well-described redispatch task')).toThrow();
     expect(stallsOf(h.runner)).toBe(2);
   });
 });
@@ -2097,7 +2098,7 @@ describe('TeamRunner — completionResolved guards spawn/redispatch (no post-com
   it('startSpecialist after completion throws and launches nothing', () => {
     const h = makeRedispatchHarness(['A']);
     inject(h.runner as unknown as Record<string, unknown>, 'completionResolved', true);
-    expect(() => h.runner.startSpecialist('A', 'a well-described task here')).toThrow(COMPLETED_ERR);
+    expect(() => h.runner.startSpecialist('A', 'Test label', 'a well-described task here')).toThrow(COMPLETED_ERR);
     expect(h.runs.size).toBe(0);
   });
 
@@ -2105,7 +2106,7 @@ describe('TeamRunner — completionResolved guards spawn/redispatch (no post-com
     const h = makeRedispatchHarness(['A']);
     h.runner.cancelSpecialist('A');
     inject(h.runner as unknown as Record<string, unknown>, 'completionResolved', true);
-    expect(() => h.runner.redispatchSpecialist('A', 'a well-described redispatch task')).toThrow(COMPLETED_ERR);
+    expect(() => h.runner.redispatchSpecialist('A', 'Test label', 'a well-described redispatch task')).toThrow(COMPLETED_ERR);
     expect(h.runs.size).toBe(0);
   });
 });
@@ -2116,7 +2117,7 @@ describe('TeamRunner.redispatchSpecialist — cancelled-from-pending is a first 
     h.runner.cancelSpecialist('A'); // never launched: no stopwatch, no session file exists
     expect(h.agents.get('A')!).toMatchObject({ activeMs: 0, runningSince: null });
 
-    h.runner.redispatchSpecialist('A', 'a well-described redispatch task');
+    h.runner.redispatchSpecialist('A', 'Test label', 'a well-described redispatch task');
     await h.runs.get('A')!.config.createSession();
 
     expect(h.sessionStores).toEqual([expect.objectContaining({ kind: 'file', id: 'id-A.a1' })]);
@@ -2442,7 +2443,7 @@ describe('TeamRunner agent stopwatch', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(1_000_000);
     const h = makeRedispatchHarness(['A']);
-    h.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    h.runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     const agentId = h.agents.get('A')!.agentId;
 
     expect(Date.parse(entryOf(h, 'agent-spawned')['timestamp'] as string)).toBe(1_000_000);
@@ -2477,7 +2478,7 @@ describe('TeamRunner agent stopwatch', () => {
   it('stamps agent-completed with the toolUseId of the run it settled in', async () => {
     const h = makeRedispatchHarness(['A']);
     (h.runner as unknown as { beginRun: (toolUseId: string, at: string) => void }).beginRun('tc-run-2', new Date().toISOString());
-    h.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    h.runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     h.runs.get('A')!.resolve(DONE_RESULT);
     await settle();
     expect(entryOf(h, 'agent-completed')['toolUseId']).toBe('tc-run-2');
@@ -2492,7 +2493,7 @@ describe('TeamRunner agent stopwatch', () => {
       (h.runner as unknown as { launchLead: (agent: TeamAgent, launch: unknown) => void })
         .launchLead(lead, { kind: 'fresh', resolution: { modelLabel: 'lead-model' }, prompt: 'begin', redeliver: [] });
     } else {
-      h.runner.startSpecialist('A', 'task for A that is descriptive enough');
+      h.runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     }
     const agentId = h.agents.get(name)!.agentId;
     vi.setSystemTime(2_007_000);
@@ -2507,7 +2508,7 @@ describe('TeamRunner agent stopwatch', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(3_000_000);
     const h = makeRedispatchHarness(['A']);
-    h.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    h.runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     const agentId = h.agents.get('A')!.agentId;
     const send = h.messageBus.send.bind(h.messageBus);
     h.messageBus.send = (from, to, content) => {
@@ -2533,7 +2534,7 @@ describe('TeamRunner agent stopwatch', () => {
   it('the finalize sends the status team-completed recorded, even when the member settles during the flush', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     const h = makeRedispatchHarness(['A']);
-    h.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    h.runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     const agentId = h.agents.get('A')!.agentId;
     privateField<{ flush: () => Promise<void> }>(h.runner, 'persistence').flush = async () => {
       h.runs.get('A')!.resolve({ ...DONE_RESULT, agentId, status: 'failed' });
@@ -2553,7 +2554,7 @@ describe('TeamRunner agent stopwatch', () => {
   it('a member that settles after team-completed sends no update and appends nothing, since a resumed run may own its card and log', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     const h = makeRedispatchHarness(['A']);
-    h.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    h.runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     const agentId = h.agents.get('A')!.agentId;
     vi.advanceTimersByTime(5_000);
     // A's run never settles, so only the drain timeout and the 2 s abort window end the team.
@@ -2596,8 +2597,8 @@ describe('TeamRunner review coverage (revision-bound reviewer sign-offs)', () =>
     const h = makeRedispatchHarness([...implementors, 'appsec']);
     let completion: string | null = null;
     (h.runner as unknown as { completionResolve: (r: string) => void }).completionResolve = (r) => { completion = r; };
-    for (const name of implementors) h.runner.startSpecialist(name, `implement the ${name} work in full`);
-    h.runner.startSpecialist('appsec', 'review the implementors for security defects', undefined, 'reviewer', implementors);
+    for (const name of implementors) h.runner.startSpecialist(name, 'Test label', `implement the ${name} work in full`);
+    h.runner.startSpecialist('appsec', 'Test label', 'review the implementors for security defects', undefined, 'reviewer', implementors);
     return Object.assign(h, { completion: () => completion });
   }
 
@@ -2765,7 +2766,7 @@ describe('TeamRunner review coverage (revision-bound reviewer sign-offs)', () =>
     expect(() => h.runner.approveSpecialist('backend')).toThrow(
       'Cannot approve "backend": its reviewer "appsec" is completed and never reviewed backend\'s revision 0. Its session has ended and no tool reopens it, so dismiss this review with team_dismiss_review and a written reason.',
     );
-    expect(() => h.runner.redispatchSpecialist('appsec', 'review the implementors for security defects', undefined, 'reviewer')).toThrow('is completed');
+    expect(() => h.runner.redispatchSpecialist('appsec', 'Test label', 'review the implementors for security defects', undefined, 'reviewer')).toThrow('is completed');
     h.runner.dismissReview('appsec', 'backend', 'appsec ran out of rounds; backend is verified by the suite');
     h.runner.approveSpecialist('backend');
     expect(h.agents.get('backend')!.status).toBe('completed');
@@ -2842,8 +2843,8 @@ describe('TeamRunner review coverage (revision-bound reviewer sign-offs)', () =>
 
   it('rule C names spawn or cancel for a never-spawned implementor, and a cancel of it clears the rule', () => {
     const h = makeRedispatchHarness(['backend', 'frontend', 'appsec']);
-    h.runner.startSpecialist('backend', 'implement the backend work in full');
-    h.runner.startSpecialist('appsec', 'review the implementors for security defects', undefined, 'reviewer', ['backend', 'frontend']);
+    h.runner.startSpecialist('backend', 'Test label', 'implement the backend work in full');
+    h.runner.startSpecialist('appsec', 'Test label', 'review the implementors for security defects', undefined, 'reviewer', ['backend', 'frontend']);
     land(h, 'backend');
     pad(h).markRead('appsec', 'backend-api');
     h.runner.reportComplete('appsec', 'reviewed every implementor in full', [{ implementor: 'backend', verdict: 'approve' }, { implementor: 'frontend', verdict: 'approve' }]);
@@ -2924,21 +2925,21 @@ describe('TeamRunner review coverage (revision-bound reviewer sign-offs)', () =>
     const refusal = 'Cannot drop "backend" from the reviews of "appsec": backend\'s revision 0 has landed and appsec\'s review of it is unsatisfied. ' +
       'Keep "backend" in "reviews", or first dismiss that review with team_dismiss_review and a written reason.';
 
-    expect(() => h.runner.redispatchSpecialist('appsec', 'implement the security fixes in full', undefined, 'implementor')).toThrow(refusal);
-    expect(() => h.runner.redispatchSpecialist('appsec', 'review nothing at all, just advise', undefined, 'reviewer', [])).toThrow(refusal);
+    expect(() => h.runner.redispatchSpecialist('appsec', 'Test label', 'implement the security fixes in full', undefined, 'implementor')).toThrow(refusal);
+    expect(() => h.runner.redispatchSpecialist('appsec', 'Test label', 'review nothing at all, just advise', undefined, 'reviewer', [])).toThrow(refusal);
     expect(h.agents.get('appsec')).toMatchObject({ status: 'cancelled', attempt: before.attempt });
     expect(h.teamEntries).toHaveLength(before.entries);
     expect(coverageOf(h).reviewsOf('appsec')).toEqual(['backend']);
 
     h.runner.dismissReview('appsec', 'backend', 'appsec is better used implementing the fixes');
-    h.runner.redispatchSpecialist('appsec', 'implement the security fixes in full', undefined, 'implementor');
+    h.runner.redispatchSpecialist('appsec', 'Test label', 'implement the security fixes in full', undefined, 'implementor');
     expect(coverageOf(h).reviewersOf('backend')).toEqual([]);
   });
 
   describe('declaring pairs on spawn', () => {
     it('requires reviews with kind reviewer and leaves the agent pending when it is missing', () => {
       const h = makeRedispatchHarness(['backend', 'appsec']);
-      expect(() => h.runner.startSpecialist('appsec', 'review the backend for defects', undefined, 'reviewer')).toThrow(
+      expect(() => h.runner.startSpecialist('appsec', 'Test label', 'review the backend for defects', undefined, 'reviewer')).toThrow(
         '"reviews" is required with kind \'reviewer\'',
       );
       expect(h.agents.get('appsec')!.status).toBe('pending');
@@ -2947,7 +2948,7 @@ describe('TeamRunner review coverage (revision-bound reviewer sign-offs)', () =>
 
     it('rejects reviews on an implementor', () => {
       const h = makeRedispatchHarness(['backend', 'appsec']);
-      expect(() => h.runner.startSpecialist('backend', 'implement the backend in full', undefined, 'implementor', ['appsec'])).toThrow('"reviews" is only for a reviewer');
+      expect(() => h.runner.startSpecialist('backend', 'Test label', 'implement the backend in full', undefined, 'implementor', ['appsec'])).toThrow('"reviews" is only for a reviewer');
       expect(h.agents.get('backend')!.status).toBe('pending');
     });
 
@@ -2958,24 +2959,24 @@ describe('TeamRunner review coverage (revision-bound reviewer sign-offs)', () =>
       [['backend', 'backend'], 'twice'],
     ])('rejects reviews %j (%s)', (reviews, message) => {
       const h = makeRedispatchHarness(['backend', 'appsec']);
-      expect(() => h.runner.startSpecialist('appsec', 'review the backend for defects', undefined, 'reviewer', reviews)).toThrow(message);
+      expect(() => h.runner.startSpecialist('appsec', 'Test label', 'review the backend for defects', undefined, 'reviewer', reviews)).toThrow(message);
       expect(h.agents.get('appsec')!.status).toBe('pending');
     });
 
     it('rejects a reviewer reviewing a reviewer, and a reviewed name spawned as a reviewer, in either order', () => {
       const h = makeRedispatchHarness(['backend', 'appsec', 'qa']);
-      h.runner.startSpecialist('qa', 'review the qa plan for gaps', undefined, 'reviewer', []);
-      expect(() => h.runner.startSpecialist('appsec', 'review the backend for defects', undefined, 'reviewer', ['qa'])).toThrow('a reviewer');
+      h.runner.startSpecialist('qa', 'Test label', 'review the qa plan for gaps', undefined, 'reviewer', []);
+      expect(() => h.runner.startSpecialist('appsec', 'Test label', 'review the backend for defects', undefined, 'reviewer', ['qa'])).toThrow('a reviewer');
 
-      h.runner.startSpecialist('appsec', 'review the backend for defects', undefined, 'reviewer', ['backend']);
-      expect(() => h.runner.startSpecialist('backend', 'review something else entirely', undefined, 'reviewer', [])).toThrow('"appsec" already reviews it');
+      h.runner.startSpecialist('appsec', 'Test label', 'review the backend for defects', undefined, 'reviewer', ['backend']);
+      expect(() => h.runner.startSpecialist('backend', 'Test label', 'review something else entirely', undefined, 'reviewer', [])).toThrow('"appsec" already reviews it');
     });
 
     it('persists the pairs on agent-spawned, [] included, and none for an implementor', () => {
       const h = makeRedispatchHarness(['backend', 'appsec', 'qa']);
-      h.runner.startSpecialist('backend', 'implement the backend in full');
-      h.runner.startSpecialist('appsec', 'review the backend for defects', undefined, 'reviewer', ['backend']);
-      h.runner.startSpecialist('qa', 'review the qa plan for gaps', undefined, 'reviewer', []);
+      h.runner.startSpecialist('backend', 'Test label', 'implement the backend in full');
+      h.runner.startSpecialist('appsec', 'Test label', 'review the backend for defects', undefined, 'reviewer', ['backend']);
+      h.runner.startSpecialist('qa', 'Test label', 'review the qa plan for gaps', undefined, 'reviewer', []);
       const spawned = (name: string): Record<string, unknown> => h.teamEntries.find((e) => e['type'] === 'agent-spawned' && e['name'] === name)!;
       expect(spawned('backend')).not.toHaveProperty('reviews');
       expect(spawned('appsec')['reviews']).toEqual(['backend']);
@@ -2992,7 +2993,7 @@ describe('TeamRunner review coverage (revision-bound reviewer sign-offs)', () =>
       h.runs.get('appsec')!.resolve({ ...DONE_RESULT, status: 'cancelled' });
       await settle();
 
-      h.runner.redispatchSpecialist('appsec', 'review the backend for defects again', undefined, 'reviewer');
+      h.runner.redispatchSpecialist('appsec', 'Test label', 'review the backend for defects again', undefined, 'reviewer');
       expect(coverageOf(h).reviewsOf('appsec')).toEqual(['backend']);
       expect(coverageOf(h).signoffOf('appsec', 'backend')).toBeUndefined();
       const reattempt = h.teamEntries.filter((e) => e['type'] === 'agent-spawned' && e['name'] === 'appsec').at(-1)!;
@@ -3005,7 +3006,7 @@ describe('TeamRunner review coverage (revision-bound reviewer sign-offs)', () =>
       h.runner.cancelSpecialist('appsec');
       h.runs.get('appsec')!.resolve({ ...DONE_RESULT, status: 'cancelled' });
       await settle();
-      h.runner.redispatchSpecialist('appsec', 'implement the security fixes in full', undefined, 'implementor');
+      h.runner.redispatchSpecialist('appsec', 'Test label', 'implement the security fixes in full', undefined, 'implementor');
       expect(coverageOf(h).declared('appsec')).toBeUndefined();
       expect(coverageOf(h).reviewersOf('backend')).toEqual([]);
     });
@@ -3016,9 +3017,9 @@ describe('TeamRunner review coverage (revision-bound reviewer sign-offs)', () =>
       h.runner.cancelSpecialist('backend');
       h.runs.get('backend')!.resolve({ ...DONE_RESULT, status: 'cancelled' });
       await settle();
-      expect(() => h.runner.redispatchSpecialist('backend', 'review the backend in full instead', undefined, 'reviewer')).toThrow('"reviews" is required');
+      expect(() => h.runner.redispatchSpecialist('backend', 'Test label', 'review the backend in full instead', undefined, 'reviewer')).toThrow('"reviews" is required');
       expect(h.agents.get('backend')!.status).toBe('cancelled');
-      h.runner.redispatchSpecialist('backend', 'implement the backend in full again', undefined, 'implementor');
+      h.runner.redispatchSpecialist('backend', 'Test label', 'implement the backend in full again', undefined, 'implementor');
       expect(coverageOf(h).landedOf('backend')).toBeUndefined();
       expect(coverageOf(h).reviewersOf('backend')).toEqual(['appsec']);
     });
@@ -3098,7 +3099,7 @@ describe('TeamRunner review coverage (revision-bound reviewer sign-offs)', () =>
 
   it('a team with no declared pairs gets no coverage lines and no ordering rule', () => {
     const h = makeRedispatchHarness(['backend']);
-    h.runner.startSpecialist('backend', 'implement the backend in full');
+    h.runner.startSpecialist('backend', 'Test label', 'implement the backend in full');
     land(h, 'backend');
     const rrr = h.sentToLead.filter((m) => m.includes('[REVIEW ROUND READY]')).at(-1)!;
     expect(rrr).not.toContain('reviewed by');
@@ -3133,8 +3134,8 @@ describe('TeamRunner re-review on landing (rule A)', () => {
 
   function team(): RedispatchHarness {
     const h = makeRedispatchHarness(['backend', 'appsec']);
-    h.runner.startSpecialist('backend', 'implement the backend work in full');
-    h.runner.startSpecialist('appsec', 'review the backend for security defects', undefined, 'reviewer', ['backend']);
+    h.runner.startSpecialist('backend', 'Test label', 'implement the backend work in full');
+    h.runner.startSpecialist('appsec', 'Test label', 'review the backend for security defects', undefined, 'reviewer', ['backend']);
     return h;
   }
 
@@ -3389,7 +3390,7 @@ describe('TeamRunner re-review on landing (rule A)', () => {
     h.runs.get('appsec')!.reject(new Error('crashed'));
     await settle();
     expect(h.agents.get('appsec')!.status).toBe('failed');
-    h.runner.redispatchSpecialist('appsec', 'review the backend for security defects again', undefined, 'reviewer');
+    h.runner.redispatchSpecialist('appsec', 'Test label', 'review the backend for security defects again', undefined, 'reviewer');
     expect(coverageOf(h).owesReReview('appsec')).toBe(false);
   });
 });
@@ -3400,7 +3401,7 @@ describe('TeamRunner provider failures', () => {
 
   it('records a specialist failed with the provider error and tells the lead how to re-run it', async () => {
     const h = makeRedispatchHarness(['A']);
-    h.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    h.runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     const agentId = h.agents.get('A')!.agentId;
     h.runs.get('A')!.resolve({ ...FAILED, agentId });
     await settle();
@@ -3416,19 +3417,19 @@ describe('TeamRunner provider failures', () => {
 
   it("reports a failed specialist's result in the card state until a redispatch starts a new attempt", async () => {
     const h = makeRedispatchHarness(['A']);
-    h.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    h.runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     h.runs.get('A')!.resolve({ ...FAILED, agentId: h.agents.get('A')!.agentId });
     await settle();
     const card = (): string | null => h.runner.getTeamState().agents.find((a) => a.name === 'A')!.result;
 
     expect(card()).toBe(FAILED.finalResponse);
-    h.runner.redispatchSpecialist('A', 'retry the task with a fresh attempt');
+    h.runner.redispatchSpecialist('A', 'Test label', 'retry the task with a fresh attempt');
     expect(card()).toBeNull();
   });
 
   it('tells the lead why a specialist failed to start, without offering a re-run that cannot fix it', async () => {
     const h = makeRedispatchHarness(['A']);
-    h.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    h.runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     h.runs.get('A')!.resolve({ ...DONE_RESULT, agentId: h.agents.get('A')!.agentId, status: 'failed', failure: { kind: 'start', message: 'no model' }, finalResponse: 'Failed to start: no model' });
     await settle();
 
@@ -3462,7 +3463,7 @@ describe('TeamRunner provider failures', () => {
       seal: (build: () => TeamCheckpoint) => { const c = build(); written.push(c); return c; },
     };
     (h.runner as unknown as { completionResolve: (r: string) => void }).completionResolve = () => undefined;
-    h.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    h.runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     const lead = Object.assign(h.agents.get('Lead')!, { status: 'running', activeMs: 0, runningSince: Date.now() });
     (h.runner as unknown as { launchLead: (agent: TeamAgent, launch: unknown) => void })
       .launchLead(lead, { kind: 'fresh', resolution: { modelLabel: 'lead-model' }, prompt: 'begin', redeliver: [] });
@@ -3481,7 +3482,7 @@ describe('TeamRunner provider failures', () => {
     (runner as unknown as { checkpointWriter: unknown }).checkpointWriter = stubCheckpointWriter();
     (runner as unknown as { completionResolve: (r: string) => void }).completionResolve = () => undefined;
     const agents = (runner as unknown as { agents: Map<string, TeamAgent> }).agents;
-    runner.startSpecialist('A', 'task for A that is descriptive enough');
+    runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
     await settle();
     const lead = Object.assign(agents.get('Lead')!, { status: 'running', activeMs: 0, runningSince: Date.now() });
     (runner as unknown as { launchLead: (agent: TeamAgent, launch: unknown) => void })

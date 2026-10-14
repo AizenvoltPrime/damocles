@@ -41,7 +41,7 @@ function agent(over: Partial<TeamAgent> = {}): TeamAgent {
     agentId: AGENT_ID,
     name: 'worker',
     role: 'specialist',
-    specialization: 'do the task',
+    description: 'do the task',
     model: 'sonnet',
     profileId: null,
     attempt: 0,
@@ -288,5 +288,20 @@ describe('a failed model call in the team agent overlay', () => {
     return nextTick().then(() => {
       expect(wrapper.get('[data-testid="agent-working"]').text()).toContain(i18n.global.t('status.retrying', { attempt: 2, max: 3 }));
     });
+  });
+
+  it('says a member stopped before reporting, with no Result box, and shows a reported result instead when it has one', async () => {
+    const wrapper = openWith([]);
+    const store = useTeamStore();
+
+    store.handleAgentStatusUpdate(TEAM_ID, AGENT_ID, 'cancelled', undefined, undefined, undefined, undefined, undefined, undefined, undefined, null);
+    await nextTick();
+    expect(wrapper.get('[data-testid="agent-stopped-unreported"]').text()).toContain(i18n.global.t('overlays.agent.stoppedBeforeReporting'));
+    expect(wrapper.find('[data-testid="agent-result"]').exists()).toBe(false);
+
+    store.handleAgentStatusUpdate(TEAM_ID, AGENT_ID, 'cancelled', undefined, undefined, undefined, undefined, undefined, undefined, undefined, 'the sign-off');
+    await nextTick();
+    expect(wrapper.find('[data-testid="agent-stopped-unreported"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="agent-result"]').exists()).toBe(true);
   });
 });

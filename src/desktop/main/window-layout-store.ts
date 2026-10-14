@@ -8,6 +8,7 @@ import {
   MAX_SHELL_COORDINATE,
   MIN_SECTION_SIZE,
   MIN_SIDEBAR_WIDTH,
+  SIDEBAR_SECTIONS,
   type GridPane,
   type ShellGridLayout,
   type ShellGridSizes,
@@ -18,6 +19,9 @@ import {
   MAX_RELATIVE_PATH_LENGTH,
   type FileRef,
   MAX_SEARCH_VIEW_STATES,
+  MAX_EXPANDED_REPOSITORY_ROWS,
+  MAX_REPOSITORY_ROW_ID_LENGTH,
+  boundRepositoryViewStates,
   EMPTY_SEARCH_HISTORY,
   type SearchEditorConfig,
   type SearchHistory,
@@ -91,11 +95,14 @@ const BACKUP_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 export const DEFAULT_SHELL_LAYOUT: ShellLayout = {
   sidebarVisible: true,
   sidebarWidth: 264,
-  sections: { projects: { collapsed: false, size: 180 }, files: { collapsed: false, size: 230 }, search: { collapsed: true, size: 260 }, scm: { collapsed: false, size: 300 }, chats: { collapsed: false } },
+  // Repositories starts collapsed (D58)
+  sections: { projects: { collapsed: false, size: 180 }, files: { collapsed: false, size: 230 }, search: { collapsed: true, size: 260 }, repos: { collapsed: true, size: 220 }, scm: { collapsed: false, size: 300 }, chats: { collapsed: false } },
+  sectionOrder: SIDEBAR_SECTIONS,
   grid: DEFAULT_GRID_LAYOUT,
   search: {},
   // VS Code's scm.defaultViewMode and scm.defaultViewSortKey
   scm: { viewMode: 'list', sortKey: 'path' },
+  repositories: {},
 };
 
 // Projects whose selected repository the layout keeps.
@@ -227,12 +234,13 @@ export function parseSearchEditorConfig(raw: unknown): SearchEditorConfig | unde
 // The Search states by project key: a malformed entry, or one past MAX_SEARCH_VIEW_STATES, is dropped.
 function parseSearchViewStates(raw: unknown): Record<string, SearchViewState> | undefined {
   if (!isRecord(raw)) return undefined;
-  const states: Record<string, SearchViewState> = {};
+  const states: Array<[string, SearchViewState]> = [];
   for (const [key, value] of Object.entries(raw).slice(0, MAX_SEARCH_VIEW_STATES)) {
     const state = parseSearchViewState(value);
-    if (key.length > 0 && key.length <= MAX_ID_LENGTH && state) states[key] = state;
+    if (key.length > 0 && key.length <= MAX_ID_LENGTH && state) states.push([key, state]);
   }
-  return states;
+  // fromEntries defines each key, so a "__proto__" project key stays an entry and never sets the prototype
+  return Object.fromEntries(states);
 }
 
 function parseScmViewOptions(raw: unknown): ScmViewOptions | undefined {
@@ -242,6 +250,37 @@ function parseScmViewOptions(raw: unknown): ScmViewOptions | undefined {
   return (SCM_VIEW_MODES as readonly unknown[]).includes(viewMode) && (SCM_SORT_KEYS as readonly unknown[]).includes(sortKey)
     ? { viewMode: viewMode as ScmViewOptions['viewMode'], sortKey: sortKey as ScmViewOptions['sortKey'] }
     : undefined;
+}
+
+/** The sidebar's section order, or undefined unless it names every section exactly once. */
+export function parseSectionOrder(raw: unknown): ShellLayout['sectionOrder'] | undefined {
+  if (!Array.isArray(raw) || raw.length !== SIDEBAR_SECTIONS.length) return undefined;
+  const order = raw.filter((name): name is ShellLayout['sectionOrder'][number] => (SIDEBAR_SECTIONS as readonly unknown[]).includes(name));
+  return new Set(order).size === SIDEBAR_SECTIONS.length ? order : undefined;
+}
+
+/**
+ * The Repositories section's expanded rows by project key, within boundRepositoryViewStates' bounds. A shell report is taken
+ * only whole, as the shell bounds it, so a malformed or out-of-bounds entry refuses it. With fileLog (reading the file), a
+ * malformed project is dropped and the oldest past the bounds go, each logged. Undefined unless raw is a record.
+ */
+export function parseRepositoryViewStates(raw: unknown, fileLog?: Log): Record<string, string[]> | undefined {
+  if (!isRecord(raw)) return undefined;
+  const entries: Array<[string, string[]]> = [];
+  for (const [key, rows] of Object.entries(raw)) {
+    const valid = key.length > 0 && key.length <= MAX_ID_LENGTH && Array.isArray(rows) && rows.length <= MAX_EXPANDED_REPOSITORY_ROWS
+      && (rows as unknown[]).every((id) => boundedString(id, MAX_REPOSITORY_ROW_ID_LENGTH) && id.length > 0);
+    if (valid) entries.push([key, [...(rows as string[])]]);
+    else if (fileLog) fileLog('[layout] dropping a project\'s malformed Repositories expanded rows');
+    else return undefined;
+  }
+  // fromEntries defines each key, so a "__proto__" project key stays an entry and never sets the prototype
+  const states = boundRepositoryViewStates(Object.fromEntries(entries));
+  const size = (list: ReadonlyArray<readonly [string, readonly string[]]>): number => list.reduce((sum, [, rows]) => sum + 1 + rows.length, 0);
+  if (size(Object.entries(states)) === size(entries)) return states;
+  if (!fileLog) return undefined;
+  fileLog('[layout] dropping the oldest Repositories expanded rows past the layout\'s bounds');
+  return states;
 }
 
 /** Each project's selected repository root, the newest MAX_SCM_SELECTIONS kept; malformed and dropped entries are logged. */
@@ -268,8 +307,9 @@ function newestSelections(entries: ReadonlyArray<readonly [string, string]>, log
 
 /**
  * The sidebar's part of a layout from the shell or the file, or undefined when any field is missing, of the wrong type or
- * out of range. A layout written before the Search section gets its defaults. With fileLog (reading the file), a malformed
- * field that has a default falls back to it alone and is logged, so it never costs the rest of the sidebar.
+ * out of range. A layout written before the Search or Repositories section, the expanded rows or the section order gets
+ * their defaults. With fileLog (reading the file), a malformed field that has a default falls back to it alone and is
+ * logged, so it never costs the rest of the sidebar.
  */
 export function parseSidebarLayout(raw: unknown, fileLog?: Log): ShellSidebarLayout | undefined {
   if (!isRecord(raw)) return undefined;
@@ -289,10 +329,20 @@ export function parseSidebarLayout(raw: unknown, fileLog?: Log): ShellSidebarLay
   const chats = field(sections, 'chats');
   const chatsCollapsed = isRecord(chats) ? field(chats, 'collapsed') : undefined;
   const scmSection = orDefault(field(sections, 'scm'), parseSection, DEFAULT_SHELL_LAYOUT.sections.scm, 'Source Control section size');
+  const reposSection = orDefault(field(sections, 'repos'), parseSection, DEFAULT_SHELL_LAYOUT.sections.repos, 'Repositories section size');
   const search = orDefault(field(raw, 'search'), parseSearchViewStates, {}, 'Search states');
   const scm = orDefault(field(raw, 'scm'), parseScmViewOptions, DEFAULT_SHELL_LAYOUT.scm, 'Source Control view options');
-  if (!projects || !files || !searchSection || !scmSection || typeof chatsCollapsed !== 'boolean' || !search || !scm) return undefined;
-  return { sidebarWidth, sections: { projects, files, search: searchSection, scm: scmSection, chats: { collapsed: chatsCollapsed } }, search, scm };
+  const repositories = orDefault(field(raw, 'repositories'), (value) => parseRepositoryViewStates(value, fileLog), {}, 'Repositories expanded rows');
+  const sectionOrder = orDefault(field(raw, 'sectionOrder'), parseSectionOrder, DEFAULT_SHELL_LAYOUT.sectionOrder, 'section order');
+  if (!projects || !files || !searchSection || !reposSection || !scmSection || typeof chatsCollapsed !== 'boolean' || !search || !scm || !repositories || !sectionOrder) return undefined;
+  return {
+    sidebarWidth,
+    sections: { projects, files, search: searchSection, repos: reposSection, scm: scmSection, chats: { collapsed: chatsCollapsed } },
+    sectionOrder,
+    search,
+    scm,
+    repositories,
+  };
 }
 
 /** A shell layout from the file, or undefined when any field is missing, of the wrong type or out of range. */
@@ -413,7 +463,7 @@ function parsePersistedTerminal(raw: unknown, log: Log): PersistedTerminal | und
   const profileId = field(raw, 'profileId');
   const projectKey = field(raw, 'projectKey');
   if (typeof profileId !== 'string' || profileId.length === 0 || profileId.length > MAX_PROFILE_ID_LENGTH) return undefined;
-  if (typeof projectKey !== 'string' || projectKey.length === 0 || projectKey.length > MAX_ID_LENGTH) return undefined;
+  if (projectKey !== null && (typeof projectKey !== 'string' || projectKey.length === 0 || projectKey.length > MAX_ID_LENGTH)) return undefined;
   const rawName = field(raw, 'name') ?? null;
   const rawIcon = field(raw, 'customIcon') ?? null;
   const rawColor = field(raw, 'color') ?? null;
@@ -659,12 +709,12 @@ export class WindowLayoutStore {
     this.setSidebar({ ...this.sidebarLayout, search });
   }
 
-  // Restore default layout: the window placement, sidebar and grid back to their defaults; the open editors, the terminals
-  // and each project's Search query stay.
+  // Restore default layout: the window placement, sidebar and grid back to their defaults; the open editors, the terminals,
+  // each project's Search query and its expanded Repositories rows stay.
   reset(): void {
     if (this.sealed) return;
     this.placement = undefined;
-    this.sidebarLayout = { ...DEFAULT_SHELL_LAYOUT, search: this.sidebarLayout.search };
+    this.sidebarLayout = { ...DEFAULT_SHELL_LAYOUT, search: this.sidebarLayout.search, repositories: this.sidebarLayout.repositories };
     this.persist();
   }
 

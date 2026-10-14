@@ -107,10 +107,11 @@ function cancelAgent(): void {
       </div>
 
       <p
-        v-if="agent.specialization"
-        class="text-xs text-(--d-muted) text-pretty"
+        v-if="agent.description"
+        class="truncate text-xs text-(--d-muted)"
+        :title="agent.description"
       >
-        {{ agent.specialization }}
+        {{ agent.description }}
       </p>
 
       <div

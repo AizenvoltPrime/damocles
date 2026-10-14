@@ -22,6 +22,7 @@ export function createDesktopDialogService(
       properties: ['openDirectory', 'createDirectory'],
       ...(opts.title !== undefined ? { title: opts.title } : {}),
       ...(opts.defaultPath !== undefined ? { defaultPath: opts.defaultPath } : {}),
+      ...(opts.buttonLabel !== undefined ? { buttonLabel: opts.buttonLabel } : {}),
     }),
     pickFile: (opts) => pickOne(window(), {
       properties: ['openFile'],

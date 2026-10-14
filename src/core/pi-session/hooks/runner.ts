@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { log } from '../../logger';
+import { windowsSystemTool } from '../../system-tools';
 import type { HookEntry, HookDecision } from './types';
 import { emptyDecision } from './types';
 import { substituteCommand, type SubstitutionContext } from './substitute';
@@ -58,7 +59,7 @@ function killProcessTree(child: ChildProcess): void {
   };
   if (process.platform === 'win32') {
     try {
-      const tk = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+      const tk = spawn(windowsSystemTool('taskkill'), ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
       // spawn reports a missing/blocked `taskkill` ASYNCHRONOUSLY via an 'error' event, not a sync throw;
       // an unhandled 'error' on a ChildProcess crashes the extension host. Swallow it and fall back.
       tk.on('error', directKill);

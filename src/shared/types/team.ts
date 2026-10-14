@@ -10,7 +10,8 @@ export interface TeamAgent {
   agentId: string;
   name: string;
   role: 'lead' | 'specialist';
-  specialization: string;
+  /** The lead-written 3-5 word label the card shows. Null before a spawn and for a log written before labels. */
+  description: string | null;
   model: string;
   profileId: string | null;
   /** Which launch of this agent the work fields below describe. A redispatch reuses the agentId, so an

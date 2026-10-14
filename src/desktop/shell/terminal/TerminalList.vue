@@ -12,7 +12,7 @@ import { MAX_TERMINAL_GROUP_PANES, TERMINAL_LIST_DEFAULT_REM, TERMINAL_LIST_MAX_
 import Sash from '../layout/Sash.vue';
 import { terminalGlyph } from './terminal-icons';
 import { isShiftF10 } from './terminal-keys';
-import { openTabMenu, terminalStatusLabel } from './terminal-menu';
+import { openTabMenu, terminalProjectLabel, terminalStatusLabel } from './terminal-menu';
 import { TERMINAL_STORE } from './terminal-store';
 import TerminalRename from './TerminalRename.vue';
 
@@ -123,7 +123,7 @@ function onKeydown(event: KeyboardEvent, index: number, terminal: TerminalInfo):
 }
 
 // Main's computed title, the working directory's folder when it is not the project's, and the project.
-const rowTitle = (terminal: TerminalInfo): string => [terminal.title, terminal.description, terminal.projectName].filter((part) => part).join(' · ');
+const rowTitle = (terminal: TerminalInfo): string => [terminal.title, terminal.description, terminalProjectLabel(terminal, t)].filter((part) => part).join(' · ');
 
 // VS Code's splitTerminalAriaLabel: a pane of a multi-pane group says where it sits.
 function splitLabel(id: string): string {
@@ -132,7 +132,7 @@ function splitLabel(id: string): string {
 }
 
 // role="tab" makes a row's content presentational, so the row names itself without its buttons' labels.
-const tabLabel = (terminal: TerminalInfo): string => [terminal.title, terminal.description, spansProjects.value ? terminal.projectName : '', splitLabel(terminal.id), terminalStatusLabel(terminal, t)].filter((part) => part).join(', ');
+const tabLabel = (terminal: TerminalInfo): string => [terminal.title, terminal.description, spansProjects.value ? terminalProjectLabel(terminal, t) : '', splitLabel(terminal.id), terminalStatusLabel(terminal, t)].filter((part) => part).join(', ');
 </script>
 
 <template>
@@ -263,7 +263,7 @@ const tabLabel = (terminal: TerminalInfo): string => [terminal.title, terminal.d
             v-if="spansProjects"
             data-testid="terminal-row-project"
             class="max-w-17 shrink-0 truncate font-mono text-10 text-(--d-faint-text)"
-          >{{ terminal.projectName }}</span>
+          >{{ terminalProjectLabel(terminal, t) }}</span>
           <Button
             variant="ghost"
             size="icon"

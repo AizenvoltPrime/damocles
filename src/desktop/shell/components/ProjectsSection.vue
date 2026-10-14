@@ -120,8 +120,8 @@ defineExpose({
 <template>
   <SidebarSection
     ref="section"
+    section="projects"
     data-testid="sidebar-projects"
-    :title="t('projects.heading')"
     :count="projects.length"
     :collapsed="collapsed"
     :body-size="bodySize"

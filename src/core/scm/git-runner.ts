@@ -27,6 +27,11 @@ export function gitAtLeast(version: GitVersion, major: number, minor: number): b
   return version.major > major || (version.major === major && version.minor >= minor);
 }
 
+// Never for checkout or reset, which git 2.43 parses wrongly with it.
+export function endOfOptions(version: GitVersion): string[] {
+  return gitAtLeast(version, 2, 24) ? ['--end-of-options'] : [];
+}
+
 // Any scheme://userinfo@ loses its userinfo: tokens and passwords ride in remote URLs.
 const URL_USERINFO = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@]*@/gi;
 
@@ -48,7 +53,8 @@ function logArg(arg: string): string {
   return /^[\w@%+=:,./-]+$/.test(arg) ? arg : escapeLogUnsafe(JSON.stringify(arg));
 }
 
-function logText(text: string): string {
+/** Text fit for a log line: URL userinfo redacted and control, line-separator and bidi characters escaped. */
+export function logText(text: string): string {
   return escapeLogUnsafe(redactUrls(text));
 }
 
@@ -147,15 +153,31 @@ export interface GitCall {
   // with what was read
   readonly onData?: (chunk: string) => 'stop' | undefined;
   // Makes the call cancellable: its process tree runs in its own job (a process group on POSIX), and an abort kills the
-  // whole tree and rejects with the signal's reason. Only a call that never writes the index or a ref may carry one.
+  // whole tree and rejects with the signal's reason. A write carries one only as a remote operation, whose locks a kill leaves.
   readonly signal?: AbortSignal;
   // The owner's session job, which a cancellable call's process tree also joins, so the owner's dispose or the host's death
-  // kills it. A call without signal never joins it, so an index write is never killed.
+  // kills it. A call without signal never joins it, so an engine write that is no remote operation is never killed.
   readonly session?: ShellSessionJob;
-  // GIT_CEILING_DIRECTORIES: git looks for a repository at none of these folders nor above them
+  // GIT_CEILING_DIRECTORIES: git never searches up into one, but still checks the call's own folder when it is one
   readonly ceilingDirectories?: readonly string[];
   // git may reach no remote: GIT_ALLOW_PROTOCOL names a protocol that does not exist, which overrides every protocol.*.allow
   readonly localOnly?: true;
+  // the askpass registration's variables, only on a call that may need credentials (a remote operation or a clone)
+  readonly askpassEnv?: Readonly<Record<string, string>>;
+  // set only by Repository.withStash after its fenced stash push; fence() refuses a starting pull, merge or rebase without it
+  readonly fencedStash?: true;
+  // command-line config passed as GIT_CONFIG_COUNT pairs, which carry a key holding '=' that -c would split
+  readonly config?: ReadonlyArray<readonly [key: string, value: string]>;
+}
+
+// A clone: the one git call that runs in no project, so no trust decides it (it runs no code of an existing repository).
+export interface GitCloneCall {
+  // the folder the clone's target lies in; no git the clone starts looks for a repository above it
+  readonly cwd: string;
+  readonly args: readonly string[];
+  readonly signal: AbortSignal;
+  readonly session?: ShellSessionJob;
+  readonly askpassEnv?: Readonly<Record<string, string>>;
 }
 
 export interface GitResult {
@@ -180,7 +202,12 @@ export interface GitRunner {
   readonly git: GitBinary;
   run(call: GitCall): Promise<GitResult>;
   // the environment a call runs with, which the docs and tests read from here
-  envFor(call: Pick<GitCall, 'kind' | 'parsed' | 'literalPathspecs' | 'ceilingDirectories' | 'localOnly'>): NodeJS.ProcessEnv;
+  envFor(call: Pick<GitCall, 'kind' | 'parsed' | 'literalPathspecs' | 'ceilingDirectories' | 'localOnly' | 'askpassEnv' | 'config'>): NodeJS.ProcessEnv;
+}
+
+// The runner the host creates: run, plus clone, which ScmService's trust gate never wraps.
+export interface GitCloner {
+  clone(call: GitCloneCall): Promise<GitResult>;
 }
 
 const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
@@ -188,7 +215,7 @@ const MAX_LOGGED_STDERR_CHARS = 2000;
 const INHERITED_PATHSPEC_MODES: ReadonlySet<string> = new Set(['GIT_LITERAL_PATHSPECS', 'GIT_GLOB_PATHSPECS', 'GIT_NOGLOB_PATHSPECS', 'GIT_ICASE_PATHSPECS']);
 
 /** The environment every engine git call runs with: no prompt and no editor; literal pathspecs where it names paths. */
-export function gitEnv(call: Pick<GitCall, 'kind' | 'parsed' | 'literalPathspecs' | 'ceilingDirectories' | 'localOnly'>): NodeJS.ProcessEnv {
+export function gitEnv(call: Pick<GitCall, 'kind' | 'parsed' | 'literalPathspecs' | 'ceilingDirectories' | 'localOnly' | 'askpassEnv' | 'config'>): NodeJS.ProcessEnv {
   const env = childEnv();
   // An inherited pathspec mode turns the fence's exclusions into file names or clashes with the literal mode set here; keys
   // match as Windows does.
@@ -197,17 +224,31 @@ export function gitEnv(call: Pick<GitCall, 'kind' | 'parsed' | 'literalPathspecs
   const ceilings = [...(call.ceilingDirectories ?? []), ...(inherited ? [inherited] : [])];
   return {
     ...env,
+    // before the engine's own variables, so a registration can never override one
+    ...call.askpassEnv,
     GIT_TERMINAL_PROMPT: '0',
     GIT_EDITOR: 'true',
     GIT_MERGE_AUTOEDIT: 'no',
     ...(call.literalPathspecs ? { GIT_LITERAL_PATHSPECS: '1' } : {}),
     ...(call.localOnly ? { GIT_ALLOW_PROTOCOL: 'none' } : {}),
+    ...configPairs(call.config ?? []),
     ...(call.parsed ? { LC_ALL: 'C' } : {}),
     ...(ceilings.length > 0 ? { GIT_CEILING_DIRECTORIES: ceilings.join(path.delimiter) } : {}),
     // Status takes no optional lock, so it never holds the index lock another tool needs. A working-tree diff refreshes the
     // index whatever GIT_OPTIONAL_LOCKS says, so every engine diff passes -c diff.autoRefreshIndex=false instead.
     ...(call.kind === 'status' ? { GIT_OPTIONAL_LOCKS: '0' } : {}),
   };
+}
+
+// childEnv() drops any inherited GIT_CONFIG_COUNT, KEY and VALUE, so these are the only pairs
+function configPairs(config: ReadonlyArray<readonly [string, string]>): Record<string, string> {
+  if (config.length === 0) return {};
+  const pairs: Record<string, string> = { GIT_CONFIG_COUNT: String(config.length) };
+  config.forEach(([key, value], index) => {
+    pairs[`GIT_CONFIG_KEY_${index}`] = key;
+    pairs[`GIT_CONFIG_VALUE_${index}`] = value;
+  });
+  return pairs;
 }
 
 /** The index of the subcommand in args: the first argument that is no option, skipping the value of -c and -C. */
@@ -217,118 +258,121 @@ export function subcommandIndex(args: readonly string[]): number {
   return index;
 }
 
-export function createGitRunner(deps: GitRunnerDeps): GitRunner {
+export function createGitRunner(deps: GitRunnerDeps): GitRunner & GitCloner {
   const spawn = deps.spawn ?? ((command, args, options) => nodeSpawn(command, [...args], options));
   const now = deps.now ?? (() => Date.now());
+  const execute = (call: Omit<GitCall, 'project'>): Promise<GitResult> =>
+    new Promise<GitResult>((resolve, reject) => {
+      if (call.signal?.aborted) {
+        reject(call.signal.reason);
+        return;
+      }
+      const args = call.args;
+      const started = now();
+      const argv = args.map((arg) => logArg(redactUrls(arg))).join(' ');
+      const cancellable = call.signal !== undefined;
+      let child: ChildProcess;
+      let job: ShellJob | undefined;
+      try {
+        // detached on POSIX: its own process group, which a kill signals as a whole
+        child = spawn(deps.git.path, args, { cwd: call.cwd, env: gitEnv(call), windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'], detached: cancellable && process.platform !== 'win32' });
+        // The first statement after spawn: a hook git starts before the assignment would stay outside the job.
+        job = cancellable && child.pid !== undefined ? createShellJob(child.pid, call.session) : undefined;
+      } catch (err) {
+        deps.log.appendLine(`> git ${argv} [failed to start: ${logText(err instanceof Error ? err.message : String(err))}]`);
+        reject(err);
+        return;
+      }
+      let settled = false;
+      // Never after the call settled: the pid may name another process by then.
+      const end = (): void => {
+        if (settled) return;
+        if (cancellable && child.pid !== undefined) killProcessTree(child.pid, job);
+        else child.kill();
+      };
+      let cancelled = false;
+      const onAbort = (): void => {
+        cancelled = true;
+        end();
+      };
+      call.signal?.addEventListener('abort', onAbort, { once: true });
+      const release = (): void => {
+        call.signal?.removeEventListener('abort', onAbort);
+        job?.dispose();
+      };
+      const out: Buffer[] = [];
+      let outBytes = 0;
+      let stderr = '';
+      let tooLarge = false;
+      let stopped = false;
+      const decoder = call.onData ? new StringDecoder('utf8') : undefined;
+      const max = call.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+      child.stdout!.on('data', (chunk: Buffer) => {
+        if (tooLarge || stopped) return;
+        if (decoder && call.onData!(decoder.write(chunk)) === 'stop') {
+          stopped = true;
+          end();
+          return;
+        }
+        outBytes += chunk.length;
+        if (outBytes > max) {
+          tooLarge = true;
+          // An index write is never killed: past the bound its output is dropped and it runs to its end.
+          if (cancellable) end();
+          return;
+        }
+        out.push(chunk);
+      });
+      child.stderr!.setEncoding('utf8');
+      child.stderr!.on('data', (chunk: string) => {
+        if (stderr.length < 1_000_000) stderr += chunk;
+      });
+      child.stdin!.on('error', () => undefined);
+      child.stdin!.end(call.input ?? '');
+      child.on('error', (err) => {
+        if (settled) return;
+        settled = true;
+        release();
+        deps.log.appendLine(`> git ${argv} [failed to start: ${logText(err.message)}]`);
+        reject(err);
+      });
+      child.on('close', (code) => {
+        if (settled) return;
+        settled = true;
+        release();
+        const ms = now() - started;
+        if (cancelled) {
+          deps.log.appendLine(`> git ${argv} [${ms}ms] cancelled`);
+          reject(call.signal!.reason);
+          return;
+        }
+        if (tooLarge && cancellable) {
+          deps.log.appendLine(`> git ${argv} [${ms}ms, output over ${max} bytes]`);
+          reject(new GitOutputTooLargeError());
+          return;
+        }
+        const exitCode = stopped ? 0 : (code ?? -1);
+        const outcome = stopped ? ' stopped' : exitCode === 0 ? '' : ` exit ${exitCode}`;
+        deps.log.appendLine(`> git ${argv} [${ms}ms]${outcome}${tooLarge ? `, output over ${max} bytes dropped` : ''}`);
+        if (exitCode !== 0 && stderr.trim() !== '') deps.log.appendLine(logText(stderr.trim().slice(0, MAX_LOGGED_STDERR_CHARS)));
+        const stdout = Buffer.concat(out);
+        if (exitCode !== 0 && !call.allowFailure) {
+          reject(new GitError(`git ${args[subcommandIndex(args)] ?? ''} exited with ${exitCode}`, code, stdout.toString('utf8'), stderr));
+          return;
+        }
+        resolve({ exitCode, stdout, stderr });
+      });
+    });
   return {
     git: deps.git,
     envFor: gitEnv,
     run(call) {
-      return new Promise<GitResult>((resolve, reject) => {
-        if (call.signal?.aborted) {
-          reject(call.signal.reason);
-          return;
-        }
-        if (!deps.isTrusted(call.project)) {
-          reject(new GitUntrustedError());
-          return;
-        }
-        const args = call.args;
-        const started = now();
-        const argv = args.map((arg) => logArg(redactUrls(arg))).join(' ');
-        const cancellable = call.signal !== undefined;
-        let child: ChildProcess;
-        let job: ShellJob | undefined;
-        try {
-          // detached on POSIX: its own process group, which a kill signals as a whole
-          child = spawn(deps.git.path, args, { cwd: call.cwd, env: gitEnv(call), windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'], detached: cancellable && process.platform !== 'win32' });
-          // The first statement after spawn: a hook git starts before the assignment would stay outside the job.
-          job = cancellable && child.pid !== undefined ? createShellJob(child.pid, call.session) : undefined;
-        } catch (err) {
-          deps.log.appendLine(`> git ${argv} [failed to start: ${logText(err instanceof Error ? err.message : String(err))}]`);
-          reject(err);
-          return;
-        }
-        let settled = false;
-        // Never after the call settled: the pid may name another process by then.
-        const end = (): void => {
-          if (settled) return;
-          if (cancellable && child.pid !== undefined) killProcessTree(child.pid, job);
-          else child.kill();
-        };
-        let cancelled = false;
-        const onAbort = (): void => {
-          cancelled = true;
-          end();
-        };
-        call.signal?.addEventListener('abort', onAbort, { once: true });
-        const release = (): void => {
-          call.signal?.removeEventListener('abort', onAbort);
-          job?.dispose();
-        };
-        const out: Buffer[] = [];
-        let outBytes = 0;
-        let stderr = '';
-        let tooLarge = false;
-        let stopped = false;
-        const decoder = call.onData ? new StringDecoder('utf8') : undefined;
-        const max = call.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
-        child.stdout!.on('data', (chunk: Buffer) => {
-          if (tooLarge || stopped) return;
-          if (decoder && call.onData!(decoder.write(chunk)) === 'stop') {
-            stopped = true;
-            end();
-            return;
-          }
-          outBytes += chunk.length;
-          if (outBytes > max) {
-            tooLarge = true;
-            // An index write is never killed: past the bound its output is dropped and it runs to its end.
-            if (cancellable) end();
-            return;
-          }
-          out.push(chunk);
-        });
-        child.stderr!.setEncoding('utf8');
-        child.stderr!.on('data', (chunk: string) => {
-          if (stderr.length < 1_000_000) stderr += chunk;
-        });
-        child.stdin!.on('error', () => undefined);
-        child.stdin!.end(call.input ?? '');
-        child.on('error', (err) => {
-          if (settled) return;
-          settled = true;
-          release();
-          deps.log.appendLine(`> git ${argv} [failed to start: ${logText(err.message)}]`);
-          reject(err);
-        });
-        child.on('close', (code) => {
-          if (settled) return;
-          settled = true;
-          release();
-          const ms = now() - started;
-          if (cancelled) {
-            deps.log.appendLine(`> git ${argv} [${ms}ms] cancelled`);
-            reject(call.signal!.reason);
-            return;
-          }
-          if (tooLarge && cancellable) {
-            deps.log.appendLine(`> git ${argv} [${ms}ms, output over ${max} bytes]`);
-            reject(new GitOutputTooLargeError());
-            return;
-          }
-          const exitCode = stopped ? 0 : (code ?? -1);
-          const outcome = stopped ? ' stopped' : exitCode === 0 ? '' : ` exit ${exitCode}`;
-          deps.log.appendLine(`> git ${argv} [${ms}ms]${outcome}${tooLarge ? `, output over ${max} bytes dropped` : ''}`);
-          if (exitCode !== 0 && stderr.trim() !== '') deps.log.appendLine(logText(stderr.trim().slice(0, MAX_LOGGED_STDERR_CHARS)));
-          const stdout = Buffer.concat(out);
-          if (exitCode !== 0 && !call.allowFailure) {
-            reject(new GitError(`git ${args[subcommandIndex(args)] ?? ''} exited with ${exitCode}`, code, stdout.toString('utf8'), stderr));
-            return;
-          }
-          resolve({ exitCode, stdout, stderr });
-        });
-      });
+      if (!deps.isTrusted(call.project)) return call.signal?.aborted ? Promise.reject(call.signal.reason) : Promise.reject(new GitUntrustedError());
+      return execute(call);
+    },
+    clone(call) {
+      if (call.args[subcommandIndex(call.args)] !== 'clone') return Promise.reject(new Error('The clone entry runs git clone only'));
+      return execute({ cwd: call.cwd, args: call.args, kind: 'mutation', signal: call.signal, ceilingDirectories: [call.cwd], ...(call.session ? { session: call.session } : {}), ...(call.askpassEnv ? { askpassEnv: call.askpassEnv } : {}) });
     },
   };
 }
@@ -351,8 +395,7 @@ export const MAX_CONCURRENT_READS = 4;
 /**
  * One repository's work queue. Reads run up to MAX_CONCURRENT_READS at once. Mutations and status runs are exclusive of
  * each other, in arrival order; one status runs at a time, and every status request made while one waits joins it (the one
- * trailing run). Disposing rejects what waits and kills the process trees of running reads and status runs through signal;
- * a running mutation finishes, since an index write is never cancelled.
+ * trailing run). Disposing kills running reads, status runs and a pull through signal; any other running mutation finishes.
  */
 export class RepoQueue {
   private reads = 0;
@@ -365,7 +408,7 @@ export class RepoQueue {
   private readonly idleListeners = new Set<() => void>();
   private readonly cancel = new AbortController();
 
-  // Aborted on dispose. Only a call that never writes the index or a ref may carry it (GitCall.signal).
+  // Aborted on dispose; an engine write other than a remote operation never carries it.
   get signal(): AbortSignal {
     return this.cancel.signal;
   }

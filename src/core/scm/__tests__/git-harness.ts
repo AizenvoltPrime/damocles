@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -10,7 +10,8 @@ import type { FileWatcher, FileWatcherFactory } from '../../../platform/file-wat
 import type { Memento } from '../../../platform/key-value-state';
 import type { SettingsChange, SettingsStore } from '../../../platform/settings-store';
 import type { TrustService } from '../../../platform/trust-service';
-import { createGitRunner, parseGitVersion, type GitRunner } from '../git-runner';
+import type { AskpassServer } from '../askpass/askpass-server';
+import { createGitRunner, parseGitVersion, type GitCloner, type GitRunner } from '../git-runner';
 import { ScmService, type ScmQuestion } from '../scm-service';
 
 // Real git in temp folders for the source control engine tests: the sandbox, fakes of the platform services and a harness.
@@ -139,7 +140,7 @@ export interface Harness {
   answers: Array<number | undefined>;
 }
 
-export function harness(opts: { trusted?: readonly string[]; state?: MapMemento; settings?: FakeSettings; runner?: GitRunner | null; realpath?: (folder: string) => Promise<string>; trash?: (absolute: string) => Promise<void> } = {}): Harness {
+export function harness(opts: { trusted?: readonly string[]; state?: MapMemento; settings?: FakeSettings; runner?: (GitRunner & GitCloner) | null; realpath?: (folder: string) => Promise<string>; trash?: (absolute: string) => Promise<void>; askpass?: AskpassServer; watchers?: FileWatcherFactory } = {}): Harness {
   const trust = new FakeTrust();
   for (const dir of opts.trusted ?? []) trust.trusted.add(path.resolve(dir).toLowerCase());
   const log: string[] = [];
@@ -164,7 +165,7 @@ export function harness(opts: { trusted?: readonly string[]; state?: MapMemento;
   (h as { service: ScmService }).service = new ScmService({
     runner,
     trust,
-    watchers,
+    watchers: opts.watchers ?? watchers,
     settings,
     globalState: state,
     ask: async (question) => {
@@ -185,6 +186,7 @@ export function harness(opts: { trusted?: readonly string[]; state?: MapMemento;
     t: (message, ...args) => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)])),
     log: (line) => h.serviceLog.push(line),
     ...(opts.realpath ? { realpath: opts.realpath } : {}),
+    ...(opts.askpass ? { askpass: opts.askpass } : {}),
   });
   return h;
 }
@@ -253,6 +255,30 @@ export function useGitSandbox(): void {
     }
     fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   });
+}
+
+// On Windows another process holds the file open without sharing delete, as a running git holds its lock.
+export async function unremovable(file: string): Promise<() => Promise<void>> {
+  if (process.platform !== 'win32') {
+    const dir = path.dirname(file);
+    const mode = fs.statSync(dir).mode & 0o777;
+    fs.chmodSync(dir, 0o555);
+    return async () => fs.chmodSync(dir, mode);
+  }
+  const shell = path.join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const script = `$f = [IO.File]::Open('${file.replace(/'/g, "''")}', 'Open', 'ReadWrite', 'None'); [Console]::Out.WriteLine('held'); [Console]::Out.Flush(); Start-Sleep -Seconds 120`;
+  const child = spawn(shell, ['-NoProfile', '-NonInteractive', '-Command', script], { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true });
+  await new Promise<void>((resolve, reject) => {
+    child.stdout.on('data', (chunk: Buffer) => {
+      if (chunk.toString('utf8').includes('held')) resolve();
+    });
+    child.once('exit', (code) => reject(new Error(`the holder exited with ${code}`)));
+  });
+  return () =>
+    new Promise<void>((resolve) => {
+      child.once('exit', () => resolve());
+      child.kill();
+    });
 }
 
 // Points repo's core.fsmonitor at a script that appends to marker, so a test sees whether git ran repository-controlled code.

@@ -29,6 +29,7 @@ function makeAgent(partial: Partial<TeamAgent> & { name: string; role: TeamAgent
     teamId: 'team-1',
     attempt: 0,
     specialization: '',
+    description: null,
     status: 'awaiting-review',
     model: 'test',
     profileId: null,

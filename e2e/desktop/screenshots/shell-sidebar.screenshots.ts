@@ -8,7 +8,7 @@ import { answerTagPicker, confirmDialog, overlayMenu, readyOverlay } from '../su
 import { openProjectChat, saveScreenshot, settled, showTheme, THEMES } from '../support/screenshots';
 import { setContentSize } from '../support/settings';
 import { shellState } from '../support/shell';
-import { chatRow, clickChat, clickRowAction, readyShell } from '../support/shell-ui';
+import { chatRow, clickChat, clickRowAction, clickSectionAction, readyShell } from '../support/shell-ui';
 import { chatInput, sendAndAwaitEcho } from '../support/ui';
 
 // Review captures of the title bar, the Projects and Chats sidebar, its row actions and its overlay menus and dialogs.
@@ -19,7 +19,7 @@ const selectedChatId = async (app: ElectronApplication): Promise<string> => (awa
 async function newChat(app: ElectronApplication, shell: Page, known: Page[]): Promise<Page> {
   const before = await selectedChatId(app);
   const opened = nextChat(app, known);
-  await shell.getByTestId('new-chat').click();
+  await clickSectionAction(shell, 'new-chat');
   await expect.poll(async () => {
     const id = await selectedChatId(app);
     return id !== before && id.startsWith('new:');

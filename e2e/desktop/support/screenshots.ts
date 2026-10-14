@@ -6,7 +6,8 @@ import { expect, type ElectronApplication, type Locator, type Page, type TestInf
 import { activeChat, nextChat } from './fixtures';
 import { captureWindow, pageFramesShown } from './browser';
 import { REPO_ROOT } from './hermetic';
-import { shellState } from './shell';
+import { overlayViewState } from './overlay';
+import { overlayPage, shellPage, shellState } from './shell';
 import { addProject, chatInput, clickMenu, setThemeSource } from './ui';
 
 export const THEMES = ['dark', 'light'] as const;
@@ -87,6 +88,55 @@ export async function showTheme(app: ElectronApplication, page: Page, theme: The
   await setThemeSource(app, theme);
   await expect(page.locator('body')).toHaveAttribute('data-vscode-theme-kind', `vscode-${theme}`);
   await settled(page);
+}
+
+/** Saves `page`, or `target` on it, once it has settled. */
+export async function shot(page: Page, testInfo: TestInfo, name: string, target?: Locator): Promise<void> {
+  await settled(page);
+  await saveScreenshot(page, testInfo, name, target);
+}
+
+/** The whole window as the user sees it, once the shell and the overlay have settled. */
+export async function windowShot(app: ElectronApplication, testInfo: TestInfo, name: string): Promise<void> {
+  await settled(await shellPage(app));
+  await settled(await overlayPage(app));
+  await saveWindowScreenshot(app, testInfo, name);
+}
+
+/** Sets the host font on the shell and the overlay the way the theme style does; 13 is the desktop default. */
+export async function setFont(app: ElectronApplication, px: number): Promise<void> {
+  for (const page of [await shellPage(app), await overlayPage(app)]) {
+    await page.evaluate((size) => document.documentElement.style.setProperty('--d-font-size', `${size}px`), px);
+    await settled(page);
+  }
+}
+
+/** Switches the app theme and waits until the shell page wears it; a chat page may be unloaded by a project switch. */
+export async function showShellTheme(app: ElectronApplication, theme: Theme): Promise<void> {
+  await setThemeSource(app, theme);
+  const shell = await shellPage(app);
+  await expect(shell.locator('body')).toHaveClass(new RegExp(`(^| )vscode-${theme}( |$)`));
+  await settled(shell);
+}
+
+/** Emulates the OS reduced-motion preference on the shell and the overlay. */
+export async function setReducedMotion(app: ElectronApplication, on: boolean): Promise<void> {
+  // the OS preference, not data-reduced-motion, which every theme switch rewrites from main's setting
+  for (const page of [await shellPage(app), await overlayPage(app)]) await page.emulateMedia({ reducedMotion: on ? 'reduce' : null });
+}
+
+/** Escape closes the top overlay popup; waits until main has hidden the overlay view, so the next click reaches the shell. */
+export async function dismiss(app: ElectronApplication, overlay: Page, popup: Locator): Promise<void> {
+  await overlay.keyboard.press('Escape');
+  await expect(popup).toHaveCount(0);
+  await expect.poll(async () => (await overlayViewState(app)).visible).toBe(false);
+}
+
+/** The pointer in the window's far corner and focus on nothing, so no sidebar section shows its title actions. */
+export async function rest(shell: Page): Promise<void> {
+  const [width, height] = await shell.evaluate(() => [window.innerWidth, window.innerHeight] as const);
+  await shell.mouse.move(width - 40, height - 40);
+  await shell.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 }
 
 /**

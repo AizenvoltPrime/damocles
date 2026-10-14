@@ -11,6 +11,7 @@ import { openSettingsModal, setContentSize } from '../support/settings';
 import { overlayPage, selectedProjectKey, SHELL_URL, shellPage } from '../support/shell';
 import { clickMenu } from '../support/ui';
 import { activeTab, codeEditor, conflictBar, editorShows, filesRow, openInEditor, quickOpen, quickPick, toggleTerminal } from '../support/editor';
+import { clickSectionAction } from '../support/shell-ui';
 
 // Review captures for slice 7 (editor pane, layout grid, Files, Quick Open), saved to DAMOCLES_SCREENSHOT_DIR, dark and light.
 const OUT = process.env.DAMOCLES_SCREENSHOT_DIR ?? path.join(process.env.USERPROFILE ?? REPO_ROOT, '.damocles', 'screenshots', 'slice7');
@@ -232,7 +233,7 @@ test('slice 7 captures', async ({ foreground: _foreground, home, launch }) => {
     // Files: the inline new-file input and a file's context menu.
     await filesRow(shell, 'src').click();
     await filesRow(shell, 'src').focus();
-    await shell.getByTestId('files-new-file').click();
+    await clickSectionAction(shell, 'files-new-file');
     await shell.getByTestId('files-edit-input').fill('rate-limit.ts');
     await shot(shell, t('files-inline-new-file'), shell.getByTestId('sidebar'));
     await shell.getByTestId('files-edit-input').press('Escape');

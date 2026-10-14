@@ -2,7 +2,7 @@
 import { computed, inject, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useElementSize } from '@vueuse/core';
-import { FolderPlus, Plus, SquareTerminal } from 'lucide-vue-next';
+import { Plus, SquareTerminal } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import type { DamoclesShellApi, ShellState } from '../../preload/shell-channels';
 import { TERMINAL_STORE } from './terminal-store';
@@ -25,7 +25,7 @@ const creating = ref(false);
 async function createHere(): Promise<void> {
   creating.value = true;
   try {
-    const result = await props.api.terminal.create({ profileId: null, projectKey: null });
+    const result = await props.api.terminal.create({ profileId: null, target: { current: true } });
     if (result.ok) store.requestFocus(result.id);
   } finally {
     creating.value = false;
@@ -68,7 +68,7 @@ function select(id: string): void {
               {{ t('grid.terminal.emptyTitle') }}
             </p>
             <p class="max-w-70 text-11.5 text-(--d-faint)">
-              {{ t('terminal.emptyText', { shortcut: state.shortcuts.toggleTerminal }) }}
+              {{ t(state.projects.length === 0 ? 'terminal.emptyTextHome' : 'terminal.emptyText', { shortcut: state.shortcuts.toggleTerminal }) }}
             </p>
             <Button
               size="sm"
@@ -81,25 +81,20 @@ function select(id: string): void {
               <Plus aria-hidden="true" />{{ t('terminal.new') }}
             </Button>
           </template>
-          <template v-else-if="state.projects.length === 0">
-            <p class="text-12.5 font-medium text-(--d-muted)">
-              {{ t('terminal.noProject') }}
-            </p>
-            <Button
-              size="sm"
-              variant="outline"
-              data-testid="terminal-empty-add-project"
-              class="d-press mt-1 h-7 gap-1.5 rounded-7 border-(--d-border2) bg-(--d-card) px-3 text-xs hover:border-(--d-accent) hover:bg-(--d-card) [&_svg]:size-3.5"
-              @click="api.addProject()"
-            >
-              <FolderPlus aria-hidden="true" />{{ t('projects.add') }}
-            </Button>
-          </template>
           <p
-            v-else
+            v-else-if="terminal.profilesReady"
+            data-testid="terminal-no-shell"
             class="max-w-70 text-12.5 font-medium text-(--d-muted)"
           >
             {{ t('terminal.noShell') }}
+          </p>
+          <p
+            v-else
+            role="status"
+            data-testid="terminal-detecting"
+            class="max-w-70 text-11.5 text-(--d-faint)"
+          >
+            {{ t('terminal.detecting') }}
           </p>
         </div>
       </Transition>

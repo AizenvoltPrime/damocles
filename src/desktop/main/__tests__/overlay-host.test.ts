@@ -263,6 +263,38 @@ describe('overlay requests', () => {
     void question;
   });
 
+  it('withdraws one message dialog by its signal, leaving another question of its kind open', async () => {
+    loaded();
+    const trust = host.request({ kind: 'message', severity: 'warning', message: 'Trust this folder?', actions: ['Trust'], cancelLabel: 'Cancel' }, undefined);
+    const trustId = lastRequestId();
+    const withdrawn = new AbortController();
+    const hostKey = host.request({ kind: 'message', severity: 'danger', message: 'Continue connecting?', actions: ['Yes'], cancelLabel: 'No' }, undefined, undefined, undefined, withdrawn.signal);
+    const hostKeyId = lastRequestId();
+    withdrawn.abort();
+    await expect(hostKey).resolves.toEqual({ kind: 'dismissed' });
+    expect(view().webContents.send).toHaveBeenCalledWith(OVERLAY_CHANNELS.cancel, hostKeyId);
+    expect(view().webContents.send).not.toHaveBeenCalledWith(OVERLAY_CHANNELS.cancel, trustId);
+    expect(host.isOpen('message')).toBe(true);
+    emit(OVERLAY_CHANNELS.answer, own(), trustId, { kind: 'message', action: 0 });
+    await expect(trust).resolves.toEqual({ kind: 'message', action: 0 });
+    expect(host.mode).toBe('hidden');
+  });
+
+  it('answers an already withdrawn request dismissed without showing it, and withdraws a held one before it is sent', async () => {
+    loaded();
+    const gone = new AbortController();
+    gone.abort();
+    await expect(host.request(MENU, undefined, undefined, undefined, gone.signal)).resolves.toEqual({ kind: 'dismissed' });
+    expect(view().webContents.send.mock.calls.filter(([channel]) => channel === OVERLAY_CHANNELS.request)).toEqual([]);
+    view().webContents.emit('did-navigate', {}, OVERLAY_PAGE_URL, 200, 'OK');
+    const withdrawn = new AbortController();
+    const held = host.request(MENU, undefined, undefined, undefined, withdrawn.signal);
+    withdrawn.abort();
+    await expect(held).resolves.toEqual({ kind: 'dismissed' });
+    view().webContents.emit('did-finish-load');
+    expect(view().webContents.send.mock.calls.filter(([channel]) => channel === OVERLAY_CHANNELS.request)).toEqual([]);
+  });
+
   it('hides and rejects the open request when the overlay crashes, then reloads it and holds a new request for it', async () => {
     loaded();
     const answer = host.request(MENU, returnFocus as never);
@@ -904,8 +936,20 @@ describe('overlay request validation', () => {
     expect(parseOverlayAnswer({ kind: 'newTerminal', profileId: 'pwsh', projectKey: 'c:\\alpha' }, request)).toEqual({ kind: 'newTerminal', profileId: 'pwsh', projectKey: 'c:\\alpha' });
     expect(parseOverlayAnswer({ kind: 'newTerminal', profileId: 'cmd', projectKey: 'c:\\alpha' }, request)).toBeUndefined();
     expect(parseOverlayAnswer({ kind: 'newTerminal', profileId: 'pwsh', projectKey: 'C:\\Windows' }, request)).toBeUndefined();
+    expect(parseOverlayAnswer({ kind: 'newTerminal', profileId: 'pwsh', projectKey: null }, request)).toBeUndefined();
     expect(parseOverlayAnswer({ kind: 'dismissed' }, request)).toEqual({ kind: 'dismissed' });
     expect(parseOverlayRequest(request)).toBeUndefined();
+  });
+
+  it('takes the home folder (a null project) for a new-terminal pick only when the request offered no project', () => {
+    const request: OverlayRequest = {
+      kind: 'newTerminal',
+      profiles: [{ id: 'pwsh', name: 'PowerShell', path: 'C:\\pwsh.exe', args: [], source: 'detected', icon: 'powershell', customIcon: null, color: null, isDefault: true }],
+      projects: [],
+    };
+    expect(parseOverlayAnswer({ kind: 'newTerminal', profileId: 'pwsh', projectKey: null }, request)).toEqual({ kind: 'newTerminal', profileId: 'pwsh', projectKey: null });
+    expect(parseOverlayAnswer({ kind: 'newTerminal', profileId: 'pwsh', projectKey: 'c:\\alpha' }, request)).toBeUndefined();
+    expect(parseOverlayAnswer({ kind: 'newTerminal', profileId: 'pwsh' }, request)).toBeUndefined();
   });
 });
 
@@ -1117,5 +1161,78 @@ describe('overlay rasterizing (D52)', () => {
     await expect(third).resolves.toBeUndefined();
     emit(OVERLAY_CHANNELS.rasterized, own(), thirdId, new Uint8Array(pngFixture(16, 16)));
     expect(redraws).toBe(4);
+  });
+});
+
+describe('an input box\'s browse button', () => {
+  const BOX: OverlayRequest = { kind: 'input', prompt: 'Please provide a worktree path', value: '/r.worktrees/wt', browse: { tooltip: 'Select Worktree Destination' } };
+  const browse = (raw: unknown) => view().webContents.ipc.handlers.get(OVERLAY_CHANNELS.inputBrowse)!(own(), raw);
+
+  it('answers closed unless an input box is open, and null for a box without a browse handler', async () => {
+    loaded();
+    await expect(browse({ value: '' })).resolves.toEqual({ ok: false, reason: 'closed' });
+    void host.request({ kind: 'input', prompt: 'Name' }, undefined);
+    await expect(browse({ value: 'x' })).resolves.toEqual({ ok: true, value: null });
+    await expect(browse({ value: 'x', extra: 1 })).rejects.toThrow('Malformed');
+  });
+
+  it('runs the open box\'s handler with its value, gives the overlay focus back and answers the new value', async () => {
+    loaded();
+    const handler = vi.fn(async (value: string) => ({ value: `${value}-2`, valueSelection: [3, 5] as const }));
+    void host.request(BOX, undefined, undefined, handler);
+    view().webContents.focus.mockClear();
+    await expect(browse({ value: '/a/b' })).resolves.toEqual({ ok: true, value: { value: '/a/b-2', valueSelection: [3, 5] } });
+    expect(handler).toHaveBeenCalledWith('/a/b');
+    expect(view().webContents.focus).toHaveBeenCalled();
+    handler.mockResolvedValueOnce(undefined as never);
+    await expect(browse({ value: '/a/b' })).resolves.toEqual({ ok: true, value: null });
+  });
+
+  it('takes focus back only while the window is focused, else once it activates', async () => {
+    loaded();
+    void host.request(BOX, undefined, undefined, async () => ({ value: '/picked' }));
+    view().webContents.focus.mockClear();
+    window.focused = false;
+    const before = activations;
+    await expect(browse({ value: '' })).resolves.toEqual({ ok: true, value: { value: '/picked' } });
+    expect(view().webContents.focus).not.toHaveBeenCalled();
+    expect(activations).toBe(before + 1);
+  });
+
+  it('answers null to a second call while the first one\'s dialog is open, and runs the handler again once it closed', async () => {
+    loaded();
+    let finish!: (result: { value: string }) => void;
+    const handler = vi.fn(() => new Promise<{ value: string }>((resolve) => (finish = resolve)));
+    void host.request(BOX, undefined, undefined, handler);
+    const first = browse({ value: '' });
+    await expect(browse({ value: '' })).resolves.toEqual({ ok: true, value: null });
+    expect(handler).toHaveBeenCalledTimes(1);
+    finish({ value: '/one' });
+    await expect(first).resolves.toEqual({ ok: true, value: { value: '/one' } });
+    const second = browse({ value: '' });
+    finish({ value: '/two' });
+    await expect(second).resolves.toEqual({ ok: true, value: { value: '/two' } });
+    expect(handler).toHaveBeenCalledTimes(2);
+  });
+
+  it('drops a result that arrives after the box closed, and one beyond the input bounds', async () => {
+    loaded();
+    let finish!: (result: { value: string }) => void;
+    void host.request(BOX, undefined, undefined, () => new Promise((resolve) => (finish = resolve)));
+    const late = browse({ value: '' });
+    host.dismiss('input');
+    finish({ value: '/picked/wt' });
+    await expect(late).resolves.toEqual({ ok: true, value: null });
+    void host.request(BOX, undefined, undefined, async () => ({ value: '/x', valueSelection: [0, 9] }));
+    await expect(browse({ value: '' })).resolves.toEqual({ ok: true, value: null });
+    expect(lines.some((line) => line.includes('a browse result exceeds the input bounds'))).toBe(true);
+  });
+
+  it('keeps the handler of a box held while the page loads', async () => {
+    host.load();
+    const handler = vi.fn(async () => ({ value: '/held' }));
+    void host.request(BOX, undefined, undefined, handler);
+    view().webContents.emit('did-finish-load');
+    await expect(browse({ value: '' })).resolves.toEqual({ ok: true, value: { value: '/held' } });
   });
 });

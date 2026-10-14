@@ -584,7 +584,7 @@ describe('useTeamStore.handleAgentStatusUpdate across attempts', () => {
       status: 'running',
       phase: 'working',
       agents: [{
-        agentId: AGENT, name: 'alpha', role: 'specialist', specialization: '', model: 'opus',
+        agentId: AGENT, name: 'alpha', role: 'specialist', description: null, model: 'opus',
         profileId: null, attempt: 0, status: 'running', activeMs: 3000, runningSince: 4000,
         toolCount: 5, lastToolName: 'Bash',
         totalInputTokens: 8, totalOutputTokens: 665, cacheReadTokens: 56_118, cacheCreationTokens: 19_628,
@@ -788,7 +788,7 @@ describe('useTeamStore failed model calls', () => {
     store.restoreTeamFromHistory({
       teamId: 'team-1', toolUseId: 'toolu_team', title: 'Team', status: 'running', phase: 'working',
       agents: [{
-        agentId: AGENT, name: 'worker', role: 'specialist', specialization: '', model: '', profileId: null, attempt: 0,
+        agentId: AGENT, name: 'worker', role: 'specialist', description: null, model: '', profileId: null, attempt: 0,
         status: 'running', activeMs: 0, runningSince: 1, toolCount: 0, lastToolName: null, totalInputTokens: 0,
         totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0, dollarBilled: true, effort: null,
         progressSummary: null, result: null, logFilePath: null,

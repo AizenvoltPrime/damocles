@@ -142,6 +142,8 @@ export interface TeamAgent {
    *  transcript) but every attempt gets its own browser scope, so this disambiguates them. */
   attempt: number;
   specialization: string;
+  /** The card's label: the lead's 3-5 word description at spawn. Null until a spawn, and for a log written before labels. */
+  description: string | null;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'awaiting-review' | 'standby' | 'monitoring';
   model: string;
   profileId: string | null;
@@ -165,7 +167,7 @@ export interface TeamAgent {
   /** A work field: the attempt's session's published effort, null until that session exists. */
   effort: EffortBadgeLevel | null;
   finalResponse: string | null;
-  /** A work field: the `result` this attempt's latest `agent-completed` entry recorded, which the card shows. */
+  /** A work field: the `result` this attempt's latest `agent-completed` entry recorded, which the card shows. Null while the attempt runs or parks. */
   result: string | null;
   error: string | null;
   logFilePath: string | null;
@@ -471,6 +473,7 @@ export interface TeamLogSpawn {
   name: string;
   role: AgentRole;
   specialization: string;
+  description: string | null;
   model: string;
   dollarBilled: boolean;
   profileId: string | null;
@@ -543,9 +546,9 @@ export interface AgentMcpContext {
    */
   deliverUserNote: (text: string) => boolean;
   /** `reviews` is a reviewer's declared implementors: required with `kind: 'reviewer'`, rejected otherwise. */
-  startSpecialist: (name: string, task: string, profileId?: string, kind?: SpecialistKind, reviews?: string[]) => string;
+  startSpecialist: (name: string, description: string, task: string, profileId?: string, kind?: SpecialistKind, reviews?: string[]) => string;
   /** Re-run a failed/cancelled specialist as a fresh attempt (reuses agentId, preserves transcript). An absent `reviews` keeps a reviewer's pairs. */
-  redispatchSpecialist: (name: string, task: string, profileId?: string, kind?: SpecialistKind, reviews?: string[]) => string;
+  redispatchSpecialist: (name: string, description: string, task: string, profileId?: string, kind?: SpecialistKind, reviews?: string[]) => string;
   /** Mechanical read-gate: the lead cannot spawn until it has read the immutable `mission-brief`. */
   checkBriefReadGate: () => { ok: boolean; error?: string };
   /** Whether a message to `name` can be delivered now — false (with guidance) for undeliverable statuses. */

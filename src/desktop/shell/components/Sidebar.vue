@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, shallowRef, toRaw, watch } from 'vue';
+import { computed, provide, ref, shallowRef, toRaw, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useElementSize, useWindowSize } from '@vueuse/core';
-import { MAX_SEARCH_VIEW_STATES, MIN_SECTION_SIZE, MIN_SIDEBAR_WIDTH, type DamoclesShellApi, type FileRef, type SearchViewState, type ShellLayout, type ScmViewOptions, type ShellSidebarLayout, type ShellState } from '../../preload/shell-channels';
+import { boundRepositoryViewStates, MAX_SEARCH_VIEW_STATES, MIN_SECTION_SIZE, MIN_SIDEBAR_WIDTH, SIDEBAR_SECTIONS, type DamoclesShellApi, type FileRef, type SearchViewState, type ShellLayout, type ScmViewOptions, type ShellSidebarLayout, type ShellState, type SidebarSectionId } from '../../preload/shell-channels';
+import type { OverlayMenuItem } from '../../preload/overlay-channels';
 import { remPx } from '@/composables/useRemPx';
 import { atRootFont, GRID_SASH_REM, ROW_SASH_OVERLAP_REM, ROW_SASH_REM, SASH_KEY_STEP_REM, SECTION_HEADER_REM } from '../layout';
 import ProjectsSection from './ProjectsSection.vue';
@@ -10,17 +11,21 @@ import ChatsSection from './ChatsSection.vue';
 import FilesSection from './FilesSection.vue';
 import SearchSection from '../search/SearchSection.vue';
 import ScmSection from '../scm/ScmSection.vue';
+import RepositoriesSection from '../scm/RepositoriesSection.vue';
+import { ALWAYS_SHOW_SECTION_ACTIONS, SECTION_ORDER, SECTION_TITLES } from './sidebar-section';
 import Sash from '../layout/Sash.vue';
 import { COLUMN_MIN_PX, gridAreas, gridMinWidth } from '../layout/layout-model';
-import { fitSections, largestSection, SIZED_SECTIONS, yieldTo, type SectionSizes, type SizedSection } from '../layout/section-sizes';
+import { fitSections, isSizedSection, moveSash, sashRange, SIZED_SECTIONS, yieldTo, type SectionSizes, type SizedSection, type SplitItem } from '../layout/section-sizes';
+import { dropSection, sameOrder, shiftSection, type SectionOrder } from '../layout/section-order';
 
 defineOptions({ name: 'ShellSidebar' });
 
 const props = defineProps<{ api: DamoclesShellApi; state: ShellState }>();
 const { t } = useI18n();
+provide(ALWAYS_SHOW_SECTION_ACTIONS, computed(() => props.state.sidebar.alwaysShowHeaderActions));
 
-// rem: five section headers plus the four row sashes between them.
-const SECTION_CHROME_REM = 5 * SECTION_HEADER_REM + 4 * (ROW_SASH_REM - 2 * ROW_SASH_OVERLAP_REM);
+// rem: six section headers plus the five row sashes between them.
+const SECTION_CHROME_REM = 6 * SECTION_HEADER_REM + 5 * (ROW_SASH_REM - 2 * ROW_SASH_OVERLAP_REM);
 
 const root = ref<HTMLElement | null>(null);
 const projects = ref<InstanceType<typeof ProjectsSection> | null>(null);
@@ -33,8 +38,8 @@ const { height: sidebarHeight } = useElementSize(root);
 // only when main replaced the layout itself, so a state push carrying older ones never undoes a change.
 // Shallow and raw: every change replaces the whole object, and the context bridge cannot clone a Vue proxy.
 const sidebarPart = (state: ShellLayout): ShellSidebarLayout => {
-  const { sidebarWidth, sections, search, scm } = toRaw(state);
-  return { sidebarWidth, sections, search, scm };
+  const { sidebarWidth, sections, sectionOrder, search, scm, repositories } = toRaw(state);
+  return { sidebarWidth, sections, sectionOrder, search, scm, repositories };
 };
 const layout = shallowRef<ShellSidebarLayout>(sidebarPart(props.state.layout));
 watch(() => props.state.layoutRevision, () => {
@@ -49,12 +54,14 @@ const minSection = computed(() => atRootFont(MIN_SECTION_SIZE));
 const gridMin = computed(() => gridMinWidth(gridAreas(props.state.layout.grid), atRootFont(COLUMN_MIN_PX), remPx(GRID_SASH_REM)));
 const maxWidth = computed(() => Math.max(minWidth.value, windowWidth.value - gridMin.value));
 const width = computed(() => Math.min(Math.max(layout.value.sidebarWidth, minWidth.value), maxWidth.value));
-// The first open section of Chats, Files, Search, Projects and Source control fills the height the others leave and keeps at least a
-// section's minimum; the other open sections keep their sizes, shrinking in proportion when the sidebar is too short for them.
+// The first open section of Chats, Files, Search, Projects, Repositories and Source control fills the height the others leave,
+// wherever the user put it, and keeps at least a section's minimum; the other open sections keep their sizes, shrinking in
+// proportion when the sidebar is too short for them.
 const sections = computed(() => layout.value.sections);
-const filler = computed(() => (['chats', 'files', 'search', 'projects', 'scm'] as const).find((name) => !sections.value[name].collapsed));
+const order = computed(() => layout.value.sectionOrder);
+const filler = computed(() => (['chats', 'files', 'search', 'projects', 'repos', 'scm'] as const).find((name) => !sections.value[name].collapsed));
 const sectionRoom = computed(() => sidebarHeight.value - remPx(SECTION_CHROME_REM) - minSection.value);
-const fixedSections = computed(() => SIZED_SECTIONS.filter((name) => !sections.value[name].collapsed && filler.value !== name));
+const fixedSections = computed(() => order.value.filter(isSizedSection).filter((name) => !sections.value[name].collapsed && filler.value !== name));
 const sizes = computed(() => {
   const stored = Object.fromEntries(SIZED_SECTIONS.map((name) => [name, sections.value[name].size])) as SectionSizes;
   return fitSections(stored, fixedSections.value, sectionRoom.value, minSection.value);
@@ -62,25 +69,75 @@ const sizes = computed(() => {
 const projectsSize = computed(() => sizes.value.projects);
 const filesSize = computed(() => sizes.value.files);
 const searchSize = computed(() => sizes.value.search);
+const reposSize = computed(() => sizes.value.repos);
 const scmSize = computed(() => sizes.value.scm);
-const maxSize = computed(() => largestSection(fixedSections.value, sectionRoom.value, minSection.value));
-// The sizes when a sash drag started: the drag resizes from them, so dragging back restores what it took from the others.
-let dragBase: SectionSizes | undefined;
 // Reference motion: the sidebar slides out by its own width; no transition while the user drags its edge.
 const slideStyle = computed(() => ({
   width: `${width.value}px`,
   marginLeft: props.state.layout.sidebarVisible ? '0px' : `-${width.value}px`,
   transition: dragging.value ? 'none' : 'margin-left .28s cubic-bezier(.2, .8, .2, 1)',
 }));
-const projectsBody = computed(() => (filler.value === 'projects' ? undefined : projectsSize.value));
-const filesBody = computed(() => (filler.value === 'files' ? undefined : filesSize.value));
-const searchBody = computed(() => (filler.value === 'search' ? undefined : searchSize.value));
-const scmBody = computed(() => (filler.value === 'scm' ? undefined : scmSize.value));
-// A sash sits on the side of a sized section that faces the filler: below Projects, above Files, Search and Source control.
-const projectsSashShown = computed(() => !sections.value.projects.collapsed && filler.value !== undefined && filler.value !== 'projects');
-const filesSashShown = computed(() => !sections.value.files.collapsed && filler.value !== 'files');
-const searchSashShown = computed(() => !sections.value.search.collapsed && filler.value !== 'search');
-const scmSashShown = computed(() => !sections.value.scm.collapsed && filler.value !== 'scm');
+const bodySize = (name: SizedSection): number | undefined => (filler.value === name ? undefined : sizes.value[name]);
+
+// The sections keep their DOM order and show in the user's order through CSS `order` (odd values), so a move never detaches a
+// section, which would reset its lists' scroll and drop focus; `reading-flow` gives Tab and assistive technology the same order.
+const orderOf = (name: SidebarSectionId): number => 2 * order.value.indexOf(name) + 1;
+// VS Code's SplitView (`splitview.ts`): every section top to bottom by its body, the filler's being the height the others leave,
+// and a sash between each two (an even `order`). A sash moves the height between the sections above and below it, looking past
+// collapsed ones, and is disabled when neither side has any to give.
+const splitItems = computed((): SplitItem[] => {
+  const fixedTotal = fixedSections.value.reduce((sum, name) => sum + sizes.value[name], 0);
+  return order.value.map((name) => {
+    if (sections.value[name].collapsed) return { size: 0, min: 0, max: 0 };
+    const size = isSizedSection(name) && name !== filler.value ? sizes.value[name] : Math.max(minSection.value, sectionRoom.value + minSection.value - fixedTotal);
+    return { size, min: minSection.value, max: Number.POSITIVE_INFINITY };
+  });
+});
+const sashes = computed(() => order.value.slice(0, -1).map((above, index) => {
+  // px from the top of the first section's body to the sash, as the WAI-ARIA window splitter's value
+  const position = Math.round(splitItems.value.slice(0, index + 1).reduce((sum, item) => sum + item.size, 0));
+  const range = sashRange(splitItems.value, index);
+  const below = order.value[index + 1]!;
+  return { index, above, below, position, min: position + range.min, max: position + range.max, disabled: range.min >= 0 && range.max <= 0, order: 2 * index + 2 };
+}));
+// The sections and sash position when a sash drag started: the drag moves from them, so dragging back restores what it took.
+let dragBase: { index: number; items: SplitItem[]; position: number } | undefined;
+
+// "{section} moved to position {position} of {count}", announced politely after a move the user made here.
+const announcement = ref('');
+
+function setOrder(next: SectionOrder, message: string): void {
+  if (sameOrder(next, order.value)) return;
+  layout.value = { ...layout.value, sectionOrder: next };
+  report();
+  announcement.value = message;
+}
+
+function moveSection(name: SidebarSectionId, next: SectionOrder): void {
+  setOrder(next, t('sidebar.moved', { section: t(SECTION_TITLES[name]), position: next.indexOf(name) + 1, count: next.length }));
+}
+
+async function openSectionMenu(name: SidebarSectionId, anchor: { x: number; y: number; width: number; height: number }): Promise<void> {
+  const at = order.value.indexOf(name);
+  const items: OverlayMenuItem[] = [
+    { kind: 'item', id: 'up', label: t('sidebar.moveUp'), disabled: at === 0 },
+    { kind: 'item', id: 'down', label: t('sidebar.moveDown'), disabled: at === order.value.length - 1 },
+    { kind: 'separator' },
+    { kind: 'item', id: 'reset', label: t('sidebar.resetOrder'), disabled: sameOrder(order.value, SIDEBAR_SECTIONS) },
+  ];
+  const answer = await props.api.requestOverlay({ kind: 'menu', label: t('sidebar.sectionMenu', { section: t(SECTION_TITLES[name]) }), anchor, items });
+  if (answer.kind !== 'menu') return;
+  if (answer.itemId === 'up') moveSection(name, shiftSection(order.value, name, -1));
+  else if (answer.itemId === 'down') moveSection(name, shiftSection(order.value, name, 1));
+  else if (answer.itemId === 'reset') setOrder(SIDEBAR_SECTIONS, t('sidebar.orderReset'));
+}
+
+provide(SECTION_ORDER, {
+  dragged: ref<SidebarSectionId | null>(null),
+  orderOf,
+  drop: (moved, target, edge) => moveSection(moved, dropSection(order.value, moved, target, edge)),
+  openMenu: openSectionMenu,
+});
 
 const selectedProject = computed(() => props.state.projects.find((project) => project.key === props.state.selected.projectKey));
 
@@ -91,7 +148,14 @@ function report(): void {
   layout.value = {
     ...layout.value,
     sidebarWidth: width.value,
-    sections: { ...sections, projects: settled('projects', projectsSize.value), files: settled('files', filesSize.value), search: settled('search', searchSize.value), scm: settled('scm', scmSize.value) },
+    sections: {
+      ...sections,
+      projects: settled('projects', projectsSize.value),
+      files: settled('files', filesSize.value),
+      search: settled('search', searchSize.value),
+      repos: settled('repos', reposSize.value),
+      scm: settled('scm', scmSize.value),
+    },
   };
   props.api.reportSidebarLayout(layout.value);
 }
@@ -104,7 +168,7 @@ function toggleSection(name: SizedSection | 'chats'): void {
   report();
 }
 
-// The user expanded or resized `name`: it keeps `size`, and the sizes the others give way to are stored.
+// The user expanded `name`: it keeps `size`, and the sizes the others give way to are stored.
 function yieldSections(base: SectionSizes, name: SizedSection, size: number): void {
   if (sidebarHeight.value <= 0 || !fixedSections.value.includes(name)) return;
   const next = yieldTo(base, fixedSections.value, sectionRoom.value, minSection.value, name, size);
@@ -115,15 +179,19 @@ function yieldSections(base: SectionSizes, name: SizedSection, size: number): vo
   };
 }
 
-function resizeSection(name: SizedSection, size: number): void {
+// The sash below the `index`th section moved to `position`: the open sections other than the filler keep their new sizes, and
+// the filler takes what they leave.
+function moveRowSash(index: number, position: number): void {
+  const base = dragBase?.index === index ? dragBase : { index, items: splitItems.value, position: sashes.value[index]!.position };
+  const next = moveSash(base.items, index, position - base.position);
   const current = layout.value.sections;
-  layout.value = { ...layout.value, sections: { ...current, [name]: { ...current[name], size } } };
-  yieldSections(dragBase ?? sizes.value, name, size);
+  const moved = order.value.flatMap((name, at) => (isSizedSection(name) && name !== filler.value && !current[name].collapsed ? [[name, { ...current[name], size: Math.round(next[at]!) }]] : []));
+  layout.value = { ...layout.value, sections: { ...current, ...Object.fromEntries(moved) } };
 }
 
-function startRowDrag(): void {
+function startRowDrag(index: number): void {
   rowDragging.value = true;
-  dragBase = sizes.value;
+  dragBase = { index, items: splitItems.value, position: sashes.value[index]!.position };
 }
 
 function endRowDrag(): void {
@@ -141,6 +209,14 @@ function saveSearchView(projectKey: string, state: SearchViewState): void {
   const { [projectKey]: _previous, ...others } = layout.value.search;
   const kept = Object.entries(others).slice(-(MAX_SEARCH_VIEW_STATES - 1));
   layout.value = { ...layout.value, search: { ...Object.fromEntries(kept), [projectKey]: state } };
+  report();
+}
+
+// The Repositories rows the user expanded in a project (AD8), that project now the newest; main takes the report only within
+// the bounds boundRepositoryViewStates keeps.
+function saveRepositoryRows(projectKey: string, rows: readonly string[]): void {
+  const { [projectKey]: _previous, ...others } = layout.value.repositories;
+  layout.value = { ...layout.value, repositories: boundRepositoryViewStates({ ...others, [projectKey]: rows }) };
   report();
 }
 
@@ -209,7 +285,7 @@ defineExpose({
     data-testid="sidebar"
     :aria-label="t('sidebar.label')"
     :inert="!state.layout.sidebarVisible"
-    class="relative flex shrink-0 flex-col overflow-hidden border-r border-(--d-border) bg-(--d-panel)"
+    class="relative flex shrink-0 flex-col overflow-hidden border-r border-(--d-border) bg-(--d-panel) [reading-flow:flex-visual]"
     :class="rowDragging ? '' : 'sidebar-sections-animated'"
     :style="slideStyle"
     @focusin="onFocusIn"
@@ -221,23 +297,26 @@ defineExpose({
       :projects="state.projects"
       :selected-key="state.selected.projectKey"
       :collapsed="layout.sections.projects.collapsed"
-      :body-size="projectsBody"
+      :body-size="bodySize('projects')"
       @toggle="toggleSection('projects')"
     />
-    <!-- Projects sits above the section that fills the sidebar, so its sash grows it downwards. -->
+    <!-- Its value is its position, so it grows the sections above it as it moves down. -->
     <Sash
-      v-if="projectsSashShown"
+      v-for="sash in sashes"
+      :key="sash.index"
       orientation="horizontal"
       pane="before"
-      data-testid="projects-sash"
+      data-testid="section-sash"
+      :data-between="`${sash.above} ${sash.below}`"
       class="relative z-3 shrink-0"
-      :style="{ height: `${ROW_SASH_REM}rem`, marginBlock: `-${ROW_SASH_OVERLAP_REM}rem` }"
-      :label="t('sidebar.resizeSections')"
-      :value="projectsSize"
-      :min="minSection"
-      :max="maxSize"
-      @start="startRowDrag()"
-      @resize="resizeSection('projects', $event)"
+      :style="{ height: `${ROW_SASH_REM}rem`, marginBlock: `-${ROW_SASH_OVERLAP_REM}rem`, order: sash.order }"
+      :label="t('sidebar.resizeBetween', { above: t(SECTION_TITLES[sash.above]), below: t(SECTION_TITLES[sash.below]) })"
+      :value="sash.position"
+      :min="sash.min"
+      :max="sash.max"
+      :disabled="sash.disabled"
+      @start="startRowDrag(sash.index)"
+      @resize="moveRowSash(sash.index, $event)"
       @commit="endRowDrag()"
     />
     <ChatsSection
@@ -251,21 +330,6 @@ defineExpose({
       :collapsed="layout.sections.chats.collapsed"
       @toggle="toggleSection('chats')"
     />
-    <!-- Files sits below Chats, so its sash grows it upwards, as the grid's bottom sash does. -->
-    <Sash
-      v-if="filesSashShown"
-      orientation="horizontal"
-      data-testid="files-sash"
-      class="relative z-3 shrink-0"
-      :style="{ height: `${ROW_SASH_REM}rem`, marginBlock: `-${ROW_SASH_OVERLAP_REM}rem` }"
-      :label="t('sidebar.resizeFiles')"
-      :value="filesSize"
-      :min="minSection"
-      :max="maxSize"
-      @start="startRowDrag()"
-      @resize="resizeSection('files', $event)"
-      @commit="endRowDrag()"
-    />
     <!-- Files lists an open project; the home folder a chat may run in is no project, so it shows the open-a-project hint. -->
     <FilesSection
       ref="files"
@@ -274,23 +338,33 @@ defineExpose({
       :project-name="selectedProject?.name ?? t('projects.home')"
       :platform="state.platform"
       :collapsed="layout.sections.files.collapsed"
-      :body-size="filesBody"
+      :body-size="bodySize('files')"
       @toggle="toggleSection('files')"
       @expand="expand('files')"
     />
-    <Sash
-      v-if="searchSashShown"
-      orientation="horizontal"
-      data-testid="search-sash"
-      class="relative z-3 shrink-0"
-      :style="{ height: `${ROW_SASH_REM}rem`, marginBlock: `-${ROW_SASH_OVERLAP_REM}rem` }"
-      :label="t('sidebar.resizeSearch')"
-      :value="searchSize"
-      :min="minSection"
-      :max="maxSize"
-      @start="startRowDrag()"
-      @resize="resizeSection('search', $event)"
-      @commit="endRowDrag()"
+    <!-- In SIDEBAR_SECTIONS' order, so the default layout's DOM order is its visual order. -->
+    <ScmSection
+      :api="api"
+      :project-key="selectedProject?.key"
+      :project-name="selectedProject?.name ?? t('projects.home')"
+      :platform="state.platform"
+      :view-mode="layout.scm.viewMode"
+      :sort-key="layout.scm.sortKey"
+      :collapsed="layout.sections.scm.collapsed"
+      :body-size="bodySize('scm')"
+      @toggle="toggleSection('scm')"
+      @expand="expand('scm')"
+      @view-options="saveScmView"
+    />
+    <RepositoriesSection
+      :api="api"
+      :project-key="selectedProject?.key"
+      :platform="state.platform"
+      :expanded="selectedProject ? layout.repositories[selectedProject.key] : undefined"
+      :collapsed="layout.sections.repos.collapsed"
+      :body-size="bodySize('repos')"
+      @toggle="toggleSection('repos')"
+      @expanded="selectedProject && saveRepositoryRows(selectedProject.key, $event)"
     />
     <SearchSection
       :api="api"
@@ -301,38 +375,11 @@ defineExpose({
       :settings="state.search"
       :shortcuts="state.shortcuts"
       :collapsed="layout.sections.search.collapsed"
-      :body-size="searchBody"
+      :body-size="bodySize('search')"
       @toggle="toggleSection('search')"
       @expand="expand('search')"
       @view-state="selectedProject && saveSearchView(selectedProject.key, $event)"
       @reveal-in-files="files?.reveal($event)"
-    />
-    <Sash
-      v-if="scmSashShown"
-      orientation="horizontal"
-      data-testid="scm-sash"
-      class="relative z-3 shrink-0"
-      :style="{ height: `${ROW_SASH_REM}rem`, marginBlock: `-${ROW_SASH_OVERLAP_REM}rem` }"
-      :label="t('sidebar.resizeScm')"
-      :value="scmSize"
-      :min="minSection"
-      :max="maxSize"
-      @start="startRowDrag()"
-      @resize="resizeSection('scm', $event)"
-      @commit="endRowDrag()"
-    />
-    <ScmSection
-      :api="api"
-      :project-key="selectedProject?.key"
-      :project-name="selectedProject?.name ?? t('projects.home')"
-      :platform="state.platform"
-      :view-mode="layout.scm.viewMode"
-      :sort-key="layout.scm.sortKey"
-      :collapsed="layout.sections.scm.collapsed"
-      :body-size="scmBody"
-      @toggle="toggleSection('scm')"
-      @expand="expand('scm')"
-      @view-options="saveScmView"
     />
     <!-- A sash: no shadcn part covers a resize handle. -->
     <div
@@ -352,5 +399,13 @@ defineExpose({
       @pointercancel="onSashUp"
       @keydown="onSashKeydown"
     />
+    <p
+      data-testid="sidebar-announcement"
+      class="sr-only"
+      role="status"
+      aria-live="polite"
+    >
+      {{ announcement }}
+    </p>
   </nav>
 </template>

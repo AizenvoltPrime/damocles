@@ -175,13 +175,15 @@ bun.lockb
 package-lock.json
 **/*.log
 
-# Desktop app: build output, packaging config, end-to-end suite, Windows icon and terminal shell-integration scripts (DESKTOP_EXCLUDE_RULES in scripts/sync-vscodeignore.mjs)
+# Desktop app: build output, packaging config, end-to-end suite, Windows icon, terminal shell-integration scripts, and the askpass helper and its scripts (DESKTOP_EXCLUDE_RULES in scripts/sync-vscodeignore.mjs)
 dist/desktop/**
 dist/desktop-shell/**
 dist/formatter-host.js
 dist/pty-host.js
 dist/quick-open-worker.js
 dist/watch-worker.js
+dist/askpass-main.js
+dist/askpass/**
 dist/e2e*/**
 dist-desktop/**
 e2e/**
@@ -192,6 +194,7 @@ playwright.desktop.config.ts
 vite.shell.config.ts
 resources/icon.ico
 resources/shell-integration/**
+resources/askpass/**
 
 # Python sidecar dev artefacts (the runtime ships in dist/, not from source tree)
 python/**/.venv/**

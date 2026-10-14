@@ -5,6 +5,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
+import { windowsSystemTool } from '../../system-tools';
 import { stripBidiControls, stripControlChars } from '../untrusted-text';
 
 const MAX_SERVER_TEXT_CHARS = 300;
@@ -49,7 +50,7 @@ export function killProcessTree(pid: number): Promise<void> {
   return new Promise<void>((resolve) => {
     if (process.platform === 'win32') {
       try {
-        const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+        const killer = spawn(windowsSystemTool('taskkill'), ['/PID', String(pid), '/T', '/F'], {
           stdio: 'ignore',
           windowsHide: true,
         });

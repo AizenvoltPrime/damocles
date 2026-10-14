@@ -43,6 +43,12 @@ describe('inputProblem', () => {
     expect(inputProblem('branchName', 'a[b', POSIX)).toEqual({ code: 'char', char: '[' });
   });
 
+  it('checks a tag name by the ref-name rules, refusing a leading dash, and allows HEAD as a tag', () => {
+    for (const name of ['v1.0', 'release/2024.1', 'x@y', 'HEAD']) expect(inputProblem('tagName', name, POSIX), name).toBeUndefined();
+    const cases: Array<[string, string]> = [['-d', 'leadingDash'], ['a b', 'space'], ['a..b', 'doubleDot'], ['a.lock', 'lockPart'], ['a^{}', 'char'], ['', 'empty']];
+    for (const [name, expected] of cases) expect(code('tagName', name), name).toBe(expected);
+  });
+
   it('refuses HEAD as a branch name', () => {
     expect(code('branchName', 'HEAD')).toBe('head');
     expect(inputProblem('branchName', 'HEADS', POSIX)).toBeUndefined();
@@ -79,6 +85,12 @@ describe('inputProblem', () => {
       expect(inputProblem('path', path, POSIX), path).toBeUndefined();
     }
     expect(inputProblem('path', 'src/console.ts', { windows: true })).toBeUndefined();
+  });
+
+  it('accepts a plain remote name and refuses one git could read as an option or a refspec', () => {
+    for (const name of ['origin', 'up-stream', 'fork_2', 'a.b']) expect(code('remoteName', name), name).toBeUndefined();
+    const cases: Array<[string, string]> = [['-x', 'leadingDash'], ['a b', 'space'], ['a	b', 'control'], ['+main', 'char'], ['.x', 'char'], ['a/b', 'char'], ['a..b', 'doubleDot'], ['x.lock', 'lockPart'], ['x.', 'trailingDot'], ['a'.repeat(101), 'tooLong'], ['', 'empty']];
+    for (const [name, expected] of cases) expect(code('remoteName', name), name).toBe(expected);
   });
 
   it('bounds every kind', () => {

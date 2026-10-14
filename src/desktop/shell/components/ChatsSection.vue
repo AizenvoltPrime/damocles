@@ -375,8 +375,8 @@ defineExpose({
 
 <template>
   <SidebarSection
+    section="chats"
     data-testid="sidebar-chats"
-    :title="t('chats.heading')"
     :count="list ? allChats.length : undefined"
     :collapsed="collapsed"
     @toggle="emit('toggle')"

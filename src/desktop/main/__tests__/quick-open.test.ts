@@ -31,7 +31,7 @@ async function openValue(answer: unknown): Promise<unknown> {
   return answered.value;
 }
 
-const CONTEXT: MenuState = { chat: true, editor: true, browser: false, page: false, focus: 'editor', updateCheck: false, project: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE };
+const CONTEXT: MenuState = { chat: true, editor: true, browser: false, page: false, focus: 'editor', updateCheck: false, terminalCreate: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE };
 
 let root: string;
 let alpha: Project;

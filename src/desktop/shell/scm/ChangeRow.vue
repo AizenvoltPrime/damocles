@@ -6,7 +6,8 @@ import type { Component } from 'vue';
 import { Button } from '@/components/ui/button';
 import { fileIcon } from '../file-icons';
 import { rowActions, type RowInlineAction } from './scm-menus';
-import { TONE_TEXT, visibleText, type ScmRow } from './scm-list';
+import { TONE_TEXT, type ScmRow } from './scm-list';
+import { visibleText } from '@shared/visible-text';
 
 type ItemRow = Extract<ScmRow, { kind: 'change' | 'folder' }>;
 
@@ -109,11 +110,12 @@ const title = computed(() => {
       v-if="row.kind === 'folder'"
       class="shrink-0 pr-1 font-mono text-10 text-(--d-faint)"
     >{{ row.count }}</span>
-    <!-- Inline actions stay in the row's flow and only fade in, so hovering never moves a control; the menu reaches them by keyboard. -->
+    <!-- Inline actions take no space until the row is hovered, focused or selected, as in VS Code; the menu reaches them by keyboard.
+         A selected row's stay shown, so scrolling it back into view replays nothing. -->
     <span
       v-if="row.kind === 'change'"
-      class="flex shrink-0 items-center gap-px opacity-0 transition-opacity duration-150 group-focus-within/row:opacity-100 group-hover/row:opacity-100"
-      :class="selected ? 'opacity-100' : ''"
+      class="shrink-0 items-center gap-px group-focus-within/row:flex group-hover/row:flex"
+      :class="selected ? 'flex' : 'd-actions-in hidden'"
     >
       <Button
         v-for="action in actions"
@@ -137,7 +139,7 @@ const title = computed(() => {
     </span>
     <span
       v-if="change"
-      class="flex w-3 shrink-0 justify-center font-mono text-10.5 font-bold"
+      class="flex w-4 shrink-0 justify-center text-11 font-semibold"
       :style="{ color: TONE_TEXT[change.tone] }"
       :title="statusText"
     >

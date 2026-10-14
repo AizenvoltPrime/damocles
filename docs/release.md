@@ -4,22 +4,29 @@ This document describes how one tag turns into per-platform VSIXes and desktop i
 
 ## Overview
 
-`.github/workflows/release.yml` runs when a tag matching `v*` is pushed, and as the dry run when started by hand ("Dry run"). It has ten jobs.
+`.github/workflows/release.yml` runs when a tag matching `v*` is pushed, and as the dry run when started by hand ("Dry run"). It has twelve jobs.
 
 ```
-verify ─┬─ package (7 VSIX legs) ──────────────────────────────────────────────────────┐
-        ├─ e2e-desktop (13 shards) ────────────────────────────────────────────────────┤
-        └─ package-desktop (5 installer legs) ─ sign-windows ─┬─ verify-desktop-install ─┼─ release-notes ─ attest ─ release
-                                                              └─ desktop-update-test ────┘
+Before signing:
+verify ─┬─ package (7 VSIX legs)
+        ├─ e2e-desktop (13 shards)
+        └─ package-desktop (5 installer legs) ─┬─ verify-desktop-install (deb, rpm, dmg)
+                                               └─ desktop-update-test (linux-x64, mac-arm64)
+
+After every job above has passed:
+sign-windows ─┬─ verify-desktop-install-windows (nsis) ─────┬─ release-notes ─ attest ─ release
+              └─ desktop-update-test-windows (win-arm64) ───┘
 ```
+
+Every job that does not test the signed Windows files runs before `sign-windows`, so a run that fails such a check spends no SignPath quota.
 
 1. **`verify`** runs once on `ubuntu-latest` under Node 24. After `npm ci` it fetches the grammars and wake models and uploads them as `fetched-assets` (see "The verify job"), checks the `package.json` version against the tag, then runs `npm run typecheck`, `npm run lint`, `npm test`, `npm run smoke:pi`, and `node scripts/sync-vscodeignore.mjs --check`. All six gates must pass before any packaging starts.
 2. **`package`** builds one `.vsix` per VS Code target platform. There are seven targets: `win32-x64`, `win32-arm64`, `darwin-arm64`, `linux-x64`, `linux-arm64`, `alpine-x64`, `alpine-arm64`. There is no `darwin-x64` target, so an Intel Mac gets no artifact from the matrix. The matrix is `fail-fast: true`, so the first failing leg cancels the others. Each leg runs three integrity checks against the VSIX it produced, then uploads it as the artifact `vsix-<target>` with a 7 day retention and `if-no-files-found: error`.
 3. **`package-desktop`** builds the desktop installers, one leg per target: Windows x64 and arm64 (NSIS), macOS arm64 (dmg and zip), Linux x64 and arm64 (deb and rpm). Each leg packages, checks the package's contents and Electron fuses, runs the end-to-end suite against the packaged app, and uploads the leg's installers, blockmaps and `latest*.yml` as `desktop-<target>`; a Windows leg uploads its unpacked app instead. The matrix is `fail-fast: false`, so a failing leg does not cancel the others and one run reports every platform's result; `release` still needs every leg. See "Desktop installers" below.
-4. **`sign-windows`** signs both Windows apps through SignPath, builds their installers from the signed apps, signs those, rebuilds their update feeds from the signed files, and uploads `desktop-win-x64` and `desktop-win-arm64`. See docs/desktop-signing.md "The signing job structure".
+4. **`sign-windows`** waits for `verify`, `package`, `package-desktop`, `e2e-desktop`, `verify-desktop-install` and `desktop-update-test`, then signs both Windows apps through SignPath, builds their installers from the signed apps, signs those, rebuilds their update feeds from the signed files, and uploads `desktop-win-x64` and `desktop-win-arm64`. See docs/desktop-signing.md "The signing job structure".
 5. **`e2e-desktop`** runs the dev end-to-end suite on the same five targets and runners, in parallel with `package-desktop`, split into Playwright shards. See "Desktop end-to-end suite".
-6. **`verify-desktop-install`** installs those installers on fresh runners and launches them. See "Install verification".
-7. **`desktop-update-test`** installs version N and updates it to a locally served N+1. See "Update tests".
+6. **`verify-desktop-install`** and **`verify-desktop-install-windows`** install those installers on fresh runners and launch them. The first takes the macOS and Linux legs and runs before signing; the second takes the Windows leg, on the signed installer. Both run the same steps (a YAML anchor in the workflow). See "Install verification".
+7. **`desktop-update-test`** and **`desktop-update-test-windows`** install version N and update it to a locally served N+1, split the same way. See "Update tests".
 8. **`release-notes`** downloads the `vsix-*` and `desktop-*` artifacts, checks that all seven VSIXes and every desktop artifact are there, and writes the release notes from `CHANGELOG.md` (see "Tagging a release") as the `release-notes` artifact. It runs on the dry run too.
 9. **`attest`** (tag runs only) downloads the same artifacts and creates a GitHub build provenance attestation for every file the release attaches. See "Provenance and checksums".
 10. **`release`** (tag runs only) runs only when every job above passed. It downloads the `vsix-*` and `desktop-*` artifacts into `dist-artifacts/` and the release notes, writes `SHA256SUMS` over them, creates one GitHub Release with all of them and `SHA256SUMS` attached, and publishes each VSIX to the Visual Studio Marketplace (gated on `VSCE_PAT`) and to the Open VSX Registry (gated on `OVSX_PAT`).
@@ -170,7 +177,7 @@ Each leg runs, in order:
    - Windows: **Build unpacked Windows app** runs `electron-builder --win nsis --<arch>`. The leg runs the checks below on the unpacked app and uploads it; the `sign-windows` job signs it, builds the installer from it with `--prepackaged` and signs that (docs/desktop-signing.md "The signing job structure"), so the released installer holds the exact tree that passed the checks. The unsigned installer this step writes is never uploaded. The step must name the `nsis` target rather than `--dir`: electron-builder writes `resources/app-update.yml`, the installed app's update feed, only after packing for an NSIS target, and `--prepackaged` skips packing.
    - macOS and Linux: **Build macOS and Linux installers** builds the installers in one step and leaves the unpacked app beside them.
    - Windows update channel: both Windows builds pass `-c.publish.channel=latest-<arch>`. Without it both arches would write `latest.yml` and one would overwrite the other in the release. The app requests the same channel (`latest-${process.arch}`). macOS and Linux keep electron-updater's default feed names, which already differ per arch.
-5. **Verify desktop package integrity and fuses**: `node scripts/verify-desktop-package.mjs --platform <os> --arch <arch> --app <unpacked app>`. It checks the ripgrep binary for the platform, every grammar `.wasm`, the Python voice package with its wake models, the scripts main runs in another process or thread (`compass-worker.js`, `usage-stats-worker.js`, `quick-open-worker.js`, `watch-worker.js`, `sentinel.js`, `formatter-host.js`, `pty-host.js`), koffi on Windows, the `@parcel/watcher` prebuild on macOS and Linux and its absence on Windows, node-pty's prebuild for the target alone with no debug symbols or native sources (`spawn-helper` mode 0755, and `codesign -v` on each native binary on macOS), the bash, zsh and fish shell integration scripts with LF line endings, the packed `dist/desktop/CHANGELOG.md`, which must equal the repo's and hold the version's `## [x.y.z] - ` section, and the license notices (`LICENSE` and `THIRD-PARTY-NOTICES.md` in `app.asar`, Monaco's `ThirdPartyNotices.txt` in the resources directory), then reads the Electron fuses back from the built binary with `@electron/fuses` and fails unless they match docs/invariants.md exactly: `runAsNode` on, `enableCookieEncryption` on, `enableEmbeddedAsarIntegrityValidation` on, `onlyLoadAppFromAsar` on, `enableNodeOptionsEnvironmentVariable` off, `enableNodeCliInspectArguments` off, `grantFileProtocolExtraPrivileges` off.
+5. **Verify desktop package integrity and fuses**: `node scripts/verify-desktop-package.mjs --platform <os> --arch <arch> --app <unpacked app>`. It checks the ripgrep binary for the platform, every grammar `.wasm`, the Python voice package with its wake models, the scripts main runs in another process or thread (`compass-worker.js`, `usage-stats-worker.js`, `quick-open-worker.js`, `watch-worker.js`, `sentinel.js`, `formatter-host.js`, `pty-host.js`), koffi on Windows, the `@parcel/watcher` prebuild on macOS and Linux and its absence on Windows, node-pty's prebuild for the target alone with no debug symbols or native sources (`spawn-helper` mode 0755, and `codesign -v` on each native binary on macOS), the bash, zsh and fish shell integration scripts with LF line endings, the packed `dist/desktop/CHANGELOG.md`, which must equal the repo's and hold the version's `## [x.y.z] - ` section with notes under it, and the license notices (`LICENSE` and `THIRD-PARTY-NOTICES.md` in `app.asar`, Monaco's `ThirdPartyNotices.txt` in the resources directory), then reads the Electron fuses back from the built binary with `@electron/fuses` and fails unless they match docs/invariants.md exactly: `runAsNode` on, `enableCookieEncryption` on, `enableEmbeddedAsarIntegrityValidation` on, `onlyLoadAppFromAsar` on, `enableNodeOptionsEnvironmentVariable` off, `enableNodeCliInspectArguments` off, `grantFileProtocolExtraPrivileges` off.
 6. **End-to-end suite against the packaged app**: `npm run test:desktop:packaged` with `DAMOCLES_E2E_PACKAGED_APP` set to the packaged executable. The test harness reads that variable; the app never does. Linux makes the packaged app's `chrome-sandbox` root-owned and setuid first, for the reason in "Desktop end-to-end suite".
    On Windows, **Verify the tested Windows app is still clean** then runs the integrity check again, because `sign-windows` signs and packs the directory the suite just ran from, and the check fails on runtime leftovers such as `__pycache__` in the Python package.
 7. **Verify this leg's release artifacts** (macOS and Linux; `sign-windows` runs it for Windows): `node scripts/release-targets.mjs --check-desktop-artifacts <target> dist-desktop` fails when an artifact in `DESKTOP_TARGETS` is missing or electron-builder wrote one under a name the module does not list.
@@ -208,7 +215,7 @@ Each suite step is 45 + 10 = 55 minutes. `e2e-desktop` needs 25 + 55 + 5 = 85 mi
 
 ## Install verification
 
-`verify-desktop-install` downloads installers from `package-desktop` and, for Windows, `sign-windows` onto fresh runners with no checkout and installs them as a user would. Each leg checks for a real OS window rather than driving the app, so it needs no `npm ci` and opens no debugging port.
+`verify-desktop-install` downloads installers from `package-desktop`, and `verify-desktop-install-windows` the Windows installer from `sign-windows`, onto fresh runners with no checkout and installs them as a user would. Each leg checks for a real OS window rather than driving the app, so it needs no `npm ci` and opens no debugging port.
 
 | Leg | Runner | What it checks |
 | --- | --- | --- |
@@ -219,7 +226,7 @@ Each suite step is 45 + 10 = 55 minutes. `e2e-desktop` needs 25 + 55 + 5 = 85 mi
 
 ## Update tests
 
-`desktop-update-test` checks the update path end to end with the driver `e2e/desktop/update/drive-update.mjs`:
+`desktop-update-test` (`linux-x64`, `mac-arm64`) and `desktop-update-test-windows` (`win-arm64`, on the signed installer) check the update path end to end with the driver `e2e/desktop/update/drive-update.mjs`:
 
 - The job installs only the driver's own dependencies: `e2e/desktop/update/package.json` lists `playwright-core` alone, pinned in its lockfile. The repository's full `npm ci` takes 11 to 17 minutes on `windows-11-arm`.
 - The N+1 build is the same tree as the release build, with the version overridden: `electron-builder ... --publish never -c.extraMetadata.version=<N+1> -c.directories.output=dist-desktop/next`, where N+1 is the package.json version without its prerelease part and with the patch number raised by one. Windows also passes its channel. It uploads as `update-feed-<target>` and is never attached to the release.
@@ -281,7 +288,7 @@ To enable Open VSX publishing:
 ## Tagging a release
 
 1. Bump `package.json` `version` to match the intended tag. The `verify` job's "Verify package.json version matches tag" step fails the run when they disagree.
-2. Add a `## [x.y.z] - YYYY-MM-DD` section to `CHANGELOG.md`. The `release-notes` job's "Extract changelog section" step scans `CHANGELOG.md` for a line starting with `## ` that contains `[x.y.z]`, and takes every line after it up to the next `## ` heading as the GitHub Release body. A missing or empty section fails the job, so the dry run catches a missing entry before the tag is pushed.
+2. Add a `## [x.y.z] - YYYY-MM-DD` section to `CHANGELOG.md`. The `release-notes` job's "Extract changelog section" step scans `CHANGELOG.md` for a line starting with `## ` that contains `[x.y.z]`, and takes every line after it up to the next `## ` heading as the GitHub Release body. A missing or empty section fails the job, so the dry run catches a missing entry before the tag is pushed. `package-desktop`'s package check (`verify-desktop-package.mjs`) fails the same section earlier, before Windows is signed.
 3. Commit the version bump and the changelog section together with the work they describe, using a conventional-commit subject that names the change. The workflow reads nothing from the commit; `gh release create` titles the Release with the tag name.
 4. Run the dry run on this commit ("Dry run" below). Tag `origin` only after every job of the dry run passed, and tag the commit that run built.
 5. Tag and push:
@@ -297,9 +304,9 @@ To enable Open VSX publishing:
 
 ### Dry run
 
-Every release runs the whole workflow on its release commit before the tag reaches `origin`, so a failing or flaky test fails a run that publishes nothing. The dry run is a manual run in this repository, not a fork: Windows signing needs the `SIGNPATH_API_TOKEN` secret, and SignPath's origin verification accepts only this repository.
+Every release runs the whole workflow on its release commit before the tag reaches `origin`, so a failing or flaky test fails a run that publishes nothing. The dry run is a manual run in this repository, not a fork: a signed manual run needs the `SIGNPATH_API_TOKEN` secret, and SignPath's origin verification accepts only this repository.
 
-A manual run differs from a tag run in four places. `verify` skips its tag version check. `sign-windows` signs with `test-signing`, the self-signed test certificate, so it needs no approval (docs/desktop-signing.md "Test run"). `release-notes` checks every artifact and writes the release notes from the `CHANGELOG.md` section of the `package.json` version, as a tag run does. `attest` and `release` are skipped, so nothing is attested, released or published.
+A manual run differs from a tag run in four places. `verify` skips its tag version check. `sign-windows` skips every SignPath step and builds the Windows installers from the unsigned apps, unless the run's `sign` input is on; then it signs with `test-signing`, the self-signed test certificate, which needs no approval (docs/desktop-signing.md "Test run"). Every signing spends SignPath's yearly artifact quota, so turn `sign` on only to test a change to the signing steps. `release-notes` checks every artifact and writes the release notes from the `CHANGELOG.md` section of the `package.json` version, as a tag run does. `attest` and `release` are skipped, so nothing is attested, released or published.
 
 1. Push the release commit to a branch of `origin`, then start the run on it, from the Actions tab (Create Release from Tag > Run workflow) or with:
 
@@ -307,8 +314,10 @@ A manual run differs from a tag run in four places. `verify` skips its tag versi
    gh workflow run release.yml --ref <branch>
    ```
 
+   Add `-f sign=true` (or tick "sign" in the Actions tab) to sign with the test certificate.
+
 2. Every job must pass, except `attest` and `release`, which show as skipped. A failed test, flaky or not, is fixed at its cause, the fix is committed, and the dry run repeats on the new commit.
-3. The `release-notes` artifact holds the exact release notes the tag run will publish; the `desktop-*` and `vsix-*` artifacts hold the files it will attach, Windows signed with the test certificate.
+3. The `release-notes` artifact holds the exact release notes the tag run will publish; the `desktop-*` and `vsix-*` artifacts hold the files it will attach, with Windows unsigned, or signed with the test certificate when `sign` was on.
 4. Tag the commit the passing run built (`gh run view <run id> --json headSha`), not the branch head if it moved since.
 
 ## Release run failure

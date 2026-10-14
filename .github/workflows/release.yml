@@ -4,8 +4,14 @@ on:
   push:
     tags:
       - 'v*'
-  # A manual run builds, tests and signs Windows with the SignPath test certificate, and publishes nothing (attest and release skip it).
+  # A manual run builds and tests everything and publishes nothing (attest and release skip it). It signs Windows, with the SignPath
+  # test certificate, only when `sign` is on, because every signing spends SignPath's yearly artifact quota.
   workflow_dispatch:
+    inputs:
+      sign:
+        description: Sign Windows with the SignPath test certificate (spends SignPath's yearly artifact quota)
+        type: boolean
+        default: false
 
 # The workflow token is read-only; only `attest` and `release` widen it, each in its own job.
 permissions:
@@ -416,10 +422,11 @@ jobs:
 
   # Signs both Windows apps' Damocles.exe, builds their installers from the signed apps, signs the installers and rebuilds the update feeds from
   # the signed files (docs/desktop-signing.md "The signing job structure"). A tag signs with the SignPath Foundation release
-  # certificate, a manual run with the self-signed test certificate. It waits for every job that does not test the signed files, so a run that
-  # fails a check never spends SignPath's yearly artifact quota (release-targets.test.ts enforces this).
+  # certificate, a manual run with `sign` on with the self-signed test certificate. A manual run with `sign` off skips every SignPath step and
+  # builds the installers from the unsigned apps, so the install and update tests still run. It waits for every job that does not test the
+  # signed files, so a run that fails a check never spends SignPath's yearly artifact quota (release-targets.test.ts enforces this).
   sign-windows:
-    needs: [verify, package, package-desktop, e2e-desktop]
+    needs: [verify, package, package-desktop, e2e-desktop, verify-desktop-install, desktop-update-test]
     runs-on: windows-latest
     # Two signing requests, each waiting up to an hour for a human approval, plus npm ci and the installer builds.
     timeout-minutes: 150
@@ -431,6 +438,7 @@ jobs:
       SIGNPATH_ORGANIZATION_ID: 567f8646-d332-4f0e-88a9-7f2a21e285d9
       SIGNPATH_PROJECT_SLUG: damocles
       SIGNPATH_SIGNING_POLICY_SLUG: ${{ github.event_name == 'push' && 'release-signing' || 'test-signing' }}
+      SIGN_WINDOWS: ${{ github.event_name == 'push' || inputs.sign }}
     defaults:
       run:
         shell: bash
@@ -473,6 +481,7 @@ jobs:
       # app-executables artifact configuration.
       - name: Collect the executables to sign
         id: collect-executables
+        if: env.SIGN_WINDOWS == 'true'
         run: |
           mkdir -p executables/x64 executables/arm64
           cp unsigned/x64/Damocles.exe executables/x64/
@@ -480,6 +489,7 @@ jobs:
 
       - name: Upload the unsigned executables for SignPath
         id: upload-unsigned-executables
+        if: env.SIGN_WINDOWS == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: unsigned-win-executables
@@ -488,6 +498,7 @@ jobs:
           if-no-files-found: error
 
       - name: Sign both executables
+        if: env.SIGN_WINDOWS == 'true'
         uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -502,11 +513,14 @@ jobs:
           wait-for-completion-timeout-in-seconds: 3600
           output-artifact-directory: signed-executables
 
+      # With signing off, signed/ holds the apps unchanged.
       - name: Put the signed executables into the apps
         run: |
           mv unsigned signed
-          cp signed-executables/x64/Damocles.exe signed/x64/Damocles.exe
-          cp signed-executables/arm64/Damocles.exe signed/arm64/Damocles.exe
+          if [ "$SIGN_WINDOWS" = true ]; then
+            cp signed-executables/x64/Damocles.exe signed/x64/Damocles.exe
+            cp signed-executables/arm64/Damocles.exe signed/arm64/Damocles.exe
+          fi
 
       # Signing must leave the fuse wire, the asar integrity hash, the tree and resources/app-update.yml as package-desktop checked them.
       - name: Verify the signed apps
@@ -515,6 +529,7 @@ jobs:
           node scripts/verify-desktop-package.mjs --platform win32 --arch arm64 --app signed/arm64
 
       - name: Check both executables are signed
+        if: env.SIGN_WINDOWS == 'true'
         shell: pwsh
         run: ./scripts/check-authenticode.ps1 -Path signed/x64/Damocles.exe, signed/arm64/Damocles.exe -RequireTrusted:($env:SIGNPATH_SIGNING_POLICY_SLUG -eq 'release-signing')
 
@@ -529,6 +544,7 @@ jobs:
 
       - name: Upload the unsigned installers for SignPath
         id: upload-unsigned-installers
+        if: env.SIGN_WINDOWS == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: unsigned-win-installers
@@ -537,6 +553,7 @@ jobs:
           if-no-files-found: error
 
       - name: Sign both installers
+        if: env.SIGN_WINDOWS == 'true'
         uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -552,16 +569,20 @@ jobs:
           output-artifact-directory: signed-installers
 
       - name: Replace the installers with the signed ones and rebuild their update feeds
+        if: env.SIGN_WINDOWS == 'true'
         run: |
           cp signed-installers/Damocles-Setup-*.exe dist-desktop/
           node scripts/signed-windows-feed.mjs --rewrite dist-desktop x64 arm64
 
-      # The release attaches these files, so every feed entry must describe the signed bytes.
-      - name: Check the installers' signatures, feeds and names
+      - name: Check the installers' signatures
+        if: env.SIGN_WINDOWS == 'true'
+        shell: pwsh
+        run: ./scripts/check-authenticode.ps1 -Path (@((Get-ChildItem dist-desktop -Filter 'Damocles-Setup-*.exe').FullName) + @('signed/x64/Damocles.exe', 'signed/arm64/Damocles.exe')) -RequireTrusted:($env:SIGNPATH_SIGNING_POLICY_SLUG -eq 'release-signing')
+
+      # The release attaches these files, so every feed entry must describe the installers' final bytes.
+      - name: Check the installers' feeds and names
         shell: pwsh
         run: |
-          ./scripts/check-authenticode.ps1 -Path (@((Get-ChildItem dist-desktop -Filter 'Damocles-Setup-*.exe').FullName) + @('signed/x64/Damocles.exe', 'signed/arm64/Damocles.exe')) -RequireTrusted:($env:SIGNPATH_SIGNING_POLICY_SLUG -eq 'release-signing')
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           node scripts/signed-windows-feed.mjs --check dist-desktop x64 arm64
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           node scripts/release-targets.mjs --check-desktop-artifacts win-x64,win-arm64 dist-desktop
@@ -689,9 +710,10 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # Fresh runners install what package-desktop built and sign-windows signed, as a user would.
+  # Fresh runners install what package-desktop built, as a user would. The Windows leg is verify-desktop-install-windows, which
+  # needs sign-windows; this job runs before signing, so its failures spend no SignPath quota.
   verify-desktop-install:
-    needs: [package-desktop, sign-windows]
+    needs: package-desktop
     strategy:
       fail-fast: false
       matrix:
@@ -705,12 +727,9 @@ jobs:
           - check: dmg
             runner: macos-latest
             artifact: desktop-mac-arm64
-          - check: nsis
-            runner: windows-latest
-            artifact: desktop-win-x64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
-    steps:
+    steps: &verify-desktop-install-steps
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ matrix.artifact }}
@@ -748,7 +767,9 @@ jobs:
           shown=0
           for _ in $(seq 1 90); do
             if ! kill -0 "$app" 2>/dev/null; then break; fi
-            if xwininfo -root -tree | grep -i damocles | grep -qE '[0-9]{3,}x[0-9]{3,}\+'; then shown=1; break; fi
+            # Output is captured before grep -q reads it: under pipefail, grep -q exiting at its first match kills the writer with SIGPIPE.
+            windows=$(xwininfo -root -tree)
+            if grep -qiE 'damocles.*[0-9]{3,}x[0-9]{3,}\+' <<<"$windows"; then shown=1; break; fi
             sleep 1
           done
           if [ "$shown" != 1 ]; then
@@ -801,7 +822,9 @@ jobs:
           set -euo pipefail
           docker run --rm -v "$PWD/installers:/installers:ro" fedora:latest bash -euo pipefail -c '
             rpm=$(ls /installers/damocles-*.x86_64.rpm)
-            rpm -qp --scripts "$rpm" | grep -q apparmor
+            # Captured before grep -q reads it: under pipefail, grep -q exiting at its first match kills rpm with SIGPIPE (exit 141).
+            scripts=$(rpm -qp --scripts "$rpm")
+            grep -q apparmor <<<"$scripts"
             # Fedora has no AppArmor, so this also proves the scripts never fail the install without it.
             dnf install -y "$rpm"
             test -x /opt/Damocles/damocles
@@ -809,7 +832,8 @@ jobs:
             test -d /opt/Damocles/resources/app.asar.unpacked
             grep -q "^provider: github" /opt/Damocles/resources/app-update.yml
             grep -qx rpm /opt/Damocles/resources/package-type
-            rpm -ql damocles | grep -q apparmor
+            files=$(rpm -ql damocles)
+            grep -q apparmor <<<"$files"
             dnf remove -y damocles
             test ! -e /opt/Damocles
           '
@@ -826,7 +850,9 @@ jobs:
           cp -R "$mount/Damocles.app" /Applications/
           hdiutil detach "$mount"
           codesign --verify --deep --strict /Applications/Damocles.app
-          codesign -dv /Applications/Damocles.app 2>&1 | grep -q 'Signature=adhoc'
+          # Captured before grep -q reads it: under pipefail, grep -q exiting at its first match kills the writer with SIGPIPE.
+          signature=$(codesign -dv /Applications/Damocles.app 2>&1)
+          grep -q 'Signature=adhoc' <<<"$signature"
           grep -q '^provider: github' /Applications/Damocles.app/Contents/Resources/app-update.yml
           cat > "$RUNNER_TEMP/windows.swift" <<'EOF'
           import CoreGraphics
@@ -894,17 +920,28 @@ jobs:
           if (Test-Path $exe) { throw "$exe is still present after uninstall" }
           if (-not (Test-Path $marker)) { throw 'The uninstaller removed ~/.damocles' }
 
-  # Installs version N, serves N+1 from a loopback feed, and checks the update applies (Windows, Linux) or the notice opens the release page (macOS).
-  desktop-update-test:
-    needs: [package-desktop, sign-windows]
+  # verify-desktop-install's steps on the installer sign-windows signed.
+  verify-desktop-install-windows:
+    needs: sign-windows
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: win-arm64
-            runner: windows-11-arm
-            platform: win32
-            installer: Damocles-Setup-VERSION-arm64.exe
+          - check: nsis
+            runner: windows-latest
+            artifact: desktop-win-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps: *verify-desktop-install-steps
+
+  # Installs version N, serves N+1 from a loopback feed, and checks the update applies (Linux) or the notice opens the release page
+  # (macOS). The Windows leg is desktop-update-test-windows, which needs sign-windows; this job runs before signing.
+  desktop-update-test:
+    needs: package-desktop
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
           - target: linux-x64
             runner: ubuntu-24.04
             platform: linux
@@ -914,12 +951,11 @@ jobs:
             platform: darwin
             installer: Damocles-VERSION-arm64.dmg
     runs-on: ${{ matrix.runner }}
-    # On windows-11-arm the install, the update and the uninstall each take 5 to 9 minutes while Defender scans the new binaries.
     timeout-minutes: 45
     defaults:
       run:
         shell: bash
-    steps:
+    steps: &desktop-update-test-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -979,10 +1015,29 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # desktop-update-test's steps on the installer sign-windows signed.
+  desktop-update-test-windows:
+    needs: sign-windows
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: win-arm64
+            runner: windows-11-arm
+            platform: win32
+            installer: Damocles-Setup-VERSION-arm64.exe
+    runs-on: ${{ matrix.runner }}
+    # On windows-11-arm the install, the update and the uninstall each take 5 to 9 minutes while Defender scans the new binaries.
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps: *desktop-update-test-steps
+
   # Checks the run produced every release artifact and writes the release notes. A manual run runs it too, so a dry run checks
   # everything release reads; release only publishes.
   release-notes:
-    needs: [package, package-desktop, sign-windows, e2e-desktop, verify-desktop-install, desktop-update-test]
+    needs: [package, package-desktop, sign-windows, e2e-desktop, verify-desktop-install, verify-desktop-install-windows, desktop-update-test, desktop-update-test-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1059,7 +1114,7 @@ jobs:
   # Build provenance for every file the release attaches. The OIDC token this job can mint signs attestations, so the job
   # holds no secret and installs and runs no package. Its subject-path list must equal the asset list in "Create GitHub Release".
   attest:
-    needs: [package, package-desktop, sign-windows, e2e-desktop, verify-desktop-install, desktop-update-test, release-notes]
+    needs: [package, package-desktop, sign-windows, e2e-desktop, verify-desktop-install, verify-desktop-install-windows, desktop-update-test, desktop-update-test-windows, release-notes]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
@@ -1092,7 +1147,7 @@ jobs:
             dist-artifacts/latest*.yml
 
   release:
-    needs: [package, package-desktop, sign-windows, e2e-desktop, verify-desktop-install, desktop-update-test, release-notes, attest]
+    needs: [package, package-desktop, sign-windows, e2e-desktop, verify-desktop-install, verify-desktop-install-windows, desktop-update-test, desktop-update-test-windows, release-notes, attest]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     # Only this job writes: `gh release create` authenticates with the job's own GITHUB_TOKEN.

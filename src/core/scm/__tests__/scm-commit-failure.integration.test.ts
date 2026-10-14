@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createGitRunner, GitError, parseGitVersion, type GitRunner } from '../git-runner';
+import { createGitRunner, GitError, parseGitVersion, type GitCloner, type GitRunner } from '../git-runner';
 import { PLAIN_COMMIT } from '../repository';
 import { folder, git, GIT_PATH, harness, HAS_GIT, makeRepo, ready, sandbox, statusOf, useGitSandbox, waitFor, write, type Harness } from './git-harness';
 
@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 // git as a German install prints it: a failed commit's output in German, everything else untouched
-function germanGit(): GitRunner {
+function germanGit(): GitRunner & GitCloner {
   const plain = createGitRunner({ git: { path: GIT_PATH!, version: parseGitVersion(git(['--version'], sandbox))! }, log: { appendLine: () => undefined }, isTrusted: () => true });
   return {
     ...plain,
@@ -37,7 +37,7 @@ function germanGit(): GitRunner {
   };
 }
 
-async function open(project: string, runner?: GitRunner): Promise<{ h: Harness; repoId: string }> {
+async function open(project: string, runner?: GitRunner & GitCloner): Promise<{ h: Harness; repoId: string }> {
   const h = harness({ trusted: [project], ...(runner ? { runner } : {}) });
   h.service.setProjects([{ key: 'p', path: project }]);
   const repoId = (await ready(h)).repos[0]!.repoId;

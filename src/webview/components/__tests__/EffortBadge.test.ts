@@ -118,7 +118,7 @@ describe('the subagent effort badge', () => {
 
 describe('the team agent effort badge', () => {
   const agent = (over: Partial<TeamAgent> = {}): TeamAgent => ({
-    agentId: 'agent-1', name: 'lead', role: 'lead', specialization: 'lead it', model: 'Opus 5', profileId: null, attempt: 0,
+    agentId: 'agent-1', name: 'lead', role: 'lead', description: 'lead it', model: 'Opus 5', profileId: null, attempt: 0,
     status: 'running', activeMs: 0, runningSince: 1, toolCount: 2, lastToolName: null, totalInputTokens: 0, totalOutputTokens: 0,
     cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0, dollarBilled: true, effort: null, progressSummary: null, result: null,
     logFilePath: null, ...over,

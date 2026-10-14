@@ -4,6 +4,8 @@ import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
 import { createShellJob, createShellSessionJob, killProcessTree } from '../process-tree';
 import { startShellSentinel } from '../shell-sentinel-client';
+import * as path from 'node:path';
+import { windowsSystemTool } from '../../../system-tools';
 
 // Passthrough, so the real shells below still run while every spawn stays countable.
 vi.mock('child_process', async (importOriginal) => {
@@ -220,7 +222,8 @@ describe('platform dispatch', () => {
     killProcessTree(999_999, undefined);
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
-    expect(spawnMock.mock.calls[0]?.[0]).toBe('taskkill');
+    expect(spawnMock.mock.calls[0]?.[0]).toBe(windowsSystemTool('taskkill'));
+    expect(path.win32.isAbsolute(String(spawnMock.mock.calls[0]?.[0]))).toBe(true);
     expect(spawnMock.mock.calls[0]?.[1]).toEqual(['/F', '/T', '/PID', '999999']);
     expect(kill).not.toHaveBeenCalled();
   });

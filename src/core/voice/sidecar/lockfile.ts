@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { userInfo } from "node:os";
 import { join } from "node:path";
+import { windowsSystemTool } from "../../system-tools";
 
 export type LockContents = {
   pid: number;
@@ -159,7 +160,7 @@ async function applyOwnerOnlyAcl(filePath: string): Promise<void> {
   if (username.length === 0) return;
   await new Promise<void>((resolve) => {
     const proc = spawn(
-      "icacls",
+      windowsSystemTool("icacls"),
       [filePath, "/inheritance:r", "/grant:r", `${username}:F`],
       { stdio: "ignore", windowsHide: true },
     );

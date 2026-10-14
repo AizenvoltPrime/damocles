@@ -1,15 +1,15 @@
-import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { ElectronApplication, Locator, Page, TestInfo } from '@playwright/test';
+import type { ElectronApplication, Locator, Page } from '@playwright/test';
 import { expect, test } from '../support/fixtures';
 import { git, initRepo, type GitHome } from '../support/git';
 import { writeUserSettings } from '../support/hermetic';
-import { menuItem, overlayMenu, overlayViewState } from '../support/overlay';
+import { menuItem, overlayMenu } from '../support/overlay';
 import { quickPick } from '../support/editor';
-import { openProjectChat, saveScreenshot, saveWindowScreenshot, settled, THEMES, type Theme } from '../support/screenshots';
+import { commitMessage, quickInput, scmSection, selectRepo, setSection, submenuItem, write } from '../support/scm';
+import { dismiss, openProjectChat, saveScreenshot, setFont, setReducedMotion, shot, showShellTheme, THEMES, windowShot, type Theme } from '../support/screenshots';
 import { closeSettingsModal, openSettingsModal, setContentSize } from '../support/settings';
 import { overlayPage, pressKeys, PRIMARY, shellPage } from '../support/shell';
-import { setThemeSource } from '../support/ui';
+import { clickSectionAction } from '../support/shell-ui';
 
 // Review captures of the commit variants: Dark and Light, the 13px default and a 16px host font, and a reduced-motion pass.
 const WIDTH = 1440;
@@ -18,24 +18,6 @@ const FONTS = [13, 16] as const;
 
 test.describe.configure({ mode: 'serial' });
 test.setTimeout(900_000);
-
-async function shot(page: Page, testInfo: TestInfo, name: string, target?: Locator): Promise<void> {
-  await settled(page);
-  await saveScreenshot(page, testInfo, name, target);
-}
-
-/** The whole window as the user sees it, once the shell and the overlay have settled. */
-async function windowShot(app: ElectronApplication, testInfo: TestInfo, name: string): Promise<void> {
-  await settled(await shellPage(app));
-  await settled(await overlayPage(app));
-  await saveWindowScreenshot(app, testInfo, name);
-}
-
-function write(root: string, relativePath: string, content: string): void {
-  const file = path.join(root, ...relativePath.split('/'));
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, content);
-}
 
 const ADA = { name: 'Ada Lovelace', email: 'ada@example.com' };
 
@@ -69,54 +51,7 @@ async function seed(h: GitHome, project: string): Promise<void> {
   write(project, 'src/routes/users.ts', "export const users = '/users';\n");
 }
 
-/** Sets the host font on every Damocles page the way the theme style does; 13 is the desktop default. */
-async function setFont(app: ElectronApplication, px: number): Promise<void> {
-  for (const page of [await shellPage(app), await overlayPage(app)]) {
-    await page.evaluate((size) => document.documentElement.style.setProperty('--d-font-size', `${size}px`), px);
-    await settled(page);
-  }
-}
-
-async function showShellTheme(app: ElectronApplication, theme: Theme): Promise<void> {
-  await setThemeSource(app, theme);
-  const shell = await shellPage(app);
-  await expect(shell.locator('body')).toHaveClass(new RegExp(`(^| )vscode-${theme}( |$)`));
-  await settled(shell);
-}
-
-async function setReducedMotion(app: ElectronApplication, on: boolean): Promise<void> {
-  for (const page of [await shellPage(app), await overlayPage(app)]) {
-    // The OS preference, not data-reduced-motion, which every theme switch rewrites from main's setting.
-    await page.emulateMedia({ reducedMotion: on ? 'reduce' : null });
-  }
-}
-
-async function setSection(shell: Page, testId: string, open: boolean): Promise<void> {
-  const toggle = shell.getByTestId(testId).locator('h2 button');
-  if ((await toggle.getAttribute('aria-expanded')) !== String(open)) await toggle.click();
-  await expect(toggle).toHaveAttribute('aria-expanded', String(open));
-}
-
-async function selectRepo(shell: Page, overlay: Page, label: string): Promise<void> {
-  await shell.getByTestId('scm-repo-picker').click();
-  await expect(overlayMenu(overlay)).toBeVisible();
-  await overlayMenu(overlay).locator('[role^="menuitem"]').filter({ hasText: label }).first().click();
-  await expect(overlayMenu(overlay)).toHaveCount(0);
-  await expect(shell.getByTestId('scm-repo-name')).toHaveText(label);
-}
-
-/** Escape closes the top overlay popup; waits until main has hidden the overlay view, so the next click reaches the shell. */
-async function dismiss(app: ElectronApplication, overlay: Page, popup: Locator): Promise<void> {
-  await overlay.keyboard.press('Escape');
-  await expect(popup).toHaveCount(0);
-  await expect.poll(async () => (await overlayViewState(app)).visible).toBe(false);
-}
-
-const scm = (shell: Page): Locator => shell.getByTestId('scm-section');
-const message = (shell: Page): Locator => shell.getByTestId('scm-commit-message');
 const dialog = (overlay: Page): Locator => overlay.getByRole('alertdialog');
-const quickInput = (overlay: Page): Locator => overlay.getByTestId('quick-input');
-const submenuItem = (overlay: Page, id: string): Locator => overlay.locator(`[data-submenu-item][data-item-id="${id}"]`);
 
 /** Runs a palette command: its title typed after ">", then its row clicked. */
 async function runCommand(app: ElectronApplication, id: string, title: string): Promise<void> {
@@ -152,9 +87,9 @@ test('slice 10b captures', async ({ foreground: _foreground, home, launch }, tes
     write(path.join(home.project, 'history'), file, `${text}\n`);
     await git(home, path.join(home.project, 'history'), 'add', '-A');
     await expect(shell.locator('[data-testid="scm-group"][data-group="index"]')).toBeVisible();
-    await message(shell).fill(text);
+    await commitMessage(shell).fill(text);
     await shell.getByTestId('scm-commit').click();
-    await expect(message(shell)).toHaveValue('');
+    await expect(commitMessage(shell)).toHaveValue('');
   }
 
   const pass = async (theme: Theme, font: number, suffix = ''): Promise<void> => {
@@ -165,8 +100,8 @@ test('slice 10b captures', async ({ foreground: _foreground, home, launch }, tes
     await selectRepo(shell, overlay, projectName);
 
     // The split button with "Commit", ready, and its menu open.
-    await message(shell).fill('Add rate limiting to POST /login');
-    await shot(shell, testInfo, t('commit-split-commit'), scm(shell));
+    await commitMessage(shell).fill('Add rate limiting to POST /login');
+    await shot(shell, testInfo, t('commit-split-commit'), scmSection(shell));
     await shell.getByTestId('scm-commit-menu').click();
     await expect(overlayMenu(overlay)).toBeVisible();
     await windowShot(app, testInfo, t('commit-menu'));
@@ -175,17 +110,17 @@ test('slice 10b captures', async ({ foreground: _foreground, home, launch }, tes
     await menuItem(overlay, 'toggleAmend').click();
     await expect(shell.getByTestId('scm-amend-banner')).toBeVisible();
     await expect(commitButton).toContainText('Commit (Amend)');
-    await shot(shell, testInfo, t('commit-amend'), scm(shell));
+    await shot(shell, testInfo, t('commit-amend'), scmSection(shell));
     await shell.getByTestId('scm-commit-menu').click();
     await expect(overlayMenu(overlay)).toBeVisible();
     await windowShot(app, testInfo, t('commit-menu-amend'));
     await dismiss(app, overlay, overlayMenu(overlay));
     await shell.getByTestId('scm-amend-cancel').click();
     await expect(shell.getByTestId('scm-amend-banner')).toHaveCount(0);
-    await expect(message(shell)).toHaveValue('Add rate limiting to POST /login');
+    await expect(commitMessage(shell)).toHaveValue('Add rate limiting to POST /login');
 
     // Commit › with the No Verify items (allowNoVerifyCommit is on).
-    await shell.getByTestId('scm-more-actions').click();
+    await clickSectionAction(shell, 'scm-more-actions');
     await expect(overlayMenu(overlay)).toBeVisible();
     await menuItem(overlay, 'submenu:commit').click();
     await expect(submenuItem(overlay, 'commitNoVerify')).toBeVisible();
@@ -198,7 +133,7 @@ test('slice 10b captures', async ({ foreground: _foreground, home, launch }, tes
     await dismiss(app, overlay, dialog(overlay));
 
     // The protected-branch question, then Commit to a New Branch's name box: prefilled, valid, and invalid.
-    await expect(message(shell)).toHaveValue('Add rate limiting to POST /login');
+    await expect(commitMessage(shell)).toHaveValue('Add rate limiting to POST /login');
     await commitButton.click();
     await expect(dialog(overlay)).toContainText('protected branch');
     await windowShot(app, testInfo, t('dialog-protected-branch'));
@@ -218,11 +153,11 @@ test('slice 10b captures', async ({ foreground: _foreground, home, launch }, tes
     // Commit Merge in the merge in progress.
     await selectRepo(shell, overlay, 'merging');
     await expect(commitButton).toContainText('Commit Merge');
-    await shot(shell, testInfo, t('commit-split-merge'), scm(shell));
+    await shot(shell, testInfo, t('commit-split-merge'), scmSection(shell));
 
     // The smart-commit question, in the repository with only unstaged changes.
     await selectRepo(shell, overlay, 'unstaged');
-    await message(shell).fill('Note the rate limits');
+    await commitMessage(shell).fill('Note the rate limits');
     await commitButton.click();
     await expect(dialog(overlay)).toContainText('There are no staged changes to commit');
     await windowShot(app, testInfo, t('dialog-smart-commit'));
@@ -233,12 +168,12 @@ test('slice 10b captures', async ({ foreground: _foreground, home, launch }, tes
     await expect(dialog(overlay)).toContainText('empty commit');
     await windowShot(app, testInfo, t('dialog-empty-commit'));
     await dismiss(app, overlay, dialog(overlay));
-    await message(shell).fill('');
+    await commitMessage(shell).fill('');
 
     // History: Up in the empty box recalls the last message; a mid-swap frame, then at rest.
     await selectRepo(shell, overlay, 'history');
-    await message(shell).focus();
-    await message(shell).press('ArrowUp');
+    await commitMessage(shell).focus();
+    await commitMessage(shell).press('ArrowUp');
     if (!suffix) {
       await shell.evaluate(() => {
         for (const animation of document.getAnimations()) {
@@ -248,14 +183,14 @@ test('slice 10b captures', async ({ foreground: _foreground, home, launch }, tes
           }
         }
       });
-      await saveScreenshot(shell, testInfo, t('commit-history-swap'), scm(shell));
+      await saveScreenshot(shell, testInfo, t('commit-history-swap'), scmSection(shell));
       await shell.evaluate(() => {
         for (const animation of document.getAnimations()) animation.finish();
       });
     }
-    await expect(message(shell)).toHaveValue(/Every response carries X-Request-Id/);
-    await shot(shell, testInfo, t('commit-history'), scm(shell));
-    await message(shell).fill('');
+    await expect(commitMessage(shell)).toHaveValue(/Every response carries X-Request-Id/);
+    await shot(shell, testInfo, t('commit-history'), scmSection(shell));
+    await commitMessage(shell).fill('');
 
     // Settings › Source control: the top, then the commit rows.
     const settings = await openSettingsModal(app, 'sourceControl');

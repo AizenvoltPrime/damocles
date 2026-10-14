@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { log } from '../../logger';
 import { gitExecutable } from '../../git-executable';
+import { windowsSystemTool } from '../../system-tools';
 import { folderKey } from '../../workspace-folders/folder-key';
 import { writeFileAtomic, writeFileAtomicIfChanged } from './atomic-write';
 import { exec, execSafe, ExecExitError, type TrackChild } from './exec';
@@ -212,11 +213,12 @@ async function processImage(pid: number): Promise<string | null> {
     }
   }
   if (process.platform === 'win32') {
-    const out = (await exec('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'])).stdout;
+    const out = (await exec(windowsSystemTool('tasklist'), ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'])).stdout;
     const match = /^"([^"]+)","(\d+)"/m.exec(out);
     return match && Number(match[2]) === pid ? match[1]! : null;
   }
-  const result = await execSafe('ps', ['-p', String(pid), '-o', 'comm=']);
+  // only macOS and the BSDs get here, and each installs ps at /bin/ps
+  const result = await execSafe('/bin/ps', ['-p', String(pid), '-o', 'comm=']);
   return result.ok && result.value.stdout.trim() ? path.basename(result.value.stdout.trim()) : null;
 }
 

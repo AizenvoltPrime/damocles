@@ -28,8 +28,8 @@ const actions = new Proxy({} as MenuActions, {
   get: (_target, name: string) => (...args: unknown[]) => calls.push([name, ...args.map((arg) => (typeof arg === 'object' ? JSON.stringify(arg) : arg))].join(':')),
 });
 
-const CHAT: MenuState = { chat: true, editor: false, browser: true, page: false, focus: 'chat', updateCheck: true, project: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE };
-const NONE: MenuState = { chat: false, editor: false, browser: false, page: false, focus: undefined, updateCheck: false, project: false, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE };
+const CHAT: MenuState = { chat: true, editor: false, browser: true, page: false, focus: 'chat', updateCheck: true, terminalCreate: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE };
+const NONE: MenuState = { chat: false, editor: false, browser: false, page: false, focus: undefined, updateCheck: false, terminalCreate: false, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE };
 const EDITOR: MenuState = { ...CHAT, editor: true, focus: 'editor' };
 
 function build(platform: NodeJS.Platform, state: MenuState, language: 'en' | 'el' = 'en'): MenuItemConstructorOptions[] {
@@ -232,7 +232,7 @@ describe('application menu', () => {
   });
 
   it('lists every git command once in View › Source Control, grouped by separators, enabled where the palette lists it', () => {
-    const OPEN: MenuState = { ...CHAT, scm: { ...NO_SCM_MENU_STATE, available: true, openRepositoryCount: 1 } };
+    const OPEN: MenuState = { ...CHAT, scm: { ...NO_SCM_MENU_STATE, available: true, openRepositoryCount: 1, gitFound: true, allowForcePush: true, stashStaged: true } };
     build('win32', OPEN);
     const view = electron.template.find((menu) => menu.id === 'damocles.menu.view')!.submenu as MenuItemConstructorOptions[];
     const submenu = view.find((item) => item.id === 'damocles.menu.sourceControl')!.submenu as MenuItemConstructorOptions[];
@@ -253,6 +253,18 @@ describe('application menu', () => {
     (items.get(MENU_IDS.gitStageAllTracked)!.click as () => void)();
     (items.get(MENU_IDS.gitViewStagedChanges)!.click as () => void)();
     expect(calls).toEqual(['scmRun:{"op":"stageAll","scope":"tracked"}', 'scmRun:{"op":"openGroupChanges","group":"index"}']);
+
+    expect(items.get(MENU_IDS.gitPushForce)!.enabled).toBe(true);
+    expect(items.get(MENU_IDS.gitClone)!.enabled).toBe(true);
+
+    // the force push variants exist only while allowForcePush is on; Clone needs git alone, whatever the project's trust
+    const noForce = build('win32', { ...OPEN, scm: { ...OPEN.scm, allowForcePush: false } });
+    expect(noForce.map((item) => item.id).filter((id) => [MENU_IDS.gitPushForce, MENU_IDS.gitPushToForce, MENU_IDS.gitPushWithTagsForce].includes(id as never))).toEqual([]);
+    const untrusted = build('win32', { ...CHAT, scm: { ...NO_SCM_MENU_STATE, gitFound: true } });
+    expect(byId(untrusted, MENU_IDS.gitClone).enabled).toBe(true);
+    expect(byId(untrusted, MENU_IDS.gitPush).enabled).toBe(false);
+    const running = build('win32', { ...OPEN, scm: { ...OPEN.scm, remoteRunning: true } });
+    expect(byId(running, MENU_IDS.gitPull).enabled).toBe(false);
 
     const closed = build('win32', CHAT);
     expect(byId(closed, MENU_IDS.gitRefresh).enabled).toBe(false);

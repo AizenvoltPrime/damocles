@@ -207,9 +207,9 @@ async function interruptedTeam(cwd: string, teamId: string, realFiles = false): 
     behave: {
       Lead: (_t, s, hh) => {
         if (s.prompts.length === 1) {
-          hh.runner.startSpecialist('A', 'task for A, described in full');
-          hh.runner.startSpecialist('B', 'task for B, described in full', undefined, 'reviewer', []);
-          hh.runner.startSpecialist('C', 'task for C, described in full');
+          hh.runner.startSpecialist('A', 'Test label', 'task for A, described in full');
+          hh.runner.startSpecialist('B', 'Test label', 'task for B, described in full', undefined, 'reviewer', []);
+          hh.runner.startSpecialist('C', 'Test label', 'task for C, described in full');
         }
         s.emit({ type: 'turn_end' });
       },
@@ -238,13 +238,13 @@ async function interruptedTeam(cwd: string, teamId: string, realFiles = false): 
   await status(h, 'C', 'standby');
   await opened(h, 'B');
 
-  h.runner.startSpecialist('E', 'task for E, described in full');
+  h.runner.startSpecialist('E', 'Test label', 'task for E, described in full');
   await status(h, 'E', 'awaiting-review');
   h.runner.approveSpecialist('E');
   await status(h, 'E', 'completed');
 
-  h.runner.startSpecialist('F', 'task for F, described in full');
-  h.runner.startSpecialist('G', 'task for G, described in full');
+  h.runner.startSpecialist('F', 'Test label', 'task for F, described in full');
+  h.runner.startSpecialist('G', 'Test label', 'task for G, described in full');
   await opened(h, 'F');
   await opened(h, 'G');
   h.runner.cancelSpecialist('G');
@@ -390,7 +390,7 @@ describe('the live checkpoint follows a member the runner parks or wakes between
     const h = makeTeam({
       cwd: newCwd(label), teamId: crypto.randomUUID(), specialists: ['A', 'B'], settleOn: 'agent_settled',
       behave: {
-        Lead: (_t, s, hh) => { if (s.prompts.length === 1) hh.runner.startSpecialist('B', 'task for B, described in full'); },
+        Lead: (_t, s, hh) => { if (s.prompts.length === 1) hh.runner.startSpecialist('B', 'Test label', 'task for B, described in full'); },
         B: holdTurn,
         A: (_t, s, hh) => {
           if (s.prompts.length > 1) return;
@@ -403,7 +403,7 @@ describe('the live checkpoint follows a member the runner parks or wakes between
     });
     const run = h.runner.run();
     await (await opened(h, 'B')).whenPrompted(1);
-    h.runner.startSpecialist('A', 'task for A, described in full');
+    h.runner.startSpecialist('A', 'Test label', 'task for A, described in full');
     await (await opened(h, 'A')).whenPrompted(1);
     expect(await h.runner.flushCheckpoint()).toBe(true);
     settleA();
@@ -533,8 +533,8 @@ describe('a run killed with no team-completed resumes from its live checkpoint',
     const tailForLead = h.bus().send('B', 'Lead', 'tail message for Lead');
     // D has no run yet, so nothing subscribed to this; its restored run must not receive it either.
     const beforeD = h.bus().send('Lead', 'D', 'sent before D was spawned');
-    h.runner.startSpecialist('D', 'task for D, described in full');
-    h.runner.redispatchSpecialist('G', 'task for G again, described in full');
+    h.runner.startSpecialist('D', 'Test label', 'task for D, described in full');
+    h.runner.redispatchSpecialist('G', 'Test label', 'task for G again, described in full');
     await (await opened(h, 'D')).whenPrompted(1);
     await vi.waitFor(() => {
       expect(deliveredIds(b)).toEqual(steerIds);
@@ -632,7 +632,7 @@ describe('TeamRunner checkpoint and restore edge cases', () => {
     expect(members.get('F')).toBe('running');
   });
 
-  it('keeps a finished member result from the event log, so a later partial synthesis still shows it', async () => {
+  it('keeps a finished member result from the event log, and names a member stopped before reporting, in a later partial synthesis', async () => {
     const { h, files, run } = await interruptedTeam(newCwd('last-result'), crypto.randomUUID());
     h.runner.cancel('user');
     await run;
@@ -644,7 +644,11 @@ describe('TeamRunner checkpoint and restore edge cases', () => {
     await (await opened(after, 'Lead')).whenPrompted(1);
     after.runner.cancel('user');
 
-    expect((await done).text).toContain('### G (specialist, cancelled)\nG found half the answer');
+    const text = (await done).text;
+    expect(text).toContain('### E (specialist, completed)\nE signed off');
+    // G narrated, then the lead cancelled it before it reported, so its narration is no outcome.
+    expect(text).toContain('### G (specialist, cancelled)\nStopped before reporting.');
+    expect(text).not.toContain('G found half the answer');
   });
 
   it.each([
@@ -737,7 +741,7 @@ describe('TeamRunner steer to a member whose session is still opening', () => {
       gate: { A: new Promise<void>((r) => { open = r; }) },
       behave: {
         Lead: (_t, s, hh) => {
-          if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'task for A, described in full');
+          if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'Test label', 'task for A, described in full');
           s.emit({ type: 'turn_end' });
         },
       },
@@ -805,7 +809,7 @@ function midToolTeam(label: string): Harness {
     cwd: newCwd(label), teamId: crypto.randomUUID(), specialists: ['A'],
     behave: {
       Lead: (_t, s, hh) => {
-        if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'task for A, described in full');
+        if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'Test label', 'task for A, described in full');
         s.emit({ type: 'turn_end' });
       },
       A: (_t, s) => {
@@ -1115,7 +1119,7 @@ describe('TeamRunner.resume and the review round', () => {
       cwd, teamId, specialists: ['A'],
       behave: {
         Lead: (text, s, hh) => {
-          if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'task for A, described in full');
+          if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'Test label', 'task for A, described in full');
           // The lead keeps working on the round it was handed, so no stall nudge repeats it.
           if (!text.includes(RRR)) s.emit({ type: 'turn_end' });
         },
@@ -1339,7 +1343,7 @@ describe('TeamRunner.resume active time', () => {
     const h = makeTeam({
       cwd, teamId, specialists: ['A'],
       behave: {
-        Lead: (_t, s, hh) => { if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'task for A, described in full'); },
+        Lead: (_t, s, hh) => { if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'Test label', 'task for A, described in full'); },
         A: (_t, s, hh) => { hh.runner.reportComplete('A', 'A signed off'); s.emit({ type: 'turn_end' }); },
       },
     });
@@ -1397,10 +1401,10 @@ describe('TeamRunner.resume keeps review coverage', () => {
       behave: {
         Lead: (text, s, hh) => {
           if (s.prompts.length === 1) {
-            hh.runner.startSpecialist('backend', 'implement the backend in full');
+            hh.runner.startSpecialist('backend', 'Test label', 'implement the backend in full');
           } else if (text.includes(RRR) && hh.agent('appsec').status === 'pending') {
             hh.scratchpad().markRead('Lead', 'backend-api');
-            hh.runner.startSpecialist('appsec', 'review the backend for defects', undefined, 'reviewer', ['backend']);
+            hh.runner.startSpecialist('appsec', 'Test label', 'review the backend for defects', undefined, 'reviewer', ['backend']);
           } else if (text.includes('CHANGES REQUESTED')) {
             hh.runner.dismissReview('appsec', 'backend', REASON);
             return;
@@ -1457,7 +1461,7 @@ describe('TeamRunner.resume keeps review coverage', () => {
       cwd, teamId, specialists: ['A'],
       behave: {
         Lead: (text, s, hh) => {
-          if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'task for A, described in full');
+          if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'Test label', 'task for A, described in full');
           if (!text.includes(RRR)) s.emit({ type: 'turn_end' });
         },
         A: (_t, s, hh) => {
@@ -1504,7 +1508,7 @@ describe('TeamRunner.resume keeps review coverage', () => {
         cwd, teamId, specialists: ['A', 'R'],
         behave: {
           Lead: (text, s, hh) => {
-            if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'task for A, described in full');
+            if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'Test label', 'task for A, described in full');
             if (!text.includes(RRR)) s.emit({ type: 'turn_end' });
           },
           A: (_t, s, hh) => {
@@ -1574,7 +1578,7 @@ describe('TeamRunner.resume keeps review coverage', () => {
       cwd, teamId, specialists: ['A', 'R'],
       behave: {
         Lead: (text, s, hh) => {
-          if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'task for A, described in full');
+          if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'Test label', 'task for A, described in full');
           if (!text.includes(RRR)) s.emit({ type: 'turn_end' });
         },
         A: (_t, s, hh) => {
@@ -1600,7 +1604,7 @@ describe('TeamRunner.resume keeps review coverage', () => {
 
     const done = after.runner.resume('tc-resume');
     after.scratchpad().markRead('Lead', 'A-api');
-    after.runner.startSpecialist('R', 'review A for defects in full', undefined, 'reviewer', ['A']);
+    after.runner.startSpecialist('R', 'Test label', 'review A for defects in full', undefined, 'reviewer', ['A']);
     expect(() => after.runner.approveSpecialist('A')).toThrow('its reviewer "R" has not signed off on A\'s latest revision (revision 0; R covers no revision)');
     after.runner.cancel('user');
     await done;
@@ -1647,7 +1651,7 @@ describe('a member card reads the same live and after a reload', () => {
     const h = makeTeam({ cwd: newCwd('thrown-run'), teamId: crypto.randomUUID(), specialists: ['A'], behave: {} });
     const runs = holdRuns(h);
     const done = h.runner.run();
-    h.runner.startSpecialist('A', 'task for A, described in full');
+    h.runner.startSpecialist('A', 'Test label', 'task for A, described in full');
 
     vi.setSystemTime(T + 7_000);
     runs.get(name)!.reject(new Error('runner crashed'));
@@ -1681,7 +1685,7 @@ describe('a member card reads the same live and after a reload', () => {
     const h = makeTeam({ cwd: newCwd('settled-result'), teamId: crypto.randomUUID(), specialists: ['A'], behave: {} });
     const runs = holdRuns(h);
     const done = h.runner.run();
-    h.runner.startSpecialist('A', 'task for A, described in full');
+    h.runner.startSpecialist('A', 'Test label', 'task for A, described in full');
     runs.get('A')!.resolve({ ...RUN_RESULT, ...outcome, agentId: h.agent('A').agentId });
     await microtasks();
     const settled = lastResultUpdate(h, h.agent('A').agentId);
@@ -1701,7 +1705,7 @@ describe('a member card reads the same live and after a reload', () => {
     const h = makeTeam({ cwd, teamId, specialists: ['A'], behave: {} });
     const runs = holdRuns(h);
     const done = h.runner.run();
-    h.runner.startSpecialist('A', 'task for A, described in full');
+    h.runner.startSpecialist('A', 'Test label', 'task for A, described in full');
     runs.get('A')!.resolve({ ...RUN_RESULT, finalResponse: 'A found the bug', agentId: h.agent('A').agentId });
     await microtasks();
     h.runner.cancel('user');
@@ -1724,12 +1728,66 @@ describe('a member card reads the same live and after a reload', () => {
     await resumed;
   });
 
+  it('a live spawn and redispatch send the card label, as a resume and a reload show it', async () => {
+    const h = makeTeam({ cwd: newCwd('live-label'), teamId: crypto.randomUUID(), specialists: ['A'], behave: {} });
+    const runs = holdRuns(h);
+    const done = h.runner.run();
+    const runningLabels = (agentId: string): unknown[] =>
+      h.webview.flatMap((m) => (m.type === 'teamAgentStatusUpdate' && m.agentId === agentId && m.status === 'running' ? [m.description] : []));
+
+    h.runner.startSpecialist('A', 'Fix the parser', 'task for A, described in full');
+    runs.get('A')!.resolve({ ...RUN_RESULT, status: 'failed', finalResponse: 'boom', agentId: h.agent('A').agentId });
+    await status(h, 'A', 'failed');
+    h.runner.redispatchSpecialist('A', 'Retry the parser', 'task for A again, described in full');
+
+    expect(runningLabels(h.agent('A').agentId)).toEqual(['Fix the parser', 'Retry the parser']);
+    expect(runningLabels(h.agent('Lead').agentId)[0]).toMatch(/^Lead: /);
+    h.runner.cancel('user');
+    runs.get('A')!.resolve({ ...RUN_RESULT, status: 'cancelled', agentId: h.agent('A').agentId });
+    runs.get('Lead')!.resolve({ ...RUN_RESULT, status: 'cancelled', agentId: h.agent('Lead').agentId });
+    await done;
+  });
+
+  // The cancelled run's result is narration an earlier build recorded; the relaunched run must not inherit it.
+  it('a member a resume relaunches carries no result, live or on reload', async () => {
+    const cwd = newCwd('resumed-no-result');
+    const teamId = crypto.randomUUID();
+    const h = makeTeam({ cwd, teamId, specialists: ['A'], behave: {} });
+    const runs = holdRuns(h);
+    const done = h.runner.run();
+    h.runner.startSpecialist('A', 'Fix the parser', 'task for A, described in full');
+    h.runner.cancel('user');
+    runs.get('A')!.resolve({ ...RUN_RESULT, status: 'cancelled', finalResponse: 'Now the trust integration test.', agentId: h.agent('A').agentId });
+    runs.get('Lead')!.resolve({ ...RUN_RESULT, status: 'cancelled', agentId: h.agent('Lead').agentId });
+    await done;
+    const persistence = persistenceOf(h);
+    expect((await persistence.loadTeamState(teamId))!.agents.find((a) => a.name === 'A')!.result).toBe('Now the trust integration test.');
+
+    const after = makeTeam({ cwd, teamId, specialists: ['A'], behave: {} });
+    const afterRuns = holdRuns(after);
+    after.runner.restore(await persistence.readEventLog(teamId), (await checkpointOf(persistence, teamId))!, new Map());
+    const resumed = after.runner.resume('tc-resume');
+    await vi.waitFor(() => expect(after.webview.some((m) => m.type === 'teamStarted')).toBe(true));
+
+    const started = after.webview.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'teamStarted' }> => m.type === 'teamStarted')!;
+    expect(started.team.agents.find((a) => a.name === 'A')).toMatchObject({ status: 'running', result: null, description: 'Fix the parser' });
+    await vi.waitFor(async () => {
+      const reloaded = (await persistence.loadTeamState(teamId))!.agents.find((a) => a.name === 'A');
+      expect(reloaded).toMatchObject({ result: null, description: 'Fix the parser' });
+    });
+    after.runner.cancel('user');
+    await vi.waitFor(() => expect(afterRuns.has('Lead')).toBe(true));
+    afterRuns.get('A')!.resolve({ ...RUN_RESULT, status: 'cancelled', agentId: after.agent('A').agentId });
+    afterRuns.get('Lead')!.resolve({ ...RUN_RESULT, status: 'cancelled', agentId: after.agent('Lead').agentId });
+    await resumed;
+  });
+
   it('a member the drain timeout forced terminal reloads with the status the finalize sent', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     const h = makeTeam({ cwd: newCwd('drain-forced'), teamId: crypto.randomUUID(), specialists: ['A'], behave: {} });
     const runs = holdRuns(h);
     const done = h.runner.run();
-    h.runner.startSpecialist('A', 'task for A, described in full');
+    h.runner.startSpecialist('A', 'Test label', 'task for A, described in full');
     vi.advanceTimersByTime(5_000);
     // A's run never settles, so only the drain timeout and the abort window end the team.
     runs.get('Lead')!.resolve({ ...RUN_RESULT, agentId: h.agent('Lead').agentId });

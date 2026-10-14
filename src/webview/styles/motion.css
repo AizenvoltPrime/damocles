@@ -76,6 +76,24 @@
 @keyframes d-msg-out-down{from{opacity:1;transform:none}to{opacity:0;transform:translateY(var(--msg-shift,.375rem))}}
 @keyframes d-msg-out-up{from{opacity:1;transform:none}to{opacity:0;transform:translateY(calc(var(--msg-shift,.375rem) * -1))}}
 
+/* A count that went down: the reverse of d-swap-in and d-swap-out, so the number rolls the way it moved. */
+@keyframes d-swap-in-down{from{opacity:0;transform:translateY(-.3125rem)}to{opacity:1;transform:none}}
+@keyframes d-swap-out-down{from{opacity:1;transform:none}to{opacity:0;transform:translateY(.3125rem)}}
+
+/* Source control remotes: a spinner coasts from --settle-from to its next full turn; a count's arrow bumps the way it points. */
+@keyframes d-settle{from{transform:rotate(var(--settle-from,0deg))}to{transform:rotate(360deg)}}
+@keyframes d-count-bump{0%,100%{transform:none}40%{transform:translateY(var(--bump,0)) scale(1.35)}}
+/* One control's content becoming another (Publish into the counts): the old grows away as the new settles in. */
+@keyframes d-morph-in{from{opacity:0;transform:scale(.88)}to{opacity:1;transform:none}}
+@keyframes d-morph-out{from{opacity:1;transform:none}to{opacity:0;transform:scale(1.1)}}
+/* A row that drops out from under the edge above it and tucks back up; its clip wrapper hides it while it is out. */
+@keyframes d-drop-in{from{transform:translateY(-100%)}to{transform:none}}
+@keyframes d-drop-out{from{transform:none}to{transform:translateY(-100%)}}
+/* Content a row pushed or released: it starts --shift away, where it stood before the row came or went, and glides into place. */
+@keyframes d-shift{from{transform:translateY(var(--shift,0))}to{transform:none}}
+/* A section's title actions appearing on hover or focus: they fade in with a short slide from the end edge. */
+@keyframes d-actions-in{from{opacity:0;transform:translateX(.1875rem)}to{opacity:1;transform:none}}
+
 /* Vue <Transition name="t-…"> classes. Leave animations hold their last frame so nothing flashes before removal. */
 .t-fade-enter-active{animation:o-fade .2s var(--ease-out)}
 .t-fade-leave-active{animation:o-fade-out .14s ease-in both}
@@ -87,6 +105,24 @@
 .t-up-leave-active{animation:o-up-out .16s ease-in both}
 .t-swap-enter-active{display:inline-block;animation:d-swap-in .2s var(--ease-out)}
 .t-swap-leave-active{display:inline-block;animation:d-swap-out .12s ease-in both}
+.t-swap-down-enter-active{display:inline-block;animation:d-swap-in-down .2s var(--ease-out)}
+.t-swap-down-leave-active{display:inline-block;animation:d-swap-out-down .12s ease-in both}
+/* Both sides share one grid cell, so the swap is a crossfade in place. */
+.t-morph-enter-active{animation:d-morph-in .26s var(--ease-out)}
+.t-morph-leave-active{pointer-events:none;animation:d-morph-out .16s ease-in both}
+/* A progress row under a section title: the root fades (Vue times the transition by it) while its card drops from the edge above; a
+   leaving row is taken out of flow (its top is set where it stood) so what follows can move up under it. */
+.t-progress-enter-active{animation:o-fade .26s var(--ease-out)}
+.t-progress-enter-active>.d-progress-card{animation:d-drop-in .26s var(--ease-out)}
+.t-progress-leave-active{position:absolute;inset-inline:0;pointer-events:none;animation:o-fade-out .2s ease-in both}
+.t-progress-leave-active>.d-progress-card{animation:d-drop-out .2s ease-in both}
+.d-shift{animation:d-shift .26s var(--ease-out)}
+.d-settle{animation:d-settle var(--settle-time,.4s) var(--ease-out)}
+.d-count-bump{animation:d-count-bump .42s var(--ease-spring)}
+/* The accent copy over a count's arrow that lights up and fades as the arrow bumps. */
+.d-count-glow{animation:d-flash .9s var(--ease-out) both}
+/* Replays each time display:none lifts, so the title actions fade in on every reveal; hiding is instant. */
+.d-actions-in{animation:d-actions-in .16s var(--ease-out)}
 /* A chip in a TransitionGroup: it pops in, shrinks out, and the chips after it slide into its place. */
 .t-chip-enter-active{animation:d-scale-in .22s var(--ease-spring) both}
 .t-chip-leave-active{animation:d-scale-out .14s ease-in both}
@@ -123,6 +159,10 @@
 .d-row-arrive{animation:d-slide .22s var(--ease-out) .06s both}
 /* A row that came back rather than moved (an undone commit's files) grows in where it sits: the reverse of .t-row-leave-active. */
 .d-row-return{animation:d-pane-return .22s var(--ease-out) .06s both}
+/* A row that arrived at the top of its group (a new stash): it drops in from above as the rows under it slide down. */
+.d-row-drop{animation:d-tuck-in .24s var(--ease-out) .06s both}
+/* Rows a user's expand revealed tuck in under their parent one after another, --reveal-index rows apart (capped). */
+.d-row-reveal{animation:d-tuck-in .2s var(--ease-out) both;animation-delay:calc(min(var(--reveal-index,0),8) * 22ms)}
 /* An empty or error state's icon settles after its block fades in. */
 .d-state-icon{animation:d-scale-in .32s var(--ease-spring) .08s both}
 /* An overlay root (scrim) carries the longest animation so Vue waits for its .o-panel child too. */

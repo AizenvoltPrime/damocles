@@ -8,7 +8,7 @@ import type { DamoclesShellApi } from '../../preload/shell-channels';
 import type { OverlayMenuItem } from '../../preload/overlay-channels';
 import { tidyMenu } from '../../preload/overlay-channels';
 import { pickerMenu, toOverlayMenu, type ScmAction } from './scm-menus';
-import { visibleText } from './scm-list';
+import { visibleText } from '@shared/visible-text';
 
 const props = defineProps<{
   api: DamoclesShellApi;

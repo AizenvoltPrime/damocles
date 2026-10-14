@@ -1,15 +1,15 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Check, Cherry, ChevronDown, GitMerge, GitPullRequestArrow, LoaderCircle, PencilLine, Sparkles, TriangleAlert } from 'lucide-vue-next';
+import { Check, Cherry, ChevronDown, CloudUpload, GitMerge, GitPullRequestArrow, LoaderCircle, PencilLine, Sparkles, TriangleAlert } from 'lucide-vue-next';
 import type { Component } from 'vue';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import type { ScmCommitFailure, ScmCommitVariant, ScmOperation, ScmRepoSnapshot } from '../../preload/scm-channels';
+import type { ScmCommitFailure, ScmCommitRequest, ScmCommitVariant, ScmOperation, ScmRepoSnapshot } from '../../preload/scm-channels';
 import type { DamoclesShellApi, ShellPlatform } from '../../preload/shell-channels';
 import { SCM_STORE, type BoxText } from './scm-store';
-import { visibleText } from './scm-list';
-import { COMMIT_VARIANTS, splitButtonMenu, toOverlayMenu, type ScmAction } from './scm-menus';
+import { visibleText } from '@shared/visible-text';
+import { actionOf, COMMIT_VARIANTS, splitButtonMenu, toOverlayMenu, type ScmAction } from './scm-menus';
 
 const props = defineProps<{ snapshot: ScmRepoSnapshot; platform: ShellPlatform; api: DamoclesShellApi }>();
 const { t } = useI18n();
@@ -82,6 +82,48 @@ const hint = computed(() => {
   if (staged.value > 0) return t('scm.commit.hint.staged', staged.value, { named: { count: staged.value } });
   return t('scm.commit.hint.nothingStaged');
 });
+// VS Code's action button: Publish Branch takes the commit button's place on a branch with no upstream and nothing to commit.
+const showPublish = computed(() => {
+  const snapshot = props.snapshot;
+  return snapshot.head?.type === 'branch' && snapshot.commit !== null && snapshot.upstream === null && snapshot.remotes.length > 0
+    && operation.value === null && !amending.value && staged.value + unstaged.value + conflicts.value === 0 && phase.value === 'idle';
+});
+// repositories whose publish this button started, until main answers it; Push Tags runs as push too, so running alone cannot say
+const publishStarted = reactive(new Set<string>());
+const publishing = computed(() => publishStarted.has(repoId.value) && props.snapshot.running === 'push');
+// main runs one remote operation per repository, so Publish waits while any runs, as the sync button does
+const publishBlocked = computed(() => publishStarted.has(repoId.value) || props.snapshot.running !== null);
+const publishTitle = computed(() => {
+  if (publishing.value) return t('scm.commit.publishing', { branch: branch.value });
+  return publishBlocked.value ? t('scm.sync.running') : t('scm.commit.publishTitle', { branch: branch.value });
+});
+
+async function publish(): Promise<void> {
+  const id = repoId.value;
+  if (publishBlocked.value) return;
+  publishStarted.add(id);
+  try {
+    await store.api.run({ op: 'publish', repoId: id });
+  } finally {
+    publishStarted.delete(id);
+  }
+}
+
+// The Publish and commit controls swap in one cell; focus on the leaving one moves to the one that takes its place.
+let swapHadFocus = false;
+
+function retireControl(element: Element): void {
+  swapHadFocus = element.contains(document.activeElement);
+  for (const node of [element, ...element.querySelectorAll('[data-testid]')]) node.removeAttribute('data-testid');
+  element.setAttribute('aria-hidden', 'true');
+}
+
+function focusSwapped(element: Element): void {
+  if (!swapHadFocus) return;
+  swapHadFocus = false;
+  (element instanceof HTMLButtonElement ? element : element.querySelector('button'))?.focus();
+}
+
 const iconKey = computed(() => (showBusy.value ? 'busy' : phase.value === 'done' ? 'done' : amending.value ? 'amend' : 'commit'));
 watch(amending, () => {
   twist.value = true;
@@ -216,7 +258,7 @@ function cancelAmend(): void {
  * Commits the draft of `id` (the shown repository unless named); no variant is the primary button's. In amend mode every
  * variant amends.
  */
-async function commit(variant?: ScmCommitVariant, id: string = repoId.value): Promise<void> {
+async function commit(variant?: ScmCommitVariant, id: string = repoId.value, postCommit?: ScmCommitRequest['postCommit']): Promise<void> {
   if (store.committing.value.has(id) || store.generating.value.has(id)) return;
   const chosen: ScmCommitVariant = { ...(variant ?? COMMIT_VARIANTS.commit), ...(store.amendingIn(id) ? { amend: true } : {}) };
   if (id === repoId.value) {
@@ -229,7 +271,7 @@ async function commit(variant?: ScmCommitVariant, id: string = repoId.value): Pr
   busyTimers.set(id, setTimeout(() => slow.add(id), BUSY_DELAY_MS));
   let ok = false;
   try {
-    const result = await store.api.commit({ repoId: id, message: store.draftOf(id), variant: chosen });
+    const result = await store.api.commit({ repoId: id, message: store.draftOf(id), variant: chosen, ...(postCommit ? { postCommit } : {}) });
     ok = result.ok;
     // applied before the box leaves its busy state, so nothing typed meanwhile can be replaced
     if (result.ok) store.applyCommitted(id, result.message, result.commitInput);
@@ -254,14 +296,20 @@ async function openCommitMenu(event: MouseEvent): Promise<void> {
   if (menuOpen.value) return;
   const rect = (event.currentTarget as HTMLElement).closest('[data-split-button]')!.getBoundingClientRect();
   const items = toOverlayMenu(
-    splitButtonMenu({ operation: operation.value, hasCommit: props.snapshot.commit !== null, amending: amending.value }),
+    splitButtonMenu({
+      operation: operation.value,
+      hasCommit: props.snapshot.commit !== null,
+      amending: amending.value,
+      head: props.snapshot.head?.type ?? null,
+      hasRemotes: props.snapshot.remotes.length > 0,
+    }),
     (key) => t(`scm.${key}`),
   );
   menuOpen.value = true;
   let action: ScmAction | undefined;
   try {
     const answer = await props.api.requestOverlay({ kind: 'menu', label: t('scm.commit.moreActions'), anchor: { x: rect.left, y: rect.top, width: rect.width, height: rect.height }, items });
-    action = answer.kind === 'menu' ? (answer.itemId as ScmAction) : undefined;
+    action = answer.kind === 'menu' ? actionOf(answer.itemId) : undefined;
   } finally {
     menuOpen.value = false;
   }
@@ -270,6 +318,8 @@ async function openCommitMenu(event: MouseEvent): Promise<void> {
     else await enterAmend();
   } else if (action === 'commit' || action === 'commitSigned') {
     await commit(COMMIT_VARIANTS[action]);
+  } else if (action === 'commitPush' || action === 'commitSync') {
+    await commit(COMMIT_VARIANTS.commit, repoId.value, action === 'commitPush' ? 'push' : 'sync');
   }
 }
 
@@ -326,23 +376,26 @@ defineExpose({
         v-if="operation"
         data-testid="scm-operation"
         :data-operation="operation"
-        class="flex h-7 items-center gap-1.5 rounded-7 border border-(--d-border2) bg-(--d-card) pr-0.75 pl-2"
+        class="flex min-h-7 flex-wrap items-center gap-x-1.5 rounded-7 border border-(--d-border2) bg-(--d-card) py-0.75 pr-0.75 pl-2"
       >
-        <component
-          :is="OPERATION_ICONS[operation]"
-          aria-hidden="true"
-          class="size-3.25 shrink-0 text-(--d-warning-text)"
-        />
-        <span
-          role="status"
-          class="min-w-0 flex-1 truncate text-11.5 text-(--d-text)"
-        >{{ t(`scm.operation.${operation}`) }}</span>
+        <!-- The status text wraps and Abort drops below it when the sidebar is narrow, so the state always reads in full. -->
+        <span class="flex min-w-0 flex-[1_1_7rem] items-center gap-1.5">
+          <component
+            :is="OPERATION_ICONS[operation]"
+            aria-hidden="true"
+            class="size-3.25 shrink-0 text-(--d-warning-text)"
+          />
+          <span
+            role="status"
+            class="min-w-0 text-11.5/snug text-pretty wrap-break-word text-(--d-text)"
+          >{{ t(`scm.operation.${operation}`) }}</span>
+        </span>
         <Button
           type="button"
           variant="ghost"
           size="sm"
           data-testid="scm-abort"
-          class="d-press h-5.5 shrink-0 rounded-5 px-2 text-11.5 text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-danger-text)"
+          class="d-press ml-auto h-5.5 shrink-0 rounded-5 px-2 text-11.5 text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-danger-text)"
           :disabled="snapshot.busy"
           @click="store.api.run({ op: 'abortOperation', repoId: snapshot.repoId })"
         >
@@ -436,11 +489,110 @@ defineExpose({
           </button>
         </div>
       </Transition>
-      <div class="@container/commit flex items-center gap-1.5 px-1.5 pt-1 pb-1.5">
-        <span
-          class="relative min-w-0 flex-1 truncate pl-1 text-10.5 text-(--d-faint)"
-          :class="label === t('scm.commit.commit') ? '@max-[10.5rem]/commit:hidden' : '@max-[13.5rem]/commit:hidden'"
-        >
+      <!-- One row, laid out right to left: the hint shows whole beside the button or wraps onto a second row the clip
+           hides (gap-y exceeds pb), so no font, language or label cuts it; screen readers still read it. -->
+      <div
+        data-testid="scm-commit-footer"
+        class="flex h-9 flex-row-reverse flex-wrap items-center gap-x-1.5 gap-y-2 overflow-hidden px-1.5 pt-1 pb-1.5"
+      >
+        <div class="inline-grid shrink-0 justify-items-end">
+          <Transition
+            name="t-morph"
+            @before-leave="retireControl"
+            @enter="focusSwapped"
+          >
+            <Button
+              v-if="showPublish"
+              type="button"
+              data-testid="scm-publish"
+              class="d-press h-6.5 gap-1.5 rounded-7 bg-(--d-accent) px-2.75 py-0 text-xs font-semibold text-(--d-on-accent) [grid-area:1/1] hover:bg-(--d-accent) hover:brightness-[1.08] focus-visible:ring-2 focus-visible:ring-(--d-on-accent)/70 focus-visible:ring-offset-0 focus-visible:ring-inset aria-disabled:cursor-default aria-disabled:hover:brightness-100 [&_svg]:size-3.25"
+              :title="publishTitle"
+              :aria-disabled="publishBlocked || undefined"
+              :aria-busy="publishing || undefined"
+              @click="publish"
+            >
+              <LoaderCircle
+                v-if="publishing"
+                aria-hidden="true"
+                class="d-spinning"
+              />
+              <CloudUpload
+                v-else
+                aria-hidden="true"
+              />
+              {{ t('scm.commit.publish') }}
+            </Button>
+            <!-- One pill of two buttons: d-press on the wrapper scales both halves together. -->
+            <div
+              v-else
+              data-split-button
+              data-testid="scm-commit-split"
+              class="d-press inline-flex h-6.5 shrink-0 overflow-hidden rounded-7 text-xs font-semibold transition-colors duration-200 [grid-area:1/1]"
+              :class="ready ? 'bg-(--d-accent) text-(--d-on-accent)' : 'bg-(--d-hover) text-(--d-muted)'"
+            >
+              <button
+                type="button"
+                data-testid="scm-commit"
+                :data-ready="ready || undefined"
+                :data-variant="amending ? 'amend' : 'commit'"
+                class="flex cursor-pointer items-center gap-1.5 px-2.5 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-inset"
+                :class="ready ? 'hover:bg-(--d-on-accent)/10 focus-visible:ring-(--d-on-accent)/70' : 'hover:bg-(--d-border2) hover:text-(--d-text) focus-visible:ring-(--d-accent)'"
+                :aria-busy="phase === 'busy' || undefined"
+                :title="t('scm.commit.withShortcut', { label, shortcut })"
+                @click="commit()"
+              >
+                <span class="inline-flex size-3.25">
+                  <Transition
+                    name="t-icon"
+                    :css="twist"
+                  >
+                    <LoaderCircle
+                      v-if="iconKey === 'busy'"
+                      key="busy"
+                      aria-hidden="true"
+                      class="d-spinning size-3.25"
+                    />
+                    <PencilLine
+                      v-else-if="iconKey === 'amend'"
+                      key="amend"
+                      aria-hidden="true"
+                      class="size-3.25"
+                    />
+                    <Check
+                      v-else
+                      :key="iconKey"
+                      aria-hidden="true"
+                      class="size-3.25"
+                    />
+                  </Transition>
+                </span>
+                <Transition
+                  name="t-swap"
+                  mode="out-in"
+                >
+                  <span :key="label">{{ label }}</span>
+                </Transition>
+              </button>
+              <button
+                type="button"
+                data-testid="scm-commit-menu"
+                aria-haspopup="menu"
+                :aria-expanded="menuOpen"
+                :aria-label="t('scm.commit.moreActions')"
+                :title="t('scm.commit.moreActions')"
+                class="flex w-5.5 cursor-pointer items-center justify-center border-l border-current/20 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-inset"
+                :class="ready ? 'hover:bg-(--d-on-accent)/10 focus-visible:ring-(--d-on-accent)/70' : 'hover:bg-(--d-border2) hover:text-(--d-text) focus-visible:ring-(--d-accent)'"
+                @click="openCommitMenu"
+              >
+                <ChevronDown
+                  aria-hidden="true"
+                  class="size-3"
+                />
+              </button>
+            </div>
+          </Transition>
+        </div>
+        <span class="relative mr-auto min-w-0 pl-1 text-10.5 whitespace-nowrap text-(--d-faint)">
           <Transition
             name="t-swap"
             mode="out-in"
@@ -451,73 +603,6 @@ defineExpose({
             >{{ hint }}</span>
           </Transition>
         </span>
-        <!-- One pill of two buttons: d-press on the wrapper scales both halves together. -->
-        <div
-          data-split-button
-          data-testid="scm-commit-split"
-          class="d-press ml-auto inline-flex h-6.5 shrink-0 overflow-hidden rounded-7 text-xs font-semibold transition-colors duration-200"
-          :class="ready ? 'bg-(--d-accent) text-(--d-on-accent)' : 'bg-(--d-hover) text-(--d-muted)'"
-        >
-          <button
-            type="button"
-            data-testid="scm-commit"
-            :data-ready="ready || undefined"
-            :data-variant="amending ? 'amend' : 'commit'"
-            class="flex cursor-pointer items-center gap-1.5 px-2.5 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-inset"
-            :class="ready ? 'hover:bg-(--d-on-accent)/10 focus-visible:ring-(--d-on-accent)/70' : 'hover:bg-(--d-border2) hover:text-(--d-text) focus-visible:ring-(--d-accent)'"
-            :aria-busy="phase === 'busy' || undefined"
-            :title="t('scm.commit.withShortcut', { label, shortcut })"
-            @click="commit()"
-          >
-            <span class="inline-flex size-3.25">
-              <Transition
-                name="t-icon"
-                :css="twist"
-              >
-                <LoaderCircle
-                  v-if="iconKey === 'busy'"
-                  key="busy"
-                  aria-hidden="true"
-                  class="d-spinning size-3.25"
-                />
-                <PencilLine
-                  v-else-if="iconKey === 'amend'"
-                  key="amend"
-                  aria-hidden="true"
-                  class="size-3.25"
-                />
-                <Check
-                  v-else
-                  :key="iconKey"
-                  aria-hidden="true"
-                  class="size-3.25"
-                />
-              </Transition>
-            </span>
-            <Transition
-              name="t-swap"
-              mode="out-in"
-            >
-              <span :key="label">{{ label }}</span>
-            </Transition>
-          </button>
-          <button
-            type="button"
-            data-testid="scm-commit-menu"
-            aria-haspopup="menu"
-            :aria-expanded="menuOpen"
-            :aria-label="t('scm.commit.moreActions')"
-            :title="t('scm.commit.moreActions')"
-            class="flex w-5.5 cursor-pointer items-center justify-center border-l border-current/20 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-inset"
-            :class="ready ? 'hover:bg-(--d-on-accent)/10 focus-visible:ring-(--d-on-accent)/70' : 'hover:bg-(--d-border2) hover:text-(--d-text) focus-visible:ring-(--d-accent)'"
-            @click="openCommitMenu"
-          >
-            <ChevronDown
-              aria-hidden="true"
-              class="size-3"
-            />
-          </button>
-        </div>
       </div>
       <span
         v-if="generating"

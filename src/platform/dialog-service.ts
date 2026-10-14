@@ -30,6 +30,8 @@ export interface PickFolderOptions {
   readonly title?: string;
   // absolute path the dialog opens at
   readonly defaultPath?: string;
+  // the confirm button's label, VS Code's openLabel
+  readonly buttonLabel?: string;
 }
 
 export interface DialogService {

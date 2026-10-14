@@ -2591,6 +2591,7 @@
       "fromLead": "the team lead",
       "messageFrom": "Message from {name}",
       "working": "Working…",
+      "stoppedBeforeReporting": "Stopped before reporting",
       "steer": "Steer",
       "steerFailed": "The note was not delivered. The agent may have finished.",
       "steerMember": "Steer {name}. Delivered before their next step",

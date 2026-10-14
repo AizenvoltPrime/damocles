@@ -27,11 +27,14 @@
   "sidebar": {
     "label": "Sidebar",
     "resize": "Resize sidebar",
-    "resizeSections": "Resize the Projects section",
     "sizeValue": "{size} pixels",
-    "resizeFiles": "Resize the Chats and Files sections",
-    "resizeSearch": "Resize the Search section",
-    "resizeScm": "Resize the Source control section"
+    "resizeBetween": "Resize the {above} and {below} sections",
+    "sectionMenu": "{section} section",
+    "moveUp": "Move Up",
+    "moveDown": "Move Down",
+    "resetOrder": "Reset Section Order",
+    "moved": "{section} moved to position {position} of {count}",
+    "orderReset": "Sections back in their default order"
   },
   "projects": {
     "heading": "Projects",
@@ -222,7 +225,9 @@
       "search": "Search",
       "searchEditor": "Search Editor",
       "commit": "Commit",
-      "branches": "Branches and repositories"
+      "branches": "Branches and repositories",
+      "fetchSync": "Fetch and sync",
+      "clone": "Clone"
     },
     "theme": {
       "dark": "Dark",
@@ -512,6 +517,58 @@
       "gitBranchPrefix": {
         "label": "Branch prefix",
         "description": "Prefills the name of a new branch, as in Commit to a New Branch."
+      },
+      "gitAutofetch": {
+        "label": "Autofetch",
+        "description": "Fetch from the remotes of the open project in the background. A failure is logged, never prompted."
+      },
+      "gitAutofetchPeriod": {
+        "label": "Autofetch period",
+        "description": "Seconds between background fetches."
+      },
+      "gitPruneOnFetch": {
+        "label": "Prune on fetch",
+        "description": "Remove remote-tracking branches that no longer exist on the remote."
+      },
+      "gitConfirmSync": {
+        "label": "Confirm sync",
+        "description": "Ask before Sync pulls and pushes."
+      },
+      "gitRebaseWhenSync": {
+        "label": "Rebase when syncing",
+        "description": "Sync runs a rebase instead of a merge when it pulls."
+      },
+      "gitFollowTagsWhenSync": {
+        "label": "Follow tags when syncing",
+        "description": "Push annotated tags that point at pushed commits."
+      },
+      "gitAllowForcePush": {
+        "label": "Allow force push",
+        "description": "Shows the force variants of Push. Each one still asks first."
+      },
+      "gitAutoStash": {
+        "label": "Auto stash",
+        "description": "Stash local changes before a pull and restore them after it."
+      },
+      "gitDefaultCloneDirectory": {
+        "label": "Default clone folder",
+        "description": "Where Clone puts new repositories. Empty asks for a folder each time."
+      },
+      "gitOpenAfterClone": {
+        "label": "Open after clone",
+        "description": "Add the cloned repository as a project: always, or after asking."
+      },
+      "gitPullBeforeCheckout": {
+        "label": "Pull before checkout",
+        "description": "Fast-forward a branch that has no outgoing commits before checking it out."
+      },
+      "gitPromptToSaveFilesBeforeStash": {
+        "label": "Save files before stash",
+        "description": "Ask to save unsaved editors of changed files before stashing. Staged asks only about files with staged changes."
+      },
+      "alwaysShowHeaderActions": {
+        "label": "Always show section actions",
+        "description": "Controls the visibility of sidebar section actions. Section actions may either be always visible, or only visible when that section is focused or hovered over."
       }
     },
     "restoreDefaults": "Restore defaults",
@@ -692,7 +749,9 @@
       },
       "none": "none",
       "postCommit": {
-        "none": "None"
+        "none": "None",
+        "push": "Push",
+        "sync": "Sync"
       },
       "protectionPrompt": {
         "alwaysPrompt": "Always prompt",
@@ -707,6 +766,16 @@
       "smartChanges": {
         "all": "All",
         "tracked": "Tracked"
+      },
+      "openAfterClone": {
+        "always": "Always",
+        "prompt": "Prompt"
+      },
+      "askEachTime": "ask each time",
+      "saveBeforeStash": {
+        "always": "Always",
+        "staged": "Staged",
+        "never": "Never"
       }
     }
   },
@@ -1049,9 +1118,11 @@
     "listLabel": "Terminals",
     "new": "New Terminal",
     "newTitle": "New Terminal ({shortcut}). Shift+click starts one in the current project.",
+    "newTitleHome": "New Terminal ({shortcut}). Shift+click starts one in your home folder.",
     "emptyText": "Start a shell in the current project, or press {shortcut}.",
-    "noProject": "Open a project to start a terminal",
+    "emptyTextHome": "Start a shell in your home folder, or press {shortcut}.",
     "noShell": "No shell was found on this computer",
+    "detecting": "Detecting shells…",
     "count": "{count} terminal | {count} terminals",
     "kill": "Kill {title}",
     "killTitle": "Kill terminal (Delete)",
@@ -1169,6 +1240,36 @@
       "unreadable": "Damocles could not read this diff.",
       "emptyFile": "The file is empty.",
       "noChanges": "This file has no line changes."
+    },
+    "stashApplied": "Stash applied"
+  },
+  "repositories": {
+    "heading": "Repositories",
+    "treeLabel": "Repositories",
+    "keyboardHelp": "Arrow keys move, and open repositories, groups and folders. Enter selects the row, Shift+F10 opens its menu. Type to jump to a row.",
+    "collapseAll": "Collapse All",
+    "rowMenu": "Actions for {name}",
+    "stashMenu": "Stash",
+    "detached": "detached",
+    "head": "checked out",
+    "group": {
+      "branches": "Branches",
+      "stashes": "Stashes",
+      "tags": "Tags",
+      "worktrees": "Worktrees"
+    },
+    "note": {
+      "empty": {
+        "branches": "No branches.",
+        "stashes": "No stashes.",
+        "tags": "No tags.",
+        "worktrees": "No worktrees."
+      },
+      "failed": "Damocles could not list them. Show Git Output has the details."
+    },
+    "open": {
+      "project": "Show project folder",
+      "addProject": "Add as project"
     }
   },
   "scm": {
@@ -1181,7 +1282,26 @@
       "viewSort": "View & Sort",
       "changes": "Changes",
       "repositories": "Repositories",
-      "commit": "Commit"
+      "commit": "Commit",
+      "pullPush": "Pull, Push",
+      "remote": "Remote",
+      "branch": "Branch",
+      "stash": "Stash",
+      "tags": "Tags",
+      "worktrees": "Worktrees"
+    },
+    "disabled": {
+      "noCommits": "No commits yet",
+      "noRemotes": "No remotes",
+      "noStashes": "No stashes",
+      "detachedHead": "Detached HEAD",
+      "noRebase": "No rebase in progress",
+      "mergeInProgress": "Merge in progress",
+      "rebaseInProgress": "Rebase in progress",
+      "cherryPickInProgress": "Cherry pick in progress",
+      "checkedOut": "Checked out",
+      "mainWorktree": "Main worktree",
+      "currentWorktree": "Current worktree"
     },
     "action": {
       "viewAsTree": "View as Tree",
@@ -1241,13 +1361,74 @@
       "commitAllAmendSigned": "Commit All (Amend, Signed Off)",
       "commitAmendSignedNoVerify": "Commit (Amend, Signed Off, No Verify)",
       "commitStagedAmendSignedNoVerify": "Commit Staged (Amend, Signed Off, No Verify)",
-      "commitAllAmendSignedNoVerify": "Commit All (Amend, Signed Off, No Verify)"
+      "commitAllAmendSignedNoVerify": "Commit All (Amend, Signed Off, No Verify)",
+      "sync": "Sync",
+      "syncRebase": "Sync (Rebase)",
+      "pull": "Pull",
+      "pullRebase": "Pull (Rebase)",
+      "pullFrom": "Pull from...",
+      "push": "Push",
+      "pushForce": "Push (Force)",
+      "pushTo": "Push to...",
+      "pushToForce": "Push to... (Force)",
+      "fetch": "Fetch",
+      "fetchPrune": "Fetch (Prune)",
+      "fetchAll": "Fetch From All Remotes",
+      "addRemote": "Add Remote...",
+      "removeRemote": "Remove Remote",
+      "clone": "Clone",
+      "commitPush": "Commit & Push",
+      "commitSync": "Commit & Sync",
+      "checkout": "Checkout to...",
+      "merge": "Merge...",
+      "rebase": "Rebase Branch...",
+      "createBranch": "Create Branch...",
+      "createBranchFrom": "Create Branch From...",
+      "renameBranch": "Rename Branch...",
+      "deleteBranch": "Delete Branch...",
+      "deleteRemoteBranch": "Delete Remote Branch...",
+      "publish": "Publish Branch...",
+      "stash": "Stash",
+      "stashIncludeUntracked": "Stash (Include Untracked)",
+      "stashStaged": "Stash Staged",
+      "stashApplyLatest": "Apply Latest Stash",
+      "stashApply": "Apply Stash...",
+      "stashPopLatest": "Pop Latest Stash",
+      "stashPop": "Pop Stash...",
+      "stashDrop": "Drop Stash...",
+      "stashDropAll": "Drop All Stashes...",
+      "stashView": "View Stash...",
+      "createTag": "Create Tag...",
+      "deleteTag": "Delete Tag...",
+      "deleteRemoteTag": "Delete Remote Tag...",
+      "pushTags": "Push Tags",
+      "createWorktree": "Create Worktree...",
+      "deleteWorktree": "Delete Worktree...",
+      "stashChanges": "Stash Changes",
+      "applyStash": "Apply Stash",
+      "viewStash": "View Stash",
+      "popStash": "Pop Stash",
+      "dropStash": "Drop Stash",
+      "copyBranchName": "Copy Branch Name",
+      "copyStashName": "Copy Stash Name",
+      "checkoutRef": "Checkout",
+      "checkoutRefDetached": "Checkout (Detached)",
+      "mergeRef": "Merge",
+      "rebaseRef": "Rebase",
+      "createBranchFromRef": "Create from...",
+      "deleteRef": "Delete",
+      "compareRef": "Compare with...",
+      "copyTagName": "Copy Tag Name",
+      "copyCommitHash": "Copy Commit Hash",
+      "openWorktree": "Open",
+      "copyWorktreePath": "Copy Worktree Path"
     },
     "group": {
       "merge": "Merge Changes",
       "index": "Staged Changes",
       "workingTree": "Changes",
-      "untracked": "Untracked Changes"
+      "untracked": "Untracked Changes",
+      "stashes": "Stashes"
     },
     "groupAria": "{name}, {count}",
     "groupMenu": "Actions for {name}",
@@ -1256,7 +1437,9 @@
     "folderAria": "{name}, {count}",
     "empty": {
       "noUnstaged": "No unstaged changes.",
-      "clean": "Working tree clean."
+      "clean": "Working tree clean.",
+      "stashes": "No stashes.",
+      "stashesFailed": "Damocles could not list the stashes. Show Git Output has the details."
     },
     "status": {
       "INDEX_MODIFIED": "Index Modified",
@@ -1316,7 +1499,8 @@
       },
       "noRepository": {
         "text": "The folder currently open doesn't have a Git repository. You can initialize a repository which will enable source control features powered by Git.",
-        "init": "Initialize Repository"
+        "init": "Initialize Repository",
+        "clone": "Clone Repository"
       }
     },
     "commit": {
@@ -1353,7 +1537,10 @@
       "moreActions": "More commit actions",
       "amending": "Amending “{subject}”",
       "cancelAmend": "cancel",
-      "cancelAmendAria": "Cancel amend"
+      "cancelAmendAria": "Cancel amend",
+      "publish": "Publish Branch",
+      "publishTitle": "Publish Branch \"{branch}\"",
+      "publishing": "Publishing Branch \"{branch}\"…"
     },
     "operation": {
       "merge": "Merge in progress",
@@ -1364,9 +1551,82 @@
         "rebase": "Abort Rebase",
         "cherryPick": "Abort Cherry Pick"
       }
-    }
+    },
+    "sync": {
+      "publishLabel": "Publish",
+      "publish": "Publish Branch",
+      "sync": "Synchronize Changes",
+      "pull": "Pull {behind} commit from {remote}/{branch} | Pull {behind} commits from {remote}/{branch}",
+      "push": "Push {ahead} commit to {remote}/{branch} | Push {ahead} commits to {remote}/{branch}",
+      "pullPush": "Pull {behind} and push {ahead} commit between {remote}/{branch} | Pull {behind} and push {ahead} commits between {remote}/{branch}",
+      "running": "Synchronizing Changes…",
+      "committing": "Committing Changes…"
+    },
+    "progress": {
+      "fetch": "Fetching…",
+      "pull": "Pulling…",
+      "push": "Pushing…",
+      "sync": "Syncing…",
+      "clone": "Cloning {name}…",
+      "cancel": "Cancel",
+      "deleteRemoteBranch": "Deleting remote branch…",
+      "deleteRemoteTag": "Deleting remote tag…",
+      "done": {
+        "fetch": "Fetch finished",
+        "pull": "Pull finished",
+        "push": "Push finished",
+        "sync": "Sync finished",
+        "clone": "Cloned {name}",
+        "deleteRemoteBranch": "Remote branch deleted",
+        "deleteRemoteTag": "Remote tag deleted"
+      },
+      "failed": {
+        "fetch": "Fetch failed",
+        "pull": "Pull failed",
+        "push": "Push failed",
+        "sync": "Sync failed",
+        "clone": "Cloning {name} failed",
+        "deleteRemoteBranch": "Deleting the remote branch failed",
+        "deleteRemoteTag": "Deleting the remote tag failed"
+      },
+      "cancelled": {
+        "fetch": "Fetch cancelled",
+        "pull": "Pull cancelled",
+        "push": "Push cancelled",
+        "sync": "Sync cancelled",
+        "clone": "Cloning {name} cancelled",
+        "deleteRemoteBranch": "Deleting the remote branch cancelled",
+        "deleteRemoteTag": "Deleting the remote tag cancelled"
+      },
+      "stashKept": {
+        "done": {
+          "pull": "Pull finished. Your changes could not be applied back and are kept in the stash list"
+        },
+        "failed": {
+          "pull": "Pull failed. Your changes could not be applied back and are kept in the stash list",
+          "sync": "Sync stopped before pushing. Your changes could not be applied back and are kept in the stash list"
+        },
+        "cancelled": {
+          "pull": "Pull cancelled. Your changes could not be applied back and are kept in the stash list",
+          "sync": "Sync cancelled. Your changes could not be applied back and are kept in the stash list"
+        }
+      }
+    },
+    "branch": {
+      "local": "local",
+      "tracking": "tracking {upstream}",
+      "unpublished": "not published yet",
+      "title": "{action} ({state})",
+      "aria": "{action} {branch}",
+      "ariaState": "{action} {branch}, {state}"
+    },
+    "stashAria": "{name}: {description}, {detail}"
+  },
+  "quickPick": {
+    "echo": "“{query}”"
   },
   "quickInput": {
+    "browseFailed": "The folder picker could not be opened. Try again.",
     "invalid": {
       "empty": "This can't be empty",
       "tooLong": "This is too long",

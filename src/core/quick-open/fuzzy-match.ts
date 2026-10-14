@@ -85,25 +85,36 @@ function charScore(queryChar: string, queryLowerChar: string, target: string, ta
   return score;
 }
 
+// The score and run-length tables, reused across calls and grown on demand; only cells a call writes are read.
+let scoreTable = new Int32Array(1024);
+let runTable = new Int32Array(1024);
+
 /** VS Code's scoreFuzzy: [score, matched positions in target]; score 0 is no match. */
 export function scoreFuzzy(target: string, query: string, queryLower: string, allowNonContiguousMatches: boolean): [number, number[]] {
   if (!target || !query || target.length < query.length) return [NO_MATCH, []];
   const targetLower = target.toLowerCase();
+  // Without gaps a match starts where the whole query does, so every cell left of its first occurrence scores nothing.
+  const first = allowNonContiguousMatches ? 0 : targetLower.indexOf(queryLower);
+  if (first < 0) return [NO_MATCH, []];
   const targetLength = target.length;
   const queryLength = query.length;
-  const scores: number[] = new Array<number>(queryLength * targetLength).fill(0);
-  const matches: number[] = new Array<number>(queryLength * targetLength).fill(0);
+  if (scoreTable.length < queryLength * targetLength) {
+    scoreTable = new Int32Array(queryLength * targetLength);
+    runTable = new Int32Array(queryLength * targetLength);
+  }
+  const scores = scoreTable;
+  const matches = runTable;
   for (let queryIndex = 0; queryIndex < queryLength; queryIndex++) {
     const offset = queryIndex * targetLength;
     const previousOffset = offset - targetLength;
     const queryGtZero = queryIndex > 0;
-    for (let targetIndex = 0; targetIndex < targetLength; targetIndex++) {
-      const targetGtZero = targetIndex > 0;
+    for (let targetIndex = first; targetIndex < targetLength; targetIndex++) {
+      const targetGtFirst = targetIndex > first;
       const current = offset + targetIndex;
-      const leftScore = targetGtZero ? scores[current - 1]! : 0;
+      const leftScore = targetGtFirst ? scores[current - 1]! : 0;
       const diag = previousOffset + targetIndex - 1;
-      const diagScore = queryGtZero && targetGtZero ? scores[diag]! : 0;
-      const sequenceLength = queryGtZero && targetGtZero ? matches[diag]! : 0;
+      const diagScore = queryGtZero && targetGtFirst ? scores[diag]! : 0;
+      const sequenceLength = queryGtZero && targetGtFirst ? matches[diag]! : 0;
       // Past the first query character a score needs one for the previous character, so the query matches in order.
       const score = !diagScore && queryGtZero ? 0 : charScore(query[queryIndex]!, queryLower[queryIndex]!, target, targetLower, targetIndex, sequenceLength);
       const valid = score > 0 && diagScore + score >= leftScore;
@@ -119,7 +130,7 @@ export function scoreFuzzy(target: string, query: string, queryLower: string, al
   const positions: number[] = [];
   let queryIndex = queryLength - 1;
   let targetIndex = targetLength - 1;
-  while (queryIndex >= 0 && targetIndex >= 0) {
+  while (queryIndex >= 0 && targetIndex >= first) {
     if (matches[queryIndex * targetLength + targetIndex] === NO_MATCH) {
       targetIndex--;
     } else {

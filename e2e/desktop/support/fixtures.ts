@@ -3,8 +3,9 @@ import { test as base, expect, type ElectronApplication, type Page, type TestInf
 import { attachDiagnostics, launchDesktop, type DesktopApp, type LaunchOptions } from './app';
 import { CLIPBOARD_LOCK_WAIT_MS, withClipboardLock, type E2eClipboard } from './clipboard';
 import { PACKAGED_SPECS } from './packaged-app';
-import { FOREGROUND_WAIT_MS, openingApp, withForeground } from './foreground';
+import { FOREGROUND_WAIT_MS, holdingForeground, openingApp, withForeground } from './foreground';
 import { createHermeticHome, type HermeticHome } from './hermetic';
+import { parkPointer, restorePointer } from './pointer';
 import { selectedProjectKey, shellPage, shellState } from './shell';
 
 // Electron prints this when an ipcMain.handle handler throws; the renderer gets a rejection and the test may never see it.
@@ -21,6 +22,15 @@ async function outsideTestTime<T>(testInfo: TestInfo, budget: number, wait: () =
     return await wait();
   } finally {
     testInfo.setTimeout(timeout + Math.ceil(performance.now() - started));
+  }
+}
+
+// Puts back the OS pointer the launches parked, before the foreground is released, so the next holder saves the user's spot.
+async function usingPointer(use: () => Promise<void>): Promise<void> {
+  try {
+    await use();
+  } finally {
+    restorePointer();
   }
 }
 
@@ -58,6 +68,7 @@ export const test = base.extend<DesktopFixtures>({
       closedApps.push(closedApp);
       launched.push(desktop);
       await desktop.startTracing();
+      if (holdingForeground()) await parkPointer(desktop.app);
       return desktop;
     });
     const failed = testInfo.status !== testInfo.expectedStatus;
@@ -82,11 +93,11 @@ export const test = base.extend<DesktopFixtures>({
   // A test lists it first, so it locks before any app launches and unlocks after every app closed; the waits have their own
   // timeout. The clipboard is taken before the foreground, and no test takes both fixtures, so no two workers wait on each other.
   // eslint-disable-next-line no-empty-pattern
-  clipboard: [async ({}, use) => withClipboardLock((clipboard) => withForeground(() => use(clipboard))), { timeout: CLIPBOARD_LOCK_WAIT_MS + FOREGROUND_WAIT_MS + 30_000 }],
+  clipboard: [async ({}, use) => withClipboardLock((clipboard) => withForeground(() => usingPointer(() => use(clipboard)))), { timeout: CLIPBOARD_LOCK_WAIT_MS + FOREGROUND_WAIT_MS + 30_000 }],
   // A test that needs its window to keep keyboard focus or the pointer's hover lists it first; a test that takes the clipboard
   // holds the foreground through it and never takes this too.
   // eslint-disable-next-line no-empty-pattern
-  foreground: [async ({}, use) => withForeground(() => use()), { timeout: FOREGROUND_WAIT_MS + 30_000 }],
+  foreground: [async ({}, use) => withForeground(() => usingPointer(() => use())), { timeout: FOREGROUND_WAIT_MS + 30_000 }],
 });
 
 export { expect };

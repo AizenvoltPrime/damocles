@@ -460,10 +460,13 @@ export class AgentRunner {
     }
 
     // The reported summary is the agent's own sign-off, so it outranks trailing assistant text, which
-    // the turn-ending hook means the agent no longer produces.
+    // the turn-ending hook means the agent no longer produces. A stopped run's trailing text is narration
+    // of a step it never finished, so without a report it has no outcome.
     const reportedSummary = config.getReportedSummary?.() ?? null;
     if (reportedSummary !== null) {
       finalResponse = reportedSummary;
+    } else if (status === 'cancelled') {
+      finalResponse = null;
     } else if (finalResponse === null) {
       const last = session.getLastAssistantText();
       if (last) finalResponse = last;

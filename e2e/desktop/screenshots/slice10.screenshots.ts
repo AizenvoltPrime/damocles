@@ -2,16 +2,17 @@ import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as path from 'node:path';
 import type { AddressInfo } from 'node:net';
-import type { ElectronApplication, Locator, Page, TestInfo } from '@playwright/test';
+import type { ElectronApplication, Page } from '@playwright/test';
 import { expect, test } from '../support/fixtures';
 import { git, initRepo, type GitHome } from '../support/git';
 import { seedStubModel, writeUserSettings } from '../support/hermetic';
 import { overlayMenu } from '../support/overlay';
-import { openProjectChat, saveScreenshot, saveWindowScreenshot, settled, THEMES, type Theme } from '../support/screenshots';
+import { commitMessage, scmSection, selectRepo, setSection, write } from '../support/scm';
+import { openProjectChat, setFont, setReducedMotion, shot, showShellTheme, THEMES, windowShot, type Theme } from '../support/screenshots';
 import { closeSettingsModal, openSettingsModal, setContentSize } from '../support/settings';
 import { overlayPage, shellPage } from '../support/shell';
-import { projectKeyOf, projectRow } from '../support/shell-ui';
-import { addProject, setThemeSource } from '../support/ui';
+import { clickSectionAction, projectKeyOf, projectRow } from '../support/shell-ui';
+import { addProject } from '../support/ui';
 
 // Review captures of source control: Dark and Light, the 13px default and a 16px host font, and a reduced-motion pass.
 const WIDTH = 1440;
@@ -20,24 +21,6 @@ const FONTS = [13, 16] as const;
 
 test.describe.configure({ mode: 'serial' });
 test.setTimeout(900_000);
-
-async function shot(page: Page, testInfo: TestInfo, name: string, target?: Locator): Promise<void> {
-  await settled(page);
-  await saveScreenshot(page, testInfo, name, target);
-}
-
-/** The whole window as the user sees it, once the shell and the overlay have settled. */
-async function windowShot(app: ElectronApplication, testInfo: TestInfo, name: string): Promise<void> {
-  await settled(await shellPage(app));
-  await settled(await overlayPage(app));
-  await saveWindowScreenshot(app, testInfo, name);
-}
-
-function write(root: string, relativePath: string, content: string): void {
-  const file = path.join(root, ...relativePath.split('/'));
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, content);
-}
 
 // A repository stopped on a conflict: `merge` leaves a merge in progress, `rebase` a rebase.
 async function conflicted(h: GitHome, dir: string, kind: 'merge' | 'rebase'): Promise<void> {
@@ -104,49 +87,10 @@ async function holdingModel(): Promise<{ baseUrl: string; release(): void; close
   };
 }
 
-/** Sets the host font on every Damocles page the way the theme style does; 13 is the desktop default. */
-async function setFont(app: ElectronApplication, px: number): Promise<void> {
-  for (const page of [await shellPage(app), await overlayPage(app)]) {
-    await page.evaluate((size) => document.documentElement.style.setProperty('--d-font-size', `${size}px`), px);
-    await settled(page);
-  }
-}
-
-/** Switches the app theme and waits until the shell page wears it; a chat page may be unloaded by a project switch. */
-async function showShellTheme(app: ElectronApplication, theme: Theme): Promise<void> {
-  await setThemeSource(app, theme);
-  const shell = await shellPage(app);
-  await expect(shell.locator('body')).toHaveClass(new RegExp(`(^| )vscode-${theme}( |$)`));
-  await settled(shell);
-}
-
-async function setReducedMotion(app: ElectronApplication, on: boolean): Promise<void> {
-  for (const page of [await shellPage(app), await overlayPage(app)]) {
-    // The OS preference, not data-reduced-motion, which every theme switch rewrites from main's setting.
-    await page.emulateMedia({ reducedMotion: on ? 'reduce' : null });
-  }
-}
-
-async function setSection(shell: Page, testId: string, open: boolean): Promise<void> {
-  const toggle = shell.getByTestId(testId).locator('h2 button');
-  if ((await toggle.getAttribute('aria-expanded')) !== String(open)) await toggle.click();
-  await expect(toggle).toHaveAttribute('aria-expanded', String(open));
-}
-
 async function selectProject(app: ElectronApplication, shell: Page, name: string): Promise<void> {
   await projectRow(shell, await projectKeyOf(app, name)).click();
 }
 
-async function selectRepo(shell: Page, overlay: Page, label: string): Promise<void> {
-  await shell.getByTestId('scm-repo-picker').click();
-  await expect(overlayMenu(overlay)).toBeVisible();
-  await overlayMenu(overlay).locator('[role^="menuitem"]').filter({ hasText: label }).first().click();
-  await expect(overlayMenu(overlay)).toHaveCount(0);
-  await expect(shell.getByTestId('scm-repo-name')).toHaveText(label);
-}
-
-const scm = (shell: Page): Locator => shell.getByTestId('scm-section');
-const message = (shell: Page): Locator => shell.getByTestId('scm-commit-message');
 // No user.name or user.email in these repositories, as on a machine without a git identity.
 const NO_IDENTITY = { identity: false } as const;
 
@@ -189,14 +133,14 @@ test('slice 10 captures', async ({ foreground: _foreground, home, launch }, test
       // The groups in list view, a change row hovered so its inline actions show.
       await shell.locator('[data-testid="scm-change"][data-group="workingTree"]').first().hover();
       await windowShot(app, testInfo, t('scm-groups-list'));
-      await shot(shell, testInfo, t('scm-section-list'), scm(shell));
+      await shot(shell, testInfo, t('scm-section-list'), scmSection(shell));
       await shell.mouse.move(0, 0);
 
       // Tree view, then back to list.
-      await shell.getByTestId('scm-view-mode').click();
+      await clickSectionAction(shell, 'scm-view-mode');
       await expect(shell.getByTestId('scm-tree')).toHaveAttribute('data-view-mode', 'tree');
-      await shot(shell, testInfo, t('scm-section-tree'), scm(shell));
-      await shell.getByTestId('scm-view-mode').click();
+      await shot(shell, testInfo, t('scm-section-tree'), scmSection(shell));
+      await clickSectionAction(shell, 'scm-view-mode');
       await expect(shell.getByTestId('scm-tree')).toHaveAttribute('data-view-mode', 'list');
 
       // The picker's menu, and More Actions with View & Sort open.
@@ -205,7 +149,7 @@ test('slice 10 captures', async ({ foreground: _foreground, home, launch }, test
       await windowShot(app, testInfo, t('scm-picker-menu'));
       await overlay.keyboard.press('Escape');
       await expect(overlayMenu(overlay)).toHaveCount(0);
-      await shell.getByTestId('scm-more-actions').click();
+      await clickSectionAction(shell, 'scm-more-actions');
       await expect(overlayMenu(overlay)).toBeVisible();
       await overlayMenu(overlay).locator('[role^="menuitem"]').first().hover();
       await windowShot(app, testInfo, t('scm-more-actions'));
@@ -214,10 +158,10 @@ test('slice 10 captures', async ({ foreground: _foreground, home, launch }, test
       await expect(overlayMenu(overlay)).toHaveCount(0);
 
       // The commit box: the length warning on a long subject, then Generate in flight.
-      await message(shell).fill('Add rate limiting to POST /login and the request id middleware');
+      await commitMessage(shell).fill('Add rate limiting to POST /login and the request id middleware');
       await expect(shell.getByTestId('scm-length-warning')).toBeVisible();
-      await shot(shell, testInfo, t('scm-commit-warning'), scm(shell));
-      await message(shell).fill('');
+      await shot(shell, testInfo, t('scm-commit-warning'), scmSection(shell));
+      await commitMessage(shell).fill('');
       await shell.getByTestId('scm-generate').click();
       await expect(shell.getByTestId('scm-generate')).toHaveAttribute('aria-busy', 'true');
       // The sheen sweeps forever; pinned halfway across so the capture shows it.
@@ -229,25 +173,25 @@ test('slice 10 captures', async ({ foreground: _foreground, home, launch }, test
           }
         }
       });
-      await shot(shell, testInfo, t('scm-commit-generating'), scm(shell));
+      await shot(shell, testInfo, t('scm-commit-generating'), scmSection(shell));
       model.release();
       await expect(shell.getByTestId('scm-generate')).not.toHaveAttribute('aria-busy', 'true');
 
       // Nothing to commit, in the clean nested repository.
       await selectRepo(shell, overlay, 'web');
-      await message(shell).fill('Update the landing page');
+      await commitMessage(shell).fill('Update the landing page');
       await shell.getByTestId('scm-commit').click();
       await expect(shell.getByTestId('scm-commit-feedback')).toBeVisible();
-      await shot(shell, testInfo, t('scm-commit-feedback'), scm(shell));
-      await message(shell).fill('');
+      await shot(shell, testInfo, t('scm-commit-feedback'), scmSection(shell));
+      await commitMessage(shell).fill('');
 
       // Merge and rebase in progress.
       await selectRepo(shell, overlay, 'merging');
       await expect(shell.getByTestId('scm-operation')).toHaveAttribute('data-operation', 'merge');
-      await shot(shell, testInfo, t('scm-merge-banner'), scm(shell));
+      await shot(shell, testInfo, t('scm-merge-banner'), scmSection(shell));
       await selectRepo(shell, overlay, 'rebasing');
       await expect(shell.getByTestId('scm-operation')).toHaveAttribute('data-operation', 'rebase');
-      await shot(shell, testInfo, t('scm-rebase-banner'), scm(shell));
+      await shot(shell, testInfo, t('scm-rebase-banner'), scmSection(shell));
 
       // The multi-file diff tab from Changes › Open Changes, with the second file selected.
       await selectRepo(shell, overlay, projectName);
@@ -274,8 +218,8 @@ test('slice 10 captures', async ({ foreground: _foreground, home, launch }, test
       // Empty and error states.
       for (const [project, name] of [[untrusted, 'state-untrusted'], [plain, 'state-no-repository'], [huge, 'scm-too-many']] as const) {
         await selectProject(app, shell, path.basename(project));
-        await expect(shell.getByTestId(name === 'scm-too-many' ? 'scm-too-many' : 'scm-state')).toBeVisible({ timeout: 60_000 });
-        await shot(shell, testInfo, t(name), scm(shell));
+        await expect(scmSection(shell).getByTestId(name === 'scm-too-many' ? 'scm-too-many' : 'scm-state')).toBeVisible({ timeout: 60_000 });
+        await shot(shell, testInfo, t(name), scmSection(shell));
       }
 
       // Settings › Source control.
@@ -307,12 +251,12 @@ test('slice 10 git missing captures', async ({ foreground: _foreground, home, la
   const shell = await shellPage(app);
   await setSection(shell, 'files-section', false);
   await setSection(shell, 'scm-section', true);
-  await expect(shell.getByTestId('scm-state')).toHaveAttribute('data-state', 'gitMissing', { timeout: 30_000 });
+  await expect(scmSection(shell).getByTestId('scm-state')).toHaveAttribute('data-state', 'gitMissing', { timeout: 30_000 });
   for (const theme of THEMES) {
     await showShellTheme(app, theme);
     for (const font of FONTS) {
       await setFont(app, font);
-      await shot(shell, testInfo, `state-git-missing-${theme}-${font}`, scm(shell));
+      await shot(shell, testInfo, `state-git-missing-${theme}-${font}`, scmSection(shell));
     }
   }
 });

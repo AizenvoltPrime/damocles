@@ -1,5 +1,6 @@
 import { spawn } from 'child_process';
 import { log } from '../../logger';
+import { windowsSystemTool } from '../../system-tools';
 import { startShellSentinel, type ShellSentinel } from './shell-sentinel-client';
 
 /** `JobObjectExtendedLimitInformation`. */
@@ -262,7 +263,7 @@ export function killProcessTree(pid: number, job?: ShellJob): void {
       job.terminate();
       return;
     }
-    const killer = spawn('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore', detached: true, windowsHide: true });
+    const killer = spawn(windowsSystemTool('taskkill'), ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore', detached: true, windowsHide: true });
     // One flag for both listeners, because a spawn failure reports an 'error' and an 'exit'.
     let fellBack = false;
     const killRoot = (): void => {

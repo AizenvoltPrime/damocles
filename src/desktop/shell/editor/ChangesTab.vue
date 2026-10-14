@@ -2,7 +2,7 @@
 import { computed, inject, nextTick, onBeforeUnmount, ref, shallowRef, useId, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useVirtualList } from '@vueuse/core';
-import { FileSymlink, FileX2 } from 'lucide-vue-next';
+import { ArchiveRestore, ArrowUpFromLine, Check, FileSymlink, FileX2, Trash2 } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import { remPx } from '@/composables/useRemPx';
 import { useSlidingIndicator } from '@/composables/useSlidingIndicator';
@@ -12,7 +12,8 @@ import type { ScmChange, ScmChangesTab } from '../../preload/scm-channels';
 import type { ShellEditorTab } from '../../preload/shell-channels';
 import { fileIcon } from '../file-icons';
 import { SCM_STORE } from '../scm/scm-store';
-import { TONE_TEXT, visibleText } from '../scm/scm-list';
+import { TONE_TEXT } from '../scm/scm-list';
+import { visibleText } from '@shared/visible-text';
 
 // The multi-file diff tab: a group's changes beside one file's unified diff, for whatever `source` main names.
 const props = defineProps<{ tab: ShellEditorTab & { changes: ScmChangesTab } }>();
@@ -138,6 +139,39 @@ const lineClass = (line: DiffLine): string =>
 // Faint text on an add or del row takes its -text shade (D48).
 const numberClass = (line: DiffLine): string => (line.type === 'addition' || line.type === 'deletion' ? 'text-(--d-faint-text)' : 'text-(--d-faint)');
 const sign = (line: DiffLine): string => (line.type === 'addition' ? '+' : line.type === 'deletion' ? '−' : '');
+
+// View Stash's title actions (VS Code's git.stashApplyEditor, git.stashPopEditor and git.stashDropEditor). The tab lives as long
+// as its stash: Apply keeps it, and main closes it once a pop or a confirmed drop removes the stash.
+const stash = computed(() => {
+  const source = props.tab.changes.source;
+  return source.kind === 'stash' ? { index: source.index, hash: source.hash } : undefined;
+});
+const stashBusy = ref(false);
+// counts each applied stash, so the check plays again on the next apply
+const applied = ref(0);
+let appliedTimer: ReturnType<typeof setTimeout> | undefined;
+// ms the applied check stays before the archive icon returns
+const APPLIED_MS = 1400;
+
+async function runStash(action: 'apply' | 'pop' | 'drop'): Promise<void> {
+  const target = stash.value;
+  if (!target || stashBusy.value) return;
+  stashBusy.value = true;
+  try {
+    const repoId = props.tab.changes.repoId;
+    const result = await store.api.run(action === 'drop' ? { op: 'stashDrop', repoId, target } : { op: 'stashApply', repoId, pop: action === 'pop', target });
+    if (action === 'apply' && result.ok) {
+      applied.value++;
+      clearTimeout(appliedTimer);
+      appliedTimer = setTimeout(() => {
+        applied.value = 0;
+      }, APPLIED_MS);
+    }
+  } finally {
+    stashBusy.value = false;
+  }
+}
+onBeforeUnmount(() => clearTimeout(appliedTimer));
 </script>
 
 <template>
@@ -150,6 +184,68 @@ const sign = (line: DiffLine): string => (line.type === 'addition' ? '+' : line.
       <span class="truncate text-(--d-text)">{{ tab.title }}</span>
       <span aria-hidden="true">·</span>
       <span data-testid="changes-count">{{ t('changesTab.files', entries.length, { named: { count: entries.length } }) }}</span>
+      <template v-if="stash">
+        <span class="flex-1" />
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          data-testid="changes-stash-apply"
+          :data-applied="applied > 0 || undefined"
+          class="d-press size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.25"
+          :disabled="stashBusy"
+          :aria-label="t('scm.action.applyStash')"
+          :title="t('scm.action.applyStash')"
+          @click="runStash('apply')"
+        >
+          <!-- A successful apply turns the icon into a check for a moment. -->
+          <span class="inline-flex size-3.25 items-center justify-center">
+            <Transition name="t-icon">
+              <Check
+                v-if="applied > 0"
+                :key="`applied-${applied}`"
+                aria-hidden="true"
+                class="text-(--d-success-text)"
+              />
+              <ArchiveRestore
+                v-else
+                key="apply"
+                aria-hidden="true"
+              />
+            </Transition>
+          </span>
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          data-testid="changes-stash-pop"
+          class="d-press size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.25"
+          :disabled="stashBusy"
+          :aria-label="t('scm.action.popStash')"
+          :title="t('scm.action.popStash')"
+          @click="runStash('pop')"
+        >
+          <ArrowUpFromLine aria-hidden="true" />
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          data-testid="changes-stash-drop"
+          class="d-press size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-danger-text) [&_svg]:size-3.25"
+          :disabled="stashBusy"
+          :aria-label="t('scm.action.dropStash')"
+          :title="t('scm.action.dropStash')"
+          @click="runStash('drop')"
+        >
+          <Trash2 aria-hidden="true" />
+        </Button>
+        <span
+          class="sr-only"
+          aria-live="polite"
+        >{{ applied > 0 ? t('changesTab.stashApplied') : '' }}</span>
+      </template>
     </div>
     <div class="flex min-h-0 flex-1">
       <!-- A virtualized listbox of the files, with the sliding selection; no shadcn part virtualizes a list. -->
@@ -199,7 +295,7 @@ const sign = (line: DiffLine): string => (line.type === 'addition' ? '+' : line.
               :style="{ color: fileIcon(entry.path).color }"
             />
             <span
-              class="shrink-0 truncate"
+              class="min-w-0 truncate"
               :class="entry.strike ? 'line-through' : ''"
             >{{ visibleText(nameOf(entry.path)) }}</span>
             <span
@@ -207,7 +303,7 @@ const sign = (line: DiffLine): string => (line.type === 'addition' ? '+' : line.
               :class="index === selectedIndex ? 'text-(--d-faint-text)' : 'text-(--d-faint)'"
             >{{ visibleText(dirOf(entry.path)) }}</span>
             <span
-              class="w-3 shrink-0 text-center font-mono text-10.5 font-bold"
+              class="w-4 shrink-0 text-center text-11 font-semibold"
               :style="{ color: TONE_TEXT[entry.tone] }"
             >{{ entry.letter }}</span>
           </div>

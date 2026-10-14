@@ -428,6 +428,7 @@ export class TeamRunner {
         role: spec.role,
         attempt: 0,
         specialization: spec.specialization ?? '',
+        description: spec.role === 'lead' ? `Lead: ${this.config.title}` : null,
         status: 'pending',
         model: spec.role === 'lead' ? leadModelValue : '',
         profileId: null,
@@ -485,6 +486,7 @@ export class TeamRunner {
       name: leadSpec.name,
       role: 'lead',
       specialization: `Lead: ${this.config.title}`,
+      description: leadAgent.description,
       model: leadAgent.model,
       dollarBilled: leadAgent.dollarBilled,
       attempt: leadAgent.attempt,
@@ -496,6 +498,7 @@ export class TeamRunner {
       teamId: this.config.teamId,
       agentId: leadAgent.agentId,
       status: 'running',
+      description: leadAgent.description,
       attempt: leadAgent.attempt,
       ...(leadAgent.model ? { model: leadAgent.model } : {}),
       stopwatch: stopwatchOf(leadAgent),
@@ -881,7 +884,7 @@ export class TeamRunner {
     });
   }
 
-  startSpecialist(name: string, task: string, profileId?: string, kind?: SpecialistKind, reviews?: string[]): string {
+  startSpecialist(name: string, description: string, task: string, profileId?: string, kind?: SpecialistKind, reviews?: string[]): string {
     // Unlike approve/revision/cancel (whose status guards throw naturally once synthesizeResult released
     // every agent to completed), a pending agent would still pass this method's guards after completion —
     // and launch a real LLM session killed only by the drain window. Fail loud instead.
@@ -918,6 +921,7 @@ export class TeamRunner {
     this.leadReviewStalls = 0;
 
     agent.specialization = task;
+    agent.description = description;
     agent.status = 'running';
     const spawnedAt = new Date();
     agent.activeMs = 0;
@@ -935,6 +939,7 @@ export class TeamRunner {
       name: agent.name,
       role: 'specialist',
       specialization: task,
+      description,
       model: agent.model,
       dollarBilled: agent.dollarBilled,
       profileId: agent.profileId,
@@ -949,6 +954,7 @@ export class TeamRunner {
       teamId: this.config.teamId,
       agentId: agent.agentId,
       status: 'running',
+      description,
       dollarBilled: agent.dollarBilled,
       attempt: agent.attempt,
       ...(agent.model ? { model: agent.model } : {}),
@@ -1229,7 +1235,7 @@ export class TeamRunner {
    * so a full fresh review round can run, but does NOT clear open briefConflicts (safety flags are never
    * silently dropped — the lead resolves those via the status-independent team_resolve_brief_conflict).
    */
-  redispatchSpecialist(name: string, task: string, profileId?: string, kind?: SpecialistKind, reviews?: string[]): string {
+  redispatchSpecialist(name: string, description: string, task: string, profileId?: string, kind?: SpecialistKind, reviews?: string[]): string {
     // Same post-completion hole as startSpecialist: a failed/cancelled agent passes the status guards
     // after synthesizeResult, so without this a late redispatch would launch a real session.
     if (this.completionResolved) {
@@ -1282,6 +1288,7 @@ export class TeamRunner {
     this.resumeCounts.delete(name);
     this.specialistKinds.set(name, kind ?? 'implementor');
     agent.specialization = task;
+    agent.description = description;
     agent.status = 'running';
     const spawnedAt = new Date();
     agent.activeMs = 0;
@@ -1314,6 +1321,7 @@ export class TeamRunner {
       name: agent.name,
       role: 'specialist',
       specialization: task,
+      description,
       model: agent.model,
       dollarBilled: agent.dollarBilled,
       profileId: agent.profileId,
@@ -1332,6 +1340,7 @@ export class TeamRunner {
       teamId: this.config.teamId,
       agentId: agent.agentId,
       status: 'running',
+      description,
       dollarBilled: agent.dollarBilled,
       attempt: agent.attempt,
       ...(agent.model ? { model: agent.model } : {}),
@@ -2266,6 +2275,7 @@ export class TeamRunner {
         role: member.role,
         attempt: member.attempt,
         specialization: spawn?.specialization ?? '',
+        description: spawn?.description ?? null,
         status: member.status,
         model: spawn?.model ?? '',
         profileId: spawn?.profileId ?? null,
@@ -2491,6 +2501,8 @@ export class TeamRunner {
         this.owedTerminalAction.delete(agent.name);
         agent.status = 'running';
       }
+      // The stopped run's result ends with it: a launched member is live again, and only a settle records a result.
+      agent.result = null;
       const resumedEntryAt = new Date();
       agent.runningSince = resumedEntryAt.getTime();
       const resumeCount = (this.resumeCounts.get(agent.name) ?? 0) + 1;
@@ -2675,8 +2687,8 @@ export class TeamRunner {
       messageBus: this.messageBus,
       scratchpad: this.scratchpad,
       deliverUserNote: (text) => this.noteSinks.get(agentId)?.(text) ?? false,
-      startSpecialist: (name, task, profileId, kind, reviews) => this.startSpecialist(name, task, profileId, kind, reviews),
-      redispatchSpecialist: (name, task, profileId, kind, reviews) => this.redispatchSpecialist(name, task, profileId, kind, reviews),
+      startSpecialist: (name, description, task, profileId, kind, reviews) => this.startSpecialist(name, description, task, profileId, kind, reviews),
+      redispatchSpecialist: (name, description, task, profileId, kind, reviews) => this.redispatchSpecialist(name, description, task, profileId, kind, reviews),
       checkBriefReadGate: () => checkBriefReadGate(this.scratchpad, agentName),
       checkMessageDeliverable: (name) => this.checkMessageDeliverable(name, 'lead'),
       synthesizeResult: (result) => this.synthesizeResult(result),
@@ -2759,10 +2771,11 @@ export class TeamRunner {
   private buildPartialResults(): string {
     const parts: string[] = ['## Partial Team Results (team did not complete normally)\n'];
 
+    // A cancel builds this before its aborted members settle, so a report is read from where it was filed.
     for (const agent of this.agents.values()) {
-      if (agent.finalResponse) {
-        parts.push(`### ${agent.name} (${agent.role}, ${agent.status})\n${agent.finalResponse}\n`);
-      }
+      if (agent.status === 'pending') continue;
+      const outcome = agent.finalResponse ?? this.reportedSummaries.get(agent.name) ?? 'Stopped before reporting.';
+      parts.push(`### ${agent.name} (${agent.role}, ${agent.status})\n${outcome}\n`);
     }
 
     const scratchpadEntries = this.scratchpad.getAll();
@@ -2850,7 +2863,7 @@ export class TeamRunner {
       agentId: a.agentId,
       name: a.name,
       role: a.role,
-      specialization: a.specialization,
+      description: a.description,
       model: a.model,
       profileId: a.profileId,
       attempt: a.attempt,

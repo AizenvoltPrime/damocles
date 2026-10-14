@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { access, constants as fsConstants } from "node:fs/promises";
+import { posixTool } from "../../system-tools";
 
 /**
  * sounddevice (the wake-word microphone driver) is a thin Python wrapper around
@@ -81,8 +82,10 @@ async function knownPathsContainPortAudio(paths: readonly string[]): Promise<boo
 }
 
 async function ldconfigListsPortAudio(signal?: AbortSignal): Promise<boolean> {
+  const ldconfig = posixTool("ldconfig");
+  if (ldconfig === undefined) return false;
   return await new Promise<boolean>((resolve) => {
-    const child = spawn("ldconfig", ["-p"], {
+    const child = spawn(ldconfig, ["-p"], {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
       ...(signal !== undefined ? { signal } : {}),

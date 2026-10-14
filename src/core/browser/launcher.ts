@@ -1,13 +1,10 @@
-import { execFile } from 'child_process';
 import { existsSync, promises as fsp } from 'fs';
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'path';
-import { promisify } from 'util';
 import { chromium, type BrowserContext } from 'patchright';
 import { t } from '../l10n';
 import { log } from '../logger';
-
-const execFileAsync = promisify(execFile);
+import { findOnAbsolutePath } from '../system-tools';
 
 let cachedBrowserPath: string | null = null;
 
@@ -52,15 +49,10 @@ export async function findBrowser(): Promise<string | null> {
     }
   } else {
     for (const name of ['google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium', 'microsoft-edge-stable', 'microsoft-edge']) {
-      try {
-        const { stdout } = await execFileAsync('which', [name]);
-        const resolved = stdout.trim();
-        if (resolved) {
-          cachedBrowserPath = resolved;
-          return resolved;
-        }
-      } catch {
-        // `which` exits non-zero when the binary is absent; try the next candidate.
+      const resolved = findOnAbsolutePath(name, process.platform, process.env);
+      if (resolved) {
+        cachedBrowserPath = resolved;
+        return resolved;
       }
     }
   }

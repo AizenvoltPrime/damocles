@@ -198,7 +198,7 @@ export default [
     },
   },
   {
-    files: ['src/desktop/quick-open-worker/**/*.ts', 'src/desktop/watch-worker/**/*.ts'],
+    files: ['src/desktop/quick-open-worker/**/*.ts', 'src/desktop/watch-worker/**/*.ts', 'src/desktop/askpass/**/*.ts'],
     rules: {
       '@typescript-eslint/no-restricted-imports': ['error', {
         paths: [{ name: 'vscode', message: VSCODE_ONLY }, IN_WORKER.path],

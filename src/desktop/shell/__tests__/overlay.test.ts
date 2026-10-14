@@ -10,6 +10,7 @@ import { placePopup } from '../overlay/placement';
 import { shellI18n } from '../i18n';
 import { createOverlaySettingsBridge } from '../overlay/settings/overlay-bridge';
 import { FakeResizeObserver, fakeOverlayApi, opened, type FakeOverlayApi } from './fakes';
+import { MAX_INPUT_VALUE_LENGTH } from '@shared/input-validation';
 
 const mounted: VueWrapper[] = [];
 let api: FakeOverlayApi;
@@ -107,6 +108,26 @@ describe('overlay requests', () => {
     await wrapper.vm.$nextTick();
     expect(api.ack).toHaveBeenCalledWith('r1');
     expect(api.shown).not.toHaveBeenCalled();
+  });
+
+  // Create Tag asks a name, then at once a message: each box leaves the page once its own answer is out.
+  it('answers chained input boxes in turn, each leaving once its exit has played', async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    vi.mocked(api.answer).mockImplementationOnce((id) => {
+      if (id === 'name') api.request('message', { kind: 'input', prompt: 'Please provide a message to annotate the tag', placeholder: 'Message' });
+    });
+    await open(wrapper, 'name', { kind: 'input', prompt: 'Please provide a tag name', placeholder: 'Tag name', validation: 'tagName' });
+    const field = () => wrapper.get<HTMLInputElement>('[data-overlay-id="message"] [data-testid="quick-input-field"]');
+    await wrapper.get('[data-testid="quick-input-field"]').setValue('v2.0');
+    await wrapper.get('[data-testid="quick-input-field"]').trigger('keydown', { key: 'Enter' });
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('name', { kind: 'input', value: 'v2.0' }));
+    await vi.waitFor(() => expect(wrapper.find('[data-overlay-id="message"]').exists()).toBe(true));
+    expect(wrapper.find('[data-overlay-id="name"]').exists()).toBe(false);
+    await field().setValue('Release two');
+    await field().trigger('keydown', { key: 'Enter' });
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('message', { kind: 'input', value: 'Release two' }));
+    expect(wrapper.find('[data-overlay-id]').exists()).toBe(false);
   });
 
   it('answers the chosen menu item', async () => {
@@ -427,6 +448,54 @@ describe('menu submenus', () => {
     }
   });
 
+  it('shows a disabled item\'s reason where its shortcut would sit, undimmed and describing the item, at either level', async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'r1', {
+      kind: 'menu',
+      label: 'Views and More Actions',
+      anchor: ANCHOR,
+      items: [
+        { kind: 'item', id: 'pull', label: 'Pull', icon: 'arrow-down-to-line', shortcut: 'Ctrl+P', disabled: true, disabledReason: 'No remotes' },
+        { kind: 'item', id: 'clone', label: 'Clone', icon: 'copy-plus', shortcut: 'Ctrl+K' },
+        { kind: 'submenu', id: 'submenu:stash', label: 'Stash', icon: 'archive', items: [{ kind: 'item', id: 'stashPopLatest', label: 'Pop Latest Stash', icon: 'arrow-up-from-line', disabled: true, disabledReason: 'No stashes' }] },
+      ],
+    });
+    const pull = wrapper.get('[data-item-id="pull"]');
+    const reason = pull.get('[data-testid="overlay-menu-reason"]');
+    expect(reason.text()).toBe('No remotes');
+    // the reason takes the shortcut's place
+    expect(pull.text()).not.toContain('Ctrl+P');
+    expect(wrapper.get('[data-item-id="clone"]').text()).toContain('Ctrl+K');
+    // the dimming is on the icon and label, never on the row or the reason
+    expect(pull.classes()).not.toContain('opacity-50');
+    expect(reason.classes()).not.toContain('opacity-50');
+    expect(pull.findAll('.opacity-50').map((element) => element.element.tagName.toLowerCase())).toEqual(['svg', 'span']);
+    expect(pull.get('span.opacity-50').text()).toBe('Pull');
+    expect(reason.classes()).toContain('text-(--d-faint)');
+    // described to assistive technology, still focusable and never chosen
+    expect(pull.attributes('aria-disabled')).toBe('true');
+    expect(pull.attributes('aria-describedby')).toBe(reason.attributes('id'));
+    expect(wrapper.get(`#${pull.attributes('aria-describedby')!}`).text()).toBe('No remotes');
+    expect(reason.attributes('aria-hidden')).toBe('true');
+    expect(wrapper.get('[data-item-id="clone"]').attributes('aria-describedby')).toBeUndefined();
+    expect(document.activeElement).toBe(pull.element);
+    await pull.trigger('click');
+    press('Enter');
+    await flushPromises();
+    expect(api.answer).not.toHaveBeenCalled();
+    await pressNow('ArrowDown');
+    await pressNow('ArrowDown');
+    await pressNow('ArrowRight');
+    const pop = submenu(wrapper).get('[data-item-id="stashPopLatest"]');
+    expect(document.activeElement).toBe(pop.element);
+    expect(pop.get('[data-testid="overlay-menu-reason"]').text()).toBe('No stashes');
+    expect(wrapper.get(`#${pop.attributes('aria-describedby')!}`).text()).toBe('No stashes');
+    expect(pop.classes()).not.toContain('opacity-50');
+    await pressNow('Enter');
+    expect(api.answer).not.toHaveBeenCalled();
+  });
+
   it("filters over every submenu's leaves", async () => {
     const wrapper = mountOverlay();
     await flushPromises();
@@ -438,6 +507,110 @@ describe('menu submenus', () => {
     expect(wrapper.findAll('[data-menu-item]').map((item) => item.attributes('data-item-id'))).toEqual(['tree', 'list']);
     await filter.trigger('keydown', { key: 'Enter' });
     await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('r1', { kind: 'menu', itemId: 'tree' }));
+  });
+});
+
+describe('quick picks main asks', () => {
+  const PICK: OverlayRequest = {
+    kind: 'quickPick',
+    placeholder: 'Select a branch or tag to checkout',
+    items: [
+      { id: '0', label: 'Create new branch...', icon: 'add', alwaysShow: true, echoQuery: true },
+      { id: '1', label: 'Create new branch from...', icon: 'add', alwaysShow: true, echoQuery: true },
+      { id: '2', label: 'Checkout detached...', icon: 'detached', alwaysShow: true },
+      { id: '3', label: 'feat/login', icon: 'branch', group: 'branches', description: 'abc1234 \u2022 subject' },
+    ],
+  };
+  const row = (wrapper: VueWrapper, id: string) => wrapper.get(`[data-testid="quick-pick-item"][data-item-id="${id}"]`);
+
+  it('echoes the trimmed filter text, quoted, on the create items as it is typed, without moving their rows', async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'p1', PICK);
+    expect(row(wrapper, '0').text()).toBe('Create new branch...');
+    const height = row(wrapper, '0').attributes('style');
+    const input = wrapper.get('[data-testid="quick-pick-input"]');
+    await input.setValue('  fix/login ');
+    await flushPromises();
+    expect(row(wrapper, '0').text()).toContain('Create new branch...');
+    expect(row(wrapper, '0').text()).toContain('\u201cfix/login\u201d');
+    expect(row(wrapper, '1').text()).toContain('\u201cfix/login\u201d');
+    // only an echoing item echoes
+    expect(row(wrapper, '2').text()).toBe('Checkout detached...');
+    expect(row(wrapper, '0').attributes('style')).toBe(height);
+    await input.setValue('fix/log');
+    await flushPromises();
+    expect(row(wrapper, '0').text()).toContain('\u201cfix/log\u201d');
+    await input.setValue('   ');
+    await flushPromises();
+    expect(row(wrapper, '0').text()).toBe('Create new branch...');
+  });
+
+  it('quotes the echo in Greek with guillemets', async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    shellI18n.global.locale.value = 'el';
+    await open(wrapper, 'p1', PICK);
+    await wrapper.get('[data-testid="quick-pick-input"]').setValue('fix');
+    await flushPromises();
+    expect(row(wrapper, '0').text()).toContain('\u00abfix\u00bb');
+  });
+
+  it('answers the picked item with the filter text as typed, and limits the text to what main accepts', async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'p1', PICK);
+    const input = wrapper.get('[data-testid="quick-pick-input"]');
+    expect(input.attributes('maxlength')).toBe(String(MAX_INPUT_VALUE_LENGTH));
+    await input.setValue(' fix login');
+    await flushPromises();
+    await row(wrapper, '0').trigger('click');
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('p1', { kind: 'quickPick', itemId: '0', query: ' fix login' }));
+  });
+
+  // VS Code's quick pick names a group's first option with the separator's label, since the separator is presentational.
+  it("names each group's first option with the group's label", async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'p1', {
+      kind: 'quickPick',
+      placeholder: 'Select a branch or tag to checkout',
+      items: [
+        { id: 'b1', label: 'v1', icon: 'branch', hint: 'local', group: 'branches' },
+        { id: 'b2', label: 'main', icon: 'branch', description: 'abc1234 \u2022 subject', group: 'branches' },
+        { id: 't1', label: 'v1', icon: 'tag', group: 'tags' },
+      ],
+    });
+    expect(row(wrapper, 'b1').attributes('aria-label')).toBe('v1, local, branches');
+    expect(row(wrapper, 'b2').attributes('aria-label')).toBe('main, abc1234 \u2022 subject');
+    expect(row(wrapper, 't1').attributes('aria-label')).toBe('v1, tags');
+  });
+});
+
+describe('an input box\'s folder button', () => {
+  const BOX: OverlayRequest = { kind: 'input', prompt: 'Please provide a worktree path', placeholder: 'Worktree path', value: '/r.worktrees/wt', valueSelection: [13, 15], browse: { tooltip: 'Select Worktree Destination' } };
+
+  it('asks main through browseInput and applies the value and selection it answers, returning focus to the field', async () => {
+    vi.mocked(api.browseInput).mockResolvedValueOnce(opened({ value: '/picked/wt', valueSelection: [8, 10] }));
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'b1', BOX);
+    const button = wrapper.get('[data-testid="quick-input-browse"]');
+    expect(button.attributes('aria-label')).toBe('Select Worktree Destination');
+    await button.trigger('click');
+    await flushPromises();
+    expect(api.browseInput).toHaveBeenCalledWith('/r.worktrees/wt');
+    const field = wrapper.get<HTMLInputElement>('[data-testid="quick-input-field"]').element;
+    expect(field.value).toBe('/picked/wt');
+    expect([field.selectionStart, field.selectionEnd]).toEqual([8, 10]);
+    expect(document.activeElement).toBe(field);
+  });
+
+  it('shows no folder button for a box main gave none', async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'b1', { kind: 'input', prompt: 'Name' });
+    expect(wrapper.find('[data-testid="quick-input-browse"]').exists()).toBe(false);
   });
 });
 

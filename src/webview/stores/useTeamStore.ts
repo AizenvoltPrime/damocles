@@ -140,7 +140,7 @@ export const useTeamStore = defineStore('team', () => {
       agentId: `${teamId}-agent-${i}`,
       name: a.name,
       role: a.role as 'lead' | 'specialist',
-      specialization: '',
+      description: null,
       model: '',
       profileId: null,
       attempt: 0,
@@ -230,7 +230,7 @@ export const useTeamStore = defineStore('team', () => {
   // A specialist's billing flag is only known once its role model resolves at spawn, which is after the
   // team list was sent, so an absent field here keeps the agent's current value rather than resetting it.
   // Agent times come only from the extension's stopwatch, never from this clock.
-  function handleAgentStatusUpdate(teamId: string, agentId: string, status: TeamAgentStatus, progressSummary?: string, logFilePath?: string | null, model?: string, dollarBilled?: boolean, attempt?: number, effort?: EffortBadgeLevel | null, stopwatch?: Stopwatch, result?: string | null): void {
+  function handleAgentStatusUpdate(teamId: string, agentId: string, status: TeamAgentStatus, progressSummary?: string, logFilePath?: string | null, model?: string, dollarBilled?: boolean, attempt?: number, effort?: EffortBadgeLevel | null, stopwatch?: Stopwatch, result?: string | null, description?: string | null): void {
     const team = teams.value[teamId];
     if (!team) return;
     // Dropped, not left stale, because a resumed or redispatched member can return to the status it was stopped in.
@@ -257,6 +257,7 @@ export const useTeamStore = defineStore('team', () => {
         ...(dollarBilled !== undefined ? { dollarBilled } : {}),
         ...(effort !== undefined ? { effort } : {}),
         ...(result !== undefined ? { result } : {}),
+        ...(description !== undefined ? { description } : {}),
         ...relaunched,
         ...(stopwatch ? { activeMs: stopwatch.activeMs, runningSince: stopwatch.runningSince } : {}),
       };

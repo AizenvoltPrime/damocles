@@ -599,7 +599,7 @@ const toolbarButton = 'size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border
 
 <template>
   <SidebarSection
-    :title="t('search.heading')"
+    section="search"
     :collapsed="collapsed"
     :body-size="bodySize"
     data-testid="search-section"

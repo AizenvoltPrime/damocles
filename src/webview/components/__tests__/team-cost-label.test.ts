@@ -34,7 +34,7 @@ function agent(over: Partial<TeamAgent> = {}): TeamAgent {
     agentId: AGENT_ID,
     name: 'worker',
     role: 'specialist',
-    specialization: 'do the task',
+    description: 'do the task',
     model: 'sonnet',
     profileId: null,
     attempt: 0,

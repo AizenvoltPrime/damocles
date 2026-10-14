@@ -8,6 +8,7 @@ import * as readline from "node:readline";
 import WebSocket from "ws";
 import type { RawData } from "ws";
 import { log } from "../../logger";
+import { windowsSystemTool } from "../../system-tools";
 import { HealthMonitor } from "./health";
 import { acquireSidecarLock } from "./lockfile";
 import type { AcquireResult, LockContents } from "./lockfile";
@@ -88,7 +89,7 @@ function killChildTree(child: ChildProcess, force: boolean, job: ShellJob | null
       }
     };
     try {
-      const proc = spawnProcess("taskkill", args, { stdio: "ignore", windowsHide: true });
+      const proc = spawnProcess(windowsSystemTool("taskkill"), args, { stdio: "ignore", windowsHide: true });
       // An unhandled 'error' event on a ChildProcess takes the extension host down with it.
       proc.on("error", (err) => {
         log("[VoiceSidecar] taskkill spawn error:", err);
@@ -319,7 +320,7 @@ export class VoiceSidecarManager extends EventEmitter<ManagerEvents> {
       try {
         // spawnSync reports a missing taskkill through `error` and a failed one through `status`, so
         // a catch alone sees neither.
-        const result = spawnSync("taskkill", ["/F", "/T", "/PID", String(pid)], {
+        const result = spawnSync(windowsSystemTool("taskkill"), ["/F", "/T", "/PID", String(pid)], {
           stdio: ["ignore", "ignore", "pipe"],
           encoding: "utf8",
           windowsHide: true,

@@ -1,10 +1,11 @@
 import type { Component } from 'vue';
 import { Folder } from 'lucide-vue-next';
-import type { OverlayQuickPickItem, PaletteCommand, QuickOpenMatch, QuickOpenResponse, QuickOpenResult } from '../../preload/overlay-channels';
+import type { OverlayQuickPickIcon, OverlayQuickPickItem, PaletteCommand, QuickOpenMatch, QuickOpenResponse, QuickOpenResult } from '../../preload/overlay-channels';
 import type { TerminalProfileOption, TerminalProjectOption } from '../../preload/terminal-channels';
 import { compareScoredItems, prepareQuery, scoreItem, type FuzzyItem, type ItemScore, type PreparedQuery } from '../../../core/quick-open/fuzzy-match';
 import { fileIcon } from '../file-icons';
 import { glyphLook, terminalGlyph } from '../terminal/terminal-icons';
+import { QUICK_PICK_ICON_COMPONENTS } from './icons';
 
 // The quick pick's rows: a reusable list of items with match ranges, grouped under separators. Quick Open fills it with
 // files; the command palette fills it with commands.
@@ -28,6 +29,10 @@ export interface QuickPickItem {
   readonly checked?: boolean;
   // a quiet chip after the label, such as a terminal profile's Default
   readonly badge?: string;
+  // quiet text at the row's end, such as a branch's "local" or "2↓ 1↑"
+  readonly hint?: string;
+  // the label in the mono font, as a ref name reads
+  readonly mono?: boolean;
 }
 
 export type QuickPickRow = { readonly kind: 'separator'; readonly label: string } | { readonly kind: 'item'; readonly item: QuickPickItem };
@@ -259,14 +264,33 @@ export function terminalProjectsModel(projects: readonly TerminalProjectOption[]
   return { rows };
 }
 
+// A quick pick icon's tint: local branches in the accent, tags in the warning hue as the prototype's ref chips, stashes in the
+// info hue, the rest quiet.
+const QUICK_PICK_ICON_COLORS: Readonly<Record<OverlayQuickPickIcon, string>> = {
+  add: 'var(--d-muted)',
+  branch: 'var(--d-accent-text)',
+  remoteBranch: 'var(--d-muted)',
+  tag: 'var(--d-warning-text)',
+  detached: 'var(--d-muted)',
+  stash: 'var(--d-info-text)',
+  worktree: 'var(--d-muted)',
+  remote: 'var(--d-muted)',
+};
+
+// The icons that lead a ref name, whose label reads in the mono font.
+const REF_ICONS: ReadonlySet<OverlayQuickPickIcon> = new Set(['branch', 'remoteBranch', 'tag']);
+
 /**
- * A list main offers (Change Icon..., Change Color..., Select Default Profile): each item's glyph in its colour, the current
- * one checked and active first while the query is empty. A query matches labels, then descriptions.
+ * A list main offers (Change Icon..., Change Color..., Select Default Profile, the branch picker): each item's glyph or icon in
+ * its colour, the current one checked. Grouped items (VS Code's sortByLabel false) keep main's order under each group's
+ * label, filtered in place with the label above its first match, and an ungrouped item after a group under an unlabelled
+ * rule, as a VS Code separator with no label; others sort by score, the current one active first. echo quotes the trimmed
+ * query for an echoQuery item's description.
  */
-export function overlayPickModel(items: readonly OverlayQuickPickItem[], rawQuery: string): QuickPickModel {
+export function overlayPickModel(items: readonly OverlayQuickPickItem[], rawQuery: string, echo: (query: string) => string): QuickPickModel {
   const query = prepareQuery(rawQuery.trim());
   const item = (entry: OverlayQuickPickItem, labelMatches: readonly QuickOpenMatch[], descriptionMatches: readonly QuickOpenMatch[]): QuickPickItem => {
-    const look = entry.glyph ? glyphLook(entry.glyph, entry.color) : undefined;
+    const look = entry.glyph ? glyphLook(entry.glyph, entry.color) : entry.icon ? { icon: QUICK_PICK_ICON_COMPONENTS[entry.icon], color: QUICK_PICK_ICON_COLORS[entry.icon] } : undefined;
     return {
       id: entry.id,
       label: entry.label,
@@ -275,18 +299,51 @@ export function overlayPickModel(items: readonly OverlayQuickPickItem[], rawQuer
       descriptionMatches,
       ...(look ? { icon: look.icon, iconColor: look.color } : {}),
       ...(entry.current ? { checked: true } : {}),
+      ...(entry.hint === undefined ? {} : { hint: entry.hint }),
+      ...(entry.icon !== undefined && REF_ICONS.has(entry.icon) ? { mono: true } : {}),
+      ...(entry.info ? { disabled: true } : {}),
     };
   };
+  const match = (entry: OverlayQuickPickItem): { score: number; labelMatches: readonly QuickOpenMatch[]; descriptionMatches: readonly QuickOpenMatch[] } | undefined => {
+    const label = scoreLabel(entry.label, query);
+    if (label.score > 0) return { score: label.score, labelMatches: label.labelMatches, descriptionMatches: [] };
+    const description = entry.description ? scoreLabel(entry.description, query) : undefined;
+    return description?.score ? { score: description.score / 2, labelMatches: [], descriptionMatches: description.labelMatches } : undefined;
+  };
+  // A query moves the alwaysShow items (a picker's commands) after the matches, under an unlabelled rule, as VS Code's
+  // checkout picker lists them (commands.ts setQuickPickItems).
+  const always = query.normalized ? items.filter((entry) => entry.alwaysShow) : [];
+  const withAlways = (rows: QuickPickRow[]): QuickPickModel => {
+    if (always.length === 0) return { rows };
+    const tail = always.map((entry): QuickPickRow => {
+      const found = match(entry);
+      // an echoing item's description is the query itself, so it carries no highlights
+      if (entry.echoQuery) return { kind: 'item', item: { ...item(entry, found?.labelMatches ?? [], []), description: echo(rawQuery.trim()) } };
+      return { kind: 'item', item: item(entry, found?.labelMatches ?? [], found?.descriptionMatches ?? []) };
+    });
+    return { rows: [...rows, ...(rows.length > 0 ? [{ kind: 'separator', label: '' } as const] : []), ...tail] };
+  };
+  if (items.some((entry) => entry.group !== undefined)) {
+    const rows: QuickPickRow[] = [];
+    let group: string | undefined;
+    for (const entry of items) {
+      if (always.includes(entry)) continue;
+      const found = query.normalized ? match(entry) : { labelMatches: [], descriptionMatches: [] };
+      if (!found) continue;
+      if (entry.group !== group) rows.push({ kind: 'separator', label: entry.group ?? '' });
+      group = entry.group;
+      rows.push({ kind: 'item', item: item(entry, found.labelMatches, found.descriptionMatches) });
+    }
+    return withAlways(rows);
+  }
   if (!query.normalized) {
     const current = items.find((entry) => entry.current);
     return { rows: items.map((entry) => ({ kind: 'item', item: item(entry, [], []) })), ...(current ? { activeId: current.id } : {}) };
   }
   const scored = items.flatMap((entry) => {
-    const label = scoreLabel(entry.label, query);
-    if (label.score > 0) return [{ entry, score: label.score, labelMatches: label.labelMatches, descriptionMatches: [] as readonly QuickOpenMatch[] }];
-    const description = entry.description ? scoreLabel(entry.description, query) : undefined;
-    return description?.score ? [{ entry, score: description.score / 2, labelMatches: [] as readonly QuickOpenMatch[], descriptionMatches: description.labelMatches }] : [];
+    const found = always.includes(entry) ? undefined : match(entry);
+    return found ? [{ entry, ...found }] : [];
   });
   scored.sort((a, b) => b.score - a.score);
-  return { rows: scored.map((match) => ({ kind: 'item', item: item(match.entry, match.labelMatches, match.descriptionMatches) })) };
+  return withAlways(scored.map((match) => ({ kind: 'item', item: item(match.entry, match.labelMatches, match.descriptionMatches) })));
 }

@@ -14,7 +14,7 @@ const COLORS = Object.fromEntries(TERMINAL_COLORS.map((color) => [color, color.t
 
 describe('terminal quick picks', () => {
   it('offers the profile icon and every curated icon in the terminal\'s color, the current one marked', async () => {
-    const fake = overlay({ kind: 'quickPick', itemId: 'bug' });
+    const fake = overlay({ kind: 'quickPick', itemId: 'bug', query: '' });
     expect(await pickTerminalIcon(fake, APPEARANCE, { placeholder: 'Icon', profileIcon: 'Default', icons: ICONS }, undefined)).toEqual({ customIcon: 'bug' });
     const request = fake.requests[0] as Extract<OverlayRequest, { kind: 'quickPick' }>;
     expect(request.items).toHaveLength(TERMINAL_CUSTOM_ICONS.length + 1);
@@ -22,19 +22,19 @@ describe('terminal quick picks', () => {
     expect(request.items.filter((item) => item.current).map((item) => item.id)).toEqual(['rocket']);
     expect(request.items.find((item) => item.id === 'flask-conical')?.label).toBe('Icon flask-conical');
     expect(request.items.every((item) => item.color === 'green')).toBe(true);
-    expect(await pickTerminalIcon(overlay({ kind: 'quickPick', itemId: 'default' }), APPEARANCE, { placeholder: 'Icon', profileIcon: 'Default', icons: ICONS }, undefined)).toEqual({ customIcon: null });
+    expect(await pickTerminalIcon(overlay({ kind: 'quickPick', itemId: 'default', query: '' }), APPEARANCE, { placeholder: 'Icon', profileIcon: 'Default', icons: ICONS }, undefined)).toEqual({ customIcon: null });
     expect(await pickTerminalIcon(overlay({ kind: 'dismissed' }), APPEARANCE, { placeholder: 'Icon', profileIcon: 'Default', icons: ICONS }, undefined)).toBeUndefined();
   });
 
   it('offers no color and the eight hues, each row showing the terminal\'s icon', async () => {
-    const fake = overlay({ kind: 'quickPick', itemId: 'magenta' });
+    const fake = overlay({ kind: 'quickPick', itemId: 'magenta', query: '' });
     expect(await pickTerminalColor(fake, APPEARANCE, { placeholder: 'Color', noColor: 'No color', colors: COLORS }, undefined)).toEqual({ color: 'magenta' });
     const request = fake.requests[0] as Extract<OverlayRequest, { kind: 'quickPick' }>;
     expect(request.items.map((item) => [item.id, item.label, item.color ?? null, item.glyph, item.current])).toEqual([
       ['default', 'No color', null, 'rocket', false],
       ...TERMINAL_COLORS.map((color) => [color, color.toUpperCase(), color, 'rocket', color === 'green']),
     ]);
-    expect(await pickTerminalColor(overlay({ kind: 'quickPick', itemId: 'default' }), APPEARANCE, { placeholder: 'Color', noColor: 'No color', colors: COLORS }, undefined)).toEqual({ color: null });
+    expect(await pickTerminalColor(overlay({ kind: 'quickPick', itemId: 'default', query: '' }), APPEARANCE, { placeholder: 'Color', noColor: 'No color', colors: COLORS }, undefined)).toEqual({ color: null });
   });
 
   it('offers the listed profiles with their paths, a user profile in its icon and color, the default marked, and nothing without any', async () => {
@@ -44,7 +44,7 @@ describe('terminal quick picks', () => {
       { id: 'wsl:Ubuntu', name: 'Ubuntu', path: 'C:\\wsl.exe', icon: 'wsl', isDefault: true, ...detected },
       { id: 'user:Dev', name: 'Dev', path: 'C:\\ps.exe', args: ['-NoExit'], source: 'user', icon: 'powershell', customIcon: 'code', color: 'magenta', isDefault: false },
     ];
-    const fake = overlay({ kind: 'quickPick', itemId: 'wsl:Ubuntu' });
+    const fake = overlay({ kind: 'quickPick', itemId: 'wsl:Ubuntu', query: '' });
     expect(await pickDefaultProfile(fake, profiles, 'Profile', undefined)).toBe('wsl:Ubuntu');
     expect(fake.requests[0]).toEqual({
       kind: 'quickPick',
