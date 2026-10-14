@@ -39,7 +39,7 @@ jobs:
       - name: Fetch the grammars and wake models
         run: npm run fetch:assets
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fetched-assets
           path: |
@@ -222,7 +222,7 @@ jobs:
           unzip -Z1 "$VSIX_NAME" > "$listing"
           node scripts/sync-vscodeignore.mjs --check-vsix-listing "$listing"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vsix-${{ matrix.target }}
           path: ${{ env.VSIX_NAME }}
@@ -358,7 +358,7 @@ jobs:
         if: matrix.os == 'win32'
         run: node scripts/verify-desktop-package.mjs --platform ${{ matrix.os }} --arch ${{ matrix.arch }} --app "${{ matrix.appDir }}"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: matrix.os == 'win32'
         with:
           name: unpacked-${{ matrix.target }}
@@ -383,7 +383,7 @@ jobs:
             -c.extraMetadata.version="$next" -c.directories.output=dist-desktop/next
 
       # sign-windows uploads the Windows legs' desktop-<target> artifacts.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: matrix.os != 'win32'
         with:
           name: desktop-${{ matrix.target }}
@@ -397,7 +397,7 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: matrix.updateFeed
         with:
           name: update-feed-${{ matrix.target }}
@@ -410,7 +410,7 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
           name: e2e-report-${{ matrix.target }}
@@ -490,7 +490,7 @@ jobs:
       - name: Upload the unsigned executables for SignPath
         id: upload-unsigned-executables
         if: env.SIGN_WINDOWS == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unsigned-win-executables
           path: executables/
@@ -545,7 +545,7 @@ jobs:
       - name: Upload the unsigned installers for SignPath
         id: upload-unsigned-installers
         if: env.SIGN_WINDOWS == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unsigned-win-installers
           path: dist-desktop/Damocles-Setup-*.exe
@@ -587,7 +587,7 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           node scripts/release-targets.mjs --check-desktop-artifacts win-x64,win-arm64 dist-desktop
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-win-x64
           path: |
@@ -597,7 +597,7 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-win-arm64
           path: |
@@ -700,7 +700,7 @@ jobs:
             npm run test:desktop -- --shard="$SHARD"
           fi
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
           name: e2e-report-${{ matrix.target }}-${{ matrix.shard }}
@@ -1005,7 +1005,7 @@ jobs:
             node "${args[@]}"
           fi
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: update-test-${{ matrix.target }}
@@ -1104,7 +1104,7 @@ jobs:
           Verifying a download: `SHA256SUMS` lists the SHA-256 of every file attached here (`sha256sum -c SHA256SUMS --ignore-missing` in the download folder), and every file except `SHA256SUMS` has a GitHub build provenance attestation (`gh attestation verify <file> --repo AizenvoltPrime/damocles`).
           EOF
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-notes
           path: ${{ runner.temp }}/release-notes/release-body.md
