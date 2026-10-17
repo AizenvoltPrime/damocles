@@ -65,7 +65,7 @@ export function ensurePanelToken(saved: { panelToken?: string } | undefined, set
 }
 
 export function useMessageHandler(options: MessageHandlerOptions): void {
-  const { postMessage, onMessage, setState, getState } = usePlatformBridge();
+  const { host, postMessage, onMessage, setState, getState } = usePlatformBridge();
   const { chatInputRef, followTranscript } = options;
 
   const uiStore = useUIStore();
@@ -91,6 +91,10 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
   const consolidationStore = useConsolidationStore();
   const memoryAuditStore = useMemoryAuditStore();
   const extensionUiStore = useExtensionUiStore();
+
+  // Before the first render: a restored desktop chat's composer stays unmounted until core says where the chat works. VS Code
+  // never sends a place; a desktop host without worktrees lifts this with its capabilities, which come before any state.
+  if (host === 'desktop' && getState<{ sessionId?: string }>()?.sessionId) uiStore.placePending = true;
 
   const stores: StoreContext = {
     uiStore,

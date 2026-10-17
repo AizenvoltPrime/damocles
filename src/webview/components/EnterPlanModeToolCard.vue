@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Ban, CircleCheck, CircleX, Compass, MessageSquare } from 'lucide-vue-next';
+import { Ban, CircleCheck, CircleX, Compass, MessageSquare, ShieldBan } from 'lucide-vue-next';
 import type { ToolCall } from '@shared/types/session';
 import ToolCardFrame from './ToolCardFrame.vue';
 import ToolCardNote from './ToolCardNote.vue';
@@ -17,6 +17,7 @@ const status = computed(() => props.toolCall.status);
 const headerText = computed(() => {
   if (status.value === 'completed') return t('planModeTool.entered');
   if (status.value === 'denied') return t('planModeTool.declined');
+  if (status.value === 'blocked') return t('planModeTool.blocked');
   if (status.value === 'abandoned') return t('planModeTool.skipped');
   return t('planModeTool.enterPlanMode');
 });
@@ -47,6 +48,13 @@ const headerText = computed(() => {
       :icon="toolCall.feedback ? MessageSquare : CircleX"
       :text="toolCall.feedback ? t('planModeTool.feedbackSent') : t('planModeTool.implementDirectly')"
       :quote="toolCall.feedback"
+    />
+    <ToolCardNote
+      v-else-if="status === 'blocked' && toolCall.feedback"
+      tone="text-(--d-muted)"
+      :icon="ShieldBan"
+      :text="toolCall.feedback"
+      data-testid="tool-card-blocked-reason"
     />
     <ToolCardNote
       v-else-if="status === 'abandoned'"

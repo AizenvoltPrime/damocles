@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { build } from 'esbuild';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startGitHttpServer, type GitHttpServer } from './git-http-server';
-import { createAskpassServer, type AskpassServer, type CredentialPrompt } from '../askpass/askpass-server';
+import { createAskpassServer, PROMPT_CANCELLED, type AskpassServer, type CredentialPrompt } from '../askpass/askpass-server';
 import { createGitRunner, GitError, GitQueueDisposedError, GitUntrustedError, parseGitVersion, type GitCall } from '../git-runner';
 import { gitErrorText, PLAIN_VARIANT, RemoteCancelledError, StashKeptError, SyncBranchChangedError } from '../scm-service';
 import { SCM_SETTING_KEYS } from '../settings-keys';
@@ -397,6 +397,18 @@ describe.skipIf(!HAS_GIT)('remote operations against bare repositories', { timeo
     h.service.dispose();
   });
 
+  it('shows the control and bidi characters of the upstream in the sync question as escapes', async () => {
+    const { work } = tracked('sync-bidi');
+    git(['checkout', '--quiet', '-b', 'fe\u202Eat'], work);
+    const { h, repoId } = await open(work);
+    await h.service.push(repoId, { remote: 'origin', branch: 'fe\u202Eat', setUpstream: true, followTags: false, force: false });
+    expect((await freshStatus(h, repoId)).upstream).toMatchObject({ branch: 'fe\u202Eat' });
+    h.answers = [undefined];
+    expect(await h.service.sync(repoId, false)).toBe(false);
+    expect(h.questions[0]!.message).toBe('This action will pull and push commits from and to "origin/fe\\u{202E}at".');
+    h.service.dispose();
+  });
+
   it('clones into a new folder named after the URL, then the next free name', async () => {
     const { origin } = tracked('cloned');
     const parent = folder('clones');
@@ -479,7 +491,7 @@ describe.skipIf(!HAS_GIT)('remote operations over http with askpass', { timeout:
     return dir;
   }
 
-  function askpass(answers: Record<CredentialPrompt['kind'], string | undefined>): { server: AskpassServer; prompts: CredentialPrompt[]; log: string[] } {
+  function askpass(answers: Record<CredentialPrompt['kind'], string | typeof PROMPT_CANCELLED | undefined>): { server: AskpassServer; prompts: CredentialPrompt[]; log: string[] } {
     const prompts: CredentialPrompt[] = [];
     const log: string[] = [];
     const created = createAskpassServer({ paths, prompt: async (prompt) => (prompts.push(prompt), answers[prompt.kind]), log: (line) => log.push(line) });
@@ -507,6 +519,43 @@ describe.skipIf(!HAS_GIT)('remote operations over http with askpass', { timeout:
       expect(text).not.toContain(`${USER}:`);
     }
     h.service.dispose();
+    await credentials.server.dispose();
+  });
+
+  it('ends fetch, pull, push, sync and clone as cancelled, as Cancel does, when the user cancels the credential prompt', async () => {
+    const served = servedRepo('escape');
+    const work = folder('escape-work');
+    git(['clone', '--quiet', served, work], sandbox);
+    git(['remote', 'set-url', 'origin', server.url('escape.git')], work);
+    git(['config', 'user.email', 'a@damocles.invalid'], work);
+    git(['config', 'user.name', 'Ada'], work);
+    write(path.join(work, 'b.txt'), 'b\n');
+    git(['add', '.'], work);
+    git(['commit', '--quiet', '-m', 'ahead'], work);
+    const credentials = askpass({ username: PROMPT_CANCELLED, password: PASSWORD, passphrase: undefined, confirm: undefined, notice: undefined });
+    const { h, repoId } = await open(fs.realpathSync.native(work), { askpass: credentials.server });
+    const runs: Array<readonly ['fetch' | 'pull' | 'push' | 'sync', () => Promise<unknown>]> = [
+      ['fetch', () => h.service.fetch(repoId, { all: true })],
+      ['pull', () => h.service.pull(repoId, { rebase: false })],
+      ['push', () => h.service.push(repoId, { remote: 'origin', branch: 'main', setUpstream: false, followTags: false, force: false })],
+      ['sync', () => h.service.sync(repoId, false)],
+    ];
+    h.answers.push(0);
+    for (const [op, run] of runs) {
+      const asked = credentials.prompts.length;
+      await expect(run(), op).rejects.toBeInstanceOf(RemoteCancelledError);
+      expect(h.service.snapshot(repoId), op).toMatchObject({ running: null, lastRemote: { op, outcome: 'cancelled' } });
+      expect(credentials.prompts.slice(asked).map((prompt) => prompt.kind), op).toEqual(['username']);
+    }
+    expect(locks(path.join(work, '.git'))).toEqual([]);
+    h.service.dispose();
+
+    const parent = folder('escape-clones');
+    const cloner = harness({ askpass: credentials.server });
+    await expect(cloner.service.clone(server.url('escape.git'), parent, false)).rejects.toBeInstanceOf(RemoteCancelledError);
+    expect(cloner.service.cloneState()).toMatchObject({ running: null, last: { outcome: 'cancelled' } });
+    expect(fs.readdirSync(parent)).toEqual([]);
+    cloner.service.dispose();
     await credentials.server.dispose();
   });
 

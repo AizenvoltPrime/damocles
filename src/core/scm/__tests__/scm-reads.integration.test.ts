@@ -2,9 +2,10 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { GitError, GitQueueDisposedError } from '../git-runner';
 import { MAX_MESSAGE_CHARS, PLAIN_COMMIT } from '../repository';
 import type { ScmEvent } from '../scm-service';
-import { folder, freshStatus, git, harness, HAS_GIT, makeRepo, ready, statusOf, useGitSandbox, waitFor, write, type Harness } from './git-harness';
+import { folder, freshStatus, git, harness, HAS_GIT, makeRepo, ready, statusOf, useGitSandbox, viewOf, waitFor, write, type Harness } from './git-harness';
 
 /**
  * Reads against real git: diffs that never write the index, bounded reads of HEAD, MERGE_MSG and the commit template, git's
@@ -204,6 +205,30 @@ describe.skipIf(!HAS_GIT)('reads against real git', { timeout: 120_000 }, () => 
     expect(gone).toEqual([nestedId]);
     h.service.setProjects([]);
     expect(gone).toEqual([nestedId, rootId]);
+    h.service.dispose();
+  });
+
+  it('closes a repository whose folder was removed under it, and its read rejects as one of a closed repository', async () => {
+    const main = makeRepo(folder('removed-main'));
+    const worktree = path.join(folder('removed-worktree'), 'wt');
+    git(['worktree', 'add', '--quiet', '-b', 'removed', worktree], main);
+    const h = harness({ trusted: [worktree] });
+    h.service.setProjects([{ key: 'w', path: worktree }]);
+    const repoId = (await ready(h, 1, 'w')).repos[0]!.repoId;
+    await waitFor(() => statusOf(h, repoId), 'a first status');
+    const repo = h.service.repository(repoId)!.repo;
+    // a failure in a folder that still exists is git's, and the repository stays open
+    await expect(repo.read(['rev-parse', '--verify', 'refs/heads/no-such-branch'])).rejects.toBeInstanceOf(GitError);
+    expect(h.service.repository(repoId)).toBeDefined();
+    const gone: string[] = [];
+    h.service.onDidChange((event: ScmEvent) => {
+      if (event.kind === 'repository' && h.service.repository(event.repoId) === undefined) gone.push(event.repoId);
+    });
+    git(['worktree', 'remove', '--force', worktree], main);
+    await expect(h.service.commitInput(repoId)).rejects.toBeInstanceOf(GitQueueDisposedError);
+    expect(h.service.repository(repoId)).toBeUndefined();
+    expect(gone).toEqual([repoId]);
+    expect(viewOf(h, 'w')).toMatchObject({ state: 'noRepository', repos: [] });
     h.service.dispose();
   });
 });

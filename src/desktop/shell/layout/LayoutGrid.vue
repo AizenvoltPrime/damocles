@@ -6,7 +6,7 @@ import type { DamoclesShellApi, GridPane, GridSlot, ShellGridLayout, ShellGridSi
 import type { OverlayMenuItem } from '../../preload/overlay-channels';
 import { remPx } from '@/composables/useRemPx';
 import { atRootFont, GRID_SASH_REM } from '../layout';
-import { clampSlotSize, COLUMN_MIN_PX, GRID_SLOTS, gridAreas, gridMinWidth, ROW_MIN_PX, slotMax, slotOf } from './layout-model';
+import { clampSlotSize, COLUMN_MIN_PX, GRID_SLOTS, gridAreas, ROW_MIN_PX, slotMax, slotMin, slotOf } from './layout-model';
 import { GRID_CONTEXT, type GridContext } from './grid-context';
 import { prefersReducedMotion } from '@/utils/reducedMotion';
 import { LAYOUT_SETTLED_EVENT } from '../content-bounds';
@@ -41,11 +41,11 @@ const area = (pane: GridPane): GridSlot => slotOf(grid.value, pane);
 const shown = (pane: GridPane): boolean => areas.value[area(pane)];
 
 // The px minimums are at the default font, so they follow the root font here; a sash stops where either neighbour reaches its minimum.
-const sideMin = computed(() => atRootFont(COLUMN_MIN_PX));
-const bottomMin = computed(() => atRootFont(ROW_MIN_PX));
 const sashPx = computed(() => remPx(GRID_SASH_REM));
 const sideRoom = computed(() => gridWidth.value - sashPx.value);
 const bottomRoom = computed(() => gridHeight.value - sashPx.value);
+const sideMin = computed(() => slotMin(sideRoom.value, atRootFont(COLUMN_MIN_PX)));
+const bottomMin = computed(() => slotMin(bottomRoom.value, atRootFont(ROW_MIN_PX)));
 const sideWidth = computed(() => clampSlotSize(grid.value.sideWidth, sideRoom.value, sideMin.value));
 const bottomHeight = computed(() => clampSlotSize(grid.value.bottomHeight, bottomRoom.value, bottomMin.value));
 const sideMax = computed(() => slotMax(sideRoom.value, sideMin.value, sideWidth.value));
@@ -62,7 +62,6 @@ const gridStyle = computed(() => {
     gridTemplateColumns: columns,
     gridTemplateRows: rows,
     gridTemplateAreas: '"main vs side" "hs hs hs" "bottom bottom bottom"',
-    minWidth: `${gridMinWidth(areas.value, sideMin.value, sashPx.value)}px`,
     transition: sashDragging.value ? 'none' : 'grid-template-columns .3s var(--ease-out), grid-template-rows .3s var(--ease-out)',
   };
 });
@@ -239,7 +238,7 @@ defineExpose({ chatSlot, root });
   <div
     ref="root"
     data-testid="layout-grid"
-    class="layout-grid relative grid min-h-0 flex-1"
+    class="layout-grid relative grid min-h-0 min-w-0 flex-1"
     :style="gridStyle"
   >
     <Sash

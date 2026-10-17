@@ -6,6 +6,7 @@ const logMock = vi.hoisted(() => vi.fn());
 vi.mock('../../logger', () => ({ log: logMock }));
 vi.mock('../ide-context-manager', () => ({
   IdeContextManager: class {
+    refresh(): void {}
     dispose(): void {}
   },
 }));
@@ -160,6 +161,16 @@ describe('tab titles', () => {
 });
 
 describe('switching folder', () => {
+  it('moves a chat for a hand-off with no question and no switch notice, since its conversation continues', async () => {
+    h = createHarness([folderEntry(A), folderEntry(B)]);
+    const { host, panelId } = await openPanel();
+    const result = await h.manager.switchPanelFolder(panelId, folderKey(B), 'chatMove');
+    expect(warnings()).toHaveLength(0);
+    expect(result).toBe(h.instance(panelId));
+    expect(lastFolderUpdate(host)).toMatchObject({ panelFolderKey: folderKey(B) });
+    expect(lastFolderUpdate(host)).not.toHaveProperty('switched');
+  });
+
   it('switches freely before the first message: no modal, a fresh session in the new folder', async () => {
     h = createHarness([folderEntry(A), folderEntry(B)]);
     const { host, panelId } = await openPanel();

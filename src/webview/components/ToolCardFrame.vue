@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { Component } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { ShieldBan } from 'lucide-vue-next';
 import type { ToolCall } from '@shared/types/session';
 import { useToolCardStatus } from '@/composables/useToolCardStatus';
 
@@ -88,12 +89,29 @@ function handleNameKeydown(event: KeyboardEvent): void {
           aria-hidden="true"
         />{{ t('toolCall.awaitingApproval') }}
       </span>
-      <component
-        :is="statusIcon"
-        class="size-3.5 flex-none"
-        :class="statusClass"
-        aria-hidden="true"
-      />
+      <Transition
+        name="t-badge"
+        mode="out-in"
+      >
+        <!-- Rule 10: a policy block, D62's isolation included, reads "Blocked" rather than a rejection. -->
+        <span
+          v-if="status === 'blocked'"
+          class="flex h-4.5 flex-none items-center gap-1 rounded-full bg-[color-mix(in_srgb,var(--d-warning)_16%,transparent)] px-1.5 text-10.5 font-medium text-(--d-warning-text)"
+          data-testid="tool-card-blocked"
+        >
+          <ShieldBan
+            class="size-2.75"
+            aria-hidden="true"
+          />{{ t('toolOverlay.statusBlocked') }}
+        </span>
+        <component
+          :is="statusIcon"
+          v-else
+          class="size-3.5 flex-none"
+          :class="statusClass"
+          aria-hidden="true"
+        />
+      </Transition>
       <slot name="trailing" />
     </div>
     <slot />

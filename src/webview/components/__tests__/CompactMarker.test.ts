@@ -1,9 +1,11 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { mount } from '@vue/test-utils';
+import { createPinia, setActivePinia } from 'pinia';
 import CompactMarker from '../CompactMarker.vue';
 import type { CompactMarker as CompactMarkerType } from '@shared/types/session';
 import { i18n, applyLocale } from '@/i18n';
+import { useUIStore } from '@/stores/useUIStore';
 
 function make(overrides: Partial<CompactMarkerType> = {}): CompactMarkerType {
   return {
@@ -27,6 +29,9 @@ function mountMarker(marker: CompactMarkerType) {
 }
 
 afterEach(() => applyLocale('en'));
+
+// The card reads the read-only flag from the UI store: a chat whose worktree was deleted offers no rewind.
+beforeEach(() => setActivePinia(createPinia()));
 
 describe('CompactMarker trigger', () => {
   it('labels a threshold compaction and explains the configured threshold', () => {
@@ -97,5 +102,18 @@ describe('CompactMarker billed usage', () => {
     // Greek compact notation and the Greek currency form both use a non-breaking space.
     expect(text).toContain('90 χιλ. → 12 χιλ. tokens');
     expect(text).toContain('12 χιλ. tokens χρεώθηκαν (~0,05 $)');
+  });
+});
+
+describe('CompactMarker in a read-only chat', () => {
+  it('offers no rewind once the chat\'s worktree was deleted', async () => {
+    const marker = { id: 'c1', entryId: 'e1', trigger: 'manual', preTokens: 1000, timestamp: Date.now() } as CompactMarkerType;
+    const live = mount(CompactMarker, { props: { marker }, global: { plugins: [i18n] } });
+    const rewindable = live.text().includes(i18n.global.t('compactMarker.rewindBefore'));
+    useUIStore().worktree = { phase: 'deleted', place: 'worktree', canHandOff: false };
+    await live.vm.$nextTick();
+    expect(rewindable).toBe(true);
+    expect(live.text()).not.toContain(i18n.global.t('compactMarker.rewindBefore'));
+    live.unmount();
   });
 });

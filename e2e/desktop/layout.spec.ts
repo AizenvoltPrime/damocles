@@ -10,7 +10,7 @@ import { activeTabTopRow, openInEditor, toggleTerminal } from './support/editor'
 import { initRepo } from './support/git';
 import { openScmProject, scmSection } from './support/scm';
 import { sectionAction } from './support/shell-ui';
-import { DEFAULT_GRID_LAYOUT, type GridPane, type GridSlot } from '../../src/desktop/preload/shell-channels';
+import { DEFAULT_GRID_LAYOUT, MIN_SECTION_SIZE, type GridPane, type GridSlot } from '../../src/desktop/preload/shell-channels';
 
 async function slots(app: ElectronApplication): Promise<Record<GridSlot, GridPane>> {
   return { ...(await shellState(app)).layout.grid.slots };
@@ -64,6 +64,23 @@ test('the default grid is chat in main, editor in side, terminal hidden in botto
     const bounds = await chatViewBounds(app, chat);
     return Math.abs(bounds.x - slot!.x) <= 2 && Math.abs(bounds.width - slot!.width) <= 2;
   }).toBe(true);
+});
+
+test('at a larger font the grid never reaches past a window narrower than every minimum; its two columns share the room', async ({ home, launch }) => {
+  const { app } = await launch();
+  await openProjectChat(app, home.project);
+  const shell = await shellPage(app);
+  await setContentSize(app, 1000, 660);
+  // 16px host font: the sidebar's minimum and both columns' minimums together are wider than the window
+  await shell.evaluate(() => document.documentElement.style.setProperty('--d-font-size', '16px'));
+  await settled(shell);
+  await expect.poll(() => shell.evaluate(() => {
+    const right = (testId: string): number => document.querySelector(`[data-testid="${testId}"]`)!.getBoundingClientRect().right;
+    return { grid: Math.round(right('layout-grid')), editor: Math.round(right('grid-pane-editor')), window: window.innerWidth };
+  })).toEqual({ grid: 1000, editor: 1000, window: 1000 });
+  const chat = await shell.getByTestId('grid-pane-chat').boundingBox();
+  const editor = await shell.getByTestId('grid-pane-editor').boundingBox();
+  expect(Math.abs(chat!.width - editor!.width)).toBeLessThanOrEqual(2);
 });
 
 test('the terminal dragged onto the side slot swaps with the editor, survives a restart, and Restore default layout resets it', async ({ home, launch }) => {
@@ -222,14 +239,14 @@ test('a sidebar section dragged by its header lands on the half it is dropped on
     const tops = await shell.locator('section[data-section]').evaluateAll((nodes) => nodes.map((node) => [node.getAttribute('data-section')!, node.getBoundingClientRect().top] as const));
     return [...tops].sort((a, b) => a[1] - b[1]).map(([name]) => name);
   };
-  const moved = ['projects', 'scm', 'chats', 'files', 'repos', 'search'];
+  const moved = ['projects', 'scm', 'chats', 'files', 'graph', 'repos', 'search'];
   {
     const { app, close } = await launch();
     const shell = await shellPage(app);
     // A native HTML5 drag: Source control's header onto the upper half of Chats.
     await dragSection(app, shell, 'scm', 'chats', 6);
     await expect.poll(() => visualOrder(shell)).toEqual(moved);
-    await expect(shell.getByTestId('sidebar-announcement')).toHaveText('Source control moved to position 2 of 6');
+    await expect(shell.getByTestId('sidebar-announcement')).toHaveText('Source control moved to position 2 of 7');
     // Tab follows the order on screen (reading-flow), not the DOM's. Collapsing Projects makes its rows inert and disables the
     // projects and scm sash, so Tab from Projects' header lands on Source control's.
     expect(await shell.getByTestId('sidebar').evaluate((nav) => getComputedStyle(nav).getPropertyValue('reading-flow'))).toBe('flex-visual');
@@ -249,10 +266,10 @@ test('a sidebar section dragged by its header lands on the half it is dropped on
   await header(shell, 'scm').locator('button[aria-expanded]').focus();
   await shell.keyboard.press('Shift+F10');
   await chooseMenuItem(app, 'down');
-  await expect.poll(() => visualOrder(shell)).toEqual(['projects', 'chats', 'scm', 'files', 'repos', 'search']);
+  await expect.poll(() => visualOrder(shell)).toEqual(['projects', 'chats', 'scm', 'files', 'graph', 'repos', 'search']);
   await header(shell, 'files').click({ button: 'right' });
   await chooseMenuItem(app, 'reset');
-  await expect.poll(() => visualOrder(shell)).toEqual(['projects', 'chats', 'files', 'scm', 'repos', 'search']);
+  await expect.poll(() => visualOrder(shell)).toEqual(['projects', 'chats', 'files', 'scm', 'graph', 'repos', 'search']);
 });
 
 test('a sash sits in every gap between sidebar sections wherever they are, and one beside collapsed sections moves the open ones past them', async ({ launch }) => {
@@ -282,37 +299,42 @@ test('a sash sits in every gap between sidebar sections wherever they are, and o
   const enabledAtEveryGap = (between: string[]) => between.map((pair) => ({ between: pair, atGap: true, hit: true, disabled: false }));
 
   const toggle = (name: string) => shell.locator(`section[data-section="${name}"] [data-testid="sidebar-section-header"] button[aria-expanded]`);
-  // Repositories and Search are collapsed below Source control by default and can give or take nothing: VS Code disables
-  // those two sashes.
+  // Repositories and Search are collapsed below the Graph by default and can give or take nothing: VS Code disables those two
+  // sashes.
   expect(await gaps()).toEqual([
-    ...enabledAtEveryGap(['projects chats', 'chats files', 'files scm']),
-    { between: 'scm repos', atGap: true, hit: false, disabled: true },
+    ...enabledAtEveryGap(['projects chats', 'chats files', 'files scm', 'scm graph']),
+    { between: 'graph repos', atGap: true, hit: false, disabled: true },
     { between: 'repos search', atGap: true, hit: false, disabled: true },
   ]);
-  // With Search open, the sash above collapsed Repositories moves Source control and Search past it.
+  // With Search open, the sash above collapsed Repositories moves the Graph and Search past it.
   await toggle('search').click();
   await settled(shell);
-  await expect.poll(gaps).toEqual(enabledAtEveryGap(['projects chats', 'chats files', 'files scm', 'scm repos', 'repos search']));
-  const scm = await height('scm');
+  await expect.poll(gaps).toEqual(enabledAtEveryGap(['projects chats', 'chats files', 'files scm', 'scm graph', 'graph repos', 'repos search']));
+  const graph = await height('graph');
   const search = await height('search');
-  await dragSectionSash('scm repos', 40);
-  expect(await height('scm')).toBe(scm + 40);
+  await dragSectionSash('graph repos', 40);
+  expect(await height('graph')).toBe(graph + 40);
   expect(await height('search')).toBe(search - 40);
 
   await toggle('search').click();
   await settled(shell);
   await dragSection(app, shell, 'scm', 'projects', 6);
   await expect.poll(gaps).toEqual([
-    ...enabledAtEveryGap(['scm projects', 'projects chats', 'chats files']),
-    { between: 'files repos', atGap: true, hit: false, disabled: true },
+    ...enabledAtEveryGap(['scm projects', 'projects chats', 'chats files', 'files graph']),
+    { between: 'graph repos', atGap: true, hit: false, disabled: true },
     { between: 'repos search', atGap: true, hit: false, disabled: true },
   ]);
-  // Up, so Source control gives back part of the 40 px it took above; below it Projects may already be at its minimum.
-  const projects = await height('projects');
+  // Down, so Source control on top takes 30 px from the sections below it, nearest first: Projects gives what it has above its
+  // minimum (its header and MIN_SECTION_SIZE's body at the default font), and Chats only the rest.
+  const projectsBefore = await height('projects');
+  const chatsBefore = await height('chats');
   const scmOnTop = await height('scm');
-  await dragSectionSash('scm projects', -30);
-  expect(await height('scm')).toBe(scmOnTop - 30);
-  expect(await height('projects')).toBe(projects + 30);
+  const header = Math.round((await shell.locator('section[data-section="projects"] [data-testid="sidebar-section-header"]').boundingBox())!.height);
+  const fromProjects = Math.min(30, projectsBefore - (header + MIN_SECTION_SIZE));
+  await dragSectionSash('scm projects', 30);
+  expect(await height('scm')).toBe(scmOnTop + 30);
+  expect(await height('projects')).toBe(projectsBefore - fromProjects);
+  expect(await height('chats')).toBe(chatsBefore - (30 - fromProjects));
 });
 
 test('a sash drag keeps the size it was released at through later state pushes, and main saves it', async ({ home, launch }) => {
@@ -428,4 +450,46 @@ test('section titles read in full at rest; title actions show on hover or keyboa
   await expect(actions).toBeHidden();
   // hovering the section still shows them
   await sectionAction(shell, 'scm-refresh');
+});
+
+test('in a narrow sidebar a section without a chip keeps its title actions beside the title, which gives way to them', async ({ foreground: _foreground, home, launch }) => {
+  await initRepo(home, home.project);
+  const { app } = await launch();
+  const shell = await openScmProject(app, home.project);
+  await dragSash(shell, 'sidebar-sash', -400, 0);
+  const header = scmSection(shell).getByTestId('sidebar-section-header');
+  await header.hover();
+  const actions = scmSection(shell).getByTestId('sidebar-section-actions');
+  await expect(actions).toBeVisible();
+  await settled(shell);
+  const title = await scmSection(shell).locator('h2').boundingBox();
+  const bar = await actions.boundingBox();
+  expect(title!.x + title!.width).toBeLessThanOrEqual(bar!.x + 0.5);
+});
+
+test('keyboard focus on the New split button shows a whole focus ring on New and on its chevron', async ({ launch }) => {
+  const { app } = await launch();
+  const shell = await shellPage(app);
+  await settled(shell);
+  // The shadcn Button draws focus as a 2px ring past a 2px offset; no box with clipped overflow may cut into that reach.
+  const ringShown = (testId: string): Promise<boolean> => shell.getByTestId(testId).evaluate((button) => {
+    if (!button.matches(':focus-visible') || getComputedStyle(button).boxShadow === 'none') return false;
+    const reach = 4;
+    const rect = button.getBoundingClientRect();
+    for (let node = button.parentElement; node && node !== document.body; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      if (style.overflowX === 'visible' && style.overflowY === 'visible') continue;
+      const box = node.getBoundingClientRect();
+      if (rect.left - reach < box.left || rect.top - reach < box.top || rect.right + reach > box.right || rect.bottom + reach > box.bottom) return false;
+    }
+    return true;
+  });
+  await shell.getByTestId('sidebar-chats').locator('h2 button').focus();
+  await shell.keyboard.press('Tab');
+  await shell.keyboard.press('Tab');
+  await expect(shell.getByTestId('new-chat')).toBeFocused();
+  expect(await ringShown('new-chat')).toBe(true);
+  await shell.keyboard.press('Tab');
+  await expect(shell.getByTestId('new-chat-options')).toBeFocused();
+  expect(await ringShown('new-chat-options')).toBe(true);
 });

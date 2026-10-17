@@ -22,6 +22,14 @@ export function paneShown(grid: Pick<ShellGridLayout, 'visible'>, pane: GridPane
 }
 
 /**
+ * The minimum each slot beside a sash keeps of `roomPx`: `minPx`, or half the room when the room holds less than two
+ * minimums (a window narrower than the sidebar's and both columns' minimums), so the grid never reaches past the window.
+ */
+export function slotMin(roomPx: number, minPx: number): number {
+  return roomPx > 0 ? Math.min(minPx, Math.floor(roomPx / 2)) : minPx;
+}
+
+/**
  * The most the side or bottom slot may take of `roomPx` (the grid's extent less the sash): what leaves the slot across the
  * sash its minimum, never below the minimum. An unmeasured grid has no room yet, so the slot keeps `sizePx` until it is.
  */

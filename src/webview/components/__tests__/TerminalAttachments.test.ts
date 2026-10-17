@@ -20,8 +20,8 @@ const bridge = (globalThis as unknown as { acquireVsCodeApi: () => { postMessage
 let posted: Array<{ type: string; [key: string]: unknown }> = [];
 const mounted: VueWrapper[] = [];
 
-const failing: TerminalAttachmentInfo = { id: 'a1', source: 'command', commandLine: 'npm test', exitCode: 1, terminalTitle: 'pwsh', lineCount: 120, omittedLines: 0, preview: 'FAIL <b>a.test.ts</b>' };
-const selection: TerminalAttachmentInfo = { id: 'a2', source: 'selection', commandLine: null, exitCode: null, terminalTitle: 'bash', lineCount: 1, omittedLines: 0, preview: 'ok' };
+const failing: TerminalAttachmentInfo = { id: 'a1', kind: 'terminal', source: 'command', commandLine: 'npm test', exitCode: 1, terminalTitle: 'pwsh', lineCount: 120, omittedLines: 0, preview: 'FAIL <b>a.test.ts</b>' };
+const selection: TerminalAttachmentInfo = { id: 'a2', kind: 'terminal', source: 'selection', commandLine: null, exitCode: null, terminalTitle: 'bash', lineCount: 1, omittedLines: 0, preview: 'ok' };
 
 function composer(isProcessing = false): VueWrapper {
   const wrapper = mount(ChatInput, {
@@ -73,6 +73,13 @@ describe('terminal attachment chips', () => {
     await wrapper.setProps({ attachment: { ...selection, terminalTitle: '1 line', exitCode: 0 } });
     expect(wrapper.text()).toContain('·1 line·exit 0·1 line');
     expect(warn.mock.calls.some((call) => String(call[0]).includes('Duplicate keys'))).toBe(false);
+  });
+
+  it('puts each separator dot between its neighbours as an item of its own, so the chip\'s gap spaces both sides alike', () => {
+    const wrapper = mount(TerminalAttachmentChip, { props: { attachment: selection }, global: { plugins: [i18n] } });
+    mounted.push(wrapper);
+    const items = [...wrapper.get('[data-testid="terminal-attachment-preview-button"]').element.children].map((child) => child.textContent ?? '');
+    expect(items.slice(1)).toEqual(['Terminal selection', '·', 'bash', '·', '1 line']);
   });
 
   it('shows core\'s pending attachments in the composer and asks core to remove one', async () => {

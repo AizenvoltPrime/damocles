@@ -122,6 +122,8 @@ interface Harness {
   env: Record<string, string>;
   // Chromium's accessibility support, which each published state reads
   screenReader: boolean;
+  // variables a root's terminals add, by root key
+  rootEnv: Record<string, Record<string, string>>;
   crashHost(exit?: PtyHostExit): void;
   hostSend(message: unknown): void;
 }
@@ -152,6 +154,7 @@ function harness(options: { saved?: PersistedTerminals; throttleConpty?: boolean
     logs: [],
     env: { PATH: 'C:\\bin', TERM_TEST: '1' },
     screenReader: false,
+    rootEnv: {},
     crashHost: (exit) => exitHost(exit ?? { code: 1, reason: null, error: null }),
     hostSend: (message) => hostSend(message),
   };
@@ -204,7 +207,9 @@ function harness(options: { saved?: PersistedTerminals; throttleConpty?: boolean
     profilesReady: () => h.profilesReady,
     isDirectory: (folder) => Promise.resolve(h.directories.has(folder)),
     projects: () => h.projects,
+    pickerProjects: () => h.projects,
     currentProjectKey: () => h.current,
+    rootEnv: (key) => h.rootEnv[key] ?? {},
     settings: () => ({ ...SETTINGS, defaultProfile: options.defaultProfile ?? '', ...h.settings }),
     env: () => h.env,
     screenReader: () => h.screenReader,
@@ -484,6 +489,43 @@ describe('exit, kill and restart', () => {
     await settle();
     expect(lastState(h).terminals[0]).toMatchObject({ id: 'term-1', status: 'running', profileId: 'git-bash', projectKey: BETA.key });
     expect(h.ptys[1]!.options.cwd).toBe(BETA.fsPath);
+  });
+
+  it('runs the worktree Setup as a task tab with the worktree env, shows its exit code, never saves it, and Restart asks its owner (rule 23)', async () => {
+    const h = harness();
+    const worktree: TerminalProject = { key: `${ALPHA.key}\u0000abcd1234`, name: 'alpha', fsPath: 'C:\\worktrees\\abcd1234' };
+    h.projects = [ALPHA, BETA, worktree];
+    h.rootEnv = { [worktree.key]: { DAMOCLES_PROJECT_FOLDER: ALPHA.fsPath, DAMOCLES_WORKTREE_INDEX: '1' } };
+    const exits: Array<number | null> = [];
+    let restarts = 0;
+    let starts = 0;
+    const task = { key: 'setup:abcd1234', name: 'Setup', file: PWSH.file, args: ['-NoLogo', '-EncodedCommand', 'AAAA'], projectKey: worktree.key, cwd: worktree.fsPath, env: { EXTRA: '1' }, onExit: (code: number | null) => exits.push(code), onRestart: () => restarts++, onCommandStart: () => starts++ };
+    const id = h.service.runTask(task);
+    await settle();
+    expect([h.ptys[0]!.file, h.ptys[0]!.args, h.ptys[0]!.options.cwd]).toEqual([PWSH.file, ['-NoLogo', '-EncodedCommand', 'AAAA'], worktree.fsPath]);
+    expect(h.ptys[0]!.options.env).toMatchObject({ PATH: 'C:\\bin', DAMOCLES_PROJECT_FOLDER: ALPHA.fsPath, DAMOCLES_WORKTREE_INDEX: '1', EXTRA: '1' });
+    expect(lastState(h).terminals.find((terminal) => terminal.id === id)).toMatchObject({ title: 'Setup', icon: 'powershell', running: 'Setup' });
+    // the task marks each command's start with the tab's nonce; a mark without it is a command's own output
+    h.ptys[0]!.emit(`${osc(`C;${nonceOf(h, 0)}`)}${osc(`D;0;${nonceOf(h, 0)}`)}${osc('C;forged')}${osc(`C;${nonceOf(h, 0)}`)}`);
+    await settle(TERMINAL_BATCH_MS);
+    expect(starts).toBe(2);
+    h.ptys[0]!.exit(2);
+    await settle(EXIT_FLUSH_MS);
+    expect(exits).toEqual([2]);
+    expect(lastState(h).terminals.find((terminal) => terminal.id === id)).toMatchObject({ status: 'exited', exitCode: 2 });
+    await h.service.restart(id);
+    expect(restarts).toBe(1);
+    expect(h.ptys).toHaveLength(1);
+    // a second run of the same task stops the first tab's process and reruns in a fresh tab
+    const again = h.service.runTask(task);
+    await settle();
+    expect(lastState(h).terminals.filter((terminal) => terminal.title === 'Setup').map((terminal) => terminal.id)).toEqual([again]);
+    expect(h.persisted.at(-1)?.terminals).toEqual([]);
+    // a terminal opened in the worktree gets the same two variables
+    h.service.create({ profileId: 'pwsh', target: { project: worktree.key } }, false);
+    await settle();
+    expect(h.ptys.at(-1)!.options.env).toMatchObject({ DAMOCLES_PROJECT_FOLDER: ALPHA.fsPath, DAMOCLES_WORKTREE_INDEX: '1' });
+    expect(h.ptys.at(-1)!.options.env).not.toHaveProperty('EXTRA');
   });
 
   it('restarts only an exited terminal', async () => {

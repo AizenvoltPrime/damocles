@@ -1,6 +1,6 @@
 import type { Disposable } from './disposable';
 import type { SettingsSectionId } from '../shared/settings-sections';
-import type { SettingsFileScope } from '../shared/types/messages';
+import type { ChatReviewScope, SettingsFileScope } from '../shared/types/messages';
 
 export interface OpenFileOptions {
   // 1-based; the cursor goes to the start of the line
@@ -81,6 +81,9 @@ export interface EditorService {
   // A .damocles settings file in the host's editor, saved under the settings file editor's rules, at key's line when the
   // file holds it; only a host that keeps those files (HostCapabilities.settingsSources) has one, and any other rejects.
   openSettingsFile(scope: SettingsFileScope, opts?: { readonly key?: string }): Promise<void>;
+  // The chat's review tab (D60) in the host's editor area; only a host with HostCapabilities.chatReview has one, and any
+  // other rejects.
+  showChatReview(panelId: string, scope: ChatReviewScope): Promise<void>;
   // installed and activated
   isHostExtensionActive(id: string): boolean;
   searchHostExtensions(query: string): Promise<void>;

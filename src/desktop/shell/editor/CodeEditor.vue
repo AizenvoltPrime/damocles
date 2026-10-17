@@ -1,17 +1,33 @@
 <script setup lang="ts">
-import { computed, inject, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
+import { computed, getCurrentInstance, inject, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { editor as MonacoEditor, IDisposable } from 'monaco-editor/editor/editor.api';
-import type { DamoclesShellApi, EditorMenuShortcut, EditorSelectionRange, SearchRange, ShellEditorSettings, ShellEditorTab } from '../../preload/shell-channels';
+import type { DamoclesShellApi, EditorMenuShortcut, EditorSelectionRange, SearchRange, ShellEditorSettings, ShellEditorTab, ShellPlatform } from '../../preload/shell-channels';
 import { prefersReducedMotion } from '@/utils/reducedMotion';
 import { attachEditorContextMenu } from './context-menu';
 import { EDITOR_STORE } from './editor-store';
+import { SCM_STORE } from '../scm/scm-store';
+import { attachEditorGit, type EditorGit } from './editor-git';
+import { attachConflictLens, type ConflictLens } from './merge/code-lens';
+import { addEditorGitKeybindings, editorChordLabels, gitKeyLabels } from './editor-keys';
 
 // One Monaco editor for every text tab: switching tabs swaps the shared model and restores that tab's view state, which the
 // store keeps per tab, so it outlives this editor while another kind of tab shows.
-const props = defineProps<{ api: DamoclesShellApi; tab: ShellEditorTab; menuShortcuts: Readonly<Record<EditorMenuShortcut, string>> }>();
-const { t } = useI18n();
+const props = defineProps<{ api: DamoclesShellApi; tab: ShellEditorTab; menuShortcuts: Readonly<Record<EditorMenuShortcut, string>>; platform: ShellPlatform }>();
+const { t, locale } = useI18n();
 const store = inject(EDITOR_STORE)!;
+const scm = inject(SCM_STORE)!;
+const appContext = getCurrentInstance()?.appContext ?? null;
+let git: EditorGit | undefined;
+let lens: ConflictLens | undefined;
+let stopCommands: (() => void) | undefined;
+// the quick diff's marks as start-end pairs, staged ones suffixed s: the editor element's data-quick-diff
+const quickDiffMarks = ref('');
+// reading until the base read answers, then none or ready; with inline blame, what e2e tests wait on instead of a sleep
+const quickDiffState = ref<'reading' | 'none' | 'ready'>('none');
+const inlineBlame = ref<'on' | 'off'>('off');
+// The kinds whose buffer the user edits as a file: inline conflict lenses show there.
+const LENS_KINDS: ReadonlySet<ShellEditorTab['kind']> = new Set(['code', 'untitled']);
 
 // ms between selection reports while the caret moves; the IDE context needs the settled selection, not every step.
 const SELECTION_THROTTLE_MS = 150;
@@ -124,7 +140,21 @@ async function show(tab: ShellEditorTab): Promise<void> {
   const request = store.takeReveal(tab.id);
   if (request !== undefined) reveal(request);
   reportSelection();
+  bindGit(tab, model);
   if (store.takeFocus(tab.id)) current.focus();
+}
+
+function bindGit(tab: ShellEditorTab, model: MonacoEditor.ITextModel | null): void {
+  git?.bind(tab, model);
+  lens?.setEnabled(LENS_KINDS.has(tab.kind) && !tab.readOnly);
+  stopCommands?.();
+  stopCommands = store.setCommandTarget(tab.id, async (command) => {
+    if (command === 'acceptCurrent' || command === 'acceptIncoming' || command === 'acceptBoth' || command === 'acceptAllCurrent' || command === 'acceptAllIncoming' || command === 'nextConflict' || command === 'previousConflict') {
+      lens?.run(command);
+      return;
+    }
+    await git?.run(command);
+  });
 }
 
 // The store moved the shown document's model to its new URI: the editor shows the new model where the reader was.
@@ -136,6 +166,7 @@ function takeModel(previous: MonacoEditor.ITextModel, next: MonacoEditor.ITextMo
   current.setModel(next);
   if (viewState) current.restoreViewState(viewState);
   if (props.tab.kind === 'log') modelListener = next.onDidChangeContent(followEnd);
+  bindGit(props.tab, next);
 }
 
 onMounted(async () => {
@@ -170,10 +201,32 @@ onMounted(async () => {
     }),
     { dispose: store.onDidReplaceModel((_documentId, previous, next) => takeModel(previous, next)) },
   );
+  git = attachEditorGit(created, monaco, {
+    api: props.api,
+    scm,
+    t: (key, named) => (named ? t(key, named) : t(key)),
+    locale: () => locale.value,
+    appContext,
+    flush: (documentId) => store.flush(documentId),
+    shortcuts: () => editorChordLabels(props.platform),
+    onQuickDiff: (marks, status) => {
+      quickDiffMarks.value = marks.map(({ change, staged }) => `${change.modifiedStartLineNumber}-${change.modifiedEndLineNumber}${staged ? 's' : ''}`).join(',');
+      quickDiffState.value = status;
+    },
+    onBlameEnabled: (enabled) => {
+      inlineBlame.value = enabled ? 'on' : 'off';
+    },
+  });
+  lens = attachConflictLens(created, monaco, { t: (key, named) => (named ? t(key, named) : t(key)), appContext, sideTints: true });
+  disposables.push(git, lens, addEditorGitKeybindings(created, monaco, gitKeyLabels(t), (command) => void store.runCommand(command)));
   await show(props.tab);
 });
 
 watch(() => [props.tab.id, props.tab.documentId, props.tab.readOnly] as const, () => void show(props.tab));
+// main gives or drops the tab's git resource as repositories open, close or trust changes
+watch(() => [props.tab.git?.repoId, props.tab.git?.path] as const, () => {
+  if (shownTabId.value === props.tab.id) bindGit(props.tab, editor.value?.getModel() ?? null);
+});
 watch(() => store.settings.value, (settings) => editor.value?.updateOptions(optionsFrom(settings)), { deep: true });
 watch(store.revealRequest, () => {
   if (shownTabId.value !== props.tab.id) return;
@@ -189,12 +242,13 @@ onBeforeUnmount(() => {
   if (editor.value && shownTabId.value !== null) store.rememberViewState(shownTabId.value, editor.value.saveViewState());
   clearTimeout(selectionTimer);
   modelListener?.dispose();
+  stopCommands?.();
   // The editor goes before the models it showed, which the store keeps and disposes.
   for (const disposable of disposables) disposable.dispose();
   disposables.length = 0;
 });
 
-defineExpose({ focus: () => editor.value?.focus(), isLog, editor, shownTabId });
+defineExpose({ focus: () => editor.value?.focus(), isLog, editor, shownTabId, gitState: () => git?.state() ?? null });
 </script>
 
 <template>
@@ -203,6 +257,9 @@ defineExpose({ focus: () => editor.value?.focus(), isLog, editor, shownTabId });
     data-testid="code-editor"
     :data-monaco-ready="shownTabId === tab.id ? 'true' : undefined"
     :data-document-id="tab.documentId"
+    :data-quick-diff="quickDiffMarks"
+    :data-quick-diff-state="quickDiffState"
+    :data-inline-blame="inlineBlame"
     class="absolute inset-0"
   />
 </template>

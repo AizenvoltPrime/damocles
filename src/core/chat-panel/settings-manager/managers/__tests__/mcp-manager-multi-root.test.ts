@@ -524,3 +524,42 @@ describe("keys and edge cases", () => {
     }
   });
 });
+
+describe("a worktree chat's working folder overriding its own config's enabled:false", () => {
+  const worktreeDir = path.join(tmpRoot, "w");
+  const W: FolderTarget = { ...folderTarget(worktreeDir), ownerKey: A.key };
+  const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 20));
+
+  beforeEach(() => fs.rmSync(worktreeDir, { recursive: true, force: true }));
+
+  it("keeps the enable while the project's config allows the server, and while no chat holds the working folder", async () => {
+    writeMcpJson(worktreeDir, { alpha: { command: "a-alpha", enabled: false } });
+    let folders: FolderTarget[] = [A, W];
+    const manager = await loaded(memento(), () => folders);
+    expect(enabledConfigs(manager, W.key).folder).not.toHaveProperty("alpha");
+
+    await manager.setServerEnabled(W.key, "alpha", true);
+    await manager.loadConfig();
+    await settle();
+    folders = [A];
+    await manager.loadConfig();
+    await settle();
+    folders = [A, W];
+    await manager.loadConfig();
+
+    expect(enabledConfigs(manager, W.key).folder).toHaveProperty("alpha");
+    expect(enabledConfigs(manager, A.key).folder).toHaveProperty("alpha");
+  });
+
+  it("lets an enable made in the project reach its worktree chats whose config also turns the server off", async () => {
+    writeMcpJson(folderA, { alpha: { command: "a-alpha", enabled: false } });
+    writeMcpJson(worktreeDir, { alpha: { command: "a-alpha", enabled: false } });
+    const manager = await loaded(memento(), () => [A, W]);
+
+    await manager.setServerEnabled(A.key, "alpha", true);
+    await manager.loadConfig();
+
+    expect(enabledConfigs(manager, A.key).folder).toHaveProperty("alpha");
+    expect(enabledConfigs(manager, W.key).folder).toHaveProperty("alpha");
+  });
+});

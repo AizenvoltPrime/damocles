@@ -6,6 +6,7 @@ import type { AgentUsageTotals } from '@shared/usage-accounting';
 import type { EffortBadgeLevel } from '@shared/effort-badge';
 import type { HistoryAgentMessage, HistoryToolCall, ContentBlock, ImageBlock, ToolUseBlock, TextBlock, ThinkingBlock } from '@shared/types/content';
 import { replacesToolStatus, resolveCancelledStatus, TERMINAL_TOOL_STATUSES } from './tool-cancelled-status';
+import { extractDenialFeedback, refusedStatus } from '@/composables/message-handler/utils';
 
 export interface StreamingSubagentMessage {
   sdkMessageId: string;
@@ -101,13 +102,15 @@ function buildChatMessagesFromHistory(
         const result = existing?.result ?? block.result;
         const imageCount = existing?.result !== undefined ? existing.imageCount : block.imageCount;
         const errorMessage = existing?.errorMessage ?? (block.isError ? block.result : undefined);
+        const denial = block.isError && block.result !== undefined ? extractDenialFeedback(block.result) : undefined;
         // Both callers hand this a transcript whose run is over, so a block with no recorded result
         // never reached an outcome and a tracked pre-terminal status would spin for the session's life.
         const recorded: ToolCall['status'] = block.abandoned
           ? 'abandoned'
           : block.isError
-            ? 'failed'
+            ? denial !== undefined ? refusedStatus(denial) : 'failed'
             : block.result === undefined ? 'unrecorded' : 'completed';
+        const feedback = denial?.text;
         const tracked = existing?.status;
         const status = resolveCancelledStatus(
           tracked !== undefined && TERMINAL_TOOL_STATUSES.has(tracked) ? tracked : recorded,
@@ -125,6 +128,7 @@ function buildChatMessagesFromHistory(
           ...(imageCount !== undefined && { imageCount }),
           ...(block.metadata !== undefined && { metadata: block.metadata }),
           ...(block.durationMs !== undefined && { durationMs: block.durationMs }),
+          ...(feedback !== undefined && { feedback }),
         });
       }
     }
@@ -498,7 +502,8 @@ export const useSubagentStore = defineStore('subagent', () => {
     errorMessage?: string,
     durationMs?: number,
     imageCount?: number,
-    abandonReason?: ToolAbandonReason
+    abandonReason?: ToolAbandonReason,
+    feedback?: string
   ): boolean {
     // Live output is view state for a running call, so the keys are dropped rather than set to
     // undefined, which exactOptionalPropertyTypes rejects.
@@ -514,6 +519,7 @@ export const useSubagentStore = defineStore('subagent', () => {
         ...(durationMs !== undefined && { durationMs }),
         ...(imageCount !== undefined && { imageCount }),
         ...(abandonReason !== undefined && { abandonReason }),
+        ...(feedback !== undefined && { feedback }),
       };
     };
 

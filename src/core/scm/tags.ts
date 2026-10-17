@@ -4,9 +4,9 @@ import { endOfOptions, isSafeRevision, revision, type GitVersion } from './git-r
 import { isObjectName } from './artifacts';
 import { remoteArg } from './sync';
 
-/** A lightweight tag at HEAD, or with a message an annotated one (`-a -F -`, the message on stdin). */
-export function createTagArgs(name: string, annotated: boolean, version: GitVersion): string[] {
-  return ['tag', ...(annotated ? ['-a', '-F', '-'] : []), ...endOfOptions(version), revision(name)];
+/** A lightweight tag at HEAD or at commit, or with a message an annotated one (`-a -F -`, the message on stdin). */
+export function createTagArgs(name: string, annotated: boolean, version: GitVersion, commit?: string): string[] {
+  return ['tag', ...(annotated ? ['-a', '-F', '-'] : []), ...endOfOptions(version), revision(name), ...(commit !== undefined ? [revision(commit)] : [])];
 }
 
 export function deleteTagArgs(name: string, version: GitVersion): string[] {

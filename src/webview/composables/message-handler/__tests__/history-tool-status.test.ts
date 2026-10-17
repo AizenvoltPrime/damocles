@@ -69,10 +69,13 @@ describe('convertHistoryTools', () => {
     expect(call.feedback).toBe('not that file');
   });
 
-  it('restores an automatic policy block as denied too', () => {
+  // Rule 10: a policy block is never shown as the user's rejection.
+  it('restores an automatic policy block as blocked, with its reason', () => {
     const result = `This tool call was blocked automatically and the user was not consulted. ${POLICY_BLOCK_MARKER} Plan mode is active.`;
+    const call = convert({ ...CALL, result, isError: true });
 
-    expect(convert({ ...CALL, result, isError: true }).status).toBe('denied');
+    expect(call.status).toBe('blocked');
+    expect(call.feedback).toBe('Plan mode is active.');
   });
 
   it('keeps a feedback string the transcript already carried', () => {

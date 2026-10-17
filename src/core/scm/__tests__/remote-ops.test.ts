@@ -123,6 +123,14 @@ describe('a remote operation whose pull kept the stash', () => {
   });
 });
 
+describe('git\'s words in a notice', () => {
+  it('shows every control, bidi and invisible character of git\'s error as an escape, and no URL userinfo', () => {
+    const refused = new GitError('git push exited with 128', 128, '', "hint: retry\nfatal: 'fe\u200Fat\u202E\u061C\u{E0041}' rejected by https://ada:tok@example.com/a.git\n");
+    expect(gitErrorText(refused)).toBe("fatal: 'fe\\u{200F}at\\u{202E}\\u{61C}\\u{E0041}' rejected by https://example.com/a.git");
+    expect(gitErrorText(new Error('first\r\nsecond\u2066'))).toBe('first\nsecond\\u{2066}');
+  });
+});
+
 describe('autofetch', () => {
   function fetcher(targets: () => AutofetchTarget[], enabled = true) {
     const log: string[] = [];

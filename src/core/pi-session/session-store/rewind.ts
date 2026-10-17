@@ -1,6 +1,9 @@
+import { createHash } from 'crypto';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
+import { DAMOCLES_WORKTREE_ENTRY } from './constants';
+import { worktreeFolderOf } from '../../worktrees/personal-config';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import type { RestorePoint, RewindHistoryItem, SkippedFile, SkippedFilesTarget, SkippedSummary } from '@shared/types/session';
 import type { CheckpointEntry, FileChange, Result } from '../checkpoints';
@@ -25,9 +28,10 @@ import {
   lstatFiles,
   readSkippedManifest,
 } from '../checkpoints';
+import { exec, ExecOutputTooLargeError } from '../checkpoints/exec';
 import { gitExecutable } from '../../git-executable';
+import { EDITOR_MAX_DOCUMENT_BYTES } from '../../../shared/types/messages';
 import { log } from '../../logger';
-import { ensurePiSessionDir } from './session-dir';
 import { resolvePiSessionFile } from './reading';
 import { extractOriginalInputs } from './original-input';
 import { extractTerminalAttachmentCounts } from './terminal-attachments';
@@ -218,6 +222,57 @@ export function mergeRewindAnchorsNewestFirst(
 }
 
 /**
+ * D61: a turn before the latest hand-off made its files in the other folder, so a rewind to it restores the conversation
+ * only. A hand-off is a worktree entry whose place differs from the one before it.
+ */
+export function markHandOffs(items: RewindHistoryItem[], entries: readonly unknown[], cwd?: string): RewindHistoryItem[] {
+  let place: string | undefined;
+  let conversationSeen = false;
+  let handOffIndex = -1;
+  // Where the chat worked from each entry index on, for the files of the turns it made there.
+  const segments: Array<{ readonly from: number; readonly folder: string | undefined }> = [];
+  const order = new Map<string, number>();
+  entries.forEach((entry, index) => {
+    const e = entry as { id?: unknown; type?: unknown; customType?: unknown; data?: { place?: unknown; projectPath?: unknown; worktreeId?: unknown } };
+    if (typeof e.id === 'string') order.set(e.id, index);
+    if (e.type === 'message') conversationSeen = true;
+    if (e.type !== 'custom' || e.customType !== DAMOCLES_WORKTREE_ENTRY || typeof e.data?.place !== 'string') return;
+    // A chat that talked before its first entry began in its project folder.
+    if (segments.length === 0 && conversationSeen) segments.push({ from: 0, folder: stringOr(e.data.projectPath) });
+    const before = place ?? (conversationSeen ? 'project' : undefined);
+    if (before !== undefined && before !== e.data.place) handOffIndex = index;
+    place = e.data.place;
+    segments.push({ from: index, folder: e.data.place === 'project' ? stringOr(e.data.projectPath) : worktreeFolderOf(stringOr(e.data.worktreeId)) });
+  });
+  if (handOffIndex < 0) return items;
+  const folderAt = (index: number): string | undefined => [...segments].reverse().find((segment) => segment.from <= index)?.folder;
+  return items.map((item) => {
+    const index = order.get(item.messageId) ?? Infinity;
+    if (index >= handOffIndex) return item;
+    const folder = folderAt(index);
+    const files = item.files && cwd !== undefined && folder !== undefined
+      ? item.files.map((file) => ({ ...file, path: rebase(file.path, cwd, folder) }))
+      : item.files;
+    return { ...item, crossesHandOff: true, ...(files ? { files } : {}) };
+  });
+}
+
+function stringOr(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+// A turn before a hand-off made its files in the folder it worked in then; its paths are shown there.
+function rebase(file: string, from: string, to: string): string {
+  const rel = path.relative(from, file);
+  return rel.startsWith('..') || path.isAbsolute(rel) ? file : path.join(to, rel);
+}
+
+/** Whether the turn `messageId` came before the chat's latest hand-off, so its files are in the other folder (D61). */
+export function precedesHandOff(entries: readonly unknown[], messageId: string): boolean {
+  return markHandOffs([{ messageId } as RewindHistoryItem], entries)[0]?.crossesHandOff === true;
+}
+
+/**
  * Rewind history for a resumed pi session (US-013c): a `RewindHistoryItem` per checkpoint AND per
  * compaction point, newest first. Prompt items carry file-change counts from each checkpoint's
  * `fileChanges` (paths cwd-joined so the diff viewer can fetch before/after content). Compaction items
@@ -238,14 +293,14 @@ export async function getPiRewindHistory(
   const filePath = await resolvePiSessionFile(cwd, sessionId);
   if (!filePath) return none;
   try {
-    const sm = pi.SessionManager.open(filePath, ensurePiSessionDir(cwd));
+    const sm = pi.SessionManager.open(filePath, path.dirname(filePath));
     const branch = sm.getBranch(sm.getLeafId() ?? undefined);
     const checkpoints = [...getCheckpointEntries(branch)];
     // A turn's recorded prompt is pi's expanded slash-command body; show the original typed input when
     // a sidecar recorded it, so the rewind list matches the transcript/up-arrow/preview.
     const originalInputs = extractOriginalInputs(branch);
     const typedText = typedTextOf(branch);
-    if (!fileCheckpoints) return { items: conversationOnlyRewindItems(branch, originalInputs, typedText), restorePoints: [] };
+    if (!fileCheckpoints) return { items: markHandOffs(conversationOnlyRewindItems(branch, originalInputs, typedText), sm.getEntries(), cwd), restorePoints: [] };
     // A checkpoint whose userEntryId matches a compaction entry is a compaction snapshot, not a prompt
     // turn: it must enrich the compaction anchor (below) instead of leaking a phantom empty-prompt row.
     const compactionIds = new Set<string>();
@@ -310,7 +365,7 @@ export async function getPiRewindHistory(
       [...promptItemsOldestFirst.reverse(), ...notRewindableItems],
       getCompactionRewindItems(branch, cwd, checkpointDiffsMap),
     );
-    return { items, restorePoints };
+    return { items: markHandOffs(items, sm.getEntries(), cwd), restorePoints };
   } catch (err) {
     log('[session-store] getPiRewindHistory failed for %s: %O', sessionId, err);
     return none;
@@ -357,7 +412,7 @@ function userEntryText(branch: readonly unknown[], id: string): string {
 }
 
 /** The repo dir holding a checkpoint's commits: the legacy per-session repo for v2, the folder repo for v3. */
-function repoDirOf(entry: CheckpointEntry, sessionFile: string): string {
+export function repoDirOf(entry: CheckpointEntry, sessionFile: string): string {
   return entry.v === 3 ? getFolderRepoDir(entry.folderId) : getRepoDir(sessionFile);
 }
 
@@ -405,23 +460,44 @@ export async function getPiFileCheckpointContent(
   const sessionFile = await resolvePiSessionFile(cwd, sessionId);
   if (!sessionFile) return null;
   try {
-    const sm = pi.SessionManager.open(sessionFile, ensurePiSessionDir(cwd));
+    const sm = pi.SessionManager.open(sessionFile, path.dirname(sessionFile));
     const branch = sm.getBranch(sm.getLeafId() ?? undefined);
     const cp = [...getCheckpointEntries(branch)].reverse().find((c) => c.userEntryId === userMessageId);
-    if (!cp || !isHexCommit(cp.beforeCommit)) return null;
-    const gitDir = getGitDir(repoDirOf(cp, sessionFile));
-    const rel = path.relative(cwd, filePath).replace(/\\/g, '/');
-    const result = await execSafe(gitExecutable, [...PORTABLE_CONFIG, `--git-dir=${gitDir}`, 'show', `${cp.beforeCommit}:${rel}`]);
-    if (result.ok) {
-      // A NUL byte means binary content — the text diff viewer would render mojibake, so return null
-      // and let the caller just open the live file instead of diffing.
-      return result.value.stdout.includes('\0') ? null : result.value.stdout;
-    }
-    if (GIT_PATH_ABSENT.test(result.error)) return '';
-    log('[session-store] getPiFileCheckpointContent git show failed for %s: %s', rel, result.error);
-    return null;
+    if (!cp) return null;
+    const read = await checkpointCommitFile(repoDirOf(cp, sessionFile), cp.beforeCommit, path.relative(cwd, filePath).replace(/\\/g, '/'));
+    // binary content would render as mojibake in the text diff viewer, so the caller opens the live file instead
+    return read.kind === 'text' ? read.text : read.kind === 'absent' ? '' : null;
   } catch {
     return null;
+  }
+}
+
+// git's binary test (`buffer_is_binary`): a NUL among the first 8000 bytes.
+const BINARY_PROBE_LENGTH = 8000;
+
+/**
+ * A file in a checkpoint commit: its text, absent from the commit, binary (a NUL among its first 8000 bytes; digest: sha1 of
+ * its bytes), past EDITOR_MAX_DOCUMENT_BYTES, which neither the review nor the rewind diff shows, or unavailable (the commit
+ * is gone or git failed).
+ */
+export type CheckpointFileRead = { kind: 'text'; text: string } | { kind: 'absent' } | { kind: 'binary'; digest: string } | { kind: 'tooLarge' } | { kind: 'unavailable' };
+
+/**
+ * `git show <commit>:<relativePath>` from a checkpoint repo; relativePath is '/' separated, relative to the folder the repo
+ * snapshots. absent only when git says the path is not in the commit (the file did not exist then).
+ */
+export async function checkpointCommitFile(repoDir: string, commit: string, relativePath: string): Promise<CheckpointFileRead> {
+  if (!isHexCommit(commit)) return { kind: 'unavailable' };
+  try {
+    const { bytes } = await exec(gitExecutable, [...PORTABLE_CONFIG, `--git-dir=${getGitDir(repoDir)}`, 'show', `${commit}:${relativePath}`], undefined, undefined, undefined, undefined, undefined, EDITOR_MAX_DOCUMENT_BYTES);
+    if (bytes.subarray(0, BINARY_PROBE_LENGTH).includes(0)) return { kind: 'binary', digest: createHash('sha1').update(bytes).digest('hex') };
+    return { kind: 'text', text: bytes.toString('utf8') };
+  } catch (err) {
+    if (err instanceof ExecOutputTooLargeError) return { kind: 'tooLarge' };
+    const message = err instanceof Error ? err.message : String(err);
+    if (GIT_PATH_ABSENT.test(message)) return { kind: 'absent' };
+    log('[session-store] reading %s from checkpoint %s failed: %s', relativePath, commit, message);
+    return { kind: 'unavailable' };
   }
 }
 
@@ -436,7 +512,7 @@ export async function getPiSkippedFiles(cwd: string, sessionId: string, target: 
   const sessionFile = await resolvePiSessionFile(cwd, sessionId);
   if (!sessionFile) return { ok: false, error: `no session file for ${sessionId}` };
   try {
-    const sm = pi.SessionManager.open(sessionFile, ensurePiSessionDir(cwd));
+    const sm = pi.SessionManager.open(sessionFile, path.dirname(sessionFile));
     if (target.kind === 'restore-point') {
       const record = getPreRewindEntries(sm.getEntries()).find((r) => r.id === target.id);
       return record ? await readSkippedManifest(record, cwd) : { ok: false, error: `no restore point ${target.id}` };

@@ -37,7 +37,11 @@ const MAX_CONTEXT_FILE_BYTES = 1024 * 1024;
  * constant freezes the real `os.homedir()` at import time.
  */
 export function resolveGlobalContextFile(homeDir: string): { path: string; content: string } | undefined {
-  const dir = path.join(homeDir, '.damocles');
+  return contextFileIn(path.join(homeDir, '.damocles'));
+}
+
+/** The first of pi's candidates that is a readable regular file in `dir`, within the size limit. */
+function contextFileIn(dir: string): { path: string; content: string } | undefined {
   for (const filename of CONTEXT_FILE_CANDIDATES) {
     const filePath = path.join(dir, filename);
     try {
@@ -56,6 +60,30 @@ export function resolveGlobalContextFile(homeDir: string): { path: string; conte
     }
   }
   return undefined;
+}
+
+/**
+ * Slice 12a rule 21: a chat worktree reads as if it sat where its project does. pi's walk inside the worktree stays; above it,
+ * the project's repository root's ancestors replace the worktree's own (`~/.damocles/worktrees/...`), root first, and
+ * `~/.damocles` is never read as an ancestor (its file is the global slot).
+ */
+function worktreeWalk(
+  base: Array<{ path: string; content: string }>,
+  worktree: { worktreeRoot: string; repositoryRoot: string },
+  homeDir: string,
+  agentDir: string,
+): Array<{ path: string; content: string }> {
+  const damoclesHome = path.join(homeDir, '.damocles');
+  const ancestors: Array<{ path: string; content: string }> = [];
+  for (let dir = path.dirname(path.resolve(worktree.repositoryRoot)); ; dir = path.dirname(dir)) {
+    if (!isUnder(dir, damoclesHome)) {
+      const file = contextFileIn(dir);
+      if (file) ancestors.unshift(file);
+    }
+    if (path.dirname(dir) === dir) break;
+  }
+  const inside = base.filter((entry) => isUnder(entry.path, worktree.worktreeRoot) || isUnder(entry.path, agentDir));
+  return [...base.filter((entry) => isUnder(entry.path, agentDir)), ...ancestors, ...inside.filter((entry) => !isUnder(entry.path, agentDir))];
 }
 
 /** Whether `p` is `dir` itself or lies beneath it, so a sibling like `agentX` is not caught. */
@@ -77,10 +105,11 @@ function isUnder(p: string, dir: string): boolean {
  * because granting trust re-runs the override without a window reload.
  */
 export function overrideGlobalContextFile(
-  base: Array<{ path: string; content: string }>,
-  opts: { agentDir: string; homeDir: string; trusted: boolean },
+  input: Array<{ path: string; content: string }>,
+  opts: { agentDir: string; homeDir: string; trusted: boolean; worktree?: { worktreeRoot: string; repositoryRoot: string } },
 ): Array<{ path: string; content: string }> {
   const global = resolveGlobalContextFile(opts.homeDir);
+  const base = opts.worktree ? worktreeWalk(input, opts.worktree, opts.homeDir, opts.agentDir) : input;
   if (!opts.trusted) {
     // With no `~/.damocles/` global, pi's `agentDir` file is the only remaining user-authored source.
     return global ? [global] : base.filter((entry) => isUnder(entry.path, opts.agentDir));

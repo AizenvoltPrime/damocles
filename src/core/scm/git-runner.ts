@@ -124,9 +124,12 @@ export class GitUntrustedError extends Error {
 }
 
 export class GitOutputTooLargeError extends Error {
-  constructor() {
-    super('git printed more than the engine reads');
+  readonly maxBytes: number;
+
+  constructor(maxBytes: number) {
+    super(`git printed more than the ${maxBytes} bytes the engine reads`);
     this.name = 'GitOutputTooLargeError';
+    this.maxBytes = maxBytes;
   }
 }
 
@@ -140,17 +143,19 @@ export interface GitCall {
   readonly kind: GitCallKind;
   // output the engine parses runs with LC_ALL=C
   readonly parsed?: boolean;
-  // stdin (a commit message, a pathspec list); never logged
-  readonly input?: string;
-  // stdout beyond this ends a cancellable call with GitOutputTooLargeError; any other call keeps running and drops the rest
+  // stdin (a commit message, a pathspec list, a blob's bytes); never logged
+  readonly input?: string | Buffer;
+  // stdout beyond this rejects the call with GitOutputTooLargeError: a cancellable call is ended, any other runs to its end
   readonly maxOutputBytes?: number;
+  // stdout beyond maxOutputBytes is dropped, the process runs to its end and the result is marked truncated
+  readonly preview?: true;
   // a non-zero exit is an answer, not an error (check-ignore, rev-parse probes)
   readonly allowFailure?: boolean;
   // the call names paths a repository author chose: GIT_LITERAL_PATHSPECS=1, so a name like `a*` or `:(top)` never widens a
   // discard or a stage. Only these calls get it, since hooks inherit the environment and a hook's own globs must keep working.
   readonly literalPathspecs?: true;
-  // streamed stdout, decoded as UTF-8 across chunks; 'stop' ends a cancellable call's process tree and the call resolves
-  // with what was read
+  // streamed stdout, decoded as UTF-8 across chunks and never buffered (the result's stdout is empty, and maxOutputBytes does
+  // not apply); 'stop' ends a cancellable call's process tree and the call resolves
   readonly onData?: (chunk: string) => 'stop' | undefined;
   // Makes the call cancellable: its process tree runs in its own job (a process group on POSIX), and an abort kills the
   // whole tree and rejects with the signal's reason. A write carries one only as a remote operation, whose locks a kill leaves.
@@ -168,6 +173,8 @@ export interface GitCall {
   readonly fencedStash?: true;
   // command-line config passed as GIT_CONFIG_COUNT pairs, which carry a key holding '=' that -c would split
   readonly config?: ReadonlyArray<readonly [key: string, value: string]>;
+  // GIT_INDEX_FILE: a temporary index, so a snapshot of the working tree never touches the repository's real index
+  readonly indexFile?: string;
 }
 
 // A clone: the one git call that runs in no project, so no trust decides it (it runs no code of an existing repository).
@@ -184,6 +191,8 @@ export interface GitResult {
   readonly exitCode: number;
   readonly stdout: Buffer;
   readonly stderr: string;
+  // only a preview call's: stdout holds the first maxOutputBytes of a longer output
+  readonly truncated?: true;
 }
 
 export interface GitLog {
@@ -196,13 +205,15 @@ export interface GitRunnerDeps {
   readonly isTrusted: (project: string) => boolean;
   readonly spawn?: (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
   readonly now?: () => number;
+  // the stdout bound of a call that names none
+  readonly maxOutputBytes?: number;
 }
 
 export interface GitRunner {
   readonly git: GitBinary;
   run(call: GitCall): Promise<GitResult>;
   // the environment a call runs with, which the docs and tests read from here
-  envFor(call: Pick<GitCall, 'kind' | 'parsed' | 'literalPathspecs' | 'ceilingDirectories' | 'localOnly' | 'askpassEnv' | 'config'>): NodeJS.ProcessEnv;
+  envFor(call: Pick<GitCall, 'kind' | 'parsed' | 'literalPathspecs' | 'ceilingDirectories' | 'localOnly' | 'askpassEnv' | 'config' | 'indexFile'>): NodeJS.ProcessEnv;
 }
 
 // The runner the host creates: run, plus clone, which ScmService's trust gate never wraps.
@@ -215,7 +226,7 @@ const MAX_LOGGED_STDERR_CHARS = 2000;
 const INHERITED_PATHSPEC_MODES: ReadonlySet<string> = new Set(['GIT_LITERAL_PATHSPECS', 'GIT_GLOB_PATHSPECS', 'GIT_NOGLOB_PATHSPECS', 'GIT_ICASE_PATHSPECS']);
 
 /** The environment every engine git call runs with: no prompt and no editor; literal pathspecs where it names paths. */
-export function gitEnv(call: Pick<GitCall, 'kind' | 'parsed' | 'literalPathspecs' | 'ceilingDirectories' | 'localOnly' | 'askpassEnv' | 'config'>): NodeJS.ProcessEnv {
+export function gitEnv(call: Pick<GitCall, 'kind' | 'parsed' | 'literalPathspecs' | 'ceilingDirectories' | 'localOnly' | 'askpassEnv' | 'config' | 'indexFile'>): NodeJS.ProcessEnv {
   const env = childEnv();
   // An inherited pathspec mode turns the fence's exclusions into file names or clashes with the literal mode set here; keys
   // match as Windows does.
@@ -230,6 +241,7 @@ export function gitEnv(call: Pick<GitCall, 'kind' | 'parsed' | 'literalPathspecs
     GIT_EDITOR: 'true',
     GIT_MERGE_AUTOEDIT: 'no',
     ...(call.literalPathspecs ? { GIT_LITERAL_PATHSPECS: '1' } : {}),
+    ...(call.indexFile !== undefined ? { GIT_INDEX_FILE: call.indexFile } : {}),
     ...(call.localOnly ? { GIT_ALLOW_PROTOCOL: 'none' } : {}),
     ...configPairs(call.config ?? []),
     ...(call.parsed ? { LC_ALL: 'C' } : {}),
@@ -261,6 +273,7 @@ export function subcommandIndex(args: readonly string[]): number {
 export function createGitRunner(deps: GitRunnerDeps): GitRunner & GitCloner {
   const spawn = deps.spawn ?? ((command, args, options) => nodeSpawn(command, [...args], options));
   const now = deps.now ?? (() => Date.now());
+  const defaultMaxOutput = deps.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
   const execute = (call: Omit<GitCall, 'project'>): Promise<GitResult> =>
     new Promise<GitResult>((resolve, reject) => {
       if (call.signal?.aborted) {
@@ -306,19 +319,23 @@ export function createGitRunner(deps: GitRunnerDeps): GitRunner & GitCloner {
       let tooLarge = false;
       let stopped = false;
       const decoder = call.onData ? new StringDecoder('utf8') : undefined;
-      const max = call.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+      const max = call.maxOutputBytes ?? defaultMaxOutput;
       child.stdout!.on('data', (chunk: Buffer) => {
         if (tooLarge || stopped) return;
-        if (decoder && call.onData!(decoder.write(chunk)) === 'stop') {
+        if (decoder) {
+          // a streamed call's stdout goes to onData alone; it bounds what it keeps itself
+          if (call.onData!(decoder.write(chunk)) !== 'stop') return;
           stopped = true;
           end();
           return;
         }
+        const kept = outBytes;
         outBytes += chunk.length;
         if (outBytes > max) {
+          if (call.preview) out.push(chunk.subarray(0, max - kept));
           tooLarge = true;
-          // An index write is never killed: past the bound its output is dropped and it runs to its end.
-          if (cancellable) end();
+          // An index write is never killed: past the bound it runs to its end with its output dropped.
+          if (cancellable && !call.preview) end();
           return;
         }
         out.push(chunk);
@@ -346,21 +363,23 @@ export function createGitRunner(deps: GitRunnerDeps): GitRunner & GitCloner {
           reject(call.signal!.reason);
           return;
         }
-        if (tooLarge && cancellable) {
-          deps.log.appendLine(`> git ${argv} [${ms}ms, output over ${max} bytes]`);
-          reject(new GitOutputTooLargeError());
+        if (tooLarge && !call.preview) {
+          const failed = !cancellable && code !== 0;
+          deps.log.appendLine(`> git ${argv} [${ms}ms]${failed ? ` exit ${code ?? -1}` : ''}, output over ${max} bytes`);
+          if (failed && stderr.trim() !== '') deps.log.appendLine(logText(stderr.trim().slice(0, MAX_LOGGED_STDERR_CHARS)));
+          reject(new GitOutputTooLargeError(max));
           return;
         }
         const exitCode = stopped ? 0 : (code ?? -1);
         const outcome = stopped ? ' stopped' : exitCode === 0 ? '' : ` exit ${exitCode}`;
-        deps.log.appendLine(`> git ${argv} [${ms}ms]${outcome}${tooLarge ? `, output over ${max} bytes dropped` : ''}`);
+        deps.log.appendLine(`> git ${argv} [${ms}ms]${outcome}${tooLarge ? `, output past ${max} bytes not kept` : ''}`);
         if (exitCode !== 0 && stderr.trim() !== '') deps.log.appendLine(logText(stderr.trim().slice(0, MAX_LOGGED_STDERR_CHARS)));
         const stdout = Buffer.concat(out);
         if (exitCode !== 0 && !call.allowFailure) {
           reject(new GitError(`git ${args[subcommandIndex(args)] ?? ''} exited with ${exitCode}`, code, stdout.toString('utf8'), stderr));
           return;
         }
-        resolve({ exitCode, stdout, stderr });
+        resolve({ exitCode, stdout, stderr, ...(tooLarge ? { truncated: true as const } : {}) });
       });
     });
   return {
@@ -378,8 +397,8 @@ export function createGitRunner(deps: GitRunnerDeps): GitRunner & GitCloner {
 }
 
 export class GitQueueDisposedError extends Error {
-  constructor() {
-    super('The repository was closed');
+  constructor(options?: ErrorOptions) {
+    super('The repository was closed', options);
     this.name = 'GitQueueDisposedError';
   }
 }

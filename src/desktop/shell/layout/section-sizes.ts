@@ -3,7 +3,7 @@ import type { SidebarSectionId } from '../../preload/shell-channels';
 export type SizedSection = Exclude<SidebarSectionId, 'chats'>;
 export type SectionSizes = Record<SizedSection, number>;
 
-export const SIZED_SECTIONS: readonly SizedSection[] = ['projects', 'files', 'search', 'repos', 'scm'];
+export const SIZED_SECTIONS: readonly SizedSection[] = ['projects', 'files', 'search', 'repos', 'scm', 'graph'];
 
 export const isSizedSection = (name: SidebarSectionId): name is SizedSection => name !== 'chats';
 

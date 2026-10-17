@@ -5,6 +5,7 @@ import type { ScmDecorations } from '../../preload/scm-channels';
 import type { ShellEditorTab } from '../../preload/shell-channels';
 import ConflictBar from '../editor/ConflictBar.vue';
 import EditorTabs from '../editor/EditorTabs.vue';
+import { tabFileName } from '../editor/editor-place';
 import { createEditorStore, EDITOR_STORE } from '../editor/editor-store';
 import { createScmStore, SCM_STORE } from '../scm/scm-store';
 import { shellI18n } from '../i18n';
@@ -57,6 +58,15 @@ describe('a deleted file\'s tab', () => {
     shellI18n.global.locale.value = 'el';
     const wrapper = await mountTabs([codeTab('a', 'gone.ts', { deleted: true })]);
     expect(wrapper.get('[data-editor-tab]').attributes('title')).toBe('C:\\work\\src\\gone.ts\nΔιαγράφηκε');
+  });
+});
+
+describe('a tab whose path holds a control or bidi character', () => {
+  it('shows the path in its tooltip and the conflict bar\'s name with the character escaped', async () => {
+    const wrapper = await mountTabs([codeTab('a', 'a\\u{202E}b.ts', { displayPath: 'C:\\work\\src\\a\u202Eb.ts' })]);
+    expect(wrapper.get('[data-editor-tab]').attributes('title')).toBe('C:\\work\\src\\a\\u{202E}b.ts');
+    expect(tabFileName({ displayPath: 'C:\\work\\src\\a\u202Eb.ts', title: 'x' })).toBe('a\\u{202E}b.ts');
+    expect(tabFileName({ displayPath: '', title: 'Untitled-1' })).toBe('Untitled-1');
   });
 });
 

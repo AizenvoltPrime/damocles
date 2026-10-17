@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { fitSections, largestSection, moveSash, sashRange, yieldTo, type SectionSizes, type SizedSection, type SplitItem } from '../layout/section-sizes';
 
-const STORED: SectionSizes = { projects: 180, files: 230, search: 260, repos: 220, scm: 300 };
-// Repositories stays collapsed here, so its stored size carries through every result.
+const STORED: SectionSizes = { projects: 180, files: 230, search: 260, repos: 220, scm: 300, graph: 190 };
+// Repositories and Graph stay collapsed here, so their stored sizes carry through every result.
 const ALL: SizedSection[] = ['projects', 'files', 'search', 'scm'];
 const total = (sizes: SectionSizes, names: readonly SizedSection[]): number => names.reduce((sum, name) => sum + sizes[name], 0);
 
@@ -15,7 +15,7 @@ describe('fitSections', () => {
     const open: SizedSection[] = ['projects', 'files', 'scm'];
     const sizes = fitSections(STORED, open, 568, 60);
     // 710 in 568 is a 0.8 scale.
-    expect(sizes).toEqual({ projects: 144, files: 184, search: 260, repos: 220, scm: 240 });
+    expect(sizes).toEqual({ projects: 144, files: 184, search: 260, repos: 220, scm: 240, graph: 190 });
     expect(total(sizes, open)).toBeLessThanOrEqual(568);
   });
 
@@ -27,7 +27,7 @@ describe('fitSections', () => {
   });
 
   it('keeps every open section at the minimum when even the minimums do not fit', () => {
-    expect(fitSections(STORED, ALL, 100, 60)).toEqual({ projects: 60, files: 60, search: 60, repos: 220, scm: 60 });
+    expect(fitSections(STORED, ALL, 100, 60)).toEqual({ projects: 60, files: 60, search: 60, repos: 220, scm: 60, graph: 190 });
   });
 
   it('leaves a section outside the fixed set at its stored size, and raises a stored size below the minimum', () => {
@@ -39,7 +39,7 @@ describe('yieldTo', () => {
   it('keeps the section the user expanded at its size, the others giving way from the bottom up', () => {
     // Search opens at 260 among 144 + 184 + 240 in 568: Source control gives 180 (to 60), then Files 80.
     const current = fitSections(STORED, ['projects', 'files', 'scm'], 568, 60);
-    expect(yieldTo(current, ALL, 568, 60, 'search', 260)).toEqual({ projects: 144, files: 104, search: 260, repos: 220, scm: 60 });
+    expect(yieldTo(current, ALL, 568, 60, 'search', 260)).toEqual({ projects: 144, files: 104, search: 260, repos: 220, scm: 60, graph: 190 });
   });
 
   it('changes nothing else when the new size fits', () => {
@@ -47,7 +47,7 @@ describe('yieldTo', () => {
   });
 
   it('caps the changed section at what the others can give', () => {
-    expect(yieldTo(STORED, ALL, 600, 60, 'projects', 900)).toEqual({ projects: 420, files: 60, search: 60, repos: 220, scm: 60 });
+    expect(yieldTo(STORED, ALL, 600, 60, 'projects', 900)).toEqual({ projects: 420, files: 60, search: 60, repos: 220, scm: 60, graph: 190 });
   });
 
   it('works from the sizes it is given, so the same start at the stored size gives the stored sizes back', () => {

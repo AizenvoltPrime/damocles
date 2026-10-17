@@ -2,6 +2,8 @@ import type { WebviewToExtensionMessage, ExtensionToWebviewMessage } from '@shar
 import type { DamoclesBridge } from '@shared/damocles-bridge';
 
 export interface PlatformBridge {
+  // the page's host, known before the first render: a VS Code webview, a desktop chat page, or the desktop overlay
+  readonly host: 'vscode' | 'desktop' | 'overlay';
   postMessage(message: WebviewToExtensionMessage): void;
   onMessage(handler: (message: ExtensionToWebviewMessage) => void): () => void;
   getState<T>(): T | undefined;
@@ -10,6 +12,7 @@ export interface PlatformBridge {
 
 function vscodeBridge(api: VsCodeApi): PlatformBridge {
   return {
+    host: 'vscode',
     postMessage: (message) => api.postMessage(message),
     onMessage: (handler) => {
       const wrappedHandler = (event: MessageEvent) => {
@@ -25,6 +28,7 @@ function vscodeBridge(api: VsCodeApi): PlatformBridge {
 
 function desktopBridge(bridge: DamoclesBridge): PlatformBridge {
   return {
+    host: 'desktop',
     postMessage: (message) => bridge.postMessage(message),
     onMessage: (handler) => bridge.onMessage((message) => handler(message as ExtensionToWebviewMessage)),
     getState: <T>() => bridge.getState() as T | undefined,

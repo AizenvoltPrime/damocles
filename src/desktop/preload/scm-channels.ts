@@ -3,7 +3,12 @@
 // file only as a repo-relative path, which main validates here and core confines again.
 
 import { isObjectName } from '../../shared/git-object-name';
+import { MAX_ROOT_KEY_LENGTH } from './folder-root';
 import { hasUnsafeWindowsSegment, isRelativeFilePath } from '../../shared/relative-path';
+import type { LineChange } from '../../shared/scm/apply-line-changes';
+import type { StatusLetter, StatusTone } from '../../shared/scm/status-letter';
+
+export type { LineChange } from '../../shared/scm/apply-line-changes';
 
 export const SCM_CHANNELS = {
   // renderer → main, invoke
@@ -28,6 +33,23 @@ export const SCM_CHANNELS = {
   amend: 'damocles:scm:amend',
   // ScmArtifactsRequest → ScmArtifactsResult
   artifacts: 'damocles:scm:artifacts',
+  // Editor git reads, in the repository's read queue; an untrusted project has no repoId, so each answers unknown there
+  // ScmPathRequest → ScmQuickDiffBaseResult
+  quickDiffBase: 'damocles:scm:quick-diff-base',
+  // ScmPathRequest → ScmBlameResult
+  blame: 'damocles:scm:blame',
+  // ScmTimelineRequest → ScmTimelineResult
+  timeline: 'damocles:scm:timeline',
+  // ScmPathRequest → ScmMergeInputsResult
+  mergeInputs: 'damocles:scm:merge-inputs',
+  // ScmMergeFileRequest → ScmMergeFileResult
+  mergeFile: 'damocles:scm:merge-file',
+  // ScmResourceRequest → ScmResource | null: the open repository holding a project file (the deepest), for the Files menu
+  resource: 'damocles:scm:resource',
+  // ScmHistoryRequest → ScmHistoryResult: one page of the Graph
+  history: 'damocles:scm:history',
+  // ScmCommitDetailsRequest → ScmCommitDetailsResult: an expanded Graph commit
+  commitDetails: 'damocles:scm:commitDetails',
   // main → renderer
   // ScmView, for one project, on every change
   view: 'damocles:scm:view',
@@ -49,7 +71,7 @@ export const SCM_CHANNELS = {
 } as const;
 
 // Bounds main checks; anything outside is refused, never clamped.
-export const MAX_SCM_ID_LENGTH = 200;
+export const MAX_SCM_ID_LENGTH: number = MAX_ROOT_KEY_LENGTH;
 export const MAX_SCM_PATHS = 10_000;
 // A commit message's characters; must equal MAX_MESSAGE_CHARS in src/core/scm/repository.ts.
 export const MAX_COMMIT_MESSAGE_CHARS: number = 64 * 1024;
@@ -81,9 +103,8 @@ export const SCM_STATUSES = [
 ] as const;
 export type ScmStatus = (typeof SCM_STATUSES)[number];
 
-// The letter VS Code's resource decoration shows; S marks a submodule, ! a conflict.
-export type ScmLetter = 'M' | 'A' | 'D' | 'R' | 'C' | 'U' | 'T' | '!' | 'S' | 'I';
-export type ScmTone = 'modified' | 'added' | 'deleted' | 'untracked' | 'conflict' | 'renamed' | 'submodule' | 'ignored';
+export type ScmLetter = StatusLetter;
+export type ScmTone = StatusTone;
 
 export const SCM_GROUPS = ['merge', 'index', 'workingTree', 'untracked'] as const;
 export type ScmGroup = (typeof SCM_GROUPS)[number];
@@ -225,11 +246,25 @@ export interface ScmWorktreeArtifact {
   readonly current: boolean;
   readonly locked: boolean;
   readonly prunable: boolean;
-  // what Open does (D58), decided by main: select the project whose folder the worktree holds, or Add as Project
+  // what Open does (D58), decided by main: select the worktree chat's most recently viewed chat, select the project whose
+  // folder the worktree holds, or Add as Project
   readonly opens: ScmWorktreeOpen;
+  // a registered chat worktree (B45): its most recently viewed chat, drawn with the chat icon and its title
+  readonly chat?: ScmWorktreeChat;
+  // a live chat worktree of an open, trusted project: the row's "New chat in this worktree" passes it to the shell's
+  // newChatInWorktree
+  readonly newChatIn?: { readonly projectKey: string; readonly worktreeId: string };
 }
 
-export type ScmWorktreeOpen = 'project' | 'addProject';
+export type ScmWorktreeOpen = 'chat' | 'project' | 'addProject';
+
+export interface ScmWorktreeChat {
+  readonly chatId: string;
+  // '' for a chat with no title yet, which the shell labels itself
+  readonly title: string;
+  // project: the chat was handed back to the project folder and still owns the worktree ("In project folder")
+  readonly place: 'worktree' | 'project';
+}
 
 export type ScmArtifacts =
   | { readonly group: 'branches'; readonly rows: readonly ScmBranchArtifact[] }
@@ -249,7 +284,13 @@ export type ScmArtifactsResult = { readonly ok: true; readonly artifacts: ScmArt
 export interface ScmArtifactsChanged {
   readonly repoId: string;
   readonly groups: readonly ScmArtifactGroup[];
+  // A branch, remote branch or tag changed: engine, by one of the engine's own operations; background, outside them
+  // (autofetch, a terminal, another app), where the refs differ from what the engine last reported. Absent when no ref
+  // changed, which includes the watcher's echo of an engine write (the Graph's reload and Outdated rules).
+  readonly refs?: ScmRefsChange;
 }
+
+export type ScmRefsChange = 'engine' | 'background';
 
 // What the repository's git can do (AD4's version checks)
 export interface ScmCapabilities {
@@ -264,6 +305,8 @@ export interface ScmRepoSummary {
   // project-relative ('' for the project folder itself), or absolute for a parent repository
   readonly displayPath: string;
   readonly kind: ScmRepoKind;
+  // the work tree's absolute path, native separators: the key of what the layout keeps per repository (the Graph's ref choice)
+  readonly root: string;
 }
 
 export interface ScmRepoSnapshot {
@@ -273,7 +316,7 @@ export interface ScmRepoSnapshot {
   // HEAD's commit and its message's first line (the amend banner); null on an unborn branch
   readonly commit: { readonly hash: string; readonly subject: string } | null;
   readonly operation: ScmOperation | null;
-  // MERGE_MSG without its comment lines, while a merge or cherry-pick is in progress: the box's prefill
+  // MERGE_MSG, else SQUASH_MSG, without comment lines, whenever git left one: VS Code's input template before commit.template
   readonly mergeMessage?: string;
   // untracked is non-empty only at untrackedChanges 'separate'; at 'mixed' untracked files sit in workingTree, at 'hidden' nowhere
   readonly groups: { readonly [G in ScmGroup]: readonly ScmChange[] };
@@ -287,6 +330,9 @@ export interface ScmRepoSnapshot {
   readonly remotes: readonly string[];
   readonly running: ScmRemoteOp | null;
   readonly lastRemote: ScmRemoteOutcome | null;
+  // grows with every status that lands, changed or not, so a quick diff recomputes after any index write (an outside
+  // `git add -p` included); a busy flip alone keeps it
+  readonly revision: number;
 }
 
 // loading: the project's discovery runs. noRepository covers closed ones too: closedCount tells the shell which text to show.
@@ -333,6 +379,8 @@ export interface ScmSettings {
   readonly allowNoVerifyCommit: boolean;
   // the force push variants show only while this is on
   readonly allowForcePush: boolean;
+  // damocles.desktop.git.blame.editorDecoration.enabled: the cursor line's inline blame
+  readonly blameEditorDecoration: boolean;
 }
 
 export interface ScmShellState {
@@ -440,14 +488,17 @@ export type ScmRunRequest =
   // cancels the repository's running remote operation, whose run then answers cancelled
   | { readonly op: 'cancel'; readonly repoId: string }
   | { readonly op: 'cancelClone' }
-  // Checkout to..., Checkout to (Detached)...: the branch picker; ref (a full refname from artifacts) skips it
-  | { readonly op: 'checkout'; readonly repoId: string; readonly detached: boolean; readonly ref?: string }
-  // Create Branch... (at HEAD), Create Branch From... (a ref picker unless ref is given)
-  | { readonly op: 'createBranch'; readonly repoId: string; readonly from: boolean; readonly ref?: string }
+  // Checkout to..., Checkout to (Detached)...: the branch picker; ref (a full refname from artifacts) skips it; commit (a full
+  // hash, with detached true and no ref) is the Graph's Checkout (Detached) on a commit
+  | { readonly op: 'checkout'; readonly repoId: string; readonly detached: boolean; readonly ref?: string; readonly commit?: string }
+  // Create Branch... (at HEAD), Create Branch From... (a ref picker unless ref is given); commit (a full hash, with from false
+  // and no ref) is the Graph's Create Branch... at a commit
+  | { readonly op: 'createBranch'; readonly repoId: string; readonly from: boolean; readonly ref?: string; readonly commit?: string }
   | { readonly op: 'renameBranch'; readonly repoId: string }
   // a refs/heads/* ref skips the picker; an unmerged branch asks a danger question, then deletes with -D
   | { readonly op: 'deleteBranch'; readonly repoId: string; readonly ref?: string }
-  | { readonly op: 'deleteRemoteBranch'; readonly repoId: string }
+  // a refs/remotes/* ref (a Graph badge) skips the picker; HEAD's upstream is refused
+  | { readonly op: 'deleteRemoteBranch'; readonly repoId: string; readonly ref?: string }
   | { readonly op: 'merge'; readonly repoId: string; readonly ref?: string }
   | { readonly op: 'rebase'; readonly repoId: string; readonly ref?: string }
   // Stash, Stash (Include Untracked), Stash Staged (refused below git 2.35): save-before-stash, then the message
@@ -461,7 +512,8 @@ export type ScmRunRequest =
   // a danger question, Cancel focused
   | { readonly op: 'stashDropAll'; readonly repoId: string }
   | { readonly op: 'viewStash'; readonly repoId: string; readonly target: 'pick' | ScmStashTarget }
-  | { readonly op: 'createTag'; readonly repoId: string }
+  // at HEAD, or at commit (a full hash) from the Graph
+  | { readonly op: 'createTag'; readonly repoId: string; readonly commit?: string }
   // a refs/tags/* ref skips the picker
   | { readonly op: 'deleteTag'; readonly repoId: string; readonly ref?: string }
   | { readonly op: 'deleteRemoteTag'; readonly repoId: string }
@@ -472,8 +524,72 @@ export type ScmRunRequest =
   // a Repositories branch or tag row's Compare with...: a picker of the other refs, then one multi-file diff tab
   | { readonly op: 'compareRef'; readonly repoId: string; readonly ref: string }
   // a Repositories worktree row's Open (D58): selects the project whose folder it holds, else Add as Project
-  | { readonly op: 'openWorktree'; readonly repoId: string; readonly path: string };
+  | { readonly op: 'openWorktree'; readonly repoId: string; readonly path: string }
+  // B40, a changed file of a chat worktree's repository: one diff tab of the project folder's copy against the worktree's
+  | { readonly op: 'compareWithWorkspace'; readonly repoId: string; readonly path: string }
+  // Stage Hunk, Stage Selected Ranges, Stage Block and Stage Selection: ranges are index (original) → the document's buffer
+  // (modified). The shell sends its pending editor:edit first; main reads the buffer when the request arrives. indexOid is
+  // the quickDiffBase oid the ranges were computed against; a changed index is refused with a notice.
+  | ScmStageRangesRequest
+  // Unstage Selected Ranges: ranges are HEAD (original) → index (modified); core applies them inverted onto the index. HEAD
+  // is read at the file's HEAD path, a staged rename's or copy's source, and headOid is the quickDiffBase oid of that blob
+  // (null when HEAD lacks it); a HEAD that moved is refused like a changed index. documentId names the file's document or a
+  // git side of its open diff tab; the blob keeps the file's open document encoding, else its own.
+  | ScmUnstageRangesRequest
+  // the merge editor's Complete Merge: saves the document, then stages the file with no marker question (the shell asked
+  // Complete with Conflicts first when regions were left)
+  | { readonly op: 'completeMerge'; readonly repoId: string; readonly path: string; readonly documentId: string }
+  // Open Commit: one file (path, at that commit) or, without path, the whole commit as a changes tab, against its first
+  // parent, or the empty tree for a root commit
+  | { readonly op: 'openCommit'; readonly repoId: string; readonly commit: string; readonly path?: string }
+  // a file's Timeline tab
+  | { readonly op: 'openTimeline'; readonly repoId: string; readonly path: string }
+  // a conflicted file's merge editor tab (UU and AA only; another merge row opens the file)
+  | { readonly op: 'openMergeEditor'; readonly repoId: string; readonly path: string }
+  // the timeline's Compare with Selected: one diff tab of two versions of a file, each at its own path then
+  | { readonly op: 'compareCommits'; readonly repoId: string; readonly left: ScmCommitFile; readonly right: ScmCommitFile }
+  // The Graph's commit menu; commit is a full hash main checks is a commit of the repository. Compare with...: a ref picker,
+  // then one multi-file diff tab of the picked ref against the commit
+  | { readonly op: 'compareCommit'; readonly repoId: string; readonly commit: string }
+  // the upstream's tip against the commit; refused without an upstream
+  | { readonly op: 'compareWithRemote'; readonly repoId: string; readonly commit: string }
+  // the base ref's tip against the commit, as VS Code's compareWithMergeBase; refused without a base ref
+  | { readonly op: 'compareWithMergeBase'; readonly repoId: string; readonly commit: string }
+  // Cherry Pick on a commit, or without commit the palette's question for one
+  | { readonly op: 'cherryPick'; readonly repoId: string; readonly commit?: string }
+  // Add to Chat: core reads the commit into a pending attachment of the selected chat; Explain Changes also puts its prompt in
+  // the composer. Neither sends.
+  | { readonly op: 'addCommitToChat'; readonly repoId: string; readonly commit: string }
+  | { readonly op: 'explainCommit'; readonly repoId: string; readonly commit: string }
+  // the Graph's Incoming or Outgoing Changes node: the merge base of HEAD and its upstream against the upstream (incoming) or
+  // HEAD (outgoing), all three resolved by main
+  | { readonly op: 'openGraphChanges'; readonly repoId: string; readonly direction: 'incoming' | 'outgoing' };
 export type ScmOp = ScmRunRequest['op'];
+
+export interface ScmStageRangesRequest {
+  readonly op: 'stageRanges';
+  readonly repoId: string;
+  readonly path: string;
+  readonly documentId: string;
+  readonly ranges: readonly LineChange[];
+  readonly indexOid: string;
+}
+
+export interface ScmUnstageRangesRequest {
+  readonly op: 'unstageRanges';
+  readonly repoId: string;
+  readonly path: string;
+  readonly documentId: string;
+  readonly ranges: readonly LineChange[];
+  readonly indexOid: string;
+  readonly headOid: string | null;
+}
+
+// A file at a commit: the full hash and the repo-relative path it had there.
+export interface ScmCommitFile {
+  readonly commit: string;
+  readonly path: string;
+}
 
 // cancelled: the user said no to a question; failed: main told the user; unknown: the repoId or projectKey is not main's
 export type ScmRunResult = { readonly ok: true } | { readonly ok: false; readonly reason: 'cancelled' | 'failed' | 'unknown' };
@@ -547,7 +663,249 @@ export type ScmFileDiffResult =
   | { readonly kind: 'tooLarge' }
   | { readonly kind: 'missing' };
 
-export const SCM_COPY_KINDS = ['path', 'relativePath', 'branchName', 'stashName', 'tagName', 'commitHash', 'worktreePath'] as const;
+// A repo-relative file of an open repository.
+export interface ScmPathRequest {
+  readonly repoId: string;
+  readonly path: string;
+}
+
+// Why a file gets no quick diff, VS Code's quickDiffProvider.ts cases plus what the editor cannot decode: unknown (no such
+// repoId, which an untrusted project never has), notInRepository (the file belongs to a nested or closed repository, or lies
+// in the git dir).
+export const SCM_QUICK_DIFF_REFUSALS = ['unknown', 'notInRepository', 'symlink', 'untracked', 'ignored', 'merge', 'lfs', 'binary', 'tooLarge', 'encoding'] as const;
+export type ScmQuickDiffRefusal = (typeof SCM_QUICK_DIFF_REFUSALS)[number];
+
+// indexText: the index blob decoded with the file's open document encoding (with none open, the blob's own: its byte order
+// mark, else UTF-8), byte order mark dropped, line breaks as stored.
+// headText: HEAD's blob at the file's HEAD path (a staged rename's or copy's source) decoded the same way, only while the file
+// has staged changes (VS Code's secondary diff), null when HEAD lacks the file. indexOid and headOid: the blobs the ranges of
+// stageRanges and unstageRanges are computed against.
+export type ScmQuickDiffBaseResult =
+  | { readonly ok: true; readonly indexText: string; readonly indexOid: string; readonly headText: string | null; readonly headOid: string | null; readonly hasStaged: boolean }
+  | { readonly ok: false; readonly reason: ScmQuickDiffRefusal };
+
+// One commit of a blame; times in ms since the epoch.
+export interface ScmBlameCommit {
+  readonly hash: string;
+  readonly author: string;
+  readonly authorEmail: string;
+  readonly authorTime: number;
+  readonly committerTime: number;
+  readonly summary: string;
+}
+
+// head: the commit blamed; lines[i] indexes commits for HEAD's line i + 1. notCommitted: HEAD is unborn or lacks the file.
+// binary: git calls the blob binary, or it is UTF-16, whose lines git does not split where the editor does.
+export type ScmBlameResult =
+  | { readonly ok: true; readonly head: string; readonly commits: readonly ScmBlameCommit[]; readonly lines: readonly number[] }
+  | { readonly ok: false; readonly reason: 'unknown' | 'notCommitted' | 'tooLarge' | 'binary' | 'failed' };
+
+// Entries of one timeline page (VS Code's timeline pageSize).
+export const SCM_TIMELINE_PAGE = 50;
+// A cursor is main's text "<hash>:<path>", the last entry listed and the file's path at it; longer is refused.
+export const MAX_SCM_CURSOR_LENGTH: number = 64 + 1 + 4096;
+
+export interface ScmTimelineRequest {
+  readonly repoId: string;
+  readonly path: string;
+  // the previous page's cursor, for Load more, passed back verbatim
+  readonly cursor?: string;
+}
+
+// One commit that touched the file (log --follow), newest first. path: the file's repo-relative path at that commit.
+export interface ScmTimelineEntry {
+  readonly hash: string;
+  readonly parents: readonly string[];
+  readonly subject: string;
+  // the full message, cut at MAX_COMMIT_MESSAGE_CHARS
+  readonly message: string;
+  readonly author: string;
+  readonly email: string;
+  // ms since the epoch
+  readonly committerDate: number;
+  readonly path: string;
+}
+
+// cursor: present while more entries follow. committed: false when no commit touched the file ("This file is not committed
+// yet."). hasStaged: the file is in the index group, so a Staged Changes entry leads.
+export type ScmTimelineResult =
+  | { readonly ok: true; readonly entries: readonly ScmTimelineEntry[]; readonly cursor?: string; readonly hasStaged: boolean; readonly committed: boolean }
+  | { readonly ok: false; readonly reason: 'unknown' | 'failed' };
+
+// The Graph (plan slice 13). A page holds SCM_HISTORY_PAGE commits (VS Code's scm.graph.pageSize default); an explicit ref
+// choice names at most MAX_SCM_HISTORY_REFS full refnames under refs/heads/, refs/remotes/ or refs/tags/.
+export const SCM_HISTORY_PAGE = 50;
+export const MAX_SCM_HISTORY_REFS = 50;
+// The distinct commits a load's refs resolve to, which its cursor carries; a load past it answers failed.
+export const MAX_SCM_HISTORY_TIPS = 100_000;
+// Commits a cursor may skip.
+export const MAX_SCM_HISTORY_SKIP = 10_000_000;
+// A commit's files the details list; stat counts them all.
+export const MAX_SCM_COMMIT_FILES = 10_000;
+
+// auto: HEAD's branch, its upstream and its base ref (HEAD's commit alone when detached); all: every local branch, remote
+// branch and tag; else the refs picked, of which those that no longer exist drop out, and none left reads as auto.
+export type ScmHistoryRefs = 'auto' | 'all' | readonly string[];
+
+export interface ScmHistoryRequest {
+  readonly repoId: string;
+  readonly refs: ScmHistoryRefs;
+  // the previous page's cursor, passed back verbatim; it carries the load's resolved commits, so every page reads one snapshot
+  readonly cursor?: string;
+}
+
+// head: the detached HEAD marker; base: the base ref (always a remote branch)
+export type ScmHistoryRefKind = 'head' | 'branch' | 'remote' | 'tag' | 'base';
+
+// One badge of a commit, from git's decorations.
+export interface ScmHistoryRef {
+  // the full refname, or 'HEAD' for a detached HEAD
+  readonly id: string;
+  // the short name shown: 'main', 'origin/main', 'v1.0', 'HEAD'
+  readonly name: string;
+  readonly kind: ScmHistoryRefKind;
+  // HEAD's branch, or the detached HEAD
+  readonly current: boolean;
+}
+
+export interface ScmHistoryCommit {
+  // the full object name, 40 or 64 hex
+  readonly hash: string;
+  // full hashes, first parent first; a shallow clone's boundary commit has none
+  readonly parents: readonly string[];
+  // as git prints them; the shell shows them through visibleText
+  readonly author: string;
+  readonly email: string;
+  // ms since the epoch
+  readonly authorDate: number;
+  readonly subject: string;
+  readonly refs: readonly ScmHistoryRef[];
+}
+
+export interface ScmHistoryHeadRef {
+  // a full refname, or 'HEAD' for a detached HEAD
+  readonly id: string;
+  // the short name shown ('main', 'origin/main', or the short hash of a detached HEAD)
+  readonly name: string;
+  // the commit it resolved to for this load
+  readonly revision: string;
+}
+
+// HEAD, its upstream and its base ref as this load read them; base only when it differs from the upstream, neither on a
+// detached HEAD.
+export interface ScmHistoryHeadRefs {
+  readonly head: ScmHistoryHeadRef;
+  readonly upstream?: ScmHistoryHeadRef;
+  readonly base?: ScmHistoryHeadRef;
+}
+
+// What a load (a request with no cursor) read once, for every page of it.
+export interface ScmHistoryLoad {
+  readonly headRefs: ScmHistoryHeadRefs;
+  // merge-base of HEAD and its upstream; absent without an upstream or with no common commit (unrelated, shallow)
+  readonly mergeBase?: string;
+  // rev-list --left-right --count HEAD...upstream: commits only HEAD has, and only the upstream has; 0 without an upstream
+  readonly ahead: number;
+  readonly behind: number;
+  // the refnames the choice resolved to ('HEAD' for a detached HEAD under auto); what the shell persists as the choice
+  readonly resolvedRefs: readonly string[];
+}
+
+export interface ScmHistoryPage {
+  readonly commits: readonly ScmHistoryCommit[];
+  // absent when this page ended the history
+  readonly cursor?: string;
+  // only on the first page of a load
+  readonly load?: ScmHistoryLoad;
+}
+
+// untrusted: the repository's project is untrusted (main runs no git); noRepository: the repoId is not main's; empty: HEAD is
+// unborn ("No commits yet."); failed: git failed and main logged it
+export type ScmHistoryResult = { readonly ok: true; readonly page: ScmHistoryPage } | { readonly ok: false; readonly reason: 'untrusted' | 'noRepository' | 'empty' | 'failed' };
+
+export interface ScmCommitDetailsRequest {
+  readonly repoId: string;
+  readonly hash: string;
+}
+
+export interface ScmCommitFileChange {
+  // repo-relative, at the commit
+  readonly path: string;
+  // a rename's or copy's source, at the first parent
+  readonly oldPath?: string;
+  readonly status: 'A' | 'M' | 'D' | 'R' | 'C' | 'T';
+}
+
+export interface ScmCommitDetails {
+  readonly hash: string;
+  readonly parents: readonly string[];
+  // the full message, cut at MAX_COMMIT_MESSAGE_CHARS
+  readonly message: string;
+  readonly messageTruncated: boolean;
+  readonly author: string;
+  readonly email: string;
+  // ms since the epoch
+  readonly authorDate: number;
+  // --shortstat against the first parent (the empty tree for a root commit); absent on git before 2.31
+  readonly stat?: { readonly files: number; readonly insertions: number; readonly deletions: number };
+  // against the first parent, or the empty tree for a root commit; the first MAX_SCM_COMMIT_FILES
+  readonly files: readonly ScmCommitFileChange[];
+  readonly filesTruncated: boolean;
+}
+
+// notCommit: the hash names no commit of the repository
+export type ScmCommitDetailsResult = { readonly ok: true; readonly details: ScmCommitDetails } | { readonly ok: false; readonly reason: 'untrusted' | 'noRepository' | 'notCommit' | 'failed' };
+
+// The operation whose conflict the merge editor resolves; worktreeApply is a worktree chat's Apply (slice 12a).
+export const SCM_MERGE_OPERATIONS = ['merge', 'rebase', 'cherryPick', 'stash', 'worktreeApply'] as const;
+export type ScmMergeOperation = (typeof SCM_MERGE_OPERATIONS)[number];
+
+// A side's title, its description (the commit's short hash) and its detail (the commit's ref names, such as the branch),
+// as VS Code's merge editor shows them.
+export interface ScmMergeLabel {
+  readonly title: string;
+  readonly description?: string;
+  readonly detail?: string;
+}
+
+// The two inputs as the merge editor shows them, Incoming then Current, with the rebase swap already applied.
+export interface ScmMergeLabels {
+  readonly current: ScmMergeLabel;
+  readonly incoming: ScmMergeLabel;
+  readonly base: ScmMergeLabel;
+}
+
+// Texts of show :1:, :2: and :3: decoded with the document's encoding; base is '' when stage 1 is absent (AA). During a
+// rebase current is :3: and incoming :2:, as VS Code swaps them.
+export type ScmMergeInputsResult =
+  | { readonly ok: true; readonly base: string; readonly current: string; readonly incoming: string; readonly labels: ScmMergeLabels; readonly operation: ScmMergeOperation }
+  | { readonly ok: false; readonly reason: 'unknown' | 'notConflicted' | 'notOpen' | 'binary' | 'tooLarge' | 'encoding' | 'failed' };
+
+export interface ScmMergeFileRequest {
+  readonly repoId: string;
+  readonly path: string;
+  readonly diff3: boolean;
+}
+
+// text: git merge-file -p's result decoded with the document's encoding, markers included
+export type ScmMergeFileResult = { readonly ok: true; readonly text: string } | { readonly ok: false; readonly reason: 'unknown' | 'notConflicted' | 'notOpen' | 'binary' | 'tooLarge' | 'encoding' | 'failed' };
+
+export interface ScmResourceRequest {
+  readonly projectKey: string;
+  readonly relativePath: string;
+}
+
+// A file's place in an open repository of a trusted project: the deepest repository holding it.
+export interface ScmResource {
+  readonly repoId: string;
+  readonly path: string;
+}
+
+// LineChanges of one stageRanges or unstageRanges, and the largest line number one may name.
+export const MAX_SCM_RANGES = 10_000;
+export const MAX_SCM_LINE = 10_000_000;
+
+export const SCM_COPY_KINDS = ['path', 'relativePath', 'branchName', 'stashName', 'tagName', 'commitHash', 'worktreePath', 'commitId', 'commitMessage'] as const;
 export type ScmCopyKind = (typeof SCM_COPY_KINDS)[number];
 
 // value names the row, never the text, and main finds the row in its own fresh lists: for path and relativePath the
@@ -555,7 +913,8 @@ export type ScmCopyKind = (typeof SCM_COPY_KINDS)[number];
 // repository's file outside the project); a stash's commit hash for stashName (its description, as VS Code's copyStashName
 // copies the row's name) and branchName (its branch); a refs/heads/ refname for branchName and commitHash, a refs/tags/ one
 // for tagName and commitHash (the commit a tag peels to); a worktree path for branchName, commitHash and worktreePath.
-// branchName is refused for a stash or worktree on no branch.
+// branchName is refused for a stash or worktree on no branch. commitId and commitMessage name a commit by its full hash, which
+// main checks is a commit of the repository: the hash itself, or its full message.
 export interface ScmCopyRequest {
   readonly repoId: string;
   readonly kind: ScmCopyKind;
@@ -592,6 +951,14 @@ export interface DamoclesScmApi {
   copy(request: ScmCopyRequest): Promise<void>;
   commitInput(repoId: string): Promise<ScmCommitInput>;
   reportAmend(report: ScmAmendReport): Promise<void>;
+  quickDiffBase(request: ScmPathRequest): Promise<ScmQuickDiffBaseResult>;
+  blame(request: ScmPathRequest): Promise<ScmBlameResult>;
+  timeline(request: ScmTimelineRequest): Promise<ScmTimelineResult>;
+  mergeInputs(request: ScmPathRequest): Promise<ScmMergeInputsResult>;
+  mergeFile(request: ScmMergeFileRequest): Promise<ScmMergeFileResult>;
+  resource(request: ScmResourceRequest): Promise<ScmResource | null>;
+  history(request: ScmHistoryRequest): Promise<ScmHistoryResult>;
+  commitDetails(request: ScmCommitDetailsRequest): Promise<ScmCommitDetailsResult>;
 }
 
 // Validators main runs on every invoke before anything reaches core. Each payload carries exactly its fields.
@@ -705,9 +1072,7 @@ export function parseScmRun(raw: unknown): ScmRunRequest | undefined {
     case 'removeRemote':
     case 'cancel':
     case 'renameBranch':
-    case 'deleteRemoteBranch':
     case 'stashDropAll':
-    case 'createTag':
     case 'deleteRemoteTag':
     case 'pushTags':
     case 'createWorktree': {
@@ -715,18 +1080,48 @@ export function parseScmRun(raw: unknown): ScmRunRequest | undefined {
       return value && isScmId(value['repoId']) ? { op, repoId: value['repoId'] } : undefined;
     }
     case 'checkout': {
-      const value = withOptional(raw, ['op', 'repoId', 'detached'], ['ref']);
+      const value = withOptional(raw, ['op', 'repoId', 'detached'], ['ref', 'commit']);
       if (!value || !isScmId(value['repoId']) || typeof value['detached'] !== 'boolean') return undefined;
-      const ref = value['ref'];
+      const { ref, commit } = value;
       if (Object.hasOwn(value, 'ref') && !isFullRefName(ref, ANY_REF)) return undefined;
-      return { op, repoId: value['repoId'], detached: value['detached'], ...(ref !== undefined ? { ref: ref as string } : {}) };
+      // a commit is checked out detached, and names the target alone
+      if (Object.hasOwn(value, 'commit') && (!isHash(commit) || !value['detached'] || ref !== undefined)) return undefined;
+      return { op, repoId: value['repoId'], detached: value['detached'], ...(ref !== undefined ? { ref: ref as string } : {}), ...(commit !== undefined ? { commit: commit as string } : {}) };
     }
     case 'createBranch': {
-      const value = withOptional(raw, ['op', 'repoId', 'from'], ['ref']);
+      const value = withOptional(raw, ['op', 'repoId', 'from'], ['ref', 'commit']);
       if (!value || !isScmId(value['repoId']) || typeof value['from'] !== 'boolean') return undefined;
-      const ref = value['ref'];
+      const { ref, commit } = value;
       if (Object.hasOwn(value, 'ref') && !isFullRefName(ref, ANY_REF)) return undefined;
-      return { op, repoId: value['repoId'], from: value['from'], ...(ref !== undefined ? { ref: ref as string } : {}) };
+      if (Object.hasOwn(value, 'commit') && (!isHash(commit) || value['from'] || ref !== undefined)) return undefined;
+      return { op, repoId: value['repoId'], from: value['from'], ...(ref !== undefined ? { ref: ref as string } : {}), ...(commit !== undefined ? { commit: commit as string } : {}) };
+    }
+    case 'createTag':
+    case 'cherryPick': {
+      const value = withOptional(raw, ['op', 'repoId'], ['commit']);
+      if (!value || !isScmId(value['repoId'])) return undefined;
+      const commit = value['commit'];
+      if (Object.hasOwn(value, 'commit') && !isHash(commit)) return undefined;
+      return { op, repoId: value['repoId'], ...(commit !== undefined ? { commit: commit as string } : {}) };
+    }
+    case 'deleteRemoteBranch': {
+      const value = withOptional(raw, ['op', 'repoId'], ['ref']);
+      if (!value || !isScmId(value['repoId'])) return undefined;
+      const ref = value['ref'];
+      if (Object.hasOwn(value, 'ref') && !isFullRefName(ref, ['refs/remotes/'])) return undefined;
+      return { op, repoId: value['repoId'], ...(ref !== undefined ? { ref: ref as string } : {}) };
+    }
+    case 'compareCommit':
+    case 'compareWithRemote':
+    case 'compareWithMergeBase':
+    case 'addCommitToChat':
+    case 'explainCommit': {
+      const value = exact(raw, ['op', 'repoId', 'commit']);
+      return value && isScmId(value['repoId']) && isHash(value['commit']) ? { op, repoId: value['repoId'], commit: value['commit'] } : undefined;
+    }
+    case 'openGraphChanges': {
+      const value = exact(raw, ['op', 'repoId', 'direction']);
+      return value && isScmId(value['repoId']) && (value['direction'] === 'incoming' || value['direction'] === 'outgoing') ? { op, repoId: value['repoId'], direction: value['direction'] } : undefined;
     }
     case 'deleteBranch':
     case 'merge':
@@ -796,7 +1191,8 @@ export function parseScmRun(raw: unknown): ScmRunRequest | undefined {
     case 'reveal':
     case 'mention':
     case 'openFile':
-    case 'openFileHead': {
+    case 'openFileHead':
+    case 'compareWithWorkspace': {
       const value = exact(raw, ['op', 'repoId', 'path']);
       return value && isScmId(value['repoId']) && isRepoPath(value['path']) ? { op, repoId: value['repoId'], path: value['path'] } : undefined;
     }
@@ -829,9 +1225,166 @@ export function parseScmRun(raw: unknown): ScmRunRequest | undefined {
       const value = exact(raw, ['op', 'recursive']);
       return value && typeof value['recursive'] === 'boolean' ? { op, recursive: value['recursive'] } : undefined;
     }
+    case 'stageRanges': {
+      const value = exact(raw, ['op', 'repoId', 'path', 'documentId', 'ranges', 'indexOid']);
+      const ranges = value ? lineChanges(value['ranges'], 'original') : undefined;
+      if (!value || !ranges || !isScmId(value['repoId']) || !isRepoPath(value['path']) || !isScmId(value['documentId']) || !isHash(value['indexOid'])) return undefined;
+      return { op, repoId: value['repoId'], path: value['path'], documentId: value['documentId'], ranges, indexOid: value['indexOid'] };
+    }
+    case 'unstageRanges': {
+      const value = exact(raw, ['op', 'repoId', 'path', 'documentId', 'ranges', 'indexOid', 'headOid']);
+      const ranges = value ? lineChanges(value['ranges'], 'modified') : undefined;
+      const headOid = value?.['headOid'];
+      if (!value || !ranges || !isScmId(value['repoId']) || !isRepoPath(value['path']) || !isScmId(value['documentId']) || !isHash(value['indexOid'])) return undefined;
+      if (headOid !== null && !isHash(headOid)) return undefined;
+      return { op, repoId: value['repoId'], path: value['path'], documentId: value['documentId'], ranges, indexOid: value['indexOid'], headOid };
+    }
+    case 'completeMerge': {
+      const value = exact(raw, ['op', 'repoId', 'path', 'documentId']);
+      return value && isScmId(value['repoId']) && isRepoPath(value['path']) && isScmId(value['documentId'])
+        ? { op, repoId: value['repoId'], path: value['path'], documentId: value['documentId'] }
+        : undefined;
+    }
+    case 'openCommit': {
+      const value = withOptional(raw, ['op', 'repoId', 'commit'], ['path']);
+      if (!value || !isScmId(value['repoId']) || !isHash(value['commit'])) return undefined;
+      const file = value['path'];
+      if (Object.hasOwn(value, 'path') && !isRepoPath(file)) return undefined;
+      return { op, repoId: value['repoId'], commit: value['commit'], ...(file !== undefined ? { path: file as string } : {}) };
+    }
+    case 'openTimeline':
+    case 'openMergeEditor': {
+      const value = exact(raw, ['op', 'repoId', 'path']);
+      return value && isScmId(value['repoId']) && isRepoPath(value['path']) ? { op, repoId: value['repoId'], path: value['path'] } : undefined;
+    }
+    case 'compareCommits': {
+      const value = exact(raw, ['op', 'repoId', 'left', 'right']);
+      const left = value ? parseCommitFile(value['left']) : undefined;
+      const right = value ? parseCommitFile(value['right']) : undefined;
+      return value && isScmId(value['repoId']) && left && right ? { op, repoId: value['repoId'], left, right } : undefined;
+    }
     default:
       return undefined;
   }
+}
+
+const isLine = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= MAX_SCM_LINE;
+
+// One LineChange: an empty side has end 0, any other side ends at or after its start, which is at least 1.
+function parseLineChange(raw: unknown): LineChange | undefined {
+  const value = exact(raw, ['originalStartLineNumber', 'originalEndLineNumber', 'modifiedStartLineNumber', 'modifiedEndLineNumber']);
+  if (!value) return undefined;
+  const { originalStartLineNumber: os, originalEndLineNumber: oe, modifiedStartLineNumber: ms, modifiedEndLineNumber: me } = value;
+  if (!isLine(os) || !isLine(oe) || !isLine(ms) || !isLine(me)) return undefined;
+  const side = (start: number, end: number): boolean => end === 0 || (start >= 1 && end >= start);
+  if (!side(os, oe) || !side(ms, me) || (oe === 0 && me === 0)) return undefined;
+  return { originalStartLineNumber: os, originalEndLineNumber: oe, modifiedStartLineNumber: ms, modifiedEndLineNumber: me };
+}
+
+// Non-empty, bounded, each well formed, and in increasing order with no overlap on the side applyLineChanges applies them
+// to: original for a stage, modified (the index) for an unstage, which applies them inverted.
+function lineChanges(raw: unknown, side: 'original' | 'modified'): LineChange[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_SCM_RANGES) return undefined;
+  const parsed: LineChange[] = [];
+  let next = 0;
+  for (const item of raw as unknown[]) {
+    const change = parseLineChange(item);
+    if (!change) return undefined;
+    const first = side === 'original' ? change.originalStartLineNumber : change.modifiedStartLineNumber;
+    const last = side === 'original' ? change.originalEndLineNumber : change.modifiedEndLineNumber;
+    if ((last === 0 ? first : first - 1) < next) return undefined;
+    next = last === 0 ? first : last;
+    parsed.push(change);
+  }
+  return parsed;
+}
+
+function parseCommitFile(raw: unknown): ScmCommitFile | undefined {
+  const value = exact(raw, ['commit', 'path']);
+  return value && isHash(value['commit']) && isRepoPath(value['path']) ? { commit: value['commit'], path: value['path'] } : undefined;
+}
+
+export function parseScmPath(raw: unknown): ScmPathRequest | undefined {
+  const value = exact(raw, ['repoId', 'path']);
+  return value && isScmId(value['repoId']) && isRepoPath(value['path']) ? { repoId: value['repoId'], path: value['path'] } : undefined;
+}
+
+export function parseScmTimeline(raw: unknown): ScmTimelineRequest | undefined {
+  const value = withOptional(raw, ['repoId', 'path'], ['cursor']);
+  if (!value || !isScmId(value['repoId']) || !isRepoPath(value['path'])) return undefined;
+  const cursor = value['cursor'];
+  if (Object.hasOwn(value, 'cursor') && parseScmTimelineCursor(cursor) === undefined) return undefined;
+  return { repoId: value['repoId'], path: value['path'], ...(cursor !== undefined ? { cursor: cursor as string } : {}) };
+}
+
+/** A timeline cursor's commit and the file's path there; undefined for anything main never issued. */
+export function parseScmTimelineCursor(raw: unknown): { readonly hash: string; readonly path: string } | undefined {
+  if (typeof raw !== 'string' || raw.length > MAX_SCM_CURSOR_LENGTH) return undefined;
+  const split = raw.indexOf(':');
+  const hash = raw.slice(0, split);
+  const file = raw.slice(split + 1);
+  return split > 0 && isHash(hash) && isRepoPath(file) ? { hash, path: file } : undefined;
+}
+
+function parseHistoryRefs(raw: unknown): ScmHistoryRefs | undefined {
+  if (raw === 'auto' || raw === 'all') return raw;
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_SCM_HISTORY_REFS) return undefined;
+  const refs = raw as unknown[];
+  return refs.every((ref) => isFullRefName(ref, ANY_REF)) && new Set(refs).size === refs.length ? [...(refs as string[])] : undefined;
+}
+
+export function parseScmHistory(raw: unknown): ScmHistoryRequest | undefined {
+  const value = withOptional(raw, ['repoId', 'refs'], ['cursor']);
+  if (!value || !isScmId(value['repoId'])) return undefined;
+  const refs = parseHistoryRefs(value['refs']);
+  const cursor = value['cursor'];
+  if (!refs || (Object.hasOwn(value, 'cursor') && parseScmHistoryCursor(cursor) === undefined)) return undefined;
+  return { repoId: value['repoId'], refs, ...(cursor !== undefined ? { cursor: cursor as string } : {}) };
+}
+
+// What a history cursor carries: the commits to skip, the base ref whose badge the page marks, and the load's commits.
+export interface ScmHistoryCursor {
+  readonly skip: number;
+  readonly baseRef?: string;
+  readonly tips: readonly string[];
+}
+
+// "<skip>;<hash>,<hash>,...;<base ref or nothing>": the base ref goes last, since a refname may hold ';' and ','.
+const MAX_SCM_HISTORY_CURSOR_LENGTH = 32 + MAX_SCM_REF_LENGTH + MAX_SCM_HISTORY_TIPS * 65;
+
+export function scmHistoryCursor(cursor: ScmHistoryCursor): string {
+  return `${cursor.skip};${cursor.tips.join(',')};${cursor.baseRef ?? ''}`;
+}
+
+/** A history cursor's parts; undefined for anything main never issued. */
+export function parseScmHistoryCursor(raw: unknown): ScmHistoryCursor | undefined {
+  if (typeof raw !== 'string' || raw.length > MAX_SCM_HISTORY_CURSOR_LENGTH) return undefined;
+  const first = raw.indexOf(';');
+  const second = first < 0 ? -1 : raw.indexOf(';', first + 1);
+  if (second < 0) return undefined;
+  const skipText = raw.slice(0, first);
+  const tipText = raw.slice(first + 1, second);
+  const baseRef = raw.slice(second + 1);
+  if (!/^(0|[1-9]\d{0,7})$/.test(skipText) || Number(skipText) > MAX_SCM_HISTORY_SKIP) return undefined;
+  if (baseRef !== '' && !isFullRefName(baseRef, ['refs/remotes/'])) return undefined;
+  const tips = tipText.split(',');
+  if (tips.length > MAX_SCM_HISTORY_TIPS || !tips.every(isHash) || new Set(tips).size !== tips.length) return undefined;
+  return { skip: Number(skipText), ...(baseRef !== '' ? { baseRef } : {}), tips };
+}
+
+export function parseScmCommitDetails(raw: unknown): ScmCommitDetailsRequest | undefined {
+  const value = exact(raw, ['repoId', 'hash']);
+  return value && isScmId(value['repoId']) && isHash(value['hash']) ? { repoId: value['repoId'], hash: value['hash'] } : undefined;
+}
+
+export function parseScmMergeFile(raw: unknown): ScmMergeFileRequest | undefined {
+  const value = exact(raw, ['repoId', 'path', 'diff3']);
+  return value && isScmId(value['repoId']) && isRepoPath(value['path']) && typeof value['diff3'] === 'boolean' ? { repoId: value['repoId'], path: value['path'], diff3: value['diff3'] } : undefined;
+}
+
+export function parseScmResource(raw: unknown): ScmResourceRequest | undefined {
+  const value = exact(raw, ['projectKey', 'relativePath']);
+  return value && isScmId(value['projectKey']) && isRepoPath(value['relativePath']) ? { projectKey: value['projectKey'], relativePath: value['relativePath'] } : undefined;
 }
 
 function parseCommitVariant(raw: unknown): ScmCommitVariant | undefined {
@@ -889,6 +1442,8 @@ const COPY_TARGETS: Readonly<Record<ScmCopyKind, (value: unknown) => boolean>> =
   tagName: (value) => isFullRefName(value, ['refs/tags/']),
   commitHash: (value) => isFullRefName(value, ['refs/heads/', 'refs/tags/']) || isWorktreePath(value),
   worktreePath: isWorktreePath,
+  commitId: isHash,
+  commitMessage: isHash,
 };
 
 export function parseScmCopy(raw: unknown): ScmCopyRequest | undefined {

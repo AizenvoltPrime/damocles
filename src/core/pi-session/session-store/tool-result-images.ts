@@ -5,8 +5,7 @@ import type { ToolResultOwner } from '../../../shared/types/session';
 import { initPiLoader } from '../pi-loader';
 import { toImageBlocks } from '../branch-text';
 import { findAgentFile, indexTeamMemberFiles, subagentsDir, teamMembersDir } from '../agent-records';
-import { ensurePiSessionDir } from './session-dir';
-import { resolvePiSessionFile } from './reading';
+import { piSessionDirOf, resolvePiSessionFile } from './reading';
 
 /**
  * The images of the `toolResult` entry for `toolCallId` in one pi session file (`[]` for a failed result), or
@@ -48,11 +47,11 @@ export async function loadToolResultImages(
     }
     case 'subagent': {
       // A resume appends to the launch file, so one file holds every call the agent made.
-      const file = await findAgentFile(subagentsDir(ensurePiSessionDir(cwd), sessionId), owner.agentId);
+      const file = await findAgentFile(subagentsDir(piSessionDirOf(cwd, sessionId), sessionId), owner.agentId);
       return file ? ((await findToolResultImagesInFile(file, toolCallId)) ?? []) : [];
     }
     case 'team': {
-      const files = (await indexTeamMemberFiles(teamMembersDir(ensurePiSessionDir(cwd), sessionId, owner.teamId))).get(owner.agentId) ?? [];
+      const files = (await indexTeamMemberFiles(teamMembersDir(piSessionDirOf(cwd, sessionId), sessionId, owner.teamId))).get(owner.agentId) ?? [];
       for (const { path } of [...files].reverse()) {
         const images = await findToolResultImagesInFile(path, toolCallId);
         if (images) return images;

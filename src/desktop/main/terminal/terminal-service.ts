@@ -48,7 +48,7 @@ import {
 import { terminalsToConfirm } from './kill-confirmation';
 import { MAX_OVERLAY_LABEL_LENGTH } from '../../preload/overlay-channels';
 import { cwdFolderName, newShellNonce, Osc633Stream, parseShellSequence, sanitizeDisplayText, sanitizeTitle } from './shell-integration';
-import { shellIntegrationInjection } from './shell-integration-injection';
+import { NONCE_ENV, shellIntegrationInjection } from './shell-integration-injection';
 import { linkPathStyle, type LinkBase, type LinkPathStyle } from './terminal-links';
 import { pasteChunks } from './terminal-paste';
 import type { TerminalAppearance } from '../terminal-pick';
@@ -155,8 +155,14 @@ export interface TerminalServiceDeps {
   readonly profilesReady: () => boolean;
   // whether a folder a shell reported still exists, for a split that starts in it; never blocks main on a slow share
   readonly isDirectory: (folder: string) => Promise<boolean>;
+  // every folder a terminal may start in, by root key (folder-root.ts): the open projects and their chat worktrees
   readonly projects: () => readonly TerminalProject[];
+  // the New Terminal picker's folders: the open projects, with the current root in place of its project's folder
+  readonly pickerProjects: () => readonly TerminalProject[];
+  // the selected project's shown folder (D31), where a new terminal starts
   readonly currentProjectKey: () => string | undefined;
+  // variables a terminal of this root key adds to env(): a chat worktree's DAMOCLES_PROJECT_FOLDER and DAMOCLES_WORKTREE_INDEX
+  readonly rootEnv: (projectKey: string) => Readonly<Record<string, string>>;
   // defaultProfile: a profile id, '' for the first detected
   readonly settings: () => TerminalServiceSettings;
   // a terminal's environment, read at each spawn
@@ -271,6 +277,36 @@ interface Terminal {
   color: TerminalColor | null;
   // input for a restart still checking its folder, which the host would drop before the spawn
   held?: string[] | undefined;
+  // a task tab main runs (the worktree Setup, D32): never persisted, split or restarted by itself
+  task?: TerminalTask;
+}
+
+// A command list main runs in its own tab; key names the task, so starting it again reruns it in the same tab.
+export interface TerminalTaskRequest {
+  readonly key: string;
+  readonly name: string;
+  readonly file: string;
+  readonly args: readonly string[];
+  // a root key, which the tab belongs to and closes with
+  readonly projectKey: string;
+  readonly cwd: string;
+  readonly env: Readonly<Record<string, string>>;
+  // the process ended; null: it could not start or the host died
+  readonly onExit: (exitCode: number | null) => void;
+  // the tab's Restart, which the task's owner answers by starting it again
+  readonly onRestart: () => void;
+  // a command of the task started: its args frame each command with shell integration's C and D sequences, signed with the
+  // nonce the task reads from NONCE_ENV
+  readonly onCommandStart?: () => void;
+}
+
+interface TerminalTask {
+  readonly key: string;
+  args: readonly string[];
+  env: Readonly<Record<string, string>>;
+  onExit: (exitCode: number | null) => void;
+  onRestart: () => void;
+  onCommandStart?: () => void;
 }
 
 interface Host {
@@ -413,7 +449,7 @@ export class TerminalService {
   /** The open projects for the quick pick, the current one first; none while no project is open (the home folder). */
   projectOptions(): TerminalProjectOption[] {
     const current = this.deps.currentProjectKey();
-    const options = this.deps.projects().map((project) => ({ key: project.key, name: project.name, path: project.fsPath, current: project.key === current }));
+    const options = this.deps.pickerProjects().map((project) => ({ key: project.key, name: project.name, path: project.fsPath, current: project.key === current }));
     return [...options.filter((option) => option.current), ...options.filter((option) => !option.current)];
   }
 
@@ -455,6 +491,29 @@ export class TerminalService {
     return started;
   }
 
+  /**
+   * Runs a task in its own tab, which becomes active without taking focus; a task already running under the same key is
+   * killed and its tab reruns. The tab shows the exit code when the process ends.
+   */
+  runTask(request: TerminalTaskRequest): string {
+    const task: TerminalTask = { key: request.key, args: request.args, env: request.env, onExit: request.onExit, onRestart: request.onRestart, ...(request.onCommandStart ? { onCommandStart: request.onCommandStart } : {}) };
+    const existing = this.terminals.find((terminal) => terminal.task?.key === request.key);
+    if (existing) this.kill(existing.id);
+    const terminal = this.launch(this.taskProfile(request), request.projectKey, request.cwd, request.cwd, task);
+    terminal.name = request.name;
+    this.groups.push(this.newGroup([terminal.id]));
+    this.activeId = terminal.id;
+    this.changed(true);
+    return terminal.id;
+  }
+
+  // The task tab takes the icon of the profile running the same shell.
+  private taskProfile(request: TerminalTaskRequest): LaunchProfile {
+    const fold = (file: string): string => (this.deps.platform === 'win32' ? file.toLowerCase() : file);
+    const icon = this.deps.profiles().find((profile) => fold(profile.file) === fold(request.file))?.icon ?? 'shell';
+    return { id: `task:${request.key}`, name: request.name, file: request.file, args: [], icon, source: 'detected', customIcon: null, color: null };
+  }
+
   // A new terminal at the end of the terminal array, in no group yet, with its process starting; the caller groups it and
   // publishes the change. A null profileId is the default profile; a null projectKey the home folder.
   private start(profileId: string | null, projectKey: string | null): TerminalCreateResult {
@@ -472,8 +531,9 @@ export class TerminalService {
     return this.deps.projects().find((project) => project.key === projectKey)?.fsPath;
   }
 
-  private launch(profile: LaunchProfile, projectKey: string | null, startCwd: string, launchCwd: string): Terminal {
+  private launch(profile: LaunchProfile, projectKey: string | null, startCwd: string, launchCwd: string, task?: TerminalTask): Terminal {
     const terminal: Terminal = {
+      ...(task ? { task } : {}),
       id: `term-${this.nextId++}`,
       profile,
       projectKey,
@@ -627,10 +687,16 @@ export class TerminalService {
    * killed, with no question when none needs one.
    */
   async confirmKill(ids: readonly string[]): Promise<boolean> {
+    const listed = this.toConfirm(ids);
+    if (listed.length === 0) return true;
+    return this.deps.confirmKill(listed);
+  }
+
+  /** Those of ids a kill asks about per damocles.desktop.terminal.confirmOnKill, for a question that asks about more. */
+  toConfirm(ids: readonly string[]): KillListEntry[] {
     const terminals = ids.flatMap((id) => this.find(id) ?? []);
     const listed = terminalsToConfirm(this.deps.settings().confirmOnKill, terminals.map((terminal) => ({ terminal, status: terminal.status, running: this.running(terminal) })));
-    if (listed.length === 0) return true;
-    return this.deps.confirmKill(listed.map(({ terminal, running }) => ({ name: terminal.name ?? terminal.profile.name, command: running })));
+    return listed.map(({ terminal, running }) => ({ name: terminal.name ?? terminal.profile.name, command: running }));
   }
 
   /** Kill, Kill All and the list's Delete key: confirmed first, then each terminal still present is killed. */
@@ -666,7 +732,7 @@ export class TerminalService {
    */
   async split(id: string): Promise<void> {
     const found = this.find(id);
-    if (!found || this.splitRefused(id)) return;
+    if (!found || found.task || this.splitRefused(id)) return;
     const cwd = await this.splitCwd(found);
     // the source, its group, its profile or its project may have changed while the folder was checked
     const source = this.find(id);
@@ -739,7 +805,10 @@ export class TerminalService {
     const index = this.terminals.findIndex((terminal) => terminal.id === id);
     if (index < 0) return;
     const [terminal] = this.terminals.splice(index, 1);
-    if (terminal!.status !== 'exited') this.post({ type: 'kill', id });
+    if (terminal!.status !== 'exited') {
+      this.post({ type: 'kill', id });
+      terminal!.task?.onExit(null);
+    }
     const group = this.groupOf(id)!;
     const groupIndex = this.groups.indexOf(group);
     this.removePane(group, id);
@@ -758,6 +827,10 @@ export class TerminalService {
   async restart(id: string): Promise<void> {
     const terminal = this.find(id);
     if (!terminal || terminal.status !== 'exited') return;
+    if (terminal.task) {
+      terminal.task.onRestart();
+      return;
+    }
     const profile = this.listedProfile(terminal.profile.id);
     if (!profile) {
       this.deps.log(`[terminal] not restarting ${id}: its profile ${terminal.profile.id} is no longer listed`);
@@ -778,6 +851,11 @@ export class TerminalService {
     shell.cwd = cwd;
     this.spawn(terminal, cwd);
     for (const data of held) this.post({ type: 'input', id, data });
+  }
+
+  /** The tab running the task named key, kept after its process ended until the tab closes; undefined without one. */
+  taskTerminal(key: string): string | undefined {
+    return this.terminals.find((terminal) => terminal.task?.key === key)?.id;
   }
 
   /** The terminal becomes active, as its group's active pane, and its group the active group. */
@@ -816,6 +894,7 @@ export class TerminalService {
   /** The window closed: every terminal is killed, and the window layout keeps the list for the next window or launch. */
   closeWindow(): void {
     if (this.terminals.some((terminal) => terminal.status !== 'exited')) this.post({ type: 'killAll' });
+    for (const terminal of this.terminals) if (terminal.status !== 'exited') terminal.task?.onExit(null);
     this.terminals = [];
     this.groups = [];
     this.activeId = null;
@@ -911,7 +990,11 @@ export class TerminalService {
 
   // The shell starts with its integration script when the setting allows and VS Code's rules inject into it.
   private spawn(terminal: Terminal, cwd: string = terminal.launchCwd): void {
-    const env = this.deps.env();
+    const env = { ...this.deps.env(), ...(terminal.projectKey !== null ? this.deps.rootEnv(terminal.projectKey) : {}), ...terminal.task?.env };
+    if (terminal.task) {
+      this.ensureHost().process.postMessage({ type: 'spawn', id: terminal.id, file: terminal.profile.file, args: [...terminal.task.args], cwd, env: { ...this.hostEnv(terminal, env, 1), [NONCE_ENV]: terminal.shell.nonce }, cols: terminal.cols, rows: terminal.rows });
+      return;
+    }
     let injection = this.deps.settings().shellIntegration
       ? shellIntegrationInjection({
         platform: this.deps.platform,
@@ -971,6 +1054,7 @@ export class TerminalService {
   private running(terminal: Terminal): string | null {
     const { shell } = terminal;
     if (terminal.status === 'exited') return null;
+    if (terminal.task) return terminal.name ?? terminal.profile.name;
     if (shell.integrated) return shell.running && (sanitizeTitle(shell.running.commandLine) ?? '');
     if (shell.processName === null || shell.processName === shellName(terminal.profile.file, this.deps.platform)) return null;
     return sanitizeTitle(shell.processName) ?? '';
@@ -1025,6 +1109,7 @@ export class TerminalService {
           terminal.commands.set(commandId, { commandLine, exitCode: null });
           if (terminal.commands.size > TRACKED_COMMANDS) terminal.commands.delete(terminal.commands.keys().next().value!);
           events.push({ offset, event: { kind: 'commandExecuted', commandId, commandLine, time: now() } });
+          terminal.task?.onCommandStart?.();
           break;
         }
         case 'commandFinished':
@@ -1070,6 +1155,7 @@ export class TerminalService {
         if (terminal.status === 'exited') continue;
         terminal.status = 'exited';
         terminal.exitCode = null;
+        terminal.task?.onExit(null);
       }
       this.changed(false);
     });
@@ -1116,6 +1202,7 @@ export class TerminalService {
           : undefined;
         terminal.status = 'exited';
         terminal.exitCode = message.exitCode;
+        terminal.task?.onExit(message.exitCode);
         if (reason !== undefined) {
           const cwd = terminal.shell.cwd ?? terminal.launchCwd;
           this.deps.log(`[terminal] ${terminal.profile.file} could not start in ${cwd}: Windows error ${message.exitCode}`);
@@ -1128,6 +1215,7 @@ export class TerminalService {
         this.deps.log(`[terminal] ${terminal.profile.file} could not start: ${message.message}`);
         terminal.status = 'exited';
         terminal.exitCode = null;
+        terminal.task?.onExit(null);
         this.shell?.data({ id: terminal.id, data: `${this.deps.spawnFailed(message.message)}\r\n` });
         this.changed(false);
         return;
@@ -1137,9 +1225,12 @@ export class TerminalService {
   // persist: the list, its groups, the active terminal or the list width changed, which the window layout keeps.
   private changed(persist: boolean): void {
     if (persist) {
-      const active = this.terminals.findIndex((terminal) => terminal.id === this.activeId);
+      // a task tab is always alone in its group and never restored
+      const kept = this.terminals.filter((terminal) => !terminal.task);
+      const groups = this.groups.filter((group) => !group.paneIds.some((id) => this.find(id)?.task));
+      const active = kept.findIndex((terminal) => terminal.id === this.activeId);
       this.deps.persist({
-        terminals: this.terminals.map((terminal) => ({
+        terminals: kept.map((terminal) => ({
           profileId: terminal.profile.id,
           projectKey: terminal.projectKey,
           name: terminal.name,
@@ -1148,7 +1239,7 @@ export class TerminalService {
         })),
         active: active < 0 ? null : active,
         listWidthRem: this.listWidthRem,
-        groups: this.groups.map((group) => ({ panes: group.paneIds.length, activePane: group.paneIds.indexOf(group.activePaneId), sizes: [...group.sizes] })),
+        groups: groups.map((group) => ({ panes: group.paneIds.length, activePane: group.paneIds.indexOf(group.activePaneId), sizes: [...group.sizes] })),
       });
     }
     this.publish();

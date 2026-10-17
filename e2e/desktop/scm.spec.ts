@@ -207,18 +207,22 @@ test('a merge in progress shows Commit Merge and Abort Merge; a rebase shows Con
   fs.writeFileSync(path.join(home.project, 'a.ts'), 'main\n');
   await git(home, home.project, 'commit', '-am', 'Main edit');
   await git(home, home.project, 'merge', 'feat').catch(() => undefined);
+  fs.writeFileSync(path.join(home.project, '.git', 'tmpl.txt'), 'tmpl: subject\n');
+  await git(home, home.project, 'config', 'commit.template', '.git/tmpl.txt');
 
   const { app } = await launch({ env: HOOKS });
   const shell = await openScmProject(app, home.project);
   await expect(scmSection(shell).getByTestId('scm-operation')).toHaveAttribute('data-operation', 'merge');
   await expect(changeRow(shell, 'merge', 'a.ts')).toHaveAttribute('data-letter', '!');
   await expect(scmSection(shell).getByTestId('scm-commit')).toContainText('Commit Merge');
-  await expect(commitMessage(shell)).toHaveValue(/Merge branch 'feat'/);
+  // MERGE_MSG comes before the commit template, and the template comes back once the merge ends
+  await expect(commitMessage(shell)).toHaveValue(/^Merge branch 'feat'/);
   await scmSection(shell).getByTestId('scm-commit').click();
   await expect(scmSection(shell).getByTestId('scm-commit-feedback')).toHaveText('Resolve the merge conflicts before committing');
   await scmSection(shell).getByTestId('scm-abort').click();
   await expect(scmSection(shell).getByTestId('scm-operation')).toHaveCount(0);
   expect(fs.existsSync(path.join(home.project, '.git', 'MERGE_HEAD'))).toBe(false);
+  await expect(commitMessage(shell)).toHaveValue('tmpl: subject');
 
   // A rebase of feat onto main stops on the conflict; resolving, staging and Continue Rebase finish it.
   await git(home, home.project, 'checkout', 'feat');
@@ -233,6 +237,37 @@ test('a merge in progress shows Commit Merge and Abort Merge; a rebase shows Con
   await expect(scmSection(shell).getByTestId('scm-operation')).toHaveCount(0, { timeout: 20_000 });
   expect(fs.existsSync(path.join(home.project, '.git', 'rebase-merge'))).toBe(false);
   expect(await git(home, home.project, 'log', '-1', '--format=%s')).toBe('Feat edit');
+});
+
+test('the Source control title reads whole beside its actions at the default width, its count badge giving way whole first', async ({ foreground: _foreground, home, launch }) => {
+  await initRepo(home, home.project, { 'a.ts': 'export const a = 1;\n' });
+  for (let index = 0; index < 12; index++) fs.writeFileSync(path.join(home.project, `new-${index}.ts`), '\n');
+  const { app } = await launch();
+  const shell = await openScmProject(app, home.project);
+  const badge = scmSection(shell).getByTestId('scm-count');
+  await expect(badge).toHaveText('12');
+  const header = scmSection(shell).getByTestId('sidebar-section-header');
+  const measure = (): Promise<{ whole: boolean; badge: string; clear: boolean }> => header.evaluate((element) => {
+    const box = (testId: string): DOMRect | undefined => element.querySelector(`[data-testid="${testId}"]`)?.getBoundingClientRect();
+    const title = element.querySelector<HTMLElement>('[data-testid="sidebar-section-title"]')!;
+    const line = box('sidebar-section-title-line')!;
+    const count = box('scm-count')!;
+    const actions = box('sidebar-section-actions');
+    return {
+      whole: title.scrollWidth <= title.clientWidth,
+      // the badge shows whole on the title's line, or not at all
+      badge: count.right <= line.right + 0.5 && count.bottom <= line.bottom + 0.5 ? 'shown' : count.top >= line.bottom - 0.5 ? 'gone' : 'cut',
+      clear: actions === undefined || actions.width === 0 || actions.left >= title.getBoundingClientRect().right,
+    };
+  });
+  await header.hover();
+  await expect(scmSection(shell).getByTestId('sidebar-section-actions')).toBeVisible();
+  expect(await measure()).toEqual({ whole: true, badge: expect.stringMatching(/^(shown|gone)$/), clear: true });
+  // at rest the badge has the room again
+  await shell.mouse.move(1200, 600);
+  await shell.locator('body').evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await expect(scmSection(shell).getByTestId('sidebar-section-actions')).toBeHidden();
+  expect(await measure()).toEqual({ whole: true, badge: 'shown', clear: true });
 });
 
 test('Source control shorter than its branch row and commit box scrolls them with its changes, so a change stays in reach of the pointer and the keys', async ({ foreground: _foreground, home, launch }) => {
@@ -431,17 +466,18 @@ test('untracked changes apart: Stage All Untracked stages only them, Discard All
   await expect.poll(async () => (await gitLog(app)).includes('-uno')).toBe(true);
 });
 
-test('a long change list scrolls to its last row and stays there', async ({ foreground: _foreground, home, launch }) => {
+test('a long change list scrolls with the commit box to its last row and stays there, in one scroll container', async ({ foreground: _foreground, home, launch }) => {
   const files = Object.fromEntries(Array.from({ length: 150 }, (_, i) => [`f${String(i).padStart(3, '0')}.ts`, 'a\n']));
   await initRepo(home, home.project, files);
   for (const name of Object.keys(files)) fs.writeFileSync(path.join(home.project, name), 'b\n');
   const { app } = await launch({ env: HOOKS });
   const shell = await openScmProject(app, home.project);
-  const tree = scmSection(shell).getByTestId('scm-tree');
+  const body = scmSection(shell).getByTestId('scm-body');
   await expect(changeRow(shell, 'workingTree', 'f000.ts')).toBeVisible();
-  // hover, not the box's centre: on a short display the body scrolls and the list's box runs past the section's bottom
-  await tree.hover();
-  const gap = (): Promise<number> => tree.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
+  // A tree that scrolls by itself shows a second scrollbar inside the body's.
+  expect(await scmSection(shell).getByTestId('scm-tree').evaluate((el) => getComputedStyle(el).overflowY)).toBe('visible');
+  await body.hover();
+  const gap = (): Promise<number> => body.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
 
   // Scrolling unmounts rows as it goes; a row that lingers for its leave transition lets scroll anchoring pull the list back.
   await expect.poll(async () => {
@@ -450,7 +486,7 @@ test('a long change list scrolls to its last row and stays there', async ({ fore
   }, { timeout: 20_000 }).toBeLessThan(1);
   await expect(changeRow(shell, 'workingTree', 'f149.ts')).toBeVisible();
   // A pull-back lands frames after the last wheel, so the bottom must hold in every frame of a window, not in one read.
-  const worstGap = (frames: number): Promise<number> => tree.evaluate(async (el, count) => {
+  const worstGap = (frames: number): Promise<number> => body.evaluate(async (el, count) => {
     let worst = 0;
     for (let frame = 0; frame < count; frame++) {
       await new Promise((resolve) => requestAnimationFrame(resolve));

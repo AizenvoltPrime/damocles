@@ -141,6 +141,14 @@ describe('replace in closed files', () => {
     expect(fs.readFileSync(file, 'utf8')).toBe('$1$& $1\n');
   });
 
+  it('names a skipped file with control or bidi characters in its path by their escapes', async () => {
+    const changed = write('a\u202Eb.ts', 'foo\n');
+    const search = recorded(query('foo'), { 'a\u202Eb.ts': 'foo\n' });
+    fs.writeFileSync(changed, 'bar\n');
+    await replaceInFiles(deps(), search, 'baz', all(search));
+    expect(notices).toEqual([{ lines: ['a\\u{202E}b.ts: changed'], more: 0 }]);
+  });
+
   it('skips a whole file changed after the search, even to the same size and time, and names it in one notice', async () => {
     const changed = write('changed.ts', 'let foo = 1;\nlet foo = 2;\n');
     const kept = write('kept.ts', 'foo\n');

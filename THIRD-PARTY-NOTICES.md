@@ -467,7 +467,7 @@ SOFTWARE.
 
 ## Visual Studio Code (Code - OSS)
 
-Parts of the desktop app adapt Visual Studio Code source, rewritten for Damocles: the Quick Open file scoring, the search view's case-preserving replace and query rules, the Search Editor's `.code-search` format and the grammar that colours its results, the integrated terminal's shell detection, pty handling, flow control, link detection, paste warning, shell integration scripts, command marks and navigation, the sidebar's section sizing, and source control's git output parsers, status groups, decorations, discard confirmations, repository discovery, list sorting, menus, commit flow and questions, commit message history and its recall keys, branch name input, remotes, fetch, pull, push, sync, clone, askpass and autofetch, branches, stash, tags and worktrees, the Repositories view, settings and palette titles.
+Parts of the desktop app adapt Visual Studio Code source, rewritten for Damocles: the Quick Open file scoring, the search view's case-preserving replace and query rules, the Search Editor's `.code-search` format and the grammar that colours its results, the integrated terminal's shell detection, pty handling, flow control, link detection, paste warning, shell integration scripts, command marks and navigation, the sidebar's section sizing, and source control's git output parsers, status groups, decorations, discard confirmations, repository discovery, list sorting, menus, commit flow and questions, commit message history and its recall keys, branch name input, remotes, fetch, pull, push, sync, clone, askpass and autofetch, branches, stash, tags and worktrees, the Repositories view, settings and palette titles, and the editor's git integration: hunk staging and revert (`applyLineChanges` and the selected-range rules of git's `staging.ts`), the merge conflict parser and merge editor labels, the quick diff and its provider rules, blame and the timeline, and the Graph: its lanes and its history view logic.
 
 - **Source**: https://github.com/microsoft/vscode
 - **Adapted code**:
@@ -515,6 +515,15 @@ Parts of the desktop app adapt Visual Studio Code source, rewritten for Damocles
   - `src/core/scm/sync.ts`, `remotes.ts`, `clone.ts` and the remote flows of `src/core/scm/scm-service.ts` and `src/desktop/main/scm/scm-host.ts` (the fetch, pull, push, force-with-lease, autostash, sync, publish, Add Remote and clone arguments, pickers, questions and folder naming) from `extensions/git/src/git.ts`, `repository.ts`, `commands.ts` and `cloneManager.ts`
   - `src/core/scm/artifacts.ts` (`parseStashes` from `parseGitStashes`, the for-each-ref format and ref rows from `getRefs` and `parseRefs`, the name-status letters from `parseGitChanges`, a detached HEAD's tag from `getHEADRef`, the stash view's base and untracked side from `_viewStash`) from `extensions/git/src/git.ts`, `commands.ts` and `artifactProvider.ts`; `src/core/scm/branches.ts`, `stash.ts`, `tags.ts` and `worktrees.ts` (the checkout, branch, delete, rename, merge, rebase, fast-forward, remote ref delete, stash, tag, ls-remote and worktree arguments and refusals, the worktree folder name and default path, and `sanitizeBranchName`, with its tests in `src/core/scm/__tests__/branch-name.test.ts`) from `extensions/git/src/git.ts`, `repository.ts` and `commands.ts`; `src/core/scm/worktree-roots.ts` (the worktree folder remembered per repository root) from `extensions/git/src/repository.ts` (`createWorktree`); `src/desktop/main/scm/ref-flows.ts` (the branch, ref, stash, tag, remote and worktree pickers, the branch name and worktree path inputs, the worktree path's folder button, the dirty checkout, unmerged branch, stash, tag and dirty worktree questions, save-before-stash, and the messages) from `extensions/git/src/commands.ts` (`_checkout`, `_branch`, `promptForBranchName`, `_deleteBranch`, `renameBranch`, `merge`, `rebase`, `_stash`, `pickStash`, `_stashDrop`, `stashDropAll`, `_viewStash`, `_createTag`, `deleteTag`, `deleteRemoteTag`, `pushTags`, `_createWorktree`, `getWorktreePath`, `deleteWorktree` and the `git.repositories.*` artifact commands) and `repository.ts` (`checkout`, `fastForwardBranch`, `createWorktree`, `deleteWorktree`)
   - `src/desktop/shell/scm/repositories-tree.ts` (`sortRefByName`, the worktree order, the branch, tag, stash and worktree rows and descriptions, the folder tree with its merged single-child chains, and the repeated-time hiding) and its tests from `extensions/git/src/artifactProvider.ts` (`sortRefByName`, `sortByWorktreeTypeAndNameAsc`, `provideArtifacts`) and `src/vs/workbench/contrib/scm/browser/scmRepositoriesViewPane.ts` (`RepositoryTreeDataSource`, `RepositoriesTreeCompressionDelegate`, `ArtifactRenderer`); `src/desktop/shell/scm/RepositoriesSection.vue` and `ArtifactRow.vue` (selection, expansion on the twistie or a double-click, the repeated time shown on hover, the inline actions) from `scmRepositoriesViewPane.ts` and `media/scm.css`; the Repositories row menus and titles in `src/desktop/shell/scm/scm-menus.ts` from `extensions/git/package.json` (`scm/artifactGroup/context`, `scm/artifact/context`, `git.repositories.stash`) and `package.nls.json`; Compare with... and the row copies in `src/desktop/main/scm/ref-flows.ts` and `scm-host.ts` from `extensions/git/src/commands.ts` (`artifactCompareWith`, `_openChangesBetweenRefs`, the `git.repositories.*Copy*` commands)
+  - `src/core/scm/graph-lanes.ts` (the lane algorithm `toISCMHistoryItemViewModelArray`, `addIncomingOutgoingChangesHistoryItems`, `compareHistoryItemRefs` and the row geometry of `renderSCMHistoryItemGraph`) and its tests from `src/vs/workbench/contrib/scm/browser/scmHistory.ts` and `src/vs/workbench/contrib/scm/test/browser/scmHistory.test.ts`
+  - `src/core/scm/history.ts` and the Graph's flows in `src/desktop/main/scm/scm-host.ts` and `ref-flows.ts` (the history log and its decorations, the merge base, the base ref resolution, the ref choice, cherry pick, Compare with Remote and Merge Base, the graph's Delete Remote Branch refusal) from `extensions/git/src/git.ts` (`log`, `getMergeBase`, `cherryPick`), `extensions/git/src/repository.ts` (`getBranchBase`, `getBranchBaseFromReflog`, `getDefaultRemote`), `extensions/git/src/historyProvider.ts`, `extensions/git/src/commands.ts` (`cherryPick`, `compareRef`, `compareWithRemote`, `compareWithMergeBase`, `deleteBranch2`) and `src/vs/workbench/contrib/scm/browser/scmHistoryViewPane.ts`
+  - `src/shared/scm/apply-line-changes.ts` (`applyLineChanges`, `invertLineChange`, `compareLineChanges`, `intersectDiffWithRange`, `touchesModifiedSide`) from `extensions/git/src/staging.ts` (`applyLineChanges`, `invertLineChange`, `compareLineChanges`, `intersectDiffWithRange`, `getModifiedRange`)
+  - `src/core/scm/staging.ts` (Stage and Unstage Selected Ranges, the index blob written from core, and the quick diff's original sides) from `extensions/git/src/commands.ts` (`_stageChanges`, `stageSelectedRanges`, `unstageSelectedRanges`) and `extensions/git/src/quickDiffProvider.ts`
+  - `src/desktop/shell/editor/merge/conflict-parser.ts` and `code-lens.ts` (the conflict scan, the blocks and their replacement text, the lenses and the Accept and Compare commands) from `extensions/merge-conflict/src/mergeConflictParser.ts`, `documentMergeConflict.ts`, `codelensProvider.ts` and `commandHandler.ts`
+  - `src/core/scm/merge.ts` (the merge editor's inputs and labels, the rebase swap and git's merge of the stages) from `extensions/git/src/commands.ts` (`openMergeEditor`, `runGitMerge`) and `extensions/git/src/git.ts` (`mergeFile`); `src/desktop/shell/editor/merge/MergeEditor.vue` (the layout and title actions) from `src/vs/workbench/contrib/mergeEditor/browser/view/mergeEditor.ts` and `browser/commands/commands.ts`
+  - `src/desktop/shell/editor/quick-diff/quick-diff-compute.ts`, `gutter.ts` and `peek.ts` (the primary and secondary diffs, the change kinds and navigation, the gutter marks and the peek zone) from `src/vs/workbench/contrib/scm/browser/quickDiffModel.ts`, `quickDiffDecorator.ts`, `quickDiffWidget.ts` and `src/vs/editor/contrib/zoneWidget/browser/zoneWidget.ts`
+  - `src/core/scm/blame.ts` and `src/desktop/shell/editor/blame.ts` (HEAD's blame, the line mapping through the quick diff's changes and the Not Committed Yet texts) from `extensions/git/src/blame.ts`
+  - `src/core/scm/timeline.ts` (the file's history through renames, 50 entries a page, led by Staged Changes) from `extensions/git/src/timelineProvider.ts`
 
 ```
 MIT License
@@ -943,7 +952,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## Bundled runtime libraries (file locking, gitignore matching, desktop networking, watching and editing)
 
-These npm packages ship inside the VSIX, the desktop app or both. esbuild bundles the first seven into the bundle each entry names (they are not externals), Vite bundles Monaco into the desktop app's `dist/webview/assets/monaco-*`, and electron-builder ships the last two as `node_modules` in the desktop app. Listed here for attribution and license compliance.
+These npm packages ship inside the VSIX, the desktop app or both. esbuild bundles the first eight into the bundle each entry names (they are not externals; Vite also bundles jsdiff into the webview and the desktop shell), Vite bundles Monaco into the desktop app's `dist/webview/assets/monaco-*`, and electron-builder ships the last two as `node_modules` in the desktop app. Listed here for attribution and license compliance.
 
 - **proper-lockfile** (v4.1.2) — MIT, Copyright (c) 2018 Made With MOXY Lda <hello@moxy.studio> — https://github.com/moxystudio/node-proper-lockfile
   — cross-process locks for config, auth and session-lease writes; bundled into `dist/extension.js` and `dist/desktop/main.js`.
@@ -959,6 +968,8 @@ These npm packages ship inside the VSIX, the desktop app or both. esbuild bundle
   — glob matching for the desktop file watchers; bundled into `dist/desktop/main.js`.
 - **ignore** (v7.0.12) — MIT, Copyright (c) 2013 Kael Zhang <i@kael.me>, contributors — https://github.com/kaelzhang/node-ignore
   — gitignore-style path matching for permission rules; bundled into `dist/extension.js` and `dist/desktop/main.js`.
+- **jsdiff** (`diff`, v8.0.4) — BSD-3-Clause, Copyright (c) 2009-2015, Kevin Decker <kpdecker@gmail.com> — https://github.com/kpdecker/jsdiff
+  — line and patch diffs: bundled into `dist/extension.js` and `dist/desktop/main.js` (tool patches, edit proposals and chat review), the chat webview (`dist/webview/`) and the desktop shell, its quick diff worker included.
 - **monaco-editor** (v0.57.0) — MIT, Copyright (c) 2016 - present Microsoft Corporation — https://github.com/microsoft/monaco-editor
   — the desktop app's file and diff editor. Monaco vendors further components (among them marked and DOMPurify); their notices are in Monaco's `ThirdPartyNotices.txt`, which the desktop app ships as `resources/monaco-editor-ThirdPartyNotices.txt`, and DOMPurify's license comment stays in the bundle.
 - **electron-updater** (v6.8.9) — MIT, Copyright (c) 2015 Loopline Systems — https://github.com/electron-userland/electron-builder
@@ -1012,6 +1023,78 @@ ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
 WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
 ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+```
+
+jsdiff is distributed under the following license:
+
+```
+BSD 3-Clause License
+
+Copyright (c) 2009-2015, Kevin Decker <kpdecker@gmail.com>
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+---
+
+## node-diff3 (MIT)
+
+The desktop merge editor aligns the base, Current and Incoming texts of a conflicted file with `diff3Merge` from node-diff3 3.2.1 (https://github.com/bhousel/node-diff3), which Vite bundles into the desktop shell.
+
+```
+diff function extracted from Project Synchrotron.
+
+For more detail please visit:
+- https://leastfixedpoint.com/tonyg/kcbbs/projects/synchrotron.html
+- https://github.com/tonyg/synchrotron
+
+Copyright (c) 2006, 2008 Tony Garnock-Jones <tonyg@lshift.net>
+Copyright (c) 2006, 2008 LShift Ltd. <query@lshift.net>
+Copyright (c) 2019-2026 Bryan Housel <bhousel@gmail.com>
+
+Permission is hereby granted, free of charge, to any person
+obtaining a copy of this software and associated documentation files
+(the "Software"), to deal in the Software without restriction,
+including without limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of the Software,
+and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
 
 ---

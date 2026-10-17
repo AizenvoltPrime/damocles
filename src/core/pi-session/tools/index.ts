@@ -40,6 +40,7 @@ import { buildWebPiTools } from '../web-access';
 import { buildSubagentTools } from './subagent-tools';
 import { buildTeamMainPiTools, type TeamServiceRef } from './team-tools';
 import type { AgentManager } from '../subagents/agent-manager';
+import { identityFolder } from '../../worktrees/personal-config';
 
 /**
  * The inputs `buildCustomTools` needs. Note what is NOT here: MCP tool definitions. A nested agent's
@@ -160,7 +161,7 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
     createFindTool(pi, cwd, rgPath, readRuleFilter),
     createWriteTool(pi, cwd),
     createEditTool(pi, cwd),
-    createPowerShellTool(pi, cwd, shellJob),
+    createPowerShellTool(pi, cwd, shellJob, () => getShellOptions().env),
     enterPlan,
     exitPlan,
     createAskUserQuestionTool(pi, permissionHandler),
@@ -170,7 +171,7 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
   // inactive tools cost nothing (pi sends only ACTIVE tools to the model), and building them up front is
   // what lets a subsystem toggled ON mid-conversation activate live (it has tools ready to activate).
   if (memoryService) {
-    tools.push(...buildMemoryPiTools({ pi, memoryService, getSessionId, workspace: cwd }));
+    tools.push(...buildMemoryPiTools({ pi, memoryService, getSessionId, workspace: identityFolder(cwd) }));
   }
   if (compassService) {
     tools.push(...buildCompassPiTools({ pi, compassService }));

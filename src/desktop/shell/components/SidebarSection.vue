@@ -14,6 +14,8 @@ const props = defineProps<{
   collapsed: boolean;
   // CSS px of the body; absent, the section takes the sidebar's remaining height
   bodySize?: number | undefined;
+  // a control shows beside the title; the #chip slot stays passed while its control leaves, so its exit can play
+  hasChip?: boolean;
 }>();
 const emit = defineEmits<{ toggle: [] }>();
 const { t } = useI18n();
@@ -128,6 +130,16 @@ onBeforeUnmount(() => {
   window.removeEventListener('focus', onWindowFocusChange);
 });
 
+// With a chip beside the title, the actions lie over the chip's tail on an opaque ground (the header's own hover tint on top),
+// so the chip keeps its width and never jumps as they come and go. They share the chip's grid cell, whose minimum is theirs
+// alone, so they never reach over the title: a header too narrow for both shortens the title, as VS Code's pane header does.
+// Their ground starts with a 1rem fade, so a chip they cover ends softly rather than cut mid-letter.
+const CHIP_ACTIONS = 'relative isolate z-1 justify-self-end self-stretch [grid-area:1/1] bg-[linear-gradient(to_right,transparent,var(--d-panel)_1rem)] ps-5.5 before:pointer-events-none before:absolute before:inset-0 before:-z-1 group-hover/header:before:bg-[linear-gradient(to_right,transparent,var(--d-hover)_1rem)]';
+const CHIP_GROUND = 'bg-(--d-panel) before:pointer-events-none before:absolute before:inset-0 before:-z-1 before:rounded-full group-hover/header:before:bg-(--d-hover)';
+const chipPointer = ref(false);
+const chipFocus = ref(false);
+const chipRaised = computed(() => chipPointer.value || chipFocus.value);
+
 /** Keeps the title actions shown until `popup` (a menu a title action opened) settles. */
 async function holdActions<T>(popup: Promise<T>): Promise<T> {
   popups.value++;
@@ -161,7 +173,7 @@ defineExpose({ bodyHeight: (): number => body.value?.getBoundingClientRect().hei
   >
     <div
       data-testid="sidebar-section-header"
-      class="flex shrink-0 items-center gap-1.5 pr-1.5 pl-2 hover:bg-(--d-hover)"
+      class="group/header @container/header relative flex shrink-0 items-center gap-1.5 pr-1.5 pl-2 hover:bg-(--d-hover)"
       :style="{ height: `${SECTION_HEADER_REM}rem` }"
       :draggable="ordering !== null"
       @dragstart="onDragStart"
@@ -170,7 +182,8 @@ defineExpose({ bodyHeight: (): number => body.value?.getBoundingClientRect().hei
     >
       <h2
         :id="headingId"
-        class="flex min-w-0 flex-1 self-stretch"
+        class="flex min-w-0 self-stretch"
+        :class="hasChip ? '' : 'flex-1'"
       >
         <button
           type="button"
@@ -185,21 +198,65 @@ defineExpose({ bodyHeight: (): number => body.value?.getBoundingClientRect().hei
             class="size-3.25 shrink-0 text-(--d-faint) transition-transform duration-200"
             :class="collapsed ? '' : 'rotate-90'"
           />
+          <!-- One clipped line: a count or badge with no room beside the title wraps out of sight, so the title reads whole first. -->
           <span
-            data-testid="sidebar-section-title"
-            class="truncate text-11 font-semibold tracking-[.07em] text-(--d-muted) uppercase"
-          >{{ title }}</span>
-          <span
-            v-if="count !== undefined"
-            class="font-mono text-10.5 text-(--d-faint)"
-          >{{ count }}</span>
-          <slot name="badge" />
+            data-testid="sidebar-section-title-line"
+            class="flex min-w-0 flex-1 flex-wrap content-start items-center gap-x-1.5 self-stretch overflow-hidden"
+          >
+            <span
+              data-testid="sidebar-section-title"
+              class="h-full content-center truncate text-11 font-semibold tracking-[.07em] text-(--d-muted) uppercase"
+            >{{ title }}</span>
+            <span
+              v-if="count !== undefined"
+              class="font-mono text-10.5 text-(--d-faint)"
+            >{{ count }}</span>
+            <slot name="badge" />
+          </span>
         </button>
       </h2>
+      <!-- A control beside the title (the Files branch chip); the space after it still toggles the section. -->
+      <div
+        v-if="$slots.chip"
+        class="grid grid-cols-[1fr] items-center self-stretch"
+        :class="hasChip ? 'flex-1' : 'flex-none'"
+        @click.self="emit('toggle')"
+      >
+        <!-- w-14 min-w-full: the chip fills the cell and adds only 3.5rem to the cell's minimum width (its icon, a letter with
+             an ellipsis and its chevron), which a long title gives up first; past that only the actions set the minimum. -->
+        <span
+          class="flex min-w-0 self-stretch [grid-area:1/1]"
+          :class="hasChip ? 'w-14 min-w-full' : ''"
+          @click.self="emit('toggle')"
+        >
+          <!-- While pointed at or focused, the chip rises over the title actions on the same opaque ground, so none covers it. -->
+          <span
+            data-testid="sidebar-section-chip"
+            :data-raised="chipRaised || undefined"
+            class="relative isolate flex max-w-full min-w-0 self-center rounded-full"
+            :class="chipRaised ? `z-2 ${CHIP_GROUND}` : ''"
+            @pointerenter="chipPointer = true"
+            @pointerleave="chipPointer = false"
+            @focusin="chipFocus = true"
+            @focusout="chipFocus = false"
+          >
+            <slot name="chip" />
+          </span>
+        </span>
+        <div
+          v-if="hasChip && $slots.actions"
+          v-show="actionsShown"
+          data-testid="sidebar-section-actions"
+          class="d-actions-in flex items-center gap-1.5"
+          :class="CHIP_ACTIONS"
+        >
+          <slot name="actions" />
+        </div>
+      </div>
       <!-- display:none at rest takes the buttons out of the tab order; focusing the header button shows them, so Tab reaches them.
            Absent without actions, so revealing an empty bar never takes the header's gap from the title. -->
       <div
-        v-if="$slots.actions"
+        v-if="$slots.actions && !(hasChip && $slots.chip)"
         v-show="actionsShown"
         data-testid="sidebar-section-actions"
         class="d-actions-in flex shrink-0 items-center gap-1.5"

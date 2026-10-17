@@ -144,7 +144,8 @@ function snapshot(dir: string): Map<string, string> {
 async function fork(parent: SessionManager, leafId: string, forkPointMs: number): Promise<Error[]> {
   return copyForkAgentData({
     SessionManager,
-    sessionDir,
+    sourceDir: sessionDir,
+    targetDir: sessionDir,
     sourceSessionId: SOURCE,
     targetSessionId: TARGET,
     branch: parent.getBranch(leafId),
@@ -318,5 +319,39 @@ describe('copyForkAgentData — teams', () => {
     expect(failures).toHaveLength(1);
     expect(failures[0]!.message).toContain(`team ${TEAM} event log`);
     expect(await forkCheckpoints()).toEqual([1800]);
+  });
+});
+
+describe('copyForkAgentData — across session directories', () => {
+  it("copies into the fork's own directory when it differs from the source's, as for a fork of a handed-off chat", async () => {
+    const parent = SessionManager.inMemory(sessionDir);
+    at(1000, () => {
+      parent.appendMessage(user('team up'));
+      invoke(parent, { kind: 'subagent', id: 'sub-on-branch', toolCallId: 'tc1', resume: false });
+      invoke(parent, { kind: 'team', id: TEAM, toolCallId: 'tc-team', resume: false });
+    });
+    const leaf = at(2000, () => parent.appendMessage(assistant('reply')));
+    writeSubagent('sub-on-branch');
+    writeEventLog();
+    writeMember();
+    const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-fork-target-'));
+    made.push(targetDir);
+    const before = snapshot(path.join(sessionDir, SOURCE));
+
+    expect(await copyForkAgentData({
+      SessionManager,
+      sourceDir: sessionDir,
+      targetDir,
+      sourceSessionId: SOURCE,
+      targetSessionId: TARGET,
+      branch: parent.getBranch(leaf),
+      forkPointMs: 2000,
+    })).toEqual([]);
+
+    expect(await findAgentFile(subagentsDir(targetDir, TARGET), 'sub-on-branch')).not.toBeNull();
+    expect(fs.existsSync(teamEventLogPath(targetDir, TARGET, TEAM))).toBe(true);
+    expect((await indexTeamMemberFiles(teamMembersDir(targetDir, TARGET, TEAM))).get(MEMBER)).toHaveLength(1);
+    expect(fs.existsSync(path.join(sessionDir, TARGET))).toBe(false);
+    expect(snapshot(path.join(sessionDir, SOURCE))).toEqual(before);
   });
 });

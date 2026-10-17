@@ -28,6 +28,8 @@ const DESKTOP_MAC: HostCapabilities = {
   folderPickerInPanel: false,
   fileMentionDrop: true,
   windowLayout: true,
+  chatReview: true,
+  worktrees: true,
 };
 
 function buildRegistry(): HandlerRegistry {
@@ -75,6 +77,8 @@ describe('host capabilities', () => {
       folderPickerInPanel: true,
       fileMentionDrop: false,
       windowLayout: false,
+      chatReview: false,
+      worktrees: false,
     });
   });
 

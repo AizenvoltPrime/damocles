@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 import type { ContentBlock } from '@shared/types/content';
 import { CANCELLED_TOOL_DETAIL_KEY, type ToolCall } from '@shared/types/session';
+import { FEEDBACK_MARKER, POLICY_BLOCK_MARKER } from '@shared/types/constants';
 import { subagentHeading, subagentToolCount, useSubagentStore } from '../useSubagentStore';
 import { i18n } from '@/i18n';
 import { defined } from '@/__tests__/helpers';
@@ -381,6 +382,27 @@ describe('useSubagentStore sealed transcript rehydration', () => {
 
     expect(nestedTool(store, 'toolu_2', 'ok-1').status).toBe('completed');
     expect(nestedTool(store, 'toolu_2', 'bad-1').status).toBe('failed');
+  });
+
+  it('reads a recorded refusal as the live card showed it: blocked or denied, with its reason', () => {
+    const store = useSubagentStore();
+    store.restoreSubagentFromHistory({
+      id: 'toolu_4',
+      name: 'Agent',
+      input: { subagent_type: 'Explore', description: 'find', prompt: 'p' },
+      agentStatus: 'completed',
+      agentResultText: 'done',
+      agentMessages: [{
+        role: 'assistant',
+        contentBlocks: [
+          { type: 'tool_use', id: 'policy-1', name: 'Bash', input: {}, result: `${POLICY_BLOCK_MARKER} aimed at the project folder`, isError: true },
+          { type: 'tool_use', id: 'user-1', name: 'Bash', input: {}, result: `${FEEDBACK_MARKER} not now`, isError: true },
+        ],
+      }],
+    });
+
+    expect(nestedTool(store, 'toolu_4', 'policy-1')).toMatchObject({ status: 'blocked', feedback: 'aimed at the project folder' });
+    expect(nestedTool(store, 'toolu_4', 'user-1')).toMatchObject({ status: 'denied', feedback: 'not now' });
   });
 
   it("keeps a nested call's recorded execution time on replay", () => {

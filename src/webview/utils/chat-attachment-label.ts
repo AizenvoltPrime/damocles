@@ -1,0 +1,18 @@
+import type { ChatAttachmentInfo, CommitAttachmentInfo } from "@shared/types/chat-attachment";
+import { terminalAttachmentLabel } from "./terminal-attachment-label";
+
+type Translate = (key: string, values?: Record<string, unknown>) => string;
+
+// git's short hash length, as the Graph shows it.
+const SHORT_HASH = 7;
+
+export const shortHash = (hash: string): string => hash.slice(0, SHORT_HASH);
+
+/** A commit chip's whole label, "Commit 1a2b3c4 · Subject", as screen readers and the chip's title read it. */
+export function commitAttachmentLabel(attachment: CommitAttachmentInfo, t: Translate): string {
+  return t("commitAttachment.label", { hash: shortHash(attachment.hash), subject: attachment.subject });
+}
+
+export function chatAttachmentLabel(attachment: ChatAttachmentInfo, t: Translate): string {
+  return attachment.kind === "commit" ? commitAttachmentLabel(attachment, t) : terminalAttachmentLabel(attachment, t);
+}

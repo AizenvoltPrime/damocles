@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import type { Disposable } from '../../../platform/disposable';
 import type { DiffView, EditorService } from '../../../platform/editor-service';
 import type { WindowService } from '../../../platform/window-service';
-import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
+import type { ChatReviewScope, ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { EditorPane } from '../editor-pane';
 import { knownLanguageId, readFileText, sideDocument } from './editor-document';
 
@@ -20,7 +20,12 @@ export interface ChatTabMessenger {
  * card's Open diff; every other open goes to the editor pane, taking focus only when the caller did not set preserveFocus.
  * The renderer never reads a file: main builds every document.
  */
-export function createDesktopEditorService(tabs: ChatTabMessenger, pane: () => EditorPane, openAppSettings: WindowService['openAppSettings']): EditorService {
+export function createDesktopEditorService(
+  tabs: ChatTabMessenger,
+  pane: () => EditorPane,
+  openAppSettings: WindowService['openAppSettings'],
+  showChatReview: (panelId: string, scope: ChatReviewScope) => Promise<void>,
+): EditorService {
   const unavailable = (feature: string): Promise<never> => Promise.reject(new Error(`${feature} is not available in the desktop app yet`));
   return {
     openFile: (filePath, opts) => {
@@ -68,6 +73,7 @@ export function createDesktopEditorService(tabs: ChatTabMessenger, pane: () => E
       return Promise.resolve();
     },
     openSettingsFile: (scope, opts) => pane().openSettingsFile(scope, opts?.key),
+    showChatReview,
     isHostExtensionActive: () => false,
     searchHostExtensions: () => unavailable('Extension search'),
   };

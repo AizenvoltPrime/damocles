@@ -176,7 +176,7 @@ async function forkAt(cwd: string, from: string, to: string, forkPointMs: number
   const branch = invocations.map((data, i) => ({
     type: 'custom', id: `f${i}`, parentId: null, timestamp: new Date(forkPointMs).toISOString(), customType: DAMOCLES_AGENT_INVOCATION_ENTRY, data,
   }) as unknown as SessionEntry);
-  expect(await copyForkAgentData({ SessionManager, sessionDir: piSessionDir(cwd), sourceSessionId: from, targetSessionId: to, branch, forkPointMs })).toEqual([]);
+  expect(await copyForkAgentData({ SessionManager, sourceDir: piSessionDir(cwd), targetDir: piSessionDir(cwd), sourceSessionId: from, targetSessionId: to, branch, forkPointMs })).toEqual([]);
 }
 
 /** A fork point strictly between what was written so far and what is written next. */

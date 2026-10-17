@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { log } from '../logger';
-import { ensurePiSessionDir } from '../pi-session/session-store';
+import { piSessionDirOf } from '../pi-session/session-store';
 import { DAMOCLES_TEAM_DELIVERED_ENTRY } from '../pi-session/session-store/constants';
 import {
   indexTeamMemberFiles,
@@ -49,7 +49,7 @@ export class TeamPersistence implements TeamPersistenceWriter {
   }
 
   private ensureDir(): string {
-    this.sessionDir ??= ensurePiSessionDir(this.cwd);
+    this.sessionDir ??= piSessionDirOf(this.cwd, this.persistenceSessionId);
     return this.sessionDir;
   }
 

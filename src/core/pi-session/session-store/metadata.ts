@@ -4,6 +4,7 @@ import { DAMOCLES_USER_RENAMED_ENTRY, DAMOCLES_TAG_ENTRY } from './constants';
 import { extractOriginalInputs } from './original-input';
 import { storedTypedText } from './prompt-context';
 import { extractTerminalAttachmentCounts } from './terminal-attachments';
+import { latestWorktreeEntry } from '../../worktrees/hand-off';
 
 /** Fields computed from a single opened pi session, including the in-tree rename marker and tag. */
 export interface PiSessionFields {
@@ -193,5 +194,8 @@ export function sessionFileMeta(sm: SessionManagerView, mtimeMs: number): Sessio
   const lastId = entries[entries.length - 1]?.id;
   const branch = lastId === undefined ? [] : sm.getBranch(lastId);
   const fields = computePiSessionFields(header, branch, sm.getSessionName(), mtimeMs);
-  return { stored: mapPiFieldsToStored(fields), prompts: newestUniquePrompts(branch) };
+  // The latest in file order, off the branch too: the entry that decides where the chat works (AD12).
+  const worktree = latestWorktreeEntry(entries);
+  const stored = mapPiFieldsToStored(fields);
+  return { stored: worktree ? { ...stored, worktree: { worktreeId: worktree.worktreeId, place: worktree.place } } : stored, prompts: newestUniquePrompts(branch) };
 }

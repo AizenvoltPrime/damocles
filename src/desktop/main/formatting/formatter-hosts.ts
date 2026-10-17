@@ -68,12 +68,16 @@ interface Host {
   readonly pending: Map<number, Pending>;
   readonly watcher: Disposable;
   idle: NodeJS.Timeout | undefined;
+  // settles when the process exits
+  readonly exited: Promise<void>;
 }
 
 /** One formatter host per project root, started on first use. */
 export class FormatterHosts implements Disposable {
   private readonly deps: FormatterHostsDeps;
   private readonly hosts = new Map<string, Host>();
+  // hosts stopped and not yet exited, by key
+  private readonly exiting = new Map<string, Promise<void>>();
   private nextId = 0;
 
   constructor(deps: FormatterHostsDeps) {
@@ -121,6 +125,16 @@ export class FormatterHosts implements Disposable {
     return this.hosts.has(projectKey);
   }
 
+  /**
+   * Stops the root's host, as for a worktree being deleted, and settles once its process has exited, a host an earlier
+   * retain stopped included: Windows refuses to remove a folder that is a live process's working folder.
+   */
+  release(projectKey: string): Promise<void> {
+    const host = this.hosts.get(projectKey);
+    if (host) this.stop(host, 'its worktree is being deleted');
+    return this.exiting.get(projectKey) ?? Promise.resolve();
+  }
+
   dispose(): void {
     for (const host of [...this.hosts.values()]) this.stop(host, 'the app is closing');
   }
@@ -136,10 +150,12 @@ export class FormatterHosts implements Disposable {
       child.kill();
       throw err;
     }
-    const host: Host = { key, root, process: child, pending: new Map(), watcher, idle: undefined };
+    let exited!: () => void;
+    const host: Host = { key, root, process: child, pending: new Map(), watcher, idle: undefined, exited: new Promise((resolve) => (exited = resolve)) };
     this.hosts.set(key, host);
     child.onMessage((raw) => this.reply(host, raw));
     child.onExit((code) => {
+      exited();
       if (this.hosts.get(key) !== host) return;
       this.deps.log(`[format] the formatter for ${root} exited with code ${code}`);
       this.forget(host, `The formatter process exited with code ${code}.`);
@@ -199,6 +215,10 @@ export class FormatterHosts implements Disposable {
     if (this.hosts.get(host.key) !== host) return;
     this.deps.log(`[format] stopping the formatter for ${host.root}: ${why}`);
     this.forget(host, `The formatter process was stopped because ${why}.`);
+    const exiting = host.exited.then(() => {
+      if (this.exiting.get(host.key) === exiting) this.exiting.delete(host.key);
+    });
+    this.exiting.set(host.key, exiting);
     host.process.kill();
   }
 

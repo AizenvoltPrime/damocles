@@ -5,6 +5,7 @@ import type { BigIntStats, Dirent } from 'node:fs';
 import type { Disposable } from '../../../platform/disposable';
 import type { FileWatcher, FileWatcherFactory } from '../../../platform/file-watcher';
 import { isRelativeFilePath } from '../../../shared/relative-path';
+import { visibleText } from '../../../shared/visible-text';
 import { isValidFileName } from '../../preload/file-names';
 import {
   type FileEntry,
@@ -180,7 +181,7 @@ export class FileTree implements Disposable {
     const entry = await confineEntry(project, relativePath);
     if (!entry.ok) return entry;
     const identity = await fs.lstat(entry.path, { bigint: true });
-    const name = path.basename(entry.path);
+    const name = visibleText(path.basename(entry.path));
     const folder = entry.stat?.isDirectory() === true;
     const choice = await this.deps.ask({
       severity: 'danger',
@@ -198,7 +199,7 @@ export class FileTree implements Disposable {
       const permanently = await this.deps.ask({
         severity: 'danger',
         message: this.deps.t('\'{0}\' could not be moved to the trash. Do you want to delete it permanently instead?', name),
-        detail: `${errorText(err)}\n\n${this.deps.t('This action is irreversible.')}`,
+        detail: `${visibleText(errorText(err))}\n\n${this.deps.t('This action is irreversible.')}`,
         actions: [this.deps.t('Delete Permanently')],
         cancelLabel: this.deps.t('Cancel'),
       });

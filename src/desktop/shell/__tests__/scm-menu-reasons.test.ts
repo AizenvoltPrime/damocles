@@ -8,6 +8,8 @@ import {
   branchRowMenu,
   commitMenu,
   folderMenu,
+  graphCommitMenu,
+  graphRefMenu,
   groupMenu,
   moreActionsMenu,
   pickerMenu,
@@ -102,6 +104,12 @@ function everyMenu(): ScmMenuNode[][] {
     groupMenu('untracked', 'separate'),
     pickerMenu({ openRepos: 2, closedCount: 1 }),
   );
+  for (const operation of OPERATIONS) {
+    for (const hasUpstream of [true, false]) for (const hasBase of [true, false]) menus.push(graphCommitMenu({ hasUpstream, hasBase, operation }));
+  }
+  for (const current of [true, false]) {
+    for (const id of ['refs/heads/a', 'refs/remotes/origin/a', 'refs/tags/a']) menus.push(graphRefMenu({ id, current }, 'refs/remotes/origin/a'));
+  }
   return menus;
 }
 

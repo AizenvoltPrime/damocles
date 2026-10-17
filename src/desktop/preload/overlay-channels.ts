@@ -2,12 +2,13 @@
 // popup window's page both run the overlay preload; main listens on each one's own webContents.ipc, which only that page's
 // messages reach, and answers the popup page only on getState and the toast channels.
 
-import type { DropZonesPointer, GridPane, GridSlot, ShellGridLayout, ShellLocale, ShellPlatform } from './shell-channels';
+import type { ChatsContinueWorktree, ChatsWorktreeOptions, DropZonesPointer, GridPane, GridSlot, NewChatWorktree, ShellGridLayout, ShellLocale, ShellPlatform } from './shell-channels';
 import type { SettingsAccountId, SettingsSectionId, SettingsTarget } from '../../shared/settings-sections';
 import type { DesktopLanguageSetting } from '../main/desktop-configuration';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../../shared/types/messages';
 import type { ChimeTone, NotificationBody, NotificationCenterState } from './notifications';
 import type { ReleaseIndex, ReleaseNotes, UpdateSnapshot, VersionInfo } from './updates';
+import type { ScmLetter } from './scm-channels';
 import type { TerminalColor, TerminalGlyph, TerminalProfileOption, TerminalProfileReport, TerminalProjectOption } from './terminal-channels';
 import { INPUT_VALIDATIONS, MAX_INPUT_VALUE_LENGTH, inputProblem, type InputPlatform, type InputValidation } from '../../shared/input-validation';
 import { visibleText } from '../../shared/visible-text';
@@ -62,6 +63,14 @@ export const OVERLAY_CHANNELS = {
   terminalProfiles: 'damocles:overlay:terminal:profiles',
   // { value } → InputBrowseResult | null; answers closed unless an input request is open, null unless it has browse
   inputBrowse: 'damocles:overlay:input:browse',
+  // {} → ChatsWorktreeOptions for the open newChatMenu request's project; answers closed unless one is open
+  worktreeOptions: 'damocles:overlay:worktree-options',
+  // {} → readonly ChatsContinueWorktree[], every live chat worktree of the open newChatMenu request's project that a new chat
+  // can continue in, most recently used first; empty when untrusted; answers closed unless one is open
+  continueWorktrees: 'damocles:overlay:continue-worktrees',
+  // {} → { message } | null from the Background model (D24) for the open mergeMessage dialog's worktree; answers closed unless
+  // one is open, and null when no message came (main told the user why)
+  worktreeGenerateMessage: 'damocles:overlay:worktree:generate-message',
   // main → renderer
   // OverlayState after the UI language changed
   state: 'damocles:overlay:state',
@@ -107,6 +116,7 @@ export const OVERLAY_ICONS = [
   'at-sign',
   'check',
   'check-check',
+  'cherry',
   'chevrons-up-down',
   'circle-dot',
   'circle-x',
@@ -130,7 +140,9 @@ export const OVERLAY_ICONS = [
   'files',
   'filter',
   'filter-x',
+  'folder',
   'folder-git-2',
+  'folder-input',
   'folder-minus',
   'folder-open',
   'folder-plus',
@@ -140,6 +152,7 @@ export const OVERLAY_ICONS = [
   'git-branch-plus',
   'git-commit-horizontal',
   'git-compare',
+  'git-fork',
   'git-merge',
   'git-pull-request-arrow',
   'hash',
@@ -149,6 +162,7 @@ export const OVERLAY_ICONS = [
   'list-tree',
   'maximize-2',
   'message-square',
+  'message-square-plus',
   'minus',
   'palette',
   'panel-bottom',
@@ -166,6 +180,7 @@ export const OVERLAY_ICONS = [
   'shield-check',
   'shield-off',
   'signature',
+  'sparkles',
   'square',
   'square-code',
   'square-terminal',
@@ -204,6 +219,8 @@ export const MAX_SETTINGS_MESSAGE_CHARS: number = 64 * 1024;
 export const OVERLAY_ACK_TIMEOUT_MS = 2000;
 // Bytes of one rasterized PNG; main refuses a larger answer.
 export const MAX_RASTER_PNG_BYTES: number = 64 * 1024;
+// Refs the Graph's ref picker offers, every group together; past it the chosen refs and the first others, and a count of the rest.
+export const MAX_REF_PICKER_REFS = 2000;
 
 // Main's art for the taskbar badge (D52): drawn in order on a width×height canvas. Coordinates and sizes are design units,
 // multiplied by scale; an SVG layer covers the whole canvas.
@@ -281,6 +298,15 @@ export function tidyMenu(items: readonly OverlayMenuItem[]): OverlayMenuItem[] {
   return out;
 }
 
+// A ref the Graph's ref picker offers: its full refname (refs/heads/, refs/remotes/ or refs/tags/) and its short name.
+export interface OverlayRefPickerRef {
+  readonly id: string;
+  readonly name: string;
+}
+
+// What the Graph shows: Auto, All, or 1 to MAX_SCM_HISTORY_REFS full refnames.
+export type OverlayRefChoice = 'auto' | 'all' | readonly string[];
+
 // Labels are localized by the sender.
 export type OverlayRequest =
   | {
@@ -312,6 +338,17 @@ export type OverlayRequest =
       readonly current?: string;
       readonly tags: readonly string[];
       readonly placeholder: string;
+    }
+  // The Graph's ref picker (A.4): Auto, All, then the repository's branches, remote branches and tags, any of which may be
+  // picked together; selected names only refs it offers. failed: a group of refs could not be read; omitted: refs past
+  // MAX_REF_PICKER_REFS left out of refs.
+  | {
+      readonly kind: 'refPicker';
+      readonly anchor: OverlayRect;
+      readonly refs: readonly OverlayRefPickerRef[];
+      readonly selected: OverlayRefChoice;
+      readonly failed: boolean;
+      readonly omitted: number;
     }
   // Only main opens it; `generation` is the attachment the modal's first settingsSend calls must carry.
   | {
@@ -358,7 +395,76 @@ export type OverlayRequest =
       readonly slots: ShellGridLayout['slots'];
       readonly grid: OverlayRect;
       readonly pointer: OverlayPoint;
-    };
+    }
+  // the Chats section's New split button menu (D30, D63); the overlay fetches the options through worktreeOptions
+  | {
+      readonly kind: 'newChatMenu';
+      readonly anchor: OverlayRect;
+      readonly projectKey: string;
+      readonly projectName: string;
+      // New chat's shortcut label, e.g. "Ctrl+N"
+      readonly shortcut: string;
+    }
+  // Only main asks one (D41, slice 12a); it stacks above an open request as a message does.
+  | WorktreeDialogRequest;
+
+export type WorktreeDialogRequest = { readonly kind: 'worktreeDialog' } & WorktreeDialog;
+
+// Texts that come from git or the disk (paths, branch names, subjects) reach the overlay as data and render as text only.
+export type WorktreeDialog =
+  // D32: the setup commands of .damocles/worktree.json, before they first run or after they changed
+  | { readonly dialog: 'setupReview'; readonly projectName: string; readonly commands: readonly string[] }
+  // D33: Delete worktree. deleteBranchDefault: no unmerged commit, so the branch goes too unless unticked; deleteBranchLocked:
+  // the checkbox cannot change (the branch is checked out elsewhere)
+  | {
+      readonly dialog: 'delete';
+      readonly path: string;
+      readonly branch: string;
+      readonly uncommitted: readonly WorktreeFile[];
+      readonly submoduleChanges: readonly WorktreeFile[];
+      readonly unmergedCommits: readonly WorktreeCommit[];
+      readonly deleteBranchDefault: boolean;
+      readonly deleteBranchLocked: boolean;
+    }
+  // D33: Merge into {target} with uncommitted worktree files, which are committed first with this message
+  | { readonly dialog: 'mergeMessage'; readonly branch: string; readonly target: string; readonly files: readonly WorktreeFile[] }
+  // D33: the target branch was rewritten after the worktree started
+  | { readonly dialog: 'rewritten'; readonly branch: string }
+  // Apply or hand-off refused: these files have local changes in the project folder
+  | { readonly dialog: 'refusal'; readonly action: 'apply' | 'handOff'; readonly files: readonly WorktreeFile[] }
+  // D61: the files that move, those also holding the user's edits marked
+  | { readonly dialog: 'handOffConfirm'; readonly direction: 'toWorktree' | 'toProject'; readonly branch?: string; readonly files: readonly HandOffFile[] }
+  // R15: the startup scan's findings; nothing is deleted, Prune runs git worktree prune on the item's repository
+  | { readonly dialog: 'leftovers'; readonly items: readonly LeftoverItem[] };
+
+export interface WorktreeCommit {
+  readonly hash: string;
+  readonly subject: string;
+}
+
+// A file of a worktree dialog's list, repository-relative, with the status letter source control shows for it.
+export interface WorktreeFile {
+  readonly path: string;
+  readonly letter: ScmLetter;
+}
+
+export interface HandOffFile extends WorktreeFile {
+  readonly alsoUserEdits: boolean;
+}
+
+// unregistered: a folder under ~/.damocles/worktrees no record owns (Reveal); missingFolder: a record whose folder is gone;
+// noChat: a live chat worktree past its grace period no chat ever worked in (Delete, or Keep, which stops reporting it);
+// gitRecordOnly: git lists a worktree whose folder is gone, which Prune drops
+export interface LeftoverItem {
+  readonly path: string;
+  readonly reason: 'unregistered' | 'missingFolder' | 'gitRecordOnly' | 'noChat';
+  // the repository Prune acts on, when one does
+  readonly repository?: string;
+}
+
+// Bounds of a worktree dialog; main cuts its lists to them and refuses an answer outside them.
+export const MAX_WORKTREE_DIALOG_ITEMS = 200;
+export const MAX_WORKTREE_COMMIT_MESSAGE_CHARS: number = 64 * 1024;
 
 export type MessageSeverity = 'info' | 'warning' | 'danger';
 
@@ -518,6 +624,8 @@ export type OverlayAnswer =
   | { readonly kind: 'confirm'; readonly confirmed: boolean }
   // null removes the tag
   | { readonly kind: 'tagPicker'; readonly tag: string | null }
+  // the Graph's ref choice; an empty selection is 'auto'
+  | { readonly kind: 'refPicker'; readonly choice: OverlayRefChoice }
   // sent once the modal's exit animation ended
   | { readonly kind: 'settings'; readonly closed: true }
   // the index of the chosen action; null is Cancel
@@ -536,7 +644,28 @@ export type OverlayAnswer =
   // Escape answers dismissed; main refuses a value its validation kind rejects
   | { readonly kind: 'input'; readonly value: string }
   // null: dropped outside every zone, or Escape
-  | { readonly kind: 'dropZones'; readonly slot: GridSlot | null };
+  | { readonly kind: 'dropZones'; readonly slot: GridSlot | null }
+  // Escape answers dismissed; worktree only after the options came and were available, startRef one of their refs, and
+  // bringChanges only with the current branch and uncommitted changes
+  | { readonly kind: 'newChatMenu'; readonly choice: 'plain' }
+  | ({ readonly kind: 'newChatMenu'; readonly choice: 'worktree' } & NewChatWorktree)
+  // Continue in a worktree: one of the listed worktrees; the shell then calls newChatInWorktree
+  | { readonly kind: 'newChatMenu'; readonly choice: 'continueInWorktree'; readonly worktreeId: string }
+  // Escape answers dismissed, which main takes as Skip, Cancel or Close
+  | ({ readonly kind: 'worktreeDialog' } & WorktreeDialogAnswer);
+
+// Each answers only the dialog of the same name.
+export type WorktreeDialogAnswer =
+  | { readonly dialog: 'setupReview'; readonly choice: 'run' | 'skip' }
+  | { readonly dialog: 'delete'; readonly choice: 'delete' | 'cancel'; readonly deleteBranch: boolean }
+  // message: non-blank, within MAX_WORKTREE_COMMIT_MESSAGE_CHARS, when committing
+  | { readonly dialog: 'mergeMessage'; readonly choice: 'commit' | 'cancel'; readonly message: string }
+  | { readonly dialog: 'rewritten'; readonly choice: 'rebase' | 'apply' | 'cancel' }
+  | { readonly dialog: 'refusal'; readonly choice: 'ok' }
+  | { readonly dialog: 'handOffConfirm'; readonly choice: 'move' | 'cancel' }
+  // reveal (unregistered), prune (gitRecordOnly), delete and keep (noChat) name one of the request's items by path
+  | { readonly dialog: 'leftovers'; readonly choice: 'close' }
+  | { readonly dialog: 'leftovers'; readonly choice: 'prune' | 'reveal' | 'delete' | 'keep'; readonly path: string };
 
 /**
  * The answer of a channel scoped to one popup. A closed popup (or a disposed overlay) is an expected state its page can
@@ -737,4 +866,9 @@ export interface DamoclesOverlayApi {
   browseInput(value: string): Promise<PopupAnswer<InputBrowseResult | null>>;
   // the shell's pane drag while a dropZones request is open; returns the unsubscribe
   onDropZonesPointer(listener: (pointer: DropZonesPointer) => void): () => void;
+  // the open newChatMenu's worktree options; answers closed unless one is open
+  worktreeOptions(): Promise<PopupAnswer<ChatsWorktreeOptions>>;
+  continueWorktrees(): Promise<PopupAnswer<readonly ChatsContinueWorktree[]>>;
+  // Generate in the open mergeMessage dialog; null: no message came, and main told the user why
+  generateWorktreeMessage(): Promise<PopupAnswer<{ readonly message: string } | null>>;
 }

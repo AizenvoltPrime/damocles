@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { Disposable } from '../../../platform/disposable';
 import type { FileWatcher, FileWatcherFactory } from '../../../platform/file-watcher';
 import { checkoutArgs } from '../branches';
-import { gitAtLeast, parseGitVersion } from '../git-runner';
+import { gitAtLeast, GitUntrustedError, parseGitVersion } from '../git-runner';
 import { PathRefusedError } from '../repository';
 import { type ScmEvent } from '../scm-service';
 import { folder, freshStatus, git, harness, HAS_GIT, makeRepo, ready, sandbox, statusOf, useGitSandbox, waitFor, write, type Harness } from './git-harness';
@@ -431,6 +431,50 @@ describe.skipIf(!HAS_GIT)('stash', { timeout: 120_000 }, () => {
     h.service.dispose();
   });
 
+  it('refuses to apply or pop a stash while files have merge conflicts, before git runs, and leaves the stash and the merge as they were', async () => {
+    const work = makeRepo(folder('stash-during-merge'));
+    git(['checkout', '-q', '-b', 'side'], work);
+    commit(work, 'a.txt', 'side\n', 'side');
+    git(['checkout', '-q', 'main'], work);
+    const { h, repoId } = await open(work);
+    write(path.join(work, 's.txt'), 'stashed\n');
+    await h.service.stash(repoId, 'includeUntracked', 'mine');
+    commit(work, 'a.txt', 'main\n', 'main');
+    expect(await h.service.integrate(repoId, 'merge', 'side')).toBe('conflict');
+    const [stash] = await rows(h, repoId, 'stashes');
+    const conflicted = fs.readFileSync(path.join(work, 'a.txt'), 'utf8');
+    for (const pop of [false, true]) {
+      await expect(h.service.stashApply(repoId, { index: 0, hash: stash!.hash }, pop)).rejects.toThrow('Resolve the merge conflicts before applying a stash.');
+    }
+    expect(h.log.some((line) => line.startsWith('> git stash apply') || line.startsWith('> git stash pop'))).toBe(false);
+    expect(await rows(h, repoId, 'stashes')).toHaveLength(1);
+    expect(fs.existsSync(path.join(work, 's.txt'))).toBe(false);
+    expect(fs.readFileSync(path.join(work, 'a.txt'), 'utf8')).toBe(conflicted);
+    expect((await freshStatus(h, repoId)).operation).toBe('merge');
+    h.service.dispose();
+  }, 60_000);
+
+  it('refuses to merge or rebase a branch while files have merge conflicts, before git runs', async () => {
+    const work = makeRepo(folder('integrate-during-merge'));
+    git(['checkout', '-q', '-b', 'side'], work);
+    commit(work, 'a.txt', 'side\n', 'side');
+    git(['checkout', '-q', '-b', 'other', 'main'], work);
+    commit(work, 'o.txt', 'other\n', 'other');
+    git(['checkout', '-q', 'main'], work);
+    commit(work, 'a.txt', 'main\n', 'main');
+    const { h, repoId } = await open(work);
+    expect(await h.service.integrate(repoId, 'merge', 'side')).toBe('conflict');
+    const head = git(['rev-parse', 'HEAD'], work).trim();
+    for (const command of ['merge', 'rebase'] as const) {
+      const before = h.log.length;
+      await expect(h.service.integrate(repoId, command, 'other')).rejects.toThrow('Resolve the merge conflicts before merging or rebasing a branch.');
+      expect(h.log.slice(before).some((line) => line.startsWith(`> git ${command}`) || line.includes(' merge ') || line.includes(' rebase '))).toBe(false);
+    }
+    expect(git(['rev-parse', 'HEAD'], work).trim()).toBe(head);
+    expect(git(['rev-parse', 'MERGE_HEAD'], work).trim()).toBe(git(['rev-parse', 'side'], work).trim());
+    h.service.dispose();
+  }, 60_000);
+
   it('lists a stash\'s files against its base, its untracked files included, with each file\'s patch', async () => {
     const work = makeRepo(folder('stash-view'));
     const { h, repoId } = await open(work);
@@ -470,6 +514,38 @@ describe.skipIf(!HAS_GIT)('stash', { timeout: 120_000 }, () => {
     factory.around(() => git(['stash', 'drop', 'stash@{1}'], work));
     await waitFor(stashed, 'artifacts-changed after a terminal drop of stash@{1}');
     expect((await rows(h, repoId, 'stashes')).map((stash) => stash.description)).toEqual(['again']);
+    h.service.dispose();
+  }, 60_000);
+
+  it('tells the Graph a ref change by the engine from one outside it, and reports none for the watcher\'s echo of refs it already reported', async () => {
+    const work = makeRepo(folder('refs-change'));
+    const factory = snapshotWatchers();
+    const h = harness({ trusted: [work], watchers: factory });
+    const events: ScmEvent[] = [];
+    h.service.onDidChange((event) => void events.push(event));
+    h.service.setProjects([{ key: 'p', path: work }]);
+    const repoId = (await ready(h)).repos[0]!.repoId;
+    await waitFor(() => statusOf(h, repoId), 'a first status');
+    const tagsEvent = () => events.find((event) => event.kind === 'artifacts' && event.groups.includes('tags'));
+    const branchesEvent = () => events.find((event) => event.kind === 'artifacts' && event.groups.includes('branches'));
+    // the first watcher event after the repository opened compares with the refs read when it opened: an echo moves nothing
+    const main = path.join(work, '.git', 'refs', 'heads', 'main');
+    factory.around(() => fs.writeFileSync(main, fs.readFileSync(main)));
+    const first = await waitFor(branchesEvent, 'the first echo');
+    expect(first && 'refs' in first ? first.refs : undefined).toBeUndefined();
+    events.length = 0;
+    // a terminal adds a tag: background
+    factory.around(() => git(['tag', 'terminal'], work));
+    expect(await waitFor(tagsEvent, 'the terminal\'s tag')).toMatchObject({ refs: 'background' });
+    events.length = 0;
+    // the engine adds one: engine, and the watcher's echo of it reports no ref change
+    await h.service.createTag(repoId, 'engine', '');
+    expect(tagsEvent()).toMatchObject({ refs: 'engine' });
+    events.length = 0;
+    const loose = path.join(work, '.git', 'refs', 'tags', 'engine');
+    factory.around(() => fs.writeFileSync(loose, fs.readFileSync(loose)));
+    const echo = await waitFor(tagsEvent, 'the echo');
+    expect(echo && 'refs' in echo ? echo.refs : undefined).toBeUndefined();
     h.service.dispose();
   }, 60_000);
 });
@@ -530,7 +606,11 @@ describe.skipIf(!HAS_GIT)('worktrees', { timeout: 120_000 }, () => {
     ]);
     expect(worktrees[1]!.path).toBe(path.normalize(fresh));
     expect(worktrees[1]!.commit?.subject).toBe('first');
+    // Delete Worktree's check runs a status in the worktree itself, as git worktree remove checks it
+    expect(await h.service.worktreeDirty(repoId, fresh)).toBe(false);
     write(path.join(fresh, 'dirty.txt'), 'dirty\n');
+    expect(await h.service.worktreeDirty(repoId, fresh)).toBe(true);
+    expect(h.log.filter((line) => line.includes(' status ')).some((line) => line.includes(' -C '))).toBe(false);
     expect(await h.service.removeWorktree(repoId, fresh, false)).toBe('dirty');
     expect(fs.existsSync(fresh)).toBe(true);
     expect(await h.service.removeWorktree(repoId, fresh, true)).toBe('ok');
@@ -539,6 +619,22 @@ describe.skipIf(!HAS_GIT)('worktrees', { timeout: 120_000 }, () => {
     expect((await rows(h, repoId, 'worktrees')).map((row) => row.name)).toEqual([path.basename(work)]);
     await expect(h.service.addWorktree(repoId, 'relative/path', 'HEAD', undefined)).rejects.toThrow();
     expect(h.service.worktreeFolder(repoId)).toBe(parent);
+    h.service.dispose();
+  }, 60_000);
+
+  it('runs no dirty check in a worktree that lies in a project the user has not trusted, which decides as for any folder', async () => {
+    const work = makeRepo(folder('worktree-trust'));
+    const stranger = folder('worktree-stranger');
+    const inside = path.join(stranger, 'wt');
+    git(['worktree', 'add', '--quiet', '-b', 'wt', inside], work);
+    write(path.join(inside, 'dirty.txt'), 'dirty\n');
+    const h = harness({ trusted: [work] });
+    h.service.setProjects([{ key: 'p', path: work }, { key: 'q', path: stranger }]);
+    const repoId = (await ready(h)).repos[0]!.repoId;
+    await waitFor(() => statusOf(h, repoId), 'a first status');
+    const before = h.log.length;
+    await expect(h.service.worktreeDirty(repoId, inside)).rejects.toBeInstanceOf(GitUntrustedError);
+    expect(h.log.slice(before)).toEqual([]);
     h.service.dispose();
   }, 60_000);
 });

@@ -208,6 +208,27 @@ describe('FormatterHosts', () => {
     hosts.dispose();
     expect(spawned[0]!.killed).toBe(true);
   });
+
+  it('releases a root\'s host once its process has exited, whether the release or an earlier retain stopped it', async () => {
+    void hosts.format(ROOT, REQUEST);
+    let released = false;
+    const release = hosts.release(ROOT.key).then(() => (released = true));
+    expect(spawned[0]!.killed).toBe(true);
+    await Promise.resolve();
+    expect(released).toBe(false);
+    spawned[0]!.exited(1);
+    await release;
+
+    void hosts.format(ROOT, REQUEST);
+    hosts.retain([]);
+    let again = false;
+    const second = hosts.release(ROOT.key).then(() => (again = true));
+    await Promise.resolve();
+    expect(again).toBe(false);
+    spawned[1]!.exited(1);
+    await second;
+    await expect(hosts.release('c:\\work\\none')).resolves.toBeUndefined();
+  });
 });
 
 describe('host message contract', () => {

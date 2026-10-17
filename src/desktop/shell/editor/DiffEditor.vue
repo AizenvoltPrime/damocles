@@ -7,6 +7,8 @@ import { Button } from '@/components/ui/button';
 import type { DamoclesShellApi, EditorMenuShortcut, ShellEditorSettings, ShellEditorTab } from '../../preload/shell-channels';
 import { attachEditorContextMenu } from './context-menu';
 import { EDITOR_STORE } from './editor-store';
+import { attachDiffGit, type DiffGit } from './diff-git';
+import { addEditorGitKeybindings, gitKeyLabels } from './editor-keys';
 import NotDisplayedNotice from './NotDisplayedNotice.vue';
 
 // A diff tab: the original side is always read-only; the modified side is editable when main says the tab is (Compare from
@@ -28,6 +30,8 @@ const single = shallowRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
 const ready = ref(false);
 const menus: IDisposable[] = [];
 let stopFollowing: (() => void) | undefined;
+let diffGit: DiffGit | undefined;
+let stopCommands: (() => void) | undefined;
 
 // Main sends sides only when one is not text, and never changes them for a tab.
 const sides = props.tab.diff.sides;
@@ -99,8 +103,29 @@ async function mountDiff(): Promise<void> {
     useInlineViewWhenSpaceIsLimited: true,
     scrollBeyondLastLine: false,
     contextmenu: false,
+    // Stage Block and Stage Selection sit in the glyph margin of a diff against the index
+    glyphMargin: props.tab.diff.git?.group === 'workingTree',
   });
   created.setModel({ original, modified });
+  const git = props.tab.diff.git;
+  if (git) {
+    diffGit = attachDiffGit(created, monaco, git, {
+      api: props.api,
+      t: (key) => t(key),
+      flush: (documentId) => store.flush(documentId),
+      documentId: props.tab.diff.modifiedId,
+      readOnly: () => props.tab.readOnly,
+    });
+    menus.push(diffGit);
+  }
+  // Every diff moves between its changes; a diff of a git change also stages, unstages and reverts.
+  for (const side of [created.getOriginalEditor(), created.getModifiedEditor()]) {
+    menus.push(addEditorGitKeybindings(side as MonacoEditor.IStandaloneCodeEditor, monaco, gitKeyLabels(t), (command) => void store.runCommand(command)));
+  }
+  stopCommands = store.setCommandTarget(props.tab.id, async (command) => {
+    if (command === 'nextChange' || command === 'previousChange') created.goToDiff(command === 'nextChange' ? 'next' : 'previous');
+    else await diffGit?.run(command);
+  });
   // Where the reader was before another tab showed in this one's place.
   const viewState = store.viewStateOf(props.tab.id);
   if (viewState && 'modified' in viewState) created.restoreViewState(viewState);
@@ -137,6 +162,7 @@ onBeforeUnmount(() => {
   const current = editor.value ?? single.value;
   if (current) store.rememberViewState(props.tab.id, current.saveViewState());
   stopFollowing?.();
+  stopCommands?.();
   for (const menu of menus.splice(0)) menu.dispose();
   editor.value?.dispose();
   single.value?.dispose();

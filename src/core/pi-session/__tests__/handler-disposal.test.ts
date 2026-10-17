@@ -156,6 +156,7 @@ function fakePanel(): PanelGateContext & { onBeforeSettle: ReturnType<typeof vi.
     isPlanMode: () => false,
     shellCancel: new ShellCancelStore().forContext(() => undefined),
     getSessionModel: () => 'claude-opus-4-8',
+    memoryWorkspace: () => '/repo',
     getSystemPromptEnv: () => ({
       cwd: '/repo',
       model: 'claude-opus-4-8',

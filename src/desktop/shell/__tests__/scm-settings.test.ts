@@ -49,10 +49,10 @@ afterEach(() => {
 });
 
 describe('Settings › Source control', () => {
-  it('lists the fetch and sync rows first and the clone rows last, titled as the final prototype titles them', async () => {
+  it('lists the fetch and sync rows first, then commit, branches and clone, and the editor\'s blame row last, titled as the final prototype titles them', async () => {
     await openSourceControl();
     const heads = [...document.querySelectorAll('.sm-group-head')].map((head) => head.textContent!.trim());
-    expect(heads).toEqual(['Fetch and sync', 'Commit', 'Branches and repositories', 'Clone']);
+    expect(heads).toEqual(['Fetch and sync', 'Commit', 'Branches and repositories', 'Clone', 'Editor']);
     const titles = (keys: readonly string[]): string[] => keys.map((key) => row(key).querySelector('[id^="settings-row-label-"]')!.textContent!.trim());
     expect(titles(['autofetch', 'autofetchPeriod', 'pruneOnFetch', 'confirmSync', 'rebaseWhenSync', 'followTagsWhenSync', 'allowForcePush', 'autoStash', 'defaultCloneDirectory', 'openAfterClone'])).toEqual([
       'Autofetch', 'Autofetch period', 'Prune on fetch', 'Confirm sync', 'Rebase when syncing', 'Follow tags when syncing', 'Allow force push', 'Auto stash', 'Default clone folder', 'Open after clone',
@@ -61,7 +61,7 @@ describe('Settings › Source control', () => {
     expect(order.slice(0, 10)).toEqual(['autofetch', 'autofetchPeriod', 'pruneOnFetch', 'confirmSync', 'rebaseWhenSync', 'followTagsWhenSync', 'allowForcePush', 'autoStash', 'pullBeforeCheckout', 'postCommitCommand']);
     // appendix A.5: Save files before stash right after Save files before commit
     expect(order.slice(order.indexOf('promptToSaveFilesBeforeCommit'), order.indexOf('promptToSaveFilesBeforeCommit') + 2)).toEqual(['promptToSaveFilesBeforeCommit', 'promptToSaveFilesBeforeStash']);
-    expect(order.slice(-2)).toEqual(['defaultCloneDirectory', 'openAfterClone']);
+    expect(order.slice(-3)).toEqual(['defaultCloneDirectory', 'openAfterClone', 'blame.editorDecoration.enabled']);
   });
 
   it("shows each key's default: autofetch and confirm sync on, every other switch off, 180 seconds, and Prompt", async () => {
@@ -114,8 +114,17 @@ describe('Settings › Source control', () => {
     expect(api.setPref).toHaveBeenCalledWith(`${GIT}promptToSaveFilesBeforeStash`, 'never');
   });
 
+  it('shows the inline blame switch on by default, as D64 sets it, and writes its dotted key', async () => {
+    await openSourceControl();
+    const blame = switchOf('blame.editorDecoration.enabled');
+    expect(row('blame.editorDecoration.enabled').querySelector('[id^="settings-row-label-"]')!.textContent!.trim()).toBe(shellI18n.global.t('settingsHost.rows.gitBlameEditorDecorationEnabled.label'));
+    expect(blame.getAttribute('aria-checked')).toBe('true');
+    blame.click();
+    expect(api.setPref).toHaveBeenCalledWith(`${GIT}blame.editorDecoration.enabled`, false);
+  });
+
   it('has English and Greek strings for every new row', () => {
-    for (const name of ['Autofetch', 'AutofetchPeriod', 'PruneOnFetch', 'ConfirmSync', 'RebaseWhenSync', 'FollowTagsWhenSync', 'AllowForcePush', 'AutoStash', 'DefaultCloneDirectory', 'OpenAfterClone', 'PullBeforeCheckout', 'PromptToSaveFilesBeforeStash']) {
+    for (const name of ['Autofetch', 'AutofetchPeriod', 'PruneOnFetch', 'ConfirmSync', 'RebaseWhenSync', 'FollowTagsWhenSync', 'AllowForcePush', 'AutoStash', 'DefaultCloneDirectory', 'OpenAfterClone', 'PullBeforeCheckout', 'PromptToSaveFilesBeforeStash', 'BlameEditorDecorationEnabled']) {
       for (const part of ['label', 'description']) {
         const key = `settingsHost.rows.git${name}.${part}`;
         expect(shellI18n.global.te(key, 'en') && shellI18n.global.te(key, 'el'), key).toBe(true);

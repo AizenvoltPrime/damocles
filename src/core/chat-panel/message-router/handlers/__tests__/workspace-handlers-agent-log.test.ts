@@ -9,8 +9,8 @@ vi.mock('../../../../pi-session/agent-records', () => ({
   subagentsDir: (sessionDir: string, sessionId: string) => `${sessionDir}/${sessionId}/subagents`,
 }));
 
-vi.mock('../../../../pi-session/session-store/session-dir', () => ({
-  ensurePiSessionDir: (cwd: string) => `/sessions/${cwd}`,
+vi.mock('../../../../pi-session/session-store/reading', () => ({
+  piSessionDirOf: (cwd: string) => `/sessions/${cwd}`,
 }));
 
 vi.mock('../../../../logger', () => ({ log: vi.fn() }));

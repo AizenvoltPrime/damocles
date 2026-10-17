@@ -1,5 +1,5 @@
 // The askpass server's prompt bridge (plan AD4, "Askpass"): what each credential prompt shows in the overlay.
-import type { PromptCredential } from '../../core/scm/askpass/askpass-server';
+import { PROMPT_CANCELLED, type PromptCredential } from '../../core/scm/askpass/askpass-server';
 import type { AskMessage } from './message-dialog';
 import type { AskInput } from './overlay';
 
@@ -13,7 +13,7 @@ export interface AskpassBridgeDeps {
  * A username in the plain box, a password, passphrase or other secret in the masked one, an SSH yes/no question (a host key,
  * or SSH_ASKPASS_PROMPT=confirm) as a danger question whose No takes focus, and ssh's notice (SSH_ASKPASS_PROMPT=none) as
  * an information dialog its withdrawal closes. git's text is shown as plain text only, and every prompt is withdrawn
- * with its signal.
+ * with its signal. A box or question the user dismissed answers PROMPT_CANCELLED, a withdrawn one undefined.
  */
 export function createAskpassBridge(deps: AskpassBridgeDeps): PromptCredential {
   const { t } = deps;
@@ -21,7 +21,8 @@ export function createAskpassBridge(deps: AskpassBridgeDeps): PromptCredential {
     const detail = prompt.text === '' ? {} : { detail: prompt.text };
     if (prompt.kind === 'confirm') {
       const choice = await deps.ask({ severity: 'danger', message: t('Are you sure you want to continue connecting?'), ...detail, actions: [t('Yes')], cancelLabel: t('No') }, signal);
-      return choice === 0 && !signal.aborted ? 'yes' : undefined;
+      if (signal.aborted) return undefined;
+      return choice === 0 ? 'yes' : PROMPT_CANCELLED;
     }
     if (prompt.kind === 'notice') {
       await deps.ask({ severity: 'info', message: t('SSH is waiting for you.'), ...detail, actions: [t('OK')], defaultAction: 0 }, signal);
@@ -29,6 +30,8 @@ export function createAskpassBridge(deps: AskpassBridgeDeps): PromptCredential {
     }
     const placeholder = prompt.kind === 'username' ? t('Username') : prompt.kind === 'passphrase' ? t('Passphrase') : t('Password');
     const text = prompt.text === '' ? t('Git asks for credentials.') : prompt.text;
-    return deps.askInput({ title: t('Git Authentication'), prompt: text, placeholder, ...(prompt.kind === 'username' ? {} : { password: true }) }, signal);
+    const answer = await deps.askInput({ title: t('Git Authentication'), prompt: text, placeholder, ...(prompt.kind === 'username' ? {} : { password: true }) }, signal);
+    if (signal.aborted) return undefined;
+    return answer ?? PROMPT_CANCELLED;
   };
 }

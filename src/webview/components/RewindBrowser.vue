@@ -2,7 +2,7 @@
 import { ref, computed, watch, useId, shallowRef } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { storeToRefs } from 'pinia';
-import { FileText, Layers, LifeBuoy, MessageSquare, RotateCcw, Search, TriangleAlert } from 'lucide-vue-next';
+import { ArrowLeftRight, FileText, Layers, LifeBuoy, MessageSquare, RotateCcw, Search, TriangleAlert } from 'lucide-vue-next';
 import { useSessionStore } from '@/stores';
 import OverlayShell from '@/components/OverlayShell.vue';
 import SlidingIndicator from '@/components/SlidingIndicator.vue';
@@ -24,7 +24,7 @@ function isCheckpointBacked(item: RewindHistoryItem): boolean {
 /** Whether a list row shows the file-count badge: prompt anchors and checkpoint-backed compaction
  *  anchors that actually restore files. Checkpoint-less compaction anchors never show it. */
 function showFileBadge(item: RewindHistoryItem): boolean {
-  return (item.kind !== 'compaction' || isCheckpointBacked(item)) && item.filesAffected > 0;
+  return (item.kind !== 'compaction' || isCheckpointBacked(item)) && item.filesAffected > 0 && item.crossesHandOff !== true;
 }
 
 /** Whether a list row shows the "Not rewindable" badge. A chat with no project folder restores files
@@ -238,6 +238,13 @@ function truncateContent(content: string, maxLength: number = 60): string {
             v-if="showFileBadge(prompt)"
             class="relative z-2 flex-none self-center rounded-full bg-(--d-hover) px-1.75 font-mono text-10.5 whitespace-nowrap text-(--d-muted)"
           >{{ t('rewind.filesAffected', { n: prompt.filesAffected }, prompt.filesAffected) }}</span>
+          <ArrowLeftRight
+            v-if="prompt.crossesHandOff"
+            data-testid="rewind-row-hand-off"
+            class="relative z-2 size-3.25 flex-none self-center text-(--d-faint)"
+            :aria-label="t('worktree.rewindNote')"
+            role="img"
+          />
           <span
             v-if="showNotRewindableBadge(prompt)"
             data-testid="rewind-row-not-rewindable"
@@ -331,7 +338,11 @@ function truncateContent(content: string, maxLength: number = 60): string {
           </div>
         </template>
         <template v-else>
-          <div class="flex items-start gap-2">
+          <!-- D61: no files go back across a hand-off, so the file list and its warning give way to the note. -->
+          <div
+            v-if="!selectedPrompt.crossesHandOff"
+            class="flex items-start gap-2"
+          >
             <FileText
               class="size-3.5 mt-0.5 flex-none"
               aria-hidden="true"
@@ -360,6 +371,20 @@ function truncateContent(content: string, maxLength: number = 60): string {
               </template>
             </div>
           </div>
+          <!-- D61: a turn before a hand-off made its edits in the other folder, so only the conversation goes back. -->
+          <Transition name="t-tuck">
+            <div
+              v-if="selectedPrompt.crossesHandOff"
+              class="flex items-start gap-2 text-(--d-info-text)"
+              data-testid="rewind-hand-off-note"
+            >
+              <ArrowLeftRight
+                class="mt-0.5 size-3.5 flex-none"
+                aria-hidden="true"
+              />
+              <span class="min-w-0 flex-1 text-pretty">{{ t('worktree.rewindNote') }}</span>
+            </div>
+          </Transition>
           <template v-if="isCheckpointBacked(selectedPrompt)">
             <div class="flex items-center gap-2 text-(--d-info)">
               <Layers
@@ -379,7 +404,7 @@ function truncateContent(content: string, maxLength: number = 60): string {
             </div>
           </template>
           <div
-            v-else
+            v-else-if="!selectedPrompt.crossesHandOff"
             class="flex items-center gap-2 text-(--d-warning)"
           >
             <TriangleAlert

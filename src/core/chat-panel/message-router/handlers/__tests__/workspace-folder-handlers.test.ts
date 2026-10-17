@@ -6,6 +6,7 @@ const logMock = vi.hoisted(() => vi.fn());
 vi.mock('../../../../logger', () => ({ log: logMock }));
 vi.mock('../../../ide-context-manager', () => ({
   IdeContextManager: class {
+    refresh(): void {}
     dispose(): void {}
   },
 }));

@@ -16,6 +16,7 @@ import {
   GIT_AUTOFETCH_PERIOD_SETTING,
   GIT_AUTOFETCH_SETTING,
   GIT_AUTO_STASH_SETTING,
+  GIT_BLAME_EDITOR_DECORATION_SETTING,
   GIT_BRANCH_PREFIX_SETTING,
   GIT_BRANCH_PROTECTION_PROMPT_SETTING,
   GIT_BRANCH_PROTECTION_PROMPTS,
@@ -319,6 +320,20 @@ const parentOptions = computed(() => GIT_OPEN_REPOSITORY_IN_PARENT_FOLDERS.map((
       :options="openAfterCloneOptions"
       :label="t('settingsHost.rows.gitOpenAfterClone.label')"
       @update:model-value="(value) => prefs.set(GIT_OPEN_AFTER_CLONE_SETTING, value)"
+    />
+  </SettingsRow>
+  <div
+    v-if="!page.query"
+    class="sm-group-head"
+    data-testid="settings-group-editor"
+  >
+    {{ t('settingsHost.groups.gitEditor') }}
+  </div>
+  <SettingsRow :id="GIT_BLAME_EDITOR_DECORATION_SETTING">
+    <SettingSwitch
+      :model-value="valueOf(GIT_BLAME_EDITOR_DECORATION_SETTING) === true"
+      :label="t('settingsHost.rows.gitBlameEditorDecorationEnabled.label')"
+      @update:model-value="(value) => prefs.set(GIT_BLAME_EDITOR_DECORATION_SETTING, value)"
     />
   </SettingsRow>
 </template>

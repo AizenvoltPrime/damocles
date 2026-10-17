@@ -1,34 +1,62 @@
 // Source control in main (plan AD4, "Who does what"): the damocles:scm:* requests, the user flows keyed by op, the selected
 // repository per project, the pushes to the shell, the editor tabs and the palette's entry points.
+import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { SettingsStore } from '../../../platform/settings-store';
 import { UNREACHABLE, type StructuredCompletionRequest, type StructuredCompletionResult } from '../../../core/pi-session/structured-completion';
 import { generateCommitMessage, type CommitMessageComplete } from '../../../core/scm/commit-message';
 import { isInside, samePath } from '../../../core/scm/discovery';
-import { redactUrls } from '../../../core/scm/git-runner';
+import { GitUntrustedError, redactUrls } from '../../../core/scm/git-runner';
 import { isRemoteName, isRemoteUrl, type Remote } from '../../../core/scm/remotes';
-import { isObjectName, type CommitPairDiff, type StashArtifact } from '../../../core/scm/artifacts';
+import { isObjectName, type CommitPairDiff, type StashArtifact, type WorktreeArtifact } from '../../../core/scm/artifacts';
 import type { Change, ChangeGroup, Repository } from '../../../core/scm/repository';
+import type { StageRefusal, TextCodec } from '../../../core/scm/staging';
 import { gitErrorText, RemoteCancelledError, StashKeptError, SyncBranchChangedError, type ProjectView, type ScmService, type SyncBranch } from '../../../core/scm/scm-service';
 import { SCM_SETTING_KEYS, type OpenAfterClone, type PostCommitCommand, type PromptToSaveFilesBeforeCommit } from '../../../core/scm/settings-keys';
 import { canStashStaged } from '../../../core/scm/stash';
+import type { CommitAttachmentInput } from '../../../shared/types/chat-attachment';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { inputProblem } from '../../../shared/input-validation';
-import type { FileRef } from '../../preload/shell-channels';
+import { visibleText } from '../../../shared/visible-text';
+import type { FileRef, ShellFileGit } from '../../preload/shell-channels';
 import {
   parseScmAmend,
   parseScmArtifacts,
   parseScmCommit,
+  parseScmCommitDetails,
+  parseScmHistory,
+  parseScmHistoryCursor,
+  scmHistoryCursor,
+  MAX_SCM_HISTORY_SKIP,
+  SCM_HISTORY_PAGE,
+  type ScmCommitDetailsResult,
+  type ScmHistoryResult,
+  type ScmHistoryCursor,
   parseScmCopy,
   parseScmFileDiff,
+  parseScmMergeFile,
+  parseScmPath,
   parseScmRepoRef,
+  parseScmResource,
   parseScmRun,
   parseScmSelect,
+  parseScmTimeline,
+  parseScmTimelineCursor,
+  type ScmBlameResult,
+  type ScmCommitFile,
+  type ScmMergeFileResult,
+  type ScmMergeInputsResult,
+  type ScmQuickDiffBaseResult,
+  type ScmResource,
+  type ScmStageRangesRequest,
+  type ScmTimelineResult,
+  type ScmUnstageRangesRequest,
   type ScmArtifactGroup,
   type ScmCopyKind,
   type ScmCopyRequest,
   type ScmArtifactsChanged,
+  type ScmRefsChange,
   type ScmArtifactsResult,
   type ScmCapabilities,
   type ScmDiffSource,
@@ -51,13 +79,17 @@ import {
   type ScmStashScope,
   type ScmShellState,
   type ScmView,
+  type ScmWorktreeArtifact,
+  type ScmWorktreeChat,
   type ScmPostCommit,
   type SCM_DISCARD_ALL_SCOPES,
   type SCM_FETCH_SCOPES,
   type SCM_STAGE_ALL_SCOPES,
 } from '../../preload/scm-channels';
 import { isDesktopSettingValue } from '../desktop-configuration';
-import type { Project } from '../documents/confine';
+import { confineExisting, type Project } from '../documents/confine';
+import { parseRootKey } from '../../preload/folder-root';
+import type { Document, DocumentService } from '../documents/document-service';
 import type { EditorPane, NotShownSide } from '../editor-pane';
 import type { AskMessage } from '../message-dialog';
 import type { AskInput } from '../overlay';
@@ -79,9 +111,34 @@ export interface ScmQuickPickItem {
   readonly info?: true;
 }
 
+export interface ScmWorktreeDeps {
+  // D33's Delete when a live chat worktree's root is at worktreePath; false for any other worktree
+  deleteChatWorktreeAt(worktreePath: string): Promise<boolean>;
+  // the adopted record of a worktree holding an open project, before its delete (rule 16)
+  adopt(project: Project, worktree: WorktreeArtifact, repositoryRoot: string, mainProject: Project | undefined): Promise<void>;
+  // Create Worktree's adopted record, under the project the repository belongs to (rule 16)
+  adoptCreated(projectKey: string, repositoryRoot: string, worktreePath: string, branch: string | undefined): Promise<void>;
+  // git removed the worktree: its adopted record is marked deleted, so its chats list read-only
+  markRemoved(worktreePath: string): Promise<void>;
+  // closes a project and its chats as Remove Project does, asking first about terminals running a process
+  closeProject(projectKey: string): Promise<'closed' | 'cancelled' | { readonly reason: string }>;
+  // Open on a registered chat worktree's row: its most recently viewed chat, or undefined for any other worktree
+  chatOf(worktreePath: string): ScmWorktreeChat | undefined;
+  // New Chat in This Worktree's target for the row: a live chat worktree of an open, trusted project
+  newChatTargetAt(worktreePath: string): { readonly projectKey: string; readonly worktreeId: string } | undefined;
+  selectChat(chatId: string): Promise<void>;
+  // Open on the worktree holding the project folder: the views show the project folder again (D31)
+  showProjectFolder(projectKey: string): void;
+  // B40: where the project folder holds a file of the chat worktree root, confined like any project file; undefined for any
+  // other root or a file outside the working folder
+  projectCopyOf(rootKey: string, absolutePath: string): { readonly project: Project; readonly relativePath: string } | undefined;
+}
+
 export interface ScmHostDeps {
   readonly service: ScmService;
   readonly settings: SettingsStore;
+  // the editor's documents: a stage reads the buffer from here, and every editor git read the document's encoding
+  readonly documents: DocumentService;
   readonly projects: () => readonly Project[];
   // the selected project, whose selected repository the palette and the menu act on
   readonly selectedProjectKey: () => string | undefined;
@@ -104,8 +161,8 @@ export interface ScmHostDeps {
   readonly addProject: (folder: string) => Promise<void>;
   // selects a project of the list, as its Projects row does (a worktree's Open)
   readonly selectProject: (projectKey: string) => Promise<void>;
-  // removes a project as its Projects row does, keeping its chats (a deleted worktree's project); not ok: the reason it stays
-  readonly removeProject: (projectKey: string) => Promise<{ readonly ok: true } | { readonly ok: false; readonly reason: string }>;
+  // worktree chats (slice 12a): D33's delete, rule 14's close-first order and the registry's adopted records
+  readonly worktrees: ScmWorktreeDeps;
   // git was found, whatever any project's trust (Clone's palette clause)
   readonly gitFound: boolean;
   // the picked item's id and the filter text as typed; undefined for Escape, or when it could not show (its asker told the user)
@@ -115,6 +172,8 @@ export interface ScmHostDeps {
   // the overlay QuickInput; undefined for Escape, or when it could not show (its asker told the user)
   readonly askInput: AskInput;
   readonly mention: (target: FileRef | { readonly path: string }) => Promise<void>;
+  // the selected chat's pending attachment, else a new chat's in projectKey; prompt, when given, joins the composer's draft
+  readonly addToChat: (projectKey: string, attachment: CommitAttachmentInput, prompt: string | undefined) => Promise<void>;
   readonly complete: CommitMessageComplete;
   readonly send: {
     view(view: ScmView): void;
@@ -151,7 +210,7 @@ export type ScmPaletteRequest =
   | { readonly op: 'clone'; readonly recursive: boolean }
   | { readonly op: 'checkout'; readonly detached: boolean }
   | { readonly op: 'createBranch'; readonly from: boolean }
-  | { readonly op: 'renameBranch' | 'deleteBranch' | 'deleteRemoteBranch' | 'merge' | 'rebase' | 'stashDropAll' | 'createTag' | 'deleteTag' | 'deleteRemoteTag' | 'pushTags' | 'createWorktree' | 'deleteWorktree' }
+  | { readonly op: 'renameBranch' | 'deleteBranch' | 'deleteRemoteBranch' | 'merge' | 'rebase' | 'cherryPick' | 'stashDropAll' | 'createTag' | 'deleteTag' | 'deleteRemoteTag' | 'pushTags' | 'createWorktree' | 'deleteWorktree' }
   | { readonly op: 'stash'; readonly scope: ScmStashScope }
   | { readonly op: 'stashApply'; readonly pop: boolean; readonly target: 'latest' | 'pick' }
   | { readonly op: 'stashDrop' | 'viewStash'; readonly target: 'pick' };
@@ -312,11 +371,12 @@ const FLOWS: FlowRegistry = {
     host.deps.service.cancelClone();
     return OK;
   },
-  checkout: (host, request) => host.refs.checkout(request.repoId, request.detached, request.ref),
-  createBranch: (host, request) => host.refs.createBranch(request.repoId, request.from, request.ref),
+  checkout: (host, request) => (request.commit !== undefined ? host.withCommit(request.repoId, request.commit, () => host.refs.checkoutCommit(request.repoId, request.commit!)) : host.refs.checkout(request.repoId, request.detached, request.ref)),
+  createBranch: (host, request) =>
+    request.commit !== undefined ? host.withCommit(request.repoId, request.commit, () => host.refs.createBranch(request.repoId, false, undefined, '', request.commit)) : host.refs.createBranch(request.repoId, request.from, request.ref),
   renameBranch: (host, request) => host.refs.renameBranch(request.repoId),
   deleteBranch: (host, request) => host.refs.deleteBranch(request.repoId, request.ref),
-  deleteRemoteBranch: (host, request) => host.refs.deleteRemoteBranch(request.repoId),
+  deleteRemoteBranch: (host, request) => host.refs.deleteRemoteBranch(request.repoId, request.ref),
   merge: (host, request) => host.refs.integrate(request.repoId, 'merge', request.ref),
   rebase: (host, request) => host.refs.integrate(request.repoId, 'rebase', request.ref),
   stash: (host, request) => host.refs.stash(request.repoId, request.scope),
@@ -325,7 +385,7 @@ const FLOWS: FlowRegistry = {
   stashDrop: (host, request) => host.refs.stashDrop(request.repoId, request.target),
   stashDropAll: (host, request) => host.refs.stashDropAll(request.repoId),
   viewStash: (host, request) => host.refs.viewStash(request.repoId, request.target),
-  createTag: (host, request) => host.refs.createTag(request.repoId),
+  createTag: (host, request) => (request.commit !== undefined ? host.withCommit(request.repoId, request.commit, () => host.refs.createTag(request.repoId, request.commit)) : host.refs.createTag(request.repoId)),
   deleteTag: (host, request) => host.refs.deleteTag(request.repoId, request.ref),
   deleteRemoteTag: (host, request) => host.refs.deleteRemoteTag(request.repoId),
   pushTags: (host, request) => host.refs.pushTags(request.repoId, () => void host.runRequest({ op: 'addRemote', repoId: request.repoId })),
@@ -333,7 +393,29 @@ const FLOWS: FlowRegistry = {
   deleteWorktree: (host, request) => host.refs.deleteWorktree(request.repoId, request.path),
   compareRef: (host, request) => host.refs.compareRef(request.repoId, request.ref),
   openWorktree: (host, request) => host.openWorktree(request.repoId, request.path),
+  compareWithWorkspace: (host, request) => host.compareWithWorkspace(request.repoId, request.path),
+  stageRanges: (host, request) => host.stageRanges(request),
+  unstageRanges: (host, request) => host.stageRanges(request),
+  completeMerge: (host, request) => host.completeMerge(request.repoId, request.path, request.documentId),
+  openCommit: (host, request) => host.withCommit(request.repoId, request.commit, () => host.openCommit(request.repoId, request.commit, request.path)),
+  openTimeline: (host, request) => host.openTimeline(request.repoId, request.path),
+  openMergeEditor: (host, request) => host.openMergeEditor(request.repoId, request.path),
+  compareCommits: (host, request) => host.withCommit(request.repoId, request.left.commit, () => host.withCommit(request.repoId, request.right.commit, () => host.compareCommits(request.repoId, request.left, request.right))),
+  compareCommit: (host, request) => host.withCommit(request.repoId, request.commit, () => host.refs.compareCommit(request.repoId, request.commit)),
+  compareWithRemote: (host, request) => host.withCommit(request.repoId, request.commit, () => host.compareWithHeadRef(request.repoId, request.commit, 'upstream')),
+  compareWithMergeBase: (host, request) => host.withCommit(request.repoId, request.commit, () => host.compareWithHeadRef(request.repoId, request.commit, 'base')),
+  cherryPick: (host, request) => host.cherryPick(request.repoId, request.commit),
+  addCommitToChat: (host, request) => host.withCommit(request.repoId, request.commit, () => host.commitToChat(request.repoId, request.commit, false)),
+  explainCommit: (host, request) => host.withCommit(request.repoId, request.commit, () => host.commitToChat(request.repoId, request.commit, true)),
+  openGraphChanges: (host, request) => host.openGraphChanges(request.repoId, request.direction),
 };
+
+// A text document's encoding and byte order mark, which its file's blobs are read and written in.
+function codecOf(document: Extract<Document, { kind: 'text' }>): TextCodec {
+  return { encoding: document.encoding, bom: document.bom };
+}
+
+const shortHash = (hash: string): string => hash.slice(0, 7);
 
 // VS Code's ~ expansion of git.defaultCloneDirectory.
 function expandHome(folder: string): string {
@@ -381,7 +463,7 @@ export function backgroundCompletion(runtime: () => SubCallRuntime | null, getSe
 
 export class ScmHost {
   readonly deps: ScmHostDeps;
-  private readonly pending = { views: new Set<string>(), repos: new Set<string>(), decorations: new Set<string>(), ignores: new Set<string>(), artifacts: new Map<string, Set<ScmArtifactGroup>>(), clone: false };
+  private readonly pending = { views: new Set<string>(), repos: new Set<string>(), decorations: new Set<string>(), ignores: new Set<string>(), artifacts: new Map<string, Set<ScmArtifactGroup>>(), refs: new Map<string, ScmRefsChange>(), clone: false };
   readonly refs: RefFlows;
   // the commit pairs of View Stash and Compare tabs, by pairKey, dropped once no open tab holds them; commits never change, so
   // an entry stays valid
@@ -402,6 +484,7 @@ export class ScmHost {
       openStash: (repoId, stash) => this.openStash(repoId, stash),
       openRefsChanges: (repoId, left, right) => this.openRefsChanges(repoId, left, right),
       worktreeProject: (repoId, worktreePath) => this.worktreeProject(repoId, worktreePath),
+      runRequest: (request) => this.runRequest(request),
     });
     this.subscriptions = [
       deps.service.onDidChange((event) => {
@@ -413,6 +496,8 @@ export class ScmHost {
           const groups = this.pending.artifacts.get(event.repoId) ?? new Set<ScmArtifactGroup>();
           for (const group of event.groups) groups.add(group);
           this.pending.artifacts.set(event.repoId, groups);
+          // an engine change within the coalesced batch wins, since the shell reloads on it whatever its scroll
+          if (event.refs !== undefined && this.pending.refs.get(event.repoId) !== 'engine') this.pending.refs.set(event.repoId, event.refs);
         }
         else this.pending.decorations.add(event.projectKey);
         this.scheduleFlush();
@@ -428,6 +513,50 @@ export class ScmHost {
   setProjects(projects: readonly Project[]): void {
     this.deps.service.setProjects(projects.map((project) => ({ key: project.key, path: project.fsPath })));
     this.selectedProjectChanged();
+  }
+
+  /** The repository holding a root's folder, the first a view lists, and its last status; undefined until one opened. */
+  rootRepository(rootKey: string): { readonly repoId: string; readonly hasRemote: boolean; readonly detached: boolean; readonly branch?: string } | undefined {
+    const repo = this.deps.service.view(rootKey)?.repos.find((candidate) => candidate.kind === 'root');
+    const status = repo ? this.deps.service.snapshot(repo.repoId)?.status : undefined;
+    if (!repo) return undefined;
+    const head = status?.head;
+    return { repoId: repo.repoId, hasRemote: (status?.remotes.length ?? 0) > 0, detached: head?.type === 'detached', ...(head?.type === 'branch' ? { branch: head.name } : {}) };
+  }
+
+  /** D30 and D9: the root of the repository holding the project folder that source control opened, its own or a parent's. */
+  projectRepository(projectKey: string): string | undefined {
+    const repo = this.deps.service.view(projectKey)?.repos.find((candidate) => candidate.kind === 'root') ?? this.deps.service.view(projectKey)?.repos.find((candidate) => candidate.kind === 'parent');
+    return repo ? this.deps.service.repository(repo.repoId)?.repo.root : undefined;
+  }
+
+  /** projectRepository once the project's discovery settled. */
+  async projectRepositoryWhenReady(projectKey: string): Promise<string | undefined> {
+    await this.discovered(projectKey);
+    return this.projectRepository(projectKey);
+  }
+
+  /** The repository of a root once its discovery settled (the root is in the list setProjects last gave). */
+  async rootRepositoryWhenReady(rootKey: string): Promise<string | undefined> {
+    await this.discovered(rootKey);
+    return this.rootRepository(rootKey)?.repoId;
+  }
+
+  private async discovered(rootKey: string): Promise<void> {
+    // a root main lists but has not handed to the service yet (setProjects follows a project change) has not settled either
+    const settled = (): boolean => {
+      const view = this.deps.service.view(rootKey);
+      return view ? view.state !== 'loading' : !this.deps.projects().some((project) => project.key === rootKey);
+    };
+    if (!settled()) {
+      await new Promise<void>((resolve) => {
+        const subscription = this.deps.service.onDidChange((event) => {
+          if (event.kind !== 'view' || !settled()) return;
+          subscription.dispose();
+          resolve();
+        });
+      });
+    }
   }
 
   /** Autofetch follows the selected project (AD4). */
@@ -514,7 +643,7 @@ export class ScmHost {
       return TOLD;
     }
     const view = t('View Stash');
-    void this.deps.notify.warn(t('Your changes were stashed for this operation and could not be applied back, so they are kept in the stash list as stash #{0}: {1}.', stash.index, stash.description), view).then((choice) => {
+    void this.deps.notify.warn(t('Your changes were stashed for this operation and could not be applied back, so they are kept in the stash list as stash #{0}: {1}.', stash.index, visibleText(stash.description)), view).then((choice) => {
       if (choice === view) void this.runRequest({ op: 'viewStash', repoId, target: { index: stash.index, hash: stash.hash } });
     });
     return TOLD;
@@ -522,7 +651,7 @@ export class ScmHost {
 
   private syncBranchChanged(err: SyncBranchChangedError): string {
     const t = this.deps.t;
-    const named = (branch: SyncBranch | null): string => (branch ? t('"{0}" tracking "{1}/{2}"', branch.branch, branch.remote, branch.upstreamBranch) : t('no branch with an upstream'));
+    const named = (branch: SyncBranch | null): string => (branch ? t('"{0}" tracking "{1}/{2}"', visibleText(branch.branch), visibleText(branch.remote), visibleText(branch.upstreamBranch)) : t('no branch with an upstream'));
     return err.stage === 'pull'
       ? t('The sync was confirmed for {0}, but the repository is now on {1}, so nothing was pulled or pushed.', named(err.confirmed), named(err.found))
       : t('The sync was confirmed for {0}, but after the pull the repository is on {1}, so nothing was pushed.', named(err.confirmed), named(err.found));
@@ -550,7 +679,9 @@ export class ScmHost {
       this.leaveAmend(request.repoId);
       const commitInput = await this.freshCommitInput(request.repoId);
       this.runPostCommitCommand(request.repoId, request.postCommit);
-      return { ok: true, message: commitInput?.template ?? '', ...(commitInput ? { commitInput } : {}) };
+      // VS Code's commitOperationCleanup puts getInputTemplate in the box: a MERGE_MSG the commit left (a rebase's next pick), else the template
+      const inputTemplate = this.deps.service.snapshot(request.repoId)?.status?.mergeMessage ?? commitInput?.template ?? '';
+      return { ok: true, message: inputTemplate, ...(commitInput ? { commitInput } : {}) };
     } catch (err) {
       this.deps.log(`[scm] commit failed: ${err instanceof Error ? err.message : String(err)}`);
       this.failed(gitErrorText(err));
@@ -562,8 +693,21 @@ export class ScmHost {
   async commitInput(raw: unknown): Promise<ScmCommitInput> {
     const request = parseScmRepoRef(raw);
     if (!request) throw new Error('Malformed request from the shell');
-    if (!this.deps.service.repository(request.repoId)) return { template: null, history: [], headMessage: null };
-    return this.deps.service.commitInput(request.repoId);
+    const empty: ScmCommitInput = { template: null, history: [], headMessage: null };
+    if (!this.deps.service.repository(request.repoId)) return empty;
+    return this.whileOpen(request.repoId, () => this.deps.service.commitInput(request.repoId), empty);
+  }
+
+  // A read of a repository that closed while it ran (a chat worktree's root leaving source control, or its folder removed)
+  // answers as one main no longer has, since the shell learns of the close only from the next view; any other failure rejects.
+  private async whileOpen<T>(repoId: string, read: () => Promise<T>, closed: T): Promise<T> {
+    try {
+      return await read();
+    } catch (err) {
+      if (this.deps.service.repository(repoId)) throw err;
+      this.deps.log(`[scm] a read of a repository that closed meanwhile answers as closed: ${gitErrorText(err)}`);
+      return closed;
+    }
   }
 
   async generateMessage(raw: unknown): Promise<ScmGenerateResult> {
@@ -590,6 +734,157 @@ export class ScmHost {
     return { ok: false };
   }
 
+  /** The quick diff's base for an open text document of a file in this repository, or why the file gets no marks. */
+  async quickDiffBase(raw: unknown): Promise<ScmQuickDiffBaseResult> {
+    const request = parseScmPath(raw);
+    if (!request) throw new Error('Malformed quick diff request from the shell');
+    const repo = this.deps.service.repository(request.repoId)?.repo;
+    if (!repo) return { ok: false, reason: 'unknown' };
+    const document = this.documentAt(path.join(repo.root, ...request.path.split('/')));
+    if (document && document.kind !== 'text') return { ok: false, reason: document.kind === 'notDisplayed' && document.reason === 'tooLarge' ? 'tooLarge' : 'binary' };
+    if (document?.readOnlyReason === 'tooLarge') return { ok: false, reason: 'tooLarge' };
+    const base = await this.whileOpen(request.repoId, () => this.deps.service.quickDiffBase(request.repoId, request.path, document ? codecOf(document) : undefined), undefined);
+    if (!base) return { ok: false, reason: 'unknown' };
+    return base.ok ? { ok: true, indexText: base.indexText, indexOid: base.indexOid, headText: base.headText, headOid: base.headOid, hasStaged: base.hasStaged } : base;
+  }
+
+  /** HEAD's blame of a file; a git failure is logged and answers failed. */
+  async blame(raw: unknown): Promise<ScmBlameResult> {
+    const request = parseScmPath(raw);
+    if (!request) throw new Error('Malformed blame request from the shell');
+    if (!this.deps.service.repository(request.repoId)) return { ok: false, reason: 'unknown' };
+    try {
+      const read = await this.whileOpen(request.repoId, () => this.deps.service.blame(request.repoId, request.path), undefined);
+      if (!read) return { ok: false, reason: 'unknown' };
+      return read.ok ? { ok: true, head: read.blame.head, commits: read.blame.commits, lines: read.blame.lines } : read;
+    } catch (err) {
+      this.deps.log(`[scm] blame failed: ${gitErrorText(err)}`);
+      return { ok: false, reason: 'failed' };
+    }
+  }
+
+  /** One page of a file's timeline; a git failure is logged and answers failed. */
+  async timeline(raw: unknown): Promise<ScmTimelineResult> {
+    const request = parseScmTimeline(raw);
+    if (!request) throw new Error('Malformed timeline request from the shell');
+    if (!this.deps.service.repository(request.repoId)) return { ok: false, reason: 'unknown' };
+    const after = request.cursor === undefined ? undefined : parseScmTimelineCursor(request.cursor);
+    try {
+      const page = await this.whileOpen(request.repoId, () => this.deps.service.timeline(request.repoId, request.path, after), undefined);
+      if (!page) return { ok: false, reason: 'unknown' };
+      return {
+        ok: true,
+        entries: page.entries,
+        ...(page.next !== undefined ? { cursor: `${page.next.hash}:${page.next.path}` } : {}),
+        hasStaged: page.hasStaged,
+        committed: after !== undefined || page.entries.length > 0,
+      };
+    } catch (err) {
+      this.deps.log(`[scm] the timeline failed: ${gitErrorText(err)}`);
+      return { ok: false, reason: 'failed' };
+    }
+  }
+
+  /**
+   * One Graph page. A request without a cursor is a load: the ref choice resolves to commits once, and the cursor carries
+   * them, so every later page reads that snapshot. A git failure is logged and answers failed.
+   */
+  async history(raw: unknown): Promise<ScmHistoryResult> {
+    const request = parseScmHistory(raw);
+    if (!request) throw new Error('Malformed history request from the shell');
+    if (!this.deps.service.repository(request.repoId)) return { ok: false, reason: 'noRepository' };
+    const next = (cursor: Omit<ScmHistoryCursor, 'skip'>, skip: number, count: number): { cursor?: string } =>
+      count === SCM_HISTORY_PAGE && skip + count <= MAX_SCM_HISTORY_SKIP ? { cursor: scmHistoryCursor({ ...cursor, skip: skip + count }) } : {};
+    try {
+      if (request.cursor !== undefined) {
+        const cursor = parseScmHistoryCursor(request.cursor)!;
+        const commits = await this.deps.service.historyPage(request.repoId, cursor.tips, cursor.skip, cursor.baseRef);
+        return { ok: true, page: { commits, ...next(cursor, cursor.skip, commits.length) } };
+      }
+      const loaded = await this.deps.service.historyLoad(request.repoId, request.refs);
+      if (!loaded) return { ok: false, reason: 'empty' };
+      const { load, commits } = loaded;
+      const baseRef = load.headRefs.base?.id;
+      return {
+        ok: true,
+        page: {
+          commits,
+          ...next({ ...(baseRef !== undefined ? { baseRef } : {}), tips: load.tips }, 0, commits.length),
+          load: { headRefs: load.headRefs, ...(load.mergeBase !== undefined ? { mergeBase: load.mergeBase } : {}), ahead: load.ahead, behind: load.behind, resolvedRefs: load.resolvedRefs },
+        },
+      };
+    } catch (err) {
+      if (!this.deps.service.repository(request.repoId)) return { ok: false, reason: 'noRepository' };
+      if (err instanceof GitUntrustedError) return { ok: false, reason: 'untrusted' };
+      this.deps.log(`[scm] reading the history failed: ${gitErrorText(err)}`);
+      return { ok: false, reason: 'failed' };
+    }
+  }
+
+  /** An expanded Graph commit: its message, stat and files, for a hash main checks is a commit of the repository. */
+  async commitDetails(raw: unknown): Promise<ScmCommitDetailsResult> {
+    const request = parseScmCommitDetails(raw);
+    if (!request) throw new Error('Malformed commit details request from the shell');
+    if (!this.deps.service.repository(request.repoId)) return { ok: false, reason: 'noRepository' };
+    try {
+      if (!(await this.deps.service.isCommit(request.repoId, request.hash))) return { ok: false, reason: 'notCommit' };
+      return { ok: true, details: await this.deps.service.commitDetails(request.repoId, request.hash) };
+    } catch (err) {
+      if (!this.deps.service.repository(request.repoId)) return { ok: false, reason: 'noRepository' };
+      if (err instanceof GitUntrustedError) return { ok: false, reason: 'untrusted' };
+      this.deps.log(`[scm] reading a commit's details failed: ${gitErrorText(err)}`);
+      return { ok: false, reason: 'failed' };
+    }
+  }
+
+  /** The merge editor's three inputs and labels, decoded with the conflicted file's document encoding. */
+  async mergeInputs(raw: unknown): Promise<ScmMergeInputsResult> {
+    const request = parseScmPath(raw);
+    if (!request) throw new Error('Malformed merge request from the shell');
+    const repo = this.deps.service.repository(request.repoId)?.repo;
+    if (!repo) return { ok: false, reason: 'unknown' };
+    const document = this.documentAt(path.join(repo.root, ...request.path.split('/')));
+    if (document?.kind !== 'text') return { ok: false, reason: document ? 'binary' : 'notOpen' };
+    try {
+      return await this.deps.service.mergeInputs(request.repoId, request.path, codecOf(document), document.text);
+    } catch (err) {
+      this.deps.log(`[scm] reading the merge inputs failed: ${gitErrorText(err)}`);
+      return { ok: false, reason: 'failed' };
+    }
+  }
+
+  /** Compute Conflicts With Git (Diff3): git merge-file's result for the Result buffer. */
+  async mergeFile(raw: unknown): Promise<ScmMergeFileResult> {
+    const request = parseScmMergeFile(raw);
+    if (!request) throw new Error('Malformed merge request from the shell');
+    const repo = this.deps.service.repository(request.repoId)?.repo;
+    if (!repo) return { ok: false, reason: 'unknown' };
+    const document = this.documentAt(path.join(repo.root, ...request.path.split('/')));
+    if (document?.kind !== 'text') return { ok: false, reason: document ? 'binary' : 'notOpen' };
+    try {
+      return await this.deps.service.mergeFile(request.repoId, request.path, codecOf(document), request.diff3, document.text);
+    } catch (err) {
+      this.deps.log(`[scm] git merge-file failed: ${gitErrorText(err)}`);
+      return { ok: false, reason: 'failed' };
+    }
+  }
+
+  /** The open repository holding a project file, for the Files menu's Open Timeline; null outside every open repository. */
+  resource(raw: unknown): ScmResource | null {
+    const request = parseScmResource(raw);
+    if (!request) throw new Error('Malformed resource request from the shell');
+    const project = this.deps.projects().find((candidate) => candidate.key === request.projectKey);
+    if (!project) return null;
+    const found = this.resourceAt(path.join(this.projectFolders(project)[0]!, ...request.relativePath.split('/')));
+    return found ? { repoId: found.repoId, path: found.relativePath } : null;
+  }
+
+  /** A file's place in an open repository (ShellEditorTab.git); untrusted projects have none open. */
+  gitOf(absolutePath: string): ShellFileGit | undefined {
+    const found = this.resourceAt(absolutePath);
+    return found ? { repoId: found.repoId, path: found.relativePath } : undefined;
+  }
+
   async fileDiff(raw: unknown): Promise<ScmFileDiffResult> {
     const request = parseScmFileDiff(raw);
     if (!request) throw new Error('Malformed diff request from the shell');
@@ -597,7 +892,7 @@ export class ScmHost {
     const source = request.source;
     if (!repo) return { kind: 'missing' };
     if (source.kind === 'stash' || source.kind === 'refs') return this.pairPatch(request.repoId, source, request.path);
-    return repo.diff(source.kind, request.path);
+    return this.whileOpen(request.repoId, () => repo.diff(source.kind, request.path), { kind: 'missing' } as const);
   }
 
   /**
@@ -619,12 +914,20 @@ export class ScmHost {
   }
 
   private async copyField(repo: Repository, request: ScmCopyRequest): Promise<void> {
+    if (request.kind === 'commitId' || request.kind === 'commitMessage') {
+      if (!(await this.deps.service.isCommit(request.repoId, request.value))) {
+        void this.deps.notify.warn(this.deps.t('The commit {0} is not in this repository.', shortHash(request.value)));
+        return;
+      }
+      await this.deps.copy(request.kind === 'commitId' ? request.value : await this.deps.service.commitMessage(request.repoId, request.value));
+      return;
+    }
     if (request.kind !== 'path' && request.kind !== 'relativePath') {
       const text = await this.rowText(request.repoId, request.kind, request.value);
       // gone meanwhile (a terminal, another window): its row is about to leave the list
       if (text === undefined) {
         const t = this.deps.t;
-        void this.deps.notify.info(isObjectName(request.value) ? t('The stash is no longer in this repository.') : t('"{0}" is no longer in this repository.', request.value));
+        void this.deps.notify.info(isObjectName(request.value) ? t('The stash is no longer in this repository.') : t('"{0}" is no longer in this repository.', visibleText(request.value)));
         return;
       }
       await this.deps.copy(text);
@@ -642,7 +945,7 @@ export class ScmHost {
 
   // The copied field of the row a stash hash, a full refname or a worktree path names, read from main's fresh list; undefined
   // when the row is gone. The validator matched each kind to the forms it may name.
-  private async rowText(repoId: string, kind: Exclude<ScmCopyKind, 'path' | 'relativePath'>, value: string): Promise<string | undefined> {
+  private async rowText(repoId: string, kind: Exclude<ScmCopyKind, 'path' | 'relativePath' | 'commitId' | 'commitMessage'>, value: string): Promise<string | undefined> {
     const service = this.deps.service;
     if (isObjectName(value)) {
       const listed = await service.artifacts(repoId, 'stashes');
@@ -677,7 +980,13 @@ export class ScmHost {
     try {
       const artifacts = await this.deps.service.artifacts(request.repoId, request.group);
       if (artifacts.group !== 'worktrees') return { ok: true, artifacts };
-      const rows = artifacts.rows.map((row) => ({ ...row, opens: this.worktreeProject(request.repoId, row.path) === undefined ? 'addProject' as const : 'project' as const }));
+      const rows = artifacts.rows.map((row): ScmWorktreeArtifact => {
+        const chat = this.deps.worktrees.chatOf(row.path);
+        const newChatIn = this.deps.worktrees.newChatTargetAt(row.path);
+        const target = newChatIn ? { newChatIn } : {};
+        if (chat) return { ...row, opens: 'chat', chat, ...target };
+        return { ...row, opens: this.worktreeProject(request.repoId, row.path) === undefined ? 'addProject' : 'project', ...target };
+      });
       return { ok: true, artifacts: { group: 'worktrees', rows } };
     } catch (err) {
       this.deps.log(`[scm] reading ${request.group} failed: ${gitErrorText(err)}`);
@@ -835,7 +1144,7 @@ export class ScmHost {
     if (!chosen) return CANCELLED;
     const branches = await this.deps.service.remoteBranches(repoId, chosen.name);
     if (branches.length === 0) {
-      void this.deps.notify.warn(t('The remote "{0}" has no fetched branches. Fetch it first.', chosen.name));
+      void this.deps.notify.warn(t('The remote "{0}" has no fetched branches. Fetch it first.', visibleText(chosen.name)));
       return TOLD;
     }
     const branch = await this.pick(t('Pick a branch to pull from'), branches.map((name) => ({ value: name, item: { label: `${chosen.name}/${name}` } })));
@@ -870,7 +1179,7 @@ export class ScmHost {
     if (!request.to) {
       const upstream = status?.upstream;
       if (upstream) return remote(() => this.deps.service.push(repoId, { ...base, remote: upstream.remote, branch: head.name, toBranch: upstream.branch }));
-      const choice = await this.deps.ask({ severity: 'warning', message: t('The branch "{0}" has no remote branch. Would you like to publish this branch?', head.name), actions: [t('OK')], cancelLabel: t('Cancel'), defaultAction: 0 });
+      const choice = await this.deps.ask({ severity: 'warning', message: t('The branch "{0}" has no remote branch. Would you like to publish this branch?', visibleText(head.name)), actions: [t('OK')], cancelLabel: t('Cancel'), defaultAction: 0 });
       return choice === 0 ? this.publish(repoId) : CANCELLED;
     }
     const target = await this.pickPushRemote(repoId, remotes.filter((entry) => entry.pushUrl !== undefined), head.name);
@@ -911,7 +1220,7 @@ export class ScmHost {
     const url = (await this.deps.askInput({ title: t('Add Remote'), prompt: t('Provide repository URL'), placeholder: t('Repository URL') }))?.trim();
     if (!url) return CANCELLED;
     if (!isRemoteUrl(url)) {
-      void this.deps.notify.warn(t('"{0}" is not a repository URL Damocles can use.', redactUrls(url)));
+      void this.deps.notify.warn(t('"{0}" is not a repository URL Damocles can use.', visibleText(redactUrls(url))));
       return TOLD;
     }
     const name = (await this.deps.askInput({ title: t('Add Remote'), prompt: t('Please provide a remote name'), placeholder: t('Remote name'), validation: 'remoteName' }))?.trim();
@@ -953,12 +1262,12 @@ export class ScmHost {
     const url = typed?.replace(/^git\s+clone\s+/, '');
     if (!url) return CANCELLED;
     if (!isRemoteUrl(url)) {
-      void this.deps.notify.warn(t('"{0}" is not a repository URL Damocles can use.', redactUrls(url)));
+      void this.deps.notify.warn(t('"{0}" is not a repository URL Damocles can use.', visibleText(redactUrls(url))));
       return TOLD;
     }
     const configured = expandHome(this.read(SCM_SETTING_KEYS.defaultCloneDirectory, '').trim());
     const opensAt = path.isAbsolute(configured) ? configured : os.homedir();
-    const parent = await this.deps.pickFolder(opensAt, t('Choose a folder to clone {0} into', redactUrls(url)), t('Select as Repository Destination'));
+    const parent = await this.deps.pickFolder(opensAt, t('Choose a folder to clone {0} into', visibleText(redactUrls(url))), t('Select as Repository Destination'));
     if (parent === undefined) return CANCELLED;
     let target: string;
     try {
@@ -969,7 +1278,7 @@ export class ScmHost {
     }
     const mode = this.read<OpenAfterClone>(SCM_SETTING_KEYS.openAfterClone, 'prompt');
     if (mode === 'prompt') {
-      const choice = await this.deps.ask({ severity: 'info', message: t('Would you like to open the cloned repository?'), detail: target, actions: [t('Add Project')], cancelLabel: t('Cancel'), defaultAction: 0 });
+      const choice = await this.deps.ask({ severity: 'info', message: t('Would you like to open the cloned repository?'), detail: visibleText(target), actions: [t('Add Project')], cancelLabel: t('Cancel'), defaultAction: 0 });
       if (choice !== 0) return OK;
     }
     await this.deps.addProject(target);
@@ -1032,7 +1341,7 @@ export class ScmHost {
     if (!to || to === from) return;
     // the answer passed validation before the trim, and core refuses a Windows-unsafe name with a generic failure
     if (inputProblem('path', to, { windows: this.deps.platform === 'win32' }) !== undefined) {
-      void this.deps.notify.warn(t('{0} is not a valid file or folder name.', to));
+      void this.deps.notify.warn(t('{0} is not a valid file or folder name.', visibleText(to)));
       return;
     }
     const repo = this.repo(repoId);
@@ -1140,13 +1449,13 @@ export class ScmHost {
           return OK;
         }
         const right = await this.gitSide(repo, 'index', change.path, name);
-        await this.diff(repoId, repo.root, title, await entryOrLexical(repo, change.path), left, right);
+        await this.diff(repoId, repo.root, title, await entryOrLexical(repo, change.path), left, right, { path: change.path, group: 'index' });
         return OK;
       }
       case 'MODIFIED': {
         const absolute = await repo.confinedEntry(change.path);
         const left = await this.gitSide(repo, 'index', change.path, name);
-        await this.diff(repoId, repo.root, title, absolute, left, { path: absolute });
+        await this.diff(repoId, repo.root, title, absolute, left, { path: absolute }, { path: change.path, group: 'workingTree' });
         return OK;
       }
       case 'INDEX_ADDED':
@@ -1161,6 +1470,182 @@ export class ScmHost {
         await this.openAbsolute(await repo.confinedEntry(change.path));
         return OK;
     }
+  }
+
+  /**
+   * Stage or Unstage Selected Ranges. The buffer is read before the first await, so it is the text the shell diffed: the shell
+   * sends its pending editor:edit just before this request, and one renderer's messages arrive in order. A stage names the
+   * file's document; an unstage may name a git side of the file's open diff tab instead, and then writes in the file's
+   * document encoding when it is open, else in the index blob's own. A refusal is a notice.
+   */
+  async stageRanges(request: ScmStageRangesRequest | ScmUnstageRangesRequest): Promise<ScmRunResult> {
+    const named = this.deps.documents.get(request.documentId);
+    const buffer = named?.kind === 'text' ? named.text : undefined;
+    const repo = this.repo(request.repoId);
+    const absolute = path.join(repo.root, ...request.path.split('/'));
+    const isFile = named?.location !== undefined && folderKey(named.location.path) === folderKey(absolute);
+    const gitSide = request.op === 'unstageRanges' && this.deps.editorPane.scmDiffTabs().some((tab) => tab.repoId === request.repoId && tab.git.path === request.path && (tab.originalId === request.documentId || tab.modifiedId === request.documentId));
+    if (!isFile && !gitSide) throw new Error('The document is not the file the request names');
+    const document = isFile ? named : this.documentAt(absolute);
+    // an unstage applies HEAD's blob, the one its ranges were computed against, at the path core reads from its own status
+    const side = request.op === 'stageRanges' ? { buffer: buffer! } : { headOid: request.headOid };
+    if (!document) {
+      const outcome = await this.deps.service.stageRanges(request.repoId, { path: request.path, ranges: request.ranges, indexOid: request.indexOid, ...side });
+      return outcome.ok ? OK : this.refuseStage(outcome.reason);
+    }
+    const refusal: StageRefusal | 'readOnly' | undefined =
+      document.kind !== 'text'
+        ? document.kind === 'notDisplayed' && document.reason === 'tooLarge' ? 'tooLarge' : 'binary'
+        : document.readOnlyReason === 'encoding' ? 'encoding' : document.readOnlyReason === 'tooLarge' ? 'tooLarge' : document.readOnlyReason !== undefined ? 'readOnly' : undefined;
+    if (refusal !== undefined || document.kind !== 'text') return this.refuseStage(refusal ?? 'binary');
+    const outcome = await this.deps.service.stageRanges(request.repoId, {
+      path: request.path,
+      ranges: request.ranges,
+      indexOid: request.indexOid,
+      codec: codecOf(document),
+      ...side,
+    });
+    return outcome.ok ? OK : this.refuseStage(outcome.reason);
+  }
+
+  private refuseStage(reason: StageRefusal | 'readOnly'): ScmRunResult {
+    const t = this.deps.t;
+    const texts: Record<StageRefusal | 'readOnly', string> = {
+      changed: t('The staged version of this file changed since the changes were shown, so nothing was staged. Try again.'),
+      conflicted: t('This file has merge conflicts. Resolve them before staging parts of it.'),
+      declined: t('That folder belongs to a project you have not trusted, so source control runs no git there.'),
+      symlink: t('Parts of a symbolic link cannot be staged.'),
+      submodule: t('Parts of a submodule cannot be staged.'),
+      lfs: t('This file is stored with Git LFS, so parts of it cannot be staged.'),
+      binary: t('Parts of a binary file cannot be staged.'),
+      tooLarge: t('This file is too large to stage parts of it.'),
+      encoding: t('This file is not valid in its encoding, so parts of it cannot be staged.'),
+      outOfRange: t('The file changed while the changes were staged, so nothing was staged. Try again.'),
+      readOnly: t('This file is read-only in the editor, so parts of it cannot be staged.'),
+    };
+    void this.deps.notify.warn(texts[reason]);
+    return TOLD;
+  }
+
+  /** Complete Merge: the Result document saved, then the file staged as resolved, and its merge editor closed. */
+  async completeMerge(repoId: string, relativePath: string, documentId: string): Promise<ScmRunResult> {
+    const repo = this.repo(repoId);
+    const document = this.deps.documents.get(documentId);
+    if (document?.kind !== 'text' || !document.location || folderKey(document.location.path) !== folderKey(path.join(repo.root, ...relativePath.split('/')))) {
+      throw new Error('The document is not the file the request names');
+    }
+    if (!(await this.deps.editorPane.saveDocuments([documentId]))) {
+      void this.deps.notify.warn(this.deps.t('The file could not be saved, so the merge was not completed.'));
+      return TOLD;
+    }
+    await this.deps.service.completeMerge(repoId, relativePath);
+    await this.deps.editorPane.closeMerge(repoId, relativePath);
+    return OK;
+  }
+
+  /** A conflicted file's merge editor when all three stages exist (UU, AA); any other merge row opens the file, as slice 10 does. */
+  async openMergeEditor(repoId: string, relativePath: string): Promise<ScmRunResult> {
+    const repo = this.repo(repoId);
+    const change = repo.lastStatus?.groups.merge.find((candidate) => candidate.path === relativePath);
+    if (!change) return OK;
+    const absolute = await repo.confinedEntry(relativePath);
+    if (change.status !== 'BOTH_MODIFIED' && change.status !== 'BOTH_ADDED') {
+      await this.openAbsolute(absolute);
+      return OK;
+    }
+    const ref = this.fileRefOf(absolute);
+    const document = ref ? await this.deps.documents.openProjectFile(ref.projectKey, ref.relativePath) : undefined;
+    if (!document?.ok) throw new Error(`The file could not be opened (${document?.reason ?? 'outside'})`);
+    this.deps.editorPane.showMerge({ repoId, path: relativePath }, document.document, this.deps.t('Merging: {0}', path.basename(relativePath)), { focus: true });
+    return OK;
+  }
+
+  /** B40's Compare with Workspace: the project folder's copy of a changed file of a chat worktree against the worktree's. */
+  async compareWithWorkspace(repoId: string, relativePath: string): Promise<ScmRunResult> {
+    const target = this.deps.service.repository(repoId);
+    if (!target) return { ok: false, reason: 'unknown' };
+    const absolute = await target.repo.confinedEntry(relativePath);
+    const projectCopy = this.deps.worktrees.projectCopyOf(target.projectKey, absolute);
+    if (projectCopy === undefined) {
+      void this.deps.notify.info(this.deps.t('Compare with Workspace compares a file of a worktree chat with the project folder\'s copy.'));
+      return TOLD;
+    }
+    const name = path.basename(absolute);
+    // a copy confinement refuses (a link out of the project folder) or one that is missing shows as an empty side
+    const confined = await confineExisting(projectCopy.project, projectCopy.relativePath);
+    const file = confined.ok && (await fs.promises.stat(confined.path)).isFile() ? confined.path : undefined;
+    await this.deps.editorPane.showDiff(
+      (fileName) => this.deps.t('{0} (project folder) ↔ {0} (worktree)', fileName),
+      absolute,
+      file !== undefined ? { path: file } : { name, content: '' },
+      { path: absolute },
+      { focus: true },
+    );
+    return OK;
+  }
+
+  async openTimeline(repoId: string, relativePath: string): Promise<ScmRunResult> {
+    this.repo(repoId);
+    this.deps.editorPane.showTimeline({ repoId, path: relativePath }, this.deps.t('Timeline: {0}', path.basename(relativePath)), { focus: true });
+    return OK;
+  }
+
+  /**
+   * Open Commit: with a path, that file at the commit against its first parent, the parent's side at the path it had there (a
+   * rename in the commit names its source); without, every file the commit changed as one changes tab. A root commit is
+   * compared with the empty tree.
+   */
+  async openCommit(repoId: string, commit: string, relativePath: string | undefined): Promise<ScmRunResult> {
+    const repo = this.repo(repoId);
+    const object = await repo.commitObject(commit);
+    const parent = object.parents[0] ?? (await this.deps.service.emptyTree(repoId));
+    const diff = await this.deps.service.diffRefs(repoId, parent, commit);
+    if (relativePath === undefined) {
+      const subject = object.message.split('\n', 1)[0]!.trim();
+      if (diff.entries.length === 0) {
+        void this.deps.notify.info(this.deps.t('Commit {0} changed no files.', shortHash(commit)));
+        return OK;
+      }
+      const source: ScmDiffSource = { kind: 'refs', left: parent, right: commit };
+      this.keepPair(pairKey(repoId, source), diff);
+      this.deps.editorPane.showChanges({ title: `${shortHash(commit)} - ${subject}`, changes: { repoId, source, entries: diff.entries.map((entry) => toScmChange(entry.change)) } }, { focus: true });
+      return OK;
+    }
+    const before = diff.entries.find((entry) => entry.change.path === relativePath)?.change.originalPath ?? relativePath;
+    return this.compareCommits(repoId, { commit: parent, path: before }, { commit, path: relativePath });
+  }
+
+  /** One diff tab of two versions of a file, each at its own path; titled as VS Code's timeline titles a diff. */
+  async compareCommits(repoId: string, left: ScmCommitFile, right: ScmCommitFile): Promise<ScmRunResult> {
+    const repo = this.repo(repoId);
+    const [leftSide, rightSide] = await Promise.all([this.commitSide(repoId, left), this.commitSide(repoId, right)]);
+    const t = this.deps.t;
+    const leftName = path.posix.basename(left.path);
+    // each side by its own name across a rename (VS Code's scmHistoryViewPane); fileName is the right side's, following its tab
+    const title = (fileName: string): string => (leftName === path.posix.basename(right.path)
+      ? t('{0} ({1}) ↔ {0} ({2})', fileName, shortHash(left.commit), shortHash(right.commit))
+      : t('{0} ({1}) ↔ {2} ({3})', leftName, shortHash(left.commit), fileName, shortHash(right.commit)));
+    await this.deps.editorPane.showDiff(title, path.join(repo.root, ...right.path.split('/')), leftSide, rightSide, { focus: true, scm: { root: repo.root, repoId } });
+    return OK;
+  }
+
+  // A file at a commit as a diff side: its text, or the placeholder of one absent there, too large or binary.
+  private async commitSide(repoId: string, file: ScmCommitFile): Promise<GitSide> {
+    const name = path.posix.basename(file.path);
+    const bytes = await this.deps.service.commitBlob(repoId, file.commit, file.path);
+    if (bytes === undefined) return { name, notDisplayed: 'missing' };
+    if (bytes === 'tooLarge') return { name, notDisplayed: 'tooLarge' };
+    const decoded = decodeDocument(bytes);
+    return decoded ? { name, content: decoded.text } : { name, notDisplayed: 'binary', bytes: bytes.length };
+  }
+
+  // The open document of a file on disk (never an untitled, settings or Search Editor document), by native path.
+  private documentAt(absolute: string): Document | undefined {
+    const key = folderKey(absolute);
+    return this.deps.documents.all().find((document) => {
+      if (document.kind === 'text' && (document.untitled || document.settingsScope !== undefined || document.searchEditor)) return false;
+      return document.location !== undefined && folderKey(document.location.path) === key;
+    });
   }
 
   async openFileHead(repoId: string, relativePath: string): Promise<ScmRunResult> {
@@ -1187,13 +1672,93 @@ export class ScmHost {
   }
 
   /**
+   * A flow on a commit the renderer named: it runs only when the hash is a commit of the repository (cat-file -t); any other
+   * object, or one the repository lacks, is told and runs nothing.
+   */
+  async withCommit(repoId: string, commit: string, flow: () => Promise<ScmRunResult>): Promise<ScmRunResult> {
+    if (await this.deps.service.isCommit(repoId, commit)) return flow();
+    void this.deps.notify.warn(this.deps.t('The commit {0} is not in this repository.', shortHash(commit)));
+    return TOLD;
+  }
+
+  /**
+   * VS Code's Add to Chat and Explain Changes on a commit main checked: core reads it, bounded, into a pending attachment of
+   * the selected chat; Explain also puts its prompt in the composer. Nothing is sent: the user sends.
+   */
+  async commitToChat(repoId: string, commit: string, explain: boolean): Promise<ScmRunResult> {
+    const projectKey = this.ownProjectKey(repoId);
+    if (projectKey === undefined) return { ok: false, reason: 'unknown' };
+    const attachment = await this.deps.service.commitAttachment(repoId, commit);
+    await this.deps.addToChat(projectKey, attachment, explain ? this.deps.t('Explain the changes in this commit.') : undefined);
+    return OK;
+  }
+
+  // VS Code's git.graph.compareWithRemote and compareWithMergeBase: the upstream's or the base ref's tip on the left, the
+  // commit on the right; refused without one.
+  async compareWithHeadRef(repoId: string, commit: string, which: 'upstream' | 'base'): Promise<ScmRunResult> {
+    const ref = (await this.deps.service.headRefs(repoId))?.[which];
+    if (!ref) {
+      const t = this.deps.t;
+      void this.deps.notify.info(which === 'upstream' ? t('The current branch has no upstream to compare with.') : t('The current branch has no base to compare with.'));
+      return TOLD;
+    }
+    return this.openRefsChanges(repoId, { hash: ref.revision, label: ref.name }, { hash: commit, label: shortHash(commit) });
+  }
+
+  // The Graph's Incoming and Outgoing Changes: the merge base of HEAD and its upstream against the upstream or HEAD, all read now.
+  async openGraphChanges(repoId: string, direction: 'incoming' | 'outgoing'): Promise<ScmRunResult> {
+    const t = this.deps.t;
+    const refs = await this.deps.service.headRefs(repoId);
+    const base = refs?.upstream ? await this.deps.service.mergeBase(repoId, refs.head.revision, refs.upstream.revision) : undefined;
+    if (!refs?.upstream || base === undefined) {
+      void this.deps.notify.info(t('The current branch has no upstream to compare with.'));
+      return TOLD;
+    }
+    const target = direction === 'incoming' ? refs.upstream : refs.head;
+    return this.openRefsChanges(repoId, { hash: base, label: shortHash(base) }, { hash: target.revision, label: target.name });
+  }
+
+  /**
+   * VS Code's cherryPick: a commit the Graph names (checked to be one of the repository), or from the palette one the user
+   * types, verified with rev-parse. A conflict warns with Show Changes, which opens the first conflicted file in the merge
+   * editor; changes already present abort the cherry-pick and say so; a refusal (a merge commit, local changes in the way) is
+   * runRequest's error notice with Show Git Output.
+   */
+  async cherryPick(repoId: string, commit: string | undefined): Promise<ScmRunResult> {
+    const t = this.deps.t;
+    let hash = commit;
+    if (hash === undefined) {
+      const typed = (await this.deps.askInput({ prompt: t('Please provide the commit hash'), placeholder: t('Commit Hash') }))?.trim();
+      if (!typed) return CANCELLED;
+      hash = await this.deps.service.resolveTypedCommit(repoId, typed);
+      if (hash === undefined) {
+        void this.deps.notify.warn(t('"{0}" is not a commit of this repository.', visibleText(typed)));
+        return TOLD;
+      }
+    } else if (!(await this.deps.service.isCommit(repoId, hash))) {
+      void this.deps.notify.warn(t('The commit {0} is not in this repository.', shortHash(hash)));
+      return TOLD;
+    }
+    const outcome = await this.deps.service.cherryPick(repoId, hash);
+    if (outcome === 'empty') void this.deps.notify.info(t('The changes are already present in the current branch.'));
+    if (outcome === 'conflict') {
+      const show = t('Show Changes');
+      void this.deps.notify.warn(t('There were merge conflicts while cherry picking the changes. Resolve the conflicts before committing them.'), show).then((choice) => {
+        const conflicted = this.deps.service.repository(repoId)?.repo.lastStatus?.groups.merge[0];
+        if (choice === show && conflicted) void this.runRequest({ op: 'openMergeEditor', repoId, path: conflicted.path });
+      });
+    }
+    return OK;
+  }
+
+  /**
    * Compare with...'s tab: the files that differ between two commits, as one multi-file diff tab titled
    * "left ↔ right" (VS Code's _openChangesBetweenRefs); the labels name the refs the user picked.
    */
   async openRefsChanges(repoId: string, left: { readonly hash: string; readonly label: string }, right: { readonly hash: string; readonly label: string }): Promise<ScmRunResult> {
     const diff = await this.deps.service.diffRefs(repoId, left.hash, right.hash);
     if (diff.entries.length === 0) {
-      void this.deps.notify.info(this.deps.t('There are no changes between "{0}" and "{1}".', left.label, right.label));
+      void this.deps.notify.info(this.deps.t('There are no changes between "{0}" and "{1}".', visibleText(left.label), visibleText(right.label)));
       return OK;
     }
     const source: ScmDiffSource = { kind: 'refs', left: left.hash, right: right.hash };
@@ -1210,22 +1775,37 @@ export class ScmHost {
     const listed = await this.deps.service.artifacts(repoId, 'worktrees');
     const worktree = listed.group === 'worktrees' ? listed.rows.find((row) => samePath(row.path, worktreePath)) : undefined;
     if (!worktree) {
-      void this.deps.notify.warn(this.deps.t('"{0}" is no longer in this repository.', worktreePath));
+      void this.deps.notify.warn(this.deps.t('"{0}" is no longer in this repository.', visibleText(worktreePath)));
       return TOLD;
     }
+    const chat = this.deps.worktrees.chatOf(worktree.path);
+    if (chat) {
+      await this.deps.worktrees.selectChat(chat.chatId);
+      return OK;
+    }
     const project = this.worktreeProject(repoId, worktree.path);
-    if (project !== undefined) await this.deps.selectProject(project.key);
-    else await this.deps.addProject(worktree.path);
+    if (project === undefined) {
+      await this.deps.addProject(worktree.path);
+      return OK;
+    }
+    await this.deps.selectProject(project.key);
+    if (project.key === this.ownProjectKey(repoId)) this.deps.worktrees.showProjectFolder(project.key);
     return OK;
   }
 
   // The project a worktree's Open selects: the repository's own project when the worktree holds its folder, else a project
-  // whose folder lies in the worktree, so Open never adds a folder the list already has.
+  // whose folder lies in the worktree, so Open never adds a folder the list already has. Chat worktree roots are no projects.
   private worktreeProject(repoId: string, worktreePath: string): Project | undefined {
-    const own = this.deps.service.repository(repoId)?.projectKey;
+    const own = this.ownProjectKey(repoId);
     const holds = (project: Project): boolean => this.projectFolders(project).some((folder) => isInside(worktreePath, folder));
-    const projects = this.deps.projects();
+    const projects = this.deps.projects().filter((project) => parseRootKey(project.key)?.worktreeId === undefined);
     return projects.find((project) => project.key === own && holds(project)) ?? projects.find(holds);
+  }
+
+  // The project a repository belongs to; a chat worktree's repository belongs to the worktree's project.
+  private ownProjectKey(repoId: string): string | undefined {
+    const key = this.deps.service.repository(repoId)?.projectKey;
+    return key === undefined ? undefined : parseRootKey(key)?.projectKey;
   }
 
   // VS Code's _viewStash: the stash's files against its base, titled as VS Code titles it.
@@ -1319,8 +1899,41 @@ export class ScmHost {
     await this.deps.editorPane.openPath(absolute, { focus: true });
   }
 
-  private async diff(repoId: string, root: string, title: (fileName: string) => string, absolute: string, left: GitSide, right: GitSide | { path: string }): Promise<void> {
-    await this.deps.editorPane.showDiff(title, absolute, left, right, { focus: true, scm: { root, repoId } });
+  // git: a working tree or index change, whose index side refreshes after each status (refreshGitSides)
+  private async diff(
+    repoId: string,
+    root: string,
+    title: (fileName: string) => string,
+    absolute: string,
+    left: GitSide,
+    right: GitSide | { path: string },
+    git?: { readonly path: string; readonly group: 'workingTree' | 'index' },
+  ): Promise<void> {
+    await this.deps.editorPane.showDiff(title, absolute, left, right, { focus: true, scm: { root, repoId, ...(git ? { git } : {}) } });
+  }
+
+  // The git sides of the open working tree and index diffs of these repositories, read again after a status: a stage, an
+  // unstage or an outside index write shows in place. A side that is no longer text keeps its last text.
+  private async refreshGitSides(repoIds: ReadonlySet<string>): Promise<void> {
+    for (const tab of this.deps.editorPane.scmDiffTabs()) {
+      const repo = repoIds.has(tab.repoId) ? this.deps.service.repository(tab.repoId)?.repo : undefined;
+      if (!repo) continue;
+      const name = path.posix.basename(tab.git.path);
+      // A conflicted file has no stage 0: a working tree diff shows HEAD there, as VS Code's sanitizeRef reads HEAD for a file
+      // outside the index group, and an index diff keeps its last index text.
+      const conflicted = repo.lastStatus?.groups.merge.some((change) => change.path === tab.git.path) ?? false;
+      const sides: Array<readonly [string, 'HEAD' | 'index', string]> =
+        tab.git.group === 'workingTree'
+          ? [[tab.originalId, conflicted ? 'HEAD' : 'index', tab.git.path]]
+          : [
+              [tab.originalId, 'HEAD', repo.lastStatus?.groups.index.find((change) => change.path === tab.git.path)?.originalPath ?? tab.git.path],
+              ...(conflicted ? [] : [[tab.modifiedId, 'index', tab.git.path] as const]),
+            ];
+      for (const [documentId, where, file] of sides) {
+        const side = await this.gitSide(repo, where, file, name);
+        if ('content' in side) this.deps.editorPane.replaceGitSide(documentId, side.content);
+      }
+    }
   }
 
   // A git side as text, or the placeholder of one absent there, past MAX_SHOW_BYTES or binary, whose bytes stay in main.
@@ -1443,6 +2056,7 @@ export class ScmHost {
       inputValidationLength: this.read(SCM_SETTING_KEYS.inputValidationLength, 72),
       allowNoVerifyCommit: this.read(SCM_SETTING_KEYS.allowNoVerifyCommit, false),
       allowForcePush: this.read(SCM_SETTING_KEYS.allowForcePush, false),
+      blameEditorDecoration: this.read(SCM_SETTING_KEYS.blameEditorDecoration, true),
     };
   }
 
@@ -1464,6 +2078,7 @@ export class ScmHost {
         label: path.basename(repo.root),
         displayPath: repo.kind === 'parent' ? repo.root : path.relative(folders[0]!, repo.root).split(path.sep).join('/'),
         kind: repo.kind,
+        root: repo.root,
       })),
       selectedRepoId: this.selectedRepoId(projectKey, view, folders),
       closedCount: view.closedRoots.length,
@@ -1506,6 +2121,7 @@ export class ScmHost {
       remotes: status?.remotes ?? [],
       running: snapshot.running,
       lastRemote: snapshot.lastRemote,
+      revision: snapshot.revision,
     };
   }
 
@@ -1559,13 +2175,19 @@ export class ScmHost {
     if (this.pending.clone) this.deps.send.clone(this.deps.service.cloneState());
     for (const [repoId, groups] of this.pending.artifacts) {
       if (!this.deps.service.repository(repoId)) continue;
-      const changed: ScmArtifactsChanged = { repoId, groups: [...groups] };
+      const refs = this.pending.refs.get(repoId);
+      const changed: ScmArtifactsChanged = { repoId, groups: [...groups], ...(refs !== undefined ? { refs } : {}) };
       this.deps.send.artifactsChanged(changed);
       if (groups.has('stashes')) void this.closeDroppedStashTabs(repoId).catch((err: unknown) => this.deps.log(`[scm] closing the tabs of dropped stashes failed: ${gitErrorText(err)}`));
     }
     this.pending.artifacts.clear();
+    this.pending.refs.clear();
     this.pending.clone = false;
-    if (repos.size > 0) this.refreshChangesTabs(repos);
+    if (repos.size > 0) {
+      this.refreshChangesTabs(repos);
+      void this.refreshGitSides(new Set(repos)).catch((err: unknown) => this.deps.log(`[scm] refreshing a diff's git side failed: ${gitErrorText(err)}`));
+    }
+    if (views.size > 0) this.deps.editorPane.gitChanged();
     if (views.size > 0 || repos.size > 0) this.deps.menuChanged();
     views.clear();
     repos.clear();
@@ -1600,11 +2222,13 @@ function remoteEntry(entry: Remote, url: 'fetch' | 'push'): PickEntry<Remote> {
   return { value: entry, item: { label: entry.name, ...(shown !== undefined ? { description: redactUrls(shown) } : {}) } };
 }
 
-// A placeholder naming user data, which the overlay bounds: the value keeps its tail behind '…', as a cut label does.
+// A placeholder naming user data with its control and bidi characters as escapes, which the overlay bounds: the value keeps
+// its tail behind '…', as a cut label does.
 function placeholderNaming(t: ScmHostDeps['t'], template: string, value: string): string {
-  const whole = t(template, value);
+  const shown = visibleText(value);
+  const whole = t(template, shown);
   const over = whole.length - MAX_OVERLAY_LABEL_LENGTH;
-  return over <= 0 ? whole : t(template, `…${value.slice(over + 1)}`);
+  return over <= 0 ? whole : t(template, `…${shown.slice(over + 1)}`);
 }
 
 function toScmChange(change: Change): ScmRepoSnapshot['groups']['merge'][number] {

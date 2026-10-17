@@ -14,7 +14,7 @@ vi.mock('electron', () => ({
   },
 }));
 
-import { acceleratorLabel, CommandPalette, desktopCommands, isEnabled, keyFires, MENU_IDS, openChatForProjectId, terminalPassKeys } from '../commands';
+import { acceleratorLabel, CHAT_FEATURE_IDS, CommandPalette, desktopCommands, isEnabled, keyFires, MENU_IDS, newChatInWorktreeAccelerator, openChatForProjectId, terminalPassKeys } from '../commands';
 import { installApplicationMenu, type MenuActions, type MenuState } from '../menu';
 import { createDesktopLocalizationService } from '../platform/localization-service';
 import { NO_SCM_MENU_STATE } from '../scm/scm-host';
@@ -25,9 +25,9 @@ const actions = new Proxy({} as MenuActions, {
 });
 
 const PROJECTS = [{ fsPath: 'C:\\work\\alpha', name: 'alpha' }] as never;
-const CHAT: MenuState = { chat: true, editor: false, browser: true, page: false, focus: 'chat', updateCheck: true, terminalCreate: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE };
+const CHAT: MenuState = { chat: true, editor: false, browser: true, page: false, focus: 'chat', updateCheck: true, terminalCreate: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE, editorKind: undefined, editorGit: null, selectedChatHasChanges: false, worktree: undefined, handOff: undefined, newChatInWorktree: undefined };
 const EDITOR: MenuState = { ...CHAT, editor: true, focus: 'editor' };
-const NONE: MenuState = { chat: false, editor: false, browser: false, page: false, focus: undefined, updateCheck: false, terminalCreate: false, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE };
+const NONE: MenuState = { chat: false, editor: false, browser: false, page: false, focus: undefined, updateCheck: false, terminalCreate: false, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE, editorKind: undefined, editorGit: null, selectedChatHasChanges: false, worktree: undefined, handOff: undefined, newChatInWorktree: undefined };
 const PLATFORMS = ['win32', 'linux', 'darwin'] as const;
 
 const en = createDesktopLocalizationService(process.cwd(), 'en', () => undefined);
@@ -89,12 +89,15 @@ describe('command registry', () => {
     }
   });
 
-  it('adds Find in Files and Replace in Files to Edit, the palette to View, and the ten chat commands to Chat', () => {
+  it('adds Find in Files and Replace in Files to Edit, the palette to View, and the ten chat commands with Review Changes to Chat', () => {
     menuItems('win32');
     const submenu = (id: string) => (electron.template.find((menu) => menu.id === id)!.submenu as MenuItemConstructorOptions[]).map((item) => item.id);
     expect(submenu('damocles.menu.edit')).toEqual(expect.arrayContaining([MENU_IDS.findInFiles, MENU_IDS.replaceInFiles]));
     expect(submenu('damocles.menu.view')[0]).toBe(MENU_IDS.showCommands);
-    expect(submenu('damocles.menu.chat').filter((id) => id?.startsWith('damocles.chat.'))).toHaveLength(10);
+    expect(submenu('damocles.menu.chat').filter((id) => id?.startsWith('damocles.chat.'))).toEqual([...CHAT_FEATURE_IDS, MENU_IDS.chatReviewChanges, MENU_IDS.chatHandOffToWorktree, MENU_IDS.chatHandOffToProjectFolder]);
+    const chatMenu = electron.template.find((menu) => menu.id === 'damocles.menu.chat')!.submenu as MenuItemConstructorOptions[];
+    const worktreeMenu = chatMenu.find((item) => item.id === 'damocles.menu.worktree')!.submenu as MenuItemConstructorOptions[];
+    expect(worktreeMenu.map((item) => item.id ?? item.type)).toEqual([MENU_IDS.worktreeApply, MENU_IDS.worktreeMerge, MENU_IDS.worktreeUpdate, MENU_IDS.worktreePushBranch, 'separator', MENU_IDS.worktreeDelete]);
     const items = menuItems('win32');
     expect(items.find((item) => item.id === MENU_IDS.showCommands)).toMatchObject({ label: 'Command Palette...', accelerator: 'CmdOrCtrl+Shift+P' });
     expect(items.find((item) => item.id === MENU_IDS.findInFiles)).toMatchObject({ label: 'Find in Files', accelerator: 'CmdOrCtrl+Shift+F' });
@@ -116,6 +119,53 @@ describe('command registry', () => {
     const listed = palette(el).list(EDITOR).find((entry) => entry.id === MENU_IDS.formatDocument);
     expect(listed).toMatchObject({ label: 'Επεξεργασία: Μορφοποίηση εγγράφου', englishLabel: 'Edit: Format Document', accelerator: 'Shift+Alt+F', enabled: true });
     expect(palette().list(CHAT).find((entry) => entry.id === MENU_IDS.formatDocument)?.enabled).toBe(false);
+  });
+
+  it('adds Chat: New Chat in This Worktree under New Chat with VS Code\'s per-OS key, enabled only for a chat working in its worktree', () => {
+    const target = { projectKey: 'c:\\work\\alpha', worktreeId: 'abcd1234' };
+    const inWorktree: MenuState = { ...CHAT, newChatInWorktree: target };
+    for (const [platform, accelerator] of [['win32', 'Shift+Alt+N'], ['linux', 'Ctrl+Alt+N'], ['darwin', 'Cmd+Alt+N']] as const) {
+      expect(newChatInWorktreeAccelerator(platform)).toBe(accelerator);
+      const command = desktopCommands(PROJECTS, actions, platform).find((candidate) => candidate.id === 'damocles.chat.newChatInWorktree')!;
+      expect(command).toMatchObject({ accelerator, inTerminal: true });
+      expect(isEnabled(command, CHAT)).toBe(false);
+      expect(isEnabled(command, NONE)).toBe(false);
+      expect(isEnabled(command, inWorktree)).toBe(true);
+      // like New Chat, the key reaches the menu from a focused terminal
+      expect(keyFires(command, { ...inWorktree, focus: 'terminal', terminalInput: true })).toBe(true);
+      expect(terminalPassKeys(desktopCommands(PROJECTS, actions, platform), inWorktree)).toContain(accelerator);
+      menuItems(platform);
+      const file = (electron.template.find((menu) => menu.id === 'damocles.menu.file')!.submenu as MenuItemConstructorOptions[]).map((item) => item.id);
+      expect(file.indexOf(MENU_IDS.chatNewInWorktree)).toBe(file.indexOf(MENU_IDS.newChat) + 1);
+    }
+    expect(MENU_IDS.chatNewInWorktree).toBe('damocles.chat.newChatInWorktree');
+    expect(palette().run(MENU_IDS.chatNewInWorktree, CHAT)).toBe(false);
+    expect(palette().run(MENU_IDS.chatNewInWorktree, inWorktree)).toBe(true);
+    expect(calls).toEqual([`newChatInWorktree:${JSON.stringify(target)}`]);
+    expect(palette().list(inWorktree).find((entry) => entry.id === MENU_IDS.chatNewInWorktree)).toMatchObject({ label: 'Chat: New Chat in This Worktree', accelerator: 'Shift+Alt+N', enabled: true });
+    expect(palette(el, 'darwin').list(inWorktree).find((entry) => entry.id === MENU_IDS.chatNewInWorktree)).toMatchObject({ label: 'Συνομιλία: Νέα συνομιλία σε αυτό το worktree', englishLabel: 'Chat: New Chat in This Worktree', accelerator: '⌥⌘N' });
+    // Ctrl+N stays the project-folder New Chat
+    expect(desktopCommands(PROJECTS, actions, 'win32').find((command) => command.id === MENU_IDS.newChat)).toMatchObject({ accelerator: 'CmdOrCtrl+N' });
+  });
+
+  it('gives New Chat in This Worktree a key no other menu item has on any platform, however the accelerator is spelled', () => {
+    for (const platform of PLATFORMS) {
+      const normalized = (accelerator: string): string => {
+        const parts = accelerator.split('+');
+        const key = parts.pop()!.toUpperCase();
+        const modifiers = parts.map((part) => {
+          if (part === 'CmdOrCtrl' || part === 'CommandOrControl') return platform === 'darwin' ? 'Cmd' : 'Ctrl';
+          if (part === 'Command') return 'Cmd';
+          if (part === 'Control') return 'Ctrl';
+          if (part === 'Option') return 'Alt';
+          return part;
+        });
+        return [...modifiers.sort(), key].join('+');
+      };
+      const own = normalized(newChatInWorktreeAccelerator(platform));
+      const others = menuItems(platform).filter((item) => item.id !== MENU_IDS.chatNewInWorktree && typeof item.accelerator === 'string').map((item) => normalized(item.accelerator as string));
+      expect(others, platform).not.toContain(own);
+    }
   });
 
   it('writes shortcuts as the platform does', () => {
@@ -253,6 +303,20 @@ describe('Git commit commands', () => {
     commands.run(MENU_IDS.gitCloseAllUnmodifiedEditors, NONE);
     expect(calls).toEqual(['scmActiveFile:rename', 'scmActiveFile:delete', 'scmRun:{"op":"undoLastCommit"}', 'scmRun:{"op":"closeAllUnmodifiedEditors"}']);
   });
+
+  it('lists Cherry Pick... with no shortcut only while no merge, rebase or cherry-pick is in progress, and runs it with no commit', () => {
+    expect(labels(OPEN)).toContain('Git: Cherry Pick...');
+    for (const operation of ['merge', 'rebase', 'cherryPick'] as const) {
+      const busy = { ...OPEN, scm: { ...OPEN.scm, operation } };
+      expect(labels(busy), operation).not.toContain('Git: Cherry Pick...');
+      expect(palette().run(MENU_IDS.gitCherryPick, busy), operation).toBe(false);
+    }
+    expect(labels(CHAT)).not.toContain('Git: Cherry Pick...');
+    expect(palette().list(OPEN).find((entry) => entry.id === MENU_IDS.gitCherryPick)).toMatchObject({ enabled: true });
+    expect(palette().list(OPEN).find((entry) => entry.id === MENU_IDS.gitCherryPick)?.accelerator).toBeNull();
+    expect(palette().run(MENU_IDS.gitCherryPick, OPEN)).toBe(true);
+    expect(calls).toEqual(['scmRun:{"op":"cherryPick"}']);
+  });
 });
 
 describe('Search commands', () => {
@@ -370,5 +434,66 @@ describe('split terminal commands', () => {
     const english = (id: string) => listed.find((entry) => entry.id === id)!.englishLabel;
     expect([english(MENU_IDS.focusNextTerminal), english(MENU_IDS.focusPreviousTerminal)]).toEqual(['Terminal: Focus Next Terminal Group', 'Terminal: Focus Previous Terminal Group']);
     expect(listed.find((entry) => entry.id === MENU_IDS.focusNextTerminal)!.label).toBe('Τερματικό: Εστίαση στην επόμενη ομάδα τερματικών');
+  });
+});
+
+describe('editor git and chat review commands', () => {
+  const FILE: MenuState = { ...EDITOR, scm: { ...NO_SCM_MENU_STATE, available: true, openRepositoryCount: 1 }, editorKind: 'code', editorGit: 'file' };
+  const entry = (context: MenuState, id: string, platform: NodeJS.Platform = 'win32') => palette(en, platform).list(context).find((candidate) => candidate.id === id);
+
+  it('shows each editor chord as its palette hint, written for the platform', () => {
+    expect(entry(FILE, MENU_IDS.gitStageSelectedRanges)?.accelerator).toBe('Ctrl+K Ctrl+Alt+S');
+    expect(entry(FILE, MENU_IDS.gitRevertSelectedRanges)?.accelerator).toBe('Ctrl+K Ctrl+R');
+    expect(entry(FILE, MENU_IDS.nextChange)?.accelerator).toBe('Alt+F5');
+    expect(entry(FILE, MENU_IDS.previousChange)?.accelerator).toBe('Shift+Alt+F5');
+    expect(entry(FILE, MENU_IDS.gitStageSelectedRanges, 'darwin')?.accelerator).toBe('⌘K ⌥⌘S');
+  });
+
+  it('lists Stage and Revert Selected Ranges for a file, and Unstage only for a diff of staged changes (VS Code resourceScheme)', () => {
+    expect(entry(FILE, MENU_IDS.gitUnstageSelectedRanges)).toBeUndefined();
+    const staged: MenuState = { ...FILE, editorKind: 'diff', editorGit: 'indexDiff' };
+    expect(entry(staged, MENU_IDS.gitUnstageSelectedRanges)?.enabled).toBe(true);
+    expect(entry(staged, MENU_IDS.gitStageSelectedRanges)).toBeUndefined();
+    expect(entry({ ...FILE, editorGit: 'workingTreeDiff', editorKind: 'diff' }, MENU_IDS.gitStageSelectedRanges)?.enabled).toBe(true);
+    expect(entry({ ...FILE, editorGit: null }, MENU_IDS.gitOpenTimeline)).toBeUndefined();
+  });
+
+  it('enables the merge-conflict commands on a text or merge tab, keeps Toggle Inline Blame always, and Review Changes on the chat having changes', () => {
+    expect(entry(FILE, MENU_IDS.mergeAcceptBoth)?.enabled).toBe(true);
+    expect(entry({ ...FILE, editorKind: 'merge', editorGit: null }, MENU_IDS.mergeNextConflict)?.enabled).toBe(true);
+    expect(entry({ ...FILE, editorKind: 'image', editorGit: null }, MENU_IDS.mergeAcceptBoth)?.enabled).toBe(false);
+    expect(entry(NONE, MENU_IDS.gitToggleInlineBlame)?.enabled).toBe(true);
+    expect(entry(CHAT, MENU_IDS.chatReviewChanges)?.enabled).toBe(false);
+    expect(entry({ ...CHAT, selectedChatHasChanges: true }, MENU_IDS.chatReviewChanges)?.enabled).toBe(true);
+  });
+
+  it('enables the worktree finish actions only while no chat using the worktree works, Merge on a branch and Push with a remote (C8)', () => {
+    const finish = { busy: false, hasRemote: true, detachedTarget: false };
+    const worktree: MenuState = { ...CHAT, worktree: { finish, baseBranch: 'main' }, handOff: { canHandOff: true, place: 'worktree' } };
+    const enabled = (context: MenuState) => [MENU_IDS.worktreeApply, MENU_IDS.worktreeMerge, MENU_IDS.worktreeUpdate, MENU_IDS.worktreePushBranch, MENU_IDS.worktreeDelete].map((id) => entry(context, id)?.enabled);
+    expect(enabled(worktree)).toEqual([true, true, true, true, true]);
+    expect(entry(worktree, MENU_IDS.worktreeMerge)?.label).toBe('Worktree: Merge into main');
+    expect(entry(worktree, MENU_IDS.worktreeUpdate)?.label).toBe('Worktree: Update from main');
+    expect(enabled({ ...worktree, worktree: { finish: { ...finish, busy: true } } })).toEqual([false, false, false, true, false]);
+    expect(enabled({ ...worktree, worktree: { finish: { ...finish, detachedTarget: true } } })).toEqual([true, false, false, true, true]);
+    expect(enabled({ ...worktree, worktree: { finish: { ...finish, hasRemote: false } } })).toEqual([true, true, true, false, true]);
+    expect(enabled(CHAT)).toEqual([false, false, false, false, false]);
+    // Hand off moves only to the other place, and only while the chat is idle
+    expect([entry(worktree, MENU_IDS.chatHandOffToWorktree)?.enabled, entry(worktree, MENU_IDS.chatHandOffToProjectFolder)?.enabled]).toEqual([false, true]);
+    expect(entry({ ...worktree, handOff: { canHandOff: false, place: 'worktree' } }, MENU_IDS.chatHandOffToProjectFolder)?.enabled).toBe(false);
+    expect(entry({ ...CHAT, handOff: { canHandOff: true, place: 'project' } }, MENU_IDS.chatHandOffToWorktree)?.enabled).toBe(true);
+    calls.length = 0;
+    palette().run(MENU_IDS.worktreeDelete, worktree);
+    palette().run(MENU_IDS.chatHandOffToProjectFolder, worktree);
+    expect(calls).toEqual(['worktreeFinish:delete', 'handOff:project']);
+  });
+
+  it('runs each through the editor command or the action main carries out', () => {
+    calls.length = 0;
+    palette().run(MENU_IDS.gitStageSelectedRanges, FILE);
+    palette().run(MENU_IDS.mergeAcceptAllIncoming, FILE);
+    palette().run(MENU_IDS.gitToggleInlineBlame, FILE);
+    palette().run(MENU_IDS.chatReviewChanges, { ...CHAT, selectedChatHasChanges: true });
+    expect(calls).toEqual(['editorCommand:stageSelectedRanges', 'editorCommand:acceptAllIncoming', 'toggleInlineBlame', 'reviewChatChanges']);
   });
 });

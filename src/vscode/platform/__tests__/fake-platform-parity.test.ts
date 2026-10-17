@@ -111,6 +111,8 @@ describe('host capabilities parity', () => {
       folderPickerInPanel: true,
       fileMentionDrop: false,
       windowLayout: false,
+      chatReview: false,
+      worktrees: false,
     });
   });
 });

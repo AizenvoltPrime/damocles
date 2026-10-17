@@ -1,7 +1,8 @@
 import type { ContentBlock, UserContentBlock } from './content';
 import type { AgentUsageTotals } from '../usage-accounting';
 import type { EffortBadgeLevel } from '../effort-badge';
-import type { TerminalAttachmentInfo } from './terminal-attachment';
+import type { ChatAttachmentInfo } from './chat-attachment';
+import type { ChatPlace } from './messages';
 
 export interface SystemInitData {
   model: string;
@@ -107,6 +108,8 @@ export interface RewindHistoryItem {
   skipped?: SkippedSummary;
   /** Set when the turn's files cannot be restored: it has no usable baseline, or the chat has no project folder and takes no checkpoints (`no-project`). */
   notRewindable?: { reason: NotRewindableReason | "no-project"; params: NotRewindableParams };
+  /** A hand-off (D61) came after this turn: its files are in the other folder, so a rewind restores the conversation only. */
+  crossesHandOff?: boolean;
 }
 
 export type SkipReason = "size" | "category" | "lfs";
@@ -249,8 +252,8 @@ export interface ChatMessage {
   refusalExplanation?: string | null;
   refusalCategory?: 'cyber' | 'bio' | null;
   contentBlocks?: ContentBlock[];
-  /** A user message's terminal attachments, shown as chips with their bounded preview. */
-  terminalAttachments?: TerminalAttachmentInfo[];
+  /** A user message's attachments (terminal output and commits), shown as chips with their bounded preview. */
+  terminalAttachments?: ChatAttachmentInfo[];
   toolCalls?: ToolCall[];
   timestamp: number;
   isPartial?: boolean;
@@ -306,8 +309,9 @@ export interface ToolCall {
   /**
    * `unrecorded` is terminal: the call ran and no outcome survived, so nothing may render it as live.
    * `cancelled` is derived in the webview from `metadata[CANCELLED_TOOL_DETAIL_KEY]`, never sent as a status.
+   * `blocked` is derived in the webview from a POLICY_BLOCK_MARKER result, never sent as a status.
    */
-  status: "pending" | "running" | "awaiting_approval" | "approved" | "denied" | "completed" | "failed" | "abandoned" | "cancelled" | "unrecorded";
+  status: "pending" | "running" | "awaiting_approval" | "approved" | "denied" | "blocked" | "completed" | "failed" | "abandoned" | "cancelled" | "unrecorded";
   result?: string;
   isError?: boolean;
   errorMessage?: string;
@@ -365,4 +369,8 @@ export interface StoredSession {
   model?: { provider: string; id: string };
   /** The open folder whose session dir holds this session, with that folder's disambiguated label. */
   workspaceFolder?: { key: string; label: string };
+  /** The session's latest worktree entry (AD12), when it has one. */
+  worktree?: { worktreeId: string; place: ChatPlace };
+  /** The registry folder whose session dir it was listed from, when that is not the project's own (AD12 Listing). */
+  listedFrom?: string;
 }

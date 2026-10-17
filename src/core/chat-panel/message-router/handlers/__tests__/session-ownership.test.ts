@@ -14,7 +14,7 @@ import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../..
 import { SESSION_LEASE_DIR, SESSION_LEASE_STALE_MS, releaseSessionLease, sessionLeasePath, sessionLeasesOf, type SessionLeaseHolder } from "../../../../pi-session/session-store/session-lease";
 import { TerminalAttachmentManager } from "../../../terminal-attachment-manager";
 
-vi.mock("../../../../pi-session/session-store", () => ({ renamePiSession: vi.fn(), deletePiSession: vi.fn(), tagPiSession: vi.fn() }));
+vi.mock("../../../../pi-session/session-store", () => ({ renamePiSession: vi.fn(), deletePiSession: vi.fn(), tagPiSession: vi.fn(), resolvePiSessionFile: vi.fn(async () => null) }));
 vi.mock("../../../../pi-session/pi-runtime", () => ({ PiRuntime: { liveSessionMutator: () => undefined } }));
 vi.mock("../../../../logger", () => ({ log: vi.fn() }));
 
@@ -96,7 +96,7 @@ function harness(...panels: Panel[]) {
     getPanels,
     switchPanelFolder,
     postWorkspaceFolderState: vi.fn(),
-    folderRegistry: { resolve: (key: string) => [FOLDER_A, FOLDER_B].find((f) => f.key === key) },
+    folderRegistry: { resolve: (key: string) => [FOLDER_A, FOLDER_B].find((f) => f.key === key), targets: () => [FOLDER_A, FOLDER_B] },
     postMessage: (host: unknown, message: ExtensionToWebviewMessage) => {
       sent.get(host)!.push(message);
       order.push(message.type);
@@ -118,6 +118,7 @@ function harness(...panels: Panel[]) {
     },
     getLanguagePreference: () => "en",
     webviewPrompts: { repost: () => undefined },
+    worktrees: () => ({ interceptSend: () => false, resumeFolder: async (_panelId: string, _sessionId: string, folder: unknown) => ({ folder, settle: () => undefined }), viewOf: () => undefined }),
     platform,
   } as unknown as HandlerDependencies;
   return { deps, sent, order, loadSessionHistory, folderOfSession, switchPanelFolder, chat: createChatHandlers(deps), session: createSessionHandlers(deps) };

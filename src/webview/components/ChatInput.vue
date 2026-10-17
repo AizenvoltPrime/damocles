@@ -38,6 +38,8 @@ const props = defineProps<{
   permissionMode: PermissionMode;
   dangerouslySkipPermissions: boolean;
   settingsOpen?: boolean;
+  // why sending is refused now (a finish action runs on the chat's worktree); the draft stays in the box
+  sendBlocked?: string | undefined;
 }>();
 
 const emit = defineEmits<{
@@ -318,7 +320,23 @@ function restoreQueued(blocks: readonly UserContentBlock[]): void {
   });
 }
 
-defineExpose({ focus, setInput, prependInput, submit: handleSend, sendPrompt, appendTranscription, voiceSetRecording, voiceSetDone, voiceSetError, settleSteer, restoreQueued });
+/** Puts `text` in the box, the whole text when it is empty, else on a new line after the draft; the caret ends after it. */
+function appendPrompt(text: string): void {
+  const draft = inputText.value;
+  inputText.value = draft === "" ? text : `${draft}${draft.endsWith("\n") ? "" : "\n"}${text}`;
+  nextTick(() => {
+    const textarea = textareaRef.value;
+    if (!textarea) return;
+    textarea.focus();
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    textarea.scrollTop = textarea.scrollHeight;
+  });
+}
+
+// No text and nothing attached: the composer as it mounts, whose height the resume placeholder takes.
+const isEmpty = computed(() => inputText.value === "" && !hasImageAttachments.value && !hasElementAttachments.value);
+
+defineExpose({ focus, setInput, prependInput, submit: handleSend, sendPrompt, appendTranscription, voiceSetRecording, voiceSetDone, voiceSetError, settleSteer, restoreQueued, appendPrompt, isEmpty });
 
 // One composer per page, so fixed ids tie the textarea to whichever autocomplete list is open.
 const MENTION_LIST_ID = "composer-mentions";
@@ -397,7 +415,7 @@ async function attachChosenImages(event: Event) {
 
 function handleSend() {
   // A prompt sent mid-switch would land in a fresh session in another folder; the draft stays in the box.
-  if (!canSend.value || settingsStore.workspaceFolderSwitchPending) return;
+  if (!canSend.value || settingsStore.workspaceFolderSwitchPending || props.sendBlocked) return;
   const text = inputText.value.trim();
 
   const imageBlocks = imagesToContentBlocks();
@@ -439,7 +457,7 @@ function removeTerminalAttachment(id: string) {
 
 /** Sends `prompt` on its own; the draft and its attachments stay staged in the box. */
 function sendPrompt(prompt: string) {
-  if (settingsStore.workspaceFolderSwitchPending) return;
+  if (settingsStore.workspaceFolderSwitchPending || props.sendBlocked) return;
   dispatch(prompt);
 }
 
@@ -552,8 +570,8 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   if (event.key !== "Escape" || !props.isProcessing || props.settingsOpen) {
     return;
   }
-  // Escape inside a dialog or a dock prompt card belongs to that card, never to the run.
-  if (event.target instanceof Element && event.target.closest(`[role="dialog"], [role="alertdialog"], ${DOCK_PROMPT_SELECTOR}`)) {
+  // Escape inside a dialog, an open menu or a dock prompt card belongs to it, never to the run.
+  if (event.target instanceof Element && event.target.closest(`[role="dialog"], [role="alertdialog"], [role="menu"], ${DOCK_PROMPT_SELECTOR}`)) {
     return;
   }
   event.preventDefault();
@@ -628,6 +646,8 @@ onUnmounted(() => {
         class="pointer-events-none absolute -inset-1.25 rounded-[1.25rem] border-4 border-(--d-accent-soft) opacity-0 transition-opacity duration-200 group-focus-within/composer:opacity-100"
         aria-hidden="true"
       />
+      <!-- Host state that rides above the text, such as the worktree opt-in chip (D30). -->
+      <slot name="chips" />
       <TerminalAttachmentStrip
         :attachments="uiStore.terminalAttachments"
         @remove="removeTerminalAttachment"
@@ -807,8 +827,8 @@ onUnmounted(() => {
               : canSend
                 ? 'bg-(--d-accent) text-(--d-on-accent) shadow-[0_4px_14px_var(--d-accent-soft)]'
                 : 'bg-(--d-hover) text-(--d-faint)'"
-            :disabled="canSend ? settingsStore.workspaceFolderSwitchPending : !isProcessing"
-            :title="isProcessing && !canSend ? t('composer.stop') : t('composer.send')"
+            :disabled="canSend ? settingsStore.workspaceFolderSwitchPending || sendBlocked !== undefined : !isProcessing"
+            :title="isProcessing && !canSend ? t('composer.stop') : canSend && sendBlocked ? sendBlocked : t('composer.send')"
             :aria-label="isProcessing && !canSend ? t('composer.stop') : t('composer.send')"
             data-testid="composer-send"
             @click="handleButtonClick"

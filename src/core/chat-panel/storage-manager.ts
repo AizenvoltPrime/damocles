@@ -5,6 +5,7 @@ import * as fs from "fs";
 import type { StoredSession } from "../../shared/types/session";
 import {
   ensurePiSessionDir,
+  piSessionDir,
   listPiSessions,
   getPiSessionMetadata,
   getPiSessionMetadataByFile,
@@ -24,6 +25,9 @@ import type { PanelHost } from "../../platform/window-service";
 import type { FolderTarget } from "../workspace-folders/folder-registry";
 import { log } from "../logger";
 import { perfSpan } from "../perf";
+import { folderKey } from "../workspace-folders/folder-key";
+import { worktreeSessionFolders } from "../worktrees/personal-config";
+import type { WorktreeRegistry } from "../worktrees/registry";
 
 const CHANGE_DEBOUNCE_MS = 300;
 /** Upserts run after every write during a turn, so only the slow ones log. */
@@ -63,7 +67,24 @@ function sameListing(a: StoredSession, b: StoredSession): boolean {
     && a.preview === b.preview
     && a.tag === b.tag
     && a.model?.provider === b.model?.provider
-    && a.model?.id === b.model?.id;
+    && a.model?.id === b.model?.id
+    && a.worktree?.worktreeId === b.worktree?.worktreeId
+    && a.worktree?.place === b.worktree?.place;
+}
+
+/**
+ * Calls `listener` after a registry change that alters which session directories the projects list (AD12 Listing): a record
+ * added, removed or marked deleted. Most writes (usedAt, an Apply's tree, a Merge's base) alter none.
+ */
+export function onListingChange(registry: Pick<WorktreeRegistry, "records" | "onDidChange">, listener: () => void): Disposable {
+  const keyOf = (): string => JSON.stringify(registry.records().map((r) => [r.id, r.kind, r.projectPath ?? null, r.workingFolder, r.deletedAt !== undefined]));
+  let last = keyOf();
+  return registry.onDidChange(() => {
+    const next = keyOf();
+    if (next === last) return;
+    last = next;
+    listener();
+  });
 }
 
 /** Whether the session's shown title or tag, or with `matchFolder` its folder label, contains `query` (lowercased, trimmed). */
@@ -89,6 +110,8 @@ export class StorageManager {
   private pendingPromptEntries: string[] = [];
   /** Folder key to that folder's session-dir watcher. */
   private readonly sessionWatchers = new Map<string, FileWatcher>();
+  // registry folders' session dirs by folderKey, each watched for the project that lists them
+  private readonly registryWatchers = new Map<string, { readonly projectKey: string; readonly watcher: FileWatcher }>();
   private pendingChangeTimers: Map<string, NodeJS.Timeout> = new Map();
   private readonly prunedFolders = new Set<string>();
   /** Session id to the key of the folder whose session dir holds it. */
@@ -147,13 +170,25 @@ export class StorageManager {
     return { ...session, workspaceFolder: { key: folder.key, label: folder.label } };
   }
 
-  /** Every open folder's stored sessions, newest first. */
+  /** Every open folder's stored sessions, newest first, each listed once under its project (AD12 Listing). */
   private async loadAllSessions(): Promise<StoredSession[]> {
     const perFolder = await Promise.all(this.folders().map(async (folder) => {
       void this.pruneOrphanCheckpointReposOnce(folder);
-      return (await listPiSessions(folder.fsPath)).map((s) => this.stamp(s, folder));
+      const own = (await listPiSessions(folder.fsPath)).map((s) => this.stamp(s, folder));
+      const extras = this.registryFoldersOf(folder);
+      if (extras.length === 0) return own;
+      const listed = await Promise.all(extras.map(async (extra) => (await listPiSessions(extra)).map((s) => ({ ...this.stamp(s, folder), listedFrom: extra }))));
+      const unique = new Map<string, StoredSession>();
+      for (const session of [...own, ...listed.flat()]) if (!unique.has(session.id)) unique.set(session.id, session);
+      return [...unique.values()];
     }));
     return perFolder.flat().sort(newestFirst);
+  }
+
+  /** The registry folders whose session dirs list under `folder`, less any open as a project itself. */
+  private registryFoldersOf(folder: FolderTarget): string[] {
+    const open = new Set(this.folders().map((t) => t.key));
+    return worktreeSessionFolders(folder.fsPath).filter((extra) => !open.has(folderKey(extra)));
   }
 
   /** The cached session list, loading it once when empty. A load overtaken by an invalidation is discarded and redone. */
@@ -300,6 +335,13 @@ export class StorageManager {
       watcher.dispose();
       this.sessionWatchers.delete(key);
     }
+    // A registry folder's watcher goes with its project, with its record and once the folder opens as a project itself.
+    const listed = new Set(this.folders().flatMap((folder) => this.registryFoldersOf(folder).map(folderKey)));
+    for (const [dirKey, entry] of this.registryWatchers) {
+      if (open.has(entry.projectKey) && listed.has(dirKey)) continue;
+      entry.watcher.dispose();
+      this.registryWatchers.delete(dirKey);
+    }
     // A folder re-added later is pruned again, since its sessions may have changed while it was closed.
     for (const key of this.prunedFolders) if (!open.has(key)) this.prunedFolders.delete(key);
     this.invalidateSessionsCache();
@@ -369,6 +411,20 @@ export class StorageManager {
   }
 
   private async watchFolder(folder: FolderTarget): Promise<void> {
+    // Rule 1: the project's registry folders' session dirs are watched under the project's key.
+    for (const extra of this.registryFoldersOf(folder)) {
+      const dirKey = folderKey(extra);
+      if (this.registryWatchers.has(dirKey)) continue;
+      // Not created here: a watch on a missing directory starts once it appears, and only a session there creates it.
+      const watcher = this.fileWatchers.watch(piSessionDir(extra), "*.jsonl");
+      const key = folder.key;
+      watcher.onDidCreate((filePath) => {
+        this.handleSessionFileCreated(filePath, key).catch((err) => log("[StorageManager] session file create upsert failed for %s: %O", filePath, err));
+      });
+      watcher.onDidChange((filePath) => this.handleSessionFileChanged(filePath, key));
+      watcher.onDidDelete((filePath) => this.handleSessionFileDeleted(filePath));
+      this.registryWatchers.set(dirKey, { projectKey: key, watcher });
+    }
     if (this.sessionWatchers.has(folder.key)) return;
 
     // pi writes to the Damocles-owned pi tree dir (created here so the watcher attaches even before
@@ -427,6 +483,8 @@ export class StorageManager {
   dispose(): void {
     for (const watcher of this.sessionWatchers.values()) watcher.dispose();
     this.sessionWatchers.clear();
+    for (const entry of this.registryWatchers.values()) entry.watcher.dispose();
+    this.registryWatchers.clear();
     for (const timer of this.pendingChangeTimers.values()) {
       clearTimeout(timer);
     }
@@ -464,9 +522,11 @@ export class StorageManager {
     const folder = this.openFolder(folderKey);
     if (generation !== this.sessionsGeneration || !folder) return false;
     this.sessionFolder.set(metadata.id, folder.key);
-    const row = this.stamp(metadata, folder);
-    const existingIndex = all.findIndex((s) => s.id === row.id);
+    const existingIndex = all.findIndex((s) => s.id === metadata.id);
     const existing = existingIndex >= 0 ? all[existingIndex]! : undefined;
+    // A file stays in the session dir the list found it in, which its metadata does not name.
+    const stamped = this.stamp(metadata, folder);
+    const row = existing?.listedFrom !== undefined ? { ...stamped, listedFrom: existing.listedFrom } : stamped;
     if (existing) {
       if (options?.ifChanged && sameRow(existing, row)) return false;
       all[existingIndex] = row;

@@ -8,14 +8,17 @@ import type { MemoryInjectionDisplay } from '../shared/types/context-injection';
 import type { SteerTargetInfo } from '../shared/types/subagents';
 import type { TeamService } from './team';
 import type { ActivitySource } from './chat-panel/activity';
-import type { TerminalAttachmentInfo } from '../shared/types/terminal-attachment';
+import type { ChatReviewSnapshot, CommentPlace, DraftComment, ReviewFileDiff, ReviewSubmitOutcome } from './pi-session/chat-review';
+import type { ChatScope } from './pi-session/chat-changes';
+import type { SessionWorktree } from './pi-session/session-worktree';
+import type { ChatAttachmentInfo } from '../shared/types/chat-attachment';
 
-/** What the transcript shows for a sent message: the typed text, its images and the terminal attachments sent with it. */
+/** What the transcript shows for a sent message: the typed text, its images and the attachments sent with it. */
 export interface UserBroadcast {
   content: string;
   contentBlocks?: UserContentBlock[];
   // the prompt starts with one formatted block per attachment, in this order
-  terminalAttachments?: TerminalAttachmentInfo[];
+  terminalAttachments?: ChatAttachmentInfo[];
 }
 
 /**
@@ -67,6 +70,10 @@ export interface ChatSession extends ActivitySource {
 
   getModelInfo(model?: string): ModelInfo | undefined;
 
+  /** Where the chat works (AD12): its place, read-only state, isolation and `worktreeState`. */
+  readonly worktree: SessionWorktree;
+  /** D61's note naming the chat's new working folder, delivered with the next prompt. */
+  noteWorkingFolder(folder: string): void;
   /** Whether this session is on, starting on, or switching to stored session `sessionId`. */
   holdsSession(sessionId: string): boolean;
   /** True when a resume or fork target is pending, a turn is processing, or the live session has messages. */
@@ -76,6 +83,16 @@ export interface ChatSession extends ActivitySource {
   /** The stored session whose file this session is on, or opens at start (a resume or fork target); null while it has no file. */
   readonly storedSessionId: string | null;
   setResumeSession(sessionId: string | null): void;
+  /** The review tab's changed files in a scope (D60); fresh reads again whatever changed (a user's open, a hand-off). */
+  chatReviewSnapshot(scope: ChatScope, opts?: { readonly fresh?: boolean }): Promise<ChatReviewSnapshot>;
+  /** One file's diff in the review tab's scope, as git prints it; missing when the file is not listed there. */
+  chatReviewFileDiff(scope: ChatScope, filePath: string): Promise<ReviewFileDiff>;
+  /** What a new comment's line is checked against at send, read from core's diff now; undefined when the comment's diff is not the current one. */
+  chatReviewAnchor(place: CommentPlace): Promise<string | undefined>;
+  /** The drafts whose line changed or left its scope's diff since they were made (D60's one staleness rule). */
+  chatReviewStale(drafts: readonly DraftComment[]): Promise<DraftComment[]>;
+  /** The review comments as one user message composed from core's own diff; a running chat queues it. */
+  submitReview(drafts: readonly DraftComment[]): Promise<ReviewSubmitOutcome>;
   initializeEarly(): Promise<void>;
   /** The webview (re)started with an empty dialog queue, so nothing on screen can answer what this
    *  side is still awaiting. Called from the `ready` handler. */

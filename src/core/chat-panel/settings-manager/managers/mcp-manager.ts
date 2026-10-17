@@ -5,6 +5,7 @@ import type { SettingsScope } from "../../../../platform/settings-store";
 import * as path from "path";
 import { homedir } from "os";
 import { LOCAL_MCP_RELATIVE_PATH, MCP_TOOL_EXPOSURE_SETTING, mcpServerNamespaceKey } from "../../../../shared/types/mcp";
+import { personalConfigRoot } from "../../../worktrees/personal-config";
 import type {
   McpConfigError,
   McpServerConfig,
@@ -234,7 +235,8 @@ export class McpManager {
     }
     for (const [key, target] of open) {
       if (this.folderWatchers.has(key)) continue;
-      this.folderWatchers.set(key, FOLDER_WATCHED_FILES.map(file => this.watch(target.fsPath, file)));
+      // The local file is watched where localMcpConfigPath reads it: a worktree chat's is its project's (D34).
+      this.folderWatchers.set(key, FOLDER_WATCHED_FILES.map(file => this.watch(file === LOCAL_MCP_RELATIVE_PATH ? personalConfigRoot(target.fsPath) : target.fsPath, file)));
     }
   }
 
@@ -451,9 +453,10 @@ export class McpManager {
       log("[McpManager] setServerEnabled: %s is not a server in %s; ignored", serverName, folderKey);
       return;
     }
+    // Kept under the folder whose config says enabled:false, which for a worktree chat is its branch's, not its project's.
     if (entry.config?.enabled === false) await this.setEnabledOverride(entry.scope, folderKey, serverName, enabled);
     if (entry.scope === "folder") {
-      await this.mutateProjectDisabled(folderKey, serverName, toggle);
+      await this.mutateProjectDisabled(this.listKeyOf(folderKey), serverName, toggle);
       // Re-read after the await: a reload may have installed a state read before this write landed.
       const current = this.folderStates.get(folderKey)?.entries.find(e => e.name === serverName && e.scope === "folder");
       if (current) current.enabled = enabled;
@@ -553,7 +556,19 @@ export class McpManager {
 
   private isFolderTrusted(folderKey: string): boolean {
     const target = this.folders().find(candidate => candidate.key === folderKey);
-    return target !== undefined && this.platform.trust.isTrusted(target.fsPath);
+    return target !== undefined && this.isTargetTrusted(target);
+  }
+
+  // Rule 8: a worktree chat's working folder is trusted exactly when its owner project is.
+  private isTargetTrusted(target: FolderTarget): boolean {
+    if (target.ownerKey === undefined) return this.platform.trust.isTrusted(target.fsPath);
+    const owner = this.folders().find(candidate => candidate.key === target.ownerKey);
+    return owner !== undefined && this.platform.trust.isTrusted(owner.fsPath);
+  }
+
+  // A worktree chat's toggles are its project's, so they outlive the working folder's registration.
+  private listKeyOf(folderKey: string): string {
+    return this.folders().find(candidate => candidate.key === folderKey)?.ownerKey ?? folderKey;
   }
 
   /**
@@ -565,7 +580,7 @@ export class McpManager {
    */
   toolExposureScopes(folderKey: string): McpToolExposureScope[] {
     const target = this.folders().find(candidate => candidate.key === folderKey);
-    if (!target?.projectScope || !this.platform.trust.isTrusted(target.fsPath)) return ["user"];
+    if (!target?.projectScope || !this.isTargetTrusted(target)) return ["user"];
     const writeTarget = defaultProjectPath(this.platform.workspaceFolders, this.workspaceState);
     if (writeTarget === undefined || !this.platform.trust.isTrusted(writeTarget)) return ["user"];
     return this.platform.settings.scopeFile("local") === undefined ? ["user", "project"] : ["user", "project", "local"];
@@ -682,7 +697,7 @@ export class McpManager {
     // One knob governs every Claude-vs-Codex tie-break, so assets and MCP can never disagree about it.
     const precedence = getAssetSourcePrecedence();
     const targets = [...this.folders()];
-    const trustedByKey = new Map(targets.map(target => [target.key, this.platform.trust.isTrusted(target.fsPath)]));
+    const trustedByKey = new Map(targets.map(target => [target.key, this.isTargetTrusted(target)]));
     const projectTargets = targets.filter(target => target.projectScope);
 
     await migrateOwnedFile(DAMOCLES_MCP_CONFIG_PATH);
@@ -696,7 +711,8 @@ export class McpManager {
       sources: [...read.sources, { source: "claude-local", ...global.claudeLocal.get(read.target.fsPath)! }],
       complete: read.complete && !global.claudeLocalUnreadable,
     }));
-    const pendingSplit = await this.migrateDisabledSplit(folderReads);
+    // The migrations are per project; a worktree chat's working folder shares its project's lists.
+    const pendingSplit = await this.migrateDisabledSplit(folderReads.filter(read => read.target.ownerKey === undefined));
 
     const userDisabled = new Set(this.getUserDisabled());
     const projectDisabled = this.getProjectDisabled();
@@ -711,14 +727,17 @@ export class McpManager {
       const folded = trustedByKey.get(target.key) === true ? ranked : demoteRepoAuthored(ranked);
       // A folder the split has not reached yet still honours every pre-split name, so nothing disabled
       // before the upgrade connects while its files are unreadable.
-      const folderDisabled = new Set(projectDisabled.get(target.key) ?? []);
-      if (pendingSplit && !pendingSplit.migratedFolders.includes(target.key)) {
-        for (const name of legacyNamesFor(pendingSplit, target.key)) folderDisabled.add(name);
+      const listKey = target.ownerKey ?? target.key;
+      const folderDisabled = new Set(projectDisabled.get(listKey) ?? []);
+      if (pendingSplit && !pendingSplit.migratedFolders.includes(listKey)) {
+        for (const name of legacyNamesFor(pendingSplit, listKey)) folderDisabled.add(name);
       }
+      // A working folder takes its project's overrides and its own, each kept against the config it was set for.
+      const folderEnabledOverride = new Set([...(projectEnabledOverride.get(listKey) ?? []), ...(projectEnabledOverride.get(target.key) ?? [])]);
       const entries = mergeMcpEntries(
         folded,
         { user: userDisabled, folder: folderDisabled },
-        { user: userEnabledOverride, folder: new Set(projectEnabledOverride.get(target.key) ?? []) },
+        { user: userEnabledOverride, folder: folderEnabledOverride },
       );
       const shadowingSources = sourcesFoldedAbove("damocles", folded);
       folderStates.set(target.key, {
@@ -736,13 +755,15 @@ export class McpManager {
     // Queued on the toggle lock but not awaited, so a load never waits behind a slow toggle write.
     void this.pruneStaleEnabledOverrides(folderStates).catch(err => log("[McpManager] Pruning stale enabled overrides failed:", err));
     if (folderReads.every(read => read.complete) && global.errors.length === 0) {
-      await this.migrateDisabledMcpTools(folderStates, trustedByKey);
+      const projectStates = new Map([...folderStates].filter(([key]) => targets.find(target => target.key === key)?.ownerKey === undefined));
+      await this.migrateDisabledMcpTools(projectStates, trustedByKey);
     }
   }
 
   /**
    * Drop the enabled overrides of servers whose config no longer says `enabled: false`, so a later
-   * `enabled: false` in that config applies again. A server absent from this load keeps its override.
+   * `enabled: false` in that config applies again. Each folder list is judged by the config of the folder it is
+   * kept under; a server absent from this load, a folder not loaded included, keeps its override.
    */
   private async pruneStaleEnabledOverrides(folderStates: ReadonlyMap<string, FolderMcpState>): Promise<void> {
     const configAllows = (entry: McpServerEntry): boolean => entry.config !== null && entry.config.enabled !== false;

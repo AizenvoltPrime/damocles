@@ -93,6 +93,9 @@
 @keyframes d-shift{from{transform:translateY(var(--shift,0))}to{transform:none}}
 /* A section's title actions appearing on hover or focus: they fade in with a short slide from the end edge. */
 @keyframes d-actions-in{from{opacity:0;transform:translateX(.1875rem)}to{opacity:1;transform:none}}
+/* A review comment box or card unfolds from its top edge and folds away before it is removed (.review-comment-in/-out, desktop shell style.css). */
+@keyframes d-expand-in{from{opacity:0;transform:translateY(-.25rem) scaleY(.82)}to{opacity:1;transform:none}}
+@keyframes d-expand-out{from{opacity:1;transform:none}to{opacity:0;transform:translateY(-.125rem) scaleY(.88)}}
 
 /* Vue <Transition name="t-…"> classes. Leave animations hold their last frame so nothing flashes before removal. */
 .t-fade-enter-active{animation:o-fade .2s var(--ease-out)}
@@ -107,6 +110,9 @@
 .t-swap-leave-active{display:inline-block;animation:d-swap-out .12s ease-in both}
 .t-swap-down-enter-active{display:inline-block;animation:d-swap-in-down .2s var(--ease-out)}
 .t-swap-down-leave-active{display:inline-block;animation:d-swap-out-down .12s ease-in both}
+/* The swap for an element that is already a box (a flex line): t-swap's inline-block would undo its layout mid-swap. */
+.t-swap-box-enter-active{animation:d-swap-in .2s var(--ease-out)}
+.t-swap-box-leave-active{animation:d-swap-out .12s ease-in both}
 /* Both sides share one grid cell, so the swap is a crossfade in place. */
 .t-morph-enter-active{animation:d-morph-in .26s var(--ease-out)}
 .t-morph-leave-active{pointer-events:none;animation:d-morph-out .16s ease-in both}

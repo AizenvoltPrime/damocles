@@ -126,11 +126,11 @@ async function openCenter(): Promise<void> {
         >{{ chatTitle }}</span>
       </template>
     </nav>
-    <div class="flex h-full min-w-3 flex-1 items-center justify-center px-3">
+    <div class="@container/quickopen flex h-full min-w-14 flex-1 items-center justify-center px-3">
       <button
         type="button"
         data-testid="quick-open-box"
-        class="title-bar-control flex h-6.5 w-full max-w-90 min-w-0 items-center gap-2 rounded-7 border border-(--d-border2) bg-(--d-input) px-2.5 text-xs text-(--d-faint) transition-colors duration-150 hover:border-(--d-accent) hover:text-(--d-muted)"
+        class="title-bar-control flex h-6.5 w-full max-w-90 min-w-0 items-center gap-2 overflow-hidden rounded-7 border border-(--d-border2) bg-(--d-input) px-2.5 text-xs text-(--d-faint) transition-colors duration-150 hover:border-(--d-accent) hover:text-(--d-muted)"
         :title="t('titleBar.quickOpenTitle', { shortcut: state.shortcuts.quickOpen })"
         :aria-label="t('titleBar.quickOpen')"
         :aria-keyshortcuts="ariaKeyshortcuts(state.shortcuts.quickOpen)"
@@ -141,7 +141,7 @@ async function openCenter(): Promise<void> {
           class="size-3.25 shrink-0"
         />
         <span class="min-w-0 flex-1 truncate text-left">{{ t('titleBar.quickOpen') }}</span>
-        <kbd class="shrink-0 rounded-5 border border-(--d-border2) px-1.25 font-mono text-10.5">{{ state.shortcuts.quickOpen }}</kbd>
+        <kbd class="shrink-0 rounded-5 @max-[10rem]/quickopen:hidden border border-(--d-border2) px-1.25 font-mono text-10.5">{{ state.shortcuts.quickOpen }}</kbd>
       </button>
     </div>
     <div class="flex shrink-0 items-center gap-0.5 px-2">

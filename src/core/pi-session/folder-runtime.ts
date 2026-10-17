@@ -36,6 +36,7 @@ import type { TrustService } from '../../platform/trust-service';
 import type { Disposable } from '../../platform/disposable';
 import type { SettingInspection } from '../../platform/settings-store';
 import type { FileWatcher, FileWatcherFactory } from '../../platform/file-watcher';
+import { worktreeWalkOf } from '../worktrees/personal-config';
 
 /** An existing asset resource directory plus its source attribution (for pi's resource source info). */
 interface AssetResourceEntry {
@@ -345,6 +346,7 @@ export class FolderRuntime {
             // Read per call, never captured: the trust-grant reload re-runs this closure, and that is
             // what surfaces the project instructions file with no window reload.
             trusted: this._trust.isTrusted(this.cwd),
+            ...worktreeWalkOf(this.cwd),
           }),
         }),
         // Damocles does not support user-installed pi extensions: drop any configured in pi so leftover

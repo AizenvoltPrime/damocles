@@ -18,6 +18,7 @@ function makeHarness(memoryOverrides: Record<string, unknown>) {
     memoryService,
     storageManager: { broadcastPromptHistoryEntry: vi.fn() },
     markUserTypedDuringTurn: vi.fn(),
+    worktrees: () => ({ interceptSend: () => false }),
   } as unknown as HandlerDependencies;
   const ctx = {
     folder: { key: "/cwd", fsPath: "/cwd", name: "ws", label: "ws", projectScope: true },

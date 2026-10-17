@@ -6,7 +6,7 @@ import { PiRuntime } from '../../core/pi-session/pi-runtime';
 import { runCheckpointMaintenance } from '../../core/pi-session/checkpoints';
 import { setupAutoDisable } from '../../core/voice/auto-disable';
 import type { Disposable } from '../../platform/disposable';
-import type { Platform } from '../../platform/platform';
+import type { PlatformWithWorktrees } from '../../core/worktrees/host';
 
 const MAINTENANCE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const MAINTENANCE_FIRST_DELAY_MS = 20_000;
@@ -29,7 +29,7 @@ export interface DesktopCore {
  * (sidebar, panel serializers, compass views, voice status bar). The caller runs the legacy settings
  * migrations once per app run, before the first start.
  */
-export function startCore(platform: Platform): DesktopCore {
+export function startCore(platform: PlatformWithWorktrees): DesktopCore {
   const subscriptions: Disposable[] = [];
   setMcpSecretStorage(platform.secrets);
 

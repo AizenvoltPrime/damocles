@@ -305,16 +305,17 @@ defineExpose({ close });
               align="start"
               :class="['w-(--reka-dropdown-menu-trigger-width)', MENU_CONTENT]"
             >
+              <!-- An unavailable scope dims only its label, so its reason keeps its token's contrast (palette-contrast.test.ts). -->
               <DropdownMenuItem
                 v-for="scope in FILE_SCOPES"
                 :key="scope"
-                :class="MENU_ITEM"
+                :class="[MENU_ITEM, 'data-disabled:opacity-100']"
                 :disabled="fileUnavailable(scope) !== null"
                 :data-testid="`settings-edit-json-${scope}`"
                 @select="emit('editSettingsFile', scope)"
               >
                 <span class="sm-option-text">
-                  {{ t(`settings.jsonFiles.edit.${scope}`) }}
+                  <span :class="fileUnavailable(scope) !== null && 'opacity-50'">{{ t(`settings.jsonFiles.edit.${scope}`) }}</span>
                   <span
                     v-if="fileUnavailable(scope)"
                     class="sm-option-hint"

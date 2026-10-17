@@ -52,6 +52,13 @@ export type AutoCheckpointStartResult =
   | { ok: true; entries: CheckpointRecord[] }
   | { ok: false; message: string; entries: CheckpointRecord[] };
 
+/** A running turn's baseline: its user entry, before commit and folder repo id. */
+export interface PendingBaseline {
+  readonly userEntryId: string;
+  readonly beforeCommit: string;
+  readonly folderId: string;
+}
+
 export type AutoCheckpointFinalizeResult = { ok: true; record: CheckpointRecord } | { ok: false };
 
 export type AutoCheckpointSnapshotResult = { ok: true; entry: CheckpointEntryV3 } | { ok: false; message: string };
@@ -153,6 +160,18 @@ export class AutoCheckpointProducer {
     if (turn.notRewindable) return false;
     turn.notRewindable = { reason, params };
     return true;
+  }
+
+  /**
+   * The pending turn's before-state once its baseline is taken: the turn, the commit and the folder repo holding it; undefined
+   * while no turn is pending, its baseline failed, or the turn is not rewindable. A running turn has no persisted entry yet.
+   */
+  async pendingBaseline(): Promise<PendingBaseline | undefined> {
+    const turn = this.pending;
+    if (!turn || turn.notRewindable) return undefined;
+    const outcome = await turn.baseline;
+    if (!outcome.ok || this.pending !== turn || turn.notRewindable) return undefined;
+    return { userEntryId: turn.userEntryId, beforeCommit: outcome.commit, folderId: this.folder.folderId };
   }
 
   /** Close the pending turn: its v3 entry, or its not-rewindable record. */

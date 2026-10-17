@@ -14,4 +14,5 @@ export type HeaderAction =
   | 'usage'
   | 'stats'
   | 'settings'
-  | 'terminal';
+  | 'terminal'
+  | 'reviewChanges';

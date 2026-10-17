@@ -30,6 +30,7 @@ import {
   type TextEncoding,
 } from '../platform/editor-document';
 import { isRelativeFilePath } from '../../../shared/relative-path';
+import { visibleText } from '../../../shared/visible-text';
 import { confineExisting, confineMissing, confineOrCreateFolder, followsLocalLinksOnly, projectOfPath, type Project } from './confine';
 
 // Images preview from a data: URL of at most this many bytes; a larger one is not displayed.
@@ -471,6 +472,16 @@ export class DocumentService {
     return document;
   }
 
+  /** New text for a read-only in-memory document (a diff's git side that moved), as a new content version the shell applies. */
+  replaceMemory(id: string, text: string): void {
+    const document = this.text(id);
+    if (!document || document.location !== undefined || document.untitled || document.readOnlyReason === undefined) throw new Error('Not a read-only in-memory document');
+    const normalized = withEol(text, document.eol);
+    if (normalized === document.text) return;
+    document.diskText = normalized;
+    this.replaceText(document, normalized);
+  }
+
   /** A core-originated side the editor does not show (a git blob that is missing, too large or binary): its reason only, no bytes. */
   openPlaceholder(name: string, reason: NotDisplayedReason, bytes?: number): NotDisplayedDocument {
     const document: NotDisplayedDocument = { id: randomUUID(), kind: 'notDisplayed', location: undefined, name, reason, ...(bytes !== undefined ? { bytes } : {}) };
@@ -664,7 +675,7 @@ export class DocumentService {
     const name = document.location?.path ?? document.name;
     const choice = await this.deps.ask({
       severity: 'warning',
-      message: this.deps.t('Overwrite {0}?', path.basename(name)),
+      message: this.deps.t('Overwrite {0}?', visibleText(path.basename(name))),
       detail: this.deps.t('The file changed on disk. Overwriting replaces those changes with the text in the editor.'),
       actions: [this.deps.t('Overwrite')],
       cancelLabel: this.deps.t('Cancel'),
@@ -693,7 +704,7 @@ export class DocumentService {
     return this.inTurn(document, async (): Promise<EditorConflictResult> => {
       if (!document.location) this.replaceText(document, document.diskText);
       else if (!(await this.reload(document, { force: true }))) {
-        return { ok: false, reason: 'failed', message: this.deps.t('{0} cannot be read as text now, so the editor kept your text.', document.name) };
+        return { ok: false, reason: 'failed', message: this.deps.t('{0} cannot be read as text now, so the editor kept your text.', visibleText(document.name)) };
       }
       if (document.searchEditor) document.searchEditor.dirty = false;
       document.conflict = false;
@@ -1236,7 +1247,7 @@ export class DocumentService {
   // VS Code's genericSaveError (textFileSaveErrorHandler.ts): the file's base name and a reason; the raw error and path go
   // only to the log.
   private saveFailure(filePath: string, reason: string): string {
-    return this.deps.t('Failed to save \'{0}\': {1}', path.basename(filePath), reason);
+    return this.deps.t('Failed to save \'{0}\': {1}', visibleText(path.basename(filePath)), reason);
   }
 
   private writeFailureReason(err: unknown): string {

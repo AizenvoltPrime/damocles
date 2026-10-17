@@ -601,6 +601,21 @@ describe('Edit settings.json menu', () => {
     expect(item('project').textContent).not.toContain(t('settings.jsonFiles.untrusted'));
   });
 
+  it('dims an unavailable file\'s label but never its reason, so the reason keeps its contrast', async () => {
+    availability('untrusted', 'noProject');
+    await open(NO_HOST_SETTINGS, 'chat', 'settingsFiles');
+    await openMenu();
+    const reason = item('project').querySelector('.sm-option-hint')!;
+    // Every class from the reason up to its menu item: none may lower the opacity the reason is drawn at.
+    const dimming: string[] = [];
+    for (let node: Element | null = reason; node && node.getAttribute('role') !== 'menu'; node = node.parentElement) {
+      dimming.push(...[...node.classList].filter((name) => /^(data-disabled:)?opacity-(?!100\b)/.test(name)));
+    }
+    expect(dimming).toEqual([]);
+    expect(item('project').querySelector('.sm-option-text > span:not(.sm-option-hint)')?.classList.contains('opacity-50')).toBe(true);
+    expect(item('user').querySelector('.sm-option-text > span')?.classList.contains('opacity-50')).toBe(false);
+  });
+
   it('moves with the arrow keys and by type-ahead, and opens the chosen file', async () => {
     availability('available', 'available');
     const wrapper = await open(NO_HOST_SETTINGS, 'chat', 'settingsFiles');

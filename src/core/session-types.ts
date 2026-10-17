@@ -1,5 +1,5 @@
 import type { SecretsStore } from '../platform/secrets-store';
-import type { Platform } from '../platform/platform';
+import type { PlatformWithWorktrees } from './worktrees/host';
 import type { SettingsFolder } from '../platform/settings-store';
 import type { PanelHost } from '../platform/window-service';
 import type { PermissionHandler } from './permission-handler';
@@ -30,7 +30,7 @@ export interface SessionOptions {
   settingsFolder: SettingsFolder | undefined;
   /** `FolderTarget.projectScope`: false on the home target, whose chat takes no checkpoints. */
   projectScope: boolean;
-  platform: Platform;
+  platform: PlatformWithWorktrees;
   permissionHandler: PermissionHandler;
   onMessage: (message: ExtensionToWebviewMessage) => void;
   /** `stored`: the session already has its file on disk (a resumed or forked one); a new one gets it with its first prompt. */

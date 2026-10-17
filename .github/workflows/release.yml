@@ -1075,7 +1075,9 @@ jobs:
       - name: Extract changelog section
         run: |
           # package.json, not the tag: verify holds them equal on a tag push, and a manual run has no tag.
+          # A manual run takes [Unreleased] while the changelog has it; must match checkChangelog in verify-desktop-package.mjs.
           version=$(node -p "require('./package.json').version")
+          if [ "$GITHUB_REF_TYPE" != tag ] && grep -q '^## \[Unreleased\]' CHANGELOG.md; then version=Unreleased; fi
           mkdir -p "$RUNNER_TEMP/release-notes"
           awk -v ver="$version" '
             BEGIN { found=0 }

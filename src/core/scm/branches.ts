@@ -2,7 +2,7 @@
 // renameBranch, merge and rebase; repository.ts fastForwardBranch). Every short name passes revision(), so it never reads as
 // an option. checkout parses --end-of-options as a path before git 2.44, so its revision follows `-q` and precedes `--`.
 import { endOfOptions, GitError, revision, type GitResult, type GitVersion } from './git-runner';
-import type { Repository, StashedOutcome, StashMode } from './repository';
+import type { Repository, SlotGit, StashedOutcome, StashMode } from './repository';
 import { remoteArg } from './sync';
 
 export type CheckoutTarget =
@@ -64,13 +64,23 @@ export async function deleteBranch(repo: Repository, name: string, force: boolea
   throw failed(args, result);
 }
 
-export function integrate(repo: Repository, command: 'merge' | 'rebase', name: string, mode: () => StashMode): Promise<StashedOutcome<'ok' | 'conflict'>> {
+/** Unmerged index entries, read in the caller's mutation slot. */
+export async function hasUnmerged(git: SlotGit): Promise<boolean> {
+  return (await git(['ls-files', '--unmerged', '-z'])).stdout.length > 0;
+}
+
+/**
+ * Merge or Rebase Branch. Refused with conflicted as the message while the index has unmerged entries, which git refuses to
+ * merge or rebase over, so any found after git ran are its own.
+ */
+export function integrate(repo: Repository, command: 'merge' | 'rebase', name: string, mode: () => StashMode, conflicted: string): Promise<StashedOutcome<'ok' | 'conflict'>> {
   const args = [command, ...repo.endOfOptions(), revision(name)];
   return repo.withStash(mode, async (git, slot) => {
+    if (await hasUnmerged(git)) throw new Error(conflicted);
     await slot.stash();
     const result = await git(args, { allowFailure: true });
     if (result.exitCode === 0) return 'ok';
-    if (await repo.hasConflicts()) return 'conflict';
+    if (await hasUnmerged(git)) return 'conflict';
     throw failed(args, result);
   });
 }

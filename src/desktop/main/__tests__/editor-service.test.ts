@@ -105,7 +105,7 @@ describe('editor documents', () => {
     const handle = fs.openSync(huge, 'w');
     fs.ftruncateSync(handle, EDITOR_MAX_DOCUMENT_BYTES + 1);
     fs.closeSync(handle);
-    const service = createDesktopEditorService({} as ChatTabMessenger, () => ({}) as EditorPane, () => undefined);
+    const service = createDesktopEditorService({} as ChatTabMessenger, () => ({}) as EditorPane, () => undefined, () => Promise.resolve());
 
     await expect(service.readText(write('read.ts', Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('const a = 1;\n')])))).resolves.toBe('const a = 1;\n');
     await expect(service.readText(huge)).rejects.toThrow('over the');
@@ -202,7 +202,7 @@ describe('desktop editor service (D15 routing)', () => {
         pane.push(`settings:${scope}:${key ?? ''}`);
       },
     } as unknown as EditorPane;
-    return { editor: createDesktopEditorService(tabs, () => fakePane, (section) => { settingsOpened.push(section); }), delivered, posted, pane, settingsOpened };
+    return { editor: createDesktopEditorService(tabs, () => fakePane, (section) => { settingsOpened.push(section); }, () => Promise.resolve()), delivered, posted, pane, settingsOpened };
   }
 
   it('opens files in the editor pane, focused only when the caller did not set preserveFocus, at a valid line only', async () => {

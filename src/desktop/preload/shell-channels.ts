@@ -8,6 +8,8 @@ import type { SettingsFileScope } from '../../shared/types/messages';
 import type { SearchFileKey, SearchFileResult, SearchQuery, SearchRange, SearchSortOrder } from '../../shared/text-search';
 import type { DamoclesTerminalApi } from './terminal-channels';
 import type { DamoclesScmApi, ScmChangesTab } from './scm-channels';
+import type { ChatReviewTab, DamoclesReviewApi } from './review-channels';
+import { MAX_ROOT_KEY_LENGTH, type FolderRoot } from './folder-root';
 import type { SEARCH_ACTIONS_POSITIONS, SEARCH_COLLAPSE_RESULTS, SEARCH_DEFAULT_VIEW_MODES, SEARCH_EDITOR_DOUBLE_CLICK, SEARCH_MODES } from '../main/desktop-configuration';
 
 export type { SearchFileKey, SearchFileResult, SearchMatch, SearchPreview, SearchQuery, SearchRange, SearchSortOrder } from '../../shared/text-search';
@@ -23,6 +25,8 @@ export const SHELL_CHANNELS = {
   chatsSearch: 'damocles:shell:chats:search',
   chatsSelect: 'damocles:shell:chats:select',
   chatsNew: 'damocles:shell:chats:new',
+  // NewChatInWorktreeRequest → void: a new chat in a live chat worktree of the project; main checks the record
+  chatsNewInWorktree: 'damocles:shell:chats:new-in-worktree',
   chatsRename: 'damocles:shell:chats:rename',
   chatsTag: 'damocles:shell:chats:tag',
   chatsDelete: 'damocles:shell:chats:delete',
@@ -36,6 +40,12 @@ export const SHELL_CHANNELS = {
   windowControl: 'damocles:shell:window:control',
   // section?: a SettingsSectionId; opens the settings modal in the overlay
   openSettings: 'damocles:shell:window:open-settings',
+  // { projectKey } → ChatsWorktreeOptions: the New menu's worktree options (D30, D63) for a project of the list
+  chatsWorktreeOptions: 'damocles:shell:chats:worktree-options',
+  // ShowFolderRequest: the Files chip's Show project folder and Show worktree (D31)
+  showFolder: 'damocles:shell:show-folder',
+  // WorktreeFinishRequest → void: a finish action (D33) from the Files chip or a chat row; main asks, runs and tells
+  worktreeFinish: 'damocles:shell:worktree:finish',
   // the title-bar pill: UpdateSnapshot, and an UpdateAction main runs when its state offers it
   updateGet: 'damocles:shell:update:get',
   updateRun: 'damocles:shell:update:run',
@@ -48,6 +58,8 @@ export const SHELL_CHANNELS = {
   state: 'damocles:shell:state',
   // projectKey whose chat list changed; the shell refetches when it shows that project
   chatsChanged: 'damocles:shell:chats:changed',
+  // ShownFolder of one project after it changed (D31); ShellState.shownFolders holds every project's
+  shownFolder: 'damocles:shell:shown-folder',
   // F6 landed on the sidebar; the shell focuses the sidebar's current row
   focusPart: 'damocles:shell:focus-part',
   // main → renderer, PanelTheme; the preload applies it to the page itself
@@ -204,7 +216,8 @@ export const MAX_EDITOR_LINE = 10_000_000;
 export const EDITOR_EDIT_THROTTLE_MS = 250;
 
 // Bounds the shell may send; main clamps nothing, it rejects anything outside these.
-export const MAX_ID_LENGTH = 200;
+// every id and key the shell names, a worktree's root key the longest of them
+export const MAX_ID_LENGTH: number = MAX_ROOT_KEY_LENGTH;
 export const MAX_SEARCH_LENGTH = 200;
 export const MAX_CHAT_NAME_LENGTH = 200;
 export const MAX_TAG_LENGTH = 50;
@@ -234,6 +247,9 @@ export interface ShellProject {
   readonly trusted: boolean;
   // the project's branch from git's HEAD file (D42); undefined outside git
   readonly branch?: string;
+  // a linked worktree opened as its own project (an adopted record): the name of the project holding its main worktree, or of
+  // that worktree's folder while that project is not open
+  readonly worktreeOf?: string;
   // loaded chats of this project by status
   readonly running: number;
   readonly waiting: number;
@@ -250,6 +266,139 @@ export interface ShellChat {
   readonly model?: { readonly provider: string; readonly id: string };
   readonly status: ChatStatus;
   readonly loaded: boolean;
+  // a chat that opted into a worktree or owns one (D30, D61, AD12 Listing)
+  readonly worktree?: ShellChatWorktree;
+  // the chat's worktree is gone: it opens as read-only history (slice 12a rule 18)
+  readonly readOnly: boolean;
+}
+
+// pending: opted in, nothing created yet, branch is the Start from branch; live: it works in its worktree; inProjectFolder:
+// handed back to the project folder and still owning the worktree; deleted: the worktree is gone ("Worktree deleted").
+export type ShellChatWorktreeStatus = 'pending' | 'live' | 'inProjectFolder' | 'deleted';
+
+export interface ShellChatWorktree {
+  // absent while pending
+  readonly worktreeId?: string;
+  readonly branch: string;
+  readonly status: ShellChatWorktreeStatus;
+  // the name of the worktree project the chat was listed under before its folder went ("Worktree deleted · {project}")
+  readonly fromProject?: string;
+  // live and inProjectFolder only: the branch checked out in the project folder ("Merge into {branch}"), absent while detached
+  readonly baseBranch?: string;
+  // live and inProjectFolder only
+  readonly finish?: WorktreeFinishState;
+  // live, its project open and trusted, and no finish action running on it: the row's "New chat in this worktree" passes it
+  // to newChatInWorktree
+  readonly newChatIn?: NewChatInWorktreeRequest;
+}
+
+// What the finish actions (D33) need to be enabled; main checks again when one runs.
+export interface WorktreeFinishState {
+  // a chat using the worktree runs, waits on the user, or has subagents or a team working; browser pages never count
+  readonly busy: boolean;
+  // the repository has a remote, which Push branch needs
+  readonly hasRemote: boolean;
+  // the project folder's HEAD is detached, which disables Merge
+  readonly detachedTarget: boolean;
+}
+
+export const WORKTREE_FINISH_ACTIONS = ['apply', 'merge', 'update', 'push', 'delete'] as const;
+export type WorktreeFinishAction = (typeof WORKTREE_FINISH_ACTIONS)[number];
+
+export interface WorktreeFinishRequest {
+  readonly projectKey: string;
+  readonly worktreeId: string;
+  readonly action: WorktreeFinishAction;
+}
+
+export interface ShowFolderRequest {
+  readonly projectKey: string;
+  readonly show: 'project' | 'worktree';
+}
+
+// The folder the views show for one project (D31): the selected chat's working folder, or the project folder after Show
+// project folder. rootKey is the key Files, Search, the editor, terminals and the source control views name it by.
+export interface ShownFolder {
+  readonly projectKey: string;
+  readonly root: FolderRoot;
+  readonly rootKey: string;
+  readonly fsPath: string;
+  // the project's chat whose worktree this is, shown or not (present whenever canShowWorktree)
+  readonly worktree?: ShownWorktree;
+  // the project's selected chat works in a worktree, so the chip offers Show worktree while the project folder shows
+  readonly canShowWorktree: boolean;
+}
+
+export interface ShownWorktree {
+  readonly worktreeId: string;
+  // the chat that selected it
+  readonly chatId: string;
+  readonly branch: string;
+  // the branch checked out in the project folder ("Merge into {branch}", "{n} behind {branch}"); absent while detached
+  readonly baseBranch?: string;
+  readonly behind: number;
+  readonly targetRewritten: boolean;
+  // where the chat works now
+  readonly place: 'worktree' | 'project';
+  readonly finish: WorktreeFinishState;
+  // as ShellChatWorktree.newChatIn: present while New chat in this worktree is available
+  readonly newChatIn?: NewChatInWorktreeRequest;
+}
+
+export interface ChatsWorktreeBranch {
+  // a full refname: refs/heads/... or refs/remotes/..., or HEAD on a detached HEAD
+  readonly ref: string;
+  readonly name: string;
+  readonly current: boolean;
+  readonly remote: boolean;
+  // a remote branch's commits its local branch lacks ("{n} newer")
+  readonly newer?: number;
+}
+
+export type ChatsWorktreeOptions =
+  | { readonly available: false; readonly reason: 'notGit' | 'noCommits' | 'untrusted' }
+  | {
+      readonly available: true;
+      readonly currentBranch: string | null;
+      readonly branches: readonly ChatsWorktreeBranch[];
+      // tracked changes and untracked files that are not ignored in the project folder
+      readonly uncommittedCount: number;
+      readonly projectName: string;
+      // damocles.desktop.git.branchPrefix, or "damocles/" when unset (D63)
+      readonly branchPrefix: string;
+    };
+
+// The New menu's "Continue in a worktree" rows before "All worktrees…"; the list itself comes apart from the options, since
+// measuring each worktree's changes takes git work the toggle must not wait for.
+export const MAX_CONTINUE_WORKTREES = 5;
+
+// A live chat worktree the New menu offers to continue in.
+export interface ChatsContinueWorktree {
+  readonly worktreeId: string;
+  // the full branch name
+  readonly branch: string;
+  // the project's chats whose latest worktree entry names it, loaded or not
+  readonly chatCount: number;
+  // lines added and removed in the worktree against its baseCommit, uncommitted work included
+  readonly added: number;
+  readonly removed: number;
+  // commits the project folder's branch has that the worktree lacks
+  readonly behind: number;
+  // the branch checked out in the project folder; absent while detached
+  readonly baseBranch?: string;
+  // epoch ms of the latest activity of its chats, the worktree's creation when none has any
+  readonly lastActivity: number;
+}
+
+export interface NewChatInWorktreeRequest {
+  readonly projectKey: string;
+  readonly worktreeId: string;
+}
+
+// The New menu's worktree choice; startRef is one of the options' refs.
+export interface NewChatWorktree {
+  readonly startRef: string;
+  readonly bringChanges: boolean;
 }
 
 export interface ShellChatList {
@@ -264,7 +413,7 @@ export type SelectChatResult = { readonly ok: true } | { readonly ok: false; rea
 export type ChatMutationResult = { readonly ok: true } | { readonly ok: false; readonly reason: 'leased' | 'missing' | 'failed' };
 
 // The sidebar's sections in their default order, top to bottom; Sidebar.vue's template lists them in the same order.
-export const SIDEBAR_SECTIONS = ['projects', 'chats', 'files', 'scm', 'repos', 'search'] as const;
+export const SIDEBAR_SECTIONS = ['projects', 'chats', 'files', 'scm', 'graph', 'repos', 'search'] as const;
 export type SidebarSectionId = (typeof SIDEBAR_SECTIONS)[number];
 
 export interface ShellSectionLayout {
@@ -367,14 +516,15 @@ export interface ShellLayout {
   readonly sidebarVisible: boolean;
   // CSS px, >= MIN_SIDEBAR_WIDTH
   readonly sidebarWidth: number;
-  // The first open section of Chats, Files, Search, Projects, Repositories and Source control takes the height the others
-  // leave wherever it sits, so Chats has no size.
+  // The first open section of Chats, Files, Search, Projects, Repositories, Source control and Graph takes the height the
+  // others leave wherever it sits, so Chats has no size.
   readonly sections: {
     readonly projects: ShellSectionLayout;
     readonly files: ShellSectionLayout;
     readonly search: ShellSectionLayout;
     readonly repos: ShellSectionLayout;
     readonly scm: ShellSectionLayout;
+    readonly graph: ShellSectionLayout;
     readonly chats: { readonly collapsed: boolean };
   };
   // top to bottom, a permutation of SIDEBAR_SECTIONS
@@ -386,6 +536,25 @@ export interface ShellLayout {
   readonly scm: ScmViewOptions;
   // the Repositories section's expanded rows by project key (D58, AD8), as the ids repositories-tree.ts gives them
   readonly repositories: { readonly [projectKey: string]: readonly string[] };
+  // the Graph's ref choice by repository root path (AD8), as boundGraphChoices bounds it
+  readonly graph: { readonly [repositoryRoot: string]: GraphRefChoice };
+}
+
+// A Graph ref choice: Auto, All, or 1..MAX_GRAPH_CHOICE_REFS full refnames under refs/heads/, refs/remotes/ or refs/tags/
+// (MAX_SCM_HISTORY_REFS in scm-channels.ts must equal it).
+export type GraphRefChoice = 'auto' | 'all' | readonly string[];
+export const MAX_GRAPH_CHOICE_REFS = 50;
+export const MAX_GRAPH_CHOICES = 100;
+// A repository root key's characters, and a refname's (MAX_SCM_REF_LENGTH in scm-channels.ts).
+export const MAX_GRAPH_ROOT_LENGTH = 4096;
+export const MAX_GRAPH_REF_LENGTH = 1024;
+
+/**
+ * The Graph's ref choices within the layout's bounds, newest last as the sidebar saves them: the newest MAX_GRAPH_CHOICES
+ * repositories. The shell reports only this, and main refuses a report that differs; each entry's form is checked by main.
+ */
+export function boundGraphChoices(choices: { readonly [repositoryRoot: string]: GraphRefChoice }): Record<string, GraphRefChoice> {
+  return Object.fromEntries(Object.entries(choices).slice(-MAX_GRAPH_CHOICES));
 }
 
 // Expanded Repositories rows the layout keeps per project, the length of one row id, the projects it keeps them for, and the
@@ -423,14 +592,14 @@ export interface ScmViewOptions {
 }
 
 // The parts of the layout the shell writes, each reported by its owner alone; main owns the rest.
-export type ShellSidebarLayout = Pick<ShellLayout, 'sidebarWidth' | 'sections' | 'sectionOrder' | 'search' | 'scm' | 'repositories'>;
+export type ShellSidebarLayout = Pick<ShellLayout, 'sidebarWidth' | 'sections' | 'sectionOrder' | 'search' | 'scm' | 'repositories' | 'graph'>;
 export type ShellGridSizes = Pick<ShellGridLayout, 'sideWidth' | 'bottomHeight'>;
 
 export type ShellFocusPart = 'sidebar' | 'editor' | 'terminal';
 export const SHELL_FOCUS_PARTS: readonly ShellFocusPart[] = ['sidebar', 'editor', 'terminal'];
 
 // Editor pane (main's editor-pane.ts relay). Ids are issued by main; the shell passes them back verbatim.
-export type EditorTabKind = 'code' | 'diff' | 'markdownPreview' | 'image' | 'untitled' | 'settings' | 'log' | 'notDisplayed' | 'browser' | 'searchEditor' | 'changes';
+export type EditorTabKind = 'code' | 'diff' | 'markdownPreview' | 'image' | 'untitled' | 'settings' | 'log' | 'notDisplayed' | 'browser' | 'searchEditor' | 'changes' | 'review' | 'timeline' | 'merge';
 export type EditorReadOnlyReason = 'encoding' | 'log' | 'outsideProject' | 'tooLarge';
 
 // A browser page of the selected chat (D14), as main observed it from the host messages core posts to the page.
@@ -459,13 +628,20 @@ export interface ShellEditorTab {
     readonly removed: number;
     readonly conflictCompare?: true;
     readonly sides?: { readonly original: ShellDiffSide; readonly modified: ShellDiffSide };
+    // a diff of a source control change, set while its repository is open: workingTree's original is the index side and its
+    // modified the working file's document; index's original is HEAD and its modified the index side. Main replaces the
+    // index side's text in place (editor:document-changed) after every status of that repository.
+    readonly git?: ShellDiffGit;
   };
   // browser tabs only
   readonly browser?: ShellBrowserPage;
   // a browser tab's is the page's own title, which the shell shows without bidi controls
   readonly title: string;
-  // absent for files outside every project (agent opens), untitled and core-generated documents
+  // absent for files outside every project (agent opens), untitled and core-generated documents; the root key (folder-root.ts)
+  // of the project folder or chat worktree the file is in
   readonly projectKey?: string;
+  // a file of a chat worktree: its branch, for the tab's branch chip (D31)
+  readonly worktreeBranch?: string;
   // '/' separated; the breadcrumbs; absent outside projects
   readonly relativePath?: string;
   // the tooltip and the breadcrumb fallback
@@ -484,6 +660,37 @@ export interface ShellEditorTab {
   readonly searchEditor?: { readonly config: SearchEditorConfig; readonly running: boolean; readonly untitled: boolean; readonly message?: SearchEditorMessage };
   // changes tabs only: a source control group's multi-file diff, whose entries main keeps current
   readonly changes?: ScmChangesTab;
+  // code and markdown source tabs of a file in an open repository of a trusted project (main's deepest repository holding
+  // it), kept current as repositories open and close: quick diff, blame, selected ranges and Open Timeline follow it
+  readonly git?: ShellFileGit;
+  // review tabs only: a chat's changes (D60), whose entries main keeps current
+  readonly review?: ChatReviewTab;
+  // timeline tabs only, titled "Timeline: {name}"
+  readonly timeline?: ShellTimelineTab;
+  // merge tabs only, titled "Merging: {name}"; never restored after a restart (AD8)
+  readonly merge?: ShellMergeTab;
+}
+
+// A file's place in an open repository: its repoId and repo-relative path.
+export interface ShellFileGit {
+  readonly repoId: string;
+  readonly path: string;
+}
+
+export interface ShellDiffGit extends ShellFileGit {
+  readonly group: 'workingTree' | 'index';
+}
+
+export interface ShellTimelineTab {
+  readonly repoId: string;
+  readonly path: string;
+}
+
+// documentId: the Result, the file's own document from the document service
+export interface ShellMergeTab {
+  readonly repoId: string;
+  readonly path: string;
+  readonly documentId: string;
 }
 
 // A Search Editor's query (VS Code's SearchConfiguration without the notebook filters).
@@ -676,7 +883,39 @@ export interface EditorSelectionReport {
   readonly selection: EditorSelectionRange | null;
 }
 
-export type EditorCommand = 'save' | 'saveAs' | 'close' | 'next' | 'previous' | 'formatDocument';
+// The rest after formatDocument are the editor-scoped palette commands (Monaco keybindings in the shell), run on the active tab.
+export type EditorCommand =
+  | 'save'
+  | 'saveAs'
+  | 'close'
+  | 'next'
+  | 'previous'
+  | 'formatDocument'
+  | 'nextChange'
+  | 'previousChange'
+  | 'stageSelectedRanges'
+  | 'unstageSelectedRanges'
+  | 'revertSelectedRanges'
+  | 'acceptCurrent'
+  | 'acceptIncoming'
+  | 'acceptBoth'
+  | 'acceptAllCurrent'
+  | 'acceptAllIncoming'
+  | 'nextConflict'
+  | 'previousConflict'
+  | 'openTimeline'
+  | 'showLineBlame';
+
+// The editor-scoped git keys, as accelerators: the shell binds them as Monaco keybindings (editor/editor-keys.ts), since
+// Electron accelerators cannot express a chord, and main shows them only as the palette's hints (commands.ts).
+export type EditorGitKey = Extract<EditorCommand, 'nextChange' | 'previousChange' | 'stageSelectedRanges' | 'unstageSelectedRanges' | 'revertSelectedRanges'>;
+export const EDITOR_GIT_KEYBINDINGS: Readonly<Record<EditorGitKey, readonly string[]>> = {
+  nextChange: ['Alt+F5'],
+  previousChange: ['Shift+Alt+F5'],
+  stageSelectedRanges: ['CmdOrCtrl+K', 'CmdOrCtrl+Alt+S'],
+  unstageSelectedRanges: ['CmdOrCtrl+K', 'CmdOrCtrl+N'],
+  revertSelectedRanges: ['CmdOrCtrl+K', 'CmdOrCtrl+R'],
+};
 
 export type EditorFormatReason = 'save' | 'command';
 
@@ -991,6 +1230,8 @@ export interface ShellState {
   readonly selected: { readonly projectKey?: string; readonly chatId?: string };
   // the breadcrumb's chat
   readonly selectedChat?: { readonly id: string; readonly title: string; readonly status: ChatStatus };
+  // by project key, every project of the list (D31)
+  readonly shownFolders: { readonly [projectKey: string]: ShownFolder };
   readonly effectiveTheme: 'dark' | 'light';
   readonly layout: ShellLayout;
   // bumped when main replaces the layout itself (Restore default layout); the shell's own reports never bump it
@@ -998,6 +1239,7 @@ export interface ShellState {
   // display labels of menu accelerators, e.g. "Ctrl+N"
   readonly shortcuts: {
     readonly newChat: string;
+    readonly newChatInWorktree: string;
     readonly toggleSidebar: string;
     readonly settings: string;
     readonly quickOpen: string;
@@ -1045,8 +1287,15 @@ export interface DamoclesShellApi {
   searchChats(projectKey: string, query: string, stateRevision: number): Promise<ShellChatList | null>;
   onChatsChanged(listener: (projectKey: string) => void): () => void;
   selectChat(chatId: string): Promise<SelectChatResult>;
-  // a new chat in projectKey, or in the selected project when omitted
-  newChat(projectKey?: string): Promise<void>;
+  // a new chat in projectKey, or in the selected project when omitted; worktree: the New menu's opt-in (D30), never Ctrl+N
+  newChat(projectKey?: string, worktree?: NewChatWorktree): Promise<void>;
+  // Chat: New Chat in This Worktree for a live chat worktree of the project; resolves once the new chat is selected
+  newChatInWorktree(request: NewChatInWorktreeRequest): Promise<void>;
+  chatsWorktreeOptions(projectKey: string): Promise<ChatsWorktreeOptions>;
+  // resolves once main applied it; the ShownFolder follows on shownFolder
+  showFolder(request: ShowFolderRequest): Promise<void>;
+  onShownFolder(listener: (shown: ShownFolder) => void): () => void;
+  worktreeFinish(request: WorktreeFinishRequest): Promise<void>;
   renameChat(chatId: string, name: string): Promise<ChatMutationResult>;
   // null removes the tag
   tagChat(chatId: string, tag: string | null): Promise<ChatMutationResult>;
@@ -1154,4 +1403,6 @@ export interface DamoclesShellApi {
   readonly terminal: DamoclesTerminalApi;
   // source control (scm-channels.ts)
   readonly scm: DamoclesScmApi;
+  // chat review tabs (review-channels.ts)
+  readonly review: DamoclesReviewApi;
 }

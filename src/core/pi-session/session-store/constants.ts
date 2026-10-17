@@ -77,6 +77,8 @@ export const DAMOCLES_AGENT_INVOCATION_ENTRY = 'damocles-agent-invocation';
 
 /** Agent-file custom entry: the agent's launch config, the first custom entry of its pi session. */
 export const DAMOCLES_AGENT_LAUNCH_ENTRY = 'damocles-agent-launch';
+/** Where a chat works (AD12): `{ worktreeId, projectPath, place }`; the latest decides the folder a resume binds to. */
+export const DAMOCLES_WORKTREE_ENTRY = 'damocles.worktree';
 
 /** Agent-file custom entry: a resume starts here; later messages render on that resume call's card. */
 export const DAMOCLES_AGENT_SEGMENT_ENTRY = 'damocles-agent-segment';

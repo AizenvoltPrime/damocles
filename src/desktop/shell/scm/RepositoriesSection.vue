@@ -364,9 +364,17 @@ async function runAction(row: RepositoryRow, action: ScmAction, anchor?: Anchor)
     case 'stash':
       if (isStashRowAction(action)) await call(stashRowCall(action, repoId, row.stash));
       return;
+    case 'worktree':
+      if (action === 'newChatInWorktree') {
+        const target = row.worktree.newChatIn;
+        // a fresh object: a row can be a reactive proxy, which the context bridge cannot clone
+        if (target) await props.api.newChatInWorktree({ projectKey: target.projectKey, worktreeId: target.worktreeId });
+        return;
+      }
+      await call(artifactRowCall(action as ArtifactAction, repoId, row));
+      return;
     case 'branch':
     case 'tag':
-    case 'worktree':
       await call(artifactRowCall(action as ArtifactAction, repoId, row));
       return;
     default:

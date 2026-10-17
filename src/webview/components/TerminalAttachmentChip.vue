@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from "vue";
+import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { SquareTerminal, X } from "lucide-vue-next";
 import type { TerminalAttachmentInfo } from "@shared/types/terminal-attachment";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { HOVER_CLOSE_MS, HOVER_OPEN_MS, useHoverPreview } from "@/composables/useHoverPreview";
 import { terminalAttachmentLabel, terminalAttachmentParts } from "@/utils/terminal-attachment-label";
 
 // Terminal output attached to a message: a chip that previews the output on hover or click, removable while it waits in
@@ -13,9 +14,7 @@ const props = defineProps<{ attachment: TerminalAttachmentInfo; removable?: bool
 const emit = defineEmits<{ remove: [id: string] }>();
 const { t } = useI18n();
 
-// ms the pointer rests on the chip before the preview opens, and may wander off before it closes.
-const HOVER_OPEN_MS = 450;
-const HOVER_CLOSE_MS = 160;
+const { open, schedule, onTriggerPress, onOpenChange, onOpenAutoFocus } = useHoverPreview();
 
 const parts = computed(() => terminalAttachmentParts(props.attachment, t));
 const label = computed(() => terminalAttachmentLabel(props.attachment, t));
@@ -29,33 +28,6 @@ const previewTitle = computed(() =>
     : t("terminalAttachment.selectionFrom", { terminal: props.attachment.terminalTitle }),
 );
 const shownLines = computed(() => (props.attachment.preview === "" ? 0 : props.attachment.preview.split("\n").length));
-
-const open = ref(false);
-// A preview the pointer opened neither takes focus nor outlives the pointer; one opened by a click or key does both.
-const openedByHover = ref(false);
-let timer: ReturnType<typeof setTimeout> | undefined;
-
-function schedule(next: boolean, ms: number): void {
-  clearTimeout(timer);
-  timer = setTimeout(() => {
-    if (next && !open.value) {
-      openedByHover.value = true;
-      open.value = true;
-    } else if (!next && openedByHover.value) open.value = false;
-  }, ms);
-}
-
-function onOpenChange(next: boolean): void {
-  clearTimeout(timer);
-  openedByHover.value = false;
-  open.value = next;
-}
-
-function onOpenAutoFocus(event: Event): void {
-  if (openedByHover.value) event.preventDefault();
-}
-
-onBeforeUnmount(() => clearTimeout(timer));
 </script>
 
 <template>
@@ -78,6 +50,8 @@ onBeforeUnmount(() => clearTimeout(timer));
           data-testid="terminal-attachment-preview-button"
           @pointerenter="schedule(true, HOVER_OPEN_MS)"
           @pointerleave="schedule(false, HOVER_CLOSE_MS)"
+          @pointerdown="onTriggerPress"
+          @keydown="onTriggerPress"
         >
           <span
             class="flex size-5.5 shrink-0 items-center justify-center rounded-full"
@@ -87,12 +61,19 @@ onBeforeUnmount(() => clearTimeout(timer));
             <SquareTerminal class="size-3" />
           </span>
           <span class="min-w-0 truncate font-mono text-11.5">{{ parts.head }}</span>
-          <span
+          <template
             v-for="(detail, index) in parts.details"
             :key="index"
-            class="shrink-0 text-11 text-(--d-muted)"
-            aria-hidden="true"
-          ><span class="px-0.5 text-(--d-faint)">·</span>{{ detail }}</span>
+          >
+            <span
+              class="shrink-0 text-11 text-(--d-faint)"
+              aria-hidden="true"
+            >·</span>
+            <span
+              class="shrink-0 text-11 text-(--d-muted)"
+              aria-hidden="true"
+            >{{ detail }}</span>
+          </template>
         </Button>
       </PopoverTrigger>
       <PopoverContent

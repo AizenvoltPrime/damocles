@@ -1,7 +1,6 @@
 import * as path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import type { BrowserWindow } from 'electron';
-import type { Platform } from '../../../platform/platform';
 import type { LogSinkFactory } from '../../../platform/log-sink';
 import type { NotificationService } from '../../../platform/notification-service';
 import type { PanelHost, PanelOptions, WindowService } from '../../../platform/window-service';
@@ -19,6 +18,9 @@ import { desktopHostCapabilities } from './capabilities';
 import { createDesktopClipboardService } from './clipboard-service';
 import { createDesktopDialogService } from './dialog-service';
 import { createDesktopEditorService, type ChatTabMessenger } from './editor-service';
+import type { EditorService } from '../../../platform/editor-service';
+import type { FileWatcherFactory } from '../../../platform/file-watcher';
+import type { PlatformWithWorktrees, WorktreeHostServices } from '../../../core/worktrees/host';
 import type { EditorPane } from '../editor-pane';
 import { createDesktopFileConfinement } from './file-confinement';
 import { DesktopFileWatcherFactory } from './file-watcher-factory';
@@ -57,13 +59,18 @@ export interface DesktopPlatformDeps {
   readonly chatTabs: ChatTabMessenger;
   // the window-wide editor pane; it exists from the platform's creation on
   readonly editorPane: () => EditorPane;
+  // opens or focuses the chat's review tab (D60) in the editor pane
+  readonly showChatReview: EditorService['showChatReview'];
   readonly chatFolders: ChatFolders;
+  // worktree chats (slice 12a): built once the platform's watchers exist; every core receives the same services
+  readonly worktrees: (watchers: FileWatcherFactory) => WorktreeHostServices;
   readonly reload: () => Promise<void>;
   // lines logged before the core log sink is installed
   readonly log: (line: string) => void;
 }
 
-export interface DesktopPlatform extends Platform {
+export interface DesktopPlatform extends PlatformWithWorktrees {
+  readonly worktrees: WorktreeHostServices;
   readonly settings: DesktopSettingsStore;
   readonly state: DesktopKeyValueState;
   readonly fileWatchers: DesktopFileWatcherFactory;
@@ -116,10 +123,11 @@ export function createDesktopPlatform(deps: DesktopPlatformDeps): DesktopPlatfor
     clipboard: createDesktopClipboardService(),
     shell,
     dialogs: createDesktopDialogService(deps.window, deps.prompts),
-    editor: createDesktopEditorService(deps.chatTabs, deps.editorPane, deps.openAppSettings),
+    editor: createDesktopEditorService(deps.chatTabs, deps.editorPane, deps.openAppSettings, deps.showChatReview),
     window: createDesktopWindowService(deps.views, deps.openChat, deps.openAppSettings, deps.toggleTerminal, deps.terminalToggle),
     lifecycle: createDesktopHostLifecycle(deps.reload),
     logSinks: deps.logSinks,
+    worktrees: deps.worktrees(fileWatchers),
     flush: async () => {
       await Promise.all([settings.flush(), secrets.flush()]);
     },

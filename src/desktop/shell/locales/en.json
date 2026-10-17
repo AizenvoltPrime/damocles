@@ -52,7 +52,8 @@
     "menuLabel": "Actions for {name}",
     "removeRefused": "Could not remove project {name}: {reason}",
     "keyboardHelp": "Arrow keys move, Enter selects, Shift+F10 opens the menu.",
-    "home": "Home folder"
+    "home": "Home folder",
+    "worktreeOf": "A worktree of {project}, opened as its own project"
   },
   "chats": {
     "heading": "Chats",
@@ -95,7 +96,10 @@
     "deleteRunning": "This chat is still running. Deleting it stops the agent.",
     "deleteWaiting": "This chat is waiting for you. Deleting it stops the agent.",
     "deleteConfirm": "Delete",
-    "keyboardHelp": "Arrow keys move, Enter opens, F2 renames, Delete deletes, Shift+F10 opens the menu."
+    "keyboardHelp": "Arrow keys move, Enter opens, F2 renames, Delete deletes, Shift+F10 opens the menu.",
+    "newOptions": "New chat options",
+    "newGroup": "Start a chat",
+    "newOptionsNoProject": "New chat options are available once Damocles has started"
   },
   "content": {
     "empty": "No chat selected",
@@ -227,7 +231,8 @@
       "commit": "Commit",
       "branches": "Branches and repositories",
       "fetchSync": "Fetch and sync",
-      "clone": "Clone"
+      "clone": "Clone",
+      "gitEditor": "Editor"
     },
     "theme": {
       "dark": "Dark",
@@ -516,7 +521,7 @@
       },
       "gitBranchPrefix": {
         "label": "Branch prefix",
-        "description": "Prefills the name of a new branch, as in Commit to a New Branch."
+        "description": "Prefills the name of a new branch, as in Commit to a New Branch. Worktree chats use damocles/ when this is empty."
       },
       "gitAutofetch": {
         "label": "Autofetch",
@@ -569,6 +574,10 @@
       "alwaysShowHeaderActions": {
         "label": "Always show section actions",
         "description": "Controls the visibility of sidebar section actions. Section actions may either be always visible, or only visible when that section is focused or hovered over."
+      },
+      "gitBlameEditorDecorationEnabled": {
+        "label": "Inline blame",
+        "description": "Show who last changed the cursor's line, at the line's end."
       }
     },
     "restoreDefaults": "Restore defaults",
@@ -867,7 +876,8 @@
       "mention": "Mention in chat",
       "copyPath": "Copy path",
       "revealInFiles": "Reveal in Files",
-      "revealInExplorer": "Reveal in File Explorer"
+      "revealInExplorer": "Reveal in File Explorer",
+      "openTimeline": "Open Timeline"
     },
     "contextMenu": {
       "label": "Editor context menu",
@@ -977,7 +987,8 @@
       "copyPath": "Copy path",
       "copyRelativePath": "Copy relative path",
       "reveal": "Reveal in File Explorer",
-      "findInFolder": "Find in Folder..."
+      "findInFolder": "Find in Folder...",
+      "openTimeline": "Open Timeline"
     },
     "decoration": {
       "submodule": "Submodule"
@@ -1269,8 +1280,10 @@
     },
     "open": {
       "project": "Show project folder",
-      "addProject": "Add as project"
-    }
+      "addProject": "Add as project",
+      "chat": "Open chat"
+    },
+    "inProjectFolder": "In project folder"
   },
   "scm": {
     "heading": "Source control",
@@ -1301,7 +1314,10 @@
       "cherryPickInProgress": "Cherry pick in progress",
       "checkedOut": "Checked out",
       "mainWorktree": "Main worktree",
-      "currentWorktree": "Current worktree"
+      "currentWorktree": "Current worktree",
+      "noUpstream": "No upstream",
+      "noBaseRef": "No base",
+      "currentUpstream": "Upstream of the current branch"
     },
     "action": {
       "viewAsTree": "View as Tree",
@@ -1421,7 +1437,23 @@
       "copyTagName": "Copy Tag Name",
       "copyCommitHash": "Copy Commit Hash",
       "openWorktree": "Open",
-      "copyWorktreePath": "Copy Worktree Path"
+      "copyWorktreePath": "Copy Worktree Path",
+      "resolveInMergeEditor": "Resolve in Merge Editor",
+      "acceptAllCurrent": "Accept All Current",
+      "acceptAllIncoming": "Accept All Incoming",
+      "openTimeline": "Open Timeline",
+      "compareWithWorkspace": "Compare with Workspace",
+      "newChatInWorktree": "New Chat in This Worktree",
+      "cherryPick": "Cherry Pick",
+      "compareWithRemote": "Compare with Remote",
+      "compareWithMergeBase": "Compare with Merge Base",
+      "copyCommitId": "Copy Commit ID",
+      "copyCommitMessage": "Copy Commit Message",
+      "addCommitToChat": "Add to Chat",
+      "explainCommit": "Explain Changes",
+      "deleteBranchRef": "Delete Branch",
+      "deleteRemoteBranchRef": "Delete Remote Branch",
+      "deleteTagRef": "Delete Tag"
     },
     "group": {
       "merge": "Merge Changes",
@@ -1560,7 +1592,9 @@
       "push": "Push {ahead} commit to {remote}/{branch} | Push {ahead} commits to {remote}/{branch}",
       "pullPush": "Pull {behind} and push {ahead} commit between {remote}/{branch} | Pull {behind} and push {ahead} commits between {remote}/{branch}",
       "running": "Synchronizing Changes…",
-      "committing": "Committing Changes…"
+      "committing": "Committing Changes…",
+      "detached": "A detached HEAD has no branch to synchronize",
+      "unborn": "The branch has no commits to synchronize yet"
     },
     "progress": {
       "fetch": "Fetching…",
@@ -1648,6 +1682,367 @@
       "outside": "The path can't leave the repository",
       "notNormalized": "Remove empty and “.” parts and doubled “/” from the path",
       "windowsName": "Windows can't use this name: no part can end with “.” or a space, contain < > : \" {'|'} ? *, or be a device name such as “CON”"
+    }
+  },
+  "quickDiff": {
+    "added": "Added lines",
+    "modified": "Changed lines",
+    "deleted": "Removed lines",
+    "stagedMark": "{kind} (staged)",
+    "position": "{index} of {count} changes",
+    "stagedChange": "Staged · {position}",
+    "peekLabel": "Changes in {name}",
+    "stageHunk": "Stage Hunk",
+    "unstageHunk": "Unstage Hunk",
+    "revertHunk": "Revert Hunk",
+    "nextChange": "Next Change",
+    "previousChange": "Previous Change",
+    "close": "Close",
+    "stageBlock": "Stage Block",
+    "stageSelection": "Stage Selection",
+    "stageSelectedRanges": "Stage Selected Ranges",
+    "unstageSelectedRanges": "Unstage Selected Ranges",
+    "revertSelectedRanges": "Revert Selected Ranges"
+  },
+  "blame": {
+    "uncommitted": "You, Not Committed Yet",
+    "staged": "You, Not Committed Yet (Staged)",
+    "line": "{author}, {ago} • {subject}",
+    "cardLabel": "Commit by {author}",
+    "openCommit": "Open Commit",
+    "copyCommitId": "Copy Commit ID",
+    "openTimeline": "Open Timeline"
+  },
+  "conflict": {
+    "acceptCurrent": "Accept Current Change",
+    "acceptIncoming": "Accept Incoming Change",
+    "acceptBoth": "Accept Both Changes",
+    "compare": "Compare Changes",
+    "compareTitle": "Compare {current} with {incoming}",
+    "compareHeading": "Compare",
+    "current": "Current",
+    "incoming": "Incoming"
+  },
+  "merge": {
+    "incoming": "Incoming",
+    "current": "Current",
+    "result": "Result",
+    "incomingPane": "Incoming changes",
+    "currentPane": "Current changes",
+    "resultPane": "Result",
+    "left": "{left} of {total} conflicts left",
+    "allResolved": "All conflicts resolved",
+    "previousConflict": "Previous Conflict",
+    "nextConflict": "Next Conflict",
+    "moreActions": "More Actions",
+    "complete": "Complete Merge",
+    "completeTitle": "Complete the merge of {name}?",
+    "unhandled": "The file has {count} unhandled conflict. | The file has {count} unhandled conflicts.",
+    "completeWithConflicts": "Complete with Conflicts",
+    "cancel": "Cancel",
+    "computeWithGit": "Compute Conflicts With Git",
+    "computeWithGitDiff3": "Compute Conflicts With Git (Diff3)",
+    "acceptAllIncoming": "Accept All Incoming",
+    "acceptAllCurrent": "Accept All Current",
+    "resetResult": "Reset Result",
+    "openFile": "Open File",
+    "acceptIncoming": "Accept Incoming",
+    "acceptCurrent": "Accept Current",
+    "acceptBoth": "Accept Both",
+    "resolved": "Resolved",
+    "failure": {
+      "unknown": "This repository is no longer open.",
+      "notConflicted": "This file has no conflict left to resolve.",
+      "notOpen": "Open the file to resolve it here.",
+      "binary": "A binary file can't be merged here.",
+      "tooLarge": "The file is too large to merge here.",
+      "encoding": "The file's encoding can't be shown here.",
+      "failed": "Couldn't read the versions to merge. See the Git output."
+    },
+    "loading": "Loading the merge…"
+  },
+  "timeline": {
+    "openChanges": "Open Changes",
+    "openCommit": "Open Commit",
+    "selectForCompare": "Select for Compare",
+    "compareWithSelected": "Compare with Selected",
+    "copyCommitId": "Copy Commit ID",
+    "copyCommitMessage": "Copy Commit Message",
+    "staged": "Staged Changes",
+    "loadMore": "Load more",
+    "loadingMore": "Loading…",
+    "notCommitted": "This file is not committed yet.",
+    "count": "{count} commit | {count} commits",
+    "countMore": "{count}+ commits",
+    "hint": "Right-click a commit for more actions",
+    "loading": "Loading the timeline…",
+    "failed": "Couldn't load the timeline.",
+    "retry": "Try again",
+    "listLabel": "Timeline of {name}",
+    "selected": "Selected for compare"
+  },
+  "review": {
+    "lead": "This chat's changes",
+    "wholeChat": "Whole chat",
+    "lastTurn": "Last turn",
+    "scopeLabel": "Changes to show",
+    "shellNotListed": "Changes made by shell commands are not listed",
+    "outsideEdits": "Includes edits made outside this chat",
+    "emptyTurn": "The last turn changed no files.",
+    "emptyChat": "This chat has not changed any files.",
+    "hint": "Click a line number to comment",
+    "full": "This review holds {count} comments, the most it can. Send or delete some first.",
+    "missing": "This file is no longer in this chat's changes.",
+    "status": {
+      "A": "Added",
+      "M": "Modified",
+      "D": "Deleted"
+    },
+    "lineLabel": {
+      "added": "Line {line}, added: {text}",
+      "removed": "Line {line}, removed: {text}",
+      "context": "Line {line}: {text}"
+    },
+    "commentOn": "Comment on line {line}",
+    "placeholder": "Comment for Damocles on line {line}",
+    "addComment": "Add comment",
+    "cancel": "Cancel",
+    "you": "You",
+    "youInitial": "Y",
+    "line": "line {line}",
+    "removedLine": "removed line {line}",
+    "deleteComment": "Delete comment",
+    "fileComments": "{count} comment | {count} comments",
+    "diffLabel": "Diff of {path}",
+    "barLabel": "Review comments",
+    "ready": "comment ready | comments ready",
+    "barHint": "Damocles gets them as one message, with file and line.",
+    "discard": "Discard",
+    "send": "Send to chat",
+    "failed": {
+      "unsent": "The chat could not take the comments now. They are kept, so send them again.",
+      "missing": "This chat is closed, so the comments were not sent.",
+      "error": "The comments could not be sent. They are kept, so try again."
+    },
+    "sharedWorktree": "Includes changes from {n} other chat | Includes changes from {n} other chats",
+    "unsendable": "This file's lines can no longer be checked, so this comment cannot be sent. Delete it to send the others.",
+    "staleComment": "This line changed after you commented, so this comment cannot be sent. Delete it, then comment on the line again if it still applies."
+  },
+  "worktree": {
+    "newMenu": {
+      "label": "New chat",
+      "newChat": "New chat",
+      "toggle": "Run in a new worktree",
+      "toggleSub": "Its own copy of the project, on its own branch",
+      "notGit": "This folder isn't in a git repository",
+      "noCommits": "This repository has no commits yet",
+      "untrusted": "Trust this folder to use worktrees",
+      "loading": "Reading the branches…",
+      "loadFailed": "Damocles could not read the branches.",
+      "startFrom": "Start from",
+      "pickerTitle": "Select the branch the worktree starts from",
+      "pickerPlaceholder": "Select a branch to start from",
+      "branches": "Branches",
+      "remoteBranches": "Remote branches",
+      "noMatch": "No branches match",
+      "current": "current",
+      "newer": "{n} newer",
+      "bring": "Bring my uncommitted changes",
+      "bringDetail": "{n} file in {project}. They are copied, so your folder keeps them too. | {n} files in {project}. They are copied, so your folder keeps them too.",
+      "createsBranch": "Creates branch {prefix} from {branch}. Setup from {file} runs before the first message.",
+      "newInWorktree": "New chat in a worktree",
+      "continue": "Continue in a worktree",
+      "chats": "{n} chat | {n} chats",
+      "changes": "{added} lines added, {removed} removed",
+      "behind": "{n} behind {branch}",
+      "allWorktrees": "All worktrees…",
+      "worktreePlaceholder": "Search worktrees",
+      "noWorktreeMatch": "No worktrees match"
+    },
+    "row": {
+      "deleted": "Worktree deleted",
+      "deletedFrom": "Worktree deleted · {project}",
+      "newFrom": "New worktree from {branch}",
+      "inProjectFolder": "In project folder · {branch}",
+      "readOnly": "read-only",
+      "worktreeChat": "Worktree chat"
+    },
+    "finish": {
+      "apply": "Apply to project folder",
+      "merge": "Merge into {branch}",
+      "mergeDetached": "Merge",
+      "update": "Update from {branch}",
+      "updateDetached": "Update",
+      "push": "Push branch",
+      "delete": "Delete worktree",
+      "busy": "While a chat works",
+      "noRemote": "No remote",
+      "detached": "Detached HEAD"
+    },
+    "chip": {
+      "projectFolder": "Project folder",
+      "showProject": "Show project folder",
+      "showWorktree": "Show worktree",
+      "behind": "{n} behind {branch}",
+      "rewritten": "{branch} was rewritten",
+      "worktreeTitle": "Files, Search and Source control show this chat's worktree, on {branch}",
+      "projectTitle": "Showing the project folder. Click to show the worktree again. The arrow, a right-click or Shift+F10 opens the menu.",
+      "menuLabel": "Worktree {branch}",
+      "tab": "Worktree {branch}",
+      "menuButton": "Worktree menu",
+      "worktree": "Worktree",
+      "projectAria": "Project folder, show worktree {branch}"
+    },
+    "dialog": {
+      "setupTitle": "Run this project's worktree setup?",
+      "setupMessage": "These commands come from .damocles/worktree.json in {project}. They run one after another in the new worktree, in the Setup terminal. Damocles asks again when they change.",
+      "run": "Run",
+      "skip": "Skip",
+      "deleteTitle": "Delete this worktree?",
+      "deleteUncommitted": "It has {n} uncommitted change, which will be lost: | It has {n} uncommitted changes, which will be lost:",
+      "deleteClean": "It has no uncommitted changes.",
+      "deleteSubmodules": "Uncommitted work in its submodules:",
+      "deleteUnmerged": "{n} commit on {branch} is not merged: | {n} commits on {branch} are not merged:",
+      "deleteDetail": "The chat stays in Chats as read-only history.",
+      "alsoDeleteBranch": "Also delete branch {branch}",
+      "deleteConfirm": "Delete worktree",
+      "mergeTitle": "Merge {branch} into {target}?",
+      "mergeMessage": "Damocles first commits the worktree's {n} uncommitted file, then merges the branch into {target} in the project folder. | Damocles first commits the worktree's {n} uncommitted files, then merges the branch into {target} in the project folder.",
+      "commitMessage": "Commit message",
+      "generate": "Generate",
+      "generating": "Generating…",
+      "mergeConfirm": "Commit and merge",
+      "rewrittenTitle": "{branch} was rewritten after this worktree started",
+      "rewrittenMessage": "Merging now would bring back the commit it replaced.",
+      "rebase": "Rebase onto {branch}",
+      "applyInstead": "Apply instead",
+      "applyRefusedTitle": "Can't apply the worktree's changes",
+      "handOffRefusedTitle": "Can't move this chat to the project folder",
+      "refusedMessage": "These files have uncommitted changes in the project folder. Commit, stash or discard them there, then try again.",
+      "ok": "OK",
+      "toWorktreeTitle": "Move this chat to a worktree?",
+      "toWorktreeMessage": "Damocles creates a worktree, moves the files this chat changed into it, and the chat continues there. Your own edits in other files stay in the project folder.",
+      "toProjectTitle": "Move this chat to the project folder?",
+      "toProjectMessage": "Damocles copies the worktree's changes into the project folder as uncommitted changes, and the chat continues there. The worktree stays for a later hand-off.",
+      "filesMove": "{n} file moves | {n} files move",
+      "noFiles": "No changed files to move.",
+      "alsoUserEdits": "also has your edits",
+      "moveToWorktree": "Move to worktree",
+      "moveToProject": "Move to project folder",
+      "leftoversTitle": "Leftover worktrees",
+      "leftoversMessage": "Damocles found worktrees it does not track. Nothing was deleted.",
+      "unregistered": "Not registered by Damocles",
+      "missingFolder": "Its folder is gone",
+      "gitRecordOnly": "Git still lists it, but its folder is gone",
+      "prune": "Prune",
+      "reveal": "Reveal",
+      "close": "Close",
+      "cancel": "Cancel",
+      "fileList": "Files",
+      "generateFailed": "Damocles could not generate a message.",
+      "tone": {
+        "modified": "Modified",
+        "added": "Added",
+        "deleted": "Deleted",
+        "renamed": "Renamed",
+        "untracked": "Untracked",
+        "ignored": "Ignored",
+        "submodule": "Submodule",
+        "conflict": "Conflict"
+      },
+      "noChat": "No chat works in it any more",
+      "deleteLeftover": "Delete",
+      "keepLeftover": "Keep",
+      "branchLocked": "The branch is checked out in another folder, so Damocles cannot delete it.",
+      "pruneTitle": "Removes git's record of every worktree of this repository whose folder is gone, not only this one"
+    },
+    "newChatHere": "New chat in this worktree",
+    "submenu": "Worktree",
+    "newChatFinishing": "While a finish action runs"
+  },
+  "graph": {
+    "heading": "Graph",
+    "treeLabel": "Graph",
+    "keyboardHelp": "Arrow keys move. Enter or Space expands a commit, Shift+F10 opens its menu. Tab reaches the focused row's ref badges, whose menu opens with Shift+F10.",
+    "refChip": "History item reference",
+    "refChipAria": "History item reference: {choice}",
+    "auto": "Auto",
+    "all": "All",
+    "refsCount": "{n} ref | {n} refs",
+    "goToCurrent": "Go to Current History Item",
+    "refresh": "Refresh",
+    "fetchAll": "Fetch From All Remotes",
+    "pull": "Pull",
+    "push": "Push",
+    "publish": "Publish Branch...",
+    "outdated": "Outdated",
+    "outdatedTitle": "Please refresh the graph using the refresh action.",
+    "loading": "Loading the history",
+    "loadingMore": "Loading more commits",
+    "loadMoreFailed": "Couldn't load more history.",
+    "retry": "Try again",
+    "incoming": "Incoming Changes",
+    "outgoing": "Outgoing Changes",
+    "incomingTitle": "Pull {n} commit from {upstream} | Pull {n} commits from {upstream}",
+    "outgoingTitle": "Push {n} commit to {upstream} | Push {n} commits to {upstream}",
+    "rowTitle": "Click for details, right-click for actions",
+    "badgeTitle": "Right-click for Checkout and Delete",
+    "rowMenu": "Actions for commit {hash}",
+    "refMenu": "Actions for {name}",
+    "head": "current",
+    "merge": "merge commit",
+    "badge": {
+      "branch": "branch {name}",
+      "current": "current branch {name}",
+      "remote": "remote branch {name}",
+      "tag": "tag {name}",
+      "base": "base {name}",
+      "head": "detached HEAD"
+    },
+    "state": {
+      "untrusted": "Trust this folder to see its history.",
+      "empty": "No commits yet.",
+      "failed": "Damocles could not read the history. Show Git Output has the details."
+    },
+    "details": {
+      "copyCommitId": "Copy Commit ID",
+      "openChanges": "Open Changes",
+      "files": "{n} file changed | {n} files changed",
+      "filesShort": "{n} file | {n} files",
+      "insertions": "+{n} insertion | +{n} insertions",
+      "deletions": "-{n} deletion | -{n} deletions",
+      "truncated": "The message is longer; Copy Commit Message copies all of it.",
+      "loading": "Loading the commit",
+      "failed": "Damocles could not read this commit.",
+      "filesTruncated": "Showing the first {n} files.",
+      "messageAria": "Commit message: {message}",
+      "fileAria": "{path}, {status}",
+      "renamed": "renamed from {path}",
+      "status": {
+        "A": "added",
+        "M": "modified",
+        "D": "deleted",
+        "R": "renamed",
+        "C": "copied",
+        "T": "type changed"
+      }
+    },
+    "picker": {
+      "label": "History item reference",
+      "placeholder": "Select the references to show in the graph",
+      "autoDescription": "current branch, its upstream and base",
+      "allDescription": "every branch, remote branch and tag",
+      "group": {
+        "branches": "Branches",
+        "remotes": "Remote branches",
+        "tags": "Tags"
+      },
+      "empty": "No matching references",
+      "ok": "OK",
+      "limit": "At most {n} references",
+      "selected": "{n} selected",
+      "failed": "Some references could not be loaded.",
+      "omitted": "{n} more reference not shown | {n} more references not shown"
     }
   }
 }

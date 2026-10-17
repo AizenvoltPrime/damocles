@@ -19,8 +19,8 @@ const branch = (name: string, hash: string, current = false): ScmBranchArtifact 
 const tag = (name: string): ScmTagArtifact => ({ ref: `refs/tags/${name}`, name, commit: commit(HASH_A, 'release'), annotated: false, current: false });
 const stash: ScmStashArtifact = { index: 0, hash: HASH_B, description: 'On main: wip', branch: 'main', date: NOW - 3_600_000 };
 
-const ROOT = { repoId: 'r1', label: 'acme', displayPath: '', kind: 'root' as const };
-const NESTED = { repoId: 'r2', label: 'lib', displayPath: 'lib', kind: 'nested' as const };
+const ROOT = { repoId: 'r1', label: 'acme', displayPath: '', kind: 'root' as const, root: '/w/acme' };
+const NESTED = { repoId: 'r2', label: 'lib', displayPath: 'lib', kind: 'nested' as const, root: '/w/acme/lib' };
 const twistie = async (wrapper: VueWrapper, group: string): Promise<void> => {
   await row(wrapper, 'group', group).get('[data-testid="repositories-twistie"]').trigger('click');
   await flushPromises();
@@ -41,6 +41,7 @@ const snapshot = (repoId: string, head: string): ScmRepoSnapshot => ({
   remotes: [],
   running: null,
   lastRemote: null,
+  revision: 0,
 });
 
 const LISTS: Partial<Record<ScmArtifactsRequest['group'], ScmArtifacts>> = {
@@ -149,6 +150,23 @@ describe('the Repositories section', () => {
     expect(expansions).toEqual([[groupRowId(ROOT, 'branches'), folderRowId(ROOT, 'branches', 'feat')]]);
     expect(rowNames(wrapper).slice(0, 5)).toEqual(['group:branches', 'folder:feat', 'branch:feat/b', 'branch:feat/a', 'branch:main']);
     expect(row(wrapper, 'branch', 'feat/b').get('[data-testid="repositories-description"]').text()).toBe(`${HASH_B.slice(0, 7)} \u2022 feat/b work`);
+  });
+
+  // happy-dom lays nothing out, so this pins the structure; scm-repositories.spec.ts measures it in Chromium.
+  it('gives the name priority over the time on one clipped wrapping line, and draws a repeated time\'s rule the row\'s full height', async () => {
+    const scm = scmFor(view([ROOT], 'r1'));
+    const { wrapper } = await mountSection(scm, [groupRowId(ROOT, 'branches'), folderRowId(ROOT, 'branches', 'feat')]);
+    const shown = row(wrapper, 'branch', 'feat/b');
+    const line = shown.get('[data-testid="repositories-label"]').element.parentElement!;
+    expect(line.getAttribute('data-testid')).toBe('repositories-line');
+    expect(line.className.split(/\s+/)).toEqual(expect.arrayContaining(['flex', 'flex-wrap', 'content-start', 'overflow-hidden', 'h-full', 'min-w-0', 'flex-1']));
+    for (const part of ['repositories-description', 'repositories-time']) expect(shown.get(`[data-testid="${part}"]`).element.parentElement).toBe(line);
+    // feat/a's time repeats feat/b's: a rule the row's height, no short bar
+    const repeated = row(wrapper, 'branch', 'feat/a').get('[data-testid="repositories-time"]');
+    expect(repeated.attributes('data-hidden')).toBe('true');
+    expect(repeated.classes()).toEqual(expect.arrayContaining(['h-full', 'border-l']));
+    expect(repeated.classes()).not.toContain('h-3.5');
+    expect(shown.get('[data-testid="repositories-time"]').classes()).not.toContain('border-l');
   });
 
   it('shares one selected repository with Source control: a row selects its repository, and the picker moves the highlight', async () => {

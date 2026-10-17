@@ -8,6 +8,7 @@ import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { folderKey } from '../../workspace-folders/folder-key';
 import type { FolderTarget } from '../../workspace-folders/folder-registry';
 import { mentionInChat, resolveMention } from '../mention-resolver';
+import { installWorktreeProjectLookup } from '../../worktrees/personal-config';
 
 let root: string;
 let project: string;
@@ -34,6 +35,22 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+describe('the wrong-copy guard of a worktree chat (AD12)', () => {
+  it('refuses a project-folder file with its own reason, and the chat posts A.5\'s refusal', async () => {
+    const worktree = path.join(root, 'wt');
+    fs.mkdirSync(worktree);
+    const installed = installWorktreeProjectLookup({ projectOf: (f) => (folderKey(f).startsWith(folderKey(worktree)) ? project : undefined), recordsOfProject: () => [], chatRecordFor: () => undefined, get: () => undefined });
+    try {
+      expect(await resolveMention(deps, { projectKey: folderKey(project), relativePath: 'src/deep/a.ts' }, worktree)).toEqual({ ok: false, reason: 'projectCopy' });
+      const warn = vi.fn(async () => undefined);
+      await mentionInChat({ ...deps, notifications: { warn } as never, post: () => undefined }, { projectKey: folderKey(project), relativePath: 'src/deep/a.ts' }, worktree);
+      expect(warn).toHaveBeenCalledWith('This file is in the project folder. This chat works in its worktree.');
+    } finally {
+      installed.dispose();
+    }
+  });
 });
 
 describe('resolveMention', () => {

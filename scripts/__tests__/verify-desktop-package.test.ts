@@ -278,6 +278,16 @@ describe('checkChangelog', () => {
     expect(checkChangelog(last, last, '2.37.0')[0]!.detail).toBe('has an empty ## [2.37.0] section');
     expect(failures(checkChangelog(empty, empty, '2.36.0'))).toEqual([]);
   });
+
+  // release.yml's "Extract changelog section" makes the same choice, so a dry run checks the notes the next release publishes.
+  it('checks [Unreleased] outside a tag run while the changelog has it, and the version section on a tag run', () => {
+    const unreleased = ['# Changelog', '', '## [Unreleased]', '', '- next', '', '## [2.36.0] - 2026-01-02', '- notes', ''].join('\r\n');
+    expect(checkChangelog(unreleased, unreleased, '2.36.0', false)[0]!.detail).toBe('dist/desktop/CHANGELOG.md has the Unreleased section');
+    expect(checkChangelog(unreleased, unreleased, '2.37.0', true)[0]!.detail).toBe('has no ## [2.37.0] section');
+    expect(failures(checkChangelog(unreleased, unreleased, '2.36.0', true))).toEqual([]);
+    const empty = ['# Changelog', '', '## [Unreleased]', '', '## [2.36.0] - 2026-01-02', '- notes', ''].join('\n');
+    expect(checkChangelog(empty, empty, '2.36.0', false)[0]!.detail).toBe('has an empty ## [Unreleased] section');
+  });
 });
 
 describe('verifyPackage', () => {

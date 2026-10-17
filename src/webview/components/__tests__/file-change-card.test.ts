@@ -72,6 +72,17 @@ describe('an Edit card', () => {
     expect(rows(wrapper)).toEqual([['-', 'line 120'], ['+', 'changed 120']]);
   });
 
+  it('shows a blocked change dimmed under Not applied, with no change chip', async () => {
+    const wrapper = await card(edit({ status: 'blocked', feedback: 'This chat works in its worktree.' }));
+
+    expect(wrapper.find('[data-testid="tool-card-change"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="tool-card-not-applied"]').text()).toBe('Not applied');
+    expect(wrapper.get('[data-testid="diff-view"]').element.closest('button')?.classList.contains('opacity-55')).toBe(true);
+    const done = await card(edit({ metadata: { patch: PATCH } }));
+    expect(done.find('[data-testid="tool-card-not-applied"]').exists()).toBe(false);
+    expect(done.get('[data-testid="diff-view"]').element.closest('button')?.classList.contains('opacity-55')).toBe(false);
+  });
+
   it('numbers its lines from the approval while it awaits one', async () => {
     usePermissionStore().addPermission('t-edit', { owner: { kind: 'main' }, toolName: 'Edit', patch: PATCH });
 

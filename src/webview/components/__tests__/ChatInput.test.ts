@@ -550,6 +550,21 @@ describe('Escape while a turn runs', () => {
     card.remove();
     confirmation.remove();
   });
+
+  it('closes an open menu and keeps the run, such as Hand off\'s while the chat works', async () => {
+    const wrapper = composer();
+    await wrapper.setProps({ isProcessing: true });
+    const menu = document.body.appendChild(document.createElement('div'));
+    menu.setAttribute('role', 'menu');
+    const item = menu.appendChild(document.createElement('div'));
+    item.setAttribute('role', 'menuitem');
+
+    keydown(item, { key: 'Escape' });
+    keydown(menu, { key: 'Escape' });
+    expect(wrapper.emitted('cancel')).toBeUndefined();
+    wrapper.unmount();
+    menu.remove();
+  });
 });
 
 /**

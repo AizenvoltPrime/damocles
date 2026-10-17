@@ -7,9 +7,11 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { remPx } from '@/composables/useRemPx';
 import { FILE_DRAG_MIME, serializeFileDragPayload } from '@shared/file-drag';
-import { MAX_FILE_NAME_LENGTH, type DamoclesShellApi, type FileRef, type ShellPlatform } from '../../preload/shell-channels';
+import { visibleText } from '@shared/visible-text';
+import { MAX_FILE_NAME_LENGTH, type DamoclesShellApi, type FileRef, type ShellPlatform, type ShownFolder } from '../../preload/shell-channels';
 import type { OverlayMenuItem } from '../../preload/overlay-channels';
-import type { ScmDecoration, ScmTone } from '../../preload/scm-channels';
+import type { ScmDecoration, ScmLetter, ScmResource, ScmTone } from '../../preload/scm-channels';
+import { parseRootKey } from '../../preload/folder-root';
 import { fileNameProblem } from '../../preload/file-names';
 import { ancestorsOf, autoRevealExcluded, flattenTree, nameOf, parentOf, type Listing, type TreeEdit, type TreeRow } from '../files-tree';
 import { fileIcon } from '../file-icons';
@@ -17,11 +19,18 @@ import { tidyMenu } from '../../preload/overlay-channels';
 import { EDITOR_STORE } from '../editor/editor-store';
 import { SCM_STORE } from '../scm/scm-store';
 import { TONE_TEXT } from '../scm/scm-list';
+import StatusLetter from '../scm/StatusLetter.vue';
 import SidebarSection from './SidebarSection.vue';
+import FilesBranchChip from './FilesBranchChip.vue';
 
 const props = defineProps<{
   api: DamoclesShellApi;
+  // the root key of the shown folder (D31): the project's, or its selected chat's worktree's
   projectKey: string | undefined;
+  // the selected project's shown folder, for the branch chip
+  shown?: ShownFolder | undefined;
+  // the New Chat in This Worktree shortcut the branch chip's menu shows
+  newChatInWorktreeShortcut?: string | undefined;
   projectName: string;
   platform: ShellPlatform;
   collapsed: boolean;
@@ -62,7 +71,7 @@ const selectedPath = computed(() => {
 });
 const rootListing = computed(() => listings.value.get(''));
 
-type RowDecoration = { readonly own: ScmDecoration | undefined; readonly ignored: boolean; readonly letter: string | undefined; readonly dot: ScmTone | undefined; readonly title: string | undefined };
+type RowDecoration = { readonly own: ScmDecoration | undefined; readonly ignored: boolean; readonly letter: ScmLetter | undefined; readonly dot: ScmTone | undefined; readonly title: string | undefined };
 // B3: source control's decoration of a row: a file's (or a submodule folder's) letter, a folder's dot for its changed descendants,
 // and ignored entries faded. Main computes the files; the folder dots come from them here.
 function decorationOf(row: Extract<TreeRow, { kind: 'entry' }>): RowDecoration {
@@ -136,7 +145,14 @@ function collapseAll(): void {
   scrollTo(0);
 }
 
-watch(() => props.projectKey, () => {
+// The tree fades in afresh when it shows another folder, so a switch between a worktree and the project folder reads as one.
+watch(() => props.projectKey, (key, previous) => {
+  const tree = containerProps.ref.value;
+  if (tree && previous !== undefined && key !== undefined) {
+    tree.classList.remove('d-fade-in');
+    void tree.offsetWidth;
+    tree.classList.add('d-fade-in');
+  }
   listings.value = new Map();
   pending = new Map();
   expanded.value = new Set();
@@ -289,6 +305,7 @@ async function startCreate(mode: 'newFile' | 'newFolder', dir = targetDir()): Pr
   editTouched.value = false;
 }
 
+// The box holds the real name, never its escapes, which a commit would write as the new name (VS Code's explorerViewer.ts).
 function startRename(path: string): void {
   edit.value = { mode: 'rename', path };
   editName.value = nameOf(path);
@@ -305,7 +322,7 @@ const editSiblings = computed<readonly string[]>(() => {
 });
 const editProblem = computed(() => (edit.value ? fileNameProblem(editName.value.trim(), editSiblings.value, props.platform) : undefined));
 // Shown once the user has typed or pressed Enter, so a new entry's empty box opens without an error.
-const editMessage = computed(() => (editTouched.value && editProblem.value ? t(`files.error.${editProblem.value}`, { name: editName.value.trim() }) : null));
+const editMessage = computed(() => (editTouched.value && editProblem.value ? t(`files.error.${editProblem.value}`, { name: visibleText(editName.value.trim()) }) : null));
 
 // The input row renders inside the virtual list's v-for, so it is found in the list rather than through a template ref.
 const editInput = (): HTMLInputElement | null => containerProps.ref.value?.querySelector<HTMLInputElement>('[data-testid="files-edit-input"]') ?? null;
@@ -402,6 +419,8 @@ async function openMenu(row: Extract<TreeRow, { kind: 'entry' }>, rect: DOMRect 
   const item = (id: string, label: string, icon: Icon, shortcut?: string): OverlayMenuItem => ({ kind: 'item', id, label, ...(icon ? { icon } : {}), ...(shortcut ? { shortcut } : {}) });
   const separator: OverlayMenuItem = { kind: 'separator' };
   const markdown = isMarkdown(row.path);
+  // A file of an open repository has Open Timeline (VS Code's explorer files.openTimeline); main resolves its repository.
+  const resource = row.directory ? null : await resourceOf(file);
   const items: OverlayMenuItem[] = row.directory
     ? [
         item('newFile', t('files.newFile'), 'file-plus'),
@@ -416,6 +435,7 @@ async function openMenu(row: Extract<TreeRow, { kind: 'entry' }>, rect: DOMRect 
           : [item('open', t('files.menu.open'), 'file', t('files.menu.click'))]),
         item('focusOverlay', t('files.menu.focusOverlay'), 'maximize-2'),
         item('mention', t('files.menu.mention'), 'at-sign', t('files.menu.drag')),
+        ...(resource ? [item('openTimeline', t('files.menu.openTimeline'), 'history')] : []),
         separator,
       ];
   items.push(
@@ -428,8 +448,8 @@ async function openMenu(row: Extract<TreeRow, { kind: 'entry' }>, rect: DOMRect 
   );
   const answer = await props.api.requestOverlay({
     kind: 'menu',
-    label: t('files.menu.label', { name: row.name }),
-    caption: row.path,
+    label: t('files.menu.label', { name: visibleText(row.name) }),
+    caption: visibleText(row.path),
     anchor: { x: Math.max(0, rect.left), y: Math.max(0, rect.top), width: rect.width, height: rect.height },
     items: tidyMenu(items),
   });
@@ -448,6 +468,17 @@ async function openMenu(row: Extract<TreeRow, { kind: 'entry' }>, rect: DOMRect 
     case 'copyPath': await props.api.copyFilePath(file, false); break;
     case 'copyRelativePath': await props.api.copyFilePath(file, true); break;
     case 'reveal': await props.api.revealFile(file); break;
+    case 'openTimeline': if (resource) await props.api.scm.run({ op: 'openTimeline', repoId: resource.repoId, path: resource.path }); break;
+  }
+}
+
+// Open Timeline is the one item that needs the lookup: when it fails the menu still opens, without that item.
+async function resourceOf(file: FileRef): Promise<ScmResource | null> {
+  try {
+    return await props.api.scm.resource({ projectKey: file.projectKey, relativePath: file.relativePath });
+  } catch (error) {
+    console.error('[files] looking up the file\'s repository failed', error);
+    return null;
   }
 }
 
@@ -467,19 +498,33 @@ function onDragStart(event: DragEvent, row: Extract<TreeRow, { kind: 'entry' }>)
   }
   event.dataTransfer.setData(FILE_DRAG_MIME, serializeFileDragPayload(file));
   event.dataTransfer.effectAllowed = 'copy';
-  dragLabel.value = row.name;
+  dragLabel.value = visibleText(row.name);
   if (dragImage.value) event.dataTransfer.setDragImage(dragImage.value, remPx(0.75), remPx(0.75));
 }
 
-/** Expands every folder above the file, focuses its row and scrolls it into view (Reveal in Files). */
+/**
+ * Expands every folder above the file, focuses its row and scrolls it into view (Reveal in Files). A file of the selected
+ * project's other folder (its project folder while the worktree shows, or the reverse) shows that folder first (D31).
+ */
 async function reveal(file: FileRef): Promise<void> {
-  if (file.projectKey !== props.projectKey) return;
+  if (file.projectKey !== props.projectKey && !(await showFolderOf(file))) return;
   if (props.collapsed) emit('expand');
   // The project root has no row of its own, so the tree itself takes focus.
   if (file.relativePath === '') {
     await nextTick();
     containerProps.ref.value?.focus({ preventScroll: true });
   } else if (await expandTo(file.relativePath)) await focusRow(file.relativePath, 'center');
+}
+
+// The shown folder's root key reaches this section in the state main sends before it answers showFolder.
+async function showFolderOf(file: FileRef): Promise<boolean> {
+  const shown = props.shown;
+  const root = parseRootKey(file.projectKey);
+  if (!shown?.worktree || root?.projectKey !== shown.projectKey) return false;
+  if (root.worktreeId !== undefined && root.worktreeId !== shown.worktree.worktreeId) return false;
+  await props.api.showFolder({ projectKey: shown.projectKey, show: root.worktreeId === undefined ? 'project' : 'worktree' });
+  await nextTick();
+  return file.projectKey === props.projectKey;
 }
 
 // VS Code's explorer.autoReveal: the active editor's file is expanded to and becomes the tree's focused row, scrolled to
@@ -510,8 +555,19 @@ defineExpose({ reveal, startCreate, collapseAll });
     :collapsed="collapsed"
     :body-size="bodySize"
     data-testid="files-section"
+    :has-chip="!!shown?.worktree"
     @toggle="emit('toggle')"
   >
+    <template #chip>
+      <Transition name="t-chip">
+        <FilesBranchChip
+          v-if="shown?.worktree"
+          :api="api"
+          :shown="shown"
+          :new-chat-shortcut="newChatInWorktreeShortcut"
+        />
+      </Transition>
+    </template>
     <template #actions>
       <Button
         type="button"
@@ -649,7 +705,7 @@ defineExpose({ reveal, startCreate, collapseAll });
             :aria-selected="row.path === selectedPath"
             :aria-busy="row.loading || undefined"
             :tabindex="index === focusedIndex ? 0 : -1"
-            :title="row.path"
+            :title="visibleText(row.path)"
             :draggable="!row.directory"
             class="files-row flex cursor-pointer items-center gap-1.25 pr-2.5 outline-none select-none hover:bg-(--d-hover) focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent)]"
             :class="row.path === selectedPath ? 'bg-(--d-accent-soft) hover:bg-(--d-accent-soft)' : ''"
@@ -679,19 +735,15 @@ defineExpose({ reveal, startCreate, collapseAll });
               :data-ignored="decoration(row).ignored || undefined"
               :class="decoration(row).ignored ? (row.path === selectedPath ? 'text-(--d-faint-text)' : 'text-(--d-faint)') : ''"
               :style="decoration(row).letter && !row.directory && decoration(row).own ? { color: TONE_TEXT[decoration(row).own!.tone] } : undefined"
-            >{{ row.name }}</span>
-            <span
+            >{{ visibleText(row.name) }}</span>
+            <StatusLetter
               v-if="decoration(row).letter"
               data-testid="files-decoration"
               aria-hidden="true"
-              class="flex w-4 shrink-0 justify-center text-11 font-semibold"
-              :style="{ color: TONE_TEXT[decoration(row).own!.tone] }"
+              :letter="decoration(row).letter!"
+              :tone="decoration(row).own!.tone"
               :title="decoration(row).title"
-            >
-              <Transition name="t-letter">
-                <span :key="decoration(row).letter">{{ decoration(row).letter }}</span>
-              </Transition>
-            </span>
+            />
             <span
               v-else-if="decoration(row).dot"
               data-testid="files-folder-dot"

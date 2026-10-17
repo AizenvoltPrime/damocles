@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { jsonConfigWritesSettled, writeJsonConfig } from '../../core/config/json-config-write';
 import { MAX_BROWSER_URL_LENGTH } from '../../shared/typed-address';
 import { MAX_ID_LENGTH } from '../preload/shell-channels';
+import { isImageBlock, type UserContentBlock } from '../../shared/types/content';
 
 const SCHEMA_VERSION = 2;
 const LEGACY_SCHEMA_VERSION = 1;
@@ -22,7 +23,12 @@ export interface PersistedChat {
   readonly panelId: string;
   readonly state: unknown;
   readonly browser: PersistedPages;
+  // the first prompt the chat held for its worktree when the window closed (rule 6), which the next start puts in its composer
+  readonly heldPrompt?: readonly UserContentBlock[];
 }
+
+// Characters of a kept held prompt, images' base64 included; a larger one is not kept.
+export const MAX_HELD_PROMPT_CHARS: number = 32 * 1024 * 1024;
 
 // The selected project and, within it, the selected chat: its loaded panel and the session file it is bound to.
 export interface PersistedSelection {
@@ -73,8 +79,23 @@ function parsePages(rawPages: unknown, rawActive: unknown, panelId: string, log:
   return { pages, ...(activePage !== undefined ? { activePage } : {}) };
 }
 
-function chatEntry(panelId: string, state: unknown, browser: PersistedPages): PersistedChat {
-  return { panelId, state: state ?? null, browser };
+function chatEntry(panelId: string, state: unknown, browser: PersistedPages, heldPrompt?: readonly UserContentBlock[]): PersistedChat {
+  return { panelId, state: state ?? null, browser, ...(heldPrompt ? { heldPrompt } : {}) };
+}
+
+// A block rebuilt from its own fields only; undefined for anything but a text or base64 image block.
+function contentBlock(value: unknown): UserContentBlock | undefined {
+  if (isRecord(value) && value['type'] === 'text' && typeof value['text'] === 'string') return { type: 'text', text: value['text'] };
+  if (!isImageBlock(value)) return undefined;
+  return { type: 'image', source: { type: 'base64', media_type: value.source.media_type, data: value.source.data } };
+}
+
+/** A held prompt as text and base64 image blocks within MAX_HELD_PROMPT_CHARS; undefined for anything else. */
+export function parseHeldPrompt(raw: unknown): readonly UserContentBlock[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const blocks = (raw as unknown[]).map(contentBlock);
+  if (!blocks.every((block): block is UserContentBlock => block !== undefined)) return undefined;
+  return JSON.stringify(blocks).length <= MAX_HELD_PROMPT_CHARS ? blocks : undefined;
 }
 
 function parsePanelId(entry: Record<string, unknown>, log: Log): string | undefined {
@@ -129,7 +150,10 @@ function parseV2(file: Record<string, unknown>, log: Log): ParsedPanels {
     const panelId = parsePanelId(entry, log);
     if (panelId === undefined || chats.some((chat) => chat.panelId === panelId)) continue;
     const pages = parsePages(field(entry, 'pages'), field(entry, 'activePage'), panelId, log);
-    chats.push(chatEntry(panelId, parseState(field(entry, 'state'), panelId, log), pages));
+    const rawHeld = field(entry, 'heldPrompt');
+    const heldPrompt = parseHeldPrompt(rawHeld);
+    if (rawHeld !== undefined && !heldPrompt) log(`[panels] chat ${panelId}: dropping a malformed held prompt`);
+    chats.push(chatEntry(panelId, parseState(field(entry, 'state'), panelId, log), pages, heldPrompt));
   }
   return { chats, selected: parseSelection(field(file, 'selected'), chats, log) };
 }
@@ -234,7 +258,20 @@ export class PanelStateStore {
   // A new chat starts with no pages; an existing one keeps its pages.
   set(chat: { readonly panelId: string; readonly state: unknown }): void {
     if (this.sealed) return;
-    this.chats.set(chat.panelId, { panelId: chat.panelId, state: chat.state, browser: this.chats.get(chat.panelId)?.browser ?? NO_PAGES });
+    const held = this.chats.get(chat.panelId)?.heldPrompt;
+    this.chats.set(chat.panelId, { panelId: chat.panelId, state: chat.state, browser: this.chats.get(chat.panelId)?.browser ?? NO_PAGES, ...(held ? { heldPrompt: held } : {}) });
+    this.persist();
+  }
+
+  // Ignored for a chat the store does not hold; undefined clears it once the next start put it back in the composer.
+  setHeldPrompt(panelId: string, heldPrompt: readonly UserContentBlock[] | undefined): void {
+    if (this.sealed) return;
+    const chat = this.chats.get(panelId);
+    if (!chat || (chat.heldPrompt === undefined && heldPrompt === undefined)) return;
+    const { heldPrompt: _dropped, ...rest } = chat;
+    const kept = heldPrompt === undefined ? undefined : parseHeldPrompt(heldPrompt);
+    if (heldPrompt !== undefined && !kept) this.log(`[panels] chat ${panelId}: not keeping a held prompt larger than ${MAX_HELD_PROMPT_CHARS} characters`);
+    this.chats.set(panelId, { ...rest, ...(kept ? { heldPrompt: kept } : {}) });
     this.persist();
   }
 
@@ -282,6 +319,7 @@ export class PanelStateStore {
         state: chat.state,
         pages: chat.browser.pages,
         ...(chat.browser.activePage !== undefined ? { activePage: chat.browser.activePage } : {}),
+        ...(chat.heldPrompt ? { heldPrompt: chat.heldPrompt } : {}),
       })),
     };
     void writeJsonConfig(this.filePath, () => `${JSON.stringify(snapshot, null, 2)}\n`).catch((err: unknown) => {

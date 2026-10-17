@@ -24,7 +24,7 @@ import { useSettingsStore } from '@/stores/useSettingsStore';
 import { useMemoryStore } from '@/stores/useMemoryStore';
 import { useCompassStore } from '@/stores/useCompassStore';
 import { useMessageHandler } from '../../index';
-import type { ExtensionToWebviewMessage } from '@shared/types/messages';
+import type { ExtensionToWebviewMessage, WorktreeStateData } from '@shared/types/messages';
 import type { StoredSession } from '@shared/types/session';
 import type { WorkspaceFolderInfo } from '@shared/types/workspace-folders';
 
@@ -687,5 +687,65 @@ describe('which host messages make the transcript follow again', () => {
     ['backgroundTaskResult', { type: 'backgroundTaskResult', taskId: 't-1', toolUseId: 'tool-1', result: 'done', summary: 'task' } as const],
   ])('%s leaves a reader who scrolled up where they are', (_name, msg) => {
     expect(handle(msg)).toBeUndefined();
+  });
+});
+
+/** Core publishes the worktree state of the session that replaces the shown one; until it does, the webview shows none. */
+describe('the worktree state when the conversation is replaced', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  const shown: WorktreeStateData = { phase: 'ready', place: 'worktree', canHandOff: true, branch: 'damocles/old-chat', projectName: 'acme' };
+
+  function contextWithWorktree(): HandlerContext {
+    const ctx = context();
+    ctx.stores.settingsStore.hostCapabilities = { ...ctx.stores.settingsStore.hostCapabilities, worktrees: true };
+    ctx.stores.uiStore.worktree = shown;
+    return ctx;
+  }
+
+  it('drops the previous folder\'s state on a folder switch, which starts another session', () => {
+    const ctx = contextWithWorktree();
+
+    dispatch(folderUpdate(SERVER.key, true), ctx);
+
+    expect(ctx.stores.uiStore.worktree).toBeNull();
+  });
+
+  it('keeps it when the folder update is not a switch', () => {
+    const ctx = contextWithWorktree();
+
+    dispatch(folderUpdate(CLIENT.key), ctx);
+
+    expect(ctx.stores.uiStore.worktree).toEqual(shown);
+  });
+
+  it('drops the previous chat\'s state on resuming another, and keeps the stored place core sends before the replay', () => {
+    const ctx = contextWithWorktree();
+    const stored: WorktreeStateData = { phase: 'deleted', place: 'worktree', canHandOff: false };
+
+    dispatch({ type: 'resumeAccepted', sessionId: 's-2' }, ctx);
+    expect(ctx.stores.uiStore.worktree).toBeNull();
+    dispatch({ type: 'worktreeState', ...stored }, ctx);
+    dispatch({ type: 'sessionCleared' }, ctx);
+
+    expect(ctx.stores.uiStore.worktree).toEqual(stored);
+  });
+
+  it('keeps it through a hand-off, which continues the conversation until the moved session publishes', () => {
+    const ctx = contextWithWorktree();
+
+    dispatch({ type: 'resumeAccepted', sessionId: 's-1', continued: true }, ctx);
+    dispatch({ type: 'sessionCleared' }, ctx);
+
+    expect(ctx.stores.uiStore.worktree).toEqual(shown);
+    expect(ctx.stores.uiStore.placePending).toBe(false);
+  });
+
+  it('keeps it through a clear, whose new session works in the same place and publishes any change', () => {
+    const ctx = contextWithWorktree();
+
+    dispatch({ type: 'conversationCleared' }, ctx);
+
+    expect(ctx.stores.uiStore.worktree).toEqual(shown);
   });
 });

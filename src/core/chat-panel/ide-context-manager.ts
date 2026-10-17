@@ -31,17 +31,30 @@ export class IdeContextManager {
   private readonly disposables: Disposable[] = [];
   private readonly onContextChange: (info: IdeContextDisplayInfo | null) => void;
 
-  constructor(editor: EditorService, onContextChange: (info: IdeContextDisplayInfo | null) => void) {
+  private readonly accepts: (filePath: string) => boolean;
+  private readonly editor: EditorService;
+
+  /** `accepts` filters the files whose context reaches the chat; a refused file reads as no context. */
+  constructor(editor: EditorService, onContextChange: (info: IdeContextDisplayInfo | null) => void, accepts: (filePath: string) => boolean = () => true) {
     this.onContextChange = onContextChange;
+    this.accepts = accepts;
+    this.editor = editor;
     this.disposables.push(editor.onDidChangeActiveContext((context) => this.handleEditorChange(context)));
     this.handleEditorChange(editor.getActiveContext());
+  }
+
+  /** What `accepts` answers changed (the chat moved to another folder): the editor's context is filtered again. */
+  refresh(): void {
+    const context = this.editor.getActiveContext();
+    if (context) this.handleEditorChange(context);
+    else if (this.currentContext && !this.accepts(this.currentContext.filePath)) this.setContext(null);
   }
 
   /** undefined (no editor, or one the host ignores) keeps the current context. */
   private handleEditorChange(context: ActiveEditorContext | undefined): void {
     if (!context) return;
 
-    if (context.filePath === undefined) {
+    if (context.filePath === undefined || !this.accepts(context.filePath)) {
       this.setContext(null);
       return;
     }

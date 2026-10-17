@@ -1,6 +1,7 @@
 // Generate commit message with Damocles (D24): the Background model writes a message from the changes.
 import type { StructuredCompletionRequest, StructuredCompletionResult } from '../pi-session/structured-completion';
 import type { Repository } from './repository';
+import { worktreeProjectOf } from '../worktrees/personal-config';
 
 // D24's bound on the diff the model reads, and the subjects that show it the repository's style.
 export const COMMIT_MESSAGE_DIFF_CHARS = 30_000;
@@ -65,7 +66,8 @@ export async function generateCommitMessage(repo: Repository, complete: CommitMe
     outputToolDescription: 'Record the commit message.',
     schema: COMMIT_MESSAGE_SCHEMA,
     purpose: 'commit-message',
-    attribution: { cwd: projectFolder },
+    // a chat worktree's spend belongs to its project (slice 12a rule 9)
+    attribution: { cwd: worktreeProjectOf(projectFolder) ?? projectFolder },
     timeoutMs: COMMIT_MESSAGE_TIMEOUT_MS,
   });
   if (result.kind === 'answered') {

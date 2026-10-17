@@ -26,8 +26,7 @@ vi.mock('../../pi-loader', async () => {
     loadPiAi: vi.fn(async () => import('@earendil-works/pi-ai')),
   };
 });
-vi.mock('../reading', () => ({ resolvePiSessionFile: vi.fn(async () => '/fake/session.jsonl') }));
-vi.mock('../session-dir', () => ({ ensurePiSessionDir: vi.fn(() => hoisted.sessionDir) }));
+vi.mock('../reading', () => ({ resolvePiSessionFile: vi.fn(async () => '/fake/session.jsonl'), piSessionDirOf: vi.fn(() => hoisted.sessionDir) }));
 vi.mock('../../checkpoints', () => ({ getCheckpointEntries: vi.fn(() => []) }));
 vi.mock('../../../logger', () => ({ log: vi.fn() }));
 vi.mock('../../agent-records', async (importOriginal) => {

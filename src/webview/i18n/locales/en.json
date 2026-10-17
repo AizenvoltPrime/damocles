@@ -1163,7 +1163,8 @@
     "out": "OUT",
     "inputFiles": "{n} files",
     "inputPattern": "Pattern: {pattern}",
-    "inputQuery": "Query: {query}"
+    "inputQuery": "Query: {query}",
+    "notApplied": "Not applied"
   },
   "questionTool": {
     "askingQuestion": "Asking a question",
@@ -1189,6 +1190,7 @@
   "skillTool": {
     "executed": "Skill \"{name}\" executed",
     "denied": "Skill \"{name}\" denied",
+    "blocked": "Skill \"{name}\" blocked",
     "skipped": "Skill \"{name}\" skipped",
     "useSkill": "Use skill \"{name}\"?",
     "waitingApproval": "Waiting for your approval...",
@@ -1201,6 +1203,7 @@
   "planModeTool": {
     "entered": "Plan mode entered",
     "declined": "Plan mode declined",
+    "blocked": "Plan mode blocked",
     "skipped": "Plan mode skipped",
     "enterPlanMode": "Enter plan mode?",
     "waitingApproval": "Waiting for your approval...",
@@ -1444,7 +1447,8 @@
       "noJobs": "No scheduled jobs",
       "listJobs": "List scheduled jobs",
       "interval": "Interval"
-    }
+    },
+    "statusBlocked": "Blocked"
   },
   "mcpToolOverlay": {
     "response": "Response",
@@ -1482,7 +1486,12 @@
     },
     "responseTruncated": "Response truncated: max output tokens reached",
     "rewindUndone": "Files restored to before the rewind",
-    "promptsApproved": "{approver} approved the open prompts it no longer asks about"
+    "promptsApproved": "{approver} approved the open prompts it no longer asks about",
+    "promptReturned": {
+      "heldPromptWaiting": "Your first message is still waiting for the worktree, so this one is back in the input.",
+      "worktreeFinishing": "A finish action is running on this chat's worktree, so your message is back in the input.",
+      "heldPromptKept": "Your message wasn't sent. It is back in the input."
+    }
   },
   "backgroundTask": {
     "title": "Background Tasks",
@@ -2748,7 +2757,10 @@
     "usageStatistics": "Usage statistics",
     "terminal": "Terminal",
     "toggleTerminal": "Toggle terminal",
-    "toggleTerminalShortcut": "Toggle terminal ({shortcut})"
+    "toggleTerminalShortcut": "Toggle terminal ({shortcut})",
+    "reviewChanges": "Review this chat's changes ({n} file) | Review this chat's changes ({n} files)",
+    "reviewChangesLabel": "Review this chat's changes: {added} lines added and {removed} removed in {n} file | Review this chat's changes: {added} lines added and {removed} removed in {n} files",
+    "reviewChangesItem": "Review changes"
   },
   "history": {
     "search": "Search conversations",
@@ -2791,7 +2803,7 @@
     "prompt": "prompt {n}"
   },
   "terminalAttachment": {
-    "listLabel": "Attached terminal output",
+    "listLabel": "Attachments",
     "command": "Terminal: {command}",
     "selection": "Terminal selection",
     "selectionFrom": "Selection from {terminal}",
@@ -2805,5 +2817,68 @@
     "previewTail": "Preview of the last {n} line | Preview of the last {n} lines",
     "empty": "No output",
     "previewRegion": "Terminal output"
+  },
+  "commitAttachment": {
+    "label": "Commit {hash} · {subject}",
+    "preview": "Preview {label}",
+    "remove": "Remove {label}",
+    "removeTitle": "Remove",
+    "added": "Commit attached: {label}",
+    "previewHead": "Preview of the first {n} line | Preview of the first {n} lines",
+    "omitted": "{n} more line not shown | {n} more lines not shown",
+    "omittedAtLeast": "{n} or more lines not shown",
+    "previewRegion": "Commit"
+  },
+  "worktree": {
+    "chip": "Worktree from {branch}",
+    "chipUncommitted": "· +{n} uncommitted",
+    "chipTitle": "Damocles creates the worktree's branch from {branch} at your first message",
+    "chipRemove": "Run in the project folder instead",
+    "creating": "Creating the worktree",
+    "settingUp": "Setting up worktree",
+    "setupNote": "Your message waits for the setup, which runs in the Setup terminal.",
+    "setupNoteMoved": "The chat moved here. A message you send waits for the setup, which runs in the Setup terminal.",
+    "sendNow": "Send now",
+    "setupFailed": "Setup failed (exit {code})",
+    "setupFailedNote": "The Setup terminal shows what went wrong. Your message waits.",
+    "setupFailedNoteMoved": "The Setup terminal shows what went wrong. A message you send waits until you retry or continue.",
+    "continueWithoutSetup": "Continue without setup",
+    "sendAnyway": "Send anyway",
+    "retry": "Retry",
+    "createFailed": "Couldn't create the worktree",
+    "createFailedNote": "Your message is kept. Nothing was sent.",
+    "runInProject": "Run in project folder",
+    "deleted": "This chat's worktree was deleted",
+    "deletedNote": "The history stays here, read-only.",
+    "newChatInProject": "New chat in project folder",
+    "handOff": "Hand off",
+    "handOffTitle": "Hand off: move where this chat works",
+    "handOffDisabled": "Hand off is available while the chat is idle",
+    "handOffHeading": "This chat works in",
+    "projectFolder": "Project folder",
+    "worktreeBranch": "Worktree {branch}",
+    "projectSub": "On {branch}",
+    "worktreeSub": "Its own copy of the project",
+    "moveToWorktree": "Move to a worktree",
+    "moveToWorktreeSub": "The chat keeps working in its own copy, and your folder is free again.",
+    "moveToProject": "Move to project folder",
+    "moveToProjectSub": "Copies the chat's changes into the project folder and continues there.",
+    "branchTitle": "This chat works in its worktree, on {branch}",
+    "behind": "{n} behind {branch}",
+    "rewritten": "{branch} was rewritten",
+    "deletedChip": "Worktree deleted",
+    "rewindNote": "Files from before the hand-off are in the other folder. Rewind restores the conversation only.",
+    "heldPrompt": "Your message, waiting to be sent:",
+    "newChatHere": "New chat in this worktree",
+    "shares": "Shares {leaf} with {n} other chat | Shares {leaf} with {n} other chats",
+    "setupStep": "{command} ({index} of {total})",
+    "showSetupTerminal": "Show Setup terminal",
+    "heldImages": "{n} image | {n} images",
+    "finishing": {
+      "apply": "Applying this worktree to the project folder. You can send when it finishes.",
+      "merge": "Merging this worktree. You can send when it finishes.",
+      "update": "Updating this worktree. You can send when it finishes.",
+      "delete": "Deleting this worktree. You can send when it finishes."
+    }
   }
 }

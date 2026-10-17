@@ -11,6 +11,7 @@ import { IGNORED_TOOLS, SUBAGENT_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_BASH, TOOL_P
 import { isPlanFilePath } from '../paths';
 import { mapPiToolName, normalizeToolInput, denormalizeToolInput, toolCategory } from './tool-normalization';
 import { classifyReadOnlyShellCommand } from './readonly-shell';
+import { worktreeIsolationBlock, type WorktreeIsolation } from './worktree-isolation';
 import { GATEABLE_MODULE_NAMES } from './tools/tool-catalog';
 import type { DeferrableSnapshot } from './tools/tool-search-tool';
 import type { ShellCancelRegistry } from './tools/shell-cancel-registry';
@@ -65,6 +66,8 @@ export interface PanelGateContext {
   getSessionModel: () => string;
   /** Environment facts for `buildSystemPrompt`. */
   getSystemPromptEnv: () => SystemPromptEnv;
+  /** The workspace memory's project scope files this panel's prompts under: the project of a worktree chat (`identityFolder`). */
+  memoryWorkspace: () => string;
   /** The session's deterministic plan-file path, named in the plan-mode system prompt so the model
    *  maintains its plan there. */
   getPlanFilePath: () => string;
@@ -115,6 +118,8 @@ export interface PanelGateContext {
    * serves. The gate opens a call's entry as it starts deciding, so a Stop reaches the call before it runs.
    */
   shellCancel: ShellCancelRegistry;
+  /** D62: set while the chat works in its chat worktree; read per call, since a hand-off moves the chat. */
+  worktreeIsolation?: () => WorktreeIsolation | undefined;
 }
 
 /** What the gate needs of a panel's turn checkpoint. */
@@ -158,7 +163,7 @@ export function formatPolicyBlockReason(message: string | undefined): string {
 
 /** The slice of a panel's context the gate actually reads. `PanelGateContext` satisfies it; a nested
  *  subagent supplies the same parent handler + a parent-mode reader (inherit-parent-mode). */
-export type GatePermissionContext = Pick<PanelGateContext, 'permissionHandler' | 'isPlanMode' | 'isMcpReadOnly' | 'mcpToolIdentity' | 'checkpointBaseline' | 'shellCancel'> & {
+export type GatePermissionContext = Pick<PanelGateContext, 'permissionHandler' | 'isPlanMode' | 'isMcpReadOnly' | 'mcpToolIdentity' | 'checkpointBaseline' | 'shellCancel' | 'worktreeIsolation'> & {
   /**
    * Apply plan mode's shell rule to this caller in every mode: a command `readonly-shell.ts` proves
    * read-only auto-runs, any other goes through `canUseTool` (prompt, settings rules, YOLO), and write
@@ -315,6 +320,14 @@ async function decideToolCall(
     return undefined;
   };
 
+  // D62 applies in every mode and before a hook's force-allow, to the input as a hook rewrote it.
+  const isolationBlock = (): ToolCallEventResult | undefined => {
+    const isolation = panel.worktreeIsolation?.();
+    if (!isolation) return undefined;
+    const blocked = worktreeIsolationBlock(damoclesName, normalizeToolInput(event.toolName, event.input as Record<string, unknown>), isolation);
+    return blocked === undefined ? undefined : { block: true, reason: formatPolicyBlockReason(blocked) };
+  };
+
   if (preToolUse) {
     const result = await preToolUse.run(event);
     if (result?.systemMessages.length) preToolUse.notify(result.systemMessages);
@@ -343,11 +356,16 @@ async function decideToolCall(
       }
       if (result.additionalContext) pendingContext = result.additionalContext;
       if (result.decision === 'allow') {
+        const isolated = isolationBlock();
+        if (isolated) return isolated;
         preToolUse.onDecision(damoclesName, 'allow', result.reason, false);
         return proceed();
       }
     }
   }
+
+  const isolated = isolationBlock();
+  if (isolated) return isolated;
 
   const input = normalizeToolInput(event.toolName, event.input as Record<string, unknown>);
 

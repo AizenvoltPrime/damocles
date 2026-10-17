@@ -3,6 +3,7 @@ import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { ChevronRight, FilePen, Folder, Replace, ReplaceAll, X } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
+import { visibleText } from '@shared/visible-text';
 import { fileIcon } from '../file-icons';
 import type { ResultRow } from './search-store';
 
@@ -70,8 +71,8 @@ const lineTitle = computed(() => {
 
 const label = computed(() => {
   const { row } = props;
-  if (row.kind === 'folder') return t('search.folderAria', { count: row.node.count, name: row.node.label });
-  if (row.kind === 'file') return t('search.fileAria', { count: row.file.matches.length, name: name.value, folder: dir.value === '' ? '.' : dir.value });
+  if (row.kind === 'folder') return t('search.folderAria', { count: row.node.count, name: visibleText(row.node.label) });
+  if (row.kind === 'file') return t('search.fileAria', { count: row.file.matches.length, name: visibleText(name.value), folder: dir.value === '' ? '.' : visibleText(dir.value) });
   const { text, matchStart, matchEnd } = row.match.preview;
   const line = text.slice(0, matchEnd + ARIA_LINE_TAIL);
   const found = text.slice(matchStart, matchEnd);
@@ -98,7 +99,7 @@ const indent = computed(() => `${INDENT_START_REM + (props.row.level - 1) * INDE
     :aria-selected="selected"
     :aria-label="label"
     :tabindex="current ? 0 : -1"
-    :title="row.kind === 'match' ? undefined : path"
+    :title="row.kind === 'match' ? undefined : visibleText(path)"
     class="search-row group relative flex cursor-pointer items-center gap-1.25 pr-2 outline-none select-none hover:bg-(--d-hover) focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent)]"
     :class="selected ? 'bg-(--d-accent-soft) hover:bg-(--d-accent-soft)' : ''"
     :style="{ height: `${height}px`, paddingLeft: indent }"
@@ -127,11 +128,11 @@ const indent = computed(() => `${INDENT_START_REM + (props.row.level - 1) * INDE
         class="size-3.5 shrink-0"
         :style="{ color: icon.color }"
       />
-      <span class="shrink-0 truncate text-12.5 text-(--d-text)">{{ row.kind === 'folder' ? row.node.label : name }}</span>
+      <span class="min-w-0 truncate text-12.5 text-(--d-text)">{{ visibleText(row.kind === 'folder' ? row.node.label : name) }}</span>
       <span
         v-if="row.kind === 'file' && showFolder && dir !== ''"
         class="min-w-0 flex-1 truncate text-11 text-(--d-faint-text)"
-      >{{ dir }}</span>
+      >{{ visibleText(dir) }}</span>
       <span
         v-else
         class="flex-1"

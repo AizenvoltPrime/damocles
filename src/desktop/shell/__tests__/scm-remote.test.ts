@@ -24,13 +24,14 @@ const snapshot = (extra: Partial<ScmRepoSnapshot> = {}): ScmRepoSnapshot => ({
   remotes: ['origin'],
   running: null,
   lastRemote: null,
+  revision: 0,
   ...extra,
 });
 
 const view = (repoIds: readonly string[] = ['r1']): ScmView => ({
   projectKey: 'p1',
   state: 'ready',
-  repos: repoIds.map((repoId) => ({ repoId, label: repoId, displayPath: repoId, kind: 'nested' as const })),
+  repos: repoIds.map((repoId) => ({ repoId, label: repoId, displayPath: repoId, kind: 'nested' as const, root: `/w/alpha/${repoId}` })),
   selectedRepoId: repoIds[0]!,
   closedCount: 0,
   unsafePaths: [],
@@ -125,14 +126,21 @@ describe('the sync button', () => {
     expect(committing.button().attributes()).toMatchObject({ 'aria-disabled': 'true', title: 'Committing Changes…' });
   });
 
-  it('offers no command on a detached HEAD or an unborn branch', async () => {
-    for (const current of [snapshot({ head: { type: 'detached', commit: 'abc1234' }, upstream: null }), snapshot({ head: { type: 'unborn', name: 'main' }, commit: null, upstream: null })]) {
+  it('offers no command on a detached HEAD or an unborn branch, shows it disabled and says why', async () => {
+    const cases = [
+      [snapshot({ head: { type: 'detached', commit: 'abc1234' }, upstream: null }), 'A detached HEAD has no branch to synchronize'],
+      [snapshot({ head: { type: 'unborn', name: 'main' }, commit: null, upstream: null }), 'The branch has no commits to synchronize yet'],
+    ] as const;
+    for (const [current, reason] of cases) {
       const { button, scm } = await mountSync(current);
-      expect(button().attributes()).toMatchObject({ 'data-mode': 'none', 'aria-disabled': 'true', 'aria-label': 'Synchronize Changes' });
+      expect(button().attributes()).toMatchObject({ 'data-mode': 'none', 'aria-disabled': 'true', 'aria-label': reason, title: reason });
+      expect(button().classes()).toContain('opacity-50');
       expect(button().find('[data-testid="scm-sync-label"]').exists()).toBe(false);
       await button().trigger('click');
       expect(scm.run).not.toHaveBeenCalled();
     }
+    // running and committing keep their full look
+    expect((await mountSync(snapshot(), true)).button().classes()).not.toContain('opacity-50');
   });
 
   it('rolls a changed count and lights the arrow whose count grew, but not for another repository', async () => {

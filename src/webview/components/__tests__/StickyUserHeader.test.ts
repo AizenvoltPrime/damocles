@@ -3,12 +3,11 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import StickyUserHeader from '../StickyUserHeader.vue';
-import PinnedRestoreChip from '../PinnedRestoreChip.vue';
 import type { ChatMessage } from '@shared/types/session';
 import { formatClock } from '@/utils/clock';
 import { i18n } from '@/i18n';
 
-/** The pinned user header and its restore chip: every action is a named button that reaches its handler. */
+/** The pinned user header: every action is a named button that reaches its handler. */
 
 const MESSAGE: ChatMessage = { id: 'u1', role: 'user', content: 'Rate-limit the login route', timestamp: Date.UTC(2026, 0, 2, 14, 5) };
 
@@ -70,17 +69,5 @@ describe('the pinned user header', () => {
     await wrapper.get('[data-testid="user-message-context"]').trigger('click');
 
     expect(wrapper.emitted('viewContext')).toEqual([[2]]);
-  });
-});
-
-describe('the restore chip', () => {
-  it('is a named button that restores the header', async () => {
-    const chip = mount(PinnedRestoreChip, { props: { message: MESSAGE }, global: { plugins: [i18n] } });
-
-    expect(chip.element.tagName).toBe('BUTTON');
-    expect(chip.attributes('title')).toBe('Show pinned header');
-    await chip.trigger('click');
-
-    expect(chip.emitted('restore')).toHaveLength(1);
   });
 });

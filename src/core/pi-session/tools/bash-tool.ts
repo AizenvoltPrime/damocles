@@ -17,6 +17,8 @@ const EXIT_STDIO_GRACE_MS = 100;
 export interface ShellOptions {
   commandPrefix?: string;
   shellPath?: string;
+  /** Added to each command's environment through pi's spawnHook (D32's worktree variables); never written into process.env. */
+  env?: Readonly<Record<string, string>>;
 }
 
 /** pi's bash definition carries its own schema and render types; only the erased shape is assignable both ways. */
@@ -247,7 +249,11 @@ export function createTrackedBashOperations(
 export function createBashTool(pi: PiCodingAgentModule, cwd: string, deps: BashToolDeps): ToolDefinition {
   const { getShellOptions, shellJob } = deps;
   const operations = createTrackedBashOperations(pi, getShellOptions, shellJob);
-  const build = (options: ShellOptions): AnyToolDefinition => pi.createBashToolDefinition(cwd, { ...options, operations });
+  const build = ({ env, ...options }: ShellOptions): AnyToolDefinition => pi.createBashToolDefinition(cwd, {
+    ...options,
+    operations,
+    ...(env !== undefined ? { spawnHook: (context) => ({ ...context, env: { ...context.env, ...env } }) } : {}),
+  });
   const initialOptions = getShellOptions();
   let cachedKey = JSON.stringify(initialOptions);
   let cachedDelegate = build(initialOptions);

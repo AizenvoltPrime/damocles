@@ -67,6 +67,7 @@ function makeHarness(opts: {
     },
     memoryService: { isEnabled: false, ensureInitialized: vi.fn(async () => undefined) },
     markUserTypedDuringTurn: vi.fn(),
+    worktrees: () => ({ interceptSend: () => false }),
   } as unknown as HandlerDependencies;
 
   const ctx = {

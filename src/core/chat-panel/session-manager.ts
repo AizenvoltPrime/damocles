@@ -1,4 +1,4 @@
-import type { Platform } from "../../platform/platform";
+import type { PlatformWithWorktrees } from "../worktrees/host";
 import type { ChatSession } from "../chat-session";
 import { PiSession } from "../pi-session/pi-session";
 import { PermissionHandler } from "../permission-handler";
@@ -38,7 +38,7 @@ export interface SessionManagerConfig {
   /** The folder's Compass service, or null for a folder with no project index. */
   getCompassService: (folderKey: string) => CompassService | null;
   onAssistantTextFinal?: (text: string) => void;
-  platform: Platform;
+  platform: PlatformWithWorktrees;
 }
 
 export class SessionManager {
@@ -57,7 +57,7 @@ export class SessionManager {
   private readonly getRawBrowserService: SessionManagerConfig["getRawBrowserService"];
   private readonly getCompassService: SessionManagerConfig["getCompassService"];
   private readonly onAssistantTextFinal: SessionManagerConfig["onAssistantTextFinal"];
-  private readonly platform: Platform;
+  private readonly platform: PlatformWithWorktrees;
 
   constructor(config: SessionManagerConfig) {
     this.getEnabledMcpServers = config.getEnabledMcpServers;
@@ -99,7 +99,10 @@ export class SessionManager {
     let piSession: PiSession | undefined;
     const teamService = new TeamService({
       cwd: folder.fsPath,
-      onMessage: (message) => this.postMessage(host, message),
+      onMessage: (message) => {
+        this.postMessage(host, message);
+        piSession?.teamMessage(message);
+      },
       getSessionId: () => piSession?.memorySessionId ?? null,
       getPermissionMode: () => permissionHandler.getPermissionMode(),
       resolveRoleModel: (role) => piSession!.resolveTeamRole(role),

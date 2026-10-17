@@ -286,6 +286,18 @@ describe('overlay requests', () => {
     await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('r2', { kind: 'confirm', confirmed: false }));
   });
 
+  // happy-dom applies no white-space rule, so this pins the class that keeps a question's paragraph breaks, as VS Code's dialog does.
+  it('keeps the line breaks of a message dialog\'s question, so each of its questions reads as its own paragraph', async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    const message = 'Are you sure you want to DELETE 1 untracked file? This is IRREVERSIBLE!\n\nAre you sure you want to discard changes in \'a.ts\'?';
+    await open(wrapper, 'm1', { kind: 'message', severity: 'danger', message, actions: ['Discard All 2 Files'], cancelLabel: 'Cancel' });
+    const dialog = wrapper.get('[role="alertdialog"]');
+    const heading = wrapper.get(`#${dialog.attributes('aria-labelledby')!.split(' ').at(-1)!}`);
+    expect(heading.element.textContent).toBe(message);
+    expect(heading.classes()).toContain('whitespace-pre-line');
+  });
+
   it('answers a message dialog\'s scrim click as Cancel, and a click inside the dialog as nothing', async () => {
     const wrapper = mountOverlay();
     await flushPromises();

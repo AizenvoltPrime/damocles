@@ -145,10 +145,12 @@ const diffSource = computed(() =>
 );
 const fileDiff = computed(() => (diffSource.value ? buildFileDiff(diffSource.value) : null));
 
-/** The change size beside an Edit or Write, as the reference's "+7 −0" chip. */
+const isBlocked = computed(() => props.toolCall.status === "blocked");
+
+/** The change size beside an Edit or Write, as the reference's "+7 −0" chip; a blocked change never landed, so it has none. */
 const changeMeta = computed(() => {
   const diff = fileDiff.value;
-  if (!diff || diff.omitted) return null;
+  if (!diff || diff.omitted || isBlocked.value) return null;
   return `+${diff.stats.added} −${diff.stats.removed}`;
 });
 
@@ -427,9 +429,21 @@ const statusNote = computed(() => {
       v-if="fileDiff"
       class="mx-2 mb-2"
     >
+      <!-- A blocked change shows what was proposed, dimmed under its caption, as Claude Code shows a rejected edit. -->
+      <p
+        v-if="isBlocked"
+        class="mb-1 flex items-center gap-1.5 text-10.5 tracking-[.06em] text-(--d-faint-text) uppercase"
+        data-testid="tool-card-not-applied"
+      >
+        <Ban
+          class="size-3 flex-none"
+          aria-hidden="true"
+        />{{ t('toolCall.notApplied') }}
+      </p>
       <button
         type="button"
         class="group relative block w-full overflow-hidden rounded-lg border border-(--d-border) bg-(--d-code) text-left"
+        :class="isBlocked ? 'opacity-55' : ''"
         :aria-label="t('toolCall.clickToExpand')"
         @click="handleDiffClick"
       >
@@ -518,6 +532,16 @@ const statusNote = computed(() => {
       />
       <span>{{ toolCall.errorMessage }}</span>
     </div>
+
+    <Transition name="t-tuck">
+      <p
+        v-if="toolCall.status === 'blocked' && toolCall.feedback"
+        class="pr-3 pb-2.5 pl-10 text-xs text-pretty wrap-anywhere text-(--d-muted)"
+        data-testid="tool-card-blocked-reason"
+      >
+        {{ toolCall.feedback }}
+      </p>
+    </Transition>
 
     <div
       v-if="statusNote"

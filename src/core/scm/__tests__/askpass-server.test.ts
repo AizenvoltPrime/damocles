@@ -12,6 +12,7 @@ import {
   parseAskpassRequest,
   promptText,
   MAX_WAITING_CONNECTIONS,
+  PROMPT_CANCELLED,
   WITHDRAWN_PROMPT_GRACE_MS,
   type AskpassServer,
   type AskpassServerDeps,
@@ -140,6 +141,41 @@ describe('the askpass server', () => {
     for (let i = 0; i < 2; i++) expect((await exchange(registration.env['DAMOCLES_ASKPASS_HANDLE']!, request)).reply).toBe(`${JSON.stringify({ cancel: true })}\n`);
     expect(prompts).toEqual([]);
     expect(log).toEqual(['[askpass] autofetch runs in the background, so its credential request was answered with a cancel']);
+  });
+
+  it('cancels its registration before the helper hears a cancel the user gave, and for no other unanswered prompt', async () => {
+    const events: string[] = [];
+    let next: () => Promise<string | typeof PROMPT_CANCELLED | undefined> = async () => PROMPT_CANCELLED;
+    const { server } = start(() => next());
+    const ask = async (mode: 'interactive' | 'background', text = "Username for 'https://example.com': ") => {
+      const registration = await server.register(mode, 'fetch');
+      registration.cancelled.addEventListener('abort', () => events.push('cancelled'));
+      const reply = await new Promise<string>((resolve) => {
+        const socket = net.connect(registration.env['DAMOCLES_ASKPASS_HANDLE']!);
+        let received = '';
+        socket.on('data', (chunk) => {
+          events.push('reply');
+          received += chunk.toString('utf8');
+        });
+        socket.on('error', () => undefined);
+        socket.on('close', () => resolve(received));
+        socket.write(line({ nonce: registration.env['DAMOCLES_ASKPASS_NONCE'], kind: 'askpass', argv: [text] }));
+      });
+      return { reply, cancelled: registration.cancelled.aborted };
+    };
+    expect(await ask('interactive')).toEqual({ reply: `${JSON.stringify({ cancel: true })}\n`, cancelled: true });
+    expect(events).toEqual(['cancelled', 'reply']);
+    // a notice closing or a withdrawn prompt, an answer refused for a line break, a prompt that threw, and a background call
+    next = async () => undefined;
+    expect((await ask('interactive')).cancelled).toBe(false);
+    next = async () => 'a\nb';
+    expect((await ask('interactive')).cancelled).toBe(false);
+    next = async () => {
+      throw new Error('the overlay is gone');
+    };
+    expect((await ask('interactive')).cancelled).toBe(false);
+    next = async () => PROMPT_CANCELLED;
+    expect((await ask('background')).cancelled).toBe(false);
   });
 
   it('never logs an answer or the prompt text, and refuses an answer holding a line break', async () => {

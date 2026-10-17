@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -32,6 +32,7 @@ vi.mock('../../pi-session/session-store', async () => {
     return null;
   };
   return {
+    piSessionDir: sessionDir,
     ensurePiSessionDir: (cwd: string) => {
       const dir = sessionDir(cwd);
       nodeFs.mkdirSync(dir, { recursive: true });
@@ -61,10 +62,12 @@ vi.mock('../../pi-session/checkpoints', async () => {
   };
 });
 
-import { StorageManager } from '../storage-manager';
+import { onListingChange, StorageManager } from '../storage-manager';
+import { worktreeFolderFor, WorktreeRegistry } from '../../worktrees/registry';
 import * as store from '../../pi-session/session-store';
 import { log } from '../../logger';
 import { pruneOrphanCheckpointRepos } from '../../pi-session/checkpoints';
+import { installWorktreeProjectLookup } from '../../worktrees/personal-config';
 
 H.tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-storage-multi-root-'));
 afterAll(() => fs.rmSync(H.tmpRoot, { recursive: true, force: true }));
@@ -521,5 +524,85 @@ describe('StorageManager: changes that land during a list load', () => {
     gate.release();
 
     expect((await listing).sessions.map((s) => s.id)).toEqual(['a-1']);
+  });
+});
+
+describe("StorageManager: a worktree chat's row (AD12 Listing)", () => {
+  const W = path.resolve('/work/worktrees/alpha/aaaaaaaa');
+  const WORKTREE = { worktreeId: 'aaaaaaaa', place: 'worktree' as const };
+  let lookup: { dispose(): void };
+  beforeEach(() => {
+    lookup = installWorktreeProjectLookup({
+      projectOf: (folderPath) => (folderPath === W ? A.fsPath : undefined),
+      recordsOfProject: (projectPath) => (projectPath === A.fsPath ? [{ workingFolder: W }] : []),
+      get: () => undefined,
+      chatRecordFor: () => undefined,
+    });
+  });
+  afterEach(() => lookup.dispose());
+
+  // Main reads an unloaded chat's worktree badge from this row; a row without it reads as a plain project-folder chat.
+  it('a change to a session listed from a registry folder keeps where it was listed from and its worktree entry', async () => {
+    vi.useFakeTimers();
+    try {
+      H.store.set(W, [session('w-1', 100, { worktree: WORKTREE })]);
+      const { manager } = harness([A]);
+      expect((await manager.sessionsOf(A.key)).map((s) => [s.id, s.listedFrom, s.worktree])).toEqual([['w-1', W, WORKTREE]]);
+      await manager.setupSessionWatcher();
+      vi.mocked(store.currentCachedRow).mockResolvedValueOnce(session('w-1', 300, { messageCount: 4, worktree: WORKTREE }));
+
+      platform.fileWatchers.watcher(store.ensurePiSessionDir(W), '*.jsonl').fireChange(fileOf(W, 'w-1'));
+      await vi.runAllTimersAsync();
+
+      expect((await manager.sessionsOf(A.key)).map((s) => [s.id, s.messageCount, s.listedFrom, s.worktree])).toEqual([['w-1', 4, W, WORKTREE]]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('watches a registry folder\'s session dir without creating it, and stops once its record is gone', async () => {
+    let records = [{ workingFolder: W }];
+    lookup.dispose();
+    lookup = installWorktreeProjectLookup({
+      projectOf: (folderPath) => (folderPath === W ? A.fsPath : undefined),
+      recordsOfProject: (projectPath) => (projectPath === A.fsPath ? records : []),
+      get: () => undefined,
+      chatRecordFor: () => undefined,
+    });
+    const dir = (store as unknown as { piSessionDir: (cwd: string) => string }).piSessionDir(W);
+    fs.rmSync(dir, { recursive: true, force: true });
+    const { manager } = harness([A]);
+    await manager.setupSessionWatcher();
+    const watcher = platform.fileWatchers.watcher(dir, '*.jsonl');
+    expect(fs.existsSync(dir)).toBe(false);
+    records = [];
+    await manager.reloadFolders();
+    expect(watcher.disposed).toBe(true);
+    expect(platform.fileWatchers.watcher(store.ensurePiSessionDir(A.fsPath), '*.jsonl').disposed).toBe(false);
+  });
+});
+
+describe('re-listing after a worktree registry change', () => {
+  const inertWatchers = {
+    watch: () => ({ onDidCreate: () => ({ dispose: () => undefined }), onDidChange: () => ({ dispose: () => undefined }), onDidDelete: () => ({ dispose: () => undefined }), dispose: () => undefined }),
+    watchWorkspace: () => { throw new Error('unused'); },
+    onDidRenameFiles: () => ({ dispose: () => undefined }),
+  };
+
+  it('re-lists when a record is added, removed or marked deleted, never for a write that changes none of them', async () => {
+    const root = fs.mkdtempSync(path.join(H.tmpRoot, 'registry-'));
+    const registry = new WorktreeRegistry({ rootDir: root, watcherFactory: inertWatchers, log: () => undefined });
+    const relist = vi.fn();
+    const subscription = onListingChange(registry, relist);
+    const worktreeRoot = worktreeFolderFor(root, A.fsPath, 'aaaaaaaa');
+    const record = await registry.addChat({ id: 'aaaaaaaa', kind: 'chat', projectPath: A.fsPath, repositoryRoot: A.fsPath, worktreeRoot, workingFolder: worktreeRoot, branch: 'damocles/x', baseCommit: 'a'.repeat(40), createdAt: 1 });
+    expect(relist).toHaveBeenCalledTimes(1);
+    await registry.markUsed(record.id);
+    await registry.update(record.id, { lastAppliedTree: 'b'.repeat(40), baseCommit: 'c'.repeat(40) });
+    expect(relist).toHaveBeenCalledTimes(1);
+    await registry.markDeleted(record.id);
+    expect(relist).toHaveBeenCalledTimes(2);
+    subscription.dispose();
+    registry.dispose();
   });
 });

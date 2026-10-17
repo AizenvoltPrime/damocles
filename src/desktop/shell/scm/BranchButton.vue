@@ -18,6 +18,10 @@ const label = computed(() => {
   const head = props.head;
   return visibleText(head.type === 'detached' ? head.commit.slice(0, 8) : head.name);
 });
+const labelParts = computed(() => {
+  const cut = label.value.lastIndexOf('/') + 1;
+  return { prefix: label.value.slice(0, cut), leaf: label.value.slice(cut) };
+});
 const unpublished = computed(() => props.head.type === 'branch' && props.snapshot.upstream === null);
 const state = computed(() => {
   const upstream = props.snapshot.upstream;
@@ -73,11 +77,15 @@ function checkout(): void {
         name="t-swap-down"
         @before-leave="retire"
       >
+        <!-- The prefix collapses before the leaf, which tells branches apart. -->
         <span
           :key="label"
           data-testid="scm-branch-label"
-          class="min-w-0 truncate [grid-area:1/1]"
-        >{{ label }}</span>
+          class="flex min-w-0 [grid-area:1/1]"
+        ><span
+          v-if="labelParts.prefix"
+          class="min-w-0 shrink-1000 truncate"
+        >{{ labelParts.prefix }}</span><span class="min-w-0 truncate">{{ labelParts.leaf }}</span></span>
       </Transition>
     </span>
     <Transition name="t-badge">

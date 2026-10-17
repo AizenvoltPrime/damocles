@@ -361,6 +361,15 @@ describe('editor store', () => {
     expect(store.saveError.value?.message).not.toContain('C:');
   });
 
+  it('names a document with control and bidi characters by their escapes when its save call rejects', async () => {
+    const named = tab({ id: 't1', dirty: true, title: 'a\\u{202E}b\\u{7}.ts' });
+    const { api, store } = await setup(state([named], 't1', {}, { 'doc-t1': { name: 'a\u202Eb\u0007.ts', languageId: 'typescript' } }), { 'doc-t1': text('doc-t1', 'a') });
+    await store.model('doc-t1');
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.mocked(api.saveDocument).mockRejectedValueOnce(new Error('refused'));
+    expect(await store.save(store.tabs.value[0]!)).toEqual({ ok: false, reason: 'failed', message: "Failed to save 'a\\u{202E}b\\u{7}.ts': Damocles could not finish the save. Try again." });
+  });
+
   it('gives two settings documents of one scope two models, each at its document\'s URI', async () => {
     const first = tab({ id: 's1', kind: 'settings', settingsScope: 'project', title: 'settings.json' });
     const second = tab({ id: 's2', kind: 'settings', settingsScope: 'project', title: 'settings.json' });

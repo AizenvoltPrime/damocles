@@ -226,3 +226,143 @@ describe('ChatHeader folder and branch', () => {
     expect(byTestId('chat-header-folder')?.textContent?.trim()).toBe('app');
   });
 });
+
+describe('the chat review counter (D60)', () => {
+  const changes = { added: 12, removed: 3, files: 2 };
+
+  it('shows +N −M only where the host can open the review tab, and only once the chat changed a file', async () => {
+    useUIStore().chatChanges = changes;
+    await mountHeader(800);
+    expect(byTestId('chat-header-changes')).toBeNull();
+
+    useSettingsStore().setHostCapabilities({ ...DESKTOP, chatReview: true });
+    await nextTick();
+    expect(byTestId('chat-header-changes-added')?.textContent).toBe('12');
+    expect(byTestId('chat-header-changes-removed')?.textContent).toBe('3');
+    expect(byTestId('chat-header-changes')?.getAttribute('title')).toBe("Review this chat's changes (2 files)");
+
+    useUIStore().chatChanges = { added: 0, removed: 0, files: 0 };
+    await nextTick();
+    await flush();
+    expect(byTestId('chat-header-changes')).toBeNull();
+  });
+
+  it('folds into More below 560px and asks the host to open the tab', async () => {
+    useSettingsStore().setHostCapabilities({ ...DESKTOP, chatReview: true });
+    useUIStore().chatChanges = changes;
+    const wrapper = await mountHeader(500);
+    expect(byTestId('chat-header-changes')).toBeNull();
+    expect(await openMore()).toContain('reviewChanges');
+    const item = document.body.querySelector<HTMLElement>('[data-action="reviewChanges"]')!;
+    expect(item.textContent).toContain('+12 −3');
+    item.click();
+    await flush();
+    expect(wrapper.emitted('action')?.at(-1)).toEqual(['reviewChanges' satisfies HeaderAction]);
+  });
+});
+
+describe('ChatHeader Hand off (D61)', () => {
+  it('keeps Hand off as an icon down to 400px and folds it into More below, so the narrowest header still fits', async () => {
+    useSettingsStore().setHostCapabilities({ ...DESKTOP, worktrees: true });
+    useUIStore().worktree = { phase: 'none', place: 'project', canHandOff: true };
+    await mountHeader(480);
+    expect(byTestId('chat-header-hand-off')).not.toBeNull();
+
+    await setWidth(360);
+    await flush();
+    expect(byTestId('chat-header-hand-off')).toBeNull();
+    expect(await openMore()).toContain('handOff');
+    expect(document.body.querySelector('[data-action="handOff"]')?.textContent).toContain('Move to a worktree');
+  });
+
+  it('says in the folded item why Hand off is unavailable, since a disabled item shows no tooltip', async () => {
+    useSettingsStore().setHostCapabilities({ ...DESKTOP, worktrees: true });
+    useUIStore().worktree = { phase: 'none', place: 'project', canHandOff: false };
+    await mountHeader(360);
+    await openMore();
+    const item = document.body.querySelector<HTMLElement>('[data-action="handOff"]')!;
+
+    expect(item.getAttribute('aria-disabled')).toBe('true');
+    expect(item.querySelector('[data-testid="hand-off-disabled-reason"]')?.textContent).toBe('Hand off is available while the chat is idle');
+    expect(item.hasAttribute('title')).toBe(false);
+  });
+
+  it('dims an unavailable move\'s label and icon but never its reason, in the folded item and the Hand off menu, so the reason keeps its contrast', async () => {
+    // Every class from the reason up to its menu item: none may lower the opacity the reason is drawn at.
+    const dimmingAbove = (reason: Element): string[] => {
+      const found: string[] = [];
+      for (let node: Element | null = reason; node && node.getAttribute('role') !== 'menu'; node = node.parentElement) {
+        found.push(...[...node.classList].filter((name) => /^(data-disabled:)?opacity-(?!100\b)/.test(name)));
+      }
+      return found;
+    };
+    useSettingsStore().setHostCapabilities({ ...DESKTOP, worktrees: true });
+    useUIStore().worktree = { phase: 'none', place: 'project', canHandOff: false };
+    await mountHeader(360);
+    await openMore();
+    const folded = document.body.querySelector<HTMLElement>('[data-action="handOff"]')!;
+    expect(dimmingAbove(folded.querySelector('[data-testid="hand-off-disabled-reason"]')!)).toEqual([]);
+    expect(folded.querySelector('span.truncate')?.classList.contains('opacity-50')).toBe(true);
+
+    for (const wrapper of mounted.splice(0)) wrapper.unmount();
+    await mountHeader(800);
+    const trigger = byTestId('chat-header-hand-off')!;
+    trigger.focus();
+    trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await flush();
+    const move = byTestId('hand-off-move')!;
+    expect(dimmingAbove(move.querySelector('[data-testid="hand-off-disabled-reason"]')!)).toEqual([]);
+    expect(move.querySelector('svg')?.classList.contains('opacity-50')).toBe(true);
+  });
+
+  it('shows no reason on the folded item while Hand off is available', async () => {
+    useSettingsStore().setHostCapabilities({ ...DESKTOP, worktrees: true });
+    useUIStore().worktree = { phase: 'none', place: 'project', canHandOff: true };
+    await mountHeader(360);
+    await openMore();
+
+    expect(document.body.querySelector('[data-testid="hand-off-disabled-reason"]')).toBeNull();
+  });
+
+  it('labels a group with where the chat works now, holding the move, so the menu has only menu roles', async () => {
+    useSettingsStore().setHostCapabilities({ ...DESKTOP, worktrees: true });
+    useUIStore().worktree = { phase: 'ready', place: 'worktree', canHandOff: true, branch: 'damocles/fix-login', projectName: 'app' };
+    await mountHeader(800);
+    const trigger = byTestId('chat-header-hand-off')!;
+    trigger.focus();
+    trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await flush();
+    const menu = byTestId('hand-off-menu')!;
+    const group = menu.querySelector<HTMLElement>('[role="group"]')!;
+    const label = document.getElementById(group.getAttribute('aria-labelledby') ?? '');
+
+    expect(label?.textContent?.replace(/\s+/g, ' ')).toContain('This chat works in');
+    expect(label?.querySelector('[data-testid="hand-off-current"]')?.textContent).toContain('damocles/fix-login');
+    expect(group.querySelector('[role="menuitem"][data-testid="hand-off-move"]')).not.toBeNull();
+    expect([...menu.children].map((child) => child.getAttribute('role'))).toEqual(['group']);
+  });
+});
+
+describe('the pinned prompt kept hidden', () => {
+  const PINNED = { id: 'u1', role: 'user' as const, content: 'Rate-limit the login route', timestamp: 0 };
+
+  it('offers it in the header row, so nothing covers a message, with its preview in a tooltip the keyboard reaches', async () => {
+    const wrapper = mount(ChatHeader, { attachTo: document.body, global: { plugins: [i18n] }, props: { pinnedPrompt: PINNED } });
+    mounted.push(wrapper);
+    await setWidth(800);
+    const button = byTestId('chat-header-pinned')!;
+    expect(button.getAttribute('aria-label')).toBe('Show pinned user-message header');
+    button.focus();
+    button.dispatchEvent(new FocusEvent('focus'));
+    await flush();
+    await flush();
+    const tooltip = byTestId('chat-header-pinned-tooltip');
+    expect(tooltip?.textContent).toContain('Show pinned header');
+    expect(tooltip?.textContent).toContain('Rate-limit the login route');
+    button.click();
+    expect(wrapper.emitted('restorePin')).toHaveLength(1);
+    await wrapper.setProps({ pinnedPrompt: null });
+    await flush();
+    expect(byTestId('chat-header-pinned')).toBeNull();
+  });
+});

@@ -175,6 +175,9 @@ interface Statements {
   setTitle: StatementSync;
   adoptNestedFiles: StatementSync;
   adoptNestedEntries: StatementSync;
+  reattributeSession: StatementSync;
+  reattributeEntries: StatementSync;
+  reattributeFiles: StatementSync;
 }
 
 function prepareStatements(db: UsageDatabase): Statements {
@@ -196,6 +199,9 @@ function prepareStatements(db: UsageDatabase): Statements {
       WHERE session_id = ? AND kind IN ('subagent', 'team') AND (session_started_ms IS NOT ? OR project_key IS NOT ?)`),
     adoptNestedEntries: db.prepare(`UPDATE entries SET session_started_ms = ?, project_key = ?
       WHERE session_id = ? AND origin IN ('subagent', 'team') AND (session_started_ms <> ? OR project_key <> ?)`),
+    reattributeSession: db.prepare('UPDATE sessions SET project_key = ? WHERE session_id = ?'),
+    reattributeEntries: db.prepare('UPDATE entries SET project_key = ? WHERE session_id = ?'),
+    reattributeFiles: db.prepare('UPDATE files SET project_key = ? WHERE session_id = ?'),
   };
 }
 
@@ -309,6 +315,9 @@ class Indexer {
       case 'launch':
         state.detail = parsed.detail;
         return;
+      case 'project':
+        this.attributeToProject(parsed.projectPath, state, target);
+        return;
       case 'model':
         state.modelProvider = parsed.provider;
         state.modelId = parsed.model;
@@ -355,6 +364,18 @@ class Indexer {
     state.agentSessionId = header.id;
     state.startedMs = parent?.started_ms ?? header.startedMs;
     state.projectKey = parent?.project_key ?? ownProjectKey;
+  }
+
+  // A worktree chat's header names its working folder; its worktree entry names the project its spend belongs to.
+  private attributeToProject(projectPath: string, state: FileState, target: Target): void {
+    if (target.kind !== 'main' || state.sessionId === null) return;
+    const projectKey = projectKeyOf(projectPath);
+    if (state.projectKey === projectKey) return;
+    this.stmts.upsertProject.run(projectKey, projectPath);
+    this.stmts.reattributeSession.run(projectKey, state.sessionId);
+    this.stmts.reattributeEntries.run(projectKey, state.sessionId);
+    this.stmts.reattributeFiles.run(projectKey, state.sessionId);
+    state.projectKey = projectKey;
   }
 
   private ledgerLine(line: string, state: FileState, fileId: number, filePath: string): void {

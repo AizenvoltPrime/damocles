@@ -21,9 +21,18 @@ import {
   MAX_IMAGE_BASE64_LENGTH,
   MAX_IMAGES_PER_MESSAGE,
   type ImageBlock,
+  type UserContentBlock,
 } from "../../shared/types/content";
 import { DEFAULT_CONTEXT_WINDOW, DEFAULT_MODELS, MODEL_SUBSTITUTES, migrateLegacyModelValue, migrateLegacyEffortValue, parseEffortLevel } from "../../shared/types/constants";
-import { PLAN_MODE_TOOLS } from "../../shared/tool-names";
+import { PLAN_MODE_TOOLS, WRITE_TOOLS } from "../../shared/tool-names";
+import { ChatReview, type ChatChangeTotals, type ChatReviewSnapshot, type CommentPlace, type DraftComment, type ReviewSubmitOutcome } from "./chat-review";
+import { SessionWorktree } from "./session-worktree";
+import { WORKTREE_ENTRY, worktreeGitOf } from "../worktrees/hand-off";
+import { identityFolder, worktreeProjectOf } from "../worktrees/personal-config";
+import { folderKey } from "../workspace-folders/folder-key";
+
+import type { ChatScope } from "./chat-changes";
+import { createQueuedMessage } from "../chat-panel/queue-manager";
 import { log } from "../logger";
 import { t } from "../l10n";
 import { perfSpan, timed } from "../perf";
@@ -59,6 +68,7 @@ import { createShellSessionJob } from "./tools/process-tree";
 import { UnpersistedToolImages } from "./unpersisted-tool-images";
 import { sessionNoteDelivery, subagentNoteDelivery, teamAgentNoteDelivery } from "./note-delivery";
 import type { ShellOptions } from "./tools/bash-tool";
+import type { WorktreeIsolation } from "./worktree-isolation";
 import { buildTeamAgentPiTools, TEAM_MAIN_PI_TOOL_NAMES, teamAgentPiToolNames } from "./tools/team-tools";
 import { mapPiToolName, toolCategory } from "./tool-normalization";
 import { createSubagentExtensionFactory } from "./subagents/subagent-extension-factory";
@@ -97,7 +107,10 @@ import { teamPlanModeStatement } from "../team/prompts";
 import type { CustomAgentInfo } from "../../shared/types/commands";
 import {
   ensurePiSessionDir,
+  piSessionDir,
   resolvePiSessionFile,
+  piSessionDirOf,
+  precedesHandOff,
   piSessionIdFromFile,
   extractFirstUserMessage,
   sessionFileMeta,
@@ -185,6 +198,13 @@ import {
 import { deferredToolNames } from "./tools/deferred-tools";
 import { waitForPendingDirectServers } from "./mcp/startup-wait";
 import { mcpGroupsOf, mcpToolSearchGroup, type DeferrableSnapshot, type McpToolMenuEntry } from "./tools/tool-search-tool";
+
+const WORKING_FOLDER_NOTE = "damocles.workingFolderNote";
+
+/** D61's working-folder note, as the model reads it after a hand-off. */
+export function workingFolderNote(folder: string): string {
+  return `This chat now works in ${folder}. Read and edit files there from now on.`;
+}
 
 /** Runtimes whose provider-fallback warning has already been shown (see `warnCustomProviderFallback`).
  *  Module scope because the dedupe spans PiSession instances; weak so a disposed runtime is collectable. */
@@ -355,6 +375,17 @@ export class PiSession implements ChatSession {
   private _mcpStatusListener: (() => void) | null = null;
   /** Per-session checkpoint engine driver, registered alongside the panel gate context (US-013b). */
   private checkpointService: CheckpointService | null = null;
+  /** What this chat changed (D60), recomputed off pi's handlers; publishChatChanges is its one publisher. */
+  private readonly chatReview: ChatReview;
+  /** Where the chat works and what follows from it (AD12); the one source of `worktreeState`. */
+  readonly worktree: SessionWorktree;
+  // D61's note not yet in the conversation (rule 11): delivered once the session runs, never by starting a turn.
+  private pendingWorkingFolderNote: string | null = null;
+  // The stored file a running switchSession opens, when it lies outside this folder's session directory.
+  private switchedFromOtherDir: string | null = null;
+  /** The last `chatChanges` sent, so a repeat is not posted again. */
+  private lastChatChanges: string | null = null;
+  private chatChangesListener: ((totals: ChatChangeTotals, generation: number) => void) | null = null;
   /** User entry ids with a rewind control, pushed via `checkpointInfo`: those with a checkpoint, or every prompt when the chat takes no checkpoints. */
   private readonly checkpointUserIds = new Set<string>();
   /** Size of the last `checkpointInfo` broadcast, to suppress no-op re-emits. */
@@ -494,8 +525,54 @@ export class PiSession implements ChatSession {
     this.mcpScope = options.mcpScope;
     this.modelValue = options.model ?? "";
     this.permissionMode = "default";
+    this.worktree = new SessionWorktree({
+      cwd: options.cwd,
+      host: () => (options.platform.capabilities.worktrees ? options.platform.worktrees : undefined),
+      enabled: () => options.platform.capabilities.worktrees,
+      isTrusted: (folder) => options.platform.trust.isTrusted(folder),
+      entries: () => this.runtime?.session.sessionManager.getEntries(),
+      sessionId: () => this.runtime?.session.sessionId,
+      sessionFile: () => this.runtime?.session.sessionManager.getSessionFile(),
+      append: (data) => this.runtime?.session.sessionManager.appendCustomEntry(WORKTREE_ENTRY, data),
+      emit: (message) => this.emit(message),
+      busy: () => deriveSessionState(this.turnState, this.raisedPrompts().length > 0) !== "idle" || this.backgroundRunning(),
+      hasConversation: () => this.hasConversation(),
+    });
+    this.chatReview = new ChatReview({
+      enabled: () => options.platform.capabilities.chatReview,
+      session: () => {
+        const session = this.runtime?.session;
+        const sessionFile = session?.sessionManager.getSessionFile();
+        if (!session || sessionFile === undefined) return undefined;
+        const live = this.worktree.inLiveWorktree();
+        const runner = options.platform.worktrees?.git();
+        const { initialFolder, handOffs } = this.worktree.handOffs();
+        return {
+          branch: session.sessionManager.getBranch(),
+          sessionId: session.sessionId,
+          sessionFile,
+          sessionDir: path.dirname(sessionFile),
+          cwd: this.cwd,
+          fileCheckpoints: this.fileCheckpoints,
+          initialFolder,
+          handOffs,
+          // D60's worktree rule: the worktree against its base commit, read through git.
+          ...(live && runner && options.platform.trust.isTrusted(live.projectPath) ? { worktree: { root: live.worktreeRoot, baseCommit: live.baseCommit, git: worktreeGitOf(live, runner), sharedWith: () => this.worktree.sharedWith() } } : {}),
+        };
+      },
+      pendingBaseline: () => this.checkpointService?.pendingBaseline() ?? Promise.resolve(undefined),
+      publish: (totals, generation) => this.publishChatChanges(totals, generation),
+      watchFolder: (folder, onChange) => {
+        const watcher = options.platform.fileWatchers.watch(folder, "*");
+        const subscriptions = [watcher.onDidCreate(onChange), watcher.onDidChange(onChange), watcher.onDidDelete(onChange)];
+        return { dispose: () => { for (const subscription of subscriptions) subscription.dispose(); watcher.dispose(); } };
+      },
+    });
     this.adapter = new PiStreamAdapter({
-      onMessage: options.onMessage,
+      onMessage: (message) => {
+        options.onMessage(message);
+        this.scheduleReviewOn(message);
+      },
       cwd: options.cwd,
       sessionId: () => this.runtime?.session.sessionId ?? "",
       modelValue: () => this.modelValue,
@@ -592,7 +669,12 @@ export class PiSession implements ChatSession {
       // the note delivery reads it through a thunk; binding it here and not to `this.runtime` is what
       // keeps a leftover shell call's note in the conversation that ran the command.
       const bound: { session?: AgentSession } = {};
-      this.adoptRecordedSelection(opts.sessionManager.getBranch());
+      // pi's switchSession opens the file with the file's own directory as the one its newSession and fork create files in;
+      // new sessions belong in this folder's directory (AD12), so that file is opened again with it.
+      const reopen = this.switchedFromOtherDir;
+      this.switchedFromOtherDir = null;
+      const sessionManager = reopen !== null ? pi.SessionManager.open(reopen, ensurePiSessionDir(this.cwd), this.cwd) : opts.sessionManager;
+      this.adoptRecordedSelection(sessionManager.getBranch());
       // Built per session so per-session tool state (the task list) resets on reset/newSession.
       const customTools = buildCustomTools({
         pi,
@@ -622,7 +704,7 @@ export class PiSession implements ChatSession {
       // the active set is governed by `applyActiveToolsForMode`. `excludeTools` still drops pi's `edit`.
       const result = await pi.createAgentSessionFromServices({
         services: shared,
-        sessionManager: opts.sessionManager,
+        sessionManager,
         ...(this.desiredModel ? { model: this.desiredModel } : {}),
         excludeTools: [...PI_EXCLUDED_TOOLS],
         customTools,
@@ -646,7 +728,9 @@ export class PiSession implements ChatSession {
     // Opening can rewrite the file (a format migration), so a session whose lease was lost meanwhile is not opened; the pending detach resets this panel.
     if (resumeTargetId && this.lostLeases.has(resumeTargetId)) throw new Error("PiSession: the session's lease was lost during start");
     if (resumePath && forkResumeId && fork) fork.consumed = true;
-    const sessionManager = resumePath ? pi.SessionManager.open(resumePath, sessionDir) : pi.SessionManager.create(this.cwd, sessionDir);
+    // A hand-off moves a chat without moving its file, whose header and directory are the folder it was created in (rule 2):
+    // cwdOverride keeps the chat in this folder, and sessionDir puts a /clear's new session in this folder's directory.
+    const sessionManager = resumePath ? pi.SessionManager.open(resumePath, sessionDir, this.cwd) : pi.SessionManager.create(this.cwd, sessionDir);
     const runtime = await timed("start.createRuntime", () =>
       pi.createAgentSessionRuntime(factory, { cwd: this.cwd, agentDir: PI_AGENT_DIR, sessionManager }), { resumed: resumePath !== null });
     if (this._disposed) {
@@ -689,6 +773,7 @@ export class PiSession implements ChatSession {
     });
 
     this.announceSessionId(this.runtime.session.sessionId);
+    await this.deliverWorkingFolderNote().catch((err: unknown) => log("[PiSession] the working-folder note waits for the next prompt: %O", err));
     // resolveInitialModel may have moved the model off the requested one, and the panel has had no
     // account state before this point.
     this.publishAccountInfo();
@@ -752,6 +837,7 @@ export class PiSession implements ChatSession {
       ...(this.options.compassService ? { compassService: this.options.compassService } : {}),
       getSessionModel: () => this.modelValue,
       getSystemPromptEnv: () => this.systemPromptEnv(),
+      memoryWorkspace: () => identityFolder(this.cwd),
       getPlanFilePath: () => this.getPlanFilePath(),
       isTeamEnabled: () => !!this.options.teamService && this.isTeamEnabled(),
       postMessage: (message) => this.emit(message),
@@ -768,6 +854,7 @@ export class PiSession implements ChatSession {
       waitForAlwaysLoadedMcp: (id) => this.waitForAlwaysLoadedMcp(id),
       ...this.checkpointBaselineField(),
       shellCancel: this.shellCancel.forContext(this.noteDeliveryForMain(() => session)),
+      worktreeIsolation: () => this.worktreeIsolation(),
     };
     folder.registerPanel(sessionId, gate);
     this.registeredGate = gate;
@@ -835,6 +922,7 @@ export class PiSession implements ChatSession {
       folder.registerCheckpointService(sessionId, checkpointService);
       checkpointService.hydrate(session.sessionManager);
     }
+    this.chatReview.schedule();
 
     // Cancel any dialogs left pending by the previous session, then bind the UI context (US-026).
     this.uiContext.cancelAll();
@@ -1116,6 +1204,21 @@ export class PiSession implements ChatSession {
       this.emit({ type: "error", message: t("Failed to initialize pi session") });
       return "unsent";
     }
+    const readOnly = this.readOnlyRefusal();
+    if (readOnly) {
+      this.emit({ type: "error", message: readOnly });
+      this.returnUnsentMessage(correlationId, userBroadcast);
+      return "unsent";
+    }
+    // The model must read where the chat works before the prompt that follows a hand-off.
+    try {
+      await this.deliverWorkingFolderNote();
+    } catch (err) {
+      log("[PiSession] the working-folder note was not delivered: %O", err);
+      this.emit({ type: "error", message: t("Damocles could not tell the agent where this chat now works: {0}", err instanceof Error ? err.message : String(err)) });
+      this.returnUnsentMessage(correlationId, userBroadcast);
+      return "unsent";
+    }
     // Pre-prompt budget block (US-008): if the session already crossed the hard limit, refuse the next
     // turn rather than starting one that would immediately abort.
     const budgetLimit = this.budgetLimitForEnforcement();
@@ -1139,6 +1242,15 @@ export class PiSession implements ChatSession {
     // one would be lost, and the message would run anyway.
     if (this.abortEpoch !== abortEpoch || this.runtime?.session !== session) {
       this.returnUnsentMessage(correlationId, userBroadcast);
+      return "unsent";
+    }
+    // D33: a finish action holds the chat's worktree only while the chat is idle, so the check sits with the one above.
+    if (this.worktree.finishing() !== undefined) {
+      this.emit({ type: "processing", isProcessing: false });
+      const content: UserContentBlock[] = userBroadcast
+        ? userBroadcast.contentBlocks ?? [{ type: "text", text: userBroadcast.content }]
+        : typeof prompt === "string" ? [{ type: "text", text: prompt }] : prompt;
+      this.emit({ type: "promptReturned", content, reason: "worktreeFinishing" });
       return "unsent";
     }
     // A turn run on the committed model means the user went on without the model that asked for sign-in.
@@ -1326,7 +1438,7 @@ export class PiSession implements ChatSession {
       try {
         const scan = await collectUndeliveredFromFiles({
           branch: session.sessionManager.getBranch(),
-          subagentDir: subagentsDir(ensurePiSessionDir(this.cwd), session.sessionId),
+          subagentDir: subagentsDir(piSessionDirOf(this.cwd, session.sessionId), session.sessionId),
           isLive: (id) => mgr?.getRecord(id) !== undefined,
         });
         cold = scan.results;
@@ -1371,7 +1483,7 @@ export class PiSession implements ChatSession {
     try {
       const { retry } = await reconcileInterruptions({
         branch: session.sessionManager.getBranch(),
-        subagentDir: subagentsDir(ensurePiSessionDir(this.cwd), session.sessionId),
+        subagentDir: subagentsDir(piSessionDirOf(this.cwd, session.sessionId), session.sessionId),
         liveSubagent: (id) => this.subagentManager?.liveStatus(id),
         teamStop: (teamId) => teamInterruptionCause(this.cwd, session.sessionId, teamId),
         // A replaced session's file may already be deleted, and an append would recreate it header-less.
@@ -1925,7 +2037,6 @@ export class PiSession implements ChatSession {
       this.emit({ type: "notification", message: t("Finish or stop the current turn before compacting."), notificationType: "warning" });
       return;
     }
-    onAccepted?.();
     // Hold `compacting` across the whole operation so a sendMessage arriving mid-compaction is rejected
     // with the normal "already in progress" notice instead of racing into pi's raw "Agent is already
     // processing" error on the shared session.
@@ -1944,6 +2055,12 @@ export class PiSession implements ChatSession {
         this.emit({ type: "error", message: t("Failed to initialize pi session") });
         return;
       }
+      const readOnly = this.readOnlyRefusal();
+      if (readOnly) {
+        this.emit({ type: "error", message: readOnly });
+        return;
+      }
+      onAccepted?.();
       const trimmed = instructions?.trim();
       try {
         await session.compact(trimmed && trimmed.length > 0 ? trimmed : undefined);
@@ -2024,10 +2141,20 @@ export class PiSession implements ChatSession {
     const sm = this.folder?.services.settingsManager;
     const commandPrefix = sm?.getShellCommandPrefix();
     const shellPath = sm?.getShellPath();
+    const env = this.worktree.shellEnvironment();
     return {
       ...(commandPrefix !== undefined ? { commandPrefix } : {}),
       ...(shellPath !== undefined ? { shellPath } : {}),
+      ...(env !== undefined ? { env } : {}),
     };
+  }
+
+  /** D62's isolation for this chat and its agents, with the prefix pi's bash tool runs before every command. */
+  private worktreeIsolation(): WorktreeIsolation | undefined {
+    const isolation = this.worktree.isolation();
+    if (!isolation) return undefined;
+    const commandPrefix = this.folder?.services.settingsManager.getShellCommandPrefix();
+    return commandPrefix ? { ...isolation, commandPrefix } : isolation;
   }
 
   reset(): void {
@@ -2138,6 +2265,8 @@ export class PiSession implements ChatSession {
   }
 
   private async runDispose(): Promise<void> {
+    const reviewSettled = this.chatReview.dispose();
+    this.worktree.dispose();
     // Before `_disposed`, which silences `emit`: nothing queued or still on its way to pi was sent, so it goes back to the composer.
     this.returnQueue(this.runtime?.session);
     for (const returnUnsent of this.unacceptedSends) returnUnsent();
@@ -2203,6 +2332,8 @@ export class PiSession implements ChatSession {
     // The last turn's record lands only while the runtime is still up and the service registered.
     await this.checkpointService?.drain(CHECKPOINT_DRAIN_MS);
     await teamSealed;
+    // A folder's release, and a worktree's removal after it, wait for the closing sessions, so the review's last git read there ends first.
+    await reviewSettled;
     // Unregistered before the runtime is disposed, so no new hook can look the checkpoint service up; the
     // runtime emits `session_shutdown` to the extension runner, and a handler on that still needs a live
     // checkpoint service, so the service is only torn down after.
@@ -2528,6 +2659,9 @@ export class PiSession implements ChatSession {
   }
 
   private announceSessionId(sessionId: string): void {
+    this.worktree.ensureEntry();
+    this.worktree.refreshGit();
+    this.worktree.publish();
     const stored = this.hasSessionFile();
     this.announcedStoredId = stored ? sessionId : null;
     this.options.onSessionIdChange?.(sessionId, stored);
@@ -2592,6 +2726,11 @@ export class PiSession implements ChatSession {
    * and nothing can drift from what the awaiter is waiting on.
    */
   onWebviewReady(): void {
+    // the reloaded webview shows no counter until it hears the totals again
+    this.lastChatChanges = null;
+    this.chatReview.schedule();
+    // a fresh webview has no worktree state, an empty chat's included, until it hears it again
+    this.worktree.republish();
     this.options.permissionHandler.repostPendingPrompts();
     this.uiContext.repostPending();
     // The reloaded store starts at `idle`, so the cached key describes a webview that no longer exists
@@ -2654,9 +2793,16 @@ export class PiSession implements ChatSession {
       this.undeliveredScanPending = true;
       // The panel can let go of the target while the retired agents settle.
       if (target.cancelled) return;
-      const switching = runtime.switchSession(filePath);
+      // The file's header names the folder it was created in, which a hand-off leaves behind (rule 2).
+      this.switchedFromOtherDir = folderKey(path.dirname(filePath)) === folderKey(piSessionDir(this.cwd)) ? null : filePath;
+      const switching = runtime.switchSession(filePath, { cwdOverride: this.cwd });
       this.piReplacement = switching.then(() => undefined, () => undefined);
-      const { cancelled } = await switching;
+      let cancelled: boolean;
+      try {
+        ({ cancelled } = await switching);
+      } finally {
+        this.switchedFromOtherDir = null;
+      }
       // The rebind callback re-subscribed the adapter + re-registered the panel, unless a dispose began meanwhile;
       // seed the meter from the now-current resumed session.
       if (!cancelled && !this._disposed) {
@@ -2731,7 +2877,8 @@ export class PiSession implements ChatSession {
 
       const { sessionId } = session;
       const cwd = this.cwd;
-      const title = await generateSessionTitle(exchange, PiRuntime.get(), { cwd, sessionId });
+      // The ledger attributes the sub-call to the project, never to a worktree's folder (slice 12a rule 9).
+      const title = await generateSessionTitle(exchange, PiRuntime.get(), { cwd: worktreeProjectOf(cwd) ?? cwd, sessionId });
       if (title) await this.routeTitle(cwd, sessionId, title.slice(0, 100));
     } catch (err) {
       log("[PiSession] title generation failed: %O", err);
@@ -2903,7 +3050,7 @@ export class PiSession implements ChatSession {
         userText: exchange.userText,
         assistantText: exchange.assistantText,
         files: exchange.files,
-        workspace: this.cwd,
+        workspace: identityFolder(this.cwd),
       });
     } catch (err) {
       log("[PiSession] enqueueMemoryCandidate failed: %O", err);
@@ -3306,11 +3453,12 @@ export class PiSession implements ChatSession {
       permissionHandler: this.options.permissionHandler,
       isPlanMode: () => this.options.permissionHandler.getPermissionMode() === "plan",
       ...this.checkpointBaselineField(),
+      worktreeIsolation: () => this.worktreeIsolation(),
       shellCancelFor: (agentId) => this.shellCancel.forContext(this.noteDeliveryForSubagent(agentId)),
       postMessage: (m) => this.emit(m),
       getParentSystemPrompt: () => this.runtime?.session.systemPrompt ?? "",
       getParentSessionId: () => this.currentSessionId ?? this.memorySessionId,
-      subagentStoreDir: () => subagentsDir(ensurePiSessionDir(this.cwd), this.liveSessionId()),
+      subagentStoreDir: () => subagentsDir(piSessionDirOf(this.cwd, this.liveSessionId()), this.liveSessionId()),
       recordInvocation: (data) => this.recordAgentInvocation(data),
       parentBranch: () => this.parentBranch(),
       assertResumableModel: (path, agentId) => this.assertResumableModel(path, agentId),
@@ -3724,6 +3872,8 @@ export class PiSession implements ChatSession {
     const session = this.runtime?.session;
     if (!session || session.sessionId !== sessionId || this.lostLeases.has(sessionId)) return false;
     session.sessionManager.appendCustomEntry(DAMOCLES_CHECKPOINT_ENTRY, record);
+    // a turn's baselines and after-state now come from its entry
+    this.chatReview.schedule();
     return true;
   }
 
@@ -3785,6 +3935,11 @@ export class PiSession implements ChatSession {
       const entry = [...checkpoints].reverse().find((c) => c.userEntryId === userMessageId) ?? null;
       const needsFileRewind = option === "code-only" || option === "fork-and-rewind-code";
       const needsFork = option === "fork-conversation" || option === "fork-and-rewind-code";
+      // D61: a turn before the latest hand-off made its files in the other folder; only its conversation comes back.
+      if (needsFileRewind && precedesHandOff(sm.getEntries(), userMessageId)) {
+        this.emit({ type: "rewindError", message: t("Files from before the hand-off are in the other folder. Rewind restores the conversation only.") });
+        return;
+      }
 
       if (needsFileRewind) {
         if (!this.fileCheckpoints) {
@@ -3867,7 +4022,10 @@ export class PiSession implements ChatSession {
     }
   }
 
-  /** The live session a rewind or undo acts on, started if the panel was only resumed; null after telling the user why not. */
+  /**
+   * The live session a rewind, fork or undo acts on, started if the panel was only resumed; null after telling the user why
+   * not, a read-only chat's included.
+   */
   private async sessionForRewind(): Promise<AgentSession | null> {
     // A resumed panel may not have run start() yet, so the live session (and its tree of checkpoint
     // entries) may not exist; start it (which opens the resumed file) before rewinding.
@@ -3878,12 +4036,35 @@ export class PiSession implements ChatSession {
       return null;
     }
     const session = this.runtime?.session ?? null;
-    if (!session) this.emit({ type: "rewindError", message: t("No active session to rewind.") });
+    if (!session) {
+      this.emit({ type: "rewindError", message: t("No active session to rewind.") });
+      return null;
+    }
+    const readOnly = this.readOnlyRefusal();
+    if (readOnly) {
+      this.emit({ type: "rewindError", message: readOnly });
+      return null;
+    }
     return session;
   }
 
+  /**
+   * Rules 17 and 18: why a read-only chat refuses a send, compaction, rewind, fork or undo; undefined for a writable one. Read
+   * only once the session started, since the latest worktree entry decides and comes from the session's file.
+   */
+  private readOnlyRefusal(): string | undefined {
+    switch (this.worktree.readOnlyReason()) {
+      case "deleted":
+        return t("This chat's worktree was deleted");
+      case "hostWithoutWorktrees":
+        return t("This chat works in a worktree, which only the Damocles app can open.");
+      case undefined:
+        return undefined;
+    }
+  }
+
   /** Copy the subagent and team data the fork's branch invoked into the fork's subtree. Never throws. */
-  private async copyAgentDataToFork(pi: PiCodingAgentModule, sourceSm: AgentSession["sessionManager"], forkLeafId: string, targetSessionId: string): Promise<void> {
+  private async copyAgentDataToFork(pi: PiCodingAgentModule, sourceSm: AgentSession["sessionManager"], forkLeafId: string, targetSessionId: string, targetDir: string): Promise<void> {
     let failures: Error[];
     try {
       // The fork point is the fork leaf's timestamp: the fork's conversation ends there, so its agents do too.
@@ -3891,7 +4072,8 @@ export class PiSession implements ChatSession {
       if (!Number.isFinite(forkPointMs)) throw new Error(`the fork entry ${forkLeafId} has no timestamp`);
       failures = await copyForkAgentData({
         SessionManager: pi.SessionManager,
-        sessionDir: ensurePiSessionDir(this.cwd),
+        sourceDir: piSessionDirOf(this.cwd, sourceSm.getSessionId()),
+        targetDir,
         sourceSessionId: sourceSm.getSessionId(),
         targetSessionId,
         branch: sourceSm.getBranch(forkLeafId),
@@ -3930,7 +4112,7 @@ export class PiSession implements ChatSession {
     const present = new Set(getCheckpointRecords(inherited).map(recordKey));
     const missing = getCheckpointRecords(sourceSm.getEntries()).filter((r) => anchorIds.has(r.userEntryId) && !present.has(recordKey(r)));
     if (missing.length > 0) {
-      const childSm = pi.SessionManager.open(branchedPath, ensurePiSessionDir(this.cwd));
+      const childSm = pi.SessionManager.open(branchedPath, path.dirname(branchedPath), this.cwd);
       for (const record of missing) childSm.appendCustomEntry(DAMOCLES_CHECKPOINT_ENTRY, record);
     }
     const folderEntries = [...getCheckpointRecords(inherited), ...missing].filter((r): r is CheckpointEntryV3 => r.kind === "checkpoint" && r.v === 3);
@@ -3977,7 +4159,8 @@ export class PiSession implements ChatSession {
         // Branch on a fresh manager reading the source file so the live session is left intact (mirrors
         // pi's own AgentSessionRuntime.fork). Truncate at the parent so the prefilled prompt re-sends
         // the rewound message.
-        const branchSm = pi.SessionManager.open(sourceFile, ensurePiSessionDir(this.cwd));
+        // The fork is a new session, created in this chat's folder; its agent data is copied beside it.
+        const branchSm = pi.SessionManager.open(sourceFile, ensurePiSessionDir(this.cwd), this.cwd);
         const branchedPath = branchSm.createBranchedSession(parentId);
         if (branchedPath) {
           piBranchedSessionId = piSessionIdFromFile(branchedPath);
@@ -3994,7 +4177,7 @@ export class PiSession implements ChatSession {
               log("[PiSession] carrying checkpoints into the fork failed: %O", err);
             }
           }
-          await this.copyAgentDataToFork(pi, liveSm, parentId, piBranchedSessionId);
+          await this.copyAgentDataToFork(pi, liveSm, parentId, piBranchedSessionId, path.dirname(branchedPath));
           try {
             await this.options.memoryService?.copySessionInjections(
               liveSm.getSessionId(),
@@ -4369,6 +4552,7 @@ export class PiSession implements ChatSession {
         isPlanMode: () => this.options.permissionHandler.getPermissionMode() === "plan",
         ...this.checkpointBaselineField(),
         shellCancel: this.shellCancel.forContext(this.noteDeliveryForTeamAgent(agent)),
+        worktreeIsolation: () => this.worktreeIsolation(),
         readOnlyShell: readOnly,
         parentToolUseId: agent.agentId,
         // `buildExtensionFactory` is invoked PER AGENT SPAWN, not once at buildTeamEngine() time, so
@@ -4502,6 +4686,13 @@ export class PiSession implements ChatSession {
   private emit(m: ExtensionToWebviewMessage): void {
     if (this._disposed) return;
     this.options.onMessage(m);
+    this.scheduleReviewOn(m);
+  }
+
+  // A file result of the chat or of a subagent (whose bridge posts through emit) can move the review counter; a team's
+  // results reach teamMessage.
+  private scheduleReviewOn(message: ExtensionToWebviewMessage): void {
+    if (message.type === "toolCompleted" && WRITE_TOOLS.has(message.toolName)) this.chatReview.schedule();
   }
 
   /** The pi thinking level for the next turn: forced off when bracketed by disableThinkingForNextQuery,
@@ -4654,6 +4845,7 @@ export class PiSession implements ChatSession {
    */
   private setTurnState(...[turn, outcome]: TurnChange): void {
     const settled = this.turnState === "running" && turn === "idle";
+    this.chatReview.schedule();
     if (turn === "running" && this.turnState !== "running") this.turnStartedAt = Date.now();
     this.turnState = turn;
     this.publishSessionState();
@@ -4705,7 +4897,9 @@ export class PiSession implements ChatSession {
     if (this.lastSessionState !== key) {
       this.lastSessionState = key;
       this.emit({ type: "sessionStateChanged", state, sessionId, pendingPrompts: pendingPromptOwners(raised) });
+      if (state === "idle") this.worktree.refreshGit();
     }
+    this.worktree.publish();
     const listener = this.activityListener;
     if (!listener) return;
     const background = this.backgroundRunning();
@@ -4715,6 +4909,97 @@ export class PiSession implements ChatSession {
     this.lastActivityKey = activityKey;
     const pendingPrompts = this.describePrompts(raised);
     listener({ state, pendingKinds, pendingPrompts, background });
+  }
+
+  /**
+   * Publish what the chat changed (D60) to the webview and the host: lines added and removed and the file count of the whole
+   * chat. Only the chat review computes the totals, so nothing else emits `chatChanges`; a repeat is not posted again. The
+   * host hears every recompute with its generation, as a file's content can change while the totals stay.
+   */
+  publishChatChanges(totals: ChatChangeTotals, generation: number): void {
+    if (!this.options.platform.capabilities.chatReview) return;
+    const key = `${totals.added}:${totals.removed}:${totals.files}`;
+    if (this.lastChatChanges !== key) {
+      this.lastChatChanges = key;
+      this.emit({ type: "chatChanges", added: totals.added, removed: totals.removed, files: totals.files });
+    }
+    this.chatChangesListener?.(totals, generation);
+  }
+
+  /**
+   * D61's working-folder note (slice 12a rule 11): user-role content the model reads with the next prompt. It never starts a
+   * turn and never carries the steer prefix.
+   */
+  noteWorkingFolder(folder: string): void {
+    this.pendingWorkingFolderNote = workingFolderNote(folder);
+    // A hand-off resumes into a session that starts later; start() delivers the note then, and a prompt never goes without it.
+    if (this.runtime) this.deliverWorkingFolderNote().catch((err: unknown) => log("[PiSession] the working-folder note was not delivered yet: %O", err));
+  }
+
+  // Appends the pending note to the conversation without a turn; it stays pending when pi refuses it.
+  private async deliverWorkingFolderNote(): Promise<void> {
+    const session = this.runtime?.session;
+    const content = this.pendingWorkingFolderNote;
+    if (!session || content === null) return;
+    this.pendingWorkingFolderNote = null;
+    try {
+      await session.sendCustomMessage({ customType: WORKING_FOLDER_NOTE, content, display: false }, { triggerTurn: false });
+    } catch (err) {
+      this.pendingWorkingFolderNote ??= content;
+      throw err;
+    }
+  }
+
+  /** The host's view of the totals (the Chat menu's Review Changes); null stops the reports. */
+  setChatChangesListener(listener: ((totals: ChatChangeTotals, generation: number) => void) | null): void {
+    this.chatChangesListener = listener;
+    if (listener) this.chatReview.schedule();
+  }
+
+  /** The review tab's files in a scope, read now. */
+  chatReviewSnapshot(scope: ChatScope, opts?: { readonly fresh?: boolean }): Promise<ChatReviewSnapshot> {
+    return this.chatReview.compute(scope, opts);
+  }
+
+  /** A message the chat's team posted to the panel: a member's tool result can move the review counter. */
+  teamMessage(message: ExtensionToWebviewMessage): void {
+    if (message.type === "teamAgentToolResult") this.chatReview.schedule();
+  }
+
+  /** One file's diff in the review tab's scope. */
+  chatReviewFileDiff(scope: ChatScope, filePath: string): ReturnType<ChatReview["fileDiff"]> {
+    return this.chatReview.fileDiff(scope, filePath);
+  }
+
+  /** What a new review comment's line is checked against at send, from core's diff now. */
+  chatReviewAnchor(place: CommentPlace): Promise<string | undefined> {
+    return this.chatReview.anchorOf(place);
+  }
+
+  /** The drafts whose line changed or left its scope's diff since they were made; the review tab marks them. */
+  chatReviewStale(drafts: readonly DraftComment[]): Promise<DraftComment[]> {
+    return this.chatReview.staleDrafts(drafts);
+  }
+
+  /**
+   * Sends the review comments as one user message core composed from its own diff; only each comment's text came from the
+   * renderer. A running chat queues it like any message.
+   */
+  async submitReview(drafts: readonly DraftComment[]): Promise<ReviewSubmitOutcome> {
+    // The review tab keeps the drafts of a send core refuses (D33), so the text never goes to the composer.
+    if (this.worktree.finishing() !== undefined) return "unsent";
+    const composed = await this.chatReview.compose(drafts);
+    if (!composed.ok) return composed.reason === "stale" ? { stale: composed.stale } : composed.reason;
+    if (this.worktree.finishing() !== undefined) return "unsent";
+    const text = composed.message;
+    if (this.turnRunning) {
+      const queued = createQueuedMessage(text);
+      const disposition = this.queueInput(text, queued.id, text);
+      if (disposition === "queued") this.emit({ type: "messageQueued", message: queued });
+      return disposition === false ? "unsent" : "queued";
+    }
+    const outcome = await this.sendMessage(text, undefined, `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`, { content: text });
+    return outcome === "sent" ? "sent" : "unsent";
   }
 
   /** Reports the current activity at once, then every change; null stops the reports. */

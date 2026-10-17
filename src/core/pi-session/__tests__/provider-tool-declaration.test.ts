@@ -65,6 +65,7 @@ function panelStub(): PanelGateContext {
     shellCancel: new ShellCancelStore().forContext(() => undefined),
     budgetStopRequested: () => false,
     getSessionModel: () => 'claude-opus-5-5',
+    memoryWorkspace: () => '/repo',
     getSystemPromptEnv: () => ({
       cwd: '/repo',
       model: 'claude-opus-5-5',

@@ -8,13 +8,12 @@ const { execFileSyncMock, GIT } = vi.hoisted(() => ({ execFileSyncMock: vi.fn(),
 vi.mock('child_process', () => ({ execFileSync: execFileSyncMock }));
 vi.mock('../../git-executable', () => ({ gitExecutable: () => GIT }));
 
-import { getChangedFiles, parseGitDiffRanges, resolveRepoRoot, resetRepoRootCacheForTests, GIT_HARDENING_ARGS } from '../git';
+import { getChangedFiles, parseGitDiffRanges, GIT_HARDENING_ARGS } from '../git';
 import { analyzeChanges, mapChangesToNodes } from '../changes';
 
 
 beforeEach(() => {
 	execFileSyncMock.mockReset();
-	resetRepoRootCacheForTests();
 });
 
 /** The argv of one recorded call, minus the hardening prefix. */
@@ -44,10 +43,6 @@ function mockGit(handlers: { revParse?: () => string; diff?: (args: string[]) =>
 		}
 		throw new Error(`unexpected git command: ${argv.join(' ')}`);
 	});
-}
-
-function revParseCallCount(): number {
-	return execFileSyncMock.mock.calls.filter(c => subcommandArgs(c)[0] === 'rev-parse').length;
 }
 
 describe('git invocation hardening', () => {
@@ -92,7 +87,7 @@ describe('git invocation hardening', () => {
 			expect(call[2]).not.toHaveProperty('shell');
 		}
 		const diff = execFileSyncMock.mock.calls.find(c => subcommandArgs(c)[0] === 'diff');
-		expect(subcommandArgs(diff!)).toEqual(['diff', '--name-only', 'release/1.0', '--']);
+		expect(subcommandArgs(diff!)).toEqual(['diff', '--name-only', '--relative', 'release/1.0', '--']);
 	});
 
 	it('passes no GIT_DIR/GIT_WORK_TREE env, which would retarget the checkpoint engine bare repo', () => {
@@ -106,77 +101,21 @@ describe('git invocation hardening', () => {
 	});
 });
 
-describe('resolveRepoRoot', () => {
-	it('returns the resolved repo root from rev-parse', () => {
-		mockGit({ revParse: () => '/repo-rr-1\n' });
-		expect(resolveRepoRoot('/repo-rr-1/packages/app')).toBe(path.resolve('/repo-rr-1'));
-	});
-
-	it('returns null outside a git repo', () => {
-		mockGit({});
-		expect(resolveRepoRoot('/no-repo-rr-2')).toBeNull();
-	});
-
-	it('caches the result per workspace path', () => {
-		mockGit({ revParse: () => '/repo-rr-3\n' });
-		resolveRepoRoot('/repo-rr-3');
-		resolveRepoRoot('/repo-rr-3');
-		expect(revParseCallCount()).toBe(1);
-	});
-
-	it('does not cache failures: a transient rev-parse error resolves on retry', () => {
-		mockGit({});
-		expect(resolveRepoRoot('/flaky-rr-4')).toBeNull();
-
-		mockGit({ revParse: () => '/flaky-rr-4\n' });
-		expect(resolveRepoRoot('/flaky-rr-4')).toBe(path.resolve('/flaky-rr-4'));
-		expect(revParseCallCount()).toBe(2);
-
-		expect(resolveRepoRoot('/flaky-rr-4')).toBe(path.resolve('/flaky-rr-4'));
-		expect(revParseCallCount()).toBe(2);
-	});
-});
-
 describe('getChangedFiles', () => {
-	it('returns repo-root-absolute paths when workspace equals repo root', () => {
+	it('asks git for paths relative to the workspace and anchors them on the workspace as the caller spells it', () => {
 		mockGit({
 			revParse: () => '/repo-gc-1\n',
 			diff: () => 'src/a.ts\nsrc/b.ts\n',
 		});
 
-		const files = getChangedFiles('/repo-gc-1');
-		expect(files).toEqual([abs('/repo-gc-1', 'src/a.ts'), abs('/repo-gc-1', 'src/b.ts')]);
+		const files = getChangedFiles('/repo-gc-1/packages/app');
+		expect(files).toEqual([abs('/repo-gc-1/packages/app', 'src/a.ts'), abs('/repo-gc-1/packages/app', 'src/b.ts')]);
+		const diff = execFileSyncMock.mock.calls.find(call => subcommandArgs(call)[0] === 'diff');
+		expect(subcommandArgs(diff!)).toContain('--relative');
+		expect(diff![2]).toMatchObject({ cwd: '/repo-gc-1/packages/app' });
 	});
 
-	it('resolves against the repo root and scopes results to the workspace (P2/M2)', () => {
-		mockGit({
-			revParse: () => '/repo-gc-2\n',
-			diff: () => 'packages/app/src/a.ts\npackages/lib/src/b.ts\n',
-		});
-
-		const files = getChangedFiles('/repo-gc-2/packages/app');
-		expect(files).toEqual([abs('/repo-gc-2', 'packages/app/src/a.ts')]);
-	});
-
-	it('filters out repo files outside the workspace so siblings never get indexed (M2)', () => {
-		mockGit({
-			revParse: () => '/repo-gc-6\n',
-			diff: () => [
-				'packages/app/src/kept.ts',
-				'packages/lib/src/sibling.ts',
-				'tooling/scripts/build.ts',
-				'packages/app/nested/deep.ts',
-			].join('\n') + '\n',
-		});
-
-		const files = getChangedFiles('/repo-gc-6/packages/app');
-		expect(files).toEqual([
-			abs('/repo-gc-6', 'packages/app/src/kept.ts'),
-			abs('/repo-gc-6', 'packages/app/nested/deep.ts'),
-		]);
-	});
-
-	it('re-anchors git paths onto the workspace spelling when git reports a different drive-letter case (win32)', () => {
+	it('keeps the workspace spelling whatever git would spell the repository as (win32 drive-letter case)', () => {
 		if (process.platform !== 'win32') return;
 		mockGit({
 			revParse: () => 'C:/Repo-Case\n',
@@ -224,18 +163,20 @@ describe('getChangedFiles', () => {
 });
 
 describe('parseGitDiffRanges', () => {
-	it('remaps diff keys to repo-root-absolute paths', () => {
+	it('keys ranges by workspace-absolute paths from a diff git prints relative to the workspace', () => {
 		mockGit({
 			revParse: () => '/repo-pd-1\n',
 			diff: () => [
-				'+++ b/packages/app/src/x.ts',
+				'+++ b/src/x.ts',
 				'@@ -5,2 +5,3 @@',
 			].join('\n'),
 		});
 
 		const ranges = parseGitDiffRanges('/repo-pd-1/packages/app');
-		expect(ranges.get(abs('/repo-pd-1', 'packages/app/src/x.ts'))).toEqual([[5, 7]]);
-		expect(ranges.has('packages/app/src/x.ts')).toBe(false);
+		expect(ranges.get(abs('/repo-pd-1/packages/app', 'src/x.ts'))).toEqual([[5, 7]]);
+		expect(ranges.has('src/x.ts')).toBe(false);
+		const diff = execFileSyncMock.mock.calls.find(call => subcommandArgs(call)[0] === 'diff');
+		expect(subcommandArgs(diff!)).toEqual(['diff', '--unified=0', '--relative', 'HEAD~1', '--']);
 	});
 
 	it('remaps against the workspace root outside a git repo', () => {
@@ -289,14 +230,14 @@ describe('monorepo graph resolution with remapped paths (P2)', () => {
 		mockGit({
 			revParse: () => '/repo-mono\n',
 			diff: () => [
-				'+++ b/packages/a/src/x.ts',
+				'+++ b/src/x.ts',
 				'@@ -1,5 +1,5 @@',
 			].join('\n'),
 		});
 
 		const ranges = parseGitDiffRanges(workspace);
 		const resolved = store.resolveGraphFilePathsGrouped([...ranges.keys()], workspace);
-		expect(resolved.get(abs('/repo-mono', 'packages/a/src/x.ts'))).toEqual([realFile]);
+		expect(resolved.get(realFile)).toEqual([realFile]);
 
 		const nodes = mapChangesToNodes(store, ranges, workspace);
 		expect(nodes.map(n => n.name)).toEqual(['realFunc']);
@@ -307,7 +248,7 @@ describe('monorepo graph resolution with remapped paths (P2)', () => {
 		mockGit({
 			revParse: () => '/repo-mono\n',
 			diff: () => [
-				'+++ b/packages/a/src/x.ts',
+				'+++ b/src/x.ts',
 				'@@ -1,5 +1,5 @@',
 			].join('\n'),
 		});

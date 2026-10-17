@@ -19,6 +19,7 @@ import type { PanelHost } from "../../../platform/window-service";
 import type { FolderTarget, WorkspaceFolderRegistry } from "../../workspace-folders/folder-registry";
 import type { AfterFolderSwitch, FolderSwitchReason } from "../panel-manager";
 import type { WebviewPrompts } from "../webview-prompts";
+import type { PanelWorktrees } from "../panel-worktrees";
 import type { WebviewToExtensionMessage, ExtensionToWebviewMessage } from "../../../shared/types/messages";
 
 export interface HandlerContext {
@@ -80,4 +81,6 @@ export interface HandlerDependencies {
   ) => Promise<HostInstance | undefined>;
   postWorkspaceFolderState: (panelId: string) => void;
   webviewPrompts: WebviewPrompts;
+  /** The panels' worktree work (slice 12a), read when a handler runs. */
+  worktrees: () => PanelWorktrees;
 }

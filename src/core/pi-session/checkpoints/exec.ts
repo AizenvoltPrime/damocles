@@ -4,6 +4,8 @@ import type { ExecEnv, Result } from './types';
 
 interface ProcessOutput {
   stdout: string;
+  // stdout as the bytes the process wrote
+  bytes: Buffer;
   stderr: string;
 }
 
@@ -50,6 +52,14 @@ export function childEnv(env?: ExecEnv): NodeJS.ProcessEnv {
   return { ...inherited, ...env };
 }
 
+/** The process wrote more stdout than the call allows; it was killed and nothing past the bound was kept. */
+export class ExecOutputTooLargeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ExecOutputTooLargeError';
+  }
+}
+
 /** A function is called as the process starts, so its throw (`gitExecutable` finding no git) fails the call as a spawn error would. */
 export type ExecCommand = string | (() => string);
 
@@ -68,6 +78,8 @@ export type TrackChild = (pid: number) => () => void;
  * hang this parameter exists to bound. Callers that pass nothing wait as long as the process runs.
  *
  * `track` sees the child's pid right after spawn and is released once the child has exited or failed.
+ *
+ * With `maxStdoutBytes`, a process that writes more stdout is killed and the promise rejects with ExecOutputTooLargeError.
  */
 export function exec(
   command: ExecCommand,
@@ -77,6 +89,7 @@ export function exec(
   timeoutMs?: number,
   input?: string,
   track?: TrackChild,
+  maxStdoutBytes?: number,
 ): Promise<ProcessOutput> {
   return new Promise<ProcessOutput>((resolve, reject) => {
     const file = typeof command === 'string' ? command : command();
@@ -103,6 +116,8 @@ export function exec(
     // Decoded once at close: a multi-byte character can straddle two chunks.
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
+    let stdoutBytes = 0;
+    let overflowed = false;
     let timedOut = false;
     const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
       timedOut = true;
@@ -111,6 +126,14 @@ export function exec(
     }, timeoutMs);
 
     child.stdout.on('data', (chunk: Buffer) => {
+      if (overflowed) return;
+      stdoutBytes += chunk.length;
+      if (maxStdoutBytes !== undefined && stdoutBytes > maxStdoutBytes) {
+        overflowed = true;
+        stdoutChunks.length = 0;
+        child.kill('SIGKILL');
+        return;
+      }
       stdoutChunks.push(chunk);
     });
     child.stderr.on('data', (chunk: Buffer) => {
@@ -131,10 +154,15 @@ export function exec(
       release();
       // The timer already rejected, and the kill's own close code says nothing the caller can use.
       if (timedOut) return;
-      const stdout = Buffer.concat(stdoutChunks).toString('utf8');
+      if (overflowed) {
+        reject(new ExecOutputTooLargeError(`${file} ${args.join(' ')} wrote more than ${maxStdoutBytes} bytes and was killed`));
+        return;
+      }
+      const bytes = Buffer.concat(stdoutChunks);
+      const stdout = bytes.toString('utf8');
       const stderr = Buffer.concat(stderrChunks).toString('utf8');
       if (code === 0) {
-        resolve({ stdout, stderr });
+        resolve({ stdout, bytes, stderr });
         return;
       }
       const detail = stderr.trim() || stdout.trim();

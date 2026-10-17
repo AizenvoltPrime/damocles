@@ -123,10 +123,14 @@ export async function confineEntry(project: Project, relativePath: string): Prom
   }
 }
 
-/** A path inside some open project, for a target that may not exist yet (Save As): its canonical path must lie under one. */
+/**
+ * A path inside some open root, for a target that may not exist yet (Save As): its canonical path must lie under one. The
+ * deepest root holding it wins, so a chat worktree inside a project folder names its own files.
+ */
 export async function projectOfPath(projects: readonly Project[], target: string): Promise<{ project: Project; relativePath: string; path: string } | undefined> {
   if (!path.isAbsolute(target)) return undefined;
   const canonical = canonicalPath(target);
+  let found: { project: Project; relativePath: string; path: string; depth: number } | undefined;
   for (const project of projects) {
     let realRoot: string;
     try {
@@ -137,7 +141,9 @@ export async function projectOfPath(projects: readonly Project[], target: string
     }
     if (!isInsideRealRoot(realRoot, canonical) || folderKey(realRoot) === folderKey(canonical)) continue;
     const relativePath = path.relative(realRoot, canonical).split(path.sep).join('/');
-    if (isRelativeFilePath(relativePath)) return { project, relativePath, path: canonical };
+    if (!isRelativeFilePath(relativePath)) continue;
+    const depth = realRoot.length;
+    if (!found || depth > found.depth) found = { project, relativePath, path: canonical, depth };
   }
-  return undefined;
+  return found && { project: found.project, relativePath: found.relativePath, path: found.path };
 }

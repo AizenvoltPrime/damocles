@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('electron', () => ({ WebContentsView: vi.fn(), nativeTheme: { shouldUseDarkColors: true, on: vi.fn(), off: vi.fn() }, protocol: {}, dialog: { showMessageBox: vi.fn() } }));
 
-import { createAskpassServer, type AskpassServer } from '../../../core/scm/askpass/askpass-server';
+import { createAskpassServer, PROMPT_CANCELLED, type AskpassServer } from '../../../core/scm/askpass/askpass-server';
 import type { OverlayAnswer, OverlayRequest } from '../../preload/overlay-channels';
 import { createAskpassBridge } from '../askpass-bridge';
 import { createMessageAsker, type AskMessage, type MessageOverlay } from '../message-dialog';
@@ -43,11 +43,19 @@ describe('the askpass prompt bridge', () => {
     expect(fake.questions).toEqual([]);
   });
 
+  it('tells a box the user dismissed from one its call withdrew', async () => {
+    expect(await bridge({}).prompt({ kind: 'username', text: "Username for 'https://example.com':" }, signal)).toBe(PROMPT_CANCELLED);
+    expect(await bridge({}).prompt({ kind: 'password', text: "Password for 'https://example.com':" }, signal)).toBe(PROMPT_CANCELLED);
+    const withdrawn = new AbortController();
+    withdrawn.abort();
+    expect(await bridge({}).prompt({ kind: 'username', text: 'x' }, withdrawn.signal)).toBeUndefined();
+  });
+
   it('asks an SSH yes/no question with No focused, and answers yes only on Yes', async () => {
     const yes = bridge({ message: 0 });
     expect(await yes.prompt({ kind: 'confirm', text: 'Allow shared connection to example.com?' }, signal)).toBe('yes');
     expect(yes.questions).toEqual([{ question: { severity: 'danger', message: 'Are you sure you want to continue connecting?', detail: 'Allow shared connection to example.com?', actions: ['Yes'], cancelLabel: 'No' }, signal }]);
-    expect(await bridge({}).prompt({ kind: 'confirm', text: 'x' }, signal)).toBeUndefined();
+    expect(await bridge({}).prompt({ kind: 'confirm', text: 'x' }, signal)).toBe(PROMPT_CANCELLED);
     const withdrawn = new AbortController();
     withdrawn.abort();
     expect(await bridge({ message: 0 }).prompt({ kind: 'confirm', text: 'x' }, withdrawn.signal)).toBeUndefined();

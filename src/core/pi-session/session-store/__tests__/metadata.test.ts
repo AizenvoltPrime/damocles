@@ -1,7 +1,8 @@
 import { describe, test, expect } from 'vitest';
 import type { SessionEntry, SessionHeader } from '@earendil-works/pi-coding-agent';
-import { mapPiFieldsToStored, computePiSessionFields, extractFirstUserMessage, newestUniquePrompts, type PiSessionFields } from '../metadata';
-import { DAMOCLES_USER_RENAMED_ENTRY, DAMOCLES_TAG_ENTRY, DAMOCLES_ORIGINAL_INPUT_ENTRY } from '../constants';
+import * as path from 'node:path';
+import { mapPiFieldsToStored, computePiSessionFields, extractFirstUserMessage, newestUniquePrompts, sessionFileMeta, type PiSessionFields } from '../metadata';
+import { DAMOCLES_USER_RENAMED_ENTRY, DAMOCLES_TAG_ENTRY, DAMOCLES_ORIGINAL_INPUT_ENTRY, DAMOCLES_WORKTREE_ENTRY } from '../constants';
 
 describe('mapPiFieldsToStored', () => {
   const base: PiSessionFields = {
@@ -181,5 +182,25 @@ describe('computePiSessionFields', () => {
     const stored = '<ide_selection>The user selected the lines 1 to 2 from c:\\x.ts:\nconst a = 1;\n\nThis may or may not be related to the current task.</ide_selection>\nexplain this';
     const entries = [msg('user', stored, 1_000), msg('assistant', 'ok', 2_000), msg('user', '<system-context> injected', 3_000)];
     expect(newestUniquePrompts(entries)).toEqual(['explain this']);
+  });
+});
+
+describe('sessionFileMeta', () => {
+  const header = { type: 'session', id: 'id-4', timestamp: '2026-06-18T00:00:00.000Z', cwd: '/ws' } as SessionHeader;
+  const projectPath = path.resolve('/ws');
+  const worktree = (place: 'worktree' | 'project', id: string, parentId: string | null): SessionEntry =>
+    ({ type: 'custom', customType: DAMOCLES_WORKTREE_ENTRY, id, parentId, timestamp: '2026-06-18T00:00:01.000Z', data: { worktreeId: 'aaaaaaaa', projectPath, place } }) as unknown as SessionEntry;
+  const manager = (entries: SessionEntry[]) => ({
+    getHeader: () => header,
+    getEntries: () => entries,
+    getBranch: () => entries,
+    getSessionName: () => undefined,
+  });
+
+  // Every path that lists a session (a full load, a watcher's upsert, a live chat) reads this, so a row never loses its worktree.
+  test('lists the latest worktree entry with the row, and none for a session without one', () => {
+    expect(sessionFileMeta(manager([worktree('worktree', 'w1', null)]), 9_999).stored?.worktree).toEqual({ worktreeId: 'aaaaaaaa', place: 'worktree' });
+    expect(sessionFileMeta(manager([worktree('worktree', 'w1', null), worktree('project', 'w2', 'w1')]), 9_999).stored?.worktree).toEqual({ worktreeId: 'aaaaaaaa', place: 'project' });
+    expect(sessionFileMeta(manager([]), 9_999).stored).not.toHaveProperty('worktree');
   });
 });

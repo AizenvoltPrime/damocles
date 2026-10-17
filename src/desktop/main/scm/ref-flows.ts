@@ -8,15 +8,17 @@ import { isInside, samePath } from '../../../core/scm/discovery';
 import { redactUrls } from '../../../core/scm/git-runner';
 import { isRemoteName, type Remote } from '../../../core/scm/remotes';
 import type { Repository } from '../../../core/scm/repository';
-import { RemoteCancelledError } from '../../../core/scm/scm-service';
+import { gitErrorText, RemoteCancelledError } from '../../../core/scm/scm-service';
 import { SCM_SETTING_KEYS, type PromptToSaveFilesBeforeStash } from '../../../core/scm/settings-keys';
 import { canStashStaged, type StashScope } from '../../../core/scm/stash';
 import { defaultWorktreePath, worktreeName } from '../../../core/scm/worktrees';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { inputProblem } from '../../../shared/input-validation';
+import { visibleLines, visibleText } from '../../../shared/visible-text';
 import { fitsQuickPick, MAX_QUICK_PICK_BYTES, MAX_QUICK_PICK_ITEMS, quickPickItemBytes, type OverlayQuickPickIcon } from '../../preload/overlay-channels';
-import { isWorktreePath, type ScmRunResult, type ScmStashChoice, type ScmStashTarget } from '../../preload/scm-channels';
+import { isWorktreePath, type ScmRunRequest, type ScmRunResult, type ScmStashChoice, type ScmStashTarget } from '../../preload/scm-channels';
 import type { Project } from '../documents/confine';
+import { parseRootKey } from '../../preload/folder-root';
 import type { ScmHostDeps, ScmQuickPickItem } from './scm-host';
 
 export const OK: ScmRunResult = { ok: true };
@@ -60,6 +62,8 @@ export interface RefFlowHost {
   openRefsChanges(repoId: string, left: { readonly hash: string; readonly label: string }, right: { readonly hash: string; readonly label: string }): Promise<ScmRunResult>;
   // the registered project whose folder the worktree holds
   worktreeProject(repoId: string, worktreePath: string): Project | undefined;
+  // a run op as the shell sends it, its failure told
+  runRequest(request: ScmRunRequest): Promise<ScmRunResult>;
 }
 
 type RefRow =
@@ -186,7 +190,7 @@ export class RefFlows {
   private async findRef(repoId: string, ref: string): Promise<RefRow | undefined> {
     const kind = ref.startsWith('refs/heads/') ? 'branch' : ref.startsWith('refs/remotes/') ? 'remote' : 'tag';
     const found = (await this.refRows(repoId, [kind])).find((entry) => entry.row.ref === ref);
-    if (!found) void this.deps.notify.warn(this.t('"{0}" is no longer in this repository.', ref));
+    if (!found) void this.deps.notify.warn(this.t('"{0}" is no longer in this repository.', visibleText(ref)));
     return found;
   }
 
@@ -235,6 +239,11 @@ export class RefFlows {
     return this.checkoutRow(repoId, choice as RefRow, detached);
   }
 
+  // The Graph's Checkout (Detached) on a commit main checked, with the dirty work tree's question.
+  checkoutCommit(repoId: string, commit: string): Promise<ScmRunResult> {
+    return this.runCheckout(repoId, { kind: 'detached', revision: commit });
+  }
+
   // CheckoutItem, CheckoutRemoteHeadItem and CheckoutTagItem's run: a remote branch checks out the local branch tracking it,
   // else a new tracking branch; pullBeforeCheckout fast-forwards a local branch first.
   private async checkoutRow(repoId: string, entry: RefRow, detached: boolean): Promise<ScmRunResult> {
@@ -272,7 +281,8 @@ export class RefFlows {
   // VS Code's DirtyWorkTree question: Stash & Checkout, Migrate Changes (stash, checkout, pop) or Force Checkout (discard,
   // with its own confirmation, then checkout).
   private async runCheckout(repoId: string, target: CheckoutTarget): Promise<ScmRunResult> {
-    if ((await this.deps.service.checkout(repoId, target)) === 'ok') return OK;
+    const first = await this.checkoutUnlessHeld(repoId, target);
+    if (first !== 'dirty') return first;
     const t = this.t.bind(this);
     const choice = await this.deps.ask({
       severity: 'warning',
@@ -285,11 +295,39 @@ export class RefFlows {
     if (choice === 2) {
       if (!(await this.deps.service.discardAll(repoId, 'all'))) return CANCELLED;
     } else if ((await this.stash(repoId, 'includeUntracked')) !== OK) return CANCELLED;
-    if ((await this.deps.service.checkout(repoId, target)) === 'dirty') {
+    const second = await this.checkoutUnlessHeld(repoId, target);
+    if (second === 'dirty') {
       void this.deps.notify.error(t('Please clean your repository working tree before checkout.'));
       return TOLD;
     }
+    if (second !== OK) return second;
     return choice === 1 ? this.stashApply(repoId, true, 'latest') : OK;
+  }
+
+  // A checkout git refused while another worktree holds the branch offers that worktree, read from the worktree list after
+  // the refusal (VS Code's WorktreeBranchAlreadyUsed); any other failure is git's own.
+  private async checkoutUnlessHeld(repoId: string, target: CheckoutTarget): Promise<ScmRunResult | 'dirty'> {
+    try {
+      return (await this.deps.service.checkout(repoId, target)) === 'ok' ? OK : 'dirty';
+    } catch (err) {
+      const branch = target.kind === 'branch' ? target.name : undefined;
+      const holder = branch === undefined ? undefined : (await this.worktrees(repoId)).find((worktree) => !worktree.current && worktree.branch === branch);
+      if (branch === undefined || !holder) throw err;
+      return this.offerWorktree(repoId, branch, holder.path);
+    }
+  }
+
+  // VS Code's handleWorktreeConflict, with the worktree row's Open in place of its two window choices (D58).
+  private async offerWorktree(repoId: string, branch: string, worktreePath: string): Promise<ScmRunResult> {
+    const t = this.t.bind(this);
+    const choice = await this.deps.ask({
+      severity: 'warning',
+      message: t('Branch "{0}" is already checked out in the worktree at "{1}".', visibleText(branch), visibleText(worktreePath)),
+      actions: [t('Open Worktree')],
+      cancelLabel: t('Cancel'),
+      defaultAction: 0,
+    });
+    return choice === 0 ? this.host.runRequest({ op: 'openWorktree', repoId, path: worktreePath }) : CANCELLED;
   }
 
   // VS Code's promptForBranchName: the box starts with branchPrefix and the caret after it, or with a picker's text, cleaned by
@@ -311,7 +349,7 @@ export class RefFlows {
     if (!answer || ('current' in prefill && answer === prefill.current)) return undefined;
     const branches = await this.deps.service.artifacts(repoId, 'branches');
     if (branches.group === 'branches' && branches.rows.some((row) => row.name === answer)) {
-      void this.deps.notify.error(t('A branch named "{0}" already exists', answer));
+      void this.deps.notify.error(t('A branch named "{0}" already exists', visibleText(answer)));
       return undefined;
     }
     if (!(await this.host.repo(repoId).isValidBranchName(answer))) {
@@ -321,10 +359,11 @@ export class RefFlows {
     return answer;
   }
 
-  // VS Code's _branch: Create Branch... at HEAD, Create Branch From... at a picked ref (HEAD first) or the row's ref; typed is
-  // the text of the picker the flow came from, which the name box starts with (the ref picker's own text only filters).
-  async createBranch(repoId: string, from: boolean, ref?: string, typed = ''): Promise<ScmRunResult> {
-    let start = 'HEAD';
+  // VS Code's _branch: Create Branch... at HEAD, Create Branch From... at a picked ref (HEAD first), the row's ref or the
+  // Graph's commit (at, which main checked); typed is the text of the picker the flow came from, which the name box starts with
+  // (the ref picker's own text only filters).
+  async createBranch(repoId: string, from: boolean, ref?: string, typed = '', at?: string): Promise<ScmRunResult> {
+    let start = at ?? 'HEAD';
     if (ref !== undefined) {
       const found = await this.findRef(repoId, ref);
       if (!found) return TOLD;
@@ -369,7 +408,7 @@ export class RefFlows {
       }
       const choice = await this.deps.ask({
         severity: 'warning',
-        message: t('Are you sure you want to delete branch "{0}"? This action will permanently remove the branch reference from the repository.', branch.name),
+        message: t('Are you sure you want to delete branch "{0}"? This action will permanently remove the branch reference from the repository.', visibleText(branch.name)),
         actions: [t('Delete Branch')],
         cancelLabel: t('Cancel'),
         defaultAction: 0,
@@ -388,7 +427,7 @@ export class RefFlows {
     if ((await this.deps.service.deleteBranch(repoId, branch.name, false)) === 'ok') return OK;
     const force = await this.deps.ask({
       severity: 'danger',
-      message: t('The branch "{0}" is not fully merged. Delete anyway?', branch.name),
+      message: t('The branch "{0}" is not fully merged. Delete anyway?', visibleText(branch.name)),
       actions: [t('Delete Branch')],
       cancelLabel: t('Cancel'),
     });
@@ -397,15 +436,35 @@ export class RefFlows {
     return OK;
   }
 
-  // VS Code's deleteRemoteBranch: the remote branches but HEAD's upstream, deleted on the remote with push --delete.
-  async deleteRemoteBranch(repoId: string): Promise<ScmRunResult> {
+  // VS Code's deleteRemoteBranch: the remote branches but HEAD's upstream, deleted on the remote with push --delete; a
+  // Graph badge's ref skips the picker, and HEAD's upstream is refused (VS Code's git.graph.deleteBranch).
+  async deleteRemoteBranch(repoId: string, ref?: string): Promise<ScmRunResult> {
     const t = this.t.bind(this);
-    const rows = this.withoutHead(await this.refRows(repoId, ['remote']), await this.headBranch(repoId));
-    if (rows.length === 0) {
-      void this.deps.notify.info(t('This repository has no remote branches.'));
-      return TOLD;
+    const head = await this.headBranch(repoId);
+    let choice: RefRow | undefined;
+    if (ref !== undefined) {
+      choice = await this.findRef(repoId, ref);
+      if (choice?.kind !== 'remote') return TOLD;
+      if (head?.upstream && `${head.upstream.remote}/${head.upstream.branch}` === choice.row.name) {
+        void this.deps.notify.info(t('The remote branch of the active branch cannot be deleted.'));
+        return TOLD;
+      }
+      // the badge skips the picker, the palette's one deliberate step, so the delete on the remote asks first
+      const confirmed = await this.deps.ask({
+        severity: 'danger',
+        message: t('Are you sure you want to delete the remote branch "{0}"? This action will permanently remove the branch from the remote "{1}".', visibleText(choice.row.name), visibleText(choice.row.remote)),
+        actions: [t('Delete Remote Branch')],
+        cancelLabel: t('Cancel'),
+      });
+      if (confirmed !== 0) return CANCELLED;
+    } else {
+      const rows = this.withoutHead(await this.refRows(repoId, ['remote']), head);
+      if (rows.length === 0) {
+        void this.deps.notify.info(t('This repository has no remote branches.'));
+        return TOLD;
+      }
+      choice = (await this.pickRef(t('Select a remote branch to delete'), rows, false))?.value;
     }
-    const choice = (await this.pickRef(t('Select a remote branch to delete'), rows, false))?.value;
     if (choice?.kind !== 'remote') return CANCELLED;
     if (!isRemoteName(choice.row.remote)) {
       void this.deps.notify.warn(t('Remote name format invalid'));
@@ -459,6 +518,19 @@ export class RefFlows {
     const choice = (await this.pickRef(this.t('Select a reference to compare with'), rows, true))?.value;
     if (!choice?.row.commit) return CANCELLED;
     return this.host.openRefsChanges(repoId, { hash: choice.row.commit.hash, label: choice.row.name }, { hash: right.hash, label: found.row.name });
+  }
+
+  // VS Code's git.graph.compareRef on a commit main checked: every branch, remote branch and tag to pick, the picked one on
+  // the left and the commit on the right, as one multi-file diff tab.
+  async compareCommit(repoId: string, commit: string): Promise<ScmRunResult> {
+    const rows = (await this.refRows(repoId, ['branch', 'remote', 'tag'])).filter((entry) => entry.row.commit !== null);
+    if (rows.length === 0) {
+      void this.deps.notify.info(this.t('This repository has no branches or tags to compare with.'));
+      return TOLD;
+    }
+    const choice = (await this.pickRef(this.t('Select a reference to compare with'), rows, true))?.value;
+    if (!choice?.row.commit) return CANCELLED;
+    return this.host.openRefsChanges(repoId, { hash: choice.row.commit.hash, label: choice.row.name }, { hash: commit, label: commit.slice(0, 7) });
   }
 
   // VS Code's _stash: refuse with nothing to stash, the save-before-stash question, the optional message, then the stash.
@@ -578,7 +650,7 @@ export class RefFlows {
     const stash = await this.chooseStash(repoId, target, t('Pick a stash to drop'));
     if (stash === undefined) return CANCELLED;
     if (stash === 'told') return TOLD;
-    const choice = await this.deps.ask({ severity: 'danger', message: t('Are you sure you want to drop the stash: {0}?', stash.description), actions: [t('Yes')], cancelLabel: t('Cancel') });
+    const choice = await this.deps.ask({ severity: 'danger', message: t('Are you sure you want to drop the stash: {0}?', visibleText(stash.description)), actions: [t('Yes')], cancelLabel: t('Cancel') });
     if (choice !== 0) return CANCELLED;
     if ((await this.deps.service.stashDrop(repoId, { index: stash.index, hash: stash.hash })) === 'moved') {
       void this.deps.notify.warn(t('The stash is no longer in this repository.'));
@@ -617,8 +689,9 @@ export class RefFlows {
     return this.host.openStash(repoId, stash);
   }
 
-  // VS Code's _createTag: a name, then a message; a message makes the tag annotated, and Escape on it a lightweight tag.
-  async createTag(repoId: string): Promise<ScmRunResult> {
+  // VS Code's _createTag: a name, then a message; a message makes the tag annotated, and Escape on it a lightweight tag. At
+  // HEAD, or at the Graph's commit, which main checked.
+  async createTag(repoId: string, commit?: string): Promise<ScmRunResult> {
     const t = this.t.bind(this);
     const name = (await this.deps.askInput({ prompt: t('Please provide a tag name'), placeholder: t('Tag name'), validation: 'tagName' }))?.trim();
     if (!name) return CANCELLED;
@@ -627,7 +700,7 @@ export class RefFlows {
       return TOLD;
     }
     const message = await this.deps.askInput({ prompt: t('Please provide a message to annotate the tag'), placeholder: t('Message') });
-    await this.deps.service.createTag(repoId, name, message ?? '');
+    await this.deps.service.createTag(repoId, name, message ?? '', commit);
     return OK;
   }
 
@@ -641,7 +714,7 @@ export class RefFlows {
       tag = found.row;
       const choice = await this.deps.ask({
         severity: 'warning',
-        message: t('Are you sure you want to delete tag "{0}"? This action will permanently remove the tag reference from the repository.', tag.name),
+        message: t('Are you sure you want to delete tag "{0}"? This action will permanently remove the tag reference from the repository.', visibleText(tag.name)),
         actions: [t('Delete Tag')],
         cancelLabel: t('Cancel'),
         defaultAction: 0,
@@ -681,7 +754,7 @@ export class RefFlows {
       throw err;
     }
     if (tags.length === 0) {
-      void this.deps.notify.info(t('Remote "{0}" has no tags.', chosen.name));
+      void this.deps.notify.info(t('Remote "{0}" has no tags.', visibleText(chosen.name)));
       return TOLD;
     }
     const tag = await this.pick(t('Select a remote tag to delete'), tags.map((entry) => ({ value: entry, item: { label: entry.name, icon: 'tag' as const, description: t('Remote tag at {0}', entry.commit.slice(0, 7)) } })));
@@ -721,17 +794,14 @@ export class RefFlows {
     } else {
       const entry = choice as RefRow;
       if (entry.kind === 'branch' && entry.row.current) {
-        const create = await this.deps.ask({ severity: 'warning', message: t('Branch "{0}" is already checked out in the current repository.', entry.row.name), actions: [t('Create New Branch')], cancelLabel: t('Cancel'), defaultAction: 0 });
+        const create = await this.deps.ask({ severity: 'warning', message: t('Branch "{0}" is already checked out in the current repository.', visibleText(entry.row.name)), actions: [t('Create New Branch')], cancelLabel: t('Cancel'), defaultAction: 0 });
         if (create !== 0) return CANCELLED;
         branch = await this.branchName(repoId);
         if (branch === undefined) return CANCELLED;
       } else {
         const worktrees = await this.worktrees(repoId);
         const holder = entry.kind === 'branch' ? worktrees.find((worktree) => worktree.branch === entry.row.name) : undefined;
-        if (holder) {
-          void this.deps.notify.warn(t('Branch "{0}" is already checked out in the worktree at "{1}".', entry.row.name, holder.path));
-          return TOLD;
-        }
+        if (holder) return this.offerWorktree(repoId, entry.row.name, holder.path);
         // a branch by name checks it out; a tag by its commit, detached there, since worktree add prefers a branch of the tag's
         // name; a remote branch by its full refname, detached
         commitish = entry.kind === 'branch' ? entry.row.name : entry.kind === 'tag' ? entry.row.commit?.hash ?? entry.row.ref : entry.row.ref;
@@ -761,6 +831,11 @@ export class RefFlows {
     const target = await this.worktreePath(repoId, typed);
     if (target === undefined) return TOLD;
     await this.deps.service.addWorktree(repoId, target, commitish, branch);
+    const owner = this.deps.service.repository(repoId);
+    const projectKey = owner ? parseRootKey(owner.projectKey)?.projectKey : undefined;
+    // the branch the new worktree has checked out: the one it created, or the local branch it took
+    const checkedOut = branch ?? (choice !== CREATE && (choice as RefRow).kind === 'branch' ? (choice as RefRow).row.name : undefined);
+    if (projectKey !== undefined) await this.deps.worktrees.adoptCreated(projectKey, repo.root, target, checkedOut);
     return OK;
   }
 
@@ -769,7 +844,7 @@ export class RefFlows {
   // worktree path made unique with -1, -2..., as VS Code's createWorktree does.
   private async worktreePath(repoId: string, typed: string): Promise<string | undefined> {
     if (!isWorktreePath(typed, this.deps.platform)) {
-      void this.deps.notify.warn(this.t('"{0}" is not an absolute folder path on this computer.', typed));
+      void this.deps.notify.warn(this.t('"{0}" is not an absolute folder path on this computer.', visibleText(typed)));
       return undefined;
     }
     const wanted = path.normalize(typed);
@@ -784,9 +859,10 @@ export class RefFlows {
     return listed.group === 'worktrees' ? [...listed.rows] : [];
   }
 
-  // VS Code's deleteWorktree: a picker of the linked worktrees (never the main one or this one), or a row's path. It always asks
-  // first, since git deletes the folder's ignored files too, naming the project the folder holds, which closes afterwards
-  // and so drops its chats from the Chats list; a dirty worktree asks again, then removes with --force.
+  // VS Code's deleteWorktree: a picker of the linked worktrees (never the main one or this one), or a row's path. A chat
+  // worktree takes D33's path. Any other always asks first, since git deletes the folder's ignored files too, naming the
+  // project the folder holds; then (slice 12a rule 14) that project and its chats close before `git worktree remove`, and a
+  // dirty worktree asks again, then removes with --force. Its chats are then listed read-only under the main project.
   async deleteWorktree(repoId: string, worktreePath?: string): Promise<ScmRunResult> {
     const t = this.t.bind(this);
     const removable = (await this.worktrees(repoId)).filter((worktree) => !worktree.main && !worktree.current);
@@ -794,7 +870,7 @@ export class RefFlows {
     if (worktreePath !== undefined) {
       worktree = removable.find((candidate) => samePath(candidate.path, worktreePath));
       if (!worktree) {
-        void this.deps.notify.warn(t('"{0}" is not a worktree that can be deleted.', worktreePath));
+        void this.deps.notify.warn(t('"{0}" is not a worktree that can be deleted.', visibleText(worktreePath)));
         return TOLD;
       }
     } else {
@@ -811,32 +887,67 @@ export class RefFlows {
       );
       if (!worktree) return CANCELLED;
     }
+    if (await this.deps.worktrees.deleteChatWorktreeAt(worktree.path)) return OK;
     const project = this.host.worktreeProject(repoId, worktree.path);
+    const main = (await this.worktrees(repoId)).find((candidate) => candidate.main);
+    const mainProject = main ? this.host.worktreeProject(repoId, main.path) : undefined;
     const confirmed = await this.deps.ask({
       severity: 'danger',
-      message: project
-        ? t('Are you sure you want to delete the worktree "{0}"? The project "{1}" is in it and will be closed, and its chats will no longer be listed.', worktree.path, project.name)
-        : t('Are you sure you want to delete the worktree "{0}"?', worktree.path),
+      message: !project
+        ? t('Are you sure you want to delete the worktree "{0}"?', visibleText(worktree.path))
+        : mainProject
+          ? t('Are you sure you want to delete the worktree "{0}"? The project "{1}" is in it and will be closed, and its chats will then be listed under "{2}", read-only.', visibleText(worktree.path), visibleText(project.name), visibleText(mainProject.name))
+          : t('Are you sure you want to delete the worktree "{0}"? The project "{1}" is in it and will be closed, and its chats will no longer be listed.', visibleText(worktree.path), visibleText(project.name)),
       detail: t('Its ignored files, such as .env and node_modules, are deleted too.'),
       actions: [t('Delete Worktree')],
       cancelLabel: t('Cancel'),
     });
     if (confirmed !== 0) return CANCELLED;
-    if ((await this.deps.service.removeWorktree(repoId, worktree.path, false)) === 'dirty') {
-      const force = await this.deps.ask({
-        severity: 'danger',
-        message: t('The worktree contains modified or untracked files. Do you want to force delete?'),
-        detail: t('Worktree: {0}', worktree.path),
-        actions: [t('Force Delete')],
-        cancelLabel: t('Cancel'),
-      });
-      if (force !== 0) return CANCELLED;
-      await this.deps.service.removeWorktree(repoId, worktree.path, true);
+    // rule 14's order: every question before the project closes, so a Cancel leaves it open
+    const dirty = await this.deps.service.worktreeDirty(repoId, worktree.path);
+    if (dirty && !(await this.confirmForceDelete(worktree.path))) return CANCELLED;
+    if (project) await this.deps.worktrees.adopt(project, worktree, main?.path ?? this.host.repo(repoId).root, mainProject);
+    if (project) {
+      const closed = await this.deps.worktrees.closeProject(project.key);
+      if (closed === 'cancelled') return CANCELLED;
+      if (closed !== 'closed') {
+        void this.deps.notify.warn(t('The worktree was not deleted, because its project "{0}" could not be closed: {1}', visibleText(project.name), visibleLines(closed.reason)));
+        return TOLD;
+      }
     }
-    if (!project) return OK;
-    const closed = await this.deps.removeProject(project.key);
-    if (closed.ok) return OK;
-    void this.deps.notify.warn(t('The worktree was deleted, but its project "{0}" could not be closed: {1}', project.name, closed.reason));
-    return TOLD;
+    // once the project closed nothing asks again: a refusal names the path and the closed project, and Retry runs the whole
+    // order again, as for a chat worktree
+    const failed = (reason: string): ScmRunResult => {
+      const retry = t('Retry');
+      const message = project ? t('Could not delete the worktree "{0}", and its project "{1}" was closed: {2}', visibleText(worktree.path), visibleText(project.name), reason) : t('Could not delete the worktree "{0}": {1}', visibleText(worktree.path), reason);
+      void this.deps.notify.error(message, retry).then((choice) => {
+        if (choice === retry) void this.host.runRequest({ op: 'deleteWorktree', repoId, path: worktree.path });
+      });
+      return TOLD;
+    };
+    try {
+      if ((await this.deps.service.removeWorktree(repoId, worktree.path, dirty)) === 'dirty') {
+        if (project) return failed(t('Files were added to it after you confirmed.'));
+        // files that appeared after the question make git refuse, and with nothing closed yet the user is asked again
+        if (!(await this.confirmForceDelete(worktree.path))) return CANCELLED;
+        await this.deps.service.removeWorktree(repoId, worktree.path, true);
+      }
+    } catch (err) {
+      return failed(gitErrorText(err));
+    }
+    await this.deps.worktrees.markRemoved(worktree.path);
+    return OK;
+  }
+
+  private async confirmForceDelete(worktreePath: string): Promise<boolean> {
+    const t = this.t.bind(this);
+    const force = await this.deps.ask({
+      severity: 'danger',
+      message: t('The worktree contains modified or untracked files. Do you want to force delete?'),
+      detail: t('Worktree: {0}', visibleText(worktreePath)),
+      actions: [t('Force Delete')],
+      cancelLabel: t('Cancel'),
+    });
+    return force === 0;
   }
 }

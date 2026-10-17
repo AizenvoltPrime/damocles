@@ -8,7 +8,7 @@ import { extractFirstUserMessage, newestUniquePrompts } from '../metadata';
 import { extractTerminalAttachmentCounts } from '../terminal-attachments';
 import { DAMOCLES_TERMINAL_ATTACHMENTS_ENTRY } from '../constants';
 
-const output: TerminalAttachmentInput = { source: 'command', commandLine: 'npm test', exitCode: 1, terminalTitle: 'pwsh', text: 'FAIL a.test.ts', omittedLines: 0 };
+const output: TerminalAttachmentInput = { kind: 'terminal', source: 'command', commandLine: 'npm test', exitCode: 1, terminalTitle: 'pwsh', text: 'FAIL a.test.ts', omittedLines: 0 };
 const block = formatTerminalAttachmentBlock(output);
 
 function user(id: string, text: string): SessionEntry {
@@ -30,7 +30,7 @@ describe('terminal attachments in history', () => {
     const message = replayedUser([user('u1', `${block}\n${ide}\nwhat failed?`), sidecar('u1', 1)]);
     expect(message.content).toBe('what failed?');
     expect(message.terminalAttachments).toEqual([
-      { id: 'u1:0', source: 'command', commandLine: 'npm test', exitCode: 1, terminalTitle: 'pwsh', lineCount: 1, omittedLines: 0, preview: 'FAIL a.test.ts' },
+      { id: 'u1:0', kind: 'terminal', source: 'command', commandLine: 'npm test', exitCode: 1, terminalTitle: 'pwsh', lineCount: 1, omittedLines: 0, preview: 'FAIL a.test.ts' },
     ]);
   });
 

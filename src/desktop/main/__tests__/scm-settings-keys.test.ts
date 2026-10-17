@@ -43,6 +43,7 @@ describe('source control setting keys', () => {
       openAfterClone: 'prompt',
       pullBeforeCheckout: false,
       promptToSaveFilesBeforeStash: 'always',
+      blameEditorDecoration: true,
     });
   });
 

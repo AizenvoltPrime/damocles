@@ -8,7 +8,8 @@ import { resumeStoredSession } from "./resume-session";
 import { extractTextFromContent, hasImageContent } from "../../../../shared/utils";
 import { t } from "../../../l10n";
 import { settingsFolderOf } from "../../../workspace-folders/folder-registry";
-import { formatTerminalAttachmentBlock } from "../../../terminal-attachment";
+import { identityFolder } from "../../../worktrees/personal-config";
+import { formatAttachmentBlock } from "../../../terminal-attachment";
 import { MAX_PENDING_TERMINAL_ATTACHMENTS } from "../../terminal-attachment-manager";
 
 /** Build the echo of a locally-handled slash command that bypasses sendMessage. It commits no user
@@ -100,7 +101,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
           kind: "fact",
           scope: tier,
           sessionId: ctx.session.memorySessionId,
-          workspace: ctx.folder.fsPath,
+          workspace: identityFolder(ctx.folder.fsPath),
         });
 
         if (memory) postMessage(ctx.host, { type: "memoryCreated", memory });
@@ -191,6 +192,12 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
 
       const { transformedContent, preApprovedSkillName } = intercept;
 
+      // An opted-in chat's first prompt waits for its worktree and setup (slice 12a rule 4); its dispatch runs this handler again.
+      if (deps.worktrees().interceptSend(ctx.panelId, msg)) {
+        if (preApprovedSkillName) ctx.permissionHandler.revokeSkillPreApproval(preApprovedSkillName);
+        return;
+      }
+
       const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const contentBlocks = hasImageContent(msgContent) ? (msgContent as UserContentBlock[]) : undefined;
 
@@ -201,7 +208,8 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       const baseContent = transformedContent ?? msgContent;
       const ids = msg.terminalAttachmentIds;
       const validIds = Array.isArray(ids) && ids.length <= MAX_PENDING_TERMINAL_ATTACHMENTS && ids.every((id) => typeof id === "string");
-      const attaching = validIds && ctx.terminalAttachments.displayInfo().some((info) => ids.includes(info.id));
+      const sending = validIds ? ctx.terminalAttachments.displayInfo().filter((info) => ids.includes(info.id)) : [];
+      const attaching = validIds && sending.length > 0;
       const withIde = msg.includeIdeContext === true && ctx.ideContextManager.getDisplayInfo() !== null;
       // pi acts on a slash invocation only at the start of the prompt text, so one that blocks will lead is resolved first.
       const baseText = extractTextFromContent(baseContent);
@@ -212,9 +220,12 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
 
       if (slash?.kind === "command") {
         if (attaching) {
+          const terminalOnly = sending.every((info) => info.kind === "terminal");
           postMessage(ctx.host, {
             type: "notification",
-            message: t("A command takes no terminal output, so the attached output stays in the composer for your next message."),
+            message: terminalOnly
+              ? t("A command takes no terminal output, so the attached output stays in the composer for your next message.")
+              : t("A command takes no attachments, so they stay in the composer for your next message."),
             notificationType: "info",
           });
         }
@@ -227,7 +238,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       // Each attachment block starts its own line of the prompt (`extractText` joins blocks with "\n"), ahead of the IDE block and the typed text.
       const attached = attaching ? ctx.terminalAttachments.take(ids) : [];
       const finalContent: ContentInput = attached.length === 0 ? withIdeContext : [
-        ...attached.map(({ attachment }) => ({ type: "text" as const, text: formatTerminalAttachmentBlock(attachment) })),
+        ...attached.map(({ attachment }) => ({ type: "text" as const, text: formatAttachmentBlock(attachment) })),
         ...(typeof withIdeContext === "string" ? [{ type: "text" as const, text: withIdeContext }] : withIdeContext),
       ];
 

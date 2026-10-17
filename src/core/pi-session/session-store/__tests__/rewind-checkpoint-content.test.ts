@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 
 const H = vi.hoisted(() => ({
-  execSafe: vi.fn(async (..._args: unknown[]) => ({ ok: true as const, value: { stdout: 'before\n', stderr: '' } })),
+  exec: vi.fn(async (..._args: unknown[]) => ({ stdout: 'before\n', bytes: Buffer.from('before\n'), stderr: '' })),
 }));
 
 vi.mock('../../pi-loader', () => ({
@@ -19,7 +19,10 @@ vi.mock('../session-dir', () => ({ ensurePiSessionDir: () => '/sessions/--ws--' 
 vi.mock('../../checkpoints', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../checkpoints')>()),
   getCheckpointEntries: (branch: Array<{ data: unknown }>) => branch.map((entry) => entry.data),
-  execSafe: H.execSafe,
+}));
+vi.mock('../../checkpoints/exec', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../checkpoints/exec')>()),
+  exec: H.exec,
 }));
 vi.mock('../../../logger', () => ({ log: vi.fn() }));
 
@@ -32,7 +35,7 @@ describe('getPiFileCheckpointContent', () => {
     const content = await getPiFileCheckpointContent('/ws', 's1', 'u1', '/ws/src/a.ts');
 
     expect(content).toBe('before\n');
-    const args = H.execSafe.mock.calls[0]?.[1] as string[];
+    const args = H.exec.mock.calls[0]?.[1] as string[];
     // The preview reads with the checkpoint repo's own config, so no user setting (global excludes, fsmonitor, filters) differs from a restore.
     expect(args.slice(0, PORTABLE_CONFIG.length)).toEqual([...PORTABLE_CONFIG]);
     expect(args).toEqual(expect.arrayContaining(['core.autocrlf=false', 'core.longpaths=true', 'core.excludesFile=']));

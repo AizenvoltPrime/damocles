@@ -15,6 +15,7 @@ import type { AssetSourcePrecedence } from "../../../asset-sources";
 import type { McpServerEntry, McpServerEntryError, McpServerScope } from "../types";
 import { validateMcpServerEntry } from "./mcp-config-validate";
 import { log } from "../../../logger";
+import { personalConfigRoot } from "../../../worktrees/personal-config";
 
 // Precedence is declared in the shared module so the webview form reads the same order. Re-exported
 // here because this is where every host consumer already looks for MCP source metadata.
@@ -255,9 +256,9 @@ export async function readMcpConfigFile(path: string): Promise<McpFileRead> {
   return { ...coerceServerMap(document ? document["mcpServers"] : undefined), error };
 }
 
-/** The personal per-project Damocles MCP file: gitignored, read-only, highest precedence. */
+/** The personal per-project Damocles MCP file: gitignored, read-only, highest precedence; a worktree chat reads its project's (D34). */
 export function localMcpConfigPath(workspaceRoot: string): string {
-  return join(workspaceRoot, ".damocles", "mcp.local.json");
+  return join(personalConfigRoot(workspaceRoot), ".damocles", "mcp.local.json");
 }
 
 /**

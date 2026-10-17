@@ -1,14 +1,19 @@
 <script setup lang="ts">
-import { ref, computed, defineAsyncComponent, nextTick, provide } from "vue";
+import { ref, computed, defineAsyncComponent, nextTick, provide, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { toast } from "vue-sonner";
 import { initLocaleMessaging } from "@/i18n";
-import { onKeyStroke } from "@vueuse/core";
+import { onKeyStroke, useResizeObserver } from "@vueuse/core";
 import { storeToRefs } from "pinia";
 import VirtualizedMessageList from "./components/VirtualizedMessageList.vue";
 import JumpToLatestButton from "./components/JumpToLatestButton.vue";
 import ChatInput from "./components/ChatInput.vue";
 import ComposerStatusStrip from "./components/composer/ComposerStatusStrip.vue";
+import WorktreeComposerStatus from "./components/composer/WorktreeComposerStatus.vue";
+import WorktreePendingChip from "./components/composer/WorktreePendingChip.vue";
+import WorktreeDeletedCard from "./components/composer/WorktreeDeletedCard.vue";
+import { LoaderCircle, Users } from "lucide-vue-next";
+import { branchLeaf } from "@/utils/branch-leaf";
 import ChatHeader from "./components/chat-header/ChatHeader.vue";
 import SessionHistoryDropdown from "./components/chat-header/SessionHistoryDropdown.vue";
 import type { HeaderAction } from "./components/chat-header/headerActions";
@@ -76,6 +81,7 @@ const EditorOverlayHost = defineAsyncComponent({
 import PromptNavigator from "./components/PromptNavigator.vue";
 import { useOpenSettings } from "@/composables/useOpenSettings";
 import { usePlatformBridge } from "./composables/usePlatformBridge";
+import { remPx } from "./composables/useRemPx";
 import { useBtwAsk } from "./composables/useBtwAsk";
 import { useMessageHandler } from "./composables/message-handler";
 import { useDoubleKeyStroke } from "./composables/useDoubleKeyStroke";
@@ -117,9 +123,10 @@ import type { SteerRequest } from "@/utils/steer-command";
 import type { PermissionUpdate } from "@shared/types/permissions";
 import type { ToolGroup } from "@shared/types/tools";
 import type { McpServerConfig, McpToolExposureScope, McpToolExposureSetting } from "@shared/types/mcp";
-import type { WebviewToExtensionMessage } from "@shared/types/messages";
+import type { WebviewToExtensionMessage, WorktreeAction } from "@shared/types/messages";
+import { visibleText } from "@shared/visible-text";
 
-const { postMessage } = usePlatformBridge();
+const { postMessage, getState, setState } = usePlatformBridge();
 const { t } = useI18n();
 
 initLocaleMessaging(postMessage);
@@ -290,12 +297,13 @@ useMessageHandler({
 });
 
 function openRewindFlow() {
+  if (uiStore.historyReadOnly) return;
   uiStore.openRewindBrowser();
   postMessage({ type: "requestRewindHistory" });
 }
 
 function handleBubbleRewind(message: ChatMessage) {
-  if (!message.sdkMessageId) return;
+  if (!message.sdkMessageId || uiStore.historyReadOnly) return;
   uiStore.startDirectRewind(message);
   postMessage({ type: "requestRewindHistory" });
 }
@@ -318,6 +326,7 @@ const pendingCompactionRewindId = ref<string | null>(null);
 // Boundary card + picker's checkpoint-less branch. Checkpoint-backed → full file-rewind modal (metadata
 // hydrates once rewindHistory arrives); checkpoint-less → yes/no confirm.
 function handleCompactionRewind(entryId: string) {
+  if (uiStore.historyReadOnly) return;
   if (checkpointMessages.value.has(entryId)) {
     const marker = compactMarkers.value.find((m) => m.entryId === entryId);
     const timestamp = marker?.timestamp ?? Date.now();
@@ -432,6 +441,49 @@ function handleSendMessage(content: string | UserContentBlock[], includeIdeConte
   followTranscript();
   uiStore.setProcessing(true);
 }
+
+function handleWorktreeAction(action: WorktreeAction) {
+  postMessage({ type: "worktreeAction", action });
+}
+
+// A send core gave back before the composer mounted lands in it as soon as it does.
+watch(chatInputRef, (composer) => {
+  const returned = uiStore.returnedPrompt;
+  if (!composer || !returned) return;
+  uiStore.returnedPrompt = null;
+  composer.restoreQueued(returned);
+});
+watch(chatInputRef, (composer) => {
+  const appended = uiStore.appendedPrompt;
+  if (!composer || !appended) return;
+  uiStore.appendedPrompt = null;
+  for (const text of appended) composer.appendPrompt(text);
+});
+// On desktop a resuming chat's composer waits for core to say where the chat works, so the wrong one never shows.
+const composerAwaitsPlace = computed(() => uiStore.placePending);
+// The empty composer's height in rem, kept in the page state so a restored page's placeholder has it before any composer mounts.
+const composerHeight = ref(getState<{ composerHeight?: number }>()?.composerHeight ?? null);
+useResizeObserver(() => chatInputRef.value?.$el as HTMLElement | undefined, ([entry]) => {
+  const blockSize = entry?.borderBoxSize[0]?.blockSize;
+  // A draft's height is not the height the composer mounts with, which is empty.
+  if (blockSize === undefined || chatInputRef.value?.isEmpty !== true) return;
+  const rem = Math.round((blockSize / remPx(1)) * 16) / 16;
+  if (rem === composerHeight.value) return;
+  composerHeight.value = rem;
+  setState({ ...getState<Record<string, unknown>>(), composerHeight: rem });
+});
+const placeholderStyle = computed(() => (composerHeight.value === null ? undefined : { height: `${composerHeight.value}rem` }));
+// Core refuses sends while a finish action runs on this chat's worktree; the composer says why and keeps the draft.
+const sendBlocked = computed(() => {
+  const finishing = uiStore.worktree?.finishing;
+  return finishing ? t(`worktree.finishing.${finishing}`) : undefined;
+});
+// Core counts the other chats working in this chat's worktree; the webview never infers it.
+const sharedWorktree = computed(() => {
+  const state = uiStore.worktree;
+  if (!state || state.phase !== "ready" || state.place !== "worktree" || !state.branch || !state.sharedWith) return null;
+  return { leaf: visibleText(branchLeaf(state.branch)), branch: visibleText(state.branch), n: state.sharedWith };
+});
 
 function handleQueueMessage(content: string | UserContentBlock[]) {
   if (tryInterceptLocalCommand(content)) return;
@@ -909,6 +961,7 @@ const HEADER_ACTIONS: Record<HeaderAction, () => void> = {
   stats: () => usageStatsStore.openOverlay(),
   settings: () => handleOpenSettings(),
   terminal: () => postMessage({ type: "toggleTerminal" }),
+  reviewChanges: () => postMessage({ type: "openChatReview", scope: "chat" }),
 };
 
 const isEmptyConversation = computed(() => messageListRef.value?.isEmpty === true);
@@ -928,7 +981,11 @@ function handleSuggestion(prompt: string) {
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col bg-(--d-bg) text-(--d-text)">
-    <ChatHeader @action="(action: HeaderAction) => HEADER_ACTIONS[action]()">
+    <ChatHeader
+      :pinned-prompt="messageListRef?.hiddenPin ?? null"
+      @action="(action: HeaderAction) => HEADER_ACTIONS[action]()"
+      @restore-pin="messageListRef?.restorePin()"
+    >
       <template
         v-if="settingsStore.hostCapabilities.historyInPanel"
         #history
@@ -1115,19 +1172,101 @@ function handleSuggestion(prompt: string) {
           @open-background-tasks="handleOpenBackgroundTasks"
         />
 
-        <ChatInput
-          ref="chatInputRef"
-          :is-processing="isProcessing"
-          :permission-mode="currentSettings.permissionMode"
-          :dangerously-skip-permissions="currentSettings.dangerouslySkipPermissions"
-          :settings-open="showSettingsModal"
-          @send="handleSendMessage"
-          @queue="handleQueueMessage"
-          @steer="handleSteer"
-          @cancel="handleCancel"
-          @change-mode="handleModeChange"
-          @toggle-dangerously-skip-permissions="handleToggleDangerouslySkipPermissions"
+        <WorktreeComposerStatus
+          v-if="uiStore.worktree"
+          :state="uiStore.worktree"
+          @action="handleWorktreeAction"
         />
+
+        <!-- The empty composer's height and still, so the dock never jumps and nothing flashes while the place is unknown. -->
+        <div
+          v-if="composerAwaitsPlace"
+          aria-hidden="true"
+          class="shrink-0"
+          :style="placeholderStyle"
+          data-testid="composer-placeholder"
+        />
+        <!-- Rule 18: a chat whose worktree was deleted is read-only; the card takes the composer's place. -->
+        <Transition
+          v-else
+          name="t-up"
+          mode="out-in"
+        >
+          <WorktreeDeletedCard
+            v-if="uiStore.worktree?.phase === 'deleted'"
+            @new-chat="postMessage({ type: 'worktreeAction', action: 'newChatInProject' })"
+          />
+          <ChatInput
+            v-else
+            ref="chatInputRef"
+            :is-processing="isProcessing"
+            :permission-mode="currentSettings.permissionMode"
+            :dangerously-skip-permissions="currentSettings.dangerouslySkipPermissions"
+            :settings-open="showSettingsModal"
+            :send-blocked="sendBlocked"
+            @send="handleSendMessage"
+            @queue="handleQueueMessage"
+            @steer="handleSteer"
+            @cancel="handleCancel"
+            @change-mode="handleModeChange"
+            @toggle-dangerously-skip-permissions="handleToggleDangerouslySkipPermissions"
+          >
+            <template #chips>
+              <Transition name="t-chip">
+                <WorktreePendingChip
+                  v-if="uiStore.worktree?.phase === 'pending' && uiStore.worktree.branch"
+                  :branch="uiStore.worktree.branch"
+                  :uncommitted="uiStore.worktree.uncommittedCount"
+                  @cancel="postMessage({ type: 'worktreeAction', action: 'cancelOptIn' })"
+                />
+              </Transition>
+              <Transition name="t-tuck">
+                <p
+                  v-if="sendBlocked"
+                  role="status"
+                  class="flex items-center gap-1.5 px-3.5 pt-2.5 text-11.5 text-(--d-warning-text)"
+                  data-testid="composer-worktree-finishing"
+                >
+                  <LoaderCircle
+                    aria-hidden="true"
+                    class="d-spinning size-3 shrink-0"
+                  />
+                  <span class="min-w-0 text-pretty">{{ sendBlocked }}</span>
+                </p>
+              </Transition>
+              <Transition name="t-tuck">
+                <p
+                  v-if="sharedWorktree && !sendBlocked"
+                  class="flex min-w-0 items-center gap-1.5 px-3.5 pt-2.5 text-11.5 text-(--d-faint-text)"
+                  :title="t('worktree.branchTitle', { branch: sharedWorktree.branch })"
+                  data-testid="composer-worktree-shares"
+                >
+                  <Users
+                    aria-hidden="true"
+                    class="size-3 shrink-0"
+                  />
+                  <i18n-t
+                    keypath="worktree.shares"
+                    :plural="sharedWorktree.n"
+                    tag="span"
+                    class="min-w-0 truncate"
+                    scope="global"
+                  >
+                    <template #leaf>
+                      <span
+                        class="font-mono text-(--d-accent-text)"
+                        dir="ltr"
+                      >{{ sharedWorktree.leaf }}</span>
+                    </template>
+                    <template #n>
+                      {{ sharedWorktree.n }}
+                    </template>
+                  </i18n-t>
+                </p>
+              </Transition>
+            </template>
+          </ChatInput>
+        </Transition>
       </div>
     </div>
 
@@ -1227,6 +1366,7 @@ function handleSuggestion(prompt: string) {
       :lines-changed="selectedRewindItem?.linesChanged"
       :skipped="selectedRewindItem?.skipped"
       :not-rewindable="selectedRewindItem?.notRewindable"
+      :crosses-hand-off="selectedRewindItem?.crossesHandOff"
       :checkpoint-id="selectedRewindItem?.messageId"
       :loading-metadata="rewindMetadataLoading"
       @confirm="handleTypeSelected"

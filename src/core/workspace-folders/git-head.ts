@@ -6,7 +6,7 @@ import type { FileWatcher, FileWatcherFactory } from "../../platform/file-watche
 
 // A valid HEAD is one short line; a `.git` file holds one `gitdir:` line, which on Windows may be a long path.
 const HEAD_READ_LIMIT = 1024;
-const GIT_FILE_READ_LIMIT = 4096;
+export const GIT_FILE_READ_LIMIT = 4096;
 const MAX_BRANCH_LENGTH = 255;
 const SHORT_ID_LENGTH = 7;
 
@@ -19,7 +19,7 @@ const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const OPEN_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0);
 
 /** Reads a regular file of at most `limit` bytes; anything else (a FIFO, a device, a directory) reads as nothing. */
-async function readBounded(file: string, limit: number): Promise<string | undefined> {
+export async function readBounded(file: string, limit: number): Promise<string | undefined> {
   let handle: fs.FileHandle | undefined;
   try {
     handle = await fs.open(file, OPEN_FLAGS);
@@ -59,7 +59,7 @@ export async function findGitDir(folder: string): Promise<string | undefined> {
  * Whether `gitDir` is a Windows UNC or device path (`\\server\share`, `\\?\`, `\\.\`) outside the folder's own root.
  * Opening one named by an untrusted `.git` file would connect over SMB and send the user's NTLM credentials.
  */
-function reachesAnotherHost(gitDir: string, folder: string): boolean {
+export function reachesAnotherHost(gitDir: string, folder: string): boolean {
   const root = path.parse(gitDir).root;
   return /^[\\/]{2}/.test(root) && root.toLowerCase() !== path.parse(folder).root.toLowerCase();
 }

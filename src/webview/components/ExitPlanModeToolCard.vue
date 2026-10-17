@@ -44,6 +44,7 @@ const CHIPS: Record<ToolCall['status'], { labelKey: string; class: string }> = {
   approved: { labelKey: 'exitPlanMode.chipApproved', class: SUCCESS_CHIP },
   completed: { labelKey: 'exitPlanMode.chipApproved', class: SUCCESS_CHIP },
   denied: { labelKey: 'exitPlanMode.chipRevising', class: WARNING_CHIP },
+  blocked: { labelKey: 'toolOverlay.statusBlocked', class: WARNING_CHIP },
   abandoned: { labelKey: 'exitPlanMode.chipExited', class: NEUTRAL_CHIP },
   cancelled: { labelKey: 'cards.status.stopped', class: NEUTRAL_CHIP },
   failed: { labelKey: 'cards.status.failed', class: NEUTRAL_CHIP },

@@ -1,7 +1,7 @@
 import { Menu, type BrowserWindow, type MenuItemConstructorOptions } from 'electron';
 import type { OpenFolder } from '../../platform/workspace-folders';
 import type { ChatCommand } from '../../shared/types/messages';
-import type { SearchEditorCommand, SearchViewCommand, ShellState } from '../preload/shell-channels';
+import type { EditorCommand, EditorTabKind, NewChatInWorktreeRequest, SearchEditorCommand, SearchViewCommand, ShellState, WorktreeFinishAction, WorktreeFinishState } from '../preload/shell-channels';
 import type { TerminalAction, TerminalStatus } from '../preload/terminal-channels';
 import {
   acceleratorLabel,
@@ -11,6 +11,7 @@ import {
   FOCUS_NEXT_SEARCH_RESULT_ACCELERATOR,
   NEW_CHAT_ACCELERATOR,
   NEW_TERMINAL_ACCELERATOR,
+  newChatInWorktreeAccelerator,
   OPEN_SETTINGS_ACCELERATOR,
   QUICK_OPEN_ACCELERATOR,
   SEARCH_AGAIN_ACCELERATOR,
@@ -18,7 +19,7 @@ import {
   TOGGLE_SIDEBAR_ACCELERATOR,
   TOGGLE_TERMINAL_ACCELERATOR,
 } from './commands';
-import { CHAT_FEATURE_IDS, commandTitle, desktopCommands, GIT_MENU_GROUPS, isEnabled, isHidden, keyFires, MENU_IDS, openChatForProjectId, resolveLabel, SEARCH_EDITOR_COMMAND_IDS, terminalPassKeys, type Command } from './commands';
+import { CHAT_FEATURE_IDS, commandTitle, desktopCommands, EDITOR_GIT_MENU_GROUPS, GIT_MENU_GROUPS, isEnabled, isHidden, keyFires, MENU_IDS, openChatForProjectId, resolveLabel, SEARCH_EDITOR_COMMAND_IDS, terminalPassKeys, type Command } from './commands';
 import type { DesktopLocalizationService } from './platform/localization-service';
 import type { ScmCommitVariant } from '../preload/scm-channels';
 import type { ScmActiveFileOp, ScmMenuState, ScmPaletteRequest } from './scm/scm-host';
@@ -46,6 +47,7 @@ export function shellShortcutLabels(platform: NodeJS.Platform = process.platform
   const splitTerminal = acceleratorLabel(splitTerminalAccelerator(platform), platform);
   return {
     newChat: acceleratorLabel(NEW_CHAT_ACCELERATOR, platform),
+    newChatInWorktree: acceleratorLabel(newChatInWorktreeAccelerator(platform), platform),
     toggleSidebar: acceleratorLabel(TOGGLE_SIDEBAR_ACCELERATOR, platform),
     settings: acceleratorLabel(OPEN_SETTINGS_ACCELERATOR, platform),
     quickOpen: acceleratorLabel(QUICK_OPEN_ACCELERATOR, platform),
@@ -84,6 +86,19 @@ export interface MenuState {
   readonly search: SearchMenuState;
   // source control for the selected project: its open repositories and the selected one's operation in progress (scm-host.ts)
   readonly scm: ScmMenuState;
+  // the active editor tab's kind; undefined without one
+  readonly editorKind: EditorTabKind | undefined;
+  // the active tab as source control sees it: a code tab of a file in an open repository, or a diff tab of a working tree or
+  // index change (ShellEditorTab.git, diff.git); null otherwise
+  readonly editorGit: 'file' | 'workingTreeDiff' | 'indexDiff' | null;
+  // the selected chat changed files (D60's set is not empty), from core's chatChanges
+  readonly selectedChatHasChanges: boolean;
+  // the selected chat's live worktree (D33); undefined for a chat without one
+  readonly worktree: { readonly finish: WorktreeFinishState; readonly baseBranch?: string } | undefined;
+  // the selected chat's Hand off state (D61); undefined until core sent it one
+  readonly handOff: { readonly canHandOff: boolean; readonly place: 'project' | 'worktree' } | undefined;
+  // New Chat in This Worktree's target: the selected chat works in its live chat worktree of a trusted project; undefined otherwise
+  readonly newChatInWorktree: NewChatInWorktreeRequest | undefined;
 }
 
 // Search's part of the context: what main's search service and editor pane hold, never what a renderer reports.
@@ -203,6 +218,16 @@ export interface MenuActions {
   scmActiveFile(op: ScmActiveFileOp): void;
   // a commit command: the shell commits its draft for the selected repository with the variant
   scmCommit(variant: ScmCommitVariant): void;
+  // an editor-scoped command the shell runs on the active tab (a Monaco keybinding's palette entry)
+  editorCommand(command: EditorCommand): void;
+  // Git: Toggle Inline Blame: flips damocles.desktop.git.blame.editorDecoration.enabled in user settings
+  toggleInlineBlame(): void;
+  // Chat: Review Changes: the selected chat's review tab, Whole chat
+  reviewChatChanges(): void;
+  handOff(to: 'worktree' | 'project'): void;
+  // Chat: New Chat in This Worktree; no target: the selected chat's worktree
+  newChatInWorktree(target?: NewChatInWorktreeRequest): void;
+  worktreeFinish(action: WorktreeFinishAction): void;
 }
 
 type MenuClick = NonNullable<MenuItemConstructorOptions['click']>;
@@ -272,6 +297,7 @@ export function installApplicationMenu(
     label: l10n.t('File'),
     submenu: [
       item(MENU_IDS.newChat),
+      item(MENU_IDS.chatNewInWorktree),
       item(MENU_IDS.openChat),
       { id: MENU_IDS.openChatForProjectMenu, label: l10n.t('Open Chat in Project'), submenu: projectItems },
       item(MENU_IDS.quickOpen),
@@ -294,6 +320,14 @@ export function installApplicationMenu(
       item(MENU_IDS.cancelSession),
       { type: 'separator' },
       ...CHAT_FEATURE_IDS.map(item),
+      item(MENU_IDS.chatReviewChanges),
+      item(MENU_IDS.chatHandOffToWorktree),
+      item(MENU_IDS.chatHandOffToProjectFolder),
+      {
+        id: 'damocles.menu.worktree',
+        label: l10n.t('Worktree'),
+        submenu: [item(MENU_IDS.worktreeApply), item(MENU_IDS.worktreeMerge), item(MENU_IDS.worktreeUpdate), item(MENU_IDS.worktreePushBranch), { type: 'separator' }, item(MENU_IDS.worktreeDelete)],
+      },
       { type: 'separator' },
       item(MENU_IDS.togglePromptNavigator),
       { type: 'separator' },
@@ -403,6 +437,10 @@ export function installApplicationMenu(
       { role: 'selectAll', label: t('Select All') },
       { type: 'separator' },
       item(MENU_IDS.formatDocument),
+      { type: 'separator' },
+      // Monaco keybindings run these in the editor; their chords are palette hints only, so the items carry no accelerator
+      ...EDITOR_GIT_MENU_GROUPS[0]!.map(item),
+      { id: 'damocles.menu.mergeConflict', label: t('Merge Conflict'), submenu: EDITOR_GIT_MENU_GROUPS.slice(1).flat().map(item) },
       { type: 'separator' },
       item(MENU_IDS.findInFiles),
       item(MENU_IDS.replaceInFiles),

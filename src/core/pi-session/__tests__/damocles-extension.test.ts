@@ -87,6 +87,7 @@ function panel(evaluate: 'allow' | 'deny', plan = false): PanelGateContext {
     shellCancel: new ShellCancelStore().forContext(() => undefined),
     budgetStopRequested: () => false,
     getSessionModel: () => 'claude-opus-4-8',
+    memoryWorkspace: () => '/repo',
     getSystemPromptEnv: () => ({
       cwd: '/repo',
       model: 'claude-opus-4-8',

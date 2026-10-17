@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import { log } from "../logger";
 import { writeJsonConfig } from "../config/json-config-write";
+import { personalConfigRoot } from "../worktrees/personal-config";
 import { parseSettingsText } from "../config/settings-file";
 import { TOOL_EDIT, TOOL_GENERATE_IMAGE, TOOL_READ, TOOL_WRITE } from "../../shared/tool-names";
 
@@ -181,10 +182,14 @@ export async function loadPermissionsByPriority(
 
   const project = (dir: string, file: string): { file: string; root: string } | null =>
     workspacePath ? { file: path.join(workspacePath, dir, file), root: workspacePath } : null;
+  // D34: a worktree chat's personal files are its project's, live; relative rule paths still match the working folder.
+  const personalRoot = workspacePath ? personalConfigRoot(workspacePath) : null;
+  const personal = (dir: string, file: string): { file: string; root: string } | null =>
+    personalRoot && workspacePath ? { file: path.join(personalRoot, dir, file), root: workspacePath } : null;
   const user = (dir: string, file: string): { file: string; root: string } => ({ file: path.join(home, dir, file), root: path.join(home, dir) });
   const sources = [
-    project(".damocles", "settings.local.json"),
-    project(".claude", "settings.local.json"),
+    personal(".damocles", "settings.local.json"),
+    personal(".claude", "settings.local.json"),
     project(".damocles", "settings.json"),
     project(".claude", "settings.json"),
     user(".damocles", "settings.local.json"),

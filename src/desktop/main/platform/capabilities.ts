@@ -16,5 +16,7 @@ export function desktopHostCapabilities(platform: NodeJS.Platform): HostCapabili
     folderPickerInPanel: false,
     fileMentionDrop: true,
     windowLayout: true,
+    chatReview: true,
+    worktrees: true,
   };
 }

@@ -82,7 +82,17 @@ import {
   type ShellSidebarLayout,
   type ShellState,
   type WindowControl,
+  WORKTREE_FINISH_ACTIONS,
+  type ChatsWorktreeOptions,
+  type NewChatInWorktreeRequest,
+  type NewChatWorktree,
+  type ShowFolderRequest,
+  type ShownFolder,
+  type WorktreeFinishAction,
+  type WorktreeFinishRequest,
 } from '../preload/shell-channels';
+import { isFullRefName } from '../preload/scm-channels';
+import { isWorktreeId } from '../../shared/worktree-id';
 import { isUpdateAction, type UpdateAction, type UpdateSnapshot } from '../preload/updates';
 import {
   MAX_TERMINAL_ACK_CHARS,
@@ -108,8 +118,17 @@ import {
   type TerminalState,
 } from '../preload/terminal-channels';
 import { MAX_TERMINAL_ATTACHMENT_CHARS, MAX_TERMINAL_ATTACHMENT_OMITTED_LINES } from '../preload/terminal-attachment-cap';
+import { REVIEW_CHANNELS, type ChatReviewFileDiffResult, type ChatReviewSendResult } from '../preload/review-channels';
 import {
   SCM_CHANNELS,
+  type ScmBlameResult,
+  type ScmMergeFileResult,
+  type ScmMergeInputsResult,
+  type ScmQuickDiffBaseResult,
+  type ScmHistoryResult,
+  type ScmCommitDetailsResult,
+  type ScmResource,
+  type ScmTimelineResult,
   type ScmCommitInput,
   type ScmCommitResult,
   type ScmDecorations,
@@ -150,7 +169,13 @@ export interface ShellActions {
   listChats(projectKey: string): Promise<ShellChatList | undefined>;
   searchChats(projectKey: string, query: string): Promise<ShellChatList | undefined>;
   selectChat(chatId: string): Promise<SelectChatResult>;
-  newChat(projectKey: string | undefined): Promise<void>;
+  // worktree: the New menu's opt-in, a full refname not yet checked against the project's options
+  newChat(projectKey: string | undefined, worktree?: NewChatWorktree): Promise<void>;
+  // main checks the worktree is a live chat worktree of that project
+  newChatInWorktree(request: NewChatInWorktreeRequest): Promise<void>;
+  worktreeOptions(projectKey: string): Promise<ChatsWorktreeOptions>;
+  showFolder(request: ShowFolderRequest): Promise<void>;
+  worktreeFinish(request: WorktreeFinishRequest): Promise<void>;
   // name is trimmed and within bounds
   renameChat(chatId: string, name: string): Promise<ChatMutationResult>;
   // tag is trimmed and within bounds; null removes it
@@ -185,13 +210,31 @@ export interface ShellActions {
   readonly browser: ShellBrowserActions;
   readonly terminal: ShellTerminalActions;
   readonly scm: ShellScmActions;
+  readonly review: ShellReviewActions;
   readonly gestures: ShellGestureActions;
   openQuickOpen(): Promise<void>;
   showCommands(): Promise<void>;
 }
 
+// Chat review tabs (review-channels.ts): each takes the raw payload, which chat-review-host.ts validates.
+export interface ShellReviewActions {
+  fileDiff(raw: unknown): Promise<ChatReviewFileDiffResult>;
+  setScope(raw: unknown): Promise<void>;
+  send(raw: unknown): Promise<ChatReviewSendResult>;
+  discard(raw: unknown): Promise<void>;
+  setDrafts(raw: unknown): Promise<void>;
+}
+
 // Source control (scm-channels.ts): each takes the raw payload, which scm-host.ts validates before anything reaches core.
 export interface ShellScmActions {
+  quickDiffBase(raw: unknown): Promise<ScmQuickDiffBaseResult>;
+  blame(raw: unknown): Promise<ScmBlameResult>;
+  timeline(raw: unknown): Promise<ScmTimelineResult>;
+  history(raw: unknown): Promise<ScmHistoryResult>;
+  commitDetails(raw: unknown): Promise<ScmCommitDetailsResult>;
+  mergeInputs(raw: unknown): Promise<ScmMergeInputsResult>;
+  mergeFile(raw: unknown): Promise<ScmMergeFileResult>;
+  resource(raw: unknown): ScmResource | null;
   state(): ScmShellState;
   select(raw: unknown): void;
   run(raw: unknown): Promise<ScmRunResult>;
@@ -453,6 +496,43 @@ function errorText(err: unknown): string {
 
 export function isShellId(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= MAX_ID_LENGTH;
+}
+
+// A plain object with exactly these keys.
+function exactRecord(raw: unknown, keys: readonly string[]): Record<string, unknown> | undefined {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
+  const value = raw as Record<string, unknown>;
+  return Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key)) ? value : undefined;
+}
+
+/**
+ * The New menu's worktree choice: a local or remote branch's full refname, or `HEAD` (a detached HEAD's option), and a flag;
+ * main checks it against fresh options.
+ */
+export function parseNewChatWorktree(raw: unknown): NewChatWorktree | undefined {
+  const value = exactRecord(raw, ['startRef', 'bringChanges']);
+  if (!value || typeof value['bringChanges'] !== 'boolean' || !(value['startRef'] === 'HEAD' || isFullRefName(value['startRef'], ['refs/heads/', 'refs/remotes/']))) return undefined;
+  return { startRef: value['startRef'], bringChanges: value['bringChanges'] };
+}
+
+export function parseShowFolder(raw: unknown): ShowFolderRequest | undefined {
+  const value = exactRecord(raw, ['projectKey', 'show']);
+  if (!value || !isShellId(value['projectKey']) || (value['show'] !== 'project' && value['show'] !== 'worktree')) return undefined;
+  return { projectKey: value['projectKey'], show: value['show'] };
+}
+
+export function parseNewChatInWorktree(raw: unknown): NewChatInWorktreeRequest | undefined {
+  const value = exactRecord(raw, ['projectKey', 'worktreeId']);
+  if (!value || !isShellId(value['projectKey']) || !isWorktreeId(value['worktreeId'])) return undefined;
+  return { projectKey: value['projectKey'], worktreeId: value['worktreeId'] };
+}
+
+export function parseWorktreeFinish(raw: unknown): WorktreeFinishRequest | undefined {
+  const value = exactRecord(raw, ['projectKey', 'worktreeId', 'action']);
+  if (!value || !isShellId(value['projectKey']) || !isWorktreeId(value['worktreeId'])) return undefined;
+  const action = value['action'];
+  if (!(WORKTREE_FINISH_ACTIONS as readonly unknown[]).includes(action)) return undefined;
+  return { projectKey: value['projectKey'], worktreeId: value['worktreeId'], action: action as WorktreeFinishAction };
 }
 
 /** A chat name from the shell, trimmed, or undefined when it is not a string of 1..MAX_CHAT_NAME_LENGTH characters after trimming. */
@@ -937,7 +1017,32 @@ export class ShellHost {
       return this.chatList(this.id(key), revision, (projectKey) => this.actions.searchChats(projectKey, query));
     });
     this.handle(SHELL_CHANNELS.chatsSelect, (id) => this.actions.selectChat(this.id(id)));
-    this.handle(SHELL_CHANNELS.chatsNew, (key) => this.actions.newChat(key === undefined ? undefined : this.id(key)));
+    this.handle(SHELL_CHANNELS.chatsNew, (key, ...rest) => {
+      if (rest.length > 1) throw new Error('Malformed new chat from the shell');
+      const worktree = rest.length === 0 ? undefined : parseNewChatWorktree(rest[0]);
+      if (rest.length === 1 && (!worktree || key === undefined)) throw new Error('Malformed new chat from the shell');
+      return this.actions.newChat(key === undefined ? undefined : this.id(key), worktree);
+    });
+    this.handle(SHELL_CHANNELS.chatsNewInWorktree, (raw) => {
+      const request = parseNewChatInWorktree(raw);
+      if (!request) throw new Error('Malformed new chat in a worktree from the shell');
+      return this.actions.newChatInWorktree(request);
+    });
+    this.handle(SHELL_CHANNELS.chatsWorktreeOptions, (raw) => {
+      const value = exactRecord(raw, ['projectKey']);
+      if (!value) throw new Error('Malformed worktree options request from the shell');
+      return this.actions.worktreeOptions(this.id(value['projectKey']));
+    });
+    this.handle(SHELL_CHANNELS.showFolder, (raw) => {
+      const request = parseShowFolder(raw);
+      if (!request) throw new Error('Malformed show folder request from the shell');
+      return this.actions.showFolder(request);
+    });
+    this.handle(SHELL_CHANNELS.worktreeFinish, (raw) => {
+      const request = parseWorktreeFinish(raw);
+      if (!request) throw new Error('Malformed worktree action from the shell');
+      return this.actions.worktreeFinish(request);
+    });
     this.handle(SHELL_CHANNELS.chatsRename, (id, raw) => {
       const name = chatName(raw);
       if (name === undefined) throw new Error('Malformed chat name from the shell');
@@ -1020,6 +1125,7 @@ export class ShellHost {
     this.handleSearchEditor();
     this.handleTerminal();
     this.handleScm();
+    this.handleReview();
 
     const contents = window.webContents;
     // Only input the browser process routes reaches these: page script's synthetic events never do.
@@ -1362,6 +1468,23 @@ export class ShellHost {
     this.handle(SCM_CHANNELS.commitInput, (raw) => scm.commitInput(raw));
     this.handle(SCM_CHANNELS.amend, (raw) => scm.amend(raw));
     this.handle(SCM_CHANNELS.artifacts, (raw) => scm.artifacts(raw));
+    this.handle(SCM_CHANNELS.quickDiffBase, (raw) => scm.quickDiffBase(raw));
+    this.handle(SCM_CHANNELS.blame, (raw) => scm.blame(raw));
+    this.handle(SCM_CHANNELS.timeline, (raw) => scm.timeline(raw));
+    this.handle(SCM_CHANNELS.history, (raw) => scm.history(raw));
+    this.handle(SCM_CHANNELS.commitDetails, (raw) => scm.commitDetails(raw));
+    this.handle(SCM_CHANNELS.mergeInputs, (raw) => scm.mergeInputs(raw));
+    this.handle(SCM_CHANNELS.mergeFile, (raw) => scm.mergeFile(raw));
+    this.handle(SCM_CHANNELS.resource, (raw) => scm.resource(raw));
+  }
+
+  private handleReview(): void {
+    const review = this.actions.review;
+    this.handle(REVIEW_CHANNELS.fileDiff, (raw) => review.fileDiff(raw));
+    this.handle(REVIEW_CHANNELS.setScope, (raw) => review.setScope(raw));
+    this.handle(REVIEW_CHANNELS.send, (raw) => review.send(raw));
+    this.handle(REVIEW_CHANNELS.discard, (raw) => review.discard(raw));
+    this.handle(REVIEW_CHANNELS.setDrafts, (raw) => review.setDrafts(raw));
   }
 
   scmView(view: ScmView): void {
@@ -1530,6 +1653,10 @@ export class ShellHost {
 
   chatsChanged(projectKey: string): void {
     this.send(SHELL_CHANNELS.chatsChanged, projectKey);
+  }
+
+  shownFolderChanged(shown: ShownFolder): void {
+    this.send(SHELL_CHANNELS.shownFolder, shown);
   }
 
   // main → shell editor and Files pushes; each is dropped while the page is not loaded, which refetches on load

@@ -13,6 +13,7 @@ export const SECTION_TITLES: Readonly<Record<SidebarSectionId, string>> = {
   search: 'search.heading',
   repos: 'repositories.heading',
   scm: 'scm.heading',
+  graph: 'graph.heading',
 };
 
 // The data type a section header drag carries, so a section ignores file drags and drags from other windows.

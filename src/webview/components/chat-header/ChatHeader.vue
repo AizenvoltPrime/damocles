@@ -2,38 +2,56 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
-import { Brain, GitBranch, Globe, MessageCircleQuestion, Settings, SquareTerminal } from 'lucide-vue-next';
+import { Brain, Folder, FolderX, GitBranch, Globe, MessageCircleQuestion, Settings, SquareTerminal } from 'lucide-vue-next';
 import { Toggle } from '@/components/ui/toggle';
 import WorkspaceFolderChip from '@/components/WorkspaceFolderChip.vue';
 import PromptNavigatorChip from '@/components/PromptNavigatorChip.vue';
+import PinnedPromptButton from './PinnedPromptButton.vue';
 import ConsolidationIndicator from '@/components/ConsolidationIndicator.vue';
 import McpStatusIndicator from '@/components/McpStatusIndicator.vue';
 import ToolsStatusIndicator from '@/components/ToolsStatusIndicator.vue';
 import PlanMenu from './PlanMenu.vue';
 import HeaderMoreMenu from './HeaderMoreMenu.vue';
+import ChatChangesCounter from './ChatChangesCounter.vue';
+import HandOffMenu from './HandOffMenu.vue';
+import WorktreeHeaderChip from './WorktreeHeaderChip.vue';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
+import type { ChatPlace } from '@shared/types/messages';
+import { visibleText } from '@shared/visible-text';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { useSessionStore } from '@/stores/useSessionStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useBtwStore } from '@/stores/useBtwStore';
 import type { HeaderAction } from './headerActions';
+import type { ChatMessage } from '@shared/types/session';
 
-const emit = defineEmits<{ action: [action: HeaderAction] }>();
+// pinnedPrompt: the prompt the message list would pin while the user keeps its pinned header hidden
+defineProps<{ pinnedPrompt?: ChatMessage | null }>();
+const emit = defineEmits<{ action: [action: HeaderAction]; restorePin: [] }>();
 
 const { t } = useI18n();
 const settingsStore = useSettingsStore();
 const { workspaceFolders, panelWorkspaceFolderKey, mcpServers, toolsSnapshot, hostCapabilities } = storeToRefs(settingsStore);
 const { selectedSessionDisplayName, isAwaitingUserAction } = storeToRefs(useSessionStore());
-const { isProcessing, terminalShown, toggleTerminalShortcut } = storeToRefs(useUIStore());
+const { isProcessing, terminalShown, toggleTerminalShortcut, chatChanges, worktree } = storeToRefs(useUIStore());
+const { postMessage } = usePlatformBridge();
 const btwStore = useBtwStore();
 
 // Chat Panel.dc.html folds the header by the panel's width: Memory consolidation below 45rem (720px at the default
 // font), the plan, memory, browser, MCP and tools controls and the desktop terminal toggle below 35rem (560px), all into the More menu.
 const WIDE_REM = 45;
 const ROOMY_REM = 35;
+// A live worktree chip takes up to 11rem beside the project name, so the toolbar folds this much earlier while it shows.
+const CHIP_FOLD_REM = 8;
 const rootRef = ref<HTMLElement | null>(null);
 const widthRem = ref(Number.POSITIVE_INFINITY);
-const wide = computed(() => widthRem.value >= WIDE_REM);
-const roomy = computed(() => widthRem.value >= ROOMY_REM);
+const foldAt = (rem: number): number => rem + (worktreeChip.value && !worktreeChip.value.gone ? CHIP_FOLD_REM : 0);
+const wide = computed(() => widthRem.value >= foldAt(WIDE_REM));
+const roomy = computed(() => widthRem.value >= foldAt(ROOMY_REM));
+// Hand off keeps its icon button down to 25rem (400px at the default font) and folds into More below it, so the header still
+// fits the narrowest panel.
+const HAND_OFF_REM = 25;
+const fitsHandOff = computed(() => widthRem.value >= HAND_OFF_REM);
 
 let observer: ResizeObserver | null = null;
 onMounted(() => {
@@ -54,11 +72,35 @@ const status = computed(() => {
   return null;
 });
 
-const branch = computed(() => workspaceFolders.value.find((f) => f.key === panelWorkspaceFolderKey.value)?.branch);
+// A worktree chat's folder is no project of the list, so its project and branch come from its worktree state.
+const panelFolder = computed(() => workspaceFolders.value.find((f) => f.key === panelWorkspaceFolderKey.value));
+const branch = computed(() => panelFolder.value?.branch ?? (worktree.value?.place === 'project' ? worktree.value.baseBranch : undefined));
+const worktreeProject = computed(() => {
+  const name = panelFolder.value ? undefined : worktree.value?.projectName;
+  return name === undefined ? undefined : visibleText(name);
+});
 const mcpConnected = computed(() => mcpServers.value.filter((s) => s.status === 'connected').length);
 const toolsEnabled = computed(() => toolsSnapshot.value.tools.filter((tool) => tool.toggleable && tool.enabled).length);
 
 const run = (action: HeaderAction) => emit('action', action);
+
+// D30, D61: shown only once the host sent a worktree state, so VS Code's header is unchanged.
+const worktreeChip = computed(() => {
+  const state = worktree.value;
+  if (!state) return null;
+  if (state.phase === 'deleted') return { gone: true as const };
+  if (state.place !== 'worktree' || !state.branch || state.phase === 'pending' || state.phase === 'none') return null;
+  const base = state.baseBranch === undefined ? undefined : visibleText(state.baseBranch);
+  const note = base === undefined ? undefined : state.targetRewritten ? { text: t('worktree.rewritten', { branch: base }), warning: true } : state.behind ? { text: t('worktree.behind', { n: state.behind, branch: base }), warning: false } : undefined;
+  return { gone: false as const, branch: state.branch, note };
+});
+const handOff = computed(() => {
+  const state = worktree.value;
+  return hostCapabilities.value.worktrees && state && (state.phase === 'none' || state.phase === 'ready') ? state : null;
+});
+const moveChat = (to: ChatPlace) => postMessage({ type: 'chatMove', to });
+// D60: only a host that opens the review tab shows the counter, and only once the chat changed a file
+const changes = computed(() => (hostCapabilities.value.chatReview && chatChanges.value.files > 0 ? chatChanges.value : null));
 const terminalTitle = computed(() => (toggleTerminalShortcut.value ? t('chatHeader.toggleTerminalShortcut', { shortcut: toggleTerminalShortcut.value }) : t('chatHeader.toggleTerminal')));
 </script>
 
@@ -90,24 +132,79 @@ const terminalTitle = computed(() => (toggleTerminalShortcut.value ? t('chatHead
         </Transition>
       </div>
       <div class="flex min-w-0 items-center gap-1.5 text-11.5/4 text-(--d-faint)">
-        <WorkspaceFolderChip />
+        <WorkspaceFolderChip v-if="!worktreeProject" />
         <span
-          v-if="branch"
+          v-else
+          class="inline-flex min-w-0 shrink items-center gap-1"
+          :title="worktreeProject"
+          data-testid="chat-header-folder"
+        >
+          <Folder
+            class="size-2.75 shrink-0"
+            aria-hidden="true"
+          />
+          <span class="truncate">{{ worktreeProject }}</span>
+        </span>
+        <Transition
+          name="t-chip"
+          mode="out-in"
+        >
+          <span
+            v-if="worktreeChip?.gone"
+            key="gone"
+            class="flex h-4.5 min-w-0 items-center gap-1 rounded-full bg-(--d-hover) px-1.5 text-10.5 text-(--d-faint-text)"
+            :title="t('worktree.deleted')"
+            data-testid="chat-header-worktree"
+            data-state="deleted"
+          >
+            <FolderX
+              class="size-2.5 shrink-0"
+              aria-hidden="true"
+            />
+            <span class="truncate">{{ t('worktree.deletedChip') }}</span>
+          </span>
+          <WorktreeHeaderChip
+            v-else-if="worktreeChip"
+            key="live"
+            :branch="worktreeChip.branch"
+            :note="worktreeChip.note"
+            :narrow="!roomy"
+            @new-chat-here="postMessage({ type: 'worktreeAction', action: 'newChatInWorktree' })"
+          />
+        </Transition>
+        <!-- The note gives way before the chip; narrow, it folds into the chip as an icon. -->
+        <Transition name="t-fade">
+          <span
+            v-if="worktreeChip && !worktreeChip.gone && worktreeChip.note && roomy"
+            class="min-w-0 shrink-4 truncate"
+            :class="worktreeChip.note.warning ? 'text-(--d-warning-text)' : 'text-(--d-faint-text)'"
+            data-testid="chat-header-worktree-note"
+          >{{ worktreeChip.note.text }}</span>
+        </Transition>
+        <span
+          v-if="branch && !worktreeChip"
           class="flex min-w-0 items-center gap-1 font-mono"
           dir="ltr"
-          :title="t('chatHeader.branch', { branch })"
+          :title="t('chatHeader.branch', { branch: visibleText(branch) })"
           data-testid="chat-header-branch"
         >
           <GitBranch
             class="size-2.75 shrink-0"
             aria-hidden="true"
           />
-          <span class="truncate">{{ branch }}</span>
+          <span class="truncate">{{ visibleText(branch) }}</span>
         </span>
       </div>
     </div>
 
     <div class="flex shrink-0 items-center gap-0.5">
+      <Transition name="t-pop">
+        <PinnedPromptButton
+          v-if="pinnedPrompt"
+          :message="pinnedPrompt"
+          @restore="emit('restorePin')"
+        />
+      </Transition>
       <PromptNavigatorChip :show-shortcut="wide" />
       <ConsolidationIndicator
         v-if="wide"
@@ -178,7 +275,25 @@ const terminalTitle = computed(() => (toggleTerminalShortcut.value ? t('chatHead
           :disabled="isProcessing"
           @click="run('tools')"
         />
+        <Transition name="t-pop">
+          <ChatChangesCounter
+            v-if="changes"
+            :added="changes.added"
+            :removed="changes.removed"
+            :files="changes.files"
+            @open="run('reviewChanges')"
+          />
+        </Transition>
       </template>
+      <Transition name="t-pop">
+        <HandOffMenu
+          v-if="handOff && fitsHandOff"
+          :state="handOff"
+          :project-branch="branch"
+          :wide="wide"
+          @move="moveChat"
+        />
+      </Transition>
       <slot name="history" />
       <!-- Pressed while the desktop window shows its terminal pane; the host toggles the pane and reports the new state. -->
       <Toggle
@@ -203,7 +318,10 @@ const terminalTitle = computed(() => (toggleTerminalShortcut.value ? t('chatHead
         :has-aside="btwStore.hasAside"
         :terminal="hostCapabilities.windowLayout"
         :terminal-shortcut="toggleTerminalShortcut"
+        :changes="changes"
+        :hand-off="fitsHandOff ? null : handOff"
         @action="run"
+        @hand-off="moveChat"
       />
       <button
         v-if="hostCapabilities.settingsInPanel"

@@ -119,6 +119,26 @@ describe('PanelStateStore v2', () => {
     });
   });
 
+  it('keeps a held prompt of a chat across a state update and a reopen until it is cleared, and drops a malformed one', async () => {
+    const store = new PanelStateStore(dir, log);
+    store.set({ panelId: 'a', state: { workspaceFolderKey: 'p' } });
+    const held = [{ type: 'text' as const, text: 'Fix the login' }, { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'AAAA' } }];
+    store.setHeldPrompt('a', held);
+    store.set({ panelId: 'a', state: { workspaceFolderKey: 'p' } });
+    await store.flush();
+    const again = new PanelStateStore(dir, log);
+    expect(again.get('a')?.heldPrompt).toEqual(held);
+    again.setHeldPrompt('a', undefined);
+    await again.flush();
+    expect(new PanelStateStore(dir, log).get('a')).toEqual({ panelId: 'a', state: { workspaceFolderKey: 'p' }, browser: NO_PAGES });
+    writeFile({ version: 2, chats: [{ panelId: 'b', state: null, pages: [], heldPrompt: [{ type: 'script', text: 'x' }] }] });
+    expect(new PanelStateStore(dir, log).get('b')).toEqual({ panelId: 'b', state: null, browser: NO_PAGES });
+    expect(lines).toContain('[panels] chat b: dropping a malformed held prompt');
+    // a block keeps only the fields of its kind
+    writeFile({ version: 2, chats: [{ panelId: 'c', state: null, pages: [], heldPrompt: [{ type: 'text', text: 'x', extra: 1 }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA', url: 'u' }, cache: true }] }] });
+    expect(new PanelStateStore(dir, log).get('c')?.heldPrompt).toEqual([{ type: 'text', text: 'x' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }]);
+  });
+
   it('keeps the selected project and session when the selected chat unloads', async () => {
     const store = new PanelStateStore(dir, log);
     store.set({ panelId: 'a', state: null });

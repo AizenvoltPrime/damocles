@@ -1,6 +1,6 @@
 import * as crypto from 'crypto';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
-import { piSessionDir } from '../pi-session/session-store';
+import { piSessionDirOf } from '../pi-session/session-store';
 import { teamMemberSessionId, teamMembersDir, type AgentSegmentData, type TeamMemberLaunchData } from '../pi-session/agent-records';
 import { DAMOCLES_AGENT_LAUNCH_ENTRY, DAMOCLES_AGENT_SEGMENT_ENTRY } from '../pi-session/session-store/constants';
 import { MessageBus } from './message-bus';
@@ -2564,7 +2564,7 @@ export class TeamRunner {
     if (member.kind === 'fresh') {
       session = await create({
         kind: 'file',
-        dir: teamMembersDir(piSessionDir(this.config.cwd), this.config.persistenceSessionId, this.config.teamId),
+        dir: teamMembersDir(piSessionDirOf(this.config.cwd, this.config.persistenceSessionId), this.config.persistenceSessionId, this.config.teamId),
         id: teamMemberSessionId(agent.agentId, attempt),
       }, member.resolution);
       const launch: TeamMemberLaunchData = {

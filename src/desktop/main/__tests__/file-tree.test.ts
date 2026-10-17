@@ -265,6 +265,18 @@ describe('delete, reveal and copy', () => {
     expect(trashed).toEqual([]);
   });
 
+  it('names an entry with control or bidi characters by their escapes in both delete questions', async () => {
+    touch('src/a\u202Eb.ts');
+    trashFailure = "EPERM: operation not permitted, 'a\u202Eb.ts'";
+    answers = [0, undefined];
+    await tree.delete(project.key, 'src/a\u202Eb.ts');
+    expect(asked.map((question) => question.message)).toEqual([
+      "Are you sure you want to delete 'a\\u{202E}b.ts'?",
+      "'a\\u{202E}b.ts' could not be moved to the trash. Do you want to delete it permanently instead?",
+    ]);
+    expect(asked[1]!.detail).toContain("'a\\u{202E}b.ts'");
+  });
+
   it('offers Delete Permanently when the trash fails, deletes only after that confirmation, and reports a failure of either', async () => {
     touch('src/locked.ts');
     const file = path.join(projectDir, 'src', 'locked.ts');

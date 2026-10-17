@@ -34,6 +34,7 @@ describe('usePlatformBridge host selection', () => {
     expect(api.postMessage).toHaveBeenCalledWith({ type: 'cancelSession' });
     expect(api.setState).toHaveBeenCalledWith({ b: 2 });
     expect(bridge.getState()).toEqual({ a: 1 });
+    expect(bridge.host).toBe('vscode');
     expect(received).toEqual([{ type: 'ping' }]);
     expect(window.damoclesBridge.postMessage).not.toHaveBeenCalled();
   });
@@ -66,6 +67,7 @@ describe('usePlatformBridge host selection', () => {
     expect(desktop.postMessage).toHaveBeenCalledWith({ type: 'cancelSession' });
     expect(desktop.setState).toHaveBeenCalledWith({ tab: 'y' });
     expect(bridge.getState()).toEqual({ tab: 'x' });
+    expect(bridge.host).toBe('desktop');
     expect(received).toEqual([{ type: 'ping' }]);
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
@@ -78,7 +80,7 @@ describe('usePlatformBridge host selection', () => {
 
   it('uses a bridge the page installs before first use, such as the desktop overlay, and refuses a second one', async () => {
     delete g.acquireVsCodeApi;
-    const page = { postMessage: vi.fn(), onMessage: vi.fn(() => () => {}), getState: vi.fn(), setState: vi.fn() };
+    const page = { host: 'overlay' as const, postMessage: vi.fn(), onMessage: vi.fn(() => () => {}), getState: vi.fn(), setState: vi.fn() };
     const { installPlatformBridge, usePlatformBridge } = await import('../usePlatformBridge');
     installPlatformBridge(page);
     usePlatformBridge().postMessage({ type: 'requestSettingsState' });

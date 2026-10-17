@@ -4,7 +4,8 @@ import type { StoredSession } from '@shared/types/session';
 import { initPiLoader, type PiCodingAgentModule } from '../pi-loader';
 import { log } from '../../logger';
 import { perfSpan } from '../../perf';
-import { ensurePiSessionDir } from './session-dir';
+import { ensurePiSessionDir, piSessionDir } from './session-dir';
+import { worktreeSessionFolders } from '../../worktrees/personal-config';
 import { PI_PROMPT_HISTORY_CAP, sessionFileMeta, type SessionFileMeta } from './metadata';
 import {
   evictSessionMetaExcept,
@@ -22,8 +23,8 @@ export function piSessionIdFromFile(filePath: string): string {
   return underscore >= 0 ? base.slice(underscore + 1) : base;
 }
 
-/** Session id to the file last seen for it. An entry can outlive its file, so `resolvePiSessionFile` checks
- *  the entry's dir and stats the file before trusting it. */
+/** Session id to the file last seen for it. An entry can outlive its file and belong to another folder's lookup, so a
+ *  reader checks that the entry's dir is one of its lookup dirs and that the file exists before trusting it. */
 const sessionFileIndex = new Map<string, string>();
 
 function indexSessionFile(filePath: string): void {
@@ -191,11 +192,27 @@ export function forgetSessionMetadata(filePath: string): void {
   if (indexed !== undefined && metaCacheKey(indexed) === metaCacheKey(filePath)) sessionFileIndex.delete(id);
 }
 
-/** Resolve the on-disk file for a pi session id within a workspace, or null if absent. */
-export async function resolvePiSessionFile(cwd: string, sessionId: string): Promise<string | null> {
-  const dir = ensurePiSessionDir(cwd);
+/**
+ * The session directories a session of `cwd` can live in (slice 12a rule 1): `cwd`'s own, then, for a folder of a project with
+ * worktree chats, the project's and each of its registry folders'. A session file stays where it was created, and a hand-off
+ * moves a chat between those folders without moving it.
+ */
+export function sessionLookupDirs(cwd: string): string[] {
+  const dirs = [piSessionDir(cwd), ...worktreeSessionFolders(cwd).map((folder) => piSessionDir(folder))];
+  return [...new Map(dirs.map((dir) => [metaCacheKey(dir), dir])).values()];
+}
+
+/** The file the index remembers for `sessionId`, when it lies in one of `dirs`. */
+function indexedIn(dirs: readonly string[], sessionId: string): string | undefined {
   const indexed = sessionFileIndex.get(sessionId);
-  if (indexed !== undefined && metaCacheKey(path.dirname(indexed)) === metaCacheKey(dir)) {
+  return indexed !== undefined && dirs.some((dir) => metaCacheKey(path.dirname(indexed)) === metaCacheKey(dir)) ? indexed : undefined;
+}
+
+/** Resolve the on-disk file for a pi session id within a workspace and its worktree folders, or null if absent. */
+export async function resolvePiSessionFile(cwd: string, sessionId: string): Promise<string | null> {
+  const dirs = sessionLookupDirs(cwd);
+  const indexed = indexedIn(dirs, sessionId);
+  if (indexed !== undefined) {
     try {
       await fs.promises.stat(indexed);
       return indexed;
@@ -203,21 +220,48 @@ export async function resolvePiSessionFile(cwd: string, sessionId: string): Prom
       sessionFileIndex.delete(sessionId);
     }
   }
-  try {
-    const files = await fs.promises.readdir(dir);
+  for (const dir of dirs) {
+    let files: string[];
+    try {
+      files = await fs.promises.readdir(dir);
+    } catch (err) {
+      // A missing dir (no sessions yet) is normal; anything else is a real fault worth surfacing rather
+      // than masking behind a bare null.
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') log('[session-store] resolvePiSessionFile readdir failed for %s: %O', dir, err);
+      continue;
+    }
     const match = files.find((f) => f.endsWith('.jsonl') && piSessionIdFromFile(f) === sessionId);
-    if (!match) return null;
+    if (!match) continue;
     const filePath = path.join(dir, match);
     indexSessionFile(filePath);
     return filePath;
-  } catch (err) {
-    // A missing dir (no sessions yet) is normal; anything else is a real fault worth surfacing rather
-    // than masking behind a bare null.
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      log('[session-store] resolvePiSessionFile readdir failed for %s: %O', dir, err);
-    }
-    return null;
   }
+  return null;
+}
+
+/**
+ * The directory of an existing session's file, where its subagent, team and fork data live (AD12 Sessions), found as
+ * resolvePiSessionFile finds it; a session with no file yet takes `cwd`'s own directory, where pi creates it.
+ */
+export function piSessionDirOf(cwd: string, sessionId: string): string {
+  const dirs = sessionLookupDirs(cwd);
+  const indexed = indexedIn(dirs, sessionId);
+  if (indexed !== undefined && fs.existsSync(indexed)) return path.dirname(indexed);
+  for (const dir of dirs) {
+    let files: string[];
+    try {
+      files = fs.readdirSync(dir);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') log('[session-store] piSessionDirOf readdir failed for %s: %O', dir, err);
+      continue;
+    }
+    const match = files.find((f) => f.endsWith('.jsonl') && piSessionIdFromFile(f) === sessionId);
+    if (match) {
+      indexSessionFile(path.join(dir, match));
+      return dir;
+    }
+  }
+  return ensurePiSessionDir(cwd);
 }
 
 /** Precise metadata for one pi session by id (marker-aware; used on rename/title/create upserts). */
@@ -241,8 +285,7 @@ export async function extractPiPromptHistory(cwds: readonly string[], sessions: 
   // One readdir per folder into an id→path map, so each session resolves in O(1). Resolving per session
   // via `resolvePiSessionFile` would readdir the whole store once per session, O(files²) on the hot path.
   const idToPath = new Map<string, string>();
-  for (const cwd of cwds) {
-    const dir = ensurePiSessionDir(cwd);
+  for (const dir of [...new Set(cwds.flatMap((cwd) => sessionLookupDirs(cwd)))]) {
     try {
       const files = await fs.promises.readdir(dir);
       for (const f of files) {

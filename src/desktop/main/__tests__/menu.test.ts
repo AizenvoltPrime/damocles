@@ -28,8 +28,8 @@ const actions = new Proxy({} as MenuActions, {
   get: (_target, name: string) => (...args: unknown[]) => calls.push([name, ...args.map((arg) => (typeof arg === 'object' ? JSON.stringify(arg) : arg))].join(':')),
 });
 
-const CHAT: MenuState = { chat: true, editor: false, browser: true, page: false, focus: 'chat', updateCheck: true, terminalCreate: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE };
-const NONE: MenuState = { chat: false, editor: false, browser: false, page: false, focus: undefined, updateCheck: false, terminalCreate: false, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE };
+const CHAT: MenuState = { chat: true, editor: false, browser: true, page: false, focus: 'chat', updateCheck: true, terminalCreate: true, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE, editorKind: undefined, editorGit: null, selectedChatHasChanges: false, worktree: undefined, handOff: undefined, newChatInWorktree: undefined };
+const NONE: MenuState = { chat: false, editor: false, browser: false, page: false, focus: undefined, updateCheck: false, terminalCreate: false, terminal: undefined, terminalSplit: false, terminalInput: false, search: { editorActive: false, viewHasSearch: false, viewHasResults: false, viewRunning: false, viewVisible: false }, scm: NO_SCM_MENU_STATE, editorKind: undefined, editorGit: null, selectedChatHasChanges: false, worktree: undefined, handOff: undefined, newChatInWorktree: undefined };
 const EDITOR: MenuState = { ...CHAT, editor: true, focus: 'editor' };
 
 function build(platform: NodeJS.Platform, state: MenuState, language: 'en' | 'el' = 'en'): MenuItemConstructorOptions[] {
@@ -149,11 +149,11 @@ describe('application menu', () => {
       expect(accelerators.filter((accelerator) => accelerator === 'CmdOrCtrl+,')).toHaveLength(1);
     }
     expect(shellShortcutLabels('win32')).toEqual({
-      newChat: 'Ctrl+N', toggleSidebar: 'Ctrl+B', settings: 'Ctrl+,', quickOpen: 'Ctrl+P', toggleTerminal: 'Ctrl+`', newTerminal: 'Ctrl+Shift+`', splitTerminal: 'Ctrl+Shift+5', closeEditor: 'Ctrl+W', searchAgain: 'Ctrl+Shift+R', toggleQueryDetails: 'Ctrl+Shift+J', focusNextSearchResult: 'F4',
+      newChat: 'Ctrl+N', newChatInWorktree: 'Shift+Alt+N', toggleSidebar: 'Ctrl+B', settings: 'Ctrl+,', quickOpen: 'Ctrl+P', toggleTerminal: 'Ctrl+`', newTerminal: 'Ctrl+Shift+`', splitTerminal: 'Ctrl+Shift+5', closeEditor: 'Ctrl+W', searchAgain: 'Ctrl+Shift+R', toggleQueryDetails: 'Ctrl+Shift+J', focusNextSearchResult: 'F4',
       editorMenu: { goToDefinition: 'F12', goToReferences: 'Shift+F12', renameSymbol: 'F2', changeAllOccurrences: 'Ctrl+F2', formatDocument: 'Shift+Alt+F', cut: 'Ctrl+X', copy: 'Ctrl+C', paste: 'Ctrl+V', commandPalette: 'Ctrl+Shift+P' },
     });
     expect(shellShortcutLabels('darwin')).toEqual({
-      newChat: '⌘N', toggleSidebar: '⌘B', settings: '⌘,', quickOpen: '⌘P', toggleTerminal: '⌃`', newTerminal: '⌃⇧`', splitTerminal: '⌘\\', closeEditor: '⌘W', searchAgain: '⇧⌘R', toggleQueryDetails: '⇧⌘J', focusNextSearchResult: 'F4',
+      newChat: '⌘N', newChatInWorktree: '⌥⌘N', toggleSidebar: '⌘B', settings: '⌘,', quickOpen: '⌘P', toggleTerminal: '⌃`', newTerminal: '⌃⇧`', splitTerminal: '⌘\\', closeEditor: '⌘W', searchAgain: '⇧⌘R', toggleQueryDetails: '⇧⌘J', focusNextSearchResult: 'F4',
       editorMenu: { goToDefinition: 'F12', goToReferences: '⇧F12', renameSymbol: 'F2', changeAllOccurrences: '⌘F2', formatDocument: '⌥⇧F', cut: '⌘X', copy: '⌘C', paste: '⌘V', commandPalette: '⇧⌘P' },
     });
   });
@@ -356,8 +356,8 @@ describe('application menu', () => {
 
   it('publishes the skip list\'s accelerators for xterm to leave unhandled, without New Terminal', () => {
     build('win32', CHAT);
-    expect(installedTerminalPassKeys(false).sort()).toEqual(['CmdOrCtrl+,', 'CmdOrCtrl+B', 'CmdOrCtrl+N', 'CmdOrCtrl+P', 'CmdOrCtrl+Shift+P', 'Ctrl+`', 'Ctrl+Shift+5', 'F6', 'Shift+F6'].sort());
-    expect(installedTerminalPassKeys(true).sort()).toEqual(['Alt+Left', 'Alt+Right', 'CmdOrCtrl+,', 'CmdOrCtrl+B', 'CmdOrCtrl+N', 'CmdOrCtrl+P', 'CmdOrCtrl+Shift+P', 'Ctrl+`', 'Ctrl+Shift+5', 'F6', 'Shift+F6'].sort());
+    expect(installedTerminalPassKeys(false).sort()).toEqual(['CmdOrCtrl+,', 'CmdOrCtrl+B', 'CmdOrCtrl+N', 'CmdOrCtrl+P', 'CmdOrCtrl+Shift+P', 'Ctrl+`', 'Ctrl+Shift+5', 'F6', 'Shift+Alt+N', 'Shift+F6'].sort());
+    expect(installedTerminalPassKeys(true).sort()).toEqual(['Alt+Left', 'Alt+Right', 'CmdOrCtrl+,', 'CmdOrCtrl+B', 'CmdOrCtrl+N', 'CmdOrCtrl+P', 'CmdOrCtrl+Shift+P', 'Ctrl+`', 'Ctrl+Shift+5', 'F6', 'Shift+Alt+N', 'Shift+F6'].sort());
   });
 
   it('decides each key in the state focus moved to, and leaves the installed items enabled by their preconditions', () => {

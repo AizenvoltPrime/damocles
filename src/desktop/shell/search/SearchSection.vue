@@ -5,6 +5,7 @@ import { useVirtualList } from '@vueuse/core';
 import { BookOpen, CaseSensitive, CaseUpper, ChevronRight, CircleStop, CopyMinus, CopyPlus, Ellipsis, FilePlus, List, ListFilter, ListTree, Regex, RefreshCw, ReplaceAll, SearchX, TriangleAlert, WholeWord } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import { remPx } from '@/composables/useRemPx';
+import { visibleText } from '@shared/visible-text';
 import type { OverlayMenuItem } from '../../preload/overlay-channels';
 import type { DamoclesShellApi, FileRef, SearchCommandMessage, SearchViewState, ShellPlatform, ShellSearchSettings, ShellState } from '../../preload/shell-channels';
 import { MAX_REPLACEMENT_LENGTH, MAX_SEARCH_GLOBS_LENGTH, MAX_SEARCH_PATTERN_LENGTH, folderGlob } from '../../../shared/text-search';
@@ -249,7 +250,7 @@ async function replaceAll(): Promise<void> {
 
 // Main posts its own notice for the files it skipped; the buffers the shell could not replace are listed here.
 function showSkips(skipped: readonly BufferSkip[]): void {
-  notices.value = skipped.map((skip) => t(`search.skipped.${skip.reason}`, { name: skip.name }));
+  notices.value = skipped.map((skip) => t(`search.skipped.${skip.reason}`, { name: visibleText(skip.name) }));
 }
 
 // The message line's links (VS Code's SearchLinkButton targets).
@@ -400,7 +401,7 @@ function activate(row: ResultRow): void {
 
 async function openRow(row: Extract<ResultRow, { kind: 'file' | 'match' }>, options: { focus: boolean; toSide: boolean }): Promise<void> {
   const reason = await store.open(row, options);
-  notices.value = reason === undefined ? [] : [t(`search.previewSkipped.${reason}`, { name: row.file.relativePath })];
+  notices.value = reason === undefined ? [] : [t(`search.previewSkipped.${reason}`, { name: visibleText(row.file.relativePath) })];
 }
 
 async function replaceRow(row: ResultRow): Promise<void> {
@@ -558,8 +559,8 @@ async function openMenu(row: ResultRow, rect: DOMRect | { left: number; top: num
   const caption = row.kind === 'folder' ? row.node.path : row.file.relativePath;
   const answer = await props.api.requestOverlay({
     kind: 'menu',
-    label: t('files.menu.label', { name: caption.slice(caption.lastIndexOf('/') + 1) }),
-    caption,
+    label: t('files.menu.label', { name: visibleText(caption.slice(caption.lastIndexOf('/') + 1)) }),
+    caption: visibleText(caption),
     anchor: { x: Math.max(0, rect.left), y: Math.max(0, rect.top), width: rect.width, height: rect.height },
     items: menuItems(row),
   });

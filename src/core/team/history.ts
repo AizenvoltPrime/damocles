@@ -1,7 +1,8 @@
 import { TeamPersistence } from './persistence';
 import { teamIdForToolCall } from '../pi-session/agent-records';
 import { initPiLoader } from '../pi-session/pi-loader';
-import { ensurePiSessionDir, resolvePiSessionFile } from '../pi-session/session-store';
+import * as path from 'path';
+import { resolvePiSessionFile } from '../pi-session/session-store';
 import type { TeamState, TeamAgentHistoryMessage } from '../../shared/types/team';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -26,7 +27,7 @@ export async function findTeamIdByToolUse(cwd: string, sessionId: string, toolUs
   if (!pi) throw new Error('The pi runtime is unavailable, so the team cannot be located.');
   const filePath = await resolvePiSessionFile(cwd, sessionId);
   if (!filePath) return null;
-  const branch = pi.SessionManager.open(filePath, ensurePiSessionDir(cwd)).getBranch();
+  const branch = pi.SessionManager.open(filePath, path.dirname(filePath)).getBranch();
   return teamIdForToolCall(branch, toolUseId);
 }
 

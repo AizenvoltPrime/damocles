@@ -154,19 +154,21 @@ export function checkAppUpdate(text, platform, arch) {
   return [problems.length === 0 ? pass('app-update.yml', Object.entries(config).map(([k, v]) => `${k}=${v}`).join(' ')) : fail('app-update.yml', problems.join('; '))];
 }
 
-/** The packed CHANGELOG.md is the repo's, and has a section for the packaged version. */
-export function checkChangelog(packed, repo, version) {
+/** The packed CHANGELOG.md is the repo's, and has the section the release-notes job would publish. */
+export function checkChangelog(packed, repo, version, tagged) {
   if (packed === undefined) return [fail('changelog', `${PACKED_CHANGELOG} is not in app.asar`)];
-  // The release-notes job publishes this section's body, up to the next "## " heading, as the release notes.
+  // Same section choice as release.yml's "Extract changelog section": a tag run takes the version's, any other run
+  // [Unreleased] while the changelog has it. That section's body, up to the next "## " heading, is the release notes.
   const lines = packed.split(/\r?\n/);
-  const heading = lines.findIndex((line) => line.startsWith(`## [${version}] - `));
+  const label = !tagged && lines.some((line) => line.startsWith('## [Unreleased]')) ? 'Unreleased' : version;
+  const heading = lines.findIndex((line) => line.startsWith(label === 'Unreleased' ? '## [Unreleased]' : `## [${version}] - `));
   const next = lines.findIndex((line, index) => index > heading && line.startsWith('## '));
   const body = lines.slice(heading + 1, next === -1 ? undefined : next);
   const problems = [
     ...(packed === repo ? [] : ["differs from the repo's CHANGELOG.md"]),
-    ...(heading === -1 ? [`has no ## [${version}] section`] : body.some((line) => line.trim() !== '') ? [] : [`has an empty ## [${version}] section`]),
+    ...(heading === -1 ? [`has no ## [${label}] section`] : body.some((line) => line.trim() !== '') ? [] : [`has an empty ## [${label}] section`]),
   ];
-  return [problems.length === 0 ? pass('changelog', `${PACKED_CHANGELOG} has the ${version} section`) : fail('changelog', problems.join('; '))];
+  return [problems.length === 0 ? pass('changelog', `${PACKED_CHANGELOG} has the ${label} section`) : fail('changelog', problems.join('; '))];
 }
 
 const NODE_PTY = 'node_modules/node-pty';
@@ -355,7 +357,7 @@ export async function verifyPackage({ platform, arch, app, repoRoot, readFuseWir
   for (const notice of RESOURCE_NOTICES) results.push(checkFile(`notice ${notice}`, join(resources, notice)));
   const changelogEntry = entries.find(({ path, entry }) => path === PACKED_CHANGELOG && !entry.unpacked);
   const packedChangelog = changelogEntry === undefined ? undefined : readAsarFile(asarPath, dataOffset, changelogEntry.entry);
-  results.push(...checkChangelog(packedChangelog, readFileSync(join(repoRoot, 'CHANGELOG.md'), 'utf8'), repoVersion));
+  results.push(...checkChangelog(packedChangelog, readFileSync(join(repoRoot, 'CHANGELOG.md'), 'utf8'), repoVersion, process.env.GITHUB_REF_TYPE === 'tag'));
 
   const unpackedFiles = listFiles(unpacked);
   results.push(...checkUnpackedSet(unpackedFiles, asarUnpackFor(platform)));

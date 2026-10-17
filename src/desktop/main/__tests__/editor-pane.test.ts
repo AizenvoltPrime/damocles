@@ -6,6 +6,7 @@ import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
 import type { ActiveEditorContext } from '../../../platform/editor-service';
 import type { ShellEditorState, ShellEditorTab } from '../../preload/shell-channels';
+import { rootKey } from '../../preload/folder-root';
 import type { BackupRecord } from '../documents/backups';
 import type { Project } from '../documents/confine';
 import { DocumentService, type TextDocument } from '../documents/document-service';
@@ -15,6 +16,8 @@ import type { MessageQuestion } from '../message-dialog';
 let root: string;
 let projectDir: string;
 let project: Project;
+// every root the documents and the pane name files in
+let roots: Project[];
 let platform: FakePlatform;
 let documents: DocumentService;
 let pane: EditorPane;
@@ -39,6 +42,7 @@ beforeEach(() => {
   projectDir = path.join(root, 'proj');
   fs.mkdirSync(path.join(projectDir, 'src'), { recursive: true });
   project = { key: folderKey(projectDir), fsPath: projectDir, name: 'proj' };
+  roots = [project];
   platform = createFakePlatform();
   events = [];
   asked = [];
@@ -60,7 +64,7 @@ beforeEach(() => {
   };
   const t = (message: string, ...args: Array<string | number>): string => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)]));
   documents = new DocumentService({
-    projects: () => [project],
+    projects: () => roots,
     watchers: platform.fileWatchers,
     ask,
     t,
@@ -94,14 +98,17 @@ beforeEach(() => {
     revealLine: (tabId, line, range) => events.push(`reveal:${tabId}:${line}${range ? `:${range.startColumn}` : ''}`),
     showPane: () => events.push('showPane'),
     showPaneBeside: () => events.push('showPaneBeside'),
-    projects: () => [project],
+    projects: () => roots,
     copy: async (text) => { events.push(`copy:${text}`); },
     reveal: async (target) => { events.push(`reveal:${target}`); },
     mention: async (target) => { events.push(`mention:${JSON.stringify(target)}`); },
     browser: () => browser,
     warn: (message) => warnings.push(message),
     searchEditorClosed: (documentId) => events.push(`searchEditorClosed:${documentId}`),
+    reviewClosed: (reviewId) => events.push(`reviewClosed:${reviewId}`),
     openChanges: async () => undefined,
+    gitOf: () => undefined,
+    worktreeBranch: () => undefined,
   });
 });
 
@@ -142,6 +149,32 @@ describe('opens and focus', () => {
     const agentTab = pane.state().activeTabId!;
     expect(events).toEqual(['showPane', `focus:${opened.tabId}`, `reveal:${opened.tabId}:3`, 'showPane']);
     expect(agentTab).not.toBe(opened.tabId);
+  });
+
+  it('names every tab with control and bidi characters escaped and a plain name as it is, keeping its path raw for the shell to split', async () => {
+    write('src/a\u202Eb.ts', 'a');
+    write('src/plain.ts', 'p');
+    const shown = await pane.openFromUser(project.key, 'src/a\u202Eb.ts', {});
+    const plain = await pane.openFromUser(project.key, 'src/plain.ts', {});
+    if (!shown.ok || !plain.ok) throw new Error('not opened');
+    pane.showTimeline({ repoId: 'repo', path: 'src/x\u2066y.ts' }, 'x\u2066y.ts (Timeline)', { focus: false });
+    pane.showReview({ reviewId: 'r1', title: 'Changes: fix\u0007', scope: 'chat', entries: [], shellChangesNotListed: true, draftsKey: 's', comments: [], staleComments: [] }, { focus: false });
+    const tabs = pane.state().tabs;
+    const byId = (tabId: string) => tabs.find((tab) => tab.id === tabId)!;
+    expect(byId(shown.tabId).title).toBe('a\\u{202E}b.ts');
+    expect(byId(shown.tabId).displayPath).toBe(path.join(projectDir, 'src', 'a\u202Eb.ts'));
+    expect(byId(plain.tabId)).toMatchObject({ title: 'plain.ts', displayPath: path.join(projectDir, 'src', 'plain.ts') });
+    expect(tabs.find((tab) => tab.kind === 'timeline')).toMatchObject({ title: 'x\\u{2066}y.ts (Timeline)', displayPath: 'src/x\u2066y.ts' });
+    expect(tabs.find((tab) => tab.kind === 'review')).toMatchObject({ title: 'Changes: fix\\u{7}' });
+  });
+
+  it('reports a review tab the user closed, and one its owner closed, to the review\'s owner', async () => {
+    const review = { reviewId: 'r1', title: 'Changes: x', scope: 'chat' as const, entries: [], shellChangesNotListed: true, draftsKey: 's', comments: [], staleComments: [] };
+    const tabId = pane.showReview(review, { focus: false });
+    await pane.tabAction('close', tabId);
+    pane.showReview({ ...review, reviewId: 'r2' }, { focus: false });
+    await pane.closeReview('r2');
+    expect(events.filter((event) => event.startsWith('reviewClosed:'))).toEqual(['reviewClosed:r1', 'reviewClosed:r2']);
   });
 
   it('reuses the tab already showing a document, and opens markdown as a preview or its source on request', async () => {
@@ -191,6 +224,61 @@ describe('closing dirty tabs and quitting', () => {
     expect(fs.readFileSync(file, 'utf8')).toBe('mine');
     expect(asked).toHaveLength(3);
     expect(asked.map((question) => [question.actions, question.cancelLabel])).toEqual(Array(3).fill([['Save', "Don't Save"], undefined]));
+  });
+
+  it('closes a deleted worktree\'s tabs, asking Save, Don\'t Save or Cancel for a dirty one, and Cancel keeps them (D33)', async () => {
+    write('a.ts', 'project copy');
+    const opened = await pane.openFromUser(project.key, 'a.ts');
+    expect(opened.ok).toBe(true);
+    // the worktree root is a second root over the same files, keyed by its root key
+    const worktreeKey = rootKey({ projectKey: project.key, worktreeId: 'abcd1234' });
+    roots = [project, { key: worktreeKey, fsPath: projectDir, name: 'proj' }];
+    write('b.ts', 'worktree copy');
+    const inWorktree = await pane.openFromUser(worktreeKey, 'b.ts');
+    if (!inWorktree.ok) throw new Error('not opened');
+    const document = textOf(inWorktree.tabId);
+    pane.edit(document.id, { version: document.version, seq: 1, text: 'unsaved', overReload: false });
+
+    answers = [undefined];
+    expect(await pane.confirmCloseRoot(worktreeKey)).toBeUndefined();
+    expect(asked.at(-1)).toMatchObject({ actions: ['Save', "Don't Save"], cancelLabel: 'Cancel' });
+    expect(pane.state().tabs).toHaveLength(2);
+
+    answers = [1];
+    const answered = await pane.confirmCloseRoot(worktreeKey);
+    expect(answered).toBeDefined();
+    // Don't Save drops nothing until the delete closes the root
+    expect(pane.state().tabs).toHaveLength(2);
+    expect(textOf(inWorktree.tabId).text).toBe('unsaved');
+    // asked again only for a buffer edited after its answer
+    expect(await pane.confirmCloseRoot(worktreeKey, answered)).toBe(answered);
+    expect(asked).toHaveLength(2);
+    const edited = textOf(inWorktree.tabId);
+    pane.edit(edited.id, { version: edited.version, seq: 2, text: 'edited again', overReload: false });
+    expect(pane.closeRoot(worktreeKey, answered!)).toBe(false);
+    answers = [1];
+    const again = await pane.confirmCloseRoot(worktreeKey, answered);
+    expect(asked).toHaveLength(3);
+    expect(pane.closeRoot(worktreeKey, again!)).toBe(true);
+    expect(pane.state().tabs.map((tab) => tab.relativePath)).toEqual(['a.ts']);
+    expect(fs.readFileSync(path.join(projectDir, 'b.ts'), 'utf8')).toBe('worktree copy');
+  });
+
+  it('saves a deleted worktree\'s dirty tab when the user answers Save, before anything closes', async () => {
+    const worktreeKey = rootKey({ projectKey: project.key, worktreeId: 'abcd1234' });
+    roots = [project, { key: worktreeKey, fsPath: projectDir, name: 'proj' }];
+    write('b.ts', 'worktree copy');
+    const opened = await pane.openFromUser(worktreeKey, 'b.ts');
+    if (!opened.ok) throw new Error('not opened');
+    const document = textOf(opened.tabId);
+    pane.edit(document.id, { version: document.version, seq: 1, text: 'saved', overReload: false });
+    answers = [0];
+    const answered = await pane.confirmCloseRoot(worktreeKey);
+    expect(fs.readFileSync(path.join(projectDir, 'b.ts'), 'utf8')).toBe('saved');
+    expect(pane.state().tabs).toHaveLength(1);
+    expect(pane.closeRoot(worktreeKey, answered!)).toBe(true);
+    expect(asked).toHaveLength(1);
+    expect(pane.state().tabs).toEqual([]);
   });
 
   it('keeps a document another tab opened while the close asked about it, so that tab still shows it', async () => {
@@ -256,6 +344,26 @@ describe('closing dirty tabs and quitting', () => {
     answers = [0];
     expect(await pane.release()).toBe(true);
     expect(fs.readFileSync(file, 'utf8')).toBe('mine');
+  });
+
+  it('names documents with control and bidi characters by their escapes in the close and quit questions', async () => {
+    restoreLayout = false;
+    write('a\u202Eb.ts', 'disk');
+    write('c\u2066.ts', 'disk');
+    const first = await pane.openFromUser(project.key, 'a\u202Eb.ts');
+    if (!first.ok) throw new Error('not opened');
+    const one = textOf(first.tabId);
+    pane.edit(one.id, { version: one.version, seq: 1, text: 'mine', overReload: false });
+    answers = [undefined];
+    await pane.tabAction('close', first.tabId);
+    expect(asked.at(-1)?.message).toBe('Do you want to save the changes you made to a\\u{202E}b.ts?');
+    const second = await pane.openFromUser(project.key, 'c\u2066.ts');
+    if (!second.ok) throw new Error('not opened');
+    const two = textOf(second.tabId);
+    pane.edit(two.id, { version: two.version, seq: 1, text: 'mine', overReload: false });
+    answers = [undefined];
+    expect(await pane.release()).toBe(false);
+    expect(asked.at(-1)?.detail).toContain('a\\u{202E}b.ts\nc\\u{2066}.ts');
   });
 
   it('without it, Don\'t Save drops the buffers and their backups', async () => {
@@ -411,6 +519,15 @@ describe('restoring a backup whose file cannot be reopened as it was', () => {
     for (const [index, name] of ['a.ts', 'elsewhere.ts', 'blob.bin', 'settings.json'].entries()) expect(warnings[index]).toContain(name);
     // blob.bin opened only to be refused; no document is left behind without a tab.
     expect(documents.all().filter((document) => !tabs.some((tab) => tab.documentId === document.id))).toEqual([]);
+  });
+
+  it('restores a backup of a file in a worktree deleted while the app was closed as an untitled buffer with its text', async () => {
+    const gone = backup('9', { kind: 'project', projectKey: rootKey({ projectKey: project.key, worktreeId: 'abcd1234' }), relativePath: 'src/a.ts' }, 'unsaved in the worktree', 'a.ts');
+    await pane.restore({ tabs: [{ kind: 'code', file: { projectKey: rootKey({ projectKey: project.key, worktreeId: 'abcd1234' }), relativePath: 'src/a.ts' }, backupId: gone.backupId }], active: 0, recent: [] }, [gone]);
+    const tabs = pane.state().tabs;
+    expect(tabs.map((tab) => [tab.kind, tab.title, tab.dirty])).toEqual([['untitled', 'a.ts', true]]);
+    expect(textOf(tabs[0]!.id).text).toBe('unsaved in the worktree');
+    expect(warnings).toEqual(['The unsaved changes to a.ts are in an untitled editor: Its worktree no longer exists.']);
   });
 
   it('keeps a second backup of the same file as an untitled buffer instead of overwriting the first', async () => {

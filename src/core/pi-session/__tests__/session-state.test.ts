@@ -1028,3 +1028,23 @@ describe('single-writer discipline', () => {
     expect(source.match(new RegExp(activity.source, 'g'))).toHaveLength(1);
   });
 });
+
+describe('the chat review inputs', () => {
+  beforeEach(() => {
+    H.resetServices();
+  });
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+    vi.restoreAllMocks();
+  });
+
+  it('starts a new review generation for a team member\'s tool result, and none for other team messages', async () => {
+    const { session } = await startPanel();
+    const before = (await session.chatReviewSnapshot('chat')).generation;
+    session.teamMessage({ type: 'teamAgentUsageUpdate', teamId: 't', agentId: 'a', totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 });
+    expect((await session.chatReviewSnapshot('chat')).generation).toBe(before);
+    session.teamMessage({ type: 'teamAgentToolResult', teamId: 't', agentId: 'a', toolUseId: 'call-1', result: 'ok' });
+    expect((await session.chatReviewSnapshot('chat')).generation).toBeGreaterThan(before);
+    await session.dispose();
+  });
+});

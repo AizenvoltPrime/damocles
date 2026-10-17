@@ -1,8 +1,8 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 
 /**
  * Compass's git calls against a real repository, with no mock in the way.
@@ -12,7 +12,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
  * something only git can answer.
  */
 
-import { getChangedFiles, parseGitDiffRanges, resetRepoRootCacheForTests } from '../git';
+import { getChangedFiles, parseGitDiffRanges } from '../git';
 
 function gitIsAvailable(): boolean {
 	try {
@@ -88,10 +88,6 @@ beforeAll(() => {
 	process.env['GIT_CEILING_DIRECTORIES'] = sandbox;
 });
 
-beforeEach(() => {
-	resetRepoRootCacheForTests();
-});
-
 afterAll(() => {
 	if (!HAS_GIT) return;
 	for (const [key, value] of Object.entries(savedEnv)) {
@@ -108,6 +104,19 @@ describe.skipIf(!HAS_GIT)('compass git against a real repository', { timeout: 60
 		const files = getChangedFiles(root);
 
 		expect(files).toEqual([path.resolve(root, 'src/a.ts').replace(/\\/g, '/')]);
+	});
+
+	it('reads changed files of a workspace reached through a link or an 8.3 alias, spelled as the workspace is', () => {
+		const root = makeRepo();
+		// A junction needs no privilege on Windows; elsewhere a directory symlink is the same kind of second spelling.
+		const link = path.join(sandbox, 'linked-workspace');
+		fs.symlinkSync(root, link, process.platform === 'win32' ? 'junction' : 'dir');
+		expect(getChangedFiles(link)).toEqual([forwardSlashed(path.join(link, 'src', 'a.ts'))]);
+		expect([...parseGitDiffRanges(link).keys()]).toEqual([forwardSlashed(path.join(link, 'src', 'a.ts'))]);
+		if (process.platform !== 'win32') return;
+		const short = execSync(`for %I in ("${root}") do @echo %~sI`, { shell: 'cmd.exe', encoding: 'utf8' }).trim();
+		if (short === root) return;
+		expect(getChangedFiles(short)).toEqual([forwardSlashed(path.join(short, 'src', 'a.ts'))]);
 	});
 
 	it('does not let the repository own core.fsmonitor command run during getChangedFiles', (ctx) => {

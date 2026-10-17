@@ -4,6 +4,7 @@ import { gitExecutable } from "../../../git-executable";
 import { localMcpConfigPath } from "./mcp-config-import";
 import { LOCAL_MCP_RELATIVE_PATH } from "../../../../shared/types/mcp";
 import { log } from "../../../logger";
+import { personalConfigRoot } from "../../../worktrees/personal-config";
 
 /**
  * Whether `<ws>/.damocles/mcp.local.json` is sitting in the working tree without git ignoring it. The
@@ -21,7 +22,9 @@ import { log } from "../../../logger";
  */
 const GIT_TIMEOUT_MS = 10_000;
 
-export async function isLocalMcpFileUnignored(workspaceRoot: string): Promise<boolean> {
+export async function isLocalMcpFileUnignored(folder: string): Promise<boolean> {
+  // D34: the personal file lives in the project folder, so git there answers whether it is ignored.
+  const workspaceRoot = personalConfigRoot(folder);
   try {
     await fs.access(localMcpConfigPath(workspaceRoot));
   } catch (err) {

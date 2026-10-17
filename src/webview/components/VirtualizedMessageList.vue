@@ -4,6 +4,7 @@ import type { ChatMessage, CompactMarker as CompactMarkerType, CacheMissNotice, 
 import type { SubagentState } from '@shared/types/subagents';
 import type { ImageBlock } from '@shared/types/content';
 import { useSessionStore } from '@/stores/useSessionStore';
+import { useUIStore } from '@/stores/useUIStore';
 import { useMessageHighlightStore } from '@/stores/useMessageHighlightStore';
 import { useVirtualizedMessages } from '@/composables/useVirtualizedMessages';
 import { useScrollEngine } from '@/composables/useScrollEngine';
@@ -12,7 +13,6 @@ import { useStickyHeader } from '@/composables/useStickyHeader';
 import { initFonts, invalidateLayoutCache } from '@/composables/usePretextMeasurement';
 import VirtualItemWrapper from './VirtualItemWrapper.vue';
 import StickyUserHeader from './StickyUserHeader.vue';
-import PinnedRestoreChip from './PinnedRestoreChip.vue';
 import ImageLightbox from './ImageLightbox.vue';
 import { imageBlockToDataUrl } from '@/utils/imageUtils';
 import { useSettingsStore } from '@/stores/useSettingsStore';
@@ -22,6 +22,7 @@ import { storeToRefs } from 'pinia';
 
 const sessionStore = useSessionStore();
 const settingsStore = useSettingsStore();
+const uiStore = useUIStore();
 const { currentSettings } = storeToRefs(settingsStore);
 const { postMessage } = usePlatformBridge();
 
@@ -130,7 +131,13 @@ function scrollToMessageId(id: string): boolean {
 // Empty means no row renders; a count of the store lists would miss a row type added later.
 const isEmpty = computed(() => items.value.length === 0);
 
-defineExpose({ scrollToMessageId, isEmpty });
+// The prompt the chat header offers to pin again while the user keeps the pinned header hidden.
+const hiddenPin = computed(() => (pinnedHeaderHidden.value ? sticky.activeMessage.value : null));
+function restorePin(): void {
+  setPinnedHeaderHidden(false);
+}
+
+defineExpose({ scrollToMessageId, isEmpty, hiddenPin, restorePin });
 
 watch(() => sessionStore.currentResumedSessionId, () => {
   scrollGeneration++;
@@ -214,7 +221,7 @@ function getPromptIndexForMessage(messageIndex: number): number {
 }
 
 function canRewindTo(message: ChatMessage): boolean {
-  return message.role === 'user' && !!message.sdkMessageId && (props.checkpointMessages?.has(message.sdkMessageId) ?? false);
+  return !uiStore.historyReadOnly && message.role === 'user' && !!message.sdkMessageId && (props.checkpointMessages?.has(message.sdkMessageId) ?? false);
 }
 
 function openLightbox(block: ImageBlock): void {
@@ -356,22 +363,6 @@ onUnmounted(() => {
       @toggle-expanded="toggleStickyExpanded"
       @hide-pinned="setPinnedHeaderHidden(true)"
     />
-
-    <div
-      v-if="sticky.activeMessage.value && pinnedHeaderHidden"
-      class="pointer-events-none sticky top-0 z-20 h-0"
-    >
-      <Transition
-        name="t-pop"
-        appear
-      >
-        <PinnedRestoreChip
-          :message="sticky.activeMessage.value"
-          class="pointer-events-auto absolute top-2 right-4.5"
-          @restore="setPinnedHeaderHidden(false)"
-        />
-      </Transition>
-    </div>
 
     <VirtualItemWrapper
       v-for="{ item, frameItem } in visibleItems"

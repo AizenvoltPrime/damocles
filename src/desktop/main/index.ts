@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { app, BrowserWindow, clipboard, dialog, Menu, powerMonitor, screen, session, shell as electronShell, webContents, WebContentsView, type WebContents } from 'electron';
@@ -27,6 +28,7 @@ import { homeDirectory, settingsFolderOf } from '../../core/workspace-folders/fo
 import type { Disposable } from '../../platform/disposable';
 import type { PanelOptions } from '../../platform/window-service';
 import type { StoredSession } from '../../shared/types/session';
+import type { ChatAttachmentInput } from '../../shared/types/chat-attachment';
 import { MAX_OVERLAY_TAGS, OVERLAY_CHANNELS, type OverlayAnswer, type OverlayRequest } from '../preload/overlay-channels';
 import type { NotificationProject } from '../preload/notifications';
 import { canCheck, type UpdateSnapshot, type VersionInfo } from '../preload/updates';
@@ -55,7 +57,8 @@ import {
   type ShellWindowState,
 } from '../preload/shell-channels';
 import type { QuickOpenMode, QuickOpenScope } from '../preload/overlay-channels';
-import type { ChatCommand } from '../../shared/types/messages';
+import type { ChatCommand, ChatReviewScope } from '../../shared/types/messages';
+import { ChatReviewHost } from './chat-review-host';
 import { handleAboutChannels, runUpdateAction, type AboutDeps } from './about-channels';
 import { ActivationFocus, onWindowActivated, onWindowDeactivated } from './activation-focus';
 import { trayIcon, windowIcon } from './app-icon';
@@ -71,6 +74,7 @@ import {
   DEFAULT_FILES_EXCLUDE,
   DEFAULT_SEARCH_EXCLUDE,
   FILES_EXCLUDE_SETTING,
+  GIT_BLAME_EDITOR_DECORATION_SETTING,
   SEARCH_EXCLUDE_SETTING,
   isDesktopSettingValue,
   NOTIFICATION_SOUND_SETTING,
@@ -144,7 +148,8 @@ import { appResourceUri, handleAppProtocol, registerAppScheme } from './protocol
 import { restrictPermissions, hardenWebContents } from './security';
 import { reportFailure, ShellHost, shellHtml, type ShellActions } from './shell';
 import { mergeLoginShellEnv, probeGit, type GitProbe } from './shell-env';
-import { backgroundCompletion, NO_SCM_MENU_STATE, ScmHost } from './scm/scm-host';
+import { backgroundCompletion, NO_SCM_MENU_STATE, ScmHost, type ScmWorktreeDeps } from './scm/scm-host';
+import type { ScmWorktreeChat } from '../preload/scm-channels';
 import { createAskpassServer, type AskpassServer } from '../../core/scm/askpass/askpass-server';
 import { createGitRunner } from '../../core/scm/git-runner';
 import { ScmService } from '../../core/scm/scm-service';
@@ -156,6 +161,28 @@ import { currentTheme, currentThemeKind, followThemeSettings, LIGHT_THEME, onThe
 import { AppTray } from './tray';
 import { TrustStore } from './trust-store';
 import { loadAutoUpdater, shellPlatform, UpdateService } from './updater';
+import { WorktreeRegistry, type ChatWorktreeRecord, type WorktreeRecord } from '../../core/worktrees/registry';
+import { folderInRepository, linkedWorktreeOf } from '../../core/worktrees/leftovers';
+import { removeAbandonedTempFolders, tempFoldersSettled } from '../../core/worktrees/create';
+import { worktreeEnvironment } from '../../core/worktrees/environment';
+import type { FileWatcherFactory } from '../../platform/file-watcher';
+import type { GitRunner } from '../../core/scm/git-runner';
+import type { WorktreeHostServices } from '../../core/worktrees/host';
+import { SCM_SETTING_KEYS } from '../../core/scm/settings-keys';
+import type { WorktreeStateData } from '../../shared/types/messages';
+import type { UserContentBlock } from '../../shared/types/content';
+import { parseRootKey, rootKey } from '../preload/folder-root';
+import type { ChatsWorktreeOptions, NewChatInWorktreeRequest, NewChatWorktree, ShowFolderRequest, WorktreeFinishAction, WorktreeFinishRequest } from '../preload/shell-channels';
+import { RootSet, WorktreeRoots, type RootProject } from './worktrees/roots';
+import { closeWorktreeRoot } from './worktrees/close-worktree';
+import { HeldPrompts } from './held-prompts';
+import { removeProject, type WaitingChat } from './remove-project';
+import { ShownFolderState } from './worktrees/shown-folder';
+import { setupTaskKey, WorktreeController } from './worktrees/worktree-controller';
+import { createWorktreeDialogAsker, type AskWorktreeDialog } from './worktrees/worktree-dialogs';
+import type { WorktreeDialog } from '../preload/overlay-channels';
+import { setupShell } from './worktrees/setup-terminal';
+import { chatRowWorktree } from './worktrees/chat-rows';
 import { UsageWarningStore } from './usage-warning-store';
 import { PanelViews, type DesktopPanel, type ShowFocus } from './views';
 import {
@@ -228,6 +255,17 @@ interface WindowBoundsTracker {
 // new position with the old size, and Linux emits no 'resized' or 'moved' to correct it.
 function refreshNormalBounds(window: BrowserWindow, tracker: WindowBoundsTracker): void {
   if (!window.isMaximized() && !window.isMinimized() && !window.isFullScreen()) tracker.normal = normalBoundsOf(window);
+}
+
+// A chat's worktree state as PanelManager.onDidChangeWorktreeState reports it.
+interface WorktreeEvent {
+  readonly panelId: string;
+  readonly sessionId?: string;
+  readonly projectPath: string;
+  readonly worktreeId?: string;
+  readonly workingFolder: string;
+  readonly state: WorktreeStateData;
+  readonly busy: boolean;
 }
 
 function statusOf(activity: ChatActivity | undefined): ChatStatus {
@@ -344,7 +382,10 @@ class DesktopApp {
   private readonly core = new CoreHost<DesktopCore>({
     start: () => this.startCoreServices(),
     openTabs: () => this.openInitialChats(),
-    retainTabStates: (retain) => this.views?.retainStatesOnClose(retain),
+    retainTabStates: (retain) => {
+      if (retain) this.heldPrompts.keep();
+      this.views?.retainStatesOnClose(retain);
+    },
     log: (line) => log(line),
     drainTimeoutMs: CLOSE_TIMEOUT_MS,
   });
@@ -366,6 +407,8 @@ class DesktopApp {
   private beforeCoreDispose = (): Promise<void> => Promise.resolve();
   // Runs as each restore recorded in chatRestores begins; the e2e hooks hold it open or fail it.
   private beforeChatRestore = (): Promise<void> => Promise.resolve();
+  // Runs as each Graph history request begins; the e2e hooks hold it open.
+  private beforeHistory = (): Promise<void> => Promise.resolve();
   // Settles once core finished restoring or setting up a chat, whether core registered the chat or not; every chat has one.
   private readonly chatRestores = new WeakMap<DesktopPanel, Promise<void>>();
   private fileTree: FileTree | undefined;
@@ -414,11 +457,59 @@ class DesktopApp {
   private viewCount = 0;
   // Latest activity by core panel id; pruned when retention runs.
   private readonly activity = new Map<string, ChatActivity>();
+  // the chats' review tabs and draft comments (D60)
+  private readonly chatReviews = new ChatReviewHost({
+    session: (panelId) => this.core.current()?.provider.getPanelManager().getPanels().get(panelId)?.session,
+    sessionId: (panelId) => this.core.current()?.provider.getPanelManager().sessionIdOf(panelId),
+    title: (panelId) => {
+      const panel = this.panelOfCore(panelId);
+      return panel ? this.titleOf(panel) : '';
+    },
+    editorPane: () => this.requireEditorPane(),
+    warn: (message) => void this.requirePlatform().notifications.warn(message),
+    t: (message, ...args) => this.requirePlatform().localization.t(message, ...args),
+    menuChanged: () => this.refreshMenuState(),
+    log: (line) => log(line),
+  });
   // Each project's stored sessions from its last catalog read, for titles outside a list request.
   private readonly catalogRows = new Map<string, readonly StoredSession[]>();
   private readonly chatWork = new ChatWorkQueue();
+  // Worktree chats (slice 12a): one registry per app run, built with the platform, which every core receives.
+  private worktreeRegistry: WorktreeRegistry | undefined;
+  private readonly roots = new WorktreeRoots({ projects: () => this.desktopProjects(), registry: () => this.worktreeRegistry });
+  private worktrees: WorktreeController | undefined;
+  private askWorktreeDialog: AskWorktreeDialog | undefined;
+  // the trust-gated runner source control and the worktree actions share; undefined when git is missing
+  private gitRunner: GitRunner | undefined;
+  // core's last worktree state by core panel id
+  private readonly worktreeStates = new Map<string, WorktreeEvent>();
+  private readonly shownFolders = new ShownFolderState({
+    roots: this.roots,
+    selectedChat: (projectKey) => this.selectedChatPlace(projectKey),
+    finish: (root) => this.finishStateOf(root.worktree!),
+    newChatIn: (record) => this.newChatInTarget(record),
+  });
+  // the roots terminals, the file tree, Quick Open and the formatter hosts last followed
+  private readonly rootSet = new RootSet();
+  // the root keys of the editor tabs, from the editor's last state
+  private editorRootKeys: ReadonlySet<string> = new Set();
+  private readonly heldPrompts = new HeldPrompts({
+    chats: () => (this.views?.chats() ?? []).map((chat) => ({ panelId: chat.panelId, corePanelId: this.corePanelIdOf(chat) })),
+    held: (corePanelId) => this.core.current()?.provider.getPanelManager().heldPrompt(corePanelId),
+    store: { setHeldPrompt: (panelId, held) => this.states.setHeldPrompt(panelId, held) },
+  });
+  // worktree roots source control keeps open while a flow needs their repository (Push branch)
+  private readonly pinnedScmRoots = new Set<string>();
+  // chats a worktree delete unloads, whose close selects no other chat
+  private readonly closingForWorktree = new WeakSet<DesktopPanel>();
+  // new chats that show once core holds their worktree opt-in
+  private readonly openingInWorktree = new WeakSet<DesktopPanel>();
   private retentionScheduled = false;
   private readonly chatFoldersChanged = new Emitter<[]>('chat-folders', (line) => log(line));
+  // a listed project, by its path as listed, whose repository's branches or HEAD changed, from source control's .git watcher (AD4)
+  private readonly refsChanged = new Emitter<[string]>('refs', (line) => log(line));
+  // a project folder whose repositories source control (re)discovered, which worktree availability follows (D30)
+  private readonly projectRepositoryChanged = new Emitter<[string]>('project-repository', (line) => log(line));
   private shellFocusedPart: ShellFocusPart | null = null;
   // Whether focus in the terminal pane is an xterm's own input, as the shell reports; it only routes the user's Edit › Paste.
   private terminalInputFocused = false;
@@ -534,6 +625,7 @@ class DesktopApp {
       window: () => this.window,
       views: () => this.requireViews(),
       openChat: (options) => this.openCoreChat(options),
+      showChatReview: (panelId, scope) => this.showChatReview(panelId, scope),
       openAppSettings: (section, account) => this.openSettings({ ...(section !== undefined ? { section } : {}), ...(account !== undefined ? { account } : {}) }),
       toggleTerminal: () => this.toggleTerminal(false),
       terminalToggle: () => this.terminalToggle(),
@@ -545,6 +637,7 @@ class DesktopApp {
         onDidChange: (cb) => this.chatFoldersChanged.add(cb),
       },
       reload: () => this.core.reload(),
+      worktrees: (watchers) => this.startWorktrees(watchers),
       log: bootLog,
     });
     installPlatform(this.platform);
@@ -587,16 +680,27 @@ class DesktopApp {
         this.shellStateChanged();
       }),
       this.projects.onDidChange(() => {
-        this.formatterHosts?.retain(this.desktopProjects().map((project) => project.key));
-        this.terminals?.projectsChanged(this.desktopProjects().map((project) => project.key));
+        this.adoptOpenWorktrees().catch(this.report('Recording adopted worktrees'));
         this.terminalLinks.clear();
         this.installMenu();
         this.shellStateChanged();
-        this.fileTree?.projectsChanged();
-        this.quickOpenIndex?.invalidate();
-        this.scm?.setProjects(this.desktopProjects());
+        this.worktreesChanged();
       }),
-      this.trust.onDidGrant(() => this.shellStateChanged()),
+      this.shownFolders.onDidChange((shown, rootChanged) => {
+        this.shell?.shownFolderChanged(shown);
+        // a running search and the selected repository follow the folder shown, never its worktree's chats working
+        if (rootChanged && shown.projectKey === this.selectedProjectKey) {
+          this.search?.stopAll();
+          this.scm?.selectedProjectChanged();
+        }
+        this.refreshScmRoots();
+        this.refreshMenuState();
+        this.shellStateChanged();
+      }),
+      this.trust.onDidGrant(() => {
+        this.shownFolders.refresh();
+        this.shellStateChanged();
+      }),
       this.platform.settings.onDidChange('damocles', (change) => {
         if (change.affects(BROWSER_ENABLED_KEY)) {
           this.browserTabs?.enabledChanged();
@@ -671,6 +775,8 @@ class DesktopApp {
       quit: () => app.quit(),
     }, localization);
     await this.core.openTabs();
+    await this.adoptOpenWorktrees().catch(this.report('Recording adopted worktrees'));
+    this.requireWorktrees().scanAtStartup(this.desktopProjects().map((project) => project.fsPath)).catch(this.report('Scanning for leftover worktrees'));
 
     if (!git.available) void this.platform.notifications.warn(git.reason);
     updates.start();
@@ -768,8 +874,13 @@ class DesktopApp {
         if (code !== 'ENOENT' && code !== 'ENOTDIR') log(`[terminal] cannot read the folder a shell reported: ${code ?? errorText(err)}`);
         return false;
       }),
-      projects: () => this.desktopProjects(),
+      projects: () => this.roots.all(),
+      pickerProjects: () => this.pickerRoots(),
       currentProjectKey: () => this.currentProjectKey(),
+      rootEnv: (key) => {
+        const record = this.roots.resolve(key)?.worktree;
+        return record ? worktreeEnvironment(record) : {};
+      },
       settings: () => terminalSettings(platform.settings),
       env: shellEnv,
       passKeys: (splitActive) => installedTerminalPassKeys(splitActive),
@@ -805,23 +916,46 @@ class DesktopApp {
   private currentProjectKey(): string | undefined {
     const projects = this.desktopProjects();
     const selected = this.selectedProjectKey ?? this.core.current()?.provider.getFolderRegistry().defaultTarget().key;
-    return projects.find((project) => project.key === selected)?.key ?? projects[0]?.key;
+    const key = projects.find((project) => project.key === selected)?.key ?? projects[0]?.key;
+    // a new terminal starts in the project's shown folder (D31)
+    return key === undefined ? undefined : this.shownFolders.rootKeyOf(key);
+  }
+
+  // The New Terminal picker's folders: each open project, the current one as its shown folder.
+  private pickerRoots(): RootProject[] {
+    const current = this.currentProjectKey();
+    return this.desktopProjects().map((project) => {
+      const shown = current !== undefined && parseRootKey(current)?.projectKey === project.key ? this.roots.resolve(current) : undefined;
+      return shown ?? { ...project, root: { projectKey: project.key } };
+    });
+  }
+
+  // Quick Open's roots (D31): the selected project's shown folder, and the other projects' folders.
+  private quickOpenRoots(): RootProject[] {
+    const selected = this.selectedProjectKey ?? this.core.current()?.provider.getFolderRegistry().defaultTarget().key;
+    return this.desktopProjects().map((project) => (project.key === selected ? this.roots.resolve(this.shownFolders.rootKeyOf(project.key)) : undefined) ?? { ...project, root: { projectKey: project.key } });
   }
 
   private startCoreServices(): DesktopCore {
     const core = startCore(this.requirePlatform());
     const panelManager = core.provider.getPanelManager();
     // The previous core's chats closed with it.
-    for (const corePanelId of this.activity.keys()) this.notificationCenter.panelClosed(corePanelId);
+    for (const corePanelId of this.activity.keys()) {
+      this.notificationCenter.panelClosed(corePanelId);
+      void this.chatReviews.panelClosed(corePanelId).catch(this.report('Closing a chat review'));
+    }
     this.activity.clear();
+    this.worktreeStates.clear();
     this.catalogRows.clear();
     const subscriptions = [
+      panelManager.onDidChangeWorktreeState((event) => this.onWorktreeState(event)),
       core.provider.getFolderRegistry().onDidChange(() => {
         this.followSelectedChat();
         this.shellStateChanged();
       }),
       panelManager.onAllPanelsClosed(() => log('[chats] the last loaded chat closed')),
       panelManager.onActivity((panelId, activity) => this.onChatActivity(panelId, activity)),
+      panelManager.onChatChanges((panelId, totals, generation) => this.chatReviews.chatChanged(panelId, totals, generation)),
       panelManager.onTurnSettled((panelId, outcome) => {
         const panel = this.panelOfCore(panelId);
         if (panel) this.chatsChanged(this.projectOf(panel));
@@ -905,10 +1039,22 @@ class DesktopApp {
     });
     handleCenterChannels(overlay, this.notificationCenter);
     handleAboutChannels(overlay, this.aboutDeps());
+    // the New menu's options and the Merge dialog's Generate answer for the request open in this overlay
+    overlay.handleWhileOpen(OVERLAY_CHANNELS.worktreeOptions, () => overlay.isOpen('newChatMenu'), () => {
+      const open = overlay.openRequestOf('newChatMenu');
+      if (!open) throw new Error('No New menu is open');
+      return this.worktreeOptions(open.projectKey);
+    });
+    overlay.handleWhileOpen(OVERLAY_CHANNELS.continueWorktrees, () => overlay.isOpen('newChatMenu'), () => {
+      const open = overlay.openRequestOf('newChatMenu');
+      if (!open) throw new Error('No New menu is open');
+      return this.requireWorktrees().continueWorktrees(this.projectByKey(open.projectKey));
+    });
+    overlay.handleWhileOpen(OVERLAY_CHANNELS.worktreeGenerateMessage, () => overlay.openRequestOf('worktreeDialog')?.dialog === 'mergeMessage', () => this.requireWorktrees().generateForOpenDialog());
     const quickOpenPicker = new QuickOpenPicker(
       overlay,
       this.requireQuickOpenIndex(),
-      () => ({ currentProjectKey: this.selectedProjectKey ?? this.core.current()?.provider.getFolderRegistry().defaultTarget().key, recent: this.requireEditorPane().recentFiles() }),
+      () => ({ currentProjectKey: this.currentProjectKey(), recent: this.requireEditorPane().recentFiles() }),
       { capture: () => this.menuState(), list: (context) => this.requirePalette().list(context) },
       (line) => log(line),
     );
@@ -1116,6 +1262,7 @@ class DesktopApp {
   // VS Code's onBeforeShutdown saves the window state, and a closing window does not rewrite it (windowsStateHandler.ts).
   private sealPersistedState(window: BrowserWindow, tracker: WindowBoundsTracker): void {
     this.saveWindowPlacement(window, tracker);
+    this.heldPrompts.keep();
     this.states.seal();
     this.windowLayout.seal();
   }
@@ -1193,6 +1340,7 @@ class DesktopApp {
       this.trackChat(host, restoredWorkspaceFolderKey(saved.state) ?? registry.defaultTarget().key);
       // A chat whose saved pages are on their way back is active, so retention keeps it until they arrive.
       if (saved.browser.pages.length > 0) this.browserTabs?.setRestoring(host, true);
+      if (saved.heldPrompt) this.heldPrompts.restoring(saved.panelId);
       this.lastViewed.set(host, ++this.viewCount);
       return { host, saved };
     });
@@ -1208,6 +1356,7 @@ class DesktopApp {
       const restore = previous.then(async () => {
         await this.restoreInCore(core, host, restoredWorkspaceFolderKey(saved.state));
         this.restorePages(core, host, saved.browser.pages, saved.browser.activePage);
+        this.restoreHeldPrompt(core, host, saved.heldPrompt);
       });
       this.chatRestores.set(host, restore);
       previous = restore.catch(this.report('Restoring a chat'));
@@ -1236,6 +1385,16 @@ class DesktopApp {
     await restore?.catch(() => undefined);
     const corePanelId = this.corePanelIdOf(chat);
     return { corePanelId, failed: corePanelId === undefined && restore !== undefined && !chat.isDisposed };
+  }
+
+  // A prompt the chat held for its worktree when the window closed goes back into its composer, once.
+  private restoreHeldPrompt(core: DesktopCore, chat: DesktopPanel, held: readonly UserContentBlock[] | undefined): void {
+    const corePanelId = this.corePanelIdOf(chat);
+    if (!held || corePanelId === undefined) return;
+    core.provider.getPanelManager().restoreDraft(corePanelId, [...held]).then(
+      () => this.heldPrompts.restored(chat.panelId),
+      this.report('Putting a held prompt back in its composer'),
+    );
   }
 
   // Reopens a chat's saved pages as its tabs once the browser relaunches, which the remaining chats and the updater do not
@@ -1268,18 +1427,91 @@ class DesktopApp {
     return host;
   }
 
-  private newChat(projectKey: string | undefined): Promise<void> {
-    return this.core.run('New Chat', (core) => this.newChatIn(core, projectKey));
+  // worktree: the New menu's opt-in (D30), checked against fresh options; plain New Chat and Ctrl+N never pass one
+  private newChat(projectKey: string | undefined, worktree?: NewChatWorktree): Promise<void> {
+    return this.core.run('New Chat', (core) => this.newChatIn(core, projectKey, { focus: true }, worktree));
   }
 
-  private async newChatIn(core: DesktopCore, projectKey: string | undefined, options: { readonly focus: ShowFocus } = { focus: true }): Promise<void> {
+  private async newChatIn(core: DesktopCore, projectKey: string | undefined, options: { readonly focus: ShowFocus } = { focus: true }, worktree?: NewChatWorktree): Promise<void> {
     const views = this.requireViews();
     const key = projectKey ?? this.selectedProjectKey ?? core.provider.getFolderRegistry().defaultTarget().key;
     if (!this.isKnownProject(key, core)) throw new Error(this.requireLocalization().t('The project is no longer in the project list.'));
+    if (worktree && !(await this.requireWorktrees().checkOptIn(this.projectByKey(key), worktree.startRef, worktree.bringChanges))) {
+      throw new Error(this.requireLocalization().t('The worktree options changed. Open the New menu again.'));
+    }
     const host = views.create({ options: CHAT_PANEL });
     this.trackChat(host, key);
+    if (!worktree) {
+      this.showChat(host, options);
+      await this.restoreChat(core, host, key);
+      return;
+    }
+    // The chat shows only once core holds the opt-in, so its first send can never reach the project folder; until then
+    // retention leaves it alone.
+    this.openingInWorktree.add(host);
+    try {
+      await this.restoreChat(core, host, key);
+      const corePanelId = this.corePanelIdOf(host);
+      if (corePanelId === undefined) throw new Error(this.requireLocalization().t('The chat closed before it could use a worktree.'));
+      await core.provider.getPanelManager().setWorktreeOptIn(corePanelId, { startRef: worktree.startRef, bringChanges: worktree.bringChanges });
+    } catch (err) {
+      if (!host.isDisposed) host.close();
+      throw err;
+    } finally {
+      this.openingInWorktree.delete(host);
+    }
     this.showChat(host, options);
-    await this.restoreChat(core, host, key);
+  }
+
+  // Core binds the new chat to the worktree before its first session exists, and it shows only once bound.
+  private newChatInWorktree(target: NewChatInWorktreeRequest | undefined): Promise<void> {
+    return this.core.run('New Chat in This Worktree', async (core) => {
+      const { t } = this.requireLocalization();
+      const request = target ?? this.menuState().newChatInWorktree;
+      if (!request) throw new Error(t('The selected chat does not work in a worktree.'));
+      const live = this.newChatInTarget(this.worktreeRegistry?.get(request.worktreeId));
+      if (live?.projectKey !== request.projectKey) throw new Error(t('The worktree is no longer a worktree of this project.'));
+      const host = this.requireViews().create({ options: CHAT_PANEL });
+      this.trackChat(host, request.projectKey);
+      this.openingInWorktree.add(host);
+      const started = this.beforeChatRestore().then(async () => {
+        if (host.isDisposed) throw new Error(t('The chat closed before it could use a worktree.'));
+        await core.provider.startInWorktree(host, request.projectKey, request.worktreeId);
+      });
+      this.chatRestores.set(host, started);
+      try {
+        await started;
+      } catch (err) {
+        if (!host.isDisposed) host.close();
+        throw err;
+      } finally {
+        this.openingInWorktree.delete(host);
+      }
+      this.showChat(host, { focus: true });
+    });
+  }
+
+  private newChatInWorktreeFailure(): (err: unknown) => void {
+    return this.shellFailure('New Chat in This Worktree', 'Damocles could not open a new conversation: {0}');
+  }
+
+  private worktreeOptions(projectKey: string): Promise<ChatsWorktreeOptions> {
+    return this.requireWorktrees().options(this.projectByKey(projectKey));
+  }
+
+  private showFolder(request: ShowFolderRequest): void {
+    this.projectByKey(request.projectKey);
+    this.shownFolders.show(request.projectKey, request.show);
+  }
+
+  // A worktree main lists for the project, never one another project or a renderer names by path.
+  private async worktreeFinish(request: WorktreeFinishRequest): Promise<void> {
+    const root = this.roots.resolve(rootKey({ projectKey: request.projectKey, worktreeId: request.worktreeId }));
+    if (!root?.worktree) {
+      void this.notifications.info(this.requireLocalization().t('This worktree no longer exists.'));
+      return;
+    }
+    await this.requireWorktrees().finish(request.worktreeId, request.action);
   }
 
   private async addProject(): Promise<void> {
@@ -1362,7 +1594,8 @@ class DesktopApp {
     const key = this.chatInstances().get(panel)?.folder.key ?? this.openedInProject.get(panel);
     const registry = this.core.current()?.provider.getFolderRegistry();
     if (key === undefined || !registry) return key;
-    return registry.resolve(key)?.key ?? registry.defaultTarget().key;
+    // a chat working in its worktree belongs to the worktree's project (AD12)
+    return registry.projectOf(key)?.key ?? registry.defaultTarget().key;
   }
 
   private loadedChat(chatId: string): DesktopPanel | undefined {
@@ -1425,6 +1658,7 @@ class DesktopApp {
       registry.setDefault(projectKey).catch(this.report('Following the selected project'));
     }
     this.refreshSelectedCatalog();
+    this.shownFolders.refresh();
     this.chatsChanged(projectKey);
     this.shellStateChanged();
     const viewed = this.viewedChat();
@@ -1553,6 +1787,7 @@ class DesktopApp {
         timestamp: Date.now(),
         status: statusOf(this.activityOf(chat)),
         loaded: true,
+        ...this.rowWorktree(chat, undefined),
       }))
       : [];
     const tags = new Set<string>();
@@ -1569,9 +1804,26 @@ class DesktopApp {
         ...(row.model ? { model: { provider: row.model.provider, id: row.model.id } } : {}),
         status: chat ? statusOf(this.activityOf(chat)) : 'idle',
         loaded: chat !== undefined,
+        ...this.rowWorktree(chat, row),
       });
     }
     return { projectKey, chats, tags: [...tags].sort((a, b) => a.localeCompare(b)).slice(0, MAX_OVERLAY_TAGS) };
+  }
+
+  // A Chats row's worktree badge and read-only state (AD12 Listing).
+  private rowWorktree(chat: DesktopPanel | undefined, row: StoredSession | undefined): Pick<ShellChat, 'worktree' | 'readOnly'> {
+    const registry = this.worktreeRegistry;
+    if (!registry) return { readOnly: false };
+    const event = chat ? this.worktreeEventOf(chat) : undefined;
+    const found = chatRowWorktree(
+      {
+        ...(event ? { live: { ...(event.worktreeId !== undefined ? { worktreeId: event.worktreeId } : {}), state: event.state } } : {}),
+        ...(row ? { stored: { ...(row.worktree ? { worktree: row.worktree } : {}), ...(row.listedFrom !== undefined ? { listedFrom: row.listedFrom } : {}) } } : {}),
+      },
+      { registry, finish: (record) => this.finishStateOf(record), baseBranch: (record) => this.scm?.rootRepository(folderKey(record.projectPath))?.branch },
+    );
+    const newChatIn = found.worktree?.status === 'live' ? this.newChatInTarget(found.worktree.worktreeId === undefined ? undefined : registry.get(found.worktree.worktreeId)) : undefined;
+    return { ...(found.worktree ? { worktree: { ...found.worktree, ...(newChatIn ? { newChatIn } : {}) } } : {}), readOnly: found.readOnly };
   }
 
   // Catalog results become the shell's; every refusal reaches the user as exactly one toast (core shows the lease one).
@@ -1609,12 +1861,20 @@ class DesktopApp {
       chat.close();
       return { ok: true };
     }
-    return this.core.run('Delete Chat', (core) => this.chatWork.run(chatId, async () => {
+    const deleted = await this.core.run('Delete Chat', (core) => this.chatWork.run(chatId, async () => {
       const holder = this.loadedChat(chatId);
+      const worktreeId = (holder ? this.worktreeEventOf(holder)?.worktreeId : undefined) ?? (await this.storedChat(core, chatId))?.session.worktree?.worktreeId;
       const result = this.mutationResult(await core.provider.getSessionCatalog().delete(chatId), 'delete');
-      if (result.ok && holder && !holder.isDisposed) holder.close();
-      return result;
+      if (result.ok && holder && !holder.isDisposed) {
+        const corePanelId = this.corePanelIdOf(holder);
+        if (corePanelId !== undefined) this.worktreeStates.delete(corePanelId);
+        holder.close();
+      }
+      return { result, worktreeId };
     }));
+    // D33: deleting the last chat that uses a worktree asks whether to delete the worktree too
+    if (deleted.result.ok && deleted.worktreeId !== undefined) this.requireWorktrees().afterChatDeleted(deleted.worktreeId).catch(this.report('Offering the worktree delete'));
+    return deleted.result;
   }
 
   // A chat left memory: by retention, Delete, or the window or core closing (which keep the saved selection).
@@ -1622,6 +1882,7 @@ class DesktopApp {
     const projectKey = this.projectOf(panel);
     this.chatsChanged(projectKey);
     const views = this.views;
+    if (this.closingForWorktree.has(panel)) return;
     if (!views || views.retainingStates || this.lifecycle.phase !== 'running' || views.selected() !== undefined) return;
     this.selectProject(projectKey ?? this.requireCore().provider.getFolderRegistry().defaultTarget().key).catch(this.report('Selecting a chat after a close'));
   }
@@ -1665,10 +1926,12 @@ class DesktopApp {
     const views = this.views;
     if (!views || !this.core.current() || views.retainingStates || this.lifecycle.phase !== 'running') return;
     const panels = this.requireCore().provider.getPanelManager().getPanels();
+    for (const corePanelId of [...this.worktreeStates.keys()]) if (!panels.has(corePanelId)) this.worktreeStates.delete(corePanelId);
     for (const corePanelId of [...this.activity.keys()]) {
       if (panels.has(corePanelId)) continue;
       this.activity.delete(corePanelId);
       this.notificationCenter.panelClosed(corePanelId);
+      void this.chatReviews.panelClosed(corePanelId).catch(this.report('Closing a chat review'));
     }
     for (const panelId of this.chatsToUnload()) {
       const chat = views.panel(panelId);
@@ -1687,7 +1950,7 @@ class DesktopApp {
     const selected = views.selected();
     return chatsToUnload(views.chats().flatMap((chat) => {
       // A chat whose session core is still setting up is neither idle nor empty yet.
-      if (this.corePanelIdOf(chat) === undefined) return [];
+      if (this.corePanelIdOf(chat) === undefined || this.openingInWorktree.has(chat)) return [];
       return [{
         id: chat.panelId,
         selected: chat === selected,
@@ -1696,6 +1959,7 @@ class DesktopApp {
         hasSession: this.sessionIdOf(chat) !== undefined,
         empty: this.isEmpty(chat),
         lastViewed: this.lastViewed.get(chat) ?? 0,
+        ...(this.worktreeEventOf(chat) ? { worktreePhase: this.worktreeEventOf(chat)!.state.phase } : {}),
       }];
     }));
   }
@@ -1711,28 +1975,79 @@ class DesktopApp {
   // locked file) is one toast naming the entry; a create or rename's name box closes either way.
   private async runFilesAction<T extends FilesMutationResult | FilesDeleteResult | FilesListResult>(action: FilesAction, file: FileRef, run: () => Promise<T>, newName?: string): Promise<T | FilesFailed> {
     const result = await settleFilesAction(run, (line) => log(line));
-    const name = file.relativePath === '' ? this.desktopProjects().find((project) => project.key === file.projectKey)?.name ?? '' : path.posix.basename(file.relativePath);
+    const name = file.relativePath === '' ? this.roots.resolve(file.projectKey)?.name ?? '' : path.posix.basename(file.relativePath);
     const message = filesFailureMessage((text, ...args) => this.requireLocalization().t(text, ...args), action, name, result, newName);
     if (message !== undefined) void this.notifications.error(message);
     return result;
   }
 
-  // A refusal or failure comes back as the reason the project list shows under the project.
+  // A refusal or failure comes back as the reason the project list shows under the project. Removing the project kills its
+  // terminals and its worktrees' (AD6), so running ones are asked about first (G22).
   private async removeProject(key: string): Promise<RemoveProjectResult> {
     try {
       const project = this.projectByKey(key);
-      const running = [...this.chatInstances().values()].some((instance) => instance.folder.key === key && instance.session.processing);
-      if (running) {
-        return { ok: false, reason: this.requireLocalization().t('A conversation is running in {0}. Stop it or wait for it to finish, then remove the project.', project.name) };
-      }
-      // Removing the project kills its terminals (AD6), so running ones are asked about first (G22); a cancel keeps it.
       const terminals = this.requireTerminals();
-      if (!(await terminals.confirmKill(terminals.idsIn(key)))) return { ok: true };
-      await this.projects.remove(project.fsPath);
-      return { ok: true };
+      return await removeProject(key, {
+        project: () => project,
+        busy: (projectKey) => this.projectBusy(projectKey),
+        waitingChats: (projectKey) => this.waitingChats(projectKey),
+        terminals: {
+          idsIn: (projectKey) => this.roots.all().filter((root) => root.root.projectKey === projectKey).flatMap((root) => terminals.idsIn(root.key)),
+          setupTerminal: (worktreeId) => terminals.taskTerminal(setupTaskKey(worktreeId)),
+          toConfirm: (ids) => terminals.toConfirm(ids),
+          confirmKill: (ids) => terminals.confirmKill(ids),
+        },
+        ask: this.ask,
+        discard: (chats) => this.discardWaitingChats(chats),
+        remove: async () => {
+          this.unloadWorktreeChats(key);
+          await this.projects.remove(project.fsPath);
+        },
+        t: (message, ...args) => this.requireLocalization().t(message, ...args),
+      });
     } catch (err) {
       log(`[shell] removing a project failed: ${errorText(err)}`);
       return { ok: false, reason: errorMessage(err) };
+    }
+  }
+
+  // D33's busy rule over the project's loaded chats, those working in its owned folders (worktrees) included.
+  private projectBusy(projectKey: string): boolean {
+    for (const [corePanelId, instance] of this.core.current()?.provider.getPanelManager().getPanels() ?? []) {
+      if ((instance.folder.ownerKey ?? instance.folder.key) !== projectKey) continue;
+      if (instance.session.processing || isActiveActivity(this.activity.get(corePanelId))) return true;
+    }
+    return false;
+  }
+
+  // The loaded chats of the project, its worktrees' included, that hold their first prompt for their worktree (rule 6).
+  private waitingChats(projectKey: string): WaitingChat[] {
+    const panelManager = this.core.current()?.provider.getPanelManager();
+    return [...panelManager?.getPanels() ?? []].flatMap(([corePanelId, instance]): WaitingChat[] => {
+      const prompt = (instance.folder.ownerKey ?? instance.folder.key) === projectKey ? panelManager?.heldPrompt(corePanelId) : undefined;
+      if (prompt === undefined) return [];
+      const panel = this.panelOfCore(corePanelId);
+      const worktreeId = this.worktreeStates.get(corePanelId)?.worktreeId;
+      return [{ corePanelId, title: panel ? this.titleOf(panel) : '', prompt, ...(worktreeId !== undefined ? { worktreeId } : {}) }];
+    });
+  }
+
+  // Each chat closes, as Delete closes one, which drops its hold and panels.json entry; core discards its unused worktree.
+  private async discardWaitingChats(chats: readonly WaitingChat[]): Promise<void> {
+    const panelManager = this.requireCore().provider.getPanelManager();
+    await Promise.all(chats.map((chat) => {
+      const panel = this.panelOfCore(chat.corePanelId);
+      if (panel && !panel.isDisposed) panel.close();
+      return panelManager.whenWorktreeDiscarded(chat.corePanelId);
+    }));
+  }
+
+  // AD12 Projects: a removed project's worktree chats unload and keep their worktrees, which re-adding lists again.
+  private unloadWorktreeChats(projectKey: string): void {
+    for (const event of [...this.worktreeStates.values()]) {
+      if (event.worktreeId === undefined || folderKey(event.projectPath) !== projectKey) continue;
+      const panel = this.panelOfCore(event.panelId);
+      if (panel && !panel.isDisposed) panel.close();
     }
   }
 
@@ -1766,7 +2081,11 @@ class DesktopApp {
       listChats: (key) => this.listChats(key),
       searchChats: (key, query) => this.searchChats(key, query),
       selectChat: (id) => this.selectChat(id),
-      newChat: reportFailure((key: string | undefined) => this.newChat(key), this.shellFailure('New Chat', 'Damocles could not open a new conversation: {0}')),
+      newChat: reportFailure((key: string | undefined, worktree?: NewChatWorktree) => this.newChat(key, worktree), this.shellFailure('New Chat', 'Damocles could not open a new conversation: {0}')),
+      newChatInWorktree: reportFailure((request: NewChatInWorktreeRequest) => this.newChatInWorktree(request), this.newChatInWorktreeFailure()),
+      worktreeOptions: (key) => this.worktreeOptions(key),
+      showFolder: reportFailure(async (request: ShowFolderRequest) => this.showFolder(request), this.shellFailure('Show Folder', 'Damocles could not switch the folder: {0}')),
+      worktreeFinish: reportFailure((request: WorktreeFinishRequest) => this.worktreeFinish(request), this.shellFailure('Worktree Action', 'The worktree action failed: {0}')),
       renameChat: reportFailure((id: string, name: string) => this.renameChat(id, name), this.shellFailure('Rename Chat', 'Damocles could not change the session: {0}'), CHAT_CHANGE_FAILED),
       tagChat: reportFailure((id: string, tag: string | null) => this.tagChat(id, tag), this.shellFailure('Tag Chat', 'Damocles could not change the session: {0}'), CHAT_CHANGE_FAILED),
       deleteChat: reportFailure((id: string) => this.deleteChat(id), this.shellFailure('Delete Chat', 'Damocles could not change the session: {0}'), CHAT_CHANGE_FAILED),
@@ -1828,6 +2147,21 @@ class DesktopApp {
         commitInput: (raw) => this.requireScm().commitInput(raw),
         amend: (raw) => this.requireScm().amend(raw),
         artifacts: (raw) => this.requireScm().artifacts(raw),
+        quickDiffBase: (raw) => this.requireScm().quickDiffBase(raw),
+        blame: (raw) => this.requireScm().blame(raw),
+        timeline: (raw) => this.requireScm().timeline(raw),
+        history: (raw) => this.beforeHistory().then(() => this.requireScm().history(raw)),
+        commitDetails: (raw) => this.requireScm().commitDetails(raw),
+        mergeInputs: (raw) => this.requireScm().mergeInputs(raw),
+        mergeFile: (raw) => this.requireScm().mergeFile(raw),
+        resource: (raw) => this.requireScm().resource(raw),
+      },
+      review: {
+        fileDiff: (raw) => this.chatReviews.fileDiff(raw),
+        setScope: (raw) => this.chatReviews.setScope(raw),
+        send: (raw) => this.chatReviews.send(raw),
+        discard: (raw) => this.chatReviews.discard(raw),
+        setDrafts: (raw) => this.chatReviews.setDrafts(raw),
       },
       searchEditor: {
         openNew: (request) => this.requireSearch().openNew(request),
@@ -1958,7 +2292,8 @@ class DesktopApp {
 
   private startEditor(platform: DesktopPlatform, localization: DesktopLocalizationService): void {
     const t = (message: string, ...args: Array<string | number>): string => localization.t(message, ...args);
-    const projects = (): readonly Project[] => this.desktopProjects();
+    // every root a renderer may name files in (AD5, rule 19): the project folders and their live chat worktrees
+    const projects = (): readonly Project[] => this.roots.all();
     const report = (line: string): void => log(line);
     const documents = new DocumentService({
       projects,
@@ -1994,7 +2329,7 @@ class DesktopApp {
       ignored: (projectKey, relativeDir, entries) => this.scm?.ignored(projectKey, relativeDir, entries) ?? Promise.resolve(new Set()),
     });
     const quickOpenIndex = new QuickOpenIndex({
-      projects,
+      projects: () => this.quickOpenRoots(),
       rgPath: () => resolveRgPath(platform.paths),
       ignoreArgs: () => getRipgrepSearchOptions(platform.settings),
       excludes: () => [...fileTree.excludePatterns(), ...this.searchExcludePatterns()],
@@ -2014,6 +2349,8 @@ class DesktopApp {
       logsDir: this.logsDir,
       sendState: (state) => {
         this.shell?.editorState(state);
+        this.editorRootKeys = new Set(state.tabs.flatMap((tab) => (tab.projectKey !== undefined ? [tab.projectKey] : [])));
+        this.refreshScmRoots();
         this.refreshMenuState();
       },
       sendDocument: (documentId, content) => this.shell?.documentChanged(documentId, content),
@@ -2030,12 +2367,15 @@ class DesktopApp {
         if (!this.windowLayout.sidebar().grid.visible.editor) this.toggleGridPane('editor');
       },
       projects,
+      worktreeBranch: (key) => this.roots.branchOf(key),
       copy: (text) => platform.clipboard.writeText(text),
       reveal: (absolutePath) => platform.shell.revealPath(absolutePath),
       mention: (target) => this.mentionInSelectedChat(target),
       browser: () => this.browserTabs,
       warn: (message) => void this.notifications.warn(message),
       searchEditorClosed: (documentId) => this.search?.searchEditorClosed(documentId),
+      reviewClosed: (reviewId) => this.chatReviews.reviewClosed(reviewId),
+      gitOf: (absolutePath) => this.scm?.gitOf(absolutePath),
       openChanges: (absolutePath) => this.requireScm().openChangesOf(absolutePath),
     });
     const formatterHosts = new FormatterHosts({
@@ -2113,8 +2453,10 @@ class DesktopApp {
     });
     const askpass = createAskpassServer({ paths: askpassPaths(platform.paths, process.execPath), prompt: createAskpassBridge({ ask: this.ask, askInput, t }), log: (line) => gitLog.appendLine(line) });
     this.askpass = askpass;
+    const gitRunner = git.available ? createGitRunner({ git: { path: git.path, version: git.version }, log: gitLog, isTrusted: (project) => platform.trust.isTrusted(project) }) : undefined;
+    this.gitRunner = gitRunner;
     const scmService = new ScmService({
-      runner: git.available ? createGitRunner({ git: { path: git.path, version: git.version }, log: gitLog, isTrusted: (project) => platform.trust.isTrusted(project) }) : undefined,
+      runner: gitRunner,
       askpass,
       trust: platform.trust,
       watchers: platform.fileWatchers,
@@ -2130,7 +2472,8 @@ class DesktopApp {
     const scm = new ScmHost({
       service: scmService,
       settings: platform.settings,
-      projects,
+      documents,
+      projects: () => this.scmRoots(),
       selectedProjectKey: () => this.searchFolder()?.projectKey,
       editorPane,
       selection: { get: (projectKey) => this.windowLayout.scmSelected(projectKey), set: (projectKey, root) => this.windowLayout.setScmSelected(projectKey, root) },
@@ -2145,7 +2488,7 @@ class DesktopApp {
       pickFolder: (defaultPath, title, buttonLabel) => platform.dialogs.pickFolder({ title: title ?? t('Open Repository'), defaultPath, ...(buttonLabel !== undefined ? { buttonLabel } : {}) }),
       addProject: (folder) => this.addProjectAt(folder),
       selectProject: (projectKey) => this.selectProject(projectKey),
-      removeProject: (projectKey) => this.removeProject(projectKey),
+      worktrees: this.scmWorktreeDeps(),
       gitFound: git.available,
       quickPick: createQuickPickAsker({
         overlay: () => this.overlay,
@@ -2157,6 +2500,7 @@ class DesktopApp {
       ask: this.ask,
       askInput,
       mention: (target) => this.mentionInSelectedChat(target),
+      addToChat: (projectKey, attachment, prompt) => this.addAttachmentToChat(projectKey, attachment, t('The chat could not be loaded, so the commit was not added to it.'), prompt),
       complete: commitMessageCompletion,
       send: {
         view: (view) => this.shell?.scmView(view),
@@ -2174,8 +2518,19 @@ class DesktopApp {
       gitLog: (line) => gitLog.appendLine(line),
       platform: process.platform,
     });
-    scm.setProjects(this.desktopProjects());
     this.scm = scm;
+    this.disposables.push(scmService.onDidChange((event) => {
+      if (event.kind === 'view') {
+        const project = this.projects.folders().find((folder) => folderKey(folder.fsPath) === event.projectKey);
+        if (project) this.projectRepositoryChanged.fire(project.fsPath);
+        return;
+      }
+      if (event.kind !== 'artifacts' || !event.groups.includes('branches')) return;
+      // by project path, as listed: a repository root is its realpath, which an 8.3 or linked project path never equals
+      const repository = scmService.repository(event.repoId);
+      if (repository !== undefined) this.refsChanged.fire(repository.projectPath);
+    }));
+    scm.setProjects(this.scmRoots());
     // Disposed in reverse, so the Git log outlives everything that writes to it; the quit closes the askpass server (closeServers).
     this.disposables.push(gitLog, scm, scmService);
 
@@ -2233,8 +2588,31 @@ class DesktopApp {
           autofetchNow: () => this.requireScm().autofetchNow(),
           ledgerPath: () => SUBCALL_USAGE_LEDGER_PATH,
           gitLog: () => fs.promises.readFile(path.join(this.logsDir, logFileName('Git')), 'utf8').catch((err: NodeJS.ErrnoException) => (err.code === 'ENOENT' ? '' : Promise.reject(err))),
+          // reached turns true once a Graph history request waits on the hold; release answers it and every later one, fail
+          // rejects them, until the next hold
+          holdHistory: () => {
+            const hold = { reached: false, release: (): void => undefined, fail: (): void => undefined };
+            const released = new Promise<void>((resolve, reject) => {
+              hold.release = resolve;
+              hold.fail = () => reject(new Error('the e2e hooks failed the history read'));
+            });
+            // a hold failed before any request waits on it is not an unhandled rejection
+            released.catch(() => undefined);
+            this.beforeHistory = () => {
+              hold.reached = true;
+              return released;
+            };
+            return hold;
+          },
         },
         reloadCore: () => this.core.reload(),
+        // the worktree dialogs (slice 12a) asked as main asks them, for the captures
+        worktrees: {
+          ask: (dialog: WorktreeDialog) => {
+            if (!this.askWorktreeDialog) throw new Error('Worktrees are not started');
+            return this.askWorktreeDialog(dialog);
+          },
+        },
         // reached turns true once a chat restore waits on the hold; fail makes every held restore reject
         holdChatRestore: () => {
           const hold = { reached: false, release: (): void => undefined, fail: (): void => undefined };
@@ -2296,11 +2674,11 @@ class DesktopApp {
     return excludeSettingGlobs(isDesktopSettingValue(SEARCH_EXCLUDE_SETTING, value) ? (value as Record<string, unknown>) : DEFAULT_SEARCH_EXCLUDE);
   }
 
-  // Search's folder: the selected project's, resolved against main's own project list.
+  // Search's folder: the selected project's shown folder (D31), resolved against main's own roots.
   private searchFolder(): SearchFolder | undefined {
     const key = this.selectedProjectKey ?? this.core.current()?.provider.getFolderRegistry().defaultTarget().key;
-    const project = this.desktopProjects().find((candidate) => candidate.key === key);
-    return project ? { projectKey: project.key, fsPath: project.fsPath } : undefined;
+    const root = key === undefined ? undefined : this.roots.resolve(this.shownFolders.rootKeyOf(key));
+    return root ? { projectKey: root.key, fsPath: root.fsPath } : undefined;
   }
 
   // A chat feature in the selected chat (AD11), once that chat's view is ready.
@@ -2320,6 +2698,411 @@ class DesktopApp {
       const key = folderKey(folder.fsPath);
       return { key, fsPath: folder.fsPath, name: registry?.resolve(key)?.label ?? folder.name };
     });
+  }
+
+  // The registry, trust's view of it, and the controller core reaches as Platform.worktrees; once per app run.
+  private startWorktrees(watchers: FileWatcherFactory): WorktreeHostServices {
+    const registry = new WorktreeRegistry({ rootDir: path.join(DAMOCLES_HOME_DIR, 'worktrees'), watcherFactory: watchers, log: (line) => log(line) });
+    this.worktreeRegistry = registry;
+    removeAbandonedTempFolders(os.tmpdir(), Date.now()).catch((err: unknown) => log(`[worktrees] could not look for abandoned temp folders: ${err instanceof Error ? err.message : String(err)}`));
+    this.trust.setWorktrees({
+      projectOf: (folder) => registry.liveChatRecordAt(folder)?.projectPath,
+      workingFolders: (projectPath) => registry.liveChatRecords(projectPath).map((record) => record.workingFolder),
+    });
+    const t = (message: string, ...args: Array<string | number>): string => this.requireLocalization().t(message, ...args);
+    const report = (line: string): void => log(line);
+    const askDialog = createWorktreeDialogAsker({
+      overlay: () => this.overlay,
+      focused: () => webContents.getFocusedWebContents() ?? undefined,
+      ask: this.ask,
+      warn: (message) => void this.notifications.warn(message),
+      t,
+      log: report,
+    });
+    this.askWorktreeDialog = askDialog;
+    const controller = new WorktreeController({
+      registry,
+      roots: this.roots,
+      git: () => this.gitRunner,
+      branchPrefix: () => this.requirePlatform().settings.get<string>(SCM_SETTING_KEYS.branchPrefix, '') ?? '',
+      isTrusted: (folder) => this.trust.isTrusted(folder),
+      askDialog,
+      ask: this.ask,
+      notify: this.notifications,
+      t,
+      log: report,
+      setupShell: () => setupShell(process.platform, process.env, this.terminalProfiles?.profiles().find((profile) => profile.id === 'pwsh')?.file),
+      runTask: (request) => {
+        this.showTerminalPane();
+        this.requireTerminals().runTask(request);
+      },
+      retrySetup: (worktreeId) => this.core.run('Retry Setup', (core) => core.provider.getPanelManager().retrySetup(worktreeId)),
+      worktreeEnv: (record) => worktreeEnvironment(record),
+      chatsUsing: (worktreeId) => [...this.worktreeStates.values()].filter((event) => event.worktreeId === worktreeId).map((event) => ({ panelId: event.panelId, busy: event.busy })),
+      sessionsUsing: (worktreeId) => this.sessionsUsing(worktreeId),
+      leasedElsewhere: (sessionId) => leaseRefusalFor(sessionId) !== undefined,
+      closeWorktree: (worktreeId, key, stop) => this.closeWorktreeRoot(worktreeId, key, stop),
+      afterClose: (worktreeId, removed) => this.worktreeClosed(worktreeId, removed),
+      showProjectFolder: (projectKey) => {
+        this.shownFolders.show(projectKey, 'project');
+      },
+      newChatInProject: (projectPath) => {
+        this.newChat(folderKey(projectPath)).catch(this.shellFailure('New Chat', 'Damocles could not open a new conversation: {0}'));
+      },
+      newChatInWorktree: (projectPath, worktreeId) => {
+        this.newChatInWorktree({ projectKey: folderKey(projectPath), worktreeId }).catch(this.newChatInWorktreeFailure());
+      },
+      beginFinish: (worktreeId, action) => this.requireCore().provider.getPanelManager().beginWorktreeFinish(worktreeId, action),
+      showTask: (key) => {
+        const terminals = this.requireTerminals();
+        const id = terminals.taskTerminal(key);
+        if (id === undefined) return false;
+        this.showTerminalPane();
+        terminals.select(id);
+        return true;
+      },
+      stopTask: (key) => {
+        const terminals = this.terminals;
+        const id = terminals?.taskTerminal(key);
+        if (terminals && id !== undefined) terminals.kill(id);
+      },
+      onDidChangeRefs: (listener) => this.refsChanged.add(listener),
+      onDidChangeProjectRepository: (listener) => this.projectRepositoryChanged.add(listener),
+      projectRepository: (projectPath) => this.scm?.projectRepository(folderKey(projectPath)),
+      projectRepositoryWhenReady: async (projectPath) => this.scm?.projectRepositoryWhenReady(folderKey(projectPath)),
+      worktreeChats: (projectPath) => this.worktreeChats(folderKey(projectPath)),
+      openConflicts: (folder, files, applyBranch) => this.openWorktreeConflicts(folder, files, applyBranch),
+      publish: (key) => this.withScmRoot(key, async (repoId) => {
+        await this.requireScm().runRequest({ op: 'publish', repoId });
+      }),
+      targetFacts: (record) => this.scm?.rootRepository(folderKey(record.projectPath)) ?? { hasRemote: false, detached: false },
+      generateMessage: (record) => this.withScmRoot(this.worktreeRootKey(record), async (repoId) => {
+        const generated = await this.requireScm().generateMessage({ repoId });
+        return generated.ok ? generated.message : undefined;
+      }),
+      changed: () => this.worktreesChanged(),
+      reveal: (absolutePath) => this.requirePlatform().shell.revealPath(absolutePath),
+    });
+    this.worktrees = controller;
+    this.disposables.push(registry, registry.onDidChange(() => this.worktreesChanged()));
+    return controller.hostServices();
+  }
+
+  // What source control's worktree flows need of worktree chats (D58, B40, B45, rules 14 and 16).
+  private scmWorktreeDeps(): ScmWorktreeDeps {
+    const liveChatAt = (worktreePath: string): ChatWorktreeRecord | undefined => this.worktreeRegistry?.records().find(
+      (record): record is ChatWorktreeRecord => record.kind === 'chat' && record.deletedAt === undefined && folderKey(record.worktreeRoot) === folderKey(worktreePath),
+    );
+    return {
+      deleteChatWorktreeAt: async (worktreePath) => {
+        const record = liveChatAt(worktreePath);
+        if (!record) return false;
+        await this.requireWorktrees().finish(record.id, 'delete');
+        return true;
+      },
+      adopt: async (project, worktree, repositoryRoot, mainProject) => {
+        await this.requireWorktreeRegistry().upsertAdopted({
+          worktreeRoot: worktree.path,
+          workingFolder: project.fsPath,
+          repositoryRoot,
+          ...(mainProject ? { projectPath: mainProject.fsPath } : {}),
+          ...(worktree.branch !== null ? { branch: worktree.branch } : {}),
+        });
+      },
+      adoptCreated: async (projectKey, repositoryRoot, worktreePath, branch) => {
+        const project = this.desktopProjects().find((candidate) => candidate.key === projectKey);
+        await this.requireWorktreeRegistry().upsertAdopted({ worktreeRoot: worktreePath, workingFolder: worktreePath, repositoryRoot, ...(project ? { projectPath: project.fsPath } : {}), ...(branch !== undefined ? { branch } : {}) });
+      },
+      markRemoved: async (worktreePath) => {
+        const registry = this.requireWorktreeRegistry();
+        const removed = registry.records().filter((record) => record.kind === 'adopted' && record.deletedAt === undefined && folderKey(record.worktreeRoot) === folderKey(worktreePath));
+        for (const record of removed) await registry.markDeleted(record.id);
+      },
+      closeProject: (projectKey) => this.closeProjectForDelete(projectKey),
+      chatOf: (worktreePath) => {
+        const record = liveChatAt(worktreePath);
+        return record ? this.worktreeChatOf(record) : undefined;
+      },
+      newChatTargetAt: (worktreePath) => this.newChatInTarget(liveChatAt(worktreePath)),
+      selectChat: async (chatId) => {
+        await this.selectChat(chatId);
+      },
+      showProjectFolder: (projectKey) => {
+        this.shownFolders.show(projectKey, 'project');
+      },
+      projectCopyOf: (key, absolutePath) => {
+        const root = this.roots.resolve(key);
+        if (!root?.worktree) return undefined;
+        const relative = path.relative(root.fsPath, absolutePath);
+        if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return undefined;
+        const project = this.roots.resolve(root.root.projectKey);
+        return project ? { project, relativePath: relative.split(path.sep).join('/') } : undefined;
+      },
+    };
+  }
+
+  // B45: the worktree's most recently viewed chat, loaded or listed; a worktree no chat uses yet names none.
+  private worktreeChatOf(record: ChatWorktreeRecord): ScmWorktreeChat | undefined {
+    const loaded = [...this.worktreeStates.values()]
+      .filter((event) => event.worktreeId === record.id)
+      .flatMap((event) => {
+        const panel = this.panelOfCore(event.panelId);
+        return panel ? [{ panel, event }] : [];
+      })
+      .sort((a, b) => (this.lastViewed.get(b.panel) ?? 0) - (this.lastViewed.get(a.panel) ?? 0))[0];
+    if (loaded) return { chatId: this.chatIdOf(loaded.panel), title: this.titleOf(loaded.panel), place: loaded.event.state.place };
+    const row = [...(this.catalogRows.get(folderKey(record.projectPath)) ?? [])]
+      .filter((candidate) => candidate.worktree?.worktreeId === record.id)
+      .sort((a, b) => b.timestamp - a.timestamp)[0];
+    return row?.worktree ? { chatId: row.id, title: storedTitle(row), place: row.worktree.place } : undefined;
+  }
+
+  // New Chat in This Worktree's target: a live chat record of an open, trusted project with no finish action running.
+  private newChatInTarget(record: WorktreeRecord | undefined): NewChatInWorktreeRequest | undefined {
+    if (record?.kind !== 'chat' || record.deletedAt !== undefined || this.worktrees?.isFinishing(record.id) !== false) return undefined;
+    const projectKey = folderKey(record.projectPath);
+    const project = this.projects.folders().find((folder) => folderKey(folder.fsPath) === projectKey);
+    return project && this.trust.isTrusted(project.fsPath) ? { projectKey, worktreeId: record.id } : undefined;
+  }
+
+  // Rule 14 for a worktree open as its own project: its chats unload and its terminals stop (asked first when one runs a
+  // process) before `git worktree remove`; a running conversation refuses.
+  private async closeProjectForDelete(projectKey: string): Promise<'closed' | 'cancelled' | { readonly reason: string }> {
+    const project = this.projectByKey(projectKey);
+    const running = { reason: this.requireLocalization().t('A conversation is running in {0}. Stop it or wait for it to finish, then remove the project.', project.name) };
+    if (this.projectBusy(projectKey)) return running;
+    const terminals = this.requireTerminals();
+    if (!(await terminals.confirmKill(terminals.idsIn(projectKey)))) return 'cancelled';
+    // a turn may have started while the question was open
+    if (this.projectBusy(projectKey)) return running;
+    const loaded = [...this.chatInstances().values()].filter((instance) => (instance.folder.ownerKey ?? instance.folder.key) === projectKey);
+    for (const instance of loaded) {
+      const panel = this.views?.chats().find((chat) => chat === instance.host);
+      if (panel && !panel.isDisposed) panel.close();
+    }
+    await this.projects.remove(project.fsPath);
+    await this.core.current()?.provider.getPanelManager().whenFolderReleased(project.fsPath);
+    return 'closed';
+  }
+
+  // Rule 16's pass: an open project that is a linked worktree gets an adopted record under the open project holding its
+  // main worktree, so its chats list under that project read-only once its folder goes; with that project closed, none.
+  private async adoptOpenWorktrees(): Promise<void> {
+    const registry = this.requireWorktreeRegistry();
+    const projects = this.desktopProjects();
+    for (const project of projects) {
+      if (registry.liveChatRecordAt(project.fsPath)) continue;
+      const linked = await linkedWorktreeOf(project.fsPath);
+      if (!linked) continue;
+      const others = projects.filter((candidate) => candidate.key !== project.key);
+      const mainPath = await folderInRepository(linked.repositoryRoot, others.map((candidate) => candidate.fsPath));
+      const main = others.find((candidate) => candidate.fsPath === mainPath);
+      const existing = registry.records().find((record) => record.kind === 'adopted' && record.deletedAt === undefined && folderKey(record.workingFolder) === project.key);
+      const sameProject = existing && (existing.projectPath === undefined ? main === undefined : main !== undefined && folderKey(existing.projectPath) === main.key);
+      if (sameProject) continue;
+      await registry.upsertAdopted({
+        worktreeRoot: linked.worktreeRoot,
+        workingFolder: project.fsPath,
+        repositoryRoot: linked.repositoryRoot,
+        ...(main ? { projectPath: main.fsPath } : {}),
+        ...(linked.branch !== undefined ? { branch: linked.branch } : {}),
+      });
+    }
+  }
+
+  // ShellProject.worktreeOf: the project whose main worktree this adopted project's folder belongs to.
+  private adoptedProjectName(projectKey: string): string | undefined {
+    const record = this.worktreeRegistry?.records().find((candidate) => candidate.kind === 'adopted' && candidate.deletedAt === undefined && folderKey(candidate.workingFolder) === projectKey);
+    if (!record) return undefined;
+    if (record.projectPath === undefined) return path.basename(record.repositoryRoot);
+    const main = folderKey(record.projectPath);
+    return this.desktopProjects().find((project) => project.key === main)?.name ?? path.basename(record.projectPath);
+  }
+
+  private requireWorktreeRegistry(): WorktreeRegistry {
+    if (!this.worktreeRegistry) throw new Error('The worktree registry used before startup finished');
+    return this.worktreeRegistry;
+  }
+
+  private requireWorktrees(): WorktreeController {
+    if (!this.worktrees) throw new Error('Worktrees used before startup finished');
+    return this.worktrees;
+  }
+
+  private worktreeRootKey(record: ChatWorktreeRecord): string {
+    return rootKey({ projectKey: folderKey(record.projectPath), worktreeId: record.id });
+  }
+
+  // The finish actions' enablement of a live chat worktree; before the controller exists nothing is enabled.
+  private finishStateOf(record: ChatWorktreeRecord): { busy: boolean; hasRemote: boolean; detachedTarget: boolean } {
+    return this.worktrees?.finishState(record) ?? { busy: true, hasRemote: false, detachedTarget: true };
+  }
+
+  // A project's selected chat for its shown folder (D31): its id, and core's worktree state while it is loaded.
+  private selectedChatPlace(projectKey: string): { readonly chatId: string; readonly worktreeId?: string; readonly state?: WorktreeStateData } | undefined {
+    const chatId = this.lastChatByProject.get(projectKey);
+    if (chatId === undefined) return undefined;
+    const panel = this.loadedChat(chatId);
+    const corePanelId = panel ? this.corePanelIdOf(panel) : undefined;
+    const event = corePanelId !== undefined ? this.worktreeStates.get(corePanelId) : undefined;
+    if (!event) return { chatId };
+    return { chatId, ...(event.worktreeId !== undefined ? { worktreeId: event.worktreeId } : {}), state: event.state };
+  }
+
+  private worktreeEventOf(panel: DesktopPanel): WorktreeEvent | undefined {
+    const corePanelId = this.corePanelIdOf(panel);
+    return corePanelId === undefined ? undefined : this.worktreeStates.get(corePanelId);
+  }
+
+  // Core's state of one chat changed (a turn starting or ending flips its busy): the shown folder, that chat's row, the
+  // menu and the chat pool follow; the roots change only with the registry, which worktreesChanged follows.
+  private onWorktreeState(event: WorktreeEvent): void {
+    const sharedBefore = this.worktreeStates.get(event.panelId)?.state.sharedWith;
+    this.worktreeStates.set(event.panelId, event);
+    if (sharedBefore !== event.state.sharedWith) this.chatReviews.sharingChanged(event.panelId);
+    const panel = this.panelOfCore(event.panelId);
+    this.shownFolders.refresh();
+    this.refreshScmRoots();
+    if (panel) this.chatsChanged(this.projectOf(panel));
+    this.refreshMenuState();
+    this.scheduleRetention();
+  }
+
+  // The registry, the projects or a finish action changed: views keyed by a root follow only a root joining or leaving.
+  private worktreesChanged(): void {
+    const roots = this.roots.all().map((root) => root.key);
+    const changed = this.rootSet.update(roots);
+    if (changed) {
+      this.formatterHosts?.retain(roots);
+      this.terminals?.projectsChanged(roots);
+      this.fileTree?.projectsChanged();
+      for (const key of changed.removed) this.quickOpenIndex?.invalidate(key);
+    }
+    this.shownFolders.refresh();
+    this.refreshScmRoots();
+    this.chatsChanged();
+    this.refreshMenuState();
+    this.shellStateChanged();
+  }
+
+  // Source control's projects: every project folder, plus the chat worktrees a project shows, an editor tab names, or a flow
+  // pinned (rule 19); a worktree root leaving the list closes its repository.
+  private scmRoots(): RootProject[] {
+    const kept = new Set(this.pinnedScmRoots);
+    for (const shown of Object.values(this.shownFolders.all())) {
+      if (shown.worktree) kept.add(rootKey({ projectKey: shown.projectKey, worktreeId: shown.worktree.worktreeId }));
+    }
+    for (const key of this.editorRootKeys) kept.add(key);
+    return this.roots.all().filter((root) => root.worktree === undefined || kept.has(root.key));
+  }
+
+  private refreshScmRoots(): void {
+    this.scm?.setProjects(this.scmRoots());
+  }
+
+  // Runs work on the repository of a root source control opens for the flow's length.
+  private async withScmRoot<T>(key: string, work: (repoId: string) => Promise<T | undefined>): Promise<T | undefined> {
+    this.pinnedScmRoots.add(key);
+    this.refreshScmRoots();
+    try {
+      const repoId = await this.requireScm().rootRepositoryWhenReady(key);
+      if (repoId === undefined) {
+        void this.notifications.warn(this.requireLocalization().t('The worktree\'s repository could not be opened.'));
+        return undefined;
+      }
+      return await work(repoId);
+    } finally {
+      this.pinnedScmRoots.delete(key);
+      this.refreshScmRoots();
+    }
+  }
+
+  // Slice 12's merge editor on the first conflicted file of the repository holding folder; Apply's conflicts take the
+  // worktree branch's Incoming label.
+  private async openWorktreeConflicts(folder: string, files: readonly string[], applyBranch?: string): Promise<void> {
+    const live = this.worktreeRegistry?.liveChatRecordAt(folder);
+    const key = live ? this.worktreeRootKey(live) : folderKey(folder);
+    await this.withScmRoot(key, async (repoId) => {
+      const scm = this.requireScm();
+      if (applyBranch !== undefined) scm.deps.service.noteWorktreeConflicts(repoId, files, applyBranch);
+      await scm.deps.service.currentStatus(repoId);
+      const first = files[0];
+      if (first !== undefined) await scm.runRequest({ op: 'openMergeEditor', repoId, path: first });
+      return undefined;
+    });
+  }
+
+  // Per worktree, the project's chats working in it and their latest activity, listed or loaded (the New menu's rows).
+  private async worktreeChats(projectKey: string): Promise<Map<string, { count: number; lastActivity: number }>> {
+    const rows = await this.core.run('Read Chat List', (core) => this.catalogList(core, projectKey));
+    // only chats working there, as sharedWith counts them; a loaded chat's live state is newer than its file
+    const chats = new Map<string, { worktreeId: string; lastActivity: number } | undefined>();
+    for (const row of rows) if (row.worktree?.place === 'worktree') chats.set(row.id, { worktreeId: row.worktree.worktreeId, lastActivity: row.timestamp });
+    for (const event of this.worktreeStates.values()) {
+      const panel = this.panelOfCore(event.panelId);
+      if (!panel || this.projectOf(panel) !== projectKey) continue;
+      const id = this.chatIdOf(panel);
+      const working = event.worktreeId !== undefined && event.state.place === 'worktree' && event.state.phase === 'ready';
+      chats.set(id, working ? { worktreeId: event.worktreeId!, lastActivity: chats.get(id)?.lastActivity ?? 0 } : undefined);
+    }
+    const byWorktree = new Map<string, { count: number; lastActivity: number }>();
+    for (const chat of chats.values()) {
+      if (!chat) continue;
+      const { worktreeId, lastActivity } = chat;
+      const current = byWorktree.get(worktreeId);
+      byWorktree.set(worktreeId, { count: (current?.count ?? 0) + 1, lastActivity: Math.max(current?.lastActivity ?? 0, lastActivity) });
+    }
+    return byWorktree;
+  }
+
+  // The sessions whose latest worktree entry names the worktree, stored or loaded.
+  private async sessionsUsing(worktreeId: string): Promise<string[]> {
+    const record = this.worktreeRegistry?.get(worktreeId);
+    const ids = new Set<string>();
+    if (record?.projectPath !== undefined) {
+      const projectKey = folderKey(record.projectPath);
+      const rows = await this.core.run('Read Chat List', (core) => this.catalogList(core, projectKey));
+      for (const row of rows) if (row.worktree?.worktreeId === worktreeId) ids.add(row.id);
+    }
+    for (const event of this.worktreeStates.values()) if (event.worktreeId === worktreeId && event.sessionId !== undefined) ids.add(event.sessionId);
+    return [...ids];
+  }
+
+  // Rule 14's first half for a chat worktree (close-worktree.ts): every question first, then what runs there stops.
+  private closeWorktreeRoot(worktreeId: string, key: string, stop: () => boolean): Promise<boolean> {
+    const terminals = this.requireTerminals();
+    return closeWorktreeRoot({
+      editor: this.requireEditorPane(),
+      terminals: { idsIn: (rootKey) => terminals.idsIn(rootKey), confirmKill: (ids) => terminals.confirmKill([...ids]), kill: (id) => terminals.kill(id) },
+      closeChats: () => {
+        const panels = [...this.worktreeStates.values()].filter((event) => event.worktreeId === worktreeId).flatMap((event) => this.panelOfCore(event.panelId) ?? []);
+        for (const panel of panels) this.closeForWorktree(panel);
+      },
+      rootsChanged: () => this.worktreesChanged(),
+      releaseFormatter: (rootKey) => this.formatterHosts?.release(rootKey) ?? Promise.resolve(),
+      whenFolderReleased: async () => {
+        const record = this.worktreeRegistry?.get(worktreeId);
+        if (record) await this.core.current()?.provider.getPanelManager().whenFolderReleased(record.workingFolder);
+      },
+    }, key, stop);
+  }
+
+  // A chat closed for a worktree delete does not pull the selection elsewhere; the delete selects its project again after.
+  private closeForWorktree(panel: DesktopPanel): void {
+    this.closingForWorktree.add(panel);
+    const corePanelId = this.corePanelIdOf(panel);
+    if (corePanelId !== undefined) this.worktreeStates.delete(corePanelId);
+    panel.close();
+  }
+
+  private worktreeClosed(worktreeId: string, removed: boolean): void {
+    if (removed) {
+      const record = this.worktreeRegistry?.get(worktreeId);
+      if (record?.projectPath !== undefined) this.windowLayout.forgetRoot(rootKey({ projectKey: folderKey(record.projectPath), worktreeId }));
+    }
+    this.worktreesChanged();
+    const projectPath = this.worktreeRegistry?.get(worktreeId)?.projectPath;
+    if (this.views && !this.views.selected() && projectPath !== undefined) this.selectProject(folderKey(projectPath)).catch(this.report('Selecting a chat after a worktree delete'));
   }
 
   // Native, as every file picker is (D41); the editor confines the answer to an open project.
@@ -2504,9 +3287,8 @@ class DesktopApp {
     this.shell?.runTerminalAction(id, action);
   }
 
-  // G25: the shell's selection or a command's output becomes a pending attachment of the current chat (the selected one, else
-  // a new chat in the terminal's project, or the default target for a home folder terminal), labelled from main's own facts
-  // and bounded again here; its composer takes focus.
+  // G25: the shell's selection or a command's output becomes a pending attachment of the current chat, labelled from main's own
+  // facts and bounded again here.
   private async addTerminalOutputToChat(request: TerminalAddToChat): Promise<void> {
     const terminals = this.requireTerminals();
     const title = terminals.titleOf(request.id);
@@ -2515,6 +3297,7 @@ class DesktopApp {
     const facts = request.commandId === null ? undefined : terminals.commandFacts(request.id, request.commandId);
     const capped = capTerminalText(request.text);
     const attachment = {
+      kind: 'terminal' as const,
       source: request.source,
       commandLine: facts && facts.commandLine !== '' ? facts.commandLine : null,
       exitCode: facts?.exitCode ?? null,
@@ -2522,21 +3305,32 @@ class DesktopApp {
       text: capped.text,
       omittedLines: Math.min(request.omittedLines + capped.omittedLines, MAX_TERMINAL_ATTACHMENT_OMITTED_LINES),
     };
+    await this.addAttachmentToChat(projectKey, attachment, this.requireLocalization().t('The chat could not be loaded, so the terminal output was not added to it.'));
+  }
+
+  // Add to Chat from a terminal or the Graph: a pending attachment of the current chat (the selected one, else a new chat in
+  // the project of root, a project key or a chat worktree's root key, or the default target for none); prompt, when given, joins
+  // the composer's draft. The composer takes focus, as the user asked. notLoaded: the warning when the chat could not be loaded.
+  private async addAttachmentToChat(root: string | null, attachment: ChatAttachmentInput, notLoaded: string, prompt?: string): Promise<void> {
+    const projectKey = root === null ? undefined : parseRootKey(root)?.projectKey;
     await this.core.run('Add to Chat', async (core) => {
-      if (!this.views?.selected()) await this.newChatIn(core, projectKey !== null && this.isKnownProject(projectKey, core) ? projectKey : undefined);
+      if (!this.views?.selected()) await this.newChatIn(core, projectKey !== undefined && this.isKnownProject(projectKey, core) ? projectKey : undefined);
       const panel = this.views?.selected();
-      // A chat still restoring is the chat the output goes to, once core registered it.
+      // A chat still restoring is the chat the attachment goes to, once core registered it.
       const restored = panel ? await this.restoredCorePanel(panel) : undefined;
       const corePanelId = restored?.corePanelId;
       if (restored?.failed) {
-        void this.requirePlatform().notifications.warn(this.requireLocalization().t('The chat could not be loaded, so the terminal output was not added to it.'));
+        void this.requirePlatform().notifications.warn(notLoaded);
         return;
       }
       if (!panel || corePanelId === undefined || !(await this.entryActionDeps.whenReady(panel)) || this.views?.selected() !== panel) {
-        log('[terminal] Add to Chat: the chat closed before it was ready');
+        log(`[${attachment.kind}] Add to Chat: the chat closed before it was ready`);
         return;
       }
-      if (core.provider.getPanelManager().addTerminalAttachment(corePanelId, attachment)) this.views?.focusChat();
+      const panels = core.provider.getPanelManager();
+      if (!panels.addTerminalAttachment(corePanelId, attachment)) return;
+      if (prompt !== undefined) await panels.appendToComposer(corePanelId, prompt);
+      this.views?.focusChat();
     });
   }
 
@@ -2690,12 +3484,14 @@ class DesktopApp {
     const projects = this.projects.folders().map((folder): ShellProject => {
       const key = folderKey(folder.fsPath);
       const branch = registry?.branchOf(key);
+      const worktreeOf = this.adoptedProjectName(key);
       return {
         key,
         name: registry?.resolve(key)?.label ?? folder.name,
         fsPath: folder.fsPath,
         trusted: this.trust.isTrusted(folder.fsPath),
         ...(branch !== undefined ? { branch } : {}),
+        ...(worktreeOf !== undefined ? { worktreeOf } : {}),
         running: counts.get(key)?.running ?? 0,
         waiting: counts.get(key)?.waiting ?? 0,
       };
@@ -2716,6 +3512,7 @@ class DesktopApp {
       shortcuts: shellShortcutLabels(),
       notifications: this.notificationCenter.bell(),
       search: shellSearchSettings(this.requirePlatform().settings),
+      shownFolders: this.shownFolders.all(),
       sidebar: { alwaysShowHeaderActions: this.requirePlatform().settings.get<unknown>(SIDEBAR_ALWAYS_SHOW_HEADER_ACTIONS_SETTING) === true },
     };
   }
@@ -2799,7 +3596,36 @@ class DesktopApp {
       terminalInput: this.terminalInputHasFocus(),
       search: this.searchMenuState(),
       scm: this.scm?.menuState() ?? NO_SCM_MENU_STATE,
+      editorKind: this.editorPane?.activeKind(),
+      editorGit: this.editorPane?.activeGit() ?? null,
+      selectedChatHasChanges: this.chatReviews.hasChanges(this.selectedCorePanelId()),
+      ...this.selectedWorktreeMenuState(),
     };
+  }
+
+  // D33's and D61's enablement from the selected chat's last worktree state.
+  private selectedWorktreeMenuState(): Pick<MenuState, 'worktree' | 'handOff' | 'newChatInWorktree'> {
+    const selected = this.views?.selected();
+    const event = selected ? this.worktreeEventOf(selected) : undefined;
+    const record = event?.worktreeId !== undefined ? this.worktreeRegistry?.get(event.worktreeId) : undefined;
+    const live = record?.kind === 'chat' && record.deletedAt === undefined ? record : undefined;
+    const working = event?.state.phase === 'ready' && event.state.place === 'worktree';
+    return {
+      worktree: live ? { finish: this.finishStateOf(live), ...(event?.state.baseBranch !== undefined ? { baseBranch: event.state.baseBranch } : {}) } : undefined,
+      handOff: event && event.state.phase !== 'deleted' ? { canHandOff: event.state.canHandOff, place: event.state.place } : undefined,
+      newChatInWorktree: working ? this.newChatInTarget(live) : undefined,
+    };
+  }
+
+  // The selected chat's core panel id; undefined while no chat is selected or loaded.
+  private selectedCorePanelId(): string | undefined {
+    const selected = this.views?.selected();
+    return selected ? this.corePanelIdOf(selected) : undefined;
+  }
+
+  // EditorService.showChatReview and Chat: Review Changes: the chat's review tab in the editor pane, which shows.
+  private async showChatReview(panelId: string, scope: ChatReviewScope): Promise<void> {
+    await this.chatReviews.show(panelId, scope);
   }
 
   // Search's enablement context, from main's search service, editor pane and layout.
@@ -2901,8 +3727,29 @@ class DesktopApp {
       scmRun: (request) => this.scm?.paletteRun(request),
       scmActiveFile: (op) => this.scm?.activeFile(op),
       scmCommit: (variant) => this.scm?.paletteCommit(variant),
+      editorCommand: (command) => this.editorPane?.command(command),
+      toggleInlineBlame: () => {
+        const settings = this.requirePlatform().settings;
+        const shown = settings.get<unknown>(GIT_BLAME_EDITOR_DECORATION_SETTING) !== false;
+        settings.update(GIT_BLAME_EDITOR_DECORATION_SETTING, !shown, 'user').catch(report('Toggle Inline Blame'));
+      },
+      reviewChatChanges: () => {
+        const panelId = this.selectedCorePanelId();
+        if (panelId !== undefined) this.showChatReview(panelId, 'chat').catch(report('Review Changes'));
+      },
+      // core checks again that the chat is idle before it moves anything (D61)
+      handOff: (to) => {
+        const panelId = this.selectedCorePanelId();
+        if (panelId !== undefined) this.core.run('Hand Off', (core) => core.provider.getPanelManager().chatMove(panelId, to)).catch(report('Hand Off'));
+      },
+      worktreeFinish: (action: WorktreeFinishAction) => {
+        const selected = this.views?.selected();
+        const worktreeId = selected ? this.worktreeEventOf(selected)?.worktreeId : undefined;
+        if (worktreeId !== undefined) this.requireWorktrees().finish(worktreeId, action).catch(report('Worktree'));
+      },
       addProject: () => { this.addProject().catch(report('Add Project')); },
       newChat: () => { this.newChat(undefined).catch(report('New Chat')); },
+      newChatInWorktree: (target) => { this.newChatInWorktree(target).catch(this.newChatInWorktreeFailure()); },
       openChat: () => { this.core.run('Open Chat', (core) => core.provider.show()).catch(report('Open Chat')); },
       openChatForProject: (fsPath) => { this.newChat(folderKey(fsPath)).catch(report('Open Chat in Project')); },
       newSession: () => { this.core.run('New Session', (core) => core.provider.newSession()).catch(report('New Session')); },
@@ -3019,7 +3866,11 @@ class DesktopApp {
         this.window?.close();
         return this.windowClosed;
       },
-      disposeCore: () => this.core.dispose(),
+      // core's dispose interrupts no worktree git work (git apply must finish), so the quit waits, within its bound, for its temp folders.
+      disposeCore: async () => {
+        await this.core.dispose();
+        await tempFoldersSettled();
+      },
       // The stores last: closing the chats can still change their saved state, and core writes the others.
       flushStores: () => this.flushStores(),
       disposeTerminals: async () => this.terminals?.dispose(),

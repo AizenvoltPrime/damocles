@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, useId, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { FolderPlus, ShieldAlert } from 'lucide-vue-next';
+import { FolderPlus, FolderTree, ShieldAlert } from 'lucide-vue-next';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { visibleText } from '@shared/visible-text';
 import type { DamoclesShellApi, ShellProject } from '../../preload/shell-channels';
 import type { OverlayMenuItem } from '../../preload/overlay-channels';
 import SidebarSection from './SidebarSection.vue';
@@ -185,14 +186,25 @@ defineExpose({
           :class="project.key === selectedKey ? 'project-avatar-ring' : ''"
         />
         <span class="flex min-w-0 flex-1 flex-col leading-tight">
-          <span class="truncate">{{ project.name }}</span>
+          <span class="flex min-w-0 items-center gap-1.25">
+            <span class="truncate">{{ project.name }}</span>
+            <!-- An adopted worktree opened as its own project (AD12) reads apart from its main project. -->
+            <FolderTree
+              v-if="project.worktreeOf"
+              role="img"
+              data-testid="project-worktree"
+              class="size-2.75 shrink-0 text-(--d-accent-text)"
+              :aria-label="t('projects.worktreeOf', { project: project.worktreeOf })"
+              :title="t('projects.worktreeOf', { project: project.worktreeOf })"
+            />
+          </span>
           <span
             v-if="project.branch"
             data-testid="project-branch"
             dir="ltr"
             class="truncate font-mono text-10.5 font-normal"
             :class="project.key === selectedKey ? 'text-(--d-faint-text)' : 'text-(--d-faint) group-hover/row:text-(--d-faint-text)'"
-          >{{ project.branch }}</span>
+          >{{ visibleText(project.branch) }}</span>
         </span>
         <Badge
           v-if="!project.trusted"

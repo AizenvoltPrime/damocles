@@ -4,12 +4,13 @@ import { useI18n } from 'vue-i18n';
 import { useVirtualList } from '@vueuse/core';
 import { ChevronDown, MessageSquareDashed, Plus, Search, Tag, X } from 'lucide-vue-next';
 import { MAX_SEARCH_LENGTH, type DamoclesShellApi, type ShellChat, type ShellChatList } from '../../preload/shell-channels';
-import { MAX_OVERLAY_ITEMS, type OverlayMenuItem, type OverlayRect } from '../../preload/overlay-channels';
+import { MAX_OVERLAY_ITEMS, tidyMenu, type OverlayMenuItem, type OverlayRect } from '../../preload/overlay-channels';
 import { Button } from '@/components/ui/button';
 import { remPx } from '@/composables/useRemPx';
 import { chatListRows, hasSavedConversation, tagCounts, type ChatListRow } from '../chat-list';
 import SidebarSection from './SidebarSection.vue';
 import ChatRow from './ChatRow.vue';
+import { finishActionOf, finishMenuItems } from '../worktree-menu';
 
 const props = defineProps<{
   api: DamoclesShellApi;
@@ -20,6 +21,7 @@ const props = defineProps<{
   projectName: string;
   selectedChatId: string | undefined;
   newChatShortcut: string;
+  newChatInWorktreeShortcut: string;
   collapsed: boolean;
 }>();
 const emit = defineEmits<{ toggle: [] }>();
@@ -238,6 +240,18 @@ async function openMenu(chat: ShellChat, anchor: OverlayRect, rowElement: Elemen
         { kind: 'separator' },
       ]
     : [];
+  // D33: a chat that owns a worktree keeps New chat in this worktree and the finish actions in one Worktree submenu.
+  const worktree = chat.worktree;
+  const opensHere = canOpenHere(chat);
+  // the shortcut acts on the selected chat's worktree, so only that row names it
+  const shortcut = chat.id === props.selectedChatId ? { shortcut: props.newChatInWorktreeShortcut } : {};
+  const worktreeItems: OverlayMenuItem[] = [
+    ...(opensHere ? [{ kind: 'item', id: NEW_IN_WORKTREE, label: t('worktree.newChatHere'), icon: 'plus', ...shortcut } as const, { kind: 'separator' } as const] : []),
+    ...(worktree?.worktreeId !== undefined && worktree.finish !== undefined ? finishMenuItems(t, worktree.finish, worktree.baseBranch) : []),
+  ];
+  const finish: OverlayMenuItem[] = worktreeItems.length > 0
+    ? [{ kind: 'submenu', id: 'submenu:worktree', label: t('worktree.submenu'), icon: 'folder-tree', items: tidyMenu(worktreeItems) }, { kind: 'separator' }]
+    : [];
   const answer = await props.api.requestOverlay({
     kind: 'menu',
     label: t('chats.menuLabel', { title: chat.title || t('chats.newChat') }),
@@ -245,16 +259,38 @@ async function openMenu(chat: ShellChat, anchor: OverlayRect, rowElement: Elemen
     items: [
       { kind: 'item', id: 'open', label: t('chats.open'), icon: 'message-square' },
       { kind: 'separator' },
+      ...finish,
       ...edits,
       { kind: 'item', id: 'delete', label: t('chats.delete'), icon: 'trash-2', danger: true },
     ],
   });
   if (answer.kind !== 'menu') return;
+  if (answer.itemId === NEW_IN_WORKTREE) {
+    await newChatHere(chat);
+    return;
+  }
+  const action = finishActionOf(answer.itemId);
+  if (action && props.projectKey !== undefined && worktree?.worktreeId !== undefined) {
+    await props.api.worktreeFinish({ projectKey: props.projectKey, worktreeId: worktree.worktreeId, action });
+    return;
+  }
   if (answer.itemId === 'open') select(chat);
   else if (answer.itemId === 'rename') startRename(chat);
   else if (answer.itemId === 'tag') await pickTag(chat, rectOf(rowElement));
   else if (answer.itemId === 'removeTag') await props.api.tagChat(chat.id, null);
   else if (answer.itemId === 'delete') await confirmDelete(chat);
+}
+
+const NEW_IN_WORKTREE = 'newChatInWorktree';
+
+// Main supplies the target only for a live chat worktree of an open, trusted project with no finish action running; the
+// row, its menu and the shortcut then start another chat in that worktree, which main lists first.
+const canOpenHere = (chat: ShellChat): boolean => chat.worktree?.newChatIn !== undefined;
+
+async function newChatHere(chat: ShellChat): Promise<void> {
+  const target = chat.worktree?.newChatIn;
+  // A fresh object: a row's data can be a reactive proxy, which the context bridge cannot clone.
+  if (target) await props.api.newChatInWorktree({ projectKey: target.projectKey, worktreeId: target.worktreeId });
 }
 
 const rowElement = (chat: ShellChat): Element | null => containerProps.ref.value?.querySelector(`[data-chat-id="${CSS.escape(chat.id)}"]`) ?? null;
@@ -361,6 +397,27 @@ function newChat(): void {
   void props.api.newChat();
 }
 
+// The split button's menu (D30, D63) shows in the overlay, above the chat view; the worktree options load there.
+const splitButton = ref<HTMLElement | null>(null);
+const section = ref<InstanceType<typeof SidebarSection> | null>(null);
+const newMenuOpen = ref(false);
+async function openNewMenu(): Promise<void> {
+  const projectKey = props.projectKey;
+  if (projectKey === undefined || newMenuOpen.value) return;
+  newMenuOpen.value = true;
+  try {
+    const asked = props.api.requestOverlay({ kind: 'newChatMenu', anchor: rectOf(splitButton.value), projectKey, projectName: props.projectName, shortcut: props.newChatShortcut });
+    // the title actions stay shown while the menu their chevron opened is up
+    const answer = await (section.value ? section.value.holdActions(asked) : asked);
+    if (answer.kind !== 'newChatMenu') return;
+    if (answer.choice === 'plain') await props.api.newChat(projectKey);
+    else if (answer.choice === 'continueInWorktree') await props.api.newChatInWorktree({ projectKey, worktreeId: answer.worktreeId });
+    else await props.api.newChat(projectKey, { startRef: answer.startRef, bringChanges: answer.bringChanges });
+  } finally {
+    newMenuOpen.value = false;
+  }
+}
+
 defineExpose({
   focus: (): boolean => {
     const container = containerProps.ref.value;
@@ -375,6 +432,7 @@ defineExpose({
 
 <template>
   <SidebarSection
+    ref="section"
     section="chats"
     data-testid="sidebar-chats"
     :count="list ? allChats.length : undefined"
@@ -400,21 +458,50 @@ defineExpose({
           class="size-3.25"
         />
       </Button>
-      <Button
-        type="button"
-        size="sm"
-        data-testid="new-chat"
-        class="h-5.5 gap-1 rounded-md px-1.75 text-11.5 hover:bg-[color-mix(in_srgb,var(--d-accent)_88%,var(--d-text))] [&_svg]:size-3"
-        :aria-label="t('chats.newChat')"
-        :title="t('chats.newTitle', { shortcut: newChatShortcut })"
-        @click="newChat"
+      <!-- The split button (D30): the main part is plain New Chat, as Ctrl+N; the chevron opens the worktree menu. Each part
+           rounds its own outer corners and raises itself while focused, so its focus ring shows whole over its neighbour. -->
+      <div
+        ref="splitButton"
+        role="group"
+        :aria-label="t('chats.newGroup')"
+        class="flex h-5.5 shrink-0"
       >
-        <Plus
-          aria-hidden="true"
-          class="size-3"
-        />
-        {{ t('chats.new') }}
-      </Button>
+        <Button
+          type="button"
+          size="sm"
+          data-testid="new-chat"
+          class="relative h-5.5 gap-1 rounded-s-md rounded-e-none px-1.75 text-11.5 hover:bg-[color-mix(in_srgb,var(--d-accent)_88%,var(--d-text))] focus-visible:z-1 [&_svg]:size-3"
+          :aria-label="t('chats.newChat')"
+          :title="t('chats.newTitle', { shortcut: newChatShortcut })"
+          @click="newChat"
+        >
+          <Plus
+            aria-hidden="true"
+            class="size-3"
+          />
+          {{ t('chats.new') }}
+        </Button>
+        <!-- aria-disabled, not disabled: a disabled button shows no tooltip, and this one says why it waits. -->
+        <Button
+          type="button"
+          size="sm"
+          data-testid="new-chat-options"
+          aria-haspopup="menu"
+          :aria-expanded="newMenuOpen"
+          class="relative h-5.5 rounded-s-none rounded-e-md border-l border-[color-mix(in_srgb,var(--d-on-accent)_25%,transparent)] px-1 hover:bg-[color-mix(in_srgb,var(--d-accent)_88%,var(--d-text))] focus-visible:z-1 aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-primary [&_svg]:size-2.75"
+          :class="newMenuOpen ? 'bg-[color-mix(in_srgb,var(--d-accent)_88%,var(--d-text))]' : ''"
+          :aria-disabled="projectKey === undefined || undefined"
+          :aria-label="t('chats.newOptions')"
+          :title="projectKey === undefined ? t('chats.newOptionsNoProject') : t('chats.newOptions')"
+          @click="openNewMenu"
+        >
+          <ChevronDown
+            aria-hidden="true"
+            class="size-2.75 transition-transform duration-200"
+            :class="newMenuOpen ? 'rotate-180' : ''"
+          />
+        </Button>
+      </div>
     </template>
 
     <div
@@ -590,7 +677,9 @@ defineExpose({
             :selected="row.chat.id === selectedChatId"
             :active="index === activeIndex"
             :renaming="row.chat.id === renamingId"
+            :opens-here="canOpenHere(row.chat)"
             @select="select(row.chat)"
+            @new-here="newChatHere(row.chat)"
             @menu="onRowMenu(row.chat, $event)"
             @rename="startRename(row.chat)"
             @tag="pickTag(row.chat, rectOf(rowElement(row.chat)))"

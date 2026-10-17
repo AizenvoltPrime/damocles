@@ -2,7 +2,7 @@
 import { ref, watch, computed, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { AlertDialog, AlertDialogContent } from '@/components/ui/alert-dialog';
-import { ChevronRight, RotateCcw, TriangleAlert } from 'lucide-vue-next';
+import { ArrowLeftRight, ChevronRight, RotateCcw, TriangleAlert } from 'lucide-vue-next';
 import ConfirmDialogLayout from './ConfirmDialogLayout.vue';
 import RewindCheckpointNotes from '@/components/RewindCheckpointNotes.vue';
 import type { RewindOption, RewindHistoryItem, SkippedFilesTarget } from '@shared/types/session';
@@ -23,6 +23,8 @@ const props = defineProps<{
   loadingMetadata?: boolean | undefined;
   skipped?: RewindHistoryItem['skipped'] | undefined;
   notRewindable?: RewindHistoryItem['notRewindable'] | undefined;
+  /** D61: a hand-off came after this turn, so its files are in the other folder and only the conversation goes back. */
+  crossesHandOff?: boolean | undefined;
   /** The checkpoint's key, so the full "not restored" list can be loaded on demand. */
   checkpointId?: string | undefined;
 }>();
@@ -91,7 +93,7 @@ const options = computed<Option[]>(() => [
 
 // A turn with no usable checkpoint can still be forked, but its files cannot be restored.
 function isDisabled(option: Option): boolean {
-  return (option.requiresFork && !props.canFork) || (option.needsCodeConfirm && !!props.notRewindable);
+  return (option.requiresFork && !props.canFork) || (option.needsCodeConfirm && (!!props.notRewindable || props.crossesHandOff === true));
 }
 
 watch(() => props.visible, (visible) => {
@@ -274,7 +276,7 @@ onUnmounted(() => {
         </div>
 
         <div
-          v-if="loadingMetadata || filesAffected"
+          v-if="!crossesHandOff && (loadingMetadata || filesAffected)"
           data-no-keyboard-shortcuts
           class="text-xs text-(--d-muted)"
         >
@@ -334,6 +336,17 @@ onUnmounted(() => {
           </template>
         </div>
 
+        <p
+          v-if="crossesHandOff"
+          class="flex items-start gap-2 text-xs text-pretty text-(--d-info-text)"
+          data-testid="rewind-confirm-hand-off-note"
+        >
+          <ArrowLeftRight
+            class="mt-0.5 size-3.5 flex-none"
+            aria-hidden="true"
+          />
+          <span>{{ t('worktree.rewindNote') }}</span>
+        </p>
         <RewindCheckpointNotes
           v-if="!loadingMetadata"
           :skipped="skipped"

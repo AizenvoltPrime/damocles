@@ -33,6 +33,7 @@ export const SCM_SETTING_KEYS = {
   openAfterClone: 'damocles.desktop.git.openAfterClone',
   pullBeforeCheckout: 'damocles.desktop.git.pullBeforeCheckout',
   promptToSaveFilesBeforeStash: 'damocles.desktop.git.promptToSaveFilesBeforeStash',
+  blameEditorDecoration: 'damocles.desktop.git.blame.editorDecoration.enabled',
 } as const;
 
 export type UntrackedChanges = 'mixed' | 'separate' | 'hidden';

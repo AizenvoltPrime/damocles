@@ -1,7 +1,7 @@
 import { computed, toValue, type Component, type ComputedRef, type MaybeRefOrGetter } from "vue";
 import { useI18n } from "vue-i18n";
 import type { ToolCall } from "@shared/types/session";
-import { Ban, CircleCheck, CircleQuestionMark, CircleX, Hourglass, LoaderCircle } from "lucide-vue-next";
+import { Ban, CircleCheck, CircleQuestionMark, CircleX, Hourglass, LoaderCircle, ShieldBan } from "lucide-vue-next";
 
 type ToolStatus = ToolCall["status"];
 
@@ -15,6 +15,8 @@ function iconFor(status: ToolStatus): Component {
     case "approved":
     case "completed":
       return CircleCheck;
+    case "blocked":
+      return ShieldBan;
     case "denied":
     case "failed":
       return CircleX;
@@ -35,6 +37,7 @@ function textClassFor(status: ToolStatus): string {
     case "running":
       return "text-(--d-accent)";
     case "awaiting_approval":
+    case "blocked":
       return "text-(--d-warning)";
     case "approved":
     case "completed":
@@ -53,6 +56,7 @@ function textClassFor(status: ToolStatus): string {
 function borderClassFor(status: ToolStatus): string {
   switch (status) {
     case "awaiting_approval":
+    case "blocked":
       return "border-[color-mix(in_srgb,var(--d-warning)_45%,var(--d-border))]";
     case "denied":
     case "failed":
@@ -80,6 +84,8 @@ function labelKeyFor(status: ToolStatus): string {
       return "toolOverlay.statusApproved";
     case "denied":
       return "toolOverlay.statusDenied";
+    case "blocked":
+      return "toolOverlay.statusBlocked";
     case "completed":
       return "toolOverlay.statusCompleted";
     case "failed":
@@ -99,6 +105,7 @@ function badgeToneFor(status: ToolStatus): string {
     case "running":
       return "d-tone-accent";
     case "awaiting_approval":
+    case "blocked":
       return "d-tone-warning";
     case "approved":
     case "completed":

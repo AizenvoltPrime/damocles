@@ -7,7 +7,7 @@ import OverlayShell from "./OverlayShell.vue";
 import SlidingIndicator from "./SlidingIndicator.vue";
 import { usePromptNavigatorStore } from "@/stores/usePromptNavigatorStore";
 import { useMessageHighlightStore } from "@/stores/useMessageHighlightStore";
-import { useSessionStore } from "@/stores";
+import { useSessionStore, useUIStore } from "@/stores";
 import { useEnrichedPrompts, type EnrichedPrompt } from "@/composables/useEnrichedPrompts";
 import { injectMessageListRef } from "@/composables/useMessageListRef";
 import { useSlidingIndicator } from "@/composables/useSlidingIndicator";
@@ -20,6 +20,7 @@ const toggleShortcut = metaKeyShortcut("k");
 
 const { t } = useI18n();
 const navigatorStore = usePromptNavigatorStore();
+const uiStore = useUIStore();
 const highlightStore = useMessageHighlightStore();
 const { query, activeIndex } = storeToRefs(navigatorStore);
 const { checkpointMessages } = storeToRefs(useSessionStore());
@@ -113,7 +114,7 @@ async function copyPrompt(prompt: EnrichedPrompt): Promise<void> {
 }
 
 function canRewind(prompt: EnrichedPrompt): boolean {
-  return canRewindForPrompt(prompt, checkpointMessages.value);
+  return !uiStore.historyReadOnly && canRewindForPrompt(prompt, checkpointMessages.value);
 }
 
 function rowText(prompt: EnrichedPrompt): string {

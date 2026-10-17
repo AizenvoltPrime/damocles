@@ -15,6 +15,7 @@ import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "./typ
 import { createHandlerRegistry } from "./handler-registry";
 import { MEMORY_MESSAGE_TYPES, MEMORY_MESSAGE_SOURCES } from "./handlers/memory-handlers";
 import { log } from "../../logger";
+import { visibleLines } from "../../../shared/visible-text";
 
 export const LANGUAGE_PREFERENCE_KEY = "userLanguagePreference";
 
@@ -38,6 +39,7 @@ export interface MessageRouterConfig {
   switchPanelFolder: HandlerDependencies["switchPanelFolder"];
   postWorkspaceFolderState: HandlerDependencies["postWorkspaceFolderState"];
   webviewPrompts: HandlerDependencies["webviewPrompts"];
+  worktrees: HandlerDependencies["worktrees"];
 }
 
 export class MessageRouter {
@@ -70,6 +72,7 @@ export class MessageRouter {
       switchPanelFolder: config.switchPanelFolder,
       postWorkspaceFolderState: config.postWorkspaceFolderState,
       webviewPrompts: config.webviewPrompts,
+      worktrees: config.worktrees,
     });
   }
 
@@ -107,7 +110,8 @@ export class MessageRouter {
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
         log("[MessageRouter] Handler for", message.type, "threw:", detail);
-        const failure = `Failed to handle ${message.type}: ${detail}`;
+        // A failure can quote repository text (git's error, a path), so its hidden characters show as escapes.
+        const failure = `Failed to handle ${message.type}: ${visibleLines(detail)}`;
         if (MEMORY_MESSAGE_TYPES.has(message.type)) {
           const source = MEMORY_MESSAGE_SOURCES.get(message.type);
           this.postMessage(instance.host, {

@@ -927,6 +927,39 @@ describe('overlay request validation', () => {
     expect(parseOverlayAnswer({ kind: 'tagPicker', tag: 'x'.repeat(51) }, picker)).toBeUndefined();
   });
 
+  it('takes the Graph ref picker with full refnames only, whether a group failed and how many refs it left out, and an answer naming only refs it offered, at most 50', () => {
+    const refs = [{ id: 'refs/heads/main', name: 'main' }, { id: 'refs/remotes/origin/main', name: 'origin/main' }, { id: 'refs/tags/v1', name: 'v1' }];
+    const request = { kind: 'refPicker', anchor: MENU.anchor, refs, selected: ['refs/heads/main'], failed: true, omitted: 12 };
+    const picker = parseOverlayRequest(request)!;
+    expect(picker).toEqual(request);
+    for (const malformed of [
+      { ...request, extra: 1 },
+      { ...request, refs: [{ id: 'main', name: 'main' }] },
+      { ...request, refs: [{ id: 'refs/heads/a..b', name: 'a' }] },
+      { ...request, refs: [{ id: 'refs/heads/main', name: '' }] },
+      { ...request, refs: [{ id: 'refs/heads/main', name: 'main', current: true }] },
+      { ...request, refs: [...refs, refs[0]] },
+      { ...request, refs: Array.from({ length: 2001 }, (_, i) => ({ id: `refs/heads/b${i}`, name: `b${i}` })) },
+      { ...request, selected: ['refs/heads/gone'] },
+      { ...request, selected: [] },
+      { ...request, selected: 'some' },
+      { ...request, failed: 'yes' },
+      { ...request, omitted: -1 },
+      { ...request, omitted: 1.5 },
+      { kind: 'refPicker', anchor: MENU.anchor, refs, selected: 'auto' },
+    ]) expect(parseOverlayRequest(malformed)).toBeUndefined();
+
+    expect(parseOverlayAnswer({ kind: 'refPicker', choice: 'auto' }, picker)).toEqual({ kind: 'refPicker', choice: 'auto' });
+    expect(parseOverlayAnswer({ kind: 'refPicker', choice: 'all' }, picker)).toEqual({ kind: 'refPicker', choice: 'all' });
+    expect(parseOverlayAnswer({ kind: 'refPicker', choice: ['refs/tags/v1', 'refs/heads/main'] }, picker)).toEqual({ kind: 'refPicker', choice: ['refs/tags/v1', 'refs/heads/main'] });
+    for (const choice of [[], ['refs/heads/other'], ['refs/heads/main', 'refs/heads/main'], 'none', [1]]) expect(parseOverlayAnswer({ kind: 'refPicker', choice }, picker)).toBeUndefined();
+    expect(parseOverlayAnswer({ kind: 'refPicker', choice: 'auto', extra: true }, picker)).toBeUndefined();
+    const many = Array.from({ length: 51 }, (_, i) => ({ id: `refs/heads/b${i}`, name: `b${i}` }));
+    const wide = parseOverlayRequest({ kind: 'refPicker', anchor: MENU.anchor, refs: many, selected: 'auto', failed: false, omitted: 0 })!;
+    expect(parseOverlayAnswer({ kind: 'refPicker', choice: many.slice(0, 50).map((ref) => ref.id) }, wide)).toBeDefined();
+    expect(parseOverlayAnswer({ kind: 'refPicker', choice: many.map((ref) => ref.id) }, wide)).toBeUndefined();
+  });
+
   it('takes a new-terminal pick only of a profile and a project the request offered, and opens that request only from main', () => {
     const request: OverlayRequest = {
       kind: 'newTerminal',
@@ -996,6 +1029,26 @@ describe('overlay message dialogs (D41)', () => {
     expect(host.isOpen('message')).toBe(true);
     host.dispose();
     await expect(question).rejects.toThrow('window closed');
+  });
+
+  it('hold a worktree dialog open as a message, so Quick Open or a menu cannot answer a setup review', async () => {
+    loaded();
+    const settings = host.request(SETTINGS, returnFocus as never);
+    const review = host.request({ kind: 'worktreeDialog', dialog: 'setupReview', projectName: 'alpha', commands: ['npm ci'] }, undefined);
+    const reviewId = lastRequestId();
+    expect(host.isOpen('settings')).toBe(true);
+    let settled = false;
+    void review.then(() => (settled = true));
+    const quickOpen = host.request({ kind: 'quickOpen', mode: 'files' }, undefined);
+    const menu = host.request(MENU, undefined);
+    await expect(quickOpen).resolves.toEqual({ kind: 'dismissed' });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(host.isOpen('worktreeDialog')).toBe(true);
+    emit(OVERLAY_CHANNELS.answer, own(), reviewId, { kind: 'worktreeDialog', dialog: 'setupReview', choice: 'run' });
+    await expect(review).resolves.toEqual({ kind: 'worktreeDialog', dialog: 'setupReview', choice: 'run' });
+    host.dispose();
+    await Promise.allSettled([settings, menu]);
   });
 
   it('reject every open request when the overlay misses an acknowledgement', async () => {

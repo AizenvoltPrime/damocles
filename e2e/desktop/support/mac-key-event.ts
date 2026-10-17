@@ -27,6 +27,7 @@ const KEYS: Record<string, { code: number; functionKey?: boolean }> = {
   Tab: { code: 0x30 },
   Escape: { code: 0x35 },
   F4: { code: 0x76, functionKey: true },
+  F5: { code: 0x60, functionKey: true },
   F6: { code: 0x61, functionKey: true },
   F10: { code: 0x6d, functionKey: true },
   F12: { code: 0x6f, functionKey: true },

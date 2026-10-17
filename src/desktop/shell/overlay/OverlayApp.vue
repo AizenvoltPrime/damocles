@@ -10,11 +10,14 @@ import ConfirmDialog from './components/ConfirmDialog.vue';
 import MessageDialog from './components/MessageDialog.vue';
 import NotificationCenter from './components/NotificationCenter.vue';
 import TagPicker from './components/TagPicker.vue';
+import RefPicker from '../graph/RefPicker.vue';
 import QuickPick from './components/QuickPick.vue';
 import TerminalPick from './components/TerminalPick.vue';
 import ListPick from './components/ListPick.vue';
 import QuickInput from './components/QuickInput.vue';
 import DropZones from './components/DropZones.vue';
+import NewChatMenu from './components/NewChatMenu.vue';
+import WorktreeDialog from './components/WorktreeDialog.vue';
 import { commandsModel, quickOpenItemId, quickOpenModel, type QuickPickModel } from './quick-pick';
 import OverlaySettings from './settings/OverlaySettings.vue';
 import type { OverlaySettingsBridge } from './settings/overlay-bridge';
@@ -68,7 +71,7 @@ function onAfterLeave(element: Element): void {
 // Kinds that handle Escape themselves, so the window's handler leaves it to them: the settings modal and the dialogs through
 // the overlay stack (a search query clears first, a dialog above the modal cancels without closing it), and Quick Open, New
 // Terminal, the quick pick and the input box in their own keydown.
-const OWN_ESCAPE: ReadonlySet<OverlayRequest['kind']> = new Set(['settings', 'confirm', 'message', 'quickOpen', 'newTerminal', 'quickPick', 'input']);
+const OWN_ESCAPE: ReadonlySet<OverlayRequest['kind']> = new Set(['settings', 'confirm', 'message', 'worktreeDialog', 'quickOpen', 'newTerminal', 'quickPick', 'input']);
 
 // Quick Open asks main for each query; the last answer names the files a pick may choose and how main parsed the query. A
 // query starting with ">" is the command palette, as in VS Code: it lists main's commands once per open request.
@@ -212,6 +215,14 @@ onBeforeUnmount(() => {
           :request="entry.request"
           @answer="answer(entry.id, $event)"
         />
+        <WorktreeDialog
+          v-else-if="entry.request.kind === 'worktreeDialog'"
+          :key="entry.id"
+          :data-overlay-id="entry.id"
+          :api="api"
+          :request="entry.request"
+          @answer="answer(entry.id, $event)"
+        />
         <DropZones
           v-else-if="entry.request.kind === 'dropZones'"
           :key="entry.id"
@@ -245,6 +256,11 @@ onBeforeUnmount(() => {
             :request="entry.request"
             @answer="answer(entry.id, $event)"
           />
+          <RefPicker
+            v-else-if="entry.request.kind === 'refPicker'"
+            :request="entry.request"
+            @answer="answer(entry.id, $event)"
+          />
           <QuickPick
             v-else-if="entry.request.kind === 'quickOpen'"
             :label="paletteMode ? t('palette.label') : entry.request.scope ? t('quickOpen.scopedLabel', { scope: scopeName(entry.request.scope) }) : t('quickOpen.label')"
@@ -263,6 +279,12 @@ onBeforeUnmount(() => {
           />
           <ListPick
             v-else-if="entry.request.kind === 'quickPick'"
+            :request="entry.request"
+            @answer="answer(entry.id, $event)"
+          />
+          <NewChatMenu
+            v-else-if="entry.request.kind === 'newChatMenu'"
+            :api="api"
             :request="entry.request"
             @answer="answer(entry.id, $event)"
           />

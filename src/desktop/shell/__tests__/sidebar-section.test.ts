@@ -125,4 +125,18 @@ describe('SidebarSection title actions', () => {
     mounted.push(wrapper);
     expect(wrapper.get('h2').find('[data-testid="badge"]').exists()).toBe(true);
   });
+
+  // happy-dom lays nothing out, so this pins the structure; scm.spec.ts measures the Source control header in Chromium.
+  it('put the title and its badge on one clipped wrapping line, so a badge with no room wraps out of sight before the title shortens', () => {
+    const wrapper = mount(SidebarSection, {
+      props: { section: 'scm', collapsed: false },
+      slots: { badge: () => h('span', { 'data-testid': 'badge' }, '3') },
+      global: { plugins: [shellI18n] },
+    });
+    mounted.push(wrapper);
+    const line = wrapper.get('[data-testid="sidebar-section-title"]').element.parentElement!;
+    expect(line.getAttribute('data-testid')).toBe('sidebar-section-title-line');
+    expect(line.className.split(/\s+/)).toEqual(expect.arrayContaining(['flex', 'flex-wrap', 'content-start', 'overflow-hidden', 'min-w-0', 'flex-1']));
+    expect(wrapper.get('[data-testid="badge"]').element.parentElement).toBe(line);
+  });
 });

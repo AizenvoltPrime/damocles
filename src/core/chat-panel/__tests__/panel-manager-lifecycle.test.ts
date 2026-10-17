@@ -5,6 +5,7 @@ import * as path from 'path';
 vi.mock('../../logger', () => ({ log: vi.fn() }));
 vi.mock('../ide-context-manager', () => ({
   IdeContextManager: class {
+    refresh(): void {}
     dispose(): void {}
   },
 }));

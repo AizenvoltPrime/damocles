@@ -284,7 +284,8 @@ function restoringPanel(platform: FakePlatform) {
       return instance;
     },
     postWorkspaceFolderState: () => undefined,
-    folderRegistry: { resolve: (key: string) => (key === FOLDER.key ? FOLDER : undefined) },
+    folderRegistry: { resolve: (key: string) => (key === FOLDER.key ? FOLDER : undefined), targets: () => [FOLDER] },
+    worktrees: () => ({ interceptSend: () => false, resumeFolder: async (_panelId: string, _sessionId: string, folder: unknown) => ({ folder, settle: () => undefined }), viewOf: () => undefined }),
     postMessage: () => undefined,
     historyManager: { loadSessionHistory: async (_cwd: string, id: string) => { loaded.push(id); return []; } },
     storageManager: {

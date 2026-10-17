@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 const hoisted = vi.hoisted(() => ({ sessionDir: '' }));
-vi.mock('../session-dir', () => ({ ensurePiSessionDir: vi.fn(() => hoisted.sessionDir) }));
+vi.mock('../session-dir', () => ({ ensurePiSessionDir: vi.fn(() => hoisted.sessionDir), piSessionDir: vi.fn(() => hoisted.sessionDir) }));
 vi.mock('../../pi-loader', async () => {
   const real = await import('@earendil-works/pi-coding-agent');
   return { initPiLoader: vi.fn(async () => ({ parseSessionEntries: real.parseSessionEntries })) };

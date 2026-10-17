@@ -13,6 +13,7 @@ import { SETTINGS_VIEW_MESSAGES, SETTINGS_VIEW_PROMPTS, SETTINGS_VIEW_REQUESTS }
 
 vi.mock('../ide-context-manager', () => ({
   IdeContextManager: class {
+    refresh(): void {}
     dispose(): void {}
   },
 }));

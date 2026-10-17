@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n';
 import type { ToolCall } from '@shared/types/session';
 import type { PersistedQuestion } from '@shared/types/permissions';
 
-import { Ban, CircleCheck, CircleQuestionMark, CircleX } from 'lucide-vue-next';
+import { Ban, CircleCheck, CircleQuestionMark, CircleX, ShieldBan } from 'lucide-vue-next';
 import ToolCardFrame from './ToolCardFrame.vue';
 import ToolCardNote from './ToolCardNote.vue';
 
@@ -47,6 +47,8 @@ const isAwaitingApproval = computed(() => props.toolCall.status === 'awaiting_ap
 const isCompleted = computed(() => props.toolCall.status === 'completed');
 const isDenied = computed(() => props.toolCall.status === 'denied');
 const isAbandoned = computed(() => props.toolCall.status === 'abandoned');
+const isCancelled = computed(() => props.toolCall.status === 'cancelled');
+const isBlocked = computed(() => props.toolCall.status === 'blocked');
 
 const headerText = computed(() => {
   const count = questions.value.length;
@@ -121,6 +123,19 @@ function truncateText(text: string, maxLength: number): string {
       tone="text-(--d-danger)"
       :icon="CircleX"
       :text="t('questionTool.cancelled')"
+    />
+    <ToolCardNote
+      v-else-if="isCancelled"
+      tone="text-(--d-muted)"
+      :icon="Ban"
+      :text="t('questionTool.cancelled')"
+    />
+    <ToolCardNote
+      v-else-if="isBlocked && toolCall.feedback"
+      tone="text-(--d-muted)"
+      :icon="ShieldBan"
+      :text="toolCall.feedback"
+      data-testid="tool-card-blocked-reason"
     />
     <ToolCardNote
       v-else-if="isAbandoned"

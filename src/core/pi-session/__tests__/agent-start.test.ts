@@ -194,6 +194,7 @@ function makePanel(opts: {
     ...(memoryService ? { memoryService } : {}),
     ...(compassService ? { compassService } : {}),
     getSessionModel: () => 'claude-opus-4-8',
+    memoryWorkspace: () => '/project',
     getSystemPromptEnv: () => ({
       cwd: '/repo',
       model: 'claude-opus-4-8',
@@ -627,6 +628,14 @@ describe('buildAgentStartResult — injection (US-005)', () => {
     expect(types).toEqual(['contextInjectionStarted', 'memoryInjectionUpdate', 'contextInjectionComplete']);
     expect(messages).toContainEqual({ type: 'contextInjectionStarted', promptIndex: 3 });
     expect(messages).toContainEqual({ type: 'contextInjectionComplete', promptIndex: 3 });
+  });
+
+  it("queries the panel's memory workspace, which is a worktree chat's project rather than its working folder", async () => {
+    const { panel, build } = makePanel({ memoryEnabled: true });
+    await runAgentStart(event({ prompt: 'what does this do?' }), panel, 'sess-1');
+    const args = build.mock.calls[0]![0] as { workspace: string };
+    expect(panel.getSystemPromptEnv().cwd).toBe('/repo');
+    expect(args.workspace).toBe('/project');
   });
 
   it('queries memory with the user text only and feeds the IDE block file to the file gate as the editor', async () => {

@@ -16,7 +16,7 @@ import {
   type PopupAnswer,
   type QuickOpenResponse,
 } from './overlay-channels';
-import type { DropZonesPointer } from './shell-channels';
+import type { ChatsContinueWorktree, ChatsWorktreeOptions, DropZonesPointer } from './shell-channels';
 import type { ChimeTone, NotificationCenterState } from './notifications';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { SettingsTarget } from '../../shared/settings-sections';
@@ -109,6 +109,9 @@ const api: DamoclesOverlayApi = {
   onTerminalProfiles: (listener) => subscribe<TerminalProfileReport>(OVERLAY_CHANNELS.terminalProfilesChanged, listener),
   onDropZonesPointer: (listener) => subscribe<DropZonesPointer>(OVERLAY_CHANNELS.dropZonesPointer, listener),
   browseInput: (value) => ipcRenderer.invoke(OVERLAY_CHANNELS.inputBrowse, { value }) as Promise<PopupAnswer<InputBrowseResult | null>>,
+  worktreeOptions: () => ipcRenderer.invoke(OVERLAY_CHANNELS.worktreeOptions, {}) as Promise<PopupAnswer<ChatsWorktreeOptions>>,
+  continueWorktrees: () => ipcRenderer.invoke(OVERLAY_CHANNELS.continueWorktrees, {}) as Promise<PopupAnswer<readonly ChatsContinueWorktree[]>>,
+  generateWorktreeMessage: () => ipcRenderer.invoke(OVERLAY_CHANNELS.worktreeGenerateMessage, {}) as Promise<PopupAnswer<{ readonly message: string } | null>>,
 };
 
 contextBridge.exposeInMainWorld('damoclesOverlay', api);

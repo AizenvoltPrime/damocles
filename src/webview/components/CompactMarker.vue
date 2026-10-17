@@ -7,8 +7,10 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import { formatCost } from '@/composables/useTeamFormatting';
 import { formatClock } from '@/utils/clock';
+import { useUIStore } from '@/stores/useUIStore';
 
 const { t, locale } = useI18n();
+const uiStore = useUIStore();
 
 // The card's figures follow the panel language, so a Greek reader gets Greek grouping, separators and units.
 const tokenFormat = computed(() => new Intl.NumberFormat(locale.value, { notation: 'compact' }));
@@ -24,7 +26,8 @@ const emit = defineEmits<{
 const isExpanded = ref(true);
 
 const hasSummary = computed(() => !!props.marker.summary);
-const canRewind = computed(() => !!props.marker.entryId);
+// A read-only chat (its worktree deleted) cannot fork, so it offers no rewind.
+const canRewind = computed(() => !!props.marker.entryId && !uiStore.historyReadOnly);
 
 function requestRewind() {
   if (!props.marker.entryId) return;

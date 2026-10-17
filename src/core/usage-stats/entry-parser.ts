@@ -1,5 +1,5 @@
 import { usageOfEntry, type AccountingEntry, type NormalizedUsage } from '../../shared/usage-accounting';
-import { DAMOCLES_AGENT_LAUNCH_ENTRY } from '../pi-session/session-store/constants';
+import { DAMOCLES_AGENT_LAUNCH_ENTRY, DAMOCLES_WORKTREE_ENTRY } from '../pi-session/session-store/constants';
 
 /**
  * Pure line parsers for pi session files and the sub-call ledger. The stats worker imports this module,
@@ -28,6 +28,8 @@ export type SessionLine =
   | { kind: 'title'; name: string }
   | { kind: 'launch'; detail: string }
   | { kind: 'model'; provider: string; model: string }
+  /** A worktree entry: the session's spend belongs to this project (slice 12a rule 9). */
+  | { kind: 'project'; projectPath: string }
   | UsageLine;
 
 export type LedgerLine =
@@ -41,6 +43,7 @@ const SESSION_MARKERS = [
   '"type":"session_info"',
   '"type":"model_change"',
   `"customType":"${DAMOCLES_AGENT_LAUNCH_ENTRY}"`,
+  `"customType":"${DAMOCLES_WORKTREE_ENTRY}"`,
 ];
 
 const SKIP = { kind: 'skip' } as const;
@@ -119,6 +122,10 @@ export function parseSessionLine(line: string): SessionLine {
         ? { kind: 'model', provider: entry['provider'], model: entry['modelId'] }
         : SKIP;
     case 'custom': {
+      if (entry['customType'] === DAMOCLES_WORKTREE_ENTRY) {
+        const data = isRecord(entry['data']) ? entry['data'] : undefined;
+        return data && nonEmptyString(data['projectPath']) ? { kind: 'project', projectPath: data['projectPath'] } : SKIP;
+      }
       if (entry['customType'] !== DAMOCLES_AGENT_LAUNCH_ENTRY || !isRecord(entry['data'])) return SKIP;
       const data = entry['data'];
       const detail = data['kind'] === 'subagent' ? data['agentType'] : data['kind'] === 'team-member' ? data['role'] : undefined;

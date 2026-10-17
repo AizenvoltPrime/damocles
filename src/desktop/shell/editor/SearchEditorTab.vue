@@ -513,6 +513,7 @@ const messageText = computed(() => {
         :api="api"
         :tab="tab"
         :menu-shortcuts="menuShortcuts"
+        :platform="platform"
       />
     </div>
     <p

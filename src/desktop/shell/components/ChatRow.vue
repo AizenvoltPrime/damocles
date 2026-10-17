@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Check, CircleAlert, LoaderCircle, MessageSquare, Pencil, Tag, Trash2, X } from 'lucide-vue-next';
+import { Check, CircleAlert, LoaderCircle, MessageSquare, MessageSquareCode, Pencil, Plus, Tag, Trash2, X } from 'lucide-vue-next';
 import { providerLogoSvg } from '@/components/icons/provider-logos';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { formatClock } from '@/utils/clock';
 import { MAX_CHAT_NAME_LENGTH, type ShellChat } from '../../preload/shell-channels';
 import { chatGroupOf, hasSavedConversation, modelLabel } from '../chat-list';
+import { branchLeaf } from '@/utils/branch-leaf';
+import { visibleText } from '@shared/visible-text';
 
 const props = defineProps<{
   chat: ShellChat;
@@ -16,6 +18,8 @@ const props = defineProps<{
   // the listbox's keyboard position
   active: boolean;
   renaming: boolean;
+  // a live worktree chat: the row offers New chat in this worktree
+  opensHere?: boolean;
 }>();
 const emit = defineEmits<{
   select: [];
@@ -26,6 +30,7 @@ const emit = defineEmits<{
   filterTag: [tag: string];
   commitRename: [name: string];
   cancelRename: [];
+  newHere: [];
 }>();
 const { t, locale } = useI18n();
 
@@ -40,6 +45,28 @@ const when = computed(() => {
   const recent = chatGroupOf(props.chat.timestamp, new Date()) !== 'earlier';
   return recent ? formatClock(date, locale.value) : new Intl.DateTimeFormat(locale.value, { month: 'short', day: 'numeric' }).format(date);
 });
+
+// A worktree chat (D30, AD12 Listing) names its branch where other rows show the time and model; the title is the whole line.
+const worktreeLine = computed(() => {
+  const worktree = props.chat.worktree;
+  if (!worktree) return undefined;
+  const branch = visibleText(worktree.branch);
+  const leaf = visibleText(branchLeaf(worktree.branch));
+  switch (worktree.status) {
+    case 'pending': {
+      const text = t('worktree.row.newFrom', { branch });
+      return { text, mono: false, title: text };
+    }
+    case 'live': return { text: leaf, mono: true, title: branch };
+    case 'inProjectFolder': return { text: t('worktree.row.inProjectFolder', { branch: leaf }), mono: false, title: t('worktree.row.inProjectFolder', { branch }) };
+    case 'deleted': {
+      const text = worktree.fromProject ? t('worktree.row.deletedFrom', { project: worktree.fromProject }) : t('worktree.row.deleted');
+      return { text, mono: false, title: text };
+    }
+  }
+  return undefined;
+});
+const worktreeGone = computed(() => props.chat.worktree?.status === 'deleted' || props.chat.readOnly);
 
 const draft = ref(props.chat.title);
 const input = ref<HTMLInputElement | null>(null);
@@ -122,6 +149,8 @@ function onRenameKeydown(event: KeyboardEvent): void {
     :data-chat-id="chat.id"
     :data-status="chat.status"
     :data-loaded="chat.loaded"
+    :data-worktree="chat.worktree?.status"
+    :data-read-only="chat.readOnly || undefined"
     class="group/row flex h-full cursor-pointer items-center gap-2 rounded-lg py-1.5 pr-1.5 pl-2 transition-colors hover:bg-(--d-hover)"
     :class="[selected ? 'bg-(--d-accent-soft) font-semibold' : '', active ? 'group-focus-visible/list:outline group-focus-visible/list:-outline-offset-1 group-focus-visible/list:outline-(--d-accent)' : '']"
     @click="emit('select')"
@@ -131,15 +160,24 @@ function onRenameKeydown(event: KeyboardEvent): void {
       class="flex w-4 shrink-0 justify-center"
       :title="chat.status === 'running' ? t('chats.running') : chat.status === 'waiting' ? t('chats.needsYou') : undefined"
     >
-      <LoaderCircle
-        v-if="chat.status === 'running'"
-        aria-hidden="true"
-        class="size-3.25 d-spinning text-(--d-accent)"
-      />
       <CircleAlert
-        v-else-if="chat.status === 'waiting'"
+        v-if="chat.status === 'waiting'"
         aria-hidden="true"
         class="size-3.25 animate-[d-pulse_1.4s_infinite] text-(--d-warning)"
+      />
+      <!-- A running worktree chat keeps its worktree icon and pulses it, so the place stays readable. -->
+      <MessageSquareCode
+        v-else-if="chat.worktree"
+        aria-hidden="true"
+        data-testid="chat-worktree-icon"
+        :data-running="chat.status === 'running' || undefined"
+        class="size-3.25"
+        :class="chat.status === 'running' ? 'd-pulsing text-(--d-accent)' : worktreeGone ? 'text-(--d-faint)' : 'text-(--d-accent)'"
+      />
+      <LoaderCircle
+        v-else-if="chat.status === 'running'"
+        aria-hidden="true"
+        class="size-3.25 d-spinning text-(--d-accent)"
       />
       <MessageSquare
         v-else
@@ -151,6 +189,14 @@ function onRenameKeydown(event: KeyboardEvent): void {
         v-if="chat.status !== 'idle'"
         class="sr-only"
       >{{ chat.status === 'running' ? t('chats.running') : t('chats.needsYou') }},</span>
+      <span
+        v-if="chat.worktree"
+        class="sr-only"
+      >{{ t('worktree.row.worktreeChat') }},</span>
+      <span
+        v-if="chat.readOnly"
+        class="sr-only"
+      >{{ t('worktree.row.readOnly') }},</span>
     </span>
     <span class="flex min-w-0 flex-1 flex-col leading-[1.3]">
       <span
@@ -161,22 +207,42 @@ function onRenameKeydown(event: KeyboardEvent): void {
         class="flex min-w-0 items-center gap-1.25 overflow-hidden text-11 font-normal whitespace-nowrap"
         :class="selected ? 'text-(--d-faint-text)' : 'text-(--d-faint) group-hover/row:text-(--d-faint-text)'"
       >
-        <span class="shrink-0">{{ when }}</span>
-        <template v-if="model">
+        <!-- No appear: a virtual row scrolled back into view stays still; a row that gains its branch or loses its worktree swaps. -->
+        <Transition
+          name="t-swap-box"
+          mode="out-in"
+        >
           <span
-            aria-hidden="true"
-            class="shrink-0"
-          >·</span>
-          <!-- eslint-disable vue/no-v-html -- a static vendored SVG chosen by provider id, never session text -->
+            v-if="worktreeLine"
+            :key="worktreeLine.text"
+            data-testid="chat-worktree-line"
+            class="min-w-0 truncate"
+            :class="worktreeLine.mono ? 'font-mono text-10.5' : ''"
+            :dir="worktreeLine.mono ? 'ltr' : undefined"
+            :title="worktreeLine.title"
+          >{{ worktreeLine.text }}</span>
           <span
-            v-if="logo"
-            aria-hidden="true"
-            class="provider-logo size-2.75 shrink-0"
-            v-html="logo"
-          />
-          <!-- eslint-enable vue/no-v-html -->
-          <span class="min-w-6 shrink truncate">{{ model }}</span>
-        </template>
+            v-else
+            class="flex min-w-0 items-center gap-1.25 overflow-hidden"
+          >
+            <span class="shrink-0">{{ when }}</span>
+            <template v-if="model">
+              <span
+                aria-hidden="true"
+                class="shrink-0"
+              >·</span>
+              <!-- eslint-disable vue/no-v-html -- a static vendored SVG chosen by provider id, never session text -->
+              <span
+                v-if="logo"
+                aria-hidden="true"
+                class="provider-logo size-2.75 shrink-0"
+                v-html="logo"
+              />
+              <!-- eslint-enable vue/no-v-html -->
+              <span class="min-w-6 shrink truncate">{{ model }}</span>
+            </template>
+          </span>
+        </Transition>
         <Badge
           v-if="chat.tag"
           as="span"
@@ -238,5 +304,25 @@ function onRenameKeydown(event: KeyboardEvent): void {
         <Trash2 class="size-3" />
       </Button>
     </span>
+    <!-- In its own slot past the hover actions, so it never moves; it reveals by opacity and scale only. A mouse shortcut like
+         those: keyboard users have the row menu's Worktree submenu. -->
+    <Button
+      v-if="opensHere"
+      type="button"
+      variant="ghost"
+      size="icon-sm"
+      tabindex="-1"
+      aria-hidden="true"
+      data-testid="chat-action-new-in-worktree"
+      class="size-5.5 shrink-0 scale-90 rounded-md text-(--d-muted) opacity-0 transition-[opacity,transform,background-color,color] duration-150 ease-out group-hover/row:scale-100 group-hover/row:opacity-100 hover:bg-(--d-accent-soft) hover:text-(--d-accent-text) [&_svg]:size-3"
+      :class="active ? 'group-focus-visible/list:scale-100 group-focus-visible/list:opacity-100' : ''"
+      :title="t('worktree.newChatHere')"
+      @click.stop="emit('newHere')"
+    >
+      <Plus
+        aria-hidden="true"
+        class="size-3"
+      />
+    </Button>
   </div>
 </template>

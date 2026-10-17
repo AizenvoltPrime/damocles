@@ -1,3 +1,4 @@
+import { identityFolder } from "../../../worktrees/personal-config";
 import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "../types";
 import type { MemoryScope, MemoryEntry } from "../../../../shared/types/memory";
 import type { ObservationCursor } from "../../../../shared/types/memory";
@@ -84,9 +85,9 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
     broadcastAuditState(ctx);
     const global = deps.memoryService.getProfile("global", "");
     for (const [, instance] of deps.getPanels()) {
-      const panel = loadPanel(instance.session.memorySessionId, instance.folder.fsPath);
+      const panel = loadPanel(instance.session.memorySessionId, identityFolder(instance.folder.fsPath));
       postMessage(instance.host, { type: "memoriesUpdate", memories: panel.memories, hasMoreObservations: panel.hasMoreObservations, observationCursor: panel.observationCursor });
-      const project = deps.memoryService.getProfile("project", instance.folder.fsPath);
+      const project = deps.memoryService.getProfile("project", identityFolder(instance.folder.fsPath));
       postMessage(instance.host, { type: "profileData", project, global });
     }
   }
@@ -103,20 +104,20 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       }
 
       await deps.memoryService.ensureInitialized();
-      const panel = loadPanel(ctx.session.memorySessionId, ctx.folder.fsPath);
+      const panel = loadPanel(ctx.session.memorySessionId, identityFolder(ctx.folder.fsPath));
       postMessage(ctx.host, { type: "memoriesUpdate", memories: panel.memories, hasMoreObservations: panel.hasMoreObservations, observationCursor: panel.observationCursor });
     },
 
     requestMoreObservations: async (msg, ctx) => {
       if (msg.type !== "requestMoreObservations") return;
 
-      if (!deps.memoryService?.isEnabled || !ctx.folder.fsPath) {
+      if (!deps.memoryService?.isEnabled || !identityFolder(ctx.folder.fsPath)) {
         postMessage(ctx.host, { type: "memoryError", message: "Memory system is not available" });
         return;
       }
 
       await deps.memoryService.ensureInitialized();
-      const { entries, hasMore, nextCursor } = deps.memoryService.getObservationPage(ctx.folder.fsPath, msg.cursor);
+      const { entries, hasMore, nextCursor } = deps.memoryService.getObservationPage(identityFolder(ctx.folder.fsPath), msg.cursor);
       postMessage(ctx.host, { type: "moreObservationsLoaded", observations: entries, hasMore, nextCursor });
     },
 
@@ -142,7 +143,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
           kind: msg.kind ?? "fact",
           scope,
           sessionId: ctx.session.memorySessionId,
-          workspace: ctx.folder.fsPath,
+          workspace: identityFolder(ctx.folder.fsPath),
           ...(msg.tags ? { tags: msg.tags } : {}),
         });
       }
@@ -207,7 +208,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       const query = {
         ...msg.query,
         ...(msg.query.limit !== undefined ? { limit: Math.min(Math.max(msg.query.limit, 1), 100) } : {}),
-        workspace: ctx.folder.fsPath,
+        workspace: identityFolder(ctx.folder.fsPath),
         sessionId: ctx.session.memorySessionId,
         allWorkspaces: false,
       };
@@ -322,7 +323,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       }
 
       await deps.memoryService.ensureInitialized();
-      const project = deps.memoryService.getProfile("project", ctx.folder.fsPath);
+      const project = deps.memoryService.getProfile("project", identityFolder(ctx.folder.fsPath));
       const global = deps.memoryService.getProfile("global", "");
       postMessage(ctx.host, { type: "profileData", project, global });
     },
@@ -336,7 +337,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       }
 
       await deps.memoryService.ensureInitialized();
-      const workspace = msg.scope === "project" ? ctx.folder.fsPath : "";
+      const workspace = msg.scope === "project" ? identityFolder(ctx.folder.fsPath) : "";
       const ok = await deps.memoryService.setProfileSection(msg.scope, workspace, msg.section, msg.content);
       if (!ok) {
         // Targeted failure so the panel clears ONLY this section's pending flag (keeping the draft),
@@ -344,7 +345,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
         postMessage(ctx.host, { type: "profileSectionError", scope: msg.scope, section: msg.section, message: "Failed to save profile section." });
         return;
       }
-      const project = deps.memoryService.getProfile("project", ctx.folder.fsPath);
+      const project = deps.memoryService.getProfile("project", identityFolder(ctx.folder.fsPath));
       const global = deps.memoryService.getProfile("global", "");
       // savedSection scopes the panel's confirm+re-seed to this section only.
       postMessage(ctx.host, { type: "profileData", project, global, savedSection: { scope: msg.scope, section: msg.section } });

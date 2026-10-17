@@ -1364,3 +1364,592 @@ export function classifyReadOnlyShellCommand(shell: ShellKind, command: string):
   }
   return classifyBash(command);
 }
+
+/** A character standing for computed text: a word holding it is computed. */
+export const COMPUTED_TEXT = '\u0000';
+
+/** The builtins whose `NAME=value` operands are assignments. */
+export const DECLARATION_BUILTINS: ReadonlySet<string> = new Set(['export', 'declare', 'local', 'readonly', 'typeset']);
+
+/** One simple command: its leading assignments and its words, each undefined when any part of it is computed. */
+export interface ShellSegment {
+  /** `raw` is the value as written, quotes and expansions included; absent when the text does not give it (a `for` variable). */
+  readonly assignments: ReadonlyArray<{ readonly name: string; readonly value: string | undefined; readonly raw?: string }>;
+  readonly words: ReadonlyArray<string | undefined>;
+  /** Each word as written, quotes and expansions included. */
+  readonly rawWords: readonly string[];
+  /** The parsed bodies of `$()`, backticks and process substitutions in this command; they run before it. */
+  readonly substitutions: readonly ShellStructure[];
+}
+
+export interface ShellStructure {
+  readonly segments: readonly ShellSegment[];
+  /** Syntax the parse cannot follow: an unbalanced quote or substitution, a heredoc without its end, a function or `case`. */
+  readonly unparsable: boolean;
+}
+
+const RESERVED_SKIP: ReadonlySet<string> = new Set(['if', 'then', 'else', 'elif', 'fi', 'do', 'done', 'while', 'until', '!', '{', '}', 'time']);
+const RESERVED_UNPARSABLE: ReadonlySet<string> = new Set(['case', 'esac', 'function', 'select', 'coproc']);
+// Unquoted, these make a word a glob or a brace expansion, whose value the text does not give.
+const PATTERN_CHARS = '*?[{}';
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
+// A declaration builtin's operand that assigns, an array element included.
+const DECLARED = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/;
+const ARITHMETIC_TEST = /^-(eq|ne|lt|le|gt|ge)$/;
+const VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Index of the `'` closing the `$'` quote whose `'` is at `open`, where a backslash escapes the next character; -1 when unbalanced. */
+function closingAnsiQuote(text: string, open: number): number {
+  for (let i = open + 1; i < text.length; i++) {
+    if (text[i] === '\\') i++;
+    else if (text[i] === "'") return i;
+  }
+  return -1;
+}
+
+/** End index of the `$()`, `${}` or backtick expansion starting at `at`, `at` itself when none starts there, -1 when unbalanced. */
+function expansionEnd(text: string, at: number): number {
+  if (text[at] === '`') return closingBacktick(text, at);
+  if (text[at] !== '$') return at;
+  if (text[at + 1] === '(') return substitutionEnd(text, at);
+  if (text[at + 1] === '{') return closingBrace(text, at + 1);
+  if (text[at + 1] === "'") return closingAnsiQuote(text, at + 1);
+  return at;
+}
+
+/** Index of the `"` closing the one at `open`, skipping escapes and the expansions inside; -1 when unbalanced. */
+function closingDoubleQuote(text: string, open: number): number {
+  for (let i = open + 1; i < text.length; i++) {
+    if (text[i] === '\\') {
+      i++;
+      continue;
+    }
+    if (text[i] === '"') return i;
+    if (text[i] === '`' || (text[i] === '$' && (text[i + 1] === '(' || text[i + 1] === '{'))) {
+      i = expansionEnd(text, i);
+      if (i < 0) return -1;
+    }
+  }
+  return -1;
+}
+
+/** End index of the `$(` at `dollar`: arithmetic when bash reads it so, else a command substitution read as a script; -1 when unbalanced. */
+function substitutionEnd(text: string, dollar: number): number {
+  if (text[dollar + 2] === '(') {
+    const end = closingParen(text, dollar + 1, false);
+    if (end >= 0 && isArithmetic(text, dollar, end)) return end;
+  }
+  return closingParen(text, dollar + 1, true);
+}
+
+/**
+ * Index of the `)` closing the `(` at `open`, skipping quotes, expansions and nested parentheses; -1 when unbalanced.
+ * In a `script` it also skips comments and heredoc bodies, as bash does; arithmetic has neither (`<<` is a shift there).
+ */
+function closingParen(text: string, open: number, script: boolean): number {
+  let depth = 0;
+  let wordStart = true;
+  const heredocs: Array<{ delimiter: string; stripTabs: boolean }> = [];
+  for (let i = open; i < text.length; i++) {
+    const ch = text[i]!;
+    const atWordStart = wordStart;
+    wordStart = /[\s;&|()<>]/.test(ch);
+    if (ch === '\\') {
+      i++;
+      continue;
+    }
+    if (script && ch === '#' && atWordStart) {
+      const end = text.indexOf('\n', i);
+      if (end < 0) return -1;
+      i = end - 1;
+      continue;
+    }
+    if (script && ch === '\n') {
+      for (const doc of heredocs.splice(0)) {
+        let found = false;
+        while (!found && i < text.length - 1) {
+          const lineEnd = text.indexOf('\n', i + 1);
+          const line = text.slice(i + 1, lineEnd < 0 ? text.length : lineEnd).replace(/\r$/, '');
+          i = lineEnd < 0 ? text.length : lineEnd;
+          found = (doc.stripTabs ? line.replace(/^\t+/, '') : line) === doc.delimiter;
+        }
+        if (!found) return -1;
+      }
+      continue;
+    }
+    if (script && ch === '<' && text[i + 1] === '<') {
+      if (text[i + 2] === '<') {
+        i += 2;
+        continue;
+      }
+      const stripTabs = text[i + 2] === '-';
+      const at = i + (stripTabs ? 3 : 2);
+      const word = heredocDelimiter(text.slice(at));
+      if (!word) return -1;
+      heredocs.push({ delimiter: word.delimiter, stripTabs });
+      i = at + word.length - 1;
+      wordStart = false;
+      continue;
+    }
+    if (script && ch === '$' && text[i + 1] === '(') {
+      i = substitutionEnd(text, i);
+      if (i < 0) return -1;
+      continue;
+    }
+    if (ch === "'") {
+      i = text.indexOf("'", i + 1);
+      if (i < 0) return -1;
+      continue;
+    }
+    if (ch === '"') {
+      i = closingDoubleQuote(text, i);
+      if (i < 0) return -1;
+      continue;
+    }
+    if (ch === '`' || (ch === '$' && (text[i + 1] === '{' || text[i + 1] === "'"))) {
+      i = expansionEnd(text, i);
+      if (i < 0) return -1;
+      continue;
+    }
+    if (ch === '(') depth++;
+    else if (ch === ')' && --depth === 0) return i;
+  }
+  return -1;
+}
+
+/** Index of the `}` closing the `${` whose brace is at `open`; bash counts no bare `{` inside, and skips quotes even within double quotes. */
+function closingBrace(text: string, open: number): number {
+  for (let i = open + 1; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '\\') {
+      i++;
+      continue;
+    }
+    if (ch === '}') return i;
+    if (ch === "'") {
+      i = text.indexOf("'", i + 1);
+      if (i < 0) return -1;
+      continue;
+    }
+    if (ch === '"') {
+      i = closingDoubleQuote(text, i);
+      if (i < 0) return -1;
+      continue;
+    }
+    i = expansionEnd(text, i);
+    if (i < 0) return -1;
+  }
+  return -1;
+}
+
+/** Index of the backtick closing the one at `open`; -1 when unbalanced. */
+function closingBacktick(text: string, open: number): number {
+  for (let i = open + 1; i < text.length; i++) {
+    if (text[i] === '\\') i++;
+    else if (text[i] === '`') return i;
+  }
+  return -1;
+}
+
+/** Whether the `$(` at `dollar`, closed at `end`, is arithmetic: bash reads `$((` as one only when its inner `(` closes right before the outer `)`. */
+function isArithmetic(text: string, dollar: number, end: number): boolean {
+  return text[dollar + 2] === '(' && closingParen(text, dollar + 2, false) === end - 1;
+}
+
+/** Calls `sub` with the body of each `$()` and backtick substitution in `text`, arithmetic bodies searched too; `fail` on an unbalanced one. */
+function substitutionsIn(text: string, sub: (body: string) => void, fail: () => void): void {
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '\\') {
+      i++;
+      continue;
+    }
+    if (text[i] === '$' && text[i + 1] === '(') {
+      const end = substitutionEnd(text, i);
+      if (end < 0) return fail();
+      if (isArithmetic(text, i, end)) substitutionsIn(text.slice(i + 3, end - 1), sub, fail);
+      else sub(text.slice(i + 2, end));
+      i = end;
+    } else if (text[i] === '`') {
+      const end = closingBacktick(text, i);
+      if (end < 0) return fail();
+      sub(text.slice(i + 1, end).replace(/\\`/g, '`'));
+      i = end;
+    }
+  }
+}
+
+/** A heredoc delimiter word after quote removal, and whether any part of it was quoted; undefined for one the parse cannot read. */
+function heredocDelimiter(text: string): { delimiter: string; quoted: boolean; length: number } | undefined {
+  const blanks = /^[ \t]*/.exec(text)![0].length;
+  let delimiter = '';
+  let quoted = false;
+  let i = blanks;
+  for (; i < text.length && !/[\s;&|<>()]/.test(text[i]!); i++) {
+    const ch = text[i]!;
+    if (ch === '`' || (ch === '$' && /["'(]/.test(text[i + 1] ?? ''))) return undefined;
+    if (ch === '\\') {
+      quoted = true;
+      delimiter += text[++i] ?? '';
+    } else if (ch === "'") {
+      const end = text.indexOf("'", i + 1);
+      if (end < 0) return undefined;
+      quoted = true;
+      delimiter += text.slice(i + 1, end);
+      i = end;
+    } else if (ch === '"') {
+      let j = i + 1;
+      for (; j < text.length && text[j] !== '"'; j++) {
+        if (text[j] === '\\' && '$`"\\'.includes(text[j + 1] ?? '')) j++;
+        delimiter += text[j];
+      }
+      if (j >= text.length) return undefined;
+      quoted = true;
+      i = j;
+    } else {
+      delimiter += ch;
+    }
+  }
+  return i === blanks ? undefined : { delimiter, quoted, length: i };
+}
+
+/** The bash structure of `command`, for checks that need the targets of particular commands; see ShellStructure. Bounded by MAX_COMMAND_LENGTH like the classifier. */
+export function parseShellStructure(command: string, depth = 0): ShellStructure {
+  if (command.length > MAX_COMMAND_LENGTH || depth > 8) return { segments: [], unparsable: true };
+  const segments: ShellSegment[] = [];
+  let unparsable = false;
+  let assignments: Array<{ name: string; value: string | undefined; raw?: string }> = [];
+  let words: Array<string | undefined> = [];
+  let rawWords: string[] = [];
+  // Each word's literal text, computed parts left out.
+  let literals: string[] = [];
+  let substitutions: ShellStructure[] = [];
+  let ignoredSegment = false;
+  // A `for` header assigns its variable each item of the list. Its first word is the variable, then `in` and the list up
+  // to `;` or a newline, or `do`, which ends a header without a list.
+  let forHeader: 'none' | 'variable' | 'afterVariable' | 'list' = 'none';
+  // bash's `time -p`: the -p belongs to the keyword.
+  let timed = false;
+  let value = '';
+  let computed = false;
+  let pattern = false;
+  let inWord = false;
+  let wordStart = 0;
+  let redirectTarget = false;
+  const heredocs: Array<{ delimiter: string; stripTabs: boolean; quoted: boolean }> = [];
+
+  const sub = (body: string): void => {
+    const parsed = parseShellStructure(body, depth + 1);
+    if (parsed.unparsable) unparsable = true;
+    substitutions.push(parsed);
+  };
+  const fail = (): void => {
+    unparsable = true;
+  };
+  // Arithmetic runs the `$()` in an array subscript of text it evaluates: a variable's value, as `$((x))` evaluates it, or
+  // an operand of `let` or of a `[[` comparison. An unbalanced one never runs.
+  const runsInArithmetic = (text: string): void => {
+    if (/\$\(|`/.test(text)) substitutionsIn(text, sub, () => undefined);
+  };
+  /** Handles the `$(` at `at`: a command substitution is parsed, an arithmetic one searched; the closing index, or -1. */
+  const dollarParen = (at: number): number => {
+    const end = substitutionEnd(command, at);
+    if (end < 0) return -1;
+    if (isArithmetic(command, at, end)) substitutionsIn(command.slice(at + 3, end - 1), sub, fail);
+    else sub(command.slice(at + 2, end));
+    return end;
+  };
+  /** Handles the `${` at `at`: its word may hold substitutions; the closing index, or -1. */
+  const dollarBrace = (at: number): number => {
+    const end = closingBrace(command, at + 1);
+    if (end >= 0) substitutionsIn(command.slice(at + 2, end), sub, fail);
+    return end;
+  };
+  const endWord = (end: number): void => {
+    if (!inWord) return;
+    inWord = false;
+    const raw = command.slice(wordStart, end);
+    // `~user` names another user's home, which the text does not give.
+    const expands = (pattern && !['{', '}', '[', ']', '[[', ']]'].includes(raw)) || /^~[^/]/.test(raw);
+    const literal = value;
+    const word = computed || expands || literal.includes(COMPUTED_TEXT) ? undefined : literal;
+    value = '';
+    computed = false;
+    pattern = false;
+    if (redirectTarget) {
+      redirectTarget = false;
+      return;
+    }
+    if (forHeader === 'variable') {
+      forHeader = 'afterVariable';
+      if (VARIABLE_NAME.test(raw)) assignments.push({ name: raw, value: undefined });
+      return;
+    }
+    if (forHeader === 'afterVariable') {
+      if (raw === 'in') {
+        forHeader = 'list';
+      } else if (raw === 'do') {
+        endSegment(end);
+      } else {
+        unparsable = true;
+      }
+      return;
+    }
+    if (ignoredSegment) return;
+    if (words.length === 0 && ASSIGNMENT.test(raw)) {
+      const eq = raw.indexOf('=');
+      const name = raw.slice(0, raw[eq - 1] === '+' ? eq - 1 : eq);
+      assignments.push({ name, value: word === undefined ? undefined : word.slice(word.indexOf('=') + 1), raw: raw.slice(eq + 1) });
+      runsInArithmetic(literal);
+      return;
+    }
+    const head = words[0];
+    if (head === 'let' || (head !== undefined && DECLARATION_BUILTINS.has(head) && DECLARED.test(literal))) runsInArithmetic(literal);
+    if (head === '[[' && word !== undefined && ARITHMETIC_TEST.test(word)) runsInArithmetic(literals.at(-1) ?? '');
+    else if (head === '[[' && ARITHMETIC_TEST.test(words.at(-1) ?? '')) runsInArithmetic(literal);
+    if (words.length === 0 && word !== undefined && raw === word) {
+      if (timed && word === '-p') {
+        timed = false;
+        return;
+      }
+      timed = word === 'time';
+      if (RESERVED_SKIP.has(word)) return;
+      if (RESERVED_UNPARSABLE.has(word)) {
+        unparsable = true;
+        ignoredSegment = true;
+        return;
+      }
+      if (word === 'for') {
+        ignoredSegment = true;
+        forHeader = 'variable';
+        return;
+      }
+    }
+    words.push(word);
+    rawWords.push(raw);
+    literals.push(literal);
+  };
+  const endSegment = (end: number): void => {
+    endWord(end);
+    if (redirectTarget) unparsable = true;
+    // An ignored `for` header still runs the substitutions in its list and assigns its variable.
+    if (ignoredSegment ? assignments.length > 0 || substitutions.length > 0 : words.length > 0 || assignments.length > 0 || substitutions.length > 0) {
+      segments.push({ assignments, words: ignoredSegment ? [] : words, rawWords: ignoredSegment ? [] : rawWords, substitutions });
+    }
+    assignments = [];
+    words = [];
+    rawWords = [];
+    literals = [];
+    substitutions = [];
+    ignoredSegment = false;
+    forHeader = 'none';
+    timed = false;
+  };
+  const startWord = (at: number): void => {
+    if (!inWord) {
+      inWord = true;
+      wordStart = at;
+    }
+  };
+
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]!;
+    if (ch === '\n') {
+      endWord(i);
+      // A heredoc body starts on the next line and ends at its delimiter line; it is data for the command that read it.
+      for (const doc of heredocs.splice(0)) {
+        let found = false;
+        while (i < command.length - 1) {
+          const lineEnd = command.indexOf('\n', i + 1);
+          const line = command.slice(i + 1, lineEnd < 0 ? command.length : lineEnd).replace(/\r$/, '');
+          i = lineEnd < 0 ? command.length : lineEnd;
+          if ((doc.stripTabs ? line.replace(/^\t+/, '') : line) === doc.delimiter) {
+            found = true;
+            break;
+          }
+          // An unquoted delimiter leaves `$()` and backticks in the body running.
+          if (!doc.quoted) substitutionsIn(line, sub, fail);
+        }
+        if (!found) unparsable = true;
+      }
+      endSegment(i);
+      continue;
+    }
+    if (ch === ' ' || ch === '\t' || ch === '\r') {
+      endWord(i);
+      continue;
+    }
+    if (ch === '#' && !inWord) {
+      const end = command.indexOf('\n', i);
+      i = (end < 0 ? command.length : end) - 1;
+      continue;
+    }
+    if (ch === '\\') {
+      if (command[i + 1] === '\n') {
+        i++;
+        continue;
+      }
+      startWord(i);
+      if (i + 1 < command.length) value += command[++i];
+      continue;
+    }
+    if (ch === "'") {
+      startWord(i);
+      const end = command.indexOf("'", i + 1);
+      if (end < 0) return { segments, unparsable: true };
+      value += command.slice(i + 1, end);
+      i = end;
+      continue;
+    }
+    if (ch === '"') {
+      startWord(i);
+      let j = i + 1;
+      for (; j < command.length && command[j] !== '"'; j++) {
+        const c = command[j]!;
+        if (c === '\\' && j + 1 < command.length) {
+          const next = command[j + 1]!;
+          value += '$`"\\\n'.includes(next) ? next : `\\${next}`;
+          j++;
+        } else if (c === '`') {
+          const end = closingBacktick(command, j);
+          if (end < 0) return { segments, unparsable: true };
+          sub(command.slice(j + 1, end).replace(/\\`/g, '`'));
+          computed = true;
+          j = end;
+        } else if (c === '$' && /[A-Za-z_{(0-9?@*#!$-]/.test(command[j + 1] ?? '')) {
+          computed = true;
+          if (command[j + 1] === '(' || command[j + 1] === '{') {
+            const end = command[j + 1] === '(' ? dollarParen(j) : dollarBrace(j);
+            if (end < 0) return { segments, unparsable: true };
+            j = end;
+          }
+        } else {
+          value += c;
+        }
+      }
+      if (j >= command.length) return { segments, unparsable: true };
+      i = j;
+      continue;
+    }
+    if (ch === '`') {
+      startWord(i);
+      const end = closingBacktick(command, i);
+      if (end < 0) return { segments, unparsable: true };
+      sub(command.slice(i + 1, end).replace(/\\`/g, '`'));
+      computed = true;
+      i = end;
+      continue;
+    }
+    if (ch === '$') {
+      const next = command[i + 1] ?? '';
+      if (next === '(' || next === '{') {
+        startWord(i);
+        const end = next === '(' ? dollarParen(i) : dollarBrace(i);
+        if (end < 0) return { segments, unparsable: true };
+        computed = true;
+        i = end;
+        continue;
+      }
+      if (next === "'") {
+        startWord(i);
+        const end = closingAnsiQuote(command, i + 1);
+        if (end < 0) return { segments, unparsable: true };
+        computed = true;
+        i = end;
+        continue;
+      }
+      // `$"..."` is a translatable string; with no translation it is the double-quoted text.
+      if (next === '"') {
+        startWord(i);
+        continue;
+      }
+      if (/[A-Za-z_0-9?@*#!$-]/.test(next)) {
+        startWord(i);
+        computed = true;
+        i++;
+        while (/[A-Za-z_0-9]/.test(command[i + 1] ?? '') && /[A-Za-z_]/.test(next)) i++;
+        continue;
+      }
+      startWord(i);
+      value += ch;
+      continue;
+    }
+    if (ch === ';' || ch === '|' || ch === '&') {
+      // `&>` and `&>>` redirect both streams; every other `&` ends a command.
+      if (ch === '&' && command[i + 1] === '>') {
+        endWord(i);
+        i += command[i + 2] === '>' ? 2 : 1;
+        redirectTarget = true;
+        continue;
+      }
+      endSegment(i);
+      if ((command[i + 1] === ch && ch !== ';') || (ch === '|' && command[i + 1] === '&')) i++;
+      continue;
+    }
+    if (ch === '(' && inWord && /^[A-Za-z_][A-Za-z0-9_]*\+?=$/.test(command.slice(wordStart, i))) {
+      // An array assignment: its elements are data, but the substitutions among them run.
+      const end = closingParen(command, i, true);
+      if (end < 0) return { segments, unparsable: true };
+      const elements = parseShellStructure(command.slice(i + 1, end), depth + 1);
+      if (elements.unparsable) unparsable = true;
+      for (const element of elements.segments) substitutions.push(...element.substitutions);
+      computed = true;
+      i = end;
+      continue;
+    }
+    if (ch === '(' || ch === ')') {
+      if (ch === '(' && (inWord || words.length > 0)) {
+        // `name()` defines a function, `a(b` is not shell: neither is followed.
+        unparsable = true;
+      }
+      endSegment(i);
+      continue;
+    }
+    if (ch === '<' || ch === '>') {
+      // A process substitution runs its body: parsed like `$()`. After a redirect it is the redirect's target, else a computed word.
+      if (command[i + 1] === '(') {
+        endWord(i);
+        const end = closingParen(command, i + 1, true);
+        if (end < 0) return { segments, unparsable: true };
+        sub(command.slice(i + 2, end));
+        if (redirectTarget) {
+          redirectTarget = false;
+        } else {
+          startWord(i);
+          computed = true;
+        }
+        i = end;
+        continue;
+      }
+      // A file descriptor number written right before the operator belongs to it, not to the words.
+      if (inWord && !computed && /^\d+$/.test(value) && command.slice(wordStart, i) === value) {
+        inWord = false;
+        value = '';
+      } else {
+        endWord(i);
+      }
+      if (ch === '<' && command[i + 1] === '<' && command[i + 2] === '<') {
+        i += 2;
+        redirectTarget = true;
+        continue;
+      }
+      if (ch === '<' && command[i + 1] === '<') {
+        const stripTabs = command[i + 2] === '-';
+        i += stripTabs ? 2 : 1;
+        const word = heredocDelimiter(command.slice(i + 1));
+        if (!word) return { segments, unparsable: true };
+        heredocs.push({ delimiter: word.delimiter, stripTabs, quoted: word.quoted });
+        i += word.length;
+        continue;
+      }
+      while (command[i + 1] === '>' || command[i + 1] === '|' || command[i + 1] === '&' || command[i + 1] === '<') i++;
+      redirectTarget = true;
+      continue;
+    }
+    startWord(i);
+    if (PATTERN_CHARS.includes(ch)) pattern = true;
+    value += ch;
+  }
+  endSegment(command.length);
+  if (heredocs.length > 0) unparsable = true;
+  return { segments, unparsable };
+}

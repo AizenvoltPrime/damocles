@@ -1482,6 +1482,11 @@
         "default": "always",
         "description": "Controls whether Git should check for unsaved files before stashing changes."
       },
+      "damocles.desktop.git.blame.editorDecoration.enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Controls whether to show blame information in the editor using editor decorations."
+      },
       "damocles.desktop.sidebar.alwaysShowHeaderActions": {
         "type": "boolean",
         "default": false,
@@ -2663,6 +2668,12 @@
         "errorMessage": "damocles.desktop.git.promptToSaveFilesBeforeStash applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
         "doNotSuggest": true,
         "description": "damocles.desktop.git.promptToSaveFilesBeforeStash applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls whether Git should check for unsaved files before stashing changes."
+      },
+      "damocles.desktop.git.blame.editorDecoration.enabled": {
+        "not": {},
+        "errorMessage": "damocles.desktop.git.blame.editorDecoration.enabled applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.git.blame.editorDecoration.enabled applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls whether to show blame information in the editor using editor decorations."
       },
       "damocles.desktop.sidebar.alwaysShowHeaderActions": {
         "not": {},

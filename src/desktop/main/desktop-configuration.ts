@@ -79,6 +79,7 @@ export const GIT_DEFAULT_CLONE_DIRECTORY_SETTING = 'damocles.desktop.git.default
 export const GIT_OPEN_AFTER_CLONE_SETTING = 'damocles.desktop.git.openAfterClone';
 export const GIT_PULL_BEFORE_CHECKOUT_SETTING = 'damocles.desktop.git.pullBeforeCheckout';
 export const GIT_PROMPT_TO_SAVE_FILES_BEFORE_STASH_SETTING = 'damocles.desktop.git.promptToSaveFilesBeforeStash';
+export const GIT_BLAME_EDITOR_DECORATION_SETTING = 'damocles.desktop.git.blame.editorDecoration.enabled';
 export const SIDEBAR_ALWAYS_SHOW_HEADER_ACTIONS_SETTING = 'damocles.desktop.sidebar.alwaysShowHeaderActions';
 
 export const EDITOR_WORD_WRAPS = ['off', 'on'] as const;
@@ -783,6 +784,13 @@ export const DESKTOP_CONFIGURATION: Readonly<Record<string, DesktopSettingProper
     default: 'always',
     scope: 'application',
     description: 'Controls whether Git should check for unsaved files before stashing changes.',
+  },
+  // On by default, unlike VS Code, whose status bar shows blame; the desktop shell has none (D64).
+  [GIT_BLAME_EDITOR_DECORATION_SETTING]: {
+    type: 'boolean',
+    default: true,
+    scope: 'application',
+    description: 'Controls whether to show blame information in the editor using editor decorations.',
   },
   [SIDEBAR_ALWAYS_SHOW_HEADER_ACTIONS_SETTING]: {
     type: 'boolean',

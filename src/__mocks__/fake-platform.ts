@@ -22,7 +22,7 @@ import type { PanelHost, PanelOptions, WindowService } from '../platform/window-
 import type { OpenFolder, WorkspaceFolders } from '../platform/workspace-folders';
 import { installPlatform } from '../core/platform-host';
 import { mergeSettingValues } from '../core/config/settings-file';
-import { VSCODE_HOST_CAPABILITIES, type HostCapabilities, type SettingsFileScope } from '../shared/types/messages';
+import { VSCODE_HOST_CAPABILITIES, type ChatReviewScope, type HostCapabilities, type SettingsFileScope } from '../shared/types/messages';
 import { createVsCodeFileConfinement } from '../vscode/platform/file-confinement';
 
 type SettingsLayer = Readonly<Record<string, unknown>>;
@@ -188,6 +188,8 @@ export interface FakeEditorService extends EditorService {
   readonly settingsQueries: readonly (string | undefined)[];
   readonly settingsFiles: ReadonlyArray<{ readonly scope: SettingsFileScope; readonly key?: string }>;
   readonly extensionSearches: readonly string[];
+  /** Every showChatReview call, in order. */
+  readonly chatReviews: ReadonlyArray<{ readonly panelId: string; readonly scope: ChatReviewScope }>;
   /** Host extensions start inactive. */
   setHostExtensionActive(id: string, active: boolean): void;
   /** Sets the focused editor's context (undefined: none focused, the initial state) and fires onDidChangeActiveContext. */
@@ -665,6 +667,7 @@ function createEditor(): FakeEditorService {
   const settingsQueries: (string | undefined)[] = [];
   const settingsFiles: Array<{ scope: SettingsFileScope; key?: string }> = [];
   const extensionSearches: string[] = [];
+  const chatReviews: Array<{ panelId: string; scope: ChatReviewScope }> = [];
   const activeExtensions = new Set<string>();
   const untitled: FakeUntitledDocument[] = [];
   const contextListeners = listenerSet<[ActiveEditorContext | undefined]>();
@@ -677,6 +680,7 @@ function createEditor(): FakeEditorService {
     settingsQueries,
     settingsFiles,
     extensionSearches,
+    chatReviews,
     openFile: (p, opts) => {
       openedFiles.push({ path: p, options: opts });
       return Promise.resolve();
@@ -708,6 +712,10 @@ function createEditor(): FakeEditorService {
     },
     openSettingsFile: (scope, opts) => {
       settingsFiles.push({ scope, ...(opts?.key !== undefined ? { key: opts.key } : {}) });
+      return Promise.resolve();
+    },
+    showChatReview: (panelId, scope) => {
+      chatReviews.push({ panelId, scope });
       return Promise.resolve();
     },
     isHostExtensionActive: (id) => activeExtensions.has(id),

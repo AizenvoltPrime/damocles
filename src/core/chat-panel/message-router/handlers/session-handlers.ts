@@ -8,6 +8,8 @@ import type { CatalogResult } from "../../session-catalog";
 import { announceLeaseRefusal, claimStoredSession, findStoredSessionHolder, leaseRefusalFor, requestSessionHandoff, type LeaseTakeover } from "../../session-ownership";
 import { readSessionLeaseOwner } from "../../../pi-session/session-store/session-lease";
 import { isUuid } from "../../../../shared/uuid";
+import type { ExtensionToWebviewMessage } from "../../../../shared/types/messages";
+import type { ResumeBinding } from "../../panel-worktrees";
 import { resumeStoredSession } from "./resume-session";
 
 // Past the moment a lease turns stale, so the retried claim takes it over.
@@ -66,101 +68,117 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       const pendingAttachments = ctx.terminalAttachments.displayInfo();
       if (pendingAttachments.length > 0) postMessage(ctx.host, { type: "terminalAttachmentsUpdate", attachments: pendingAttachments });
       const total = perfSpan("ready.total");
-
-      // The webview renders the conversation with these, so they precede any replay.
-      const settingsSpan = perfSpan("ready.settings");
-      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
-      settingsManager.sendMcpConfig(ctx.host, ctx.folder.key);
-      postMessage(ctx.host, { type: "toolStatus", data: ctx.session.getToolStatus() });
-      settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
-      settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId, ctx.folder);
-      postMessage(ctx.host, { type: "languageChange", locale: getLanguagePreference() });
-      settingsSpan.end();
-      deps.postWorkspaceFolderState(ctx.panelId);
-
-      // Both parse session files synchronously on this thread, so they run after the replay, never beside it.
-      const postSessionList = async (): Promise<void> => {
-        try {
-          const { sessions, hasMore, nextOffset } = await timed("ready.sessions", () => storageManager.getStoredSessions());
-          postMessage(ctx.host, { type: "storedSessions", sessions, hasMore, nextOffset, isFirstPage: true });
-        } catch (err) {
-          log("[MessageRouter] Error fetching sessions:", err);
-        }
-      };
-      const postPromptHistory = async (): Promise<void> => {
-        try {
-          const { history, hasMore } = await timed("ready.promptHistory", () => storageManager.getPromptHistory(0));
-          postMessage(ctx.host, { type: "promptHistory", history, hasMore });
-        } catch (err) {
-          log("[MessageRouter] Error pre-loading prompt history:", err);
-        }
-      };
-
       const savedSessionId = msg.type === "ready" ? msg.savedSessionId : undefined;
       const savedFolderKey = msg.type === "ready" ? msg.savedWorkspaceFolderKey : undefined;
-      const heldHere = savedSessionId !== undefined && findStoredSessionHolder(deps.getPanels(), ctx, savedSessionId) !== undefined;
-      // Read before any move: a restore its lease refuses opens empty on the saved folder.
-      const leaseRefusal = savedSessionId && !heldHere ? leaseRefusalFor(savedSessionId) : undefined;
+      // A webview that asked to restore keeps its composer unmounted until it hears the place or a started session.
+      let placeSignaled = false;
+      const signalStarted = (host: PanelHost, message: Extract<ExtensionToWebviewMessage, { type: "sessionStarted" }>): void => {
+        placeSignaled = true;
+        postMessage(host, message);
+      };
       let handOver: (() => void) | undefined;
-      if (savedSessionId && leaseRefusal) {
-        // A holder whose heartbeat stopped died or hung; its lease turns stale at `heldUntilMs`, and the restore is retried once then.
-        const heldUntilMs = leaseRefusal.kind === "other-process" ? leaseRefusal.heldUntilMs : undefined;
-        const takeover: LeaseTakeover = {
-          sessionId: savedSessionId,
-          canOpen: () => deps.getPanels().has(ctx.panelId),
-          open: () => resumeStoredSession(deps, ctx.panelId, savedSessionId),
-        };
-        const owner = leaseRefusal.kind === "other-process" && heldUntilMs === undefined && panelToken !== null
-          ? readSessionLeaseOwner(savedSessionId)
-          : undefined;
-        if (owner?.panelToken === panelToken) {
-          // This panel's previous incarnation holds it: an extension host a reload left running, or one still shutting down.
-          const handoff = requestSessionHandoff(savedSessionId, owner.nonce);
-          handOver = () => {
-            handoff.then(async (result) => {
-              const instance = deps.getPanels().get(ctx.panelId);
-              if (!instance) return;
-              if (result === "timeout") {
-                announceLeaseRefusal(deps.platform.notifications, leaseRefusal, { takeover });
-                return;
-              }
-              // The user started or opened a conversation in the panel meanwhile.
-              if (instance.session.hasConversation()) return;
-              await resumeStoredSession(deps, ctx.panelId, savedSessionId);
-            }).catch((err: unknown) => log("[MessageRouter] Restoring %s after its handover failed: %O", savedSessionId, err));
-          };
-        } else {
-          announceLeaseRefusal(deps.platform.notifications, leaseRefusal, { retryScheduled: heldUntilMs !== undefined, takeover });
-        }
-        if (heldUntilMs !== undefined) {
-          setTimeout(() => {
-            const instance = deps.getPanels().get(ctx.panelId);
-            // The panel closed, or the user started or opened a conversation there meanwhile.
-            if (!instance || instance.session.hasConversation()) return;
-            resumeStoredSession(deps, ctx.panelId, savedSessionId).catch((err) => log("[MessageRouter] Retrying the restore of %s failed: %O", savedSessionId, err));
-          }, heldUntilMs - Date.now() + RESTORE_RETRY_MARGIN_MS);
-        }
-      }
+      let binding: ResumeBinding | undefined;
       try {
+        // The webview renders the conversation with these, so they precede any replay.
+        const settingsSpan = perfSpan("ready.settings");
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
+        settingsManager.sendMcpConfig(ctx.host, ctx.folder.key);
+        postMessage(ctx.host, { type: "toolStatus", data: ctx.session.getToolStatus() });
+        settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
+        settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId, ctx.folder);
+        postMessage(ctx.host, { type: "languageChange", locale: getLanguagePreference() });
+        settingsSpan.end();
+        deps.postWorkspaceFolderState(ctx.panelId);
+
+        // Both parse session files synchronously on this thread, so they run after the replay, never beside it.
+        const postSessionList = async (): Promise<void> => {
+          try {
+            const { sessions, hasMore, nextOffset } = await timed("ready.sessions", () => storageManager.getStoredSessions());
+            postMessage(ctx.host, { type: "storedSessions", sessions, hasMore, nextOffset, isFirstPage: true });
+          } catch (err) {
+            log("[MessageRouter] Error fetching sessions:", err);
+          }
+        };
+        const postPromptHistory = async (): Promise<void> => {
+          try {
+            const { history, hasMore } = await timed("ready.promptHistory", () => storageManager.getPromptHistory(0));
+            postMessage(ctx.host, { type: "promptHistory", history, hasMore });
+          } catch (err) {
+            log("[MessageRouter] Error pre-loading prompt history:", err);
+          }
+        };
+
+        const heldHere = savedSessionId !== undefined && findStoredSessionHolder(deps.getPanels(), ctx, savedSessionId) !== undefined;
+        // Read before any move: a restore its lease refuses opens empty on the saved folder.
+        const leaseRefusal = savedSessionId && !heldHere ? leaseRefusalFor(savedSessionId) : undefined;
+        if (savedSessionId && leaseRefusal) {
+          // A holder whose heartbeat stopped died or hung; its lease turns stale at `heldUntilMs`, and the restore is retried once then.
+          const heldUntilMs = leaseRefusal.kind === "other-process" ? leaseRefusal.heldUntilMs : undefined;
+          const takeover: LeaseTakeover = {
+            sessionId: savedSessionId,
+            canOpen: () => deps.getPanels().has(ctx.panelId),
+            open: () => resumeStoredSession(deps, ctx.panelId, savedSessionId),
+          };
+          const owner = leaseRefusal.kind === "other-process" && heldUntilMs === undefined && panelToken !== null
+            ? readSessionLeaseOwner(savedSessionId)
+            : undefined;
+          if (owner?.panelToken === panelToken) {
+            // This panel's previous incarnation holds it: an extension host a reload left running, or one still shutting down.
+            const handoff = requestSessionHandoff(savedSessionId, owner.nonce);
+            handOver = () => {
+              handoff.then(async (result) => {
+                const instance = deps.getPanels().get(ctx.panelId);
+                if (!instance) return;
+                if (result === "timeout") {
+                  announceLeaseRefusal(deps.platform.notifications, leaseRefusal, { takeover });
+                  return;
+                }
+                // The user started or opened a conversation in the panel meanwhile.
+                if (instance.session.hasConversation()) return;
+                await resumeStoredSession(deps, ctx.panelId, savedSessionId);
+              }).catch((err: unknown) => log("[MessageRouter] Restoring %s after its handover failed: %O", savedSessionId, err));
+            };
+          } else {
+            announceLeaseRefusal(deps.platform.notifications, leaseRefusal, { retryScheduled: heldUntilMs !== undefined, takeover });
+          }
+          if (heldUntilMs !== undefined) {
+            setTimeout(() => {
+              const instance = deps.getPanels().get(ctx.panelId);
+              // The panel closed, or the user started or opened a conversation there meanwhile.
+              if (!instance || instance.session.hasConversation()) return;
+              resumeStoredSession(deps, ctx.panelId, savedSessionId).catch((err) => log("[MessageRouter] Retrying the restore of %s failed: %O", savedSessionId, err));
+            }, heldUntilMs - Date.now() + RESTORE_RETRY_MARGIN_MS);
+          }
+        }
         // A saved conversation or folder the host did not open in moves the panel there.
-        const sessionFolder = savedSessionId && !heldHere && !leaseRefusal
+        const listedFolder = savedSessionId && !heldHere && !leaseRefusal
           ? await timed("ready.folderOf", () => storageManager.folderOf(savedSessionId))
           : undefined;
-        const target = sessionFolder
-          ?? (savedFolderKey !== undefined ? deps.folderRegistry.resolve(savedFolderKey) : undefined)
+        // A worktree chat comes back in its working folder through its latest entry, never through a key the webview names.
+        const resumeBinding = listedFolder && savedSessionId ? await deps.worktrees().resumeFolder(ctx.panelId, savedSessionId, listedFolder) : undefined;
+        binding = resumeBinding;
+        const target = resumeBinding?.folder
+          ?? listedFolder
+          ?? (savedFolderKey !== undefined ? deps.folderRegistry.targets().find((t) => t.key === savedFolderKey) : undefined)
           ?? ctx.folder;
         // A restored panel whose conversation another panel already holds opens empty instead.
         const resumeSaved = async (instance: Pick<HostInstance, "host" | "session" | "folder">): Promise<boolean> => {
           if (!savedSessionId || leaseRefusal) return false;
           if (claimStoredSession(deps.platform.notifications, deps.getPanels(), { panelId: ctx.panelId, session: instance.session }, savedSessionId)) return false;
+          // The stored file's place reaches the webview before the replay, so its first render is the right composer; a session
+          // already running there (a reloaded webview) sends its live state instead.
+          if (resumeBinding?.state !== undefined) {
+            placeSignaled = true;
+            instance.session.worktree.publishStored(resumeBinding.state, savedSessionId);
+          }
           try {
             const rewindableIds = await timed("ready.replay", () =>
               deps.historyManager.loadSessionHistory(instance.folder.fsPath, savedSessionId, instance.host, instance.session));
-            postMessage(instance.host, { type: "sessionStarted", sessionId: savedSessionId, stored: rewindableIds !== null });
+            signalStarted(instance.host, { type: "sessionStarted", sessionId: savedSessionId, stored: rewindableIds !== null });
           } catch (err) {
             if (err instanceof Error && err.name === 'AbortError') return true;
             log("[MessageRouter] Error auto-resuming session:", err);
-            postMessage(instance.host, { type: "sessionStarted", sessionId: savedSessionId });
+            signalStarted(instance.host, { type: "sessionStarted", sessionId: savedSessionId });
           }
           return true;
         };
@@ -168,8 +186,9 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         let route: "switch" | "restore" | "fresh";
         if (target.key !== ctx.folder.key) {
           // Claimed inside the switch, so a message the webview sent meanwhile reaches the restored session.
-          await deps.switchPanelFolder(ctx.panelId, target.key, "restore", async (instance) => { await resumeSaved(instance); });
-          route = "switch";
+          let resumed = false;
+          await deps.switchPanelFolder(ctx.panelId, target.key, "restore", async (instance) => { resumed = await resumeSaved(instance); });
+          route = resumed ? "switch" : "fresh";
         } else {
           // A status posted before `ready` never reached the webview; a switch posts its target folder's status itself.
           const compass = deps.compassRegistry?.get(ctx.folder.key);
@@ -177,12 +196,18 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
           route = (await resumeSaved(ctx)) ? "restore" : "fresh";
           // The webview persists only a stored conversation's id, so a reload of a panel whose conversation pi has not written yet sends none.
           const liveId = route === "fresh" ? ctx.session.currentSessionId : null;
-          if (liveId) postMessage(ctx.host, { type: "sessionStarted", sessionId: liveId, stored: ctx.session.hasSessionFile() });
+          if (liveId) signalStarted(ctx.host, { type: "sessionStarted", sessionId: liveId, stored: ctx.session.hasSessionFile() });
         }
         await postSessionList();
         await postPromptHistory();
         total.end({ path: route });
       } finally {
+        const landed = deps.getPanels().get(ctx.panelId);
+        binding?.settle(landed);
+        // A restore that opened nothing, failed, threw or was overtaken still tells the waiting webview where the panel works now.
+        if (savedSessionId && !placeSignaled && landed && deps.platform.capabilities.worktrees) {
+          landed.session.worktree.publishStored(deps.worktrees().placeOf(ctx.panelId));
+        }
         // After the restore posted everything, and even when it threw: the holder lets go either way, so the conversation must still open here or the user be told.
         handOver?.();
       }

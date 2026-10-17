@@ -5,13 +5,18 @@ import type { StructuredCompletionRequest } from '../../../core/pi-session/struc
 import { RemoteCancelledError, StashKeptError, SyncBranchChangedError, type CommitHooks, type ProjectView, type ScmEvent, type ScmService } from '../../../core/scm/scm-service';
 import type { Change, Repository, RepositoryStatus } from '../../../core/scm/repository';
 import { SCM_SETTING_KEYS } from '../../../core/scm/settings-keys';
+import { GitError } from '../../../core/scm/git-runner';
 import type { Artifacts, CommitPairDiff } from '../../../core/scm/artifacts';
+import { HISTORY_PAGE, MAX_DETAIL_FILES, MAX_HISTORY_TIPS } from '../../../core/scm/history';
 import { MAX_OVERLAY_LABEL_LENGTH, MAX_QUICK_PICK_ITEMS } from '../../preload/overlay-channels';
-import type { ScmArtifactsChanged, ScmChangesTab, ScmSetInput, ScmShellCommand, ScmView } from '../../preload/scm-channels';
+import { MAX_SCM_COMMIT_FILES, MAX_SCM_HISTORY_TIPS, MAX_SCM_ID_LENGTH, SCM_HISTORY_PAGE, type ScmArtifactsChanged, type ScmChangesTab, type ScmSetInput, type ScmShellCommand, type ScmView } from '../../preload/scm-channels';
+import { rootKey } from '../../preload/folder-root';
 import type { AskInputRequest } from '../overlay';
 import type { EditorPane } from '../editor-pane';
+import type { DocumentService } from '../documents/document-service';
 import type { MessageQuestion } from '../message-dialog';
 import { backgroundCompletion, ScmHost, type ScmHostDeps, type SubCallRuntime } from '../scm/scm-host';
+import { visibleText } from '../../../shared/visible-text';
 
 const projectPath = path.resolve('/work/project');
 const nestedRoot = path.join(projectPath, 'nested');
@@ -31,12 +36,19 @@ const status: RepositoryStatus = {
 const PLAIN = { scope: 'auto', amend: false, signoff: false, noVerify: false, empty: false } as const;
 const HASH_A = 'a'.repeat(40);
 const HASH_B = 'b'.repeat(40);
+// a commit of the repository, an object of it that is no commit, and the merge base of HEAD and its upstream
+const COMMIT = 'c'.repeat(40);
+const TREE = 'e'.repeat(40);
+const MERGE_BASE = 'd'.repeat(40);
+const HEAD_REFS = { head: { id: 'refs/heads/main', name: 'main', revision: HASH_A }, upstream: { id: 'refs/remotes/origin/main', name: 'origin/main', revision: HASH_B } };
 const PAIR: CommitPairDiff = { left: HASH_A, entries: [{ change: { path: 'src/a.ts', status: 'MODIFIED', letter: 'M', tone: 'modified', strike: false }, right: HASH_B }] };
 
 // confinedEntry fails as fs.realpath does for a path whose folder is gone
 function fakeRepo(root: string, repoStatus: RepositoryStatus = status, show: Repository['show'] = async () => Buffer.from('index text'), gone: readonly string[] = []): Repository {
   return {
     root,
+    // main composes no git argv: every git call it needs is core's
+    read: async (args: readonly string[]) => Promise.reject(new Error(`main ran git ${args.join(' ')}`)),
     lastStatus: repoStatus,
     confinedEntry: async (relative: string) => {
       if (gone.some((folder) => relative.startsWith(`${folder}/`))) throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${relative}'`), { code: 'ENOENT' });
@@ -88,8 +100,13 @@ interface SetupOptions {
   checkouts?: Array<'ok' | 'dirty'>;
   deletes?: Array<'ok' | 'unmerged'>;
   removals?: Array<'ok' | 'dirty'>;
-  // what removing a project answers (a deleted worktree's)
-  removeProject?: { ok: true } | { ok: false; reason: string };
+  // worktrees with modified or untracked files
+  dirtyWorktrees?: readonly string[];
+  // what closing a deleted worktree's project answers
+  closeProject?: 'closed' | 'cancelled' | { reason: string };
+  // HEAD's refs core reads, and what its cherry-pick answers
+  headRefs?: Awaited<ReturnType<ScmService['headRefs']>>;
+  cherryPick?: 'ok' | 'conflict' | 'empty' | Error;
 }
 
 function setup(overrides: SetupOptions = {}) {
@@ -116,7 +133,7 @@ function setup(overrides: SetupOptions = {}) {
     projectRealPath: () => overrides.real,
     projectKeys: () => ['p'],
     view: (key: string) => (key === 'p' ? view : undefined),
-    snapshot: (repoId: string) => (repos.has(repoId) ? { repoId, projectKey: 'p', status, busy: false, running: null, lastRemote: null } : undefined),
+    snapshot: (repoId: string) => (repos.has(repoId) ? { repoId, projectKey: 'p', status: overrides.status ?? status, busy: false, running: null, lastRemote: null } : undefined),
     cloneState: () => ({ running: null, last: null }),
     setAutofetchProject: vi.fn(),
     remotes: async () => overrides.remotes ?? [{ name: 'origin', fetchUrl: 'https://user:token@example.com/a.git', pushUrl: 'https://user:token@example.com/a.git' }],
@@ -163,6 +180,21 @@ function setup(overrides: SetupOptions = {}) {
     removeWorktree: vi.fn(async () => removals.shift() ?? 'ok'),
     discardAll: vi.fn(async () => true),
     autofetchNow: vi.fn(),
+    isCommit: vi.fn(async (_repoId: string, hash: string) => hash !== TREE),
+    headRefs: vi.fn(async () => ('headRefs' in overrides ? overrides.headRefs : HEAD_REFS)),
+    mergeBase: vi.fn(async () => MERGE_BASE),
+    resolveTypedCommit: vi.fn(async (_repoId: string, typed: string) => (typed === 'HEAD~1' ? COMMIT : undefined)),
+    cherryPick: vi.fn(async () => {
+      if (overrides.cherryPick instanceof Error) throw overrides.cherryPick;
+      return overrides.cherryPick ?? 'ok';
+    }),
+    commitMessage: vi.fn(async () => 'Subject\n\nBody'),
+    historyLoad: vi.fn(async () => undefined),
+    historyPage: vi.fn(async () => []),
+    commitDetails: vi.fn(async () => undefined),
+    commitAttachment: vi.fn(async (_repoId: string, hash: string) => ({ kind: 'commit', hash, subject: 'Subject', author: 'A', authorDate: 0, text: `commit ${hash}`, omittedLines: 0 })),
+    commitBlob: vi.fn(async () => Buffer.from('text\n')),
+    worktreeDirty: vi.fn(async (_repoId: string, worktreePath: string) => (overrides.dirtyWorktrees ?? []).includes(worktreePath)),
   } as unknown as ScmService;
   const sent = { views: [] as ScmView[], settings: 0, states: 0 };
   let menuChanges = 0;
@@ -178,6 +210,7 @@ function setup(overrides: SetupOptions = {}) {
   const saved = new Map<string, string>();
   const notices: Array<{ severity: string; message: string; actions: string[] }> = [];
   const copied: string[] = [];
+  const chatAdds: Array<{ projectKey: string; attachment: unknown; prompt: string | undefined }> = [];
   const folderRequests: Array<{ defaultPath: string; title?: string; buttonLabel?: string }> = [];
   const added: string[] = [];
   const selectedProjects: string[] = [];
@@ -204,6 +237,8 @@ function setup(overrides: SetupOptions = {}) {
     fileRenamed: vi.fn(async (_projectKey: string, _from: string, renameOnDisk: () => Promise<unknown>) => renameOnDisk()),
     closeActive: vi.fn(async () => undefined),
     closeChangesTabs: vi.fn(async () => undefined),
+    scmDiffTabs: () => [],
+    gitChanged: vi.fn(),
   } as unknown as EditorPane;
   const notify = (severity: string) => async (message: string, ...actions: string[]) => {
     notices.push({ severity, message, actions });
@@ -211,6 +246,7 @@ function setup(overrides: SetupOptions = {}) {
   };
   const host = new ScmHost({
     service,
+    documents: { get: () => undefined, all: () => [] } as unknown as DocumentService,
     settings: {
       get: (key: string) => {
         settingReads++;
@@ -237,9 +273,20 @@ function setup(overrides: SetupOptions = {}) {
     },
     addProject: async (folder) => void added.push(folder),
     selectProject: async (projectKey) => void selectedProjects.push(projectKey),
-    removeProject: async (projectKey) => {
-      removedProjects.push(projectKey);
-      return overrides.removeProject ?? { ok: true };
+    worktrees: {
+      deleteChatWorktreeAt: async () => false,
+      adopt: vi.fn(async () => undefined),
+      adoptCreated: vi.fn(async () => undefined),
+      markRemoved: vi.fn(async () => undefined),
+      closeProject: vi.fn(async (projectKey: string) => {
+        removedProjects.push(projectKey);
+        return overrides.closeProject ?? 'closed';
+      }),
+      chatOf: () => undefined,
+      newChatTargetAt: () => undefined,
+      selectChat: async () => undefined,
+      showProjectFolder: () => undefined,
+      projectCopyOf: () => undefined,
     },
     gitFound: true,
     quickPick: async (placeholder, items) => {
@@ -256,6 +303,7 @@ function setup(overrides: SetupOptions = {}) {
       return inputs.shift();
     },
     mention: async () => undefined,
+    addToChat: async (projectKey, attachment, prompt) => void chatAdds.push({ projectKey, attachment, prompt }),
     complete: overrides.complete ?? (async () => ({ kind: 'unreachable' })),
     send: {
       view: (view) => void sent.views.push(view),
@@ -279,7 +327,7 @@ function setup(overrides: SetupOptions = {}) {
   const settingsChanged = (): void => {
     for (const listener of settingListeners) listener();
   };
-  return { host, saved, notices, copied, editorPane, service, questions, inputRequests, setInputs, commands, gitLog, repos, sent, emit, settingsChanged, menuChanges: () => menuChanges, folderRequests, added, selectedProjects, removedProjects, pickRequests, artifactsChanged, settingReads: () => settingReads };
+  return { host, saved, notices, copied, chatAdds, editorPane, service, questions, inputRequests, setInputs, commands, gitLog, repos, sent, emit, settingsChanged, menuChanges: () => menuChanges, folderRequests, added, selectedProjects, removedProjects, pickRequests, artifactsChanged, settingReads: () => settingReads };
 }
 
 const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
@@ -348,6 +396,11 @@ describe('source control host', () => {
     await expect(host.commit({ repoId: 'repo-1', message: 'x', variant: { ...PLAIN, amend: 'yes' } })).rejects.toThrow();
     await expect(host.commit({ repoId: 'repo-1', message: 'x', variant: { ...PLAIN, extra: true } })).rejects.toThrow();
     expect(vi.mocked(service.commit)).not.toHaveBeenCalled();
+  });
+
+  it('puts the MERGE_MSG a commit left in the box before the template, as VS Code\'s getInputTemplate does', async () => {
+    const { host } = setup({ status: { ...status, operation: 'rebase', mergeMessage: 'Next pick' } });
+    expect(await host.commit({ repoId: 'repo-1', message: 'x', variant: PLAIN })).toMatchObject({ ok: true, message: 'Next pick' });
   });
 
   it('puts the template in the box after a commit, then runs postCommitCommand push to the upstream', async () => {
@@ -538,6 +591,29 @@ describe('source control host', () => {
     await expect(host.run({ op: 'undoLastCommit', repoId: 'repo-1', extra: 1 })).rejects.toThrow();
   });
 
+  it('answers a commit input read whose repository closed meanwhile as empty, and rejects any other failure', async () => {
+    const h = setup({ commitInput: () => Promise.reject(Object.assign(new Error('The repository was closed'), { name: 'GitQueueDisposedError' })) });
+    const read = h.host.commitInput({ repoId: 'repo-1' });
+    h.repos.delete('repo-1');
+    expect(await read).toEqual({ template: null, history: [], headMessage: null });
+    const open = setup({ commitInput: () => Promise.reject(new Error('HEAD unreadable')) });
+    await expect(open.host.commitInput({ repoId: 'repo-1' })).rejects.toThrow('HEAD unreadable');
+  });
+
+  it('answers a blame or timeline read whose repository closed meanwhile as unknown, not as a failure', async () => {
+    const h = setup();
+    const closed = (): Promise<never> => Promise.reject(Object.assign(new Error('The repository was closed'), { name: 'GitQueueDisposedError' }));
+    Object.assign(h.service, { blame: closed, timeline: closed });
+    const blame = h.host.blame({ repoId: 'repo-1', path: 'src/a.ts' });
+    const timeline = h.host.timeline({ repoId: 'repo-1', path: 'src/a.ts' });
+    h.repos.delete('repo-1');
+    expect(await blame).toEqual({ ok: false, reason: 'unknown' });
+    expect(await timeline).toEqual({ ok: false, reason: 'unknown' });
+    const open = setup();
+    Object.assign(open.service, { blame: () => Promise.reject(new Error('blame broke')) });
+    expect(await open.host.blame({ repoId: 'repo-1', path: 'src/a.ts' })).toEqual({ ok: false, reason: 'failed' });
+  });
+
   it('reports a commit that landed although the commit input could not be read afterwards, leaving that read to the shell', async () => {
     const { host, setInputs } = setup({ commitInput: () => Promise.reject(new Error('HEAD unreadable')) });
     expect(await host.commit({ repoId: 'repo-1', message: 'x', variant: PLAIN })).toEqual({ ok: true, message: '' });
@@ -582,6 +658,27 @@ describe('source control host', () => {
     expect(vi.mocked(clean.service.remove)).toHaveBeenCalledWith('repo-1', ['src/clean.ts']);
   });
 
+  it('reads no index side of a conflicted file after a status: a working tree diff shows HEAD there and an index diff keeps its text', async () => {
+    const conflicted: Change = { path: 'src/a.ts', status: 'BOTH_MODIFIED', letter: '!', tone: 'conflict', strike: false };
+    const merging: RepositoryStatus = { ...status, operation: 'merge', groups: { merge: [conflicted], index: [], workingTree: [], untracked: [] } };
+    const shown: Array<readonly [string, string]> = [];
+    const h = setup({ status: merging, show: async (where, file) => (shown.push([where, file]), Buffer.from(`${where} text`)) });
+    const replaceGitSide = vi.fn();
+    Object.assign(h.editorPane, {
+      replaceGitSide,
+      scmDiffTabs: () => [
+        { repoId: 'repo-1', git: { path: 'src/a.ts', group: 'workingTree' }, originalId: 'wt-left', modifiedId: 'wt-right' },
+        { repoId: 'repo-1', git: { path: 'src/a.ts', group: 'index' }, originalId: 'ix-left', modifiedId: 'ix-right' },
+      ],
+    });
+    for (let round = 0; round < 3; round++) {
+      h.emit({ kind: 'repository', repoId: 'repo-1' });
+      await vi.waitFor(() => expect(shown).toHaveLength(2 * (round + 1)));
+    }
+    expect(shown.every(([where]) => where === 'HEAD')).toBe(true);
+    expect(replaceGitSide.mock.calls.map(([id]) => id)).toEqual(['wt-left', 'ix-left', 'wt-left', 'ix-left', 'wt-left', 'ix-left']);
+  });
+
   it('opens a working tree change as a diff of its index side and the file', async () => {
     const { host, editorPane } = setup();
     expect(await host.run({ op: 'openChanges', repoId: 'repo-1', path: 'src/a.ts', group: 'workingTree' })).toEqual({ ok: true });
@@ -591,7 +688,8 @@ describe('source control host', () => {
     expect(file).toBe(path.join(projectPath, 'src', 'a.ts'));
     expect(left).toEqual({ name: 'a.ts', content: 'index text' });
     expect(right).toEqual({ path: path.join(projectPath, 'src', 'a.ts') });
-    expect(vi.mocked(editorPane.showDiff).mock.calls[0]![4]).toEqual({ focus: true, scm: { root: projectPath, repoId: 'repo-1' } });
+    // the index side refreshes after each status of the repository (ShellDiffGit)
+    expect(vi.mocked(editorPane.showDiff).mock.calls[0]![4]).toEqual({ focus: true, scm: { root: projectPath, repoId: 'repo-1', git: { path: 'src/a.ts', group: 'workingTree' } } });
   });
 });
 
@@ -729,7 +827,7 @@ describe('source control host: sides, palette and pushes', () => {
 
   it('keeps the shell\'s amend report for the selected repository as menu context, refusing a malformed one and dropping an unknown repository', () => {
     const { host, menuChanges } = setup();
-    for (const raw of [undefined, null, 'repo-1', {}, { repoId: 'repo-1' }, { repoId: 'repo-1', amending: 'yes' }, { repoId: '', amending: true }, { repoId: 'r'.repeat(201), amending: true }, { repoId: 'repo-1', amending: true, extra: 1 }, ['repo-1', true]]) {
+    for (const raw of [undefined, null, 'repo-1', {}, { repoId: 'repo-1' }, { repoId: 'repo-1', amending: 'yes' }, { repoId: '', amending: true }, { repoId: 'r'.repeat(MAX_SCM_ID_LENGTH + 1), amending: true }, { repoId: 'repo-1', amending: true, extra: 1 }, ['repo-1', true]]) {
       expect(() => host.amend(raw), JSON.stringify(raw)).toThrow('Malformed');
     }
     host.amend({ repoId: 'repo-9', amending: true });
@@ -938,6 +1036,55 @@ describe('source control host: branches, stash, tags and worktrees', () => {
     expect(ahead.service.checkout).toHaveBeenCalledWith('repo-1', { kind: 'branch', name: 'feat' });
   });
 
+  it('offers to open the worktree that holds a branch git refused to check out, from the picker, a row and after a stash', async () => {
+    const holder = path.join(path.dirname(projectPath), 'feat-wt');
+    const worktrees = [
+      { path: projectPath, name: 'project', branch: 'main', commit: commit(HASH_A, 's'), main: true, current: true, locked: false, prunable: false },
+      { path: holder, name: 'feat-wt', branch: 'feat', commit: commit(HASH_B, 's'), main: false, current: false, locked: false, prunable: false },
+    ];
+    const refused = new GitError('git checkout exited with 128', 128, '', `fatal: 'feat' is already used by worktree at '${holder}'`);
+    const offer = { severity: 'warning', message: `Branch "feat" is already checked out in the worktree at "${holder}".`, actions: ['Open Worktree'], cancelLabel: 'Cancel' };
+    // the row's ref, answered Open
+    const row = setup({ artifacts: { ...artifacts, worktrees }, answers: [0] });
+    vi.mocked(row.service.checkout).mockRejectedValueOnce(refused);
+    expect(await row.host.run({ op: 'checkout', repoId: 'repo-1', detached: false, ref: 'refs/heads/feat' })).toEqual({ ok: true });
+    expect(row.questions).toEqual([expect.objectContaining(offer)]);
+    expect(row.added).toEqual([holder]);
+    expect(row.notices).toEqual([]);
+    // the picker ('4' is feat), answered Cancel
+    const picker = setup({ artifacts: { ...artifacts, worktrees }, picks: ['4'], answers: [undefined] });
+    vi.mocked(picker.service.checkout).mockRejectedValueOnce(refused);
+    expect(await picker.host.run({ op: 'checkout', repoId: 'repo-1', detached: false })).toEqual({ ok: false, reason: 'cancelled' });
+    expect(picker.questions).toEqual([expect.objectContaining(offer)]);
+    expect(picker.added).toEqual([]);
+    expect(picker.notices).toEqual([]);
+    // the checkout after Force Checkout's discard
+    const stashed = setup({ artifacts: { ...artifacts, worktrees }, answers: [2, undefined] });
+    vi.mocked(stashed.service.checkout).mockResolvedValueOnce('dirty').mockRejectedValueOnce(refused);
+    expect(await stashed.host.run({ op: 'checkout', repoId: 'repo-1', detached: false, ref: 'refs/heads/feat' })).toEqual({ ok: false, reason: 'cancelled' });
+    expect(stashed.questions[1]).toMatchObject(offer);
+    // Create Worktree from a branch another worktree holds ('2' is feat, after Create new branch... and main)
+    const create = setup({ artifacts: { ...artifacts, worktrees }, picks: ['2'], answers: [0] });
+    expect(await create.host.run({ op: 'createWorktree', repoId: 'repo-1' })).toEqual({ ok: true });
+    expect(create.questions).toEqual([expect.objectContaining(offer)]);
+    expect(create.added).toEqual([holder]);
+    expect(create.service.addWorktree).not.toHaveBeenCalled();
+    // repository text in the question shows its bidi controls as escapes, while Open gets the path as listed
+    const tricky = path.join(path.dirname(projectPath), 'evil\u202Etxt.wt');
+    const bidi = setup({ artifacts: { ...artifacts, worktrees: [worktrees[0]!, { ...worktrees[1]!, path: tricky }] }, answers: [0] });
+    vi.mocked(bidi.service.checkout).mockRejectedValueOnce(refused);
+    await bidi.host.run({ op: 'checkout', repoId: 'repo-1', detached: false, ref: 'refs/heads/feat' });
+    expect(bidi.questions[0]!.message).toContain('evil\\u{202E}txt.wt');
+    expect(bidi.questions[0]!.message).not.toContain('\u202E');
+    expect(bidi.added).toEqual([tricky]);
+    // a refusal while no other worktree holds the branch is git's own error
+    const plain = setup({ artifacts: { ...artifacts, worktrees: [worktrees[0]!] } });
+    vi.mocked(plain.service.checkout).mockRejectedValueOnce(new GitError('git checkout exited with 128', 128, '', 'fatal: something else'));
+    expect(await plain.host.run({ op: 'checkout', repoId: 'repo-1', detached: false, ref: 'refs/heads/feat' })).toEqual({ ok: false, reason: 'failed' });
+    expect(plain.questions).toEqual([]);
+    expect(plain.notices.at(-1)!.message).toContain('fatal: something else');
+  });
+
   it('asks VS Code\'s question when a checkout would overwrite changes, and Force Checkout discards first', async () => {
     const { host, service, questions } = setup({ artifacts, checkouts: ['dirty', 'ok'], answers: [2] });
     expect(await host.run({ op: 'checkout', repoId: 'repo-1', detached: false, ref: 'refs/heads/feat' })).toEqual({ ok: true });
@@ -1128,6 +1275,12 @@ describe('source control host: branches, stash, tags and worktrees', () => {
     emit({ kind: 'artifacts', repoId: 'repo-9', groups: ['tags'] });
     await tick();
     expect(artifactsChanged).toEqual([{ repoId: 'repo-1', groups: ['tags', 'branches'] }]);
+    // within one coalesced batch an engine change wins over a background one, whatever their order
+    emit({ kind: 'artifacts', repoId: 'repo-1', groups: ['remoteBranches'], refs: 'engine' });
+    emit({ kind: 'artifacts', repoId: 'repo-1', groups: ['tags'], refs: 'background' });
+    emit({ kind: 'artifacts', repoId: 'repo-2', groups: ['tags'], refs: 'background' });
+    await tick();
+    expect(artifactsChanged.slice(1)).toEqual([{ repoId: 'repo-1', groups: ['remoteBranches', 'tags'], refs: 'engine' }, { repoId: 'repo-2', groups: ['tags'], refs: 'background' }]);
   });
 
   it('copies a stash row\'s description and branch from main\'s own list, refusing one with no branch', async () => {
@@ -1208,9 +1361,9 @@ describe('source control host: branches, stash, tags and worktrees', () => {
     await host.run({ op: 'createTag', repoId: 'repo-1' });
     expect(inputRequests[0]).toMatchObject({ prompt: 'Please provide a tag name', placeholder: 'Tag name', validation: 'tagName' });
     expect(inputRequests[1]).toMatchObject({ prompt: 'Please provide a message to annotate the tag', placeholder: 'Message' });
-    expect(service.createTag).toHaveBeenLastCalledWith('repo-1', 'v2', 'Release two');
+    expect(service.createTag).toHaveBeenLastCalledWith('repo-1', 'v2', 'Release two', undefined);
     await host.run({ op: 'createTag', repoId: 'repo-1' });
-    expect(service.createTag).toHaveBeenLastCalledWith('repo-1', 'light', '');
+    expect(service.createTag).toHaveBeenLastCalledWith('repo-1', 'light', '', undefined);
     // one remote with a push URL: no remote picker
     await host.run({ op: 'deleteRemoteTag', repoId: 'repo-1' });
     expect(pickRequests).toHaveLength(1);
@@ -1233,10 +1386,15 @@ describe('source control host: branches, stash, tags and worktrees', () => {
     const relative = setup({ artifacts: { ...artifacts, worktrees }, picks: ['0'], inputs: ['x', 'relative/wt'] });
     expect(await relative.host.run({ op: 'createWorktree', repoId: 'repo-1' })).toEqual({ ok: false, reason: 'failed' });
     expect(relative.service.addWorktree).not.toHaveBeenCalled();
-    const dirty = setup({ artifacts: { ...artifacts, worktrees }, removals: ['dirty', 'ok'], answers: [0, 0] });
+    const dirty = setup({ artifacts: { ...artifacts, worktrees }, dirtyWorktrees: [worktrees[1]!.path], answers: [0, 0] });
     await dirty.host.run({ op: 'deleteWorktree', repoId: 'repo-1', path: worktrees[1]!.path });
     expect(dirty.questions[1]).toMatchObject({ severity: 'danger', message: 'The worktree contains modified or untracked files. Do you want to force delete?', detail: `Worktree: ${worktrees[1]!.path}`, actions: ['Force Delete'] });
-    expect(vi.mocked(dirty.service.removeWorktree).mock.calls).toEqual([['repo-1', worktrees[1]!.path, false], ['repo-1', worktrees[1]!.path, true]]);
+    expect(vi.mocked(dirty.service.removeWorktree).mock.calls).toEqual([['repo-1', worktrees[1]!.path, true]]);
+    // files that appear after the questions make git refuse, and Force Delete is asked again
+    const late = setup({ artifacts: { ...artifacts, worktrees }, removals: ['dirty', 'ok'], answers: [0, 0] });
+    await late.host.run({ op: 'deleteWorktree', repoId: 'repo-1', path: worktrees[1]!.path });
+    expect(late.questions[1]).toMatchObject({ actions: ['Force Delete'] });
+    expect(vi.mocked(late.service.removeWorktree).mock.calls).toEqual([['repo-1', worktrees[1]!.path, false], ['repo-1', worktrees[1]!.path, true]]);
     // the main worktree is never deleted
     expect(await dirty.host.run({ op: 'deleteWorktree', repoId: 'repo-1', path: projectPath })).toEqual({ ok: false, reason: 'failed' });
   });
@@ -1333,20 +1491,20 @@ describe('source control host: flows after a write, refusals and kept stashes', 
     expect(more.service.checkout).not.toHaveBeenCalled();
   });
 
-  it('always asks before deleting a worktree, naming the project it holds, which closes afterwards; Cancel deletes nothing', async () => {
+  it('always asks before deleting a worktree, naming the project it holds; that project closes before git removes it', async () => {
     const linked = worktree('review');
     const other = worktree('plain');
     const projects = [{ key: 'p', fsPath: projectPath, name: 'project' }, { key: 'w', fsPath: linked.path, name: 'Review' }];
-    const run = (answers: Array<number | undefined>, removals: Array<'ok' | 'dirty'> = ['ok'], removeProject?: { ok: false; reason: string }) => {
-      const h = setup({ artifacts: { worktrees: [mainWorktree, linked, other] }, answers, removals, ...(removeProject ? { removeProject } : {}) });
-      Object.assign(h.host.deps, { projects: () => projects });
+    const run = (answers: Array<number | undefined>, removals: Array<'ok' | 'dirty'> = ['ok'], closeProject?: 'cancelled' | { reason: string }, open = projects) => {
+      const h = setup({ artifacts: { worktrees: [mainWorktree, linked, other] }, answers, removals, ...(closeProject ? { closeProject } : {}) });
+      Object.assign(h.host.deps, { projects: () => open });
       return h;
     };
     const cancelled = run([undefined]);
     expect(await cancelled.host.run({ op: 'deleteWorktree', repoId: 'repo-1', path: linked.path })).toEqual({ ok: false, reason: 'cancelled' });
     expect(cancelled.questions[0]).toEqual({
       severity: 'danger',
-      message: `Are you sure you want to delete the worktree "${linked.path}"? The project "Review" is in it and will be closed, and its chats will no longer be listed.`,
+      message: `Are you sure you want to delete the worktree "${linked.path}"? The project "Review" is in it and will be closed, and its chats will then be listed under "project", read-only.`,
       detail: 'Its ignored files, such as .env and node_modules, are deleted too.',
       actions: ['Delete Worktree'],
       cancelLabel: 'Cancel',
@@ -1354,10 +1512,27 @@ describe('source control host: flows after a write, refusals and kept stashes', 
     expect(cancelled.service.removeWorktree).not.toHaveBeenCalled();
     expect(cancelled.removedProjects).toEqual([]);
 
+    // rule 14: the adopted record, then the project closes, then git removes the folder, then the record is marked deleted
     const deleted = run([0]);
     expect(await deleted.host.run({ op: 'deleteWorktree', repoId: 'repo-1', path: linked.path })).toEqual({ ok: true });
     expect(vi.mocked(deleted.service.removeWorktree).mock.calls).toEqual([['repo-1', linked.path, false]]);
     expect(deleted.removedProjects).toEqual(['w']);
+    const worktreeDeps = deleted.host.deps.worktrees;
+    const order = (fn: unknown): number => vi.mocked(fn as () => void).mock.invocationCallOrder[0]!;
+    expect(order(worktreeDeps.adopt)).toBeLessThan(order(worktreeDeps.closeProject));
+    expect(order(worktreeDeps.closeProject)).toBeLessThan(order(deleted.service.removeWorktree));
+    expect(order(deleted.service.removeWorktree)).toBeLessThan(order(worktreeDeps.markRemoved));
+    expect(worktreeDeps.markRemoved).toHaveBeenCalledWith(linked.path);
+
+    // with the main worktree's project not open, the question ends as 3.9.0's did
+    const alone = run([undefined], ['ok'], undefined, [projects[1]!]);
+    await alone.host.run({ op: 'deleteWorktree', repoId: 'repo-1', path: linked.path });
+    expect(alone.questions[0]!.message).toBe(`Are you sure you want to delete the worktree "${linked.path}"? The project "Review" is in it and will be closed, and its chats will no longer be listed.`);
+
+    // a terminal question the user cancels removes nothing
+    const kept = run([0], ['ok'], 'cancelled');
+    expect(await kept.host.run({ op: 'deleteWorktree', repoId: 'repo-1', path: linked.path })).toEqual({ ok: false, reason: 'cancelled' });
+    expect(kept.service.removeWorktree).not.toHaveBeenCalled();
 
     // the palette's picker asks the same, and a clean worktree holding no project closes nothing
     const plain = setup({ artifacts: { worktrees: [mainWorktree, linked, other] }, answers: [0], picks: ['1'] });
@@ -1366,12 +1541,54 @@ describe('source control host: flows after a write, refusals and kept stashes', 
     expect(plain.service.removeWorktree).toHaveBeenCalledWith('repo-1', other.path, false);
     expect(plain.removedProjects).toEqual([]);
 
-    // dirty: Force Delete as VS Code asks it, and a project that cannot close says why
-    const dirty = run([0, 0], ['dirty', 'ok'], { ok: false, reason: 'A conversation is running in Review.' });
-    expect(await dirty.host.run({ op: 'deleteWorktree', repoId: 'repo-1', path: linked.path })).toEqual({ ok: false, reason: 'failed' });
+    // dirty: Force Delete as VS Code asks it, before the project closes (rule 14), so a Cancel leaves the project open
+    const dirtyRun = (answers: Array<number | undefined>) => {
+      const h = setup({ artifacts: { worktrees: [mainWorktree, linked, other] }, answers, dirtyWorktrees: [linked.path] });
+      Object.assign(h.host.deps, { projects: () => projects });
+      return h;
+    };
+    const dirty = dirtyRun([0, 0]);
+    expect(await dirty.host.run({ op: 'deleteWorktree', repoId: 'repo-1', path: linked.path })).toEqual({ ok: true });
     expect(dirty.questions[1]).toMatchObject({ severity: 'danger', actions: ['Force Delete'] });
-    expect(vi.mocked(dirty.service.removeWorktree).mock.calls.at(-1)).toEqual(['repo-1', linked.path, true]);
-    expect(dirty.notices.at(-1)!.message).toBe('The worktree was deleted, but its project "Review" could not be closed: A conversation is running in Review.');
+    expect(vi.mocked(dirty.service.removeWorktree).mock.calls).toEqual([['repo-1', linked.path, true]]);
+    expect(dirty.removedProjects).toEqual(['w']);
+    const forceCancelled = dirtyRun([0, undefined]);
+    expect(await forceCancelled.host.run({ op: 'deleteWorktree', repoId: 'repo-1', path: linked.path })).toEqual({ ok: false, reason: 'cancelled' });
+    expect(forceCancelled.removedProjects).toEqual([]);
+    expect(forceCancelled.host.deps.worktrees.adopt).not.toHaveBeenCalled();
+    expect(forceCancelled.service.removeWorktree).not.toHaveBeenCalled();
+
+    // a project that cannot close says why, and git removes nothing
+    const busy = run([0], ['ok'], { reason: 'A conversation is running in Review.' });
+    expect(await busy.host.run({ op: 'deleteWorktree', repoId: 'repo-1', path: linked.path })).toEqual({ ok: false, reason: 'failed' });
+    expect(busy.service.removeWorktree).not.toHaveBeenCalled();
+    expect(busy.notices.at(-1)!.message).toBe('The worktree was not deleted, because its project "Review" could not be closed: A conversation is running in Review.');
+
+    // a failing remove names the path and that its project closed, keeps the record live, and Retry runs the whole order again
+    const held = run([0, 0]);
+    vi.mocked(held.service.removeWorktree).mockRejectedValueOnce(new Error('Permission denied'));
+    let answered = false;
+    Object.assign(held.host.deps.notify, {
+      error: async (message: string, ...actions: string[]) => {
+        held.notices.push({ severity: 'error', message, actions });
+        const retry = !answered;
+        answered = true;
+        return retry ? 'Retry' : undefined;
+      },
+    });
+    expect(await held.host.run({ op: 'deleteWorktree', repoId: 'repo-1', path: linked.path })).toEqual({ ok: false, reason: 'failed' });
+    expect(held.notices[0]).toEqual({ severity: 'error', message: `Could not delete the worktree "${linked.path}", and its project "Review" was closed: Permission denied`, actions: ['Retry'] });
+    expect(held.host.deps.worktrees.markRemoved).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(held.host.deps.worktrees.markRemoved).toHaveBeenCalledWith(linked.path));
+    expect(held.questions).toHaveLength(2);
+
+    // files that appear after the project closed ask nothing more: the failure says so, and Retry asks again from the start
+    const late = run([0], ['dirty']);
+    expect(await late.host.run({ op: 'deleteWorktree', repoId: 'repo-1', path: linked.path })).toEqual({ ok: false, reason: 'failed' });
+    expect(late.questions).toHaveLength(1);
+    expect(vi.mocked(late.service.removeWorktree).mock.calls).toEqual([['repo-1', linked.path, false]]);
+    expect(late.notices.at(-1)).toEqual({ severity: 'error', message: `Could not delete the worktree "${linked.path}", and its project "Review" was closed: Files were added to it after you confirmed.`, actions: ['Retry'] });
+    expect(late.host.deps.worktrees.markRemoved).not.toHaveBeenCalled();
   });
 
   it('stashes with untracked files before a checkout, and Migrate Changes pops the latest stash after it', async () => {
@@ -1411,7 +1628,7 @@ describe('source control host: flows after a write, refusals and kept stashes', 
       const h = setup({ platform, picks: ['0'], inputs: ['next', typed] });
       expect(await h.host.run({ op: 'createWorktree', repoId: 'repo-1' }), typed).toEqual({ ok: false, reason: 'failed' });
       expect(h.service.addWorktree, typed).not.toHaveBeenCalled();
-      expect(h.notices.at(-1)!.message, typed).toBe(`"${typed}" is not an absolute folder path on this computer.`);
+      expect(h.notices.at(-1)!.message, typed).toBe(`"${visibleText(typed)}" is not an absolute folder path on this computer.`);
     }
     const drive = setup({ platform: 'win32', picks: ['0'], inputs: ['next', 'D:\\trees\\next'] });
     expect(await drive.host.run({ op: 'createWorktree', repoId: 'repo-1' })).toEqual({ ok: true });
@@ -1581,8 +1798,322 @@ describe('source control host: flows after a write, refusals and kept stashes', 
     const h = setup();
     const before = h.settingReads();
     h.host.menuState();
-    expect(h.settingReads() - before).toBe(6);
+    expect(h.settingReads() - before).toBe(7);
     h.host.autofetchNow();
     expect(h.service.autofetchNow).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('source control host: the project repository', () => {
+  it('answers the repository holding the project folder, and waits for a listed project the service has not been given yet', async () => {
+    const h = setup();
+    expect(h.host.projectRepository('p')).toBe(projectPath);
+    let given = false;
+    const original = h.service.view;
+    const parentView = { projectKey: 'q', state: 'ready', repos: [{ repoId: 'repo-1', root: projectPath, kind: 'parent' }], closedRoots: [], unsafe: [], parents: [] };
+    Object.assign(h.service, { view: (key: string) => (key === 'q' ? (given ? parentView : undefined) : original(key)) });
+    Object.assign(h.host.deps, { projects: () => [{ key: 'p', fsPath: projectPath }, { key: 'q', fsPath: path.join(projectPath, 'q') }] });
+    let answer: string | undefined | null = null;
+    const waiting = h.host.projectRepositoryWhenReady('q').then((root) => {
+      answer = root;
+      return root;
+    });
+    await Promise.resolve();
+    expect(answer).toBeNull();
+    given = true;
+    h.emit({ kind: 'view', projectKey: 'q' });
+    expect(await waiting).toBe(projectPath);
+    // a root main does not list answers at once
+    expect(await h.host.projectRepositoryWhenReady('elsewhere')).toBeUndefined();
+  });
+});
+
+describe('source control host: the Graph', () => {
+  it('runs a commit action only on a commit of the repository, refusing any other object before git sees it', async () => {
+    const { host, service, notices, inputRequests } = setup({ inputs: ['topic', 'v9', ''] });
+    for (const request of [
+      { op: 'checkout', repoId: 'repo-1', detached: true, commit: TREE },
+      { op: 'createBranch', repoId: 'repo-1', from: false, commit: TREE },
+      { op: 'createTag', repoId: 'repo-1', commit: TREE },
+      { op: 'compareCommit', repoId: 'repo-1', commit: TREE },
+      { op: 'compareWithRemote', repoId: 'repo-1', commit: TREE },
+      { op: 'compareWithMergeBase', repoId: 'repo-1', commit: TREE },
+      { op: 'cherryPick', repoId: 'repo-1', commit: TREE },
+      { op: 'openCommit', repoId: 'repo-1', commit: TREE },
+    ]) {
+      expect(await host.run(request), request.op).toEqual({ ok: false, reason: 'failed' });
+      expect(notices.at(-1)!.message).toBe(`The commit ${TREE.slice(0, 7)} is not in this repository.`);
+    }
+    for (const call of [service.checkout, service.createBranch, service.createTag, service.cherryPick, service.diffRefs]) expect(call).not.toHaveBeenCalled();
+    expect(inputRequests).toHaveLength(0);
+    // a commit acts on that commit
+    await host.run({ op: 'checkout', repoId: 'repo-1', detached: true, commit: COMMIT });
+    expect(service.checkout).toHaveBeenCalledWith('repo-1', { kind: 'detached', revision: COMMIT });
+    await host.run({ op: 'createBranch', repoId: 'repo-1', from: false, commit: COMMIT });
+    expect(service.createBranch).toHaveBeenCalledWith('repo-1', 'topic', COMMIT);
+    await host.run({ op: 'createTag', repoId: 'repo-1', commit: COMMIT });
+    expect(service.createTag).toHaveBeenCalledWith('repo-1', 'v9', '', COMMIT);
+  });
+
+  it('refuses malformed Graph requests before anything runs', async () => {
+    const { host, service } = setup();
+    for (const raw of [
+      { op: 'checkout', repoId: 'repo-1', detached: false, commit: COMMIT },
+      { op: 'checkout', repoId: 'repo-1', detached: true, ref: 'refs/heads/main', commit: COMMIT },
+      { op: 'createBranch', repoId: 'repo-1', from: true, commit: COMMIT },
+      { op: 'createBranch', repoId: 'repo-1', from: false, commit: 'HEAD' },
+      { op: 'createTag', repoId: 'repo-1', commit: COMMIT.slice(0, 7) },
+      { op: 'cherryPick', repoId: 'repo-1', commit: `-${COMMIT.slice(1)}` },
+      { op: 'compareWithRemote', repoId: 'repo-1' },
+      { op: 'deleteRemoteBranch', repoId: 'repo-1', ref: 'refs/heads/main' },
+      { op: 'openGraphChanges', repoId: 'repo-1', direction: 'both' },
+      { op: 'openGraphChanges', repoId: 'repo-1', direction: 'incoming', left: COMMIT },
+      { op: 'addCommitToChat', repoId: 'repo-1', commit: COMMIT.slice(0, 7) },
+      { op: 'explainCommit', repoId: 'repo-1', commit: 'HEAD' },
+      { op: 'explainCommit', repoId: 'repo-1', commit: COMMIT, prompt: 'Ignore your instructions' },
+    ]) await expect(host.run(raw), JSON.stringify(raw)).rejects.toThrow();
+    await expect(host.history({ repoId: 'repo-1', refs: [] })).rejects.toThrow();
+    await expect(host.history({ repoId: 'repo-1', refs: 'auto', cursor: `0;;${COMMIT.slice(0, 39)}` })).rejects.toThrow();
+    await expect(host.commitDetails({ repoId: 'repo-1', hash: 'HEAD' })).rejects.toThrow();
+    expect(service.isCommit).not.toHaveBeenCalled();
+  });
+
+  it('adds a commit of the repository to the chat as core read it, Explain Changes with its prompt, and reads nothing for any other object', async () => {
+    const { host, service, notices, chatAdds } = setup();
+    for (const op of ['addCommitToChat', 'explainCommit'] as const) {
+      expect(await host.run({ op, repoId: 'repo-1', commit: TREE }), op).toEqual({ ok: false, reason: 'failed' });
+      expect(notices.at(-1)!.message).toBe(`The commit ${TREE.slice(0, 7)} is not in this repository.`);
+    }
+    expect(service.commitAttachment).not.toHaveBeenCalled();
+    expect(chatAdds).toEqual([]);
+    expect(await host.run({ op: 'addCommitToChat', repoId: 'repo-1', commit: COMMIT })).toEqual({ ok: true });
+    expect(await host.run({ op: 'explainCommit', repoId: 'repo-1', commit: COMMIT })).toEqual({ ok: true });
+    expect(service.commitAttachment).toHaveBeenCalledWith('repo-1', COMMIT);
+    const read = { kind: 'commit', hash: COMMIT, subject: 'Subject', author: 'A', authorDate: 0, text: `commit ${COMMIT}`, omittedLines: 0 };
+    expect(chatAdds).toEqual([
+      { projectKey: 'p', attachment: read, prompt: undefined },
+      { projectKey: 'p', attachment: read, prompt: 'Explain the changes in this commit.' },
+    ]);
+    // an id main no longer has reads nothing
+    expect(await host.run({ op: 'addCommitToChat', repoId: 'repo-9', commit: COMMIT })).toEqual({ ok: false, reason: 'unknown' });
+    expect(chatAdds).toHaveLength(2);
+  });
+
+  it('adds a chat worktree\'s commit to a chat of the worktree\'s project, never naming the worktree root as a project', async () => {
+    const h = setup();
+    const repository = h.service.repository.bind(h.service);
+    const worktreeRoot = rootKey({ projectKey: 'p', worktreeId: 'abcd1234' });
+    Object.assign(h.service, { repository: (repoId: string) => { const found = repository(repoId); return found && { ...found, projectKey: worktreeRoot }; } });
+    expect(await h.host.run({ op: 'addCommitToChat', repoId: 'repo-1', commit: COMMIT })).toEqual({ ok: true });
+    expect(h.chatAdds.map((add) => add.projectKey)).toEqual(['p']);
+  });
+
+  it('compares two versions of a file only when both name commits of the repository', async () => {
+    const { host, editorPane, notices, service } = setup();
+    for (const [left, right] of [[TREE, COMMIT], [COMMIT, TREE]] as const) {
+      expect(await host.run({ op: 'compareCommits', repoId: 'repo-1', left: { commit: left, path: 'a.txt' }, right: { commit: right, path: 'a.txt' } })).toEqual({ ok: false, reason: 'failed' });
+      expect(notices.at(-1)!.message).toBe(`The commit ${TREE.slice(0, 7)} is not in this repository.`);
+    }
+    expect(editorPane.showDiff).not.toHaveBeenCalled();
+    expect(service.commitBlob).not.toHaveBeenCalled();
+    expect(await host.run({ op: 'compareCommits', repoId: 'repo-1', left: { commit: HASH_A, path: 'a.txt' }, right: { commit: COMMIT, path: 'a.txt' } })).toEqual({ ok: true });
+    expect(editorPane.showDiff).toHaveBeenCalledTimes(1);
+  });
+
+  it('titles a compare of two versions with each side\'s own name when a rename lies between them, as VS Code\'s history view does', async () => {
+    const { host, editorPane } = setup();
+    expect(await host.run({ op: 'compareCommits', repoId: 'repo-1', left: { commit: HASH_A, path: 'src/new-name.ts' }, right: { commit: COMMIT, path: 'old-name.ts' } })).toEqual({ ok: true });
+    const renamed = vi.mocked(editorPane.showDiff).mock.calls[0]![0] as (fileName: string) => string;
+    expect(renamed('old-name.ts')).toBe(`new-name.ts (${HASH_A.slice(0, 7)}) ↔ old-name.ts (${COMMIT.slice(0, 7)})`);
+    // the right side's name follows a rename of the tab's file; the left side keeps the name it had at its commit
+    expect(renamed('moved.ts')).toBe(`new-name.ts (${HASH_A.slice(0, 7)}) ↔ moved.ts (${COMMIT.slice(0, 7)})`);
+    expect(await host.run({ op: 'compareCommits', repoId: 'repo-1', left: { commit: HASH_A, path: 'a.txt' }, right: { commit: COMMIT, path: 'a.txt' } })).toEqual({ ok: true });
+    const same = vi.mocked(editorPane.showDiff).mock.calls[1]![0] as (fileName: string) => string;
+    expect(same('a.txt')).toBe(`a.txt (${HASH_A.slice(0, 7)}) ↔ a.txt (${COMMIT.slice(0, 7)})`);
+  });
+
+  it('says a copied object is no commit of the repository as the other commit flows do, never as a git failure', async () => {
+    const { host, notices, copied } = setup();
+    await host.copy({ repoId: 'repo-1', kind: 'commitId', value: TREE });
+    await host.copy({ repoId: 'repo-1', kind: 'commitMessage', value: TREE });
+    expect(copied).toEqual([]);
+    expect(notices).toEqual([
+      { severity: 'warn', message: `The commit ${TREE.slice(0, 7)} is not in this repository.`, actions: [] },
+      { severity: 'warn', message: `The commit ${TREE.slice(0, 7)} is not in this repository.`, actions: [] },
+    ]);
+  });
+
+  it('compares a commit with the upstream or the base ref, and refuses without one', async () => {
+    const { host, editorPane, notices } = setup();
+    await host.run({ op: 'compareWithRemote', repoId: 'repo-1', commit: COMMIT });
+    expect(vi.mocked(editorPane.showChanges).mock.calls.at(-1)![0]).toMatchObject({ title: `origin/main \u2194 ${COMMIT.slice(0, 7)}`, changes: { source: { kind: 'refs', left: HASH_B, right: COMMIT } } });
+    expect(await host.run({ op: 'compareWithMergeBase', repoId: 'repo-1', commit: COMMIT })).toEqual({ ok: false, reason: 'failed' });
+    expect(notices.at(-1)!.message).toBe('The current branch has no base to compare with.');
+    const withBase = setup({ headRefs: { ...HEAD_REFS, base: { id: 'refs/remotes/upstream/main', name: 'upstream/main', revision: MERGE_BASE } } });
+    await withBase.host.run({ op: 'compareWithMergeBase', repoId: 'repo-1', commit: COMMIT });
+    expect(vi.mocked(withBase.editorPane.showChanges).mock.calls.at(-1)![0]).toMatchObject({ changes: { source: { kind: 'refs', left: MERGE_BASE, right: COMMIT } } });
+    const detached = setup({ headRefs: { head: { id: 'HEAD', name: 'aaaaaaa', revision: HASH_A } } });
+    expect(await detached.host.run({ op: 'compareWithRemote', repoId: 'repo-1', commit: COMMIT })).toEqual({ ok: false, reason: 'failed' });
+    expect(detached.notices.at(-1)!.message).toBe('The current branch has no upstream to compare with.');
+  });
+
+  it('opens the incoming and outgoing changes between the merge base and the upstream or HEAD, all resolved by main', async () => {
+    const { host, editorPane } = setup();
+    await host.run({ op: 'openGraphChanges', repoId: 'repo-1', direction: 'incoming' });
+    expect(vi.mocked(editorPane.showChanges).mock.calls.at(-1)![0]).toMatchObject({ changes: { source: { kind: 'refs', left: MERGE_BASE, right: HASH_B } } });
+    await host.run({ op: 'openGraphChanges', repoId: 'repo-1', direction: 'outgoing' });
+    expect(vi.mocked(editorPane.showChanges).mock.calls.at(-1)![0]).toMatchObject({ changes: { source: { kind: 'refs', left: MERGE_BASE, right: HASH_A } } });
+  });
+
+  it('asks the palette\'s Cherry Pick for a hash, verifies it, and tells a conflict, an empty pick and a refusal apart', async () => {
+    const asked = setup({ inputs: ['HEAD~1', 'nope', undefined] });
+    expect(await asked.host.run({ op: 'cherryPick', repoId: 'repo-1' })).toEqual({ ok: true });
+    expect(asked.inputRequests[0]).toMatchObject({ prompt: 'Please provide the commit hash', placeholder: 'Commit Hash' });
+    expect(asked.service.cherryPick).toHaveBeenCalledWith('repo-1', COMMIT);
+    expect(await asked.host.run({ op: 'cherryPick', repoId: 'repo-1' })).toEqual({ ok: false, reason: 'failed' });
+    expect(asked.notices.at(-1)!.message).toBe('"nope" is not a commit of this repository.');
+    expect(await asked.host.run({ op: 'cherryPick', repoId: 'repo-1' })).toEqual({ ok: false, reason: 'cancelled' });
+    expect(asked.service.cherryPick).toHaveBeenCalledTimes(1);
+
+    const conflict = setup({ cherryPick: 'conflict' });
+    await conflict.host.run({ op: 'cherryPick', repoId: 'repo-1', commit: COMMIT });
+    expect(conflict.notices.at(-1)).toEqual({ severity: 'warn', message: 'There were merge conflicts while cherry picking the changes. Resolve the conflicts before committing them.', actions: ['Show Changes'] });
+    const empty = setup({ cherryPick: 'empty' });
+    await empty.host.run({ op: 'cherryPick', repoId: 'repo-1', commit: COMMIT });
+    expect(empty.notices.at(-1)).toEqual({ severity: 'info', message: 'The changes are already present in the current branch.', actions: [] });
+    const refused = setup({ cherryPick: new Error('error: commit is a merge but no -m option was given.') });
+    expect(await refused.host.run({ op: 'cherryPick', repoId: 'repo-1', commit: COMMIT })).toEqual({ ok: false, reason: 'failed' });
+    expect(refused.notices.at(-1)).toMatchObject({ severity: 'error', actions: ['Show Git Output'] });
+  });
+
+  it('deletes a remote branch a badge names after a question, and refuses HEAD\'s upstream', async () => {
+    const upstream = { ref: 'refs/remotes/origin/main', name: 'origin/main', remote: 'origin', commit: null };
+    const other = { ref: 'refs/remotes/origin/feature', name: 'origin/feature', remote: 'origin', commit: null };
+    const branches = [{ ref: 'refs/heads/main', name: 'main', commit: null, current: true, upstream: { remote: 'origin', branch: 'main', ahead: 0, behind: 0 } }];
+    const { host, service, notices, questions } = setup({ artifacts: { remoteBranches: [upstream, other], branches }, answers: [undefined, 0] });
+    expect(await host.run({ op: 'deleteRemoteBranch', repoId: 'repo-1', ref: upstream.ref })).toEqual({ ok: false, reason: 'failed' });
+    expect(notices.at(-1)!.message).toBe('The remote branch of the active branch cannot be deleted.');
+    expect(questions).toHaveLength(0);
+    // Cancel deletes nothing on the remote
+    expect(await host.run({ op: 'deleteRemoteBranch', repoId: 'repo-1', ref: other.ref })).toEqual({ ok: false, reason: 'cancelled' });
+    expect(questions[0]).toMatchObject({ severity: 'danger', message: 'Are you sure you want to delete the remote branch "origin/feature"? This action will permanently remove the branch from the remote "origin".', actions: ['Delete Remote Branch'] });
+    expect(service.deleteRemoteRef).not.toHaveBeenCalled();
+    expect(await host.run({ op: 'deleteRemoteBranch', repoId: 'repo-1', ref: other.ref })).toEqual({ ok: true });
+    expect(service.deleteRemoteRef).toHaveBeenCalledWith('repo-1', 'origin', 'refs/heads/feature');
+  });
+
+  it('copies a checked commit\'s hash, and its message as log -1 --format=%B reads it', async () => {
+    const { host, copied, service } = setup();
+    await host.copy({ repoId: 'repo-1', kind: 'commitMessage', value: COMMIT });
+    expect(service.commitMessage).toHaveBeenCalledWith('repo-1', COMMIT);
+    expect(copied).toEqual(['Subject\n\nBody']);
+  });
+
+  it('answers a history load with its first page and a cursor, and a later page from the cursor\'s snapshot alone', async () => {
+    const { host, service } = setup();
+    const commit = (n: number) => ({ hash: n.toString(16).padStart(40, '0'), parents: [], author: 'A', email: 'a@x', authorDate: 0, subject: `s${n}`, refs: [] });
+    const page = Array.from({ length: 50 }, (_, n) => commit(n + 1));
+    const load = { headRefs: { ...HEAD_REFS, base: { id: 'refs/remotes/up/main', name: 'up/main', revision: MERGE_BASE } }, mergeBase: MERGE_BASE, ahead: 1, behind: 2, resolvedRefs: ['refs/heads/main'], tips: [HASH_A, HASH_B] };
+    vi.mocked(service.historyLoad).mockResolvedValueOnce({ load, commits: page });
+    const first = await host.history({ repoId: 'repo-1', refs: 'auto' });
+    if (!first.ok) throw new Error('no page');
+    expect(first.page.load).toEqual({ headRefs: load.headRefs, mergeBase: MERGE_BASE, ahead: 1, behind: 2, resolvedRefs: ['refs/heads/main'] });
+    expect(first.page.cursor).toBe(`50;${HASH_A},${HASH_B};refs/remotes/up/main`);
+    vi.mocked(service.historyPage).mockResolvedValueOnce(page.slice(0, 3));
+    const second = await host.history({ repoId: 'repo-1', refs: 'auto', cursor: first.page.cursor });
+    expect(service.historyPage).toHaveBeenCalledWith('repo-1', [HASH_A, HASH_B], 50, 'refs/remotes/up/main');
+    expect(second).toEqual({ ok: true, page: { commits: page.slice(0, 3) } });
+    // an unborn HEAD has no commits, and an id main no longer has answers so
+    expect(await host.history({ repoId: 'repo-1', refs: 'all' })).toEqual({ ok: false, reason: 'empty' });
+    expect(await host.history({ repoId: 'repo-9', refs: 'all' })).toEqual({ ok: false, reason: 'noRepository' });
+    expect(await host.commitDetails({ repoId: 'repo-1', hash: TREE })).toEqual({ ok: false, reason: 'notCommit' });
+    // main's bounds are core's
+    expect(MAX_SCM_HISTORY_TIPS).toBe(MAX_HISTORY_TIPS);
+    expect(SCM_HISTORY_PAGE).toBe(HISTORY_PAGE);
+    expect(MAX_SCM_COMMIT_FILES).toBe(MAX_DETAIL_FILES);
+  });
+});
+
+describe('source control host: repository text in questions and notices', () => {
+  const R = '\u202E';
+  const commit = (hash: string) => ({ hash, subject: 's', author: 'Ada', date: 1_700_000_000_000 });
+  const sibling = (name: string) => path.join(path.dirname(projectPath), name);
+  const head = { ref: `refs/heads/ma${R}in`, name: `ma${R}in`, commit: commit(HASH_A), current: true, upstream: { remote: 'origin', branch: 'main', ahead: 0, behind: 0 } };
+  const feat = { ref: `refs/heads/fe${R}at`, name: `fe${R}at`, commit: commit(HASH_B), current: false, upstream: null };
+  const topic = { ref: `refs/remotes/ori${R}gin/topic`, name: `ori${R}gin/topic`, remote: `ori${R}gin`, commit: commit(HASH_B) };
+  const tag = { ref: `refs/tags/v${R}1`, name: `v${R}1`, commit: commit(HASH_A), annotated: false, current: false };
+  const stash = { index: 0, hash: HASH_B, description: `On main: wip ${R}gnp.exe`, branch: 'main', date: 1 };
+  const mainWorktree = { path: projectPath, name: 'project', branch: 'main', commit: commit(HASH_A), main: true, current: true, locked: false, prunable: false };
+  const linked = { path: sibling(`evil${R}txt.wt`), name: 'wt', branch: 'wt', commit: commit(HASH_B), main: false, current: false, locked: false, prunable: false };
+  const artifacts = { branches: [head, feat], remoteBranches: [topic], tags: [tag], stashes: [stash], worktrees: [mainWorktree, linked] };
+  const unpublished: RepositoryStatus = { ...status, head: { type: 'branch', name: `ma${R}in` }, upstream: null };
+  const remote = { name: `ori${R}gin`, fetchUrl: 'https://example.com/a.git', pushUrl: 'https://example.com/a.git' };
+  type Harness = ReturnType<typeof setup>;
+  const question = (index: number) => (h: Harness) => h.questions[index]?.message;
+  const notice = (h: Harness) => h.notices.at(-1)?.message;
+  const deleteLinked = (h: Harness) => h.host.run({ op: 'deleteWorktree', repoId: 'repo-1', path: linked.path });
+  const cases: Array<[string, SetupOptions, (h: Harness) => Promise<unknown>, (h: Harness) => string | undefined]> = [
+    ['a ref no longer listed', {}, (h) => h.host.run({ op: 'checkout', repoId: 'repo-1', detached: false, ref: `refs/heads/gone${R}x` }), notice],
+    ['a typed branch name a branch has', { inputs: [`fe${R}at`] }, (h) => h.host.run({ op: 'createBranch', repoId: 'repo-1', from: false }), notice],
+    ['Delete Branch on a row', { answers: [undefined] }, (h) => h.host.run({ op: 'deleteBranch', repoId: 'repo-1', ref: feat.ref }), question(0)],
+    ['an unmerged branch', { answers: [0, undefined], deletes: ['unmerged'] }, (h) => h.host.run({ op: 'deleteBranch', repoId: 'repo-1', ref: feat.ref }), question(1)],
+    ['Delete Remote Branch on a badge', { answers: [undefined] }, (h) => h.host.run({ op: 'deleteRemoteBranch', repoId: 'repo-1', ref: topic.ref }), question(0)],
+    ['Drop Stash', { answers: [undefined] }, (h) => h.host.run({ op: 'stashDrop', repoId: 'repo-1', target: { index: 0, hash: HASH_B } }), question(0)],
+    ['Delete Tag on a row', { answers: [undefined] }, (h) => h.host.run({ op: 'deleteTag', repoId: 'repo-1', ref: tag.ref }), question(0)],
+    ['a remote with no tags', { remotes: [remote] }, (h) => {
+      vi.mocked(h.service.remoteTags).mockResolvedValueOnce([]);
+      return h.host.run({ op: 'deleteRemoteTag', repoId: 'repo-1' });
+    }, notice],
+    ['a worktree from the checked-out branch', { picks: ['1'], answers: [undefined] }, (h) => h.host.run({ op: 'createWorktree', repoId: 'repo-1' }), question(0)],
+    ['a typed worktree path that is not absolute', { picks: ['0'], inputs: ['nb', `rel${R}wt`] }, (h) => h.host.run({ op: 'createWorktree', repoId: 'repo-1' }), notice],
+    ['a worktree path no longer listed', {}, (h) => h.host.run({ op: 'deleteWorktree', repoId: 'repo-1', path: sibling(`gone${R}wt`) }), notice],
+    ['Delete Worktree', { answers: [undefined] }, deleteLinked, question(0)],
+    ['Delete Worktree on a worktree holding a project', { answers: [undefined] }, (h) => {
+      Object.assign(h.host.deps, { projects: () => [{ key: 'p', fsPath: projectPath, name: `pro${R}ject` }, { key: 'w', fsPath: linked.path, name: `Re${R}view` }] });
+      return deleteLinked(h);
+    }, question(0)],
+    ['Force Delete', { answers: [0, undefined], dirtyWorktrees: [linked.path] }, deleteLinked, (h) => h.questions[1]?.detail],
+    ['a worktree git could not remove', { answers: [0] }, (h) => {
+      vi.mocked(h.service.removeWorktree).mockRejectedValueOnce(new GitError('git worktree remove exited with 128', 128, '', `fatal: '${linked.path}' is locked`));
+      return deleteLinked(h);
+    }, notice],
+    ['a project that could not close', { answers: [0], closeProject: { reason: `A conversation is running in Re${R}view.` } }, (h) => {
+      Object.assign(h.host.deps, { projects: () => [{ key: 'w', fsPath: linked.path, name: `Re${R}view` }] });
+      return deleteLinked(h);
+    }, notice],
+    ['a stash the engine kept', {}, (h) => {
+      vi.mocked(h.service.pull).mockRejectedValueOnce(new StashKeptError('kept', 'ok', HASH_B));
+      return h.host.run({ op: 'pull', repoId: 'repo-1', rebase: false });
+    }, notice],
+    ['a sync whose branch changed', {}, (h) => {
+      vi.mocked(h.service.sync).mockRejectedValueOnce(new SyncBranchChangedError('changed', 'pull', { branch: `ma${R}in`, remote: `ori${R}gin`, upstreamBranch: 'main' }, null));
+      return h.host.run({ op: 'sync', repoId: 'repo-1', rebase: false });
+    }, notice],
+    ['a copied ref no longer listed', {}, (h) => h.host.copy({ repoId: 'repo-1', kind: 'branchName', value: `refs/heads/gone${R}x` }), notice],
+    ['a remote with no fetched branches', { remotes: [remote] }, (h) => {
+      Object.assign(h.service, { remoteBranches: async () => [] });
+      return h.host.run({ op: 'pullFrom', repoId: 'repo-1' });
+    }, notice],
+    ['Push on a branch with no upstream', { status: unpublished, answers: [undefined] }, (h) => h.host.run({ op: 'push', repoId: 'repo-1', to: false, force: false, followTags: false }), question(0)],
+    ['Publish\'s remote picker', { status: unpublished, remotes: [remote, { ...remote, name: 'second' }], picks: [undefined] }, (h) => h.host.run({ op: 'publish', repoId: 'repo-1' }), (h) => h.pickRequests[0]?.placeholder],
+    ['a typed remote URL Damocles refuses', { inputs: [`-evil${R}`] }, (h) => h.host.run({ op: 'addRemote', repoId: 'repo-1' }), notice],
+    ['a typed clone URL Damocles refuses', { inputs: [`-evil${R}`] }, (h) => h.host.run({ op: 'clone', recursive: false }), notice],
+    ['the clone\'s folder picker', { inputs: [`https://example.com/a${R}b.git`] }, (h) => h.host.run({ op: 'clone', recursive: false }), (h) => h.folderRequests[0]?.title],
+    ['the cloned folder', { inputs: ['https://example.com/a.git'], folder: sibling('dest'), clone: async () => sibling(`cl${R}one`) }, (h) => h.host.run({ op: 'clone', recursive: false }), (h) => h.questions[0]?.detail],
+    ['a typed rename Damocles refuses', { inputs: [`/x${R}y`] }, (h) => h.host.rename('repo-1', 'src/a.ts'), notice],
+    ['a typed commit that is none', { inputs: [`x${R}y`] }, (h) => h.host.run({ op: 'cherryPick', repoId: 'repo-1' }), notice],
+    ['a compare with no changes', { picks: ['0'] }, (h) => {
+      vi.mocked(h.service.diffRefs).mockResolvedValueOnce({ left: HASH_A, entries: [] });
+      return h.host.run({ op: 'compareRef', repoId: 'repo-1', ref: feat.ref });
+    }, notice],
+    ['Open on a worktree no longer listed', {}, (h) => h.host.run({ op: 'openWorktree', repoId: 'repo-1', path: sibling(`gone${R}wt`) }), notice],
+  ];
+
+  it.each(cases)('shows the bidi controls of %s as escapes', async (_name, options, act, shown) => {
+    const h = setup({ artifacts, ...options });
+    await act(h);
+    const text = shown(h);
+    expect(text).toContain('\\u{202E}');
+    expect(text).not.toContain(R);
   });
 });

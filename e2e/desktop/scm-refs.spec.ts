@@ -8,8 +8,10 @@ import { menuItem, overlayMenu, readyOverlay } from './support/overlay';
 import { answerInput, bareClone, moreActions, openScmProject, pickItem, quickInput, quickInputField, scmSection, write } from './support/scm';
 import { overlayPage, selectedProjectKey } from './support/shell';
 import { clickSectionAction } from './support/shell-ui';
+import { setContentSize } from './support/settings';
 import { codeEditor, DOCUMENT_END, editorShows, editorTab, openInEditor, quickPick } from './support/editor';
 import { answerDialogs, answerOpenDialog, askedDialogs } from './support/ui';
+import { registryRecords } from './support/worktree-repo';
 
 // Branches, stash, tags and worktrees (slice 11b) against temp repositories and local bare remotes, never the network. Core's
 // integration tests cover each command's argv; this spec drives main's pickers, inputs and questions through the real app.
@@ -210,6 +212,36 @@ test('View Stash\'s Pop Stash pops the tab\'s stash and closes the tab, which le
   expect(fs.readFileSync(path.join(home.project, 'a.ts'), 'utf8')).toBe('export const a = 4;\n');
 });
 
+test('View Stash keeps its actions on the lead\'s line while both fit whole, and moves them under it only when they do not', async ({ foreground: _foreground, home, launch }) => {
+  await initRepo(home, home.project);
+  const { app } = await launch();
+  const shell = await openScmProject(app, home.project);
+  write(home.project, 'a.ts', 'export const a = 4;\n');
+  await stash(app, shell, 'stash', 'wip');
+  await stashRows(shell).first().click();
+  await expect(shell.locator('[data-testid="changes-tab"][data-source="stash"]').getByTestId('changes-stash-drop')).toBeVisible();
+  await setContentSize(app, 900, 660);
+  const top = () => shell.evaluate(() => {
+    const tab = document.querySelector('[data-testid="changes-tab"][data-source="stash"]')!;
+    const row = tab.querySelector('[data-testid="changes-top"]')!;
+    const lead = tab.querySelector('[data-testid="changes-lead"] > span')!;
+    const first = tab.querySelector('[data-testid="changes-stash-apply"]')!.getBoundingClientRect();
+    const last = tab.querySelector('[data-testid="changes-stash-drop"]')!.getBoundingClientRect();
+    const style = getComputedStyle(row);
+    const inner = row.clientWidth - Number.parseFloat(style.paddingLeft) - Number.parseFloat(style.paddingRight);
+    return {
+      fits: lead.scrollWidth + Number.parseFloat(style.columnGap) + (last.right - first.left) <= inner,
+      sameLine: first.top < tab.querySelector('[data-testid="changes-heading"]')!.getBoundingClientRect().bottom,
+      leadWhole: lead.scrollWidth <= lead.clientWidth,
+    };
+  });
+  const setFont = (px: number) => shell.evaluate((size) => document.documentElement.style.setProperty('--d-font-size', `${size}px`), px);
+  await setFont(16);
+  await expect.poll(top).toEqual({ fits: true, sameLine: true, leadWhole: true });
+  await setFont(20);
+  await expect.poll(top).toEqual({ fits: false, sameLine: false, leadWhole: true });
+});
+
 test('More Actions › Stash says why Pop Latest Stash is off when the repository has no stashes', async ({ foreground: _foreground, home, launch }) => {
   await initRepo(home, home.project);
   const { app } = await launch();
@@ -322,6 +354,10 @@ test('Create Worktree adds a linked worktree; Delete Worktree always asks first,
   await expect.poll(async () => (await worktrees()).length).toBe(2);
   const linked = (await worktrees())[1]!.slice('worktree '.length);
   expect(await git(home, linked, 'branch', '--show-current')).toBe('wt-branch');
+  // slice 12a rule 16: Create Worktree records the worktree as adopted, and its delete retires the record
+  const sameFolder = (a: string, b: string): boolean => (process.platform === 'win32' ? path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase() : path.resolve(a) === path.resolve(b));
+  const adopted = () => registryRecords(home).find((record) => record.kind === 'adopted' && sameFolder(record.worktreeRoot, linked));
+  await expect.poll(() => adopted()?.branch).toBe('wt-branch');
 
   // a clean worktree still asks, since git deletes its ignored files too
   await answerDialogs(app, { [DELETE_WORKTREE]: 'Cancel' });
@@ -346,6 +382,8 @@ test('Create Worktree adds a linked worktree; Delete Worktree always asks first,
   await expect.poll(async () => (await worktrees()).length).toBe(1);
   expect(fs.existsSync(linked)).toBe(false);
   expect((await askedDialogs(app)).filter((dialog) => (dialog.message + (dialog.detail ?? '')).includes(DIRTY_WORKTREE)).at(-1)).toMatchObject({ severity: 'danger' });
+  // no chat names the deleted record, so it is removed rather than kept as a tombstone
+  await expect.poll(() => adopted()).toBeUndefined();
 });
 
 test('Create Worktree\'s folder button sets the path to the picked folder and the name, and the next Create Worktree starts there', async ({ foreground: _foreground, home, launch }) => {

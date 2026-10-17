@@ -25,7 +25,8 @@ import {
   WINDOW_LAYOUT_FILE,
   WindowLayoutStore,
 } from '../window-layout-store';
-import { DEFAULT_GRID_LAYOUT, MAX_REPOSITORY_ROW_ID_LENGTH, MAX_REPOSITORY_VIEW_CHARS, moveGridPane, toggleGridMaximize, toggleGridPane } from '../../preload/shell-channels';
+import { DEFAULT_GRID_LAYOUT, MAX_GRAPH_CHOICE_REFS, MAX_GRAPH_CHOICES, MAX_REPOSITORY_ROW_ID_LENGTH, MAX_REPOSITORY_VIEW_CHARS, moveGridPane, toggleGridMaximize, toggleGridPane, type GraphRefChoice } from '../../preload/shell-channels';
+import { MAX_SCM_HISTORY_REFS } from '../../preload/scm-channels';
 import { TERMINAL_LIST_DEFAULT_REM, TERMINAL_LIST_MAX_REM, TERMINAL_LIST_MIN_REM } from '../../preload/terminal-channels';
 import { DEFAULT_PERSISTED_TERMINALS } from '../terminal/terminal-service';
 import { flushAcrossHeldRename } from '../../../__mocks__/held-rename';
@@ -139,22 +140,22 @@ describe('parseShellLayout', () => {
 // Each shell part reports only its own fields, so neither report can carry a stale copy of the other's.
 describe('shell reports', () => {
   it('reads the sidebar\'s fields alone from a report', () => {
-    const { sidebarWidth, sections, sectionOrder, search, scm, repositories } = DEFAULT_SHELL_LAYOUT;
-    expect(parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, sidebarVisible: false })).toEqual({ sidebarWidth, sections, sectionOrder, search, scm, repositories });
+    const { sidebarWidth, sections, sectionOrder, search, scm, repositories, graph } = DEFAULT_SHELL_LAYOUT;
+    expect(parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, sidebarVisible: false })).toEqual({ sidebarWidth, sections, sectionOrder, search, scm, repositories, graph });
     expect(parseSidebarLayout({ sidebarWidth: 100, sections, search })).toBeUndefined();
   });
 
   it('keeps the section order the user chose across a relaunch, and refuses one that does not name every section once', async () => {
-    const moved = ['scm', 'projects', 'files', 'chats', 'search', 'repos'] as const;
+    const moved = ['scm', 'graph', 'projects', 'files', 'chats', 'search', 'repos'] as const;
     expect(parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, sectionOrder: moved })?.sectionOrder).toEqual(moved);
-    for (const malformed of [['scm', 'scm', 'files', 'chats', 'search', 'repos'], ['scm', 'projects', 'files', 'chats', 'search'], [...moved, 'terminal'], ['scm', 'projects', 'files', 'chats', 'search', 'other'], 'scm']) {
+    for (const malformed of [['scm', 'scm', 'files', 'chats', 'search', 'repos', 'graph'], ['scm', 'projects', 'files', 'chats', 'search'], [...moved, 'terminal'], ['scm', 'projects', 'files', 'chats', 'search', 'other'], ['graph', 'projects', 'files', 'chats', 'search', 'repos'], 'scm']) {
       expect(parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, sectionOrder: malformed })).toBeUndefined();
       expect(parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, sectionOrder: malformed }, log)?.sectionOrder).toEqual(DEFAULT_SHELL_LAYOUT.sectionOrder);
     }
     expect(lines).toContain('[layout] dropping the malformed section order');
     // a layout written before sections could move keeps the default order
     const { sectionOrder: _order, ...older } = DEFAULT_SHELL_LAYOUT;
-    expect(parseSidebarLayout(older)?.sectionOrder).toEqual(['projects', 'chats', 'files', 'scm', 'repos', 'search']);
+    expect(parseSidebarLayout(older)?.sectionOrder).toEqual(['projects', 'chats', 'files', 'scm', 'graph', 'repos', 'search']);
 
     lines = [];
     const store = new WindowLayoutStore(dir, log);
@@ -166,6 +167,60 @@ describe('shell reports', () => {
     await store.flush();
     expect(new WindowLayoutStore(dir, log).sidebar().sectionOrder).toEqual(DEFAULT_SHELL_LAYOUT.sectionOrder);
     expect(lines).toEqual([]);
+  });
+
+  it('puts the Graph right after Source control in an order 3.9.0 saved, keeping the rest of the arrangement, with no log line', async () => {
+    const saved = ['search', 'scm', 'chats', 'projects', 'repos', 'files'];
+    expect(parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, sectionOrder: saved }, log)?.sectionOrder).toEqual(['search', 'scm', 'graph', 'chats', 'projects', 'repos', 'files']);
+    expect(parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, sectionOrder: ['projects', 'chats', 'files', 'repos', 'search', 'scm'] }, log)?.sectionOrder).toEqual(['projects', 'chats', 'files', 'repos', 'search', 'scm', 'graph']);
+    // a 3.9.0 file: six ids and no Graph size, read through the store
+    const { graph: _size, ...sections } = DEFAULT_SHELL_LAYOUT.sections;
+    const { graph: _choices, ...older } = DEFAULT_SHELL_LAYOUT;
+    writeFile({ version: 2, sidebar: { ...older, sections, sectionOrder: saved } });
+    const read = new WindowLayoutStore(dir, log).sidebar();
+    expect(read.sectionOrder).toEqual(['search', 'scm', 'graph', 'chats', 'projects', 'repos', 'files']);
+    expect(read.sections.graph).toEqual({ collapsed: false, size: 190 });
+    expect(read.graph).toEqual({});
+    expect(lines).toEqual([]);
+  });
+
+  it('starts the Graph open at 190 px right after Source control, and keeps a missing Graph size at its default', () => {
+    expect(DEFAULT_SHELL_LAYOUT.sectionOrder).toEqual(['projects', 'chats', 'files', 'scm', 'graph', 'repos', 'search']);
+    expect(DEFAULT_SHELL_LAYOUT.sections.graph).toEqual({ collapsed: false, size: 190 });
+    const { graph: _graph, ...sections } = DEFAULT_SHELL_LAYOUT.sections;
+    expect(parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, sections })?.sections.graph).toEqual({ collapsed: false, size: 190 });
+    expect(parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, sections: { ...sections, graph: { collapsed: true, size: 10 } } })).toBeUndefined();
+  });
+
+  it('keeps the Graph\'s ref choice per repository root, bounded, refusing a malformed shell report whole and dropping a malformed file entry alone', async () => {
+    const root = path.resolve(dir, 'repo');
+    const choices: Record<string, GraphRefChoice> = { [root]: ['refs/heads/main', 'refs/remotes/origin/main'], [path.resolve(dir, 'b')]: 'all', [path.resolve(dir, 'c')]: 'auto' };
+    expect(parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, graph: choices })?.graph).toEqual(choices);
+    for (const bad of [
+      { relative: 'auto' },
+      { [root]: 'some' },
+      { [root]: [] },
+      { [root]: ['main'] },
+      { [root]: ['refs/heads/a..b'] },
+      { [root]: ['refs/heads/main', 'refs/heads/main'] },
+      { [root]: Array.from({ length: MAX_GRAPH_CHOICE_REFS + 1 }, (_, i) => `refs/heads/b${i}`) },
+      [],
+    ]) {
+      expect(parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, graph: bad })).toBeUndefined();
+    }
+    expect(parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, graph: { ...choices, relative: 'auto' } }, log)?.graph).toEqual(choices);
+    expect(lines).toContain('[layout] dropping a malformed Graph ref choice');
+    // past MAX_GRAPH_CHOICES the shell's report is refused, and the file keeps the newest
+    const many = Object.fromEntries(Array.from({ length: MAX_GRAPH_CHOICES + 1 }, (_, i) => [path.resolve(dir, `r${i}`), 'all']));
+    expect(parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, graph: many })).toBeUndefined();
+    expect(Object.keys(parseSidebarLayout({ ...DEFAULT_SHELL_LAYOUT, graph: many }, log)?.graph ?? {})).toEqual(Object.keys(many).slice(1));
+    expect(MAX_GRAPH_CHOICE_REFS).toBe(MAX_SCM_HISTORY_REFS);
+    // Restore default layout keeps the choices, as it keeps the Search states
+    const store = new WindowLayoutStore(dir, log);
+    store.setSidebar({ ...DEFAULT_SHELL_LAYOUT, graph: choices });
+    store.reset();
+    expect(store.sidebar().graph).toEqual(choices);
+    await store.flush();
   });
 
   it('keeps each project\'s expanded Repositories rows, bounded, and drops a malformed entry alone', () => {
@@ -249,12 +304,13 @@ describe('grid layout', () => {
     writeFile({ version: 1, sidebar: v1Sidebar });
     expect(new WindowLayoutStore(dir, log).sidebar()).toEqual({
       ...v1Sidebar,
-      sections: { ...v1Sidebar.sections, files: DEFAULT_SHELL_LAYOUT.sections.files, search: DEFAULT_SHELL_LAYOUT.sections.search, repos: DEFAULT_SHELL_LAYOUT.sections.repos, scm: DEFAULT_SHELL_LAYOUT.sections.scm },
+      sections: { ...v1Sidebar.sections, files: DEFAULT_SHELL_LAYOUT.sections.files, search: DEFAULT_SHELL_LAYOUT.sections.search, repos: DEFAULT_SHELL_LAYOUT.sections.repos, scm: DEFAULT_SHELL_LAYOUT.sections.scm, graph: DEFAULT_SHELL_LAYOUT.sections.graph },
       sectionOrder: DEFAULT_SHELL_LAYOUT.sectionOrder,
       grid: DEFAULT_GRID_LAYOUT,
       search: {},
       scm: DEFAULT_SHELL_LAYOUT.scm,
       repositories: {},
+      graph: {},
     });
     expect(lines).toEqual([]);
   });
@@ -589,6 +645,22 @@ describe('WindowLayoutStore', () => {
     const read = new WindowLayoutStore(dir, log);
     expect(read.scmSelected('p')).toBeUndefined();
     expect(read.scmSelected('q')).toBe(path.resolve('/q'));
+  });
+
+  it('forgets a deleted worktree\'s selected repository, Search state and expanded rows, and keeps the project\'s', async () => {
+    const store = new WindowLayoutStore(dir, log);
+    const worktree = 'p\u0000abcd1234';
+    const view = parseSearchViewState({ pattern: 'x', isRegex: false, matchCase: false, wholeWord: false, useExcludeSettingsAndIgnoreFiles: true, replaceOpen: false, include: '', exclude: '' })!;
+    store.setScmSelected('p', path.resolve('/repo'));
+    store.setScmSelected(worktree, path.resolve('/wt'));
+    store.setSidebar({ ...store.sidebar(), search: { p: view, [worktree]: view }, repositories: { p: ['a'], [worktree]: ['b'] } });
+    store.forgetRoot(worktree);
+    await store.flush();
+    const read = new WindowLayoutStore(dir, log);
+    expect(read.scmSelected(worktree)).toBeUndefined();
+    expect(read.scmSelected('p')).toBe(path.resolve('/repo'));
+    expect(Object.keys(read.sidebar().search)).toEqual(['p']);
+    expect(read.sidebar().repositories).toEqual({ p: ['a'] });
   });
 
   it('keeps the newest selections past the bound, as a new selection evicts the oldest, and forgets them when layouts are not restored', async () => {

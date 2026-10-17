@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n';
 import type { ToolCall } from '@shared/types/session';
 import type { FormFieldSchema, FormResult } from '@shared/types/forms';
 
-import { Ban, CircleCheck, CircleX, Lock, SquarePen } from 'lucide-vue-next';
+import { Ban, CircleCheck, CircleX, Lock, ShieldBan, SquarePen } from 'lucide-vue-next';
 import ToolCardFrame from './ToolCardFrame.vue';
 import ToolCardNote from './ToolCardNote.vue';
 
@@ -86,6 +86,8 @@ const isAwaitingApproval = computed(() => props.toolCall.status === 'awaiting_ap
 const isFailed = computed(() => props.toolCall.status === 'failed');
 const isDenied = computed(() => props.toolCall.status === 'denied');
 const isAbandoned = computed(() => props.toolCall.status === 'abandoned');
+const isCancelled = computed(() => props.toolCall.status === 'cancelled');
+const isBlocked = computed(() => props.toolCall.status === 'blocked');
 
 const headerText = computed(() => {
   const title = schema.value.title;
@@ -186,6 +188,19 @@ const headerText = computed(() => {
       tone="text-(--d-danger)"
       :icon="CircleX"
       :text="t('formTool.cancelled')"
+    />
+    <ToolCardNote
+      v-else-if="isCancelled"
+      tone="text-(--d-muted)"
+      :icon="Ban"
+      :text="t('formTool.cancelled')"
+    />
+    <ToolCardNote
+      v-else-if="isBlocked && toolCall.feedback"
+      tone="text-(--d-muted)"
+      :icon="ShieldBan"
+      :text="toolCall.feedback"
+      data-testid="tool-card-blocked-reason"
     />
     <ToolCardNote
       v-else-if="isFailed"

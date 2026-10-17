@@ -16,6 +16,7 @@ export function createOverlaySettingsBridge(api: DamoclesOverlayApi): OverlaySet
   let generation: number | null = null;
   let state: unknown;
   return {
+    host: 'overlay',
     setGeneration(next) {
       generation = next;
     },

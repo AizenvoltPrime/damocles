@@ -1,11 +1,30 @@
 import { describe, expect, it } from 'vitest';
-import { ChatWorkQueue, chatsToUnload, isActiveActivity, RETAINED_IDLE_CHATS, type PooledChat } from '../chat-pool';
+import { ChatWorkQueue, chatsToUnload, holdsWorktreeSetup, isActiveActivity, RETAINED_IDLE_CHATS, type PooledChat } from '../chat-pool';
 
 function chat(id: string, lastViewed: number, overrides: Partial<PooledChat> = {}): PooledChat {
   return { id, selected: false, active: false, restoring: false, hasSession: true, empty: false, lastViewed, ...overrides };
 }
 
 describe('chatsToUnload', () => {
+  it('keeps an empty chat while its worktree is being created or set up or failed to be created, and drops one whose opt-in did no git work yet (rule 6)', () => {
+    const chats = [
+      chat('pending', 1, { empty: true, hasSession: false, worktreePhase: 'pending' }),
+      chat('creating', 2, { empty: true, hasSession: false, worktreePhase: 'creating' }),
+      chat('settingUp', 3, { empty: true, hasSession: false, worktreePhase: 'settingUp' }),
+      chat('setupFailed', 4, { empty: true, hasSession: false, worktreePhase: 'setupFailed' }),
+      chat('createFailed', 4, { empty: true, hasSession: false, worktreePhase: 'createFailed' }),
+      chat('ready', 5, { empty: true, hasSession: false, worktreePhase: 'ready' }),
+      chat('selected', 6, { selected: true }),
+    ];
+    expect(chatsToUnload(chats).sort()).toEqual(['pending', 'ready']);
+    expect(['pending', 'creating', 'settingUp', 'setupFailed', 'createFailed', 'ready', 'none', 'deleted', undefined].filter((phase) => holdsWorktreeSetup(phase as never))).toEqual(['creating', 'settingUp', 'setupFailed', 'createFailed']);
+  });
+
+  it('counts a chat in setup as active, so the idle budget still keeps three others', () => {
+    const chats = [chat('setup', 0, { worktreePhase: 'settingUp' }), ...[1, 2, 3, 4].map((n) => chat(`c${n}`, n))];
+    expect(chatsToUnload(chats)).toEqual(['c1']);
+  });
+
   it('keeps the selected chat and the 3 most recently viewed idle chats of 6 stored ones', () => {
     const chats = [1, 2, 3, 4, 5, 6].map((n) => chat(`c${n}`, n, { selected: n === 6 }));
     expect(RETAINED_IDLE_CHATS).toBe(3);

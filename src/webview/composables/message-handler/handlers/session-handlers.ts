@@ -46,6 +46,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
     sessionStarted: (msg, ctx) => {
       const { sessionStore } = ctx.stores;
       const { bridge } = ctx;
+      ctx.stores.uiStore.placePending = false;
       sessionStore.setCurrentSession(msg.sessionId);
       sessionStore.setResumedSession(msg.sessionId);
       if (sessionStore.selectedSessionId !== msg.sessionId) sessionStore.setSelectedSession(msg.sessionId);
@@ -65,6 +66,12 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       streamingStore.$reset();
       teamStore.$reset();
       sessionStore.clearSessionData();
+      // Core says where the resumed session works before it replays it; until then the composer stays unmounted and the previous
+      // chat's worktree state is gone. A hand-off continues the conversation on screen, so its composer, draft and state stay.
+      if (!msg.continued) {
+        ctx.stores.uiStore.worktree = null;
+        if (ctx.stores.settingsStore.hostCapabilities.worktrees) ctx.stores.uiStore.placePending = true;
+      }
       sessionStore.setResumedSession(msg.sessionId);
       sessionStore.setSelectedSession(msg.sessionId, sessionName);
       bridge.setState({ ...bridge.getState<{ sessionId?: string; sessionName?: string | null }>(), sessionId: msg.sessionId, sessionName });
@@ -118,6 +125,8 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       settingsViewHandlers.workspaceFolderUpdate(msg, ctx);
       if (msg.switched) {
         resetConversationState(ctx);
+        // The new folder's session publishes its own worktree state, or that it has none, once it starts.
+        ctx.stores.uiStore.worktree = null;
         // Project memories and the project profile belong to the folder, so reload them for the new one.
         ctx.stores.memoryStore.clearFolderData();
         // The extension re-sends the new folder's Compass status after this update.

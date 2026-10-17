@@ -7,6 +7,7 @@ import { isImageBlock, type ImageBlock } from "@shared/types/content";
 import MarkdownRenderer from "./MarkdownRenderer.vue";
 import UserMessageImageChip from "./UserMessageImageChip.vue";
 import TerminalAttachmentChip from "./TerminalAttachmentChip.vue";
+import CommitAttachmentChip from "./CommitAttachmentChip.vue";
 import { ArrowUp, Check, ChevronDown, ChevronRight, ChevronUp, Copy, Database, Pin, RotateCcw, X } from "lucide-vue-next";
 import { formatClock } from "@/utils/clock";
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard";
@@ -299,11 +300,19 @@ onUnmounted(() => {
             class="mb-2 flex flex-wrap gap-1.5"
             data-testid="user-message-terminal-attachments"
           >
-            <TerminalAttachmentChip
+            <template
               v-for="attachment in message.terminalAttachments"
               :key="attachment.id"
-              :attachment="attachment"
-            />
+            >
+              <CommitAttachmentChip
+                v-if="attachment.kind === 'commit'"
+                :attachment="attachment"
+              />
+              <TerminalAttachmentChip
+                v-else
+                :attachment="attachment"
+              />
+            </template>
           </div>
           <div
             v-if="imageBlocks.length > 0"

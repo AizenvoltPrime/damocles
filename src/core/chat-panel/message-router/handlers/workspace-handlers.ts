@@ -8,12 +8,13 @@ import { listWorkspaceFiles } from "../../ripgrep";
 import { resolveSessionFilePath } from "../../session-file-path";
 import { findSessionPlanFiles } from "../../../paths";
 import { findAgentFile, subagentsDir } from "../../../pi-session/agent-records";
-import { ensurePiSessionDir } from "../../../pi-session/session-store/session-dir";
+import { piSessionDirOf } from "../../../pi-session/session-store/reading";
 import { log } from "../../../logger";
 import { t } from "../../../l10n";
 import { openMarkdownPreview } from "../../markdown-preview";
 import { mentionInChat } from "../../mention-resolver";
 import { parseFileDragTarget } from "../../../../shared/file-drag";
+import { WORKTREE_ACTIONS } from "../../../../shared/types/messages";
 import { isSettingsAccountId, isSettingsSectionId } from "../../../../shared/settings-sections";
 
 function hasPathTraversal(slug: string): boolean {
@@ -104,6 +105,29 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       platform.window.toggleTerminal();
     },
 
+    // The header counter shows only where the host opens the review tab, so no other host is ever asked.
+    openChatReview: async (msg, ctx) => {
+      if (msg.type !== "openChatReview") return;
+      if (msg.scope !== "chat" && msg.scope !== "turn") throw new Error("Unknown chat review scope");
+      if (!platform.capabilities.chatReview) throw new Error("The host has no chat review");
+      await platform.editor.showChatReview(ctx.panelId, msg.scope);
+    },
+
+    // Both come from the webview: the values are checked here, and the chat's state again where they act.
+    worktreeAction: async (msg, ctx) => {
+      if (msg.type !== "worktreeAction") return;
+      if (!platform.capabilities.worktrees) throw new Error("The host has no worktree chats");
+      if (!(WORKTREE_ACTIONS as readonly string[]).includes(msg.action)) throw new Error("Unknown worktree action");
+      await deps.worktrees().action(ctx.panelId, msg.action);
+    },
+
+    chatMove: async (msg, ctx) => {
+      if (msg.type !== "chatMove") return;
+      if (!platform.capabilities.worktrees) throw new Error("The host has no worktree chats");
+      if (msg.to !== "worktree" && msg.to !== "project") throw new Error("Unknown chat place");
+      await deps.worktrees().chatMove(ctx.panelId, msg.to);
+    },
+
     openSessionLog: async (_msg, ctx) => {
       const sessionId = ctx.session.persistenceSessionId;
       const filePath = sessionId ? await resolveSessionFilePath(ctx.folder.fsPath, sessionId) : null;
@@ -121,7 +145,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
         if (hasPathTraversal(msg.agentId)) throw new Error("Invalid agent id");
         const sessionId = ctx.session.persistenceSessionId;
         if (!sessionId) throw new Error("No active session");
-        const filePath = await findAgentFile(subagentsDir(ensurePiSessionDir(ctx.folder.fsPath), sessionId), msg.agentId);
+        const filePath = await findAgentFile(subagentsDir(piSessionDirOf(ctx.folder.fsPath, sessionId), sessionId), msg.agentId);
         if (!filePath) {
           void platform.notifications.info(
             t("This agent has no log file. A log is written once the agent receives its task."),

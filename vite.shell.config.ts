@@ -4,6 +4,7 @@ import vue from '@vitejs/plugin-vue';
 import tailwindcss from '@tailwindcss/vite';
 import { resolve } from 'path';
 import { DESKTOP_FONT_FILES, DESKTOP_FONT_LICENSES } from './src/desktop/main/desktop-fonts';
+import { shellWorkerTest } from './scripts/shell-workers.mjs';
 
 // Copies the desktop fonts and their licences to dist/desktop-shell/fonts/ under the names theme.ts's @font-face rules load.
 function desktopFonts(): Plugin {
@@ -34,15 +35,15 @@ function requiredPageAssets(): Plugin {
   };
 }
 
-// The shell ships only Monaco's editor, JSON and TypeScript workers (docs/invariants.md, "Only the desktop chat panel page and the shell page allow workers"); any other worker entry fails the build.
-const SHELL_WORKER = /\/node_modules\/monaco-editor\/esm\/vs\/.*\/(?:editor|json|ts)\.worker\.js$/;
+// Any worker entry scripts/shell-workers.mjs does not allow fails the build.
 function shellWorkersOnly(): Plugin {
+  const allowed = shellWorkerTest(__dirname);
   return {
     name: 'damocles-shell-workers-only',
     generateBundle(_options, bundle) {
       for (const file of Object.values(bundle)) {
-        const entry = file.type === 'chunk' && file.isEntry ? file.facadeModuleId?.replace(/\\/g, '/') ?? file.fileName : undefined;
-        if (entry !== undefined && !SHELL_WORKER.test(entry)) this.error(`worker ${entry} is not one the shell may ship`);
+        const entry = file.type === 'chunk' && file.isEntry ? file.facadeModuleId ?? file.fileName : undefined;
+        if (entry !== undefined && !allowed(entry)) this.error(`worker ${entry} is not one the shell may ship`);
       }
     },
   };

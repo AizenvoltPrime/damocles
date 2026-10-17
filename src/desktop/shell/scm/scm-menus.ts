@@ -68,15 +68,24 @@ export type ScmAction =
   | 'stageAll' | 'unstageAll' | 'discardAll' | 'stageAllTracked' | 'stageAllUntracked' | 'discardAllTracked' | 'discardAllUntracked'
   | 'stageAllMerge' | 'openGroupChanges'
   | 'closeRepository' | 'closeOtherRepositories' | 'reopenClosed' | 'showOutput'
-  | 'openChanges' | 'openFile' | 'openFileHead' | 'stage' | 'unstage' | 'discard' | 'addToGitignore'
+  | 'openChanges' | 'compareWithWorkspace' | 'openFile' | 'openFileHead' | 'stage' | 'unstage' | 'discard' | 'addToGitignore'
   | 'copyPath' | 'copyRelativePath' | 'reveal' | 'mention'
+  | 'resolveInMergeEditor' | 'acceptAllCurrent' | 'acceptAllIncoming' | 'openTimeline'
   | ScmCommitAction | 'undoLastCommit' | 'abortRebase' | 'restoreCommitTemplate' | 'toggleAmend' | 'commitPush' | 'commitSync'
-  | RemoteAction | 'clone' | RefAction | StashAction | StashRowAction | 'stashChanges' | ArtifactAction;
+  | RemoteAction | 'clone' | RefAction | StashAction | StashRowAction | 'stashChanges' | ArtifactAction | GraphCommitAction | GraphRefAction;
+
+// A Graph commit row's actions (VS Code's scm/historyItem/context, in the plan's order), each on that row's commit.
+export type GraphCommitAction =
+  | 'openCommit' | 'checkoutCommit' | 'createBranchAtCommit' | 'createTagAtCommit' | 'cherryPick'
+  | 'compareCommit' | 'compareWithRemote' | 'compareWithMergeBase' | 'copyCommitId' | 'copyCommitMessage' | 'addCommitToChat' | 'explainCommit';
+
+// A Graph ref badge's actions (VS Code's scm/historyItemRef/context, with Delete Remote Branch split out).
+export type GraphRefAction = 'checkoutRef' | 'deleteBranchRef' | 'deleteRemoteBranchRef' | 'deleteTagRef';
 
 // A Repositories branch, tag or worktree row's actions (D58, VS Code's scm/artifact/context), each on that row.
 export type ArtifactAction =
   | 'checkoutRef' | 'checkoutRefDetached' | 'mergeRef' | 'rebaseRef' | 'createBranchFromRef' | 'deleteRef' | 'compareRef'
-  | 'copyBranchName' | 'copyTagName' | 'copyCommitHash' | 'openWorktree' | 'deleteWorktreeRow' | 'copyWorktreePath';
+  | 'copyBranchName' | 'copyTagName' | 'copyCommitHash' | 'openWorktree' | 'deleteWorktreeRow' | 'copyWorktreePath' | 'newChatInWorktree';
 
 // The commands of VS Code's git.pullpush and git.remotes submenus.
 export type RemoteAction =
@@ -108,7 +117,10 @@ export type ScmDisabledReason =
   | 'cherryPickInProgress'
   | 'checkedOut'
   | 'mainWorktree'
-  | 'currentWorktree';
+  | 'currentWorktree'
+  | 'noUpstream'
+  | 'noBaseRef'
+  | 'currentUpstream';
 
 export interface ScmMenuEntry {
   readonly action: ScmAction;
@@ -449,8 +461,9 @@ export function tagRowMenu(tag: Pick<ScmTagArtifact, 'current' | 'commit'>): Scm
  * A worktree row's menu (D58: Open in place of VS Code's two Open Worktree commands). Delete is off on the main worktree and
  * on the repository's own, which git cannot remove; the copies need a branch and a commit.
  */
-export function worktreeRowMenu(worktree: Pick<ScmWorktreeArtifact, 'main' | 'current' | 'branch' | 'commit'>): ScmMenuNode[] {
+export function worktreeRowMenu(worktree: Pick<ScmWorktreeArtifact, 'main' | 'current' | 'branch' | 'commit' | 'newChatIn'>): ScmMenuNode[] {
   return [
+    ...(worktree.newChatIn ? [{ action: 'newChatInWorktree', label: 'newChatInWorktree', icon: 'plus' } as const] : []),
     { action: 'openWorktree', label: 'openWorktree', icon: 'arrow-up-right' },
     SEPARATOR,
     { action: 'deleteWorktreeRow', label: 'deleteRef', icon: 'trash-2', danger: true, ...disabledBy(worktree.main && 'mainWorktree', worktree.current && 'currentWorktree') },
@@ -646,14 +659,27 @@ export function rowActions(group: ScmGroup): RowInlineAction[] {
 
 // No HEAD side: the file is new in this change.
 const NO_HEAD = new Set<ScmChange['status']>(['UNTRACKED', 'INDEX_ADDED', 'INTENT_TO_ADD', 'ADDED_BY_US', 'ADDED_BY_THEM', 'BOTH_ADDED']);
+// The index holds all three stages (UU, AA), so the merge editor has both inputs; any other merge row keeps its file actions.
+export const MERGE_EDITOR_STATUSES: ReadonlySet<ScmChange['status']> = new Set(['BOTH_MODIFIED', 'BOTH_ADDED']);
 
-/** A change row's context menu (scm/resourceState/context). */
-export function rowMenu(group: ScmGroup, change: ScmChange): ScmMenuNode[] {
+/** A change row's context menu (scm/resourceState/context); inWorktree adds B40's Compare with Workspace. */
+export function rowMenu(group: ScmGroup, change: ScmChange, inWorktree = false): ScmMenuNode[] {
   return [
     { action: 'openChanges', label: 'openChanges', icon: 'git-compare' },
+    ...(inWorktree && change.status !== 'DELETED' ? [{ action: 'compareWithWorkspace', label: 'compareWithWorkspace', icon: 'columns-2' } as const] : []),
     { action: 'openFile', label: 'openFile', icon: 'file' },
     ...(NO_HEAD.has(change.status) ? [] : [{ action: 'openFileHead', label: 'openFileHead', icon: 'file-clock' } as const]),
+    { action: 'openTimeline', label: 'openTimeline', icon: 'history' },
     SEPARATOR,
+    // VS Code's git.openMergeEditor and merge-conflict's scm/resourceState/context items on the Merge Changes group
+    ...(group === 'merge'
+      ? [
+          ...(MERGE_EDITOR_STATUSES.has(change.status) ? [{ action: 'resolveInMergeEditor', label: 'resolveInMergeEditor', icon: 'git-merge' } as const] : []),
+          { action: 'acceptAllCurrent', label: 'acceptAllCurrent', icon: 'circle-dot' } as const,
+          { action: 'acceptAllIncoming', label: 'acceptAllIncoming', icon: 'arrow-down-to-line' } as const,
+          SEPARATOR,
+        ]
+      : []),
     ...(group === 'index'
       ? [{ action: 'unstage', label: 'unstage', icon: 'minus' } as const]
       : group === 'merge'
@@ -689,3 +715,101 @@ export function groupMenu(group: ScmGroup, untrackedChanges: ScmSettings['untrac
 export function actionsMenu(actions: readonly GroupInlineAction[]): ScmMenuNode[] {
   return actions.map((entry) => ({ action: entry.action, label: entry.label, icon: entry.icon, ...(entry.danger ? { danger: true as const } : {}) }));
 }
+
+export interface GraphCommitMenuContext {
+  // HEAD's branch has an upstream (VS Code's scmCurrentHistoryItemRefHasRemote)
+  readonly hasUpstream: boolean;
+  // HEAD's branch has a base ref other than its upstream (scmCurrentHistoryItemRefHasBase)
+  readonly hasBase: boolean;
+  // a merge, rebase or cherry-pick in progress, during which git cannot cherry-pick (the palette command's rule)
+  readonly operation: ScmOperation | null;
+}
+
+/**
+ * A Graph commit row's menu (A.4): Open Changes, then VS Code's scm/historyItem/context groups in the plan's order, its chat
+ * group last.
+ */
+export function graphCommitMenu(context: GraphCommitMenuContext): ScmMenuNode[] {
+  return [
+    { action: 'openCommit', label: 'openChanges', icon: 'git-compare' },
+    SEPARATOR,
+    { action: 'checkoutCommit', label: 'checkoutRefDetached', icon: 'circle-dot' },
+    { action: 'createBranchAtCommit', label: 'createBranch', icon: 'git-branch-plus' },
+    { action: 'createTagAtCommit', label: 'createTag', icon: 'tag' },
+    { action: 'cherryPick', label: 'cherryPick', icon: 'cherry', ...disabledBy(context.operation !== null && OPERATION_REASONS[context.operation]) },
+    SEPARATOR,
+    { action: 'compareCommit', label: 'compareRef', icon: 'git-compare' },
+    { action: 'compareWithRemote', label: 'compareWithRemote', icon: 'cloud', ...disabledBy(!context.hasUpstream && 'noUpstream') },
+    { action: 'compareWithMergeBase', label: 'compareWithMergeBase', icon: 'git-fork', ...disabledBy(!context.hasBase && 'noBaseRef') },
+    SEPARATOR,
+    { action: 'copyCommitId', label: 'copyCommitId', icon: 'copy' },
+    { action: 'copyCommitMessage', label: 'copyCommitMessage', icon: 'copy' },
+    SEPARATOR,
+    { action: 'addCommitToChat', label: 'addCommitToChat', icon: 'message-square-plus' },
+    { action: 'explainCommit', label: 'explainCommit', icon: 'sparkles' },
+  ];
+}
+
+/** A Graph commit row's action on that row's commit, by its full hash, which main checks is a commit of the repository. */
+export function graphCommitCall(action: GraphCommitAction, repoId: string, commit: string): ScmRowCall {
+  switch (action) {
+    case 'openCommit': return { run: { op: 'openCommit', repoId, commit } };
+    case 'checkoutCommit': return { run: { op: 'checkout', repoId, detached: true, commit } };
+    case 'createBranchAtCommit': return { run: { op: 'createBranch', repoId, from: false, commit } };
+    case 'createTagAtCommit': return { run: { op: 'createTag', repoId, commit } };
+    case 'cherryPick': return { run: { op: 'cherryPick', repoId, commit } };
+    case 'compareCommit': return { run: { op: 'compareCommit', repoId, commit } };
+    case 'compareWithRemote': return { run: { op: 'compareWithRemote', repoId, commit } };
+    case 'compareWithMergeBase': return { run: { op: 'compareWithMergeBase', repoId, commit } };
+    case 'copyCommitId': return { copy: { repoId, kind: 'commitId', value: commit } };
+    case 'copyCommitMessage': return { copy: { repoId, kind: 'commitMessage', value: commit } };
+    case 'addCommitToChat': return { run: { op: 'addCommitToChat', repoId, commit } };
+    case 'explainCommit': return { run: { op: 'explainCommit', repoId, commit } };
+  }
+}
+
+const GRAPH_COMMIT_ACTIONS: ReadonlySet<ScmAction> = new Set<GraphCommitAction>([
+  'openCommit', 'checkoutCommit', 'createBranchAtCommit', 'createTagAtCommit', 'cherryPick',
+  'compareCommit', 'compareWithRemote', 'compareWithMergeBase', 'copyCommitId', 'copyCommitMessage', 'addCommitToChat', 'explainCommit',
+]);
+export const isGraphCommitAction = (action: ScmAction): action is GraphCommitAction => GRAPH_COMMIT_ACTIONS.has(action);
+
+// What a ref badge names: a full refname, or 'HEAD' for a detached HEAD, which has no menu.
+const refKindOf = (id: string): 'branch' | 'remote' | 'tag' | undefined =>
+  id.startsWith('refs/heads/') ? 'branch' : id.startsWith('refs/remotes/') ? 'remote' : id.startsWith('refs/tags/') ? 'tag' : undefined;
+
+export interface GraphRefMenuTarget {
+  // full refname
+  readonly id: string;
+  // HEAD's branch
+  readonly current: boolean;
+}
+
+/**
+ * A Graph ref badge's menu (A.4): Checkout, then Delete Branch, Delete Remote Branch or Delete Tag by the ref's kind. HEAD's
+ * branch can be neither checked out nor deleted, and HEAD's upstream is not deleted from here, as VS Code refuses it.
+ */
+export function graphRefMenu(ref: GraphRefMenuTarget, upstream: string | undefined): ScmMenuNode[] {
+  const kind = refKindOf(ref.id);
+  if (kind === undefined) return [];
+  const head = disabledBy(ref.current && 'checkedOut');
+  const remove: ScmMenuEntry = kind === 'branch'
+    ? { action: 'deleteBranchRef', label: 'deleteBranchRef', icon: 'trash-2', danger: true, ...head }
+    : kind === 'remote'
+      ? { action: 'deleteRemoteBranchRef', label: 'deleteRemoteBranchRef', icon: 'trash-2', danger: true, ...disabledBy(ref.id === upstream && 'currentUpstream') }
+      : { action: 'deleteTagRef', label: 'deleteTagRef', icon: 'trash-2', danger: true };
+  return [{ action: 'checkoutRef', label: 'checkoutRef', icon: 'check', ...head }, SEPARATOR, remove];
+}
+
+/** A Graph ref badge's action on that ref, through slice 11b's flows and confirmations. */
+export function graphRefCall(action: GraphRefAction, repoId: string, ref: string): ScmRowCall {
+  switch (action) {
+    case 'checkoutRef': return { run: { op: 'checkout', repoId, detached: false, ref } };
+    case 'deleteBranchRef': return { run: { op: 'deleteBranch', repoId, ref } };
+    case 'deleteRemoteBranchRef': return { run: { op: 'deleteRemoteBranch', repoId, ref } };
+    case 'deleteTagRef': return { run: { op: 'deleteTag', repoId, ref } };
+  }
+}
+
+const GRAPH_REF_ACTIONS: ReadonlySet<ScmAction> = new Set<GraphRefAction>(['checkoutRef', 'deleteBranchRef', 'deleteRemoteBranchRef', 'deleteTagRef']);
+export const isGraphRefAction = (action: ScmAction): action is GraphRefAction => GRAPH_REF_ACTIONS.has(action);

@@ -9,7 +9,7 @@ import type { SteerTargetInfo } from '../../shared/types/subagents';
 import type { ImageBlock } from '../../shared/types/content';
 import type { TeamState as WebviewTeamState } from '../../shared/types/team';
 import { agentInvocationsOnBranch, indexTeamMemberFiles, teamEventLogPath, teamMembersDir, type AgentInvocationData } from '../pi-session/agent-records';
-import { piSessionDir } from '../pi-session/session-store';
+import { piSessionDirOf } from '../pi-session/session-store';
 import { formatTeamUserSteerPrefix } from '../../shared/steer';
 import { oneLine } from '../pi-session/untrusted-text';
 import type { InterruptionCause } from '../pi-session/interruption-notice';
@@ -68,7 +68,7 @@ const unsettledTeams = new Set<string>();
 
 /** Whether a run of the team, draining or still validating its resume included, holds its files in this process. */
 export function isTeamRunningHere(cwd: string, sessionId: string, teamId: string): boolean {
-  return unsettledTeams.has(teamEventLogPath(piSessionDir(cwd), sessionId, teamId));
+  return unsettledTeams.has(teamEventLogPath(piSessionDirOf(cwd, sessionId), sessionId, teamId));
 }
 
 /**
@@ -197,7 +197,7 @@ export class TeamService {
     const runner = new TeamRunner(teamConfig, (msg) => this.deps.onMessage(msg));
 
     this.setActiveTeam(teamId, runner);
-    const unsettledKey = teamEventLogPath(piSessionDir(this.deps.cwd), sessionId, teamId);
+    const unsettledKey = teamEventLogPath(piSessionDirOf(this.deps.cwd, sessionId), sessionId, teamId);
     unsettledTeams.add(unsettledKey);
 
     try {
@@ -229,7 +229,7 @@ export class TeamService {
     }
     const sessionId = this.deps.getSessionId();
     if (!sessionId) throw new Error('Cannot resume a team without an active session');
-    const unsettledKey = teamEventLogPath(piSessionDir(this.deps.cwd), sessionId, teamId);
+    const unsettledKey = teamEventLogPath(piSessionDirOf(this.deps.cwd, sessionId), sessionId, teamId);
     if (unsettledTeams.has(unsettledKey)) {
       throw new Error(`Team "${teamId}" is still running in another panel or shutting down; try again shortly.`);
     }
@@ -267,7 +267,7 @@ export class TeamService {
       if (log.finalStatus === 'completed') throw new Error(`Team "${teamId}" completed and cannot be resumed.`);
       const checkpoint = await persistence.resumableCheckpoint(log);
       if (!checkpoint) throw cannotResume;
-      const files = await indexTeamMemberFiles(teamMembersDir(piSessionDir(this.deps.cwd), sessionId, teamId));
+      const files = await indexTeamMemberFiles(teamMembersDir(piSessionDirOf(this.deps.cwd, sessionId), sessionId, teamId));
       // A live checkpoint can trail the log, so a member's attempt is its latest spawn's when that is newer.
       const spawnAttempts = new Map(log.spawns.map((s) => [s.agentId, s.attempt]));
       const sessionFiles = new Map<string, string>();

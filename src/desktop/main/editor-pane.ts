@@ -6,6 +6,7 @@ import type { ActiveEditorContext, DiffSide } from '../../platform/editor-servic
 import type { SettingsStore } from '../../platform/settings-store';
 import type { SettingsFileScope } from '../../shared/types/messages';
 import { folderKey } from '../../core/workspace-folders/folder-key';
+import { visibleText } from '../../shared/visible-text';
 import {
   type EditorCommand,
   type EditorConflictResult,
@@ -26,10 +27,16 @@ import {
   type ShellEditorDocument,
   type ShellEditorSettings,
   type ShellEditorState,
+  type ShellDiffGit,
   type ShellDiffSide,
   type ShellEditorTab,
+  type ShellFileGit,
+  type ShellMergeTab,
+  type ShellTimelineTab,
 } from '../preload/shell-channels';
 import type { ScmChangesTab } from '../preload/scm-channels';
+import type { ChatReviewTab } from '../preload/review-channels';
+import { parseRootKey } from '../preload/folder-root';
 import {
   EDITOR_AUTO_SAVES,
   EDITOR_AUTO_SAVE_SETTING,
@@ -110,9 +117,19 @@ interface Tab {
     // the root and id of the repository whose change source control opened here (Close All Diff Editors, a disposed repository)
     readonly scmRoot?: string;
     readonly scmRepoId?: string;
+    // the change's file and group, whose index side main refreshes after each status (ShellDiffGit)
+    readonly scmGit?: Omit<ShellDiffGit, 'repoId'>;
   };
   changes?: ChangesTabState;
+  // a chat's review (D60), kept current by its owner
+  review?: ChatReviewTab;
+  timeline?: ShellTimelineTab & { readonly title: string };
+  // the Result is the tab's documentId
+  merge?: Omit<ShellMergeTab, 'documentId'> & { readonly title: string };
 }
+
+// What the active tab is to source control (MenuState.editorGit).
+export type ActiveEditorGit = 'file' | 'workingTreeDiff' | 'indexDiff' | null;
 
 // A persisted tab names its file; ids are issued again on restore.
 export type PersistedTab =
@@ -125,6 +142,9 @@ export type PersistedTab =
   // a saved Search Editor reopens from its .code-search file; an untitled one from its backup, else from its header alone
   | { readonly kind: 'searchEditor'; readonly file: FileRef; readonly backupId?: string }
   | { readonly kind: 'searchEditor'; readonly projectKey?: string; readonly config: SearchEditorConfig; readonly backupId?: string };
+
+// A worktree delete's Don't Save answers: document id to the unsaved text the user answered for.
+export type RootCloseAnswers = ReadonlyMap<string, string>;
 
 export interface PersistedEditor {
   readonly tabs: readonly PersistedTab[];
@@ -167,7 +187,10 @@ export interface EditorPaneDeps {
   readonly showPane: () => void;
   // Open to the Side: the editor pane shows, and a maximized chat or terminal gives way to it
   readonly showPaneBeside: () => void;
+  // every root a tab may name a file in, keyed by root key (folder-root.ts): the open projects and their chat worktrees
   readonly projects: () => readonly Project[];
+  // the branch of a chat worktree's root key, for the tab's chip; undefined for a project folder
+  readonly worktreeBranch: (rootKey: string) => string | undefined;
   readonly copy: (text: string) => Promise<void>;
   readonly reveal: (absolutePath: string) => Promise<void>;
   // Mention this file in chat: core's resolver for the selected chat
@@ -178,8 +201,12 @@ export interface EditorPaneDeps {
   readonly warn: (message: string) => void;
   // a Search Editor's document left with its last tab
   readonly searchEditorClosed: (documentId: string) => void;
+  // a chat review's tab closed, by the user or by its owner
+  readonly reviewClosed: (reviewId: string) => void;
   // a code tab's Open Changes: source control's diff of that file
   readonly openChanges: (absolutePath: string) => Promise<void>;
+  // the file's place in an open repository of a trusted project (ShellEditorTab.git); undefined anywhere else
+  readonly gitOf: (absolutePath: string) => ShellFileGit | undefined;
 }
 
 function readSetting<T>(settings: SettingsStore, key: string, fallback: T): T {
@@ -249,6 +276,13 @@ function sameSubject(a: DiffSubject, b: DiffSubject): boolean {
   return a.place.projectKey === b.place.projectKey && a.place.relativePath === b.place.relativePath && folderKey(a.place.path) === folderKey(b.place.path);
 }
 
+// The one place a tab's title reaches the shell, which shows it in the strip, the menus and as the tab's accessible name.
+// displayPath stays raw because the shell splits it on separators, and escapes it where it shows it; a page's title is the
+// browser's own text, which the shell cleans itself.
+function shownTitle(tab: ShellEditorTab): ShellEditorTab {
+  return { ...tab, title: visibleText(tab.title) };
+}
+
 function placeFields(place: Place): Pick<ShellEditorTab, 'projectKey' | 'relativePath' | 'displayPath'> {
   return {
     ...(place.projectKey !== undefined ? { projectKey: place.projectKey } : {}),
@@ -307,7 +341,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
 
   state(): ShellEditorState {
     return {
-      tabs: [...this.tabs.map((tab) => this.shellTab(tab)), ...this.browserTabs()],
+      tabs: [...this.tabs.map((tab) => shownTitle(this.shellTab(tab))), ...this.browserTabs()],
       activeTabId: this.activeId,
       settings: editorSettings(this.deps.settings),
       documents: this.shellDocuments(),
@@ -448,7 +482,12 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       if (this.tabs.some((other) => other !== tab && other.documentId === edited.id)) continue;
       this.replaceWithFileTab(tab, edited);
     }
-    await this.closeTabs(this.tabs.filter((tab) => tab.changes?.changes.repoId === repoId || repoDiff(tab)).map((tab) => tab.id), { ask: false });
+    const ofRepo = (tab: Tab): boolean => tab.changes?.changes.repoId === repoId || tab.timeline?.repoId === repoId || tab.merge?.repoId === repoId || repoDiff(tab);
+    for (const tab of this.tabs.filter((candidate) => candidate.merge?.repoId === repoId)) {
+      const document = tab.documentId !== undefined ? this.deps.documents.get(tab.documentId) : undefined;
+      if (document && isDocumentDirty(document) && !this.tabs.some((other) => other.kind === 'code' && other.documentId === document.id)) this.showDocument(document);
+    }
+    await this.closeTabs(this.tabs.filter(ofRepo).map((tab) => tab.id), { ask: false });
   }
 
   /** Closes the changes tabs whose content matches, with no question: they hold no edits. */
@@ -466,6 +505,95 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     if (!tab?.changes || JSON.stringify(tab.changes) === JSON.stringify(state)) return;
     tab.changes = state;
     this.stateChanged();
+  }
+
+  /** A chat's review tab: the one of that review updated, else a new one; a user action focuses it. */
+  showReview(review: ChatReviewTab, opts: { readonly focus: boolean }): string {
+    const existing = this.tabs.find((tab) => tab.review?.reviewId === review.reviewId);
+    if (existing) existing.review = review;
+    const tab = existing ?? this.addTab({ id: randomUUID(), kind: 'review', review });
+    this.afterOpen(tab, opts);
+    this.stateChanged();
+    return tab.id;
+  }
+
+  /** The open review tabs' states. */
+  reviewTabs(): readonly ChatReviewTab[] {
+    return this.tabs.flatMap((tab) => (tab.review ? [tab.review] : []));
+  }
+
+  updateReview(review: ChatReviewTab): void {
+    const tab = this.tabs.find((candidate) => candidate.review?.reviewId === review.reviewId);
+    if (!tab || JSON.stringify(tab.review) === JSON.stringify(review)) return;
+    tab.review = review;
+    this.stateChanged();
+  }
+
+  async closeReview(reviewId: string): Promise<void> {
+    await this.closeTabs(this.tabs.filter((tab) => tab.review?.reviewId === reviewId).map((tab) => tab.id), { ask: false });
+  }
+
+  /** A file's Timeline tab, reused for the same file; focused for a user action. */
+  showTimeline(timeline: ShellTimelineTab, title: string, opts: { readonly focus: boolean }): string {
+    const existing = this.tabs.find((tab) => tab.timeline?.repoId === timeline.repoId && tab.timeline.path === timeline.path);
+    const tab = existing ?? this.addTab({ id: randomUUID(), kind: 'timeline', timeline: { ...timeline, title } });
+    this.afterOpen(tab, opts);
+    return tab.id;
+  }
+
+  /** A conflicted file's merge editor tab over its own document (the Result), reused for the same file. */
+  showMerge(merge: Omit<ShellMergeTab, 'documentId'>, document: Document, title: string, opts: { readonly focus: boolean }): string {
+    const existing = this.tabs.find((tab) => tab.kind === 'merge' && tab.documentId === document.id);
+    const tab = existing ?? this.addTab({ id: randomUUID(), kind: 'merge', documentId: document.id, merge: { ...merge, title } });
+    this.afterOpen(tab, opts);
+    return tab.id;
+  }
+
+  /** The merge editor tabs of a file, closed with no question: the Result is the file's own document, which keeps its edits. */
+  async closeMerge(repoId: string, relativePath: string): Promise<void> {
+    const merges = this.tabs.filter((tab) => tab.merge?.repoId === repoId && tab.merge.path === relativePath);
+    // the file's own tab takes over the document first, so closing the merge tab never releases unsaved edits
+    for (const tab of merges) {
+      const document = tab.documentId !== undefined ? this.deps.documents.get(tab.documentId) : undefined;
+      if (document && isDocumentDirty(document) && !this.tabs.some((other) => other.kind === 'code' && other.documentId === document.id)) this.showDocument(document);
+    }
+    await this.closeTabs(merges.map((tab) => tab.id), { ask: false });
+  }
+
+  /** The diff tabs of source control changes, whose git side their owner refreshes. */
+  scmDiffTabs(): ReadonlyArray<{ readonly repoId: string; readonly git: Omit<ShellDiffGit, 'repoId'>; readonly originalId: string; readonly modifiedId: string }> {
+    return this.tabs.flatMap((tab) =>
+      tab.diff?.scmGit && tab.diff.scmRepoId !== undefined ? [{ repoId: tab.diff.scmRepoId, git: tab.diff.scmGit, originalId: tab.diff.originalId, modifiedId: tab.diff.modifiedId }] : [],
+    );
+  }
+
+  /** New text for a git side of a source control diff tab; the shell applies it in place. */
+  replaceGitSide(documentId: string, text: string): void {
+    if (!this.tabs.some((tab) => tab.diff?.scmGit && (tab.diff.originalId === documentId || tab.diff.modifiedId === documentId))) return;
+    this.deps.documents.replaceMemory(documentId, text);
+  }
+
+  /** Repositories opened or closed: the tabs' git places are published again. */
+  gitChanged(): void {
+    this.stateChanged(false);
+  }
+
+  /** The active tab's kind; undefined without one. */
+  activeKind(): EditorTabKind | undefined {
+    if (this.activeId === null) return undefined;
+    const tab = this.tabs.find((candidate) => candidate.id === this.activeId);
+    if (tab) return tab.kind;
+    return this.browserTabs().some((candidate) => candidate.id === this.activeId) ? 'browser' : undefined;
+  }
+
+  /** The active tab to source control: a code tab of a file in an open repository, or a diff of a working tree or index change. */
+  activeGit(): ActiveEditorGit {
+    const tab = this.tabs.find((candidate) => candidate.id === this.activeId);
+    if (!tab) return null;
+    if (tab.diff?.scmGit) return tab.diff.scmGit.group === 'index' ? 'indexDiff' : 'workingTreeDiff';
+    if (tab.kind !== 'code' || tab.documentId === undefined) return null;
+    const location = this.deps.documents.get(tab.documentId)?.location;
+    return location && this.deps.gitOf(location.path) ? 'file' : null;
   }
 
   /** A path core named (a tool card click, the agent): shown in the pane, focused only for a user's click. */
@@ -505,12 +633,13 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     filePath: string,
     left: DiffSide | NotShownSide,
     right: DiffSide | NotShownSide,
-    opts: { readonly focus: boolean; readonly scm?: { readonly root: string; readonly repoId: string } },
+    opts: { readonly focus: boolean; readonly scm?: { readonly root: string; readonly repoId: string; readonly git?: Omit<ShellDiffGit, 'repoId'> } },
   ): Promise<{ close(): void }> {
     const [original, modified] = await Promise.all([this.sideDocument(left), this.sideDocument(right)]);
     const fileSide = 'path' in right ? modified : 'path' in left ? original : undefined;
     const subject: DiffSubject = fileSide ? { documentId: fileSide.id } : { place: await this.placeOfPath(filePath) };
-    const tab = this.openDiffTab(title, original, modified, subject, opts.scm ? { scmRoot: opts.scm.root, scmRepoId: opts.scm.repoId } : {});
+    const scm = opts.scm;
+    const tab = this.openDiffTab(title, original, modified, subject, scm ? { scmRoot: scm.root, scmRepoId: scm.repoId, ...(scm.git ? { scmGit: scm.git } : {}) } : {});
     this.afterOpen(tab, { focus: opts.focus });
     // Edits the user made to the file in this tab are asked about, as VS Code's tabGroups.close asks before closing a dirty editor.
     return { close: () => this.closeTabs([tab.id], { ask: true }) };
@@ -554,6 +683,60 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       return text.has(tab.kind) && document !== undefined && !isDocumentDirty(document) && !(document.location && changed(document.location.path));
     });
     await this.closeTabs(targets.map((tab) => tab.id), { ask: false });
+  }
+
+  /**
+   * A worktree delete's tab questions (rule 14), asked before anything closes: Save, Don't Save or Cancel for each dirty
+   * document a tab of the root shows. Save saves at once, while the root still resolves; Don't Save is remembered with the
+   * text it was given for and drops nothing yet. A document answered earlier whose text is unchanged is not asked again.
+   * undefined: the user cancelled, or a save failed and its tab says why.
+   */
+  async confirmCloseRoot(rootKey: string, answered: RootCloseAnswers = new Map()): Promise<RootCloseAnswers | undefined> {
+    await this.flush();
+    const discarded = new Map(answered);
+    for (const document of this.rootDocuments(rootKey)) {
+      if (document.kind !== 'text' || !isDocumentDirty(document) || discarded.get(document.id) === document.text) continue;
+      const choice = await this.askToSave(document, true);
+      if (choice === 'cancel') return undefined;
+      if (choice === 'discard') discarded.set(document.id, document.text);
+    }
+    return discarded.size === answered.size && [...discarded].every(([id, text]) => answered.get(id) === text) ? answered : discarded;
+  }
+
+  /**
+   * Closes every tab of the root, dropping the unsaved text the user answered Don't Save for; false, closing nothing, when a
+   * document of it holds unsaved text no answer covers.
+   */
+  closeRoot(rootKey: string, answers: RootCloseAnswers): boolean {
+    const documents = this.rootDocuments(rootKey);
+    if (documents.some((document) => document.kind === 'text' && isDocumentDirty(document) && answers.get(document.id) !== document.text)) return false;
+    const ids = new Set(documents.map((document) => document.id));
+    const targets = this.tabs.filter((tab) => [tab.documentId, tab.diff?.modifiedId, tab.diff?.originalId].some((id) => id !== undefined && ids.has(id)));
+    if (targets.length === 0) return true;
+    this.tabs = this.tabs.filter((tab) => !targets.includes(tab));
+    const held = new Set(this.tabs.flatMap((tab) => [tab.documentId, tab.diff?.originalId, tab.diff?.modifiedId]));
+    for (const tab of targets) {
+      for (const id of tab.diff ? [tab.diff.originalId, tab.diff.modifiedId] : tab.documentId !== undefined ? [tab.documentId] : []) {
+        if (!held.has(id) && this.deps.documents.get(id)) this.releaseDocument(id);
+      }
+      if (tab.review) this.deps.reviewClosed(tab.review.reviewId);
+    }
+    if (targets.some((tab) => tab.id === this.activeId)) this.activateFallback();
+    this.stateChanged();
+    return true;
+  }
+
+  // The documents the root's tabs show: each one's file, or a Search Editor's search, lies in the root.
+  private rootDocuments(rootKey: string): Document[] {
+    const documents = new Map<string, Document>();
+    for (const tab of this.tabs) {
+      for (const id of [tab.documentId, tab.diff?.originalId, tab.diff?.modifiedId]) {
+        const document = id !== undefined ? this.deps.documents.get(id) : undefined;
+        const projectKey = document?.kind === 'text' && document.searchEditor ? document.searchEditor.projectKey : document?.location?.projectKey;
+        if (document && projectKey === rootKey) documents.set(document.id, document);
+      }
+    }
+    return [...documents.values()];
   }
 
   /** Closes the active file tab as Close Editor does; cleanOnly leaves a tab with unsaved edits open. */
@@ -793,9 +976,9 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     const choice = await this.deps.ask({
       severity: 'warning',
       message: dirty.length === 1
-        ? this.deps.t('Do you want to save the changes you made to {0}?', dirty[0]!.name)
+        ? this.deps.t('Do you want to save the changes you made to {0}?', visibleText(dirty[0]!.name))
         : this.deps.t('Do you want to save the changes to the following {0} files?', dirty.length),
-      detail: [...(dirty.length > 1 ? [dirty.map((document) => document.name).join('\n')] : []), this.deps.t('Your changes will be lost if you don\'t save them.')].join('\n\n'),
+      detail: [...(dirty.length > 1 ? [dirty.map((document) => visibleText(document.name)).join('\n')] : []), this.deps.t('Your changes will be lost if you don\'t save them.')].join('\n\n'),
       // Save and Don't Save only; Escape or dismissing the dialog answers undefined, which keeps the app open.
       actions: [dirty.length === 1 ? this.deps.t('Save') : this.deps.t('Save All'), this.deps.t('Don\'t Save')],
       defaultAction: 0,
@@ -903,7 +1086,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       placed = this.deps.t('It could not be reopened.');
     }
     if (typeof placed !== 'string') return placed;
-    this.deps.warn(this.deps.t('The unsaved changes to {0} are in an untitled editor: {1}', backup.name, placed));
+    this.deps.warn(this.deps.t('The unsaved changes to {0} are in an untitled editor: {1}', visibleText(backup.name), placed));
     return this.restoreUntitled(backup);
   }
 
@@ -924,7 +1107,9 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       // A settings buffer belongs to the file it was opened from; the scope names another once the default project moved.
       if (!document.location || folderKey(document.location.path) !== folderKey(target.path)) return this.refuseBackup(document, this.deps.t('That settings file does not apply now.'));
     } else {
-      if (this.liveProjectKey(target.projectKey) === undefined) return this.deps.t('Its project is no longer open.');
+      if (this.liveProjectKey(target.projectKey) === undefined) {
+        return parseRootKey(target.projectKey)?.worktreeId !== undefined ? this.deps.t('Its worktree no longer exists.') : this.deps.t('Its project is no longer open.');
+      }
       const opened = await this.deps.documents.openProjectFile(target.projectKey, target.relativePath, { missing: backup });
       if (!opened.ok) {
         if (opened.reason === 'outside') return this.deps.t('It is now outside its project.');
@@ -968,7 +1153,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     original: Document,
     modified: Document,
     subject: DiffSubject,
-    flags: { readonly conflictCompare?: true; readonly replacePreview?: true; readonly scmRoot?: string; readonly scmRepoId?: string } = {},
+    flags: { readonly conflictCompare?: true; readonly replacePreview?: true; readonly scmRoot?: string; readonly scmRepoId?: string; readonly scmGit?: Omit<ShellDiffGit, 'repoId'> } = {},
   ): Tab {
     const counts = original.kind === 'text' && modified.kind === 'text' ? diffCounts(original.text, modified.text) : { added: 0, removed: 0 };
     return this.addTab({ id: randomUUID(), kind: 'diff', diff: { originalId: original.id, modifiedId: modified.id, title, subject, ...counts, ...flags } });
@@ -1088,7 +1273,8 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   }
 
   // Closing the last tab of a dirty document asks Save, Don't Save or Cancel; Cancel keeps that tab and every later one.
-  private async closeTabs(tabIds: readonly string[], opts: { readonly ask: boolean }): Promise<void> {
+  // cancellable: the question offers Cancel beside Save and Don't Save, for a close that is part of a larger action
+  private async closeTabs(tabIds: readonly string[], opts: { readonly ask: boolean; readonly cancellable?: boolean }): Promise<void> {
     for (const tabId of tabIds) {
       const tab = this.tabs.find((candidate) => candidate.id === tabId);
       if (!tab) {
@@ -1100,30 +1286,33 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       for (const id of documentIds.filter((candidate) => !heldElsewhere(candidate))) {
         const document = this.deps.documents.get(id);
         if (!opts.ask || !document || !isDocumentDirty(document)) continue;
-        if (!(await this.askToSave(document as TextDocument))) return;
+        if ((await this.askToSave(document as TextDocument, opts.cancellable === true)) === 'cancel') return;
       }
       this.tabs = this.tabs.filter((candidate) => candidate !== tab);
       // Asked again after the question: another tab may have opened the document meanwhile.
       for (const id of documentIds) if (!heldElsewhere(id)) this.releaseDocument(id);
+      if (tab.review) this.deps.reviewClosed(tab.review.reviewId);
       if (this.activeId === tab.id) this.activateFallback();
       this.stateChanged();
     }
   }
 
-  private async askToSave(document: TextDocument): Promise<boolean> {
+  // cancel: the user cancelled, or the save failed and its tab says why
+  private async askToSave(document: TextDocument, cancellable: boolean): Promise<'saved' | 'discard' | 'cancel'> {
     const choice = await this.deps.ask({
       severity: 'warning',
-      message: this.deps.t('Do you want to save the changes you made to {0}?', document.name),
+      message: this.deps.t('Do you want to save the changes you made to {0}?', visibleText(document.name)),
       detail: this.deps.t('Your changes will be lost if you don\'t save them.'),
-      // Save and Don't Save only; Escape or dismissing the dialog answers undefined, which keeps the tab open.
+      // Escape or dismissing the dialog answers undefined, which keeps the tab open, as Cancel does.
       actions: [this.deps.t('Save'), this.deps.t('Don\'t Save')],
+      ...(cancellable ? { cancelLabel: this.deps.t('Cancel') } : {}),
       defaultAction: 0,
     });
-    if (choice === undefined) return false;
-    if (choice === 1) return true;
+    if (choice === undefined) return 'cancel';
+    if (choice === 1) return 'discard';
     await this.flush(this.formatsOnSave([document]));
     const result = await this.deps.documents.save(document.id, document.version, document.text);
-    return result.ok;
+    return result.ok ? 'saved' : 'cancel';
   }
 
   private releaseDocument(documentId: string): void {
@@ -1192,17 +1381,40 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     if (tab.changes) {
       return { id: tab.id, kind: 'changes', title: tab.changes.title, displayPath: tab.changes.title, dirty: false, readOnly: true, conflict: false, changes: tab.changes.changes };
     }
+    if (tab.review) {
+      return { id: tab.id, kind: 'review', title: tab.review.title, displayPath: tab.review.title, dirty: false, readOnly: true, conflict: false, review: tab.review };
+    }
+    if (tab.timeline) {
+      const { repoId, path: file, title } = tab.timeline;
+      return { id: tab.id, kind: 'timeline', title, displayPath: file, dirty: false, readOnly: true, conflict: false, timeline: { repoId, path: file } };
+    }
+    if (tab.merge) {
+      const document = this.deps.documents.get(tab.documentId!)!;
+      const { repoId, path: file, title } = tab.merge;
+      return {
+        id: tab.id,
+        kind: 'merge',
+        documentId: document.id,
+        title,
+        ...this.placeOf(document),
+        dirty: isDocumentDirty(document),
+        readOnly: document.kind !== 'text' || document.readOnlyReason !== undefined,
+        conflict: document.kind === 'text' && document.conflict,
+        merge: { repoId, path: file, documentId: document.id },
+      };
+    }
     if (tab.diff) {
       const original = this.deps.documents.get(tab.diff.originalId);
       const modified = this.deps.documents.get(tab.diff.modifiedId);
-      const { originalId, modifiedId, added, removed, conflictCompare, subject } = tab.diff;
+      const { originalId, modifiedId, added, removed, conflictCompare, subject, scmGit, scmRepoId } = tab.diff;
       const sides = { original: diffSide(original, false), modified: diffSide(modified, true) };
+      const git = scmGit && scmRepoId !== undefined ? { git: { repoId: scmRepoId, ...scmGit } } : {};
       return {
         id: tab.id,
         kind: 'diff',
-        diff: { originalId, modifiedId, added, removed, ...(conflictCompare ? { conflictCompare } : {}), ...(sides.original.kind === 'text' && sides.modified.kind === 'text' ? {} : { sides }) },
+        diff: { originalId, modifiedId, added, removed, ...(conflictCompare ? { conflictCompare } : {}), ...(sides.original.kind === 'text' && sides.modified.kind === 'text' ? {} : { sides }), ...git },
         title: tab.diff.title(this.subjectName(subject)),
-        ...('place' in subject ? placeFields(subject.place) : this.placeOf(this.deps.documents.get(subject.documentId))),
+        ...('place' in subject ? this.withBranch(placeFields(subject.place)) : this.placeOf(this.deps.documents.get(subject.documentId))),
         dirty: modified !== undefined && isDocumentDirty(modified),
         readOnly: modified?.kind !== 'text' || modified.readOnlyReason !== undefined,
         ...(modified?.kind === 'text' && modified.readOnlyReason !== undefined ? { readOnlyReason: modified.readOnlyReason } : {}),
@@ -1212,6 +1424,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     const document = this.deps.documents.get(tab.documentId!)!;
     const readOnlyReason = document.kind === 'text' ? document.readOnlyReason : undefined;
     const settingsScope = tab.kind === 'settings' && document.kind === 'text' ? document.settingsScope : undefined;
+    const git = tab.kind === 'code' && document.location ? this.deps.gitOf(document.location.path) : undefined;
     return {
       id: tab.id,
       kind: tab.kind,
@@ -1225,6 +1438,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       ...(document.kind === 'text' && document.orphaned ? { deleted: true as const } : {}),
       ...(settingsScope !== undefined ? { settingsScope } : {}),
       ...(document.kind === 'text' && document.searchEditor ? { searchEditor: this.searchEditorOf(document) } : {}),
+      ...(git ? { git } : {}),
     };
   }
 
@@ -1260,14 +1474,21 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     return scope === 'local' ? 'settings.local.json' : 'settings.json';
   }
 
-  private placeOf(document: Document | undefined): Pick<ShellEditorTab, 'projectKey' | 'relativePath' | 'displayPath'> {
+  private placeOf(document: Document | undefined): Pick<ShellEditorTab, 'projectKey' | 'worktreeBranch' | 'relativePath' | 'displayPath'> {
     const location = document?.location;
     const projectKey = document?.kind === 'text' && document.searchEditor ? document.searchEditor.projectKey : location?.projectKey;
+    const branch = projectKey !== undefined ? this.deps.worktreeBranch(projectKey) : undefined;
     return {
       ...(projectKey !== undefined ? { projectKey } : {}),
+      ...(branch !== undefined ? { worktreeBranch: branch } : {}),
       ...(location?.relativePath !== undefined ? { relativePath: location.relativePath } : {}),
       displayPath: location?.path ?? document?.name ?? '',
     };
+  }
+
+  private withBranch(fields: Pick<ShellEditorTab, 'projectKey' | 'relativePath' | 'displayPath'>): Pick<ShellEditorTab, 'projectKey' | 'worktreeBranch' | 'relativePath' | 'displayPath'> {
+    const branch = fields.projectKey !== undefined ? this.deps.worktreeBranch(fields.projectKey) : undefined;
+    return branch !== undefined ? { ...fields, worktreeBranch: branch } : fields;
   }
 
   private persisted(): PersistedEditor {
@@ -1299,7 +1520,8 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       return { kind: 'searchEditor', ...(projectKey !== undefined ? { projectKey } : {}), config: document.searchEditor.config, ...withBackup };
     }
     if (tab.kind === 'settings') return document.kind === 'text' && document.settingsScope !== undefined ? { kind: 'settings', scope: document.settingsScope, ...withBackup } : undefined;
-    if (tab.kind === 'diff' || tab.kind === 'changes') return undefined;
+    // review and timeline tabs name ids of this run, and a merge tab is never restored (AD8)
+    if (tab.kind === 'diff' || tab.kind === 'changes' || tab.kind === 'review' || tab.kind === 'timeline' || tab.kind === 'merge') return undefined;
     const file = fileRefOf(document);
     if (file) return { kind: tab.kind, file, ...withBackup };
     return document.location ? { kind: tab.kind, path: document.location.path } : undefined;

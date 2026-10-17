@@ -22,8 +22,10 @@ import {
 
 export interface ForkAgentDataInput {
   SessionManager: PiCodingAgentModule['SessionManager'];
-  /** The workspace pi session dir holding both sessions. */
-  sessionDir: string;
+  /** The directory of the source session's file, where its agent data lives. */
+  sourceDir: string;
+  /** The directory of the fork's file, where its agent data goes. */
+  targetDir: string;
   sourceSessionId: string;
   targetSessionId: string;
   /** The fork's branch, root to leaf, as entries of the source session. */
@@ -125,7 +127,7 @@ function asOfIn(content: string): number | undefined {
  * fork point. Each item is copied independently; the returned errors name the items that failed.
  */
 export async function copyForkAgentData(input: ForkAgentDataInput): Promise<Error[]> {
-  const { SessionManager, sessionDir, sourceSessionId, targetSessionId, forkPointMs } = input;
+  const { SessionManager, sourceDir, targetDir, sourceSessionId, targetSessionId, forkPointMs } = input;
   const failures: Error[] = [];
   const attempt = async (label: string, run: () => Promise<void> | void): Promise<void> => {
     try {
@@ -139,8 +141,8 @@ export async function copyForkAgentData(input: ForkAgentDataInput): Promise<Erro
   const subagentIds = new Set(invocations.filter((inv) => inv.kind === 'subagent').map((inv) => inv.id));
   const teamIds = new Set(invocations.filter((inv) => inv.kind === 'team').map((inv) => inv.id));
 
-  const sourceSubagents = subagentsDir(sessionDir, sourceSessionId);
-  const targetSubagents = subagentsDir(sessionDir, targetSessionId);
+  const sourceSubagents = subagentsDir(sourceDir, sourceSessionId);
+  const targetSubagents = subagentsDir(targetDir, targetSessionId);
   let subagentFiles = new Map<string, string>();
   if (subagentIds.size > 0) {
     await attempt('subagent files', async () => {
@@ -154,12 +156,12 @@ export async function copyForkAgentData(input: ForkAgentDataInput): Promise<Erro
 
   for (const teamId of teamIds) {
     await attempt(`team ${teamId} event log`, () =>
-      cutEventLog(teamEventLogPath(sessionDir, sourceSessionId, teamId), teamEventLogPath(sessionDir, targetSessionId, teamId), forkPointMs),
+      cutEventLog(teamEventLogPath(sourceDir, sourceSessionId, teamId), teamEventLogPath(targetDir, targetSessionId, teamId), forkPointMs),
     );
-    const targetMembers = teamMembersDir(sessionDir, targetSessionId, teamId);
+    const targetMembers = teamMembersDir(targetDir, targetSessionId, teamId);
     let memberFiles: string[] = [];
     await attempt(`team ${teamId} members`, async () => {
-      const index = await indexTeamMemberFiles(teamMembersDir(sessionDir, sourceSessionId, teamId));
+      const index = await indexTeamMemberFiles(teamMembersDir(sourceDir, sourceSessionId, teamId));
       memberFiles = [...index.values()].flat().map((f) => f.path);
     });
     for (const file of memberFiles) {
@@ -167,12 +169,12 @@ export async function copyForkAgentData(input: ForkAgentDataInput): Promise<Erro
     }
     let checkpoints: number[] = [];
     await attempt(`team ${teamId} checkpoints`, async () => {
-      checkpoints = await checkpointsAtForkPoint(teamCheckpointsDir(sessionDir, sourceSessionId, teamId), forkPointMs);
+      checkpoints = await checkpointsAtForkPoint(teamCheckpointsDir(sourceDir, sourceSessionId, teamId), forkPointMs);
     });
     for (const cancelledAt of checkpoints) {
       await attempt(`team ${teamId} checkpoint ${cancelledAt}`, () => copyCheckpointAtForkPoint(
-        teamCheckpointPath(sessionDir, sourceSessionId, teamId, cancelledAt),
-        teamCheckpointPath(sessionDir, targetSessionId, teamId, cancelledAt),
+        teamCheckpointPath(sourceDir, sourceSessionId, teamId, cancelledAt),
+        teamCheckpointPath(targetDir, targetSessionId, teamId, cancelledAt),
         cancelledAt,
         forkPointMs,
       ));

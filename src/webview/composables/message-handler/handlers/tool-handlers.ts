@@ -1,6 +1,6 @@
 import { TOOL_AGENT, TEAM_CREATE_TOOL } from "@shared/tool-names";
 import type { HandlerRegistry } from "../types";
-import { extractDenialFeedback } from "../utils";
+import { extractDenialFeedback, refusedStatus } from "../utils";
 import { takeRejectedCancels } from "@/composables/useToolCancel";
 import { endedSubagentStatus } from "@/stores/useSubagentStore";
 
@@ -127,8 +127,9 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
 
     toolFailed: (msg, ctx) => {
       const { uiStore, streamingStore, subagentStore } = ctx.stores;
-      const feedback = extractDenialFeedback(msg.error);
-      const status = feedback !== undefined ? "denied" : "failed";
+      const denial = extractDenialFeedback(msg.error);
+      const status = denial !== undefined ? refusedStatus(denial) : "failed";
+      const feedback = denial?.text;
 
       if (msg.parentToolUseId && subagentStore.hasSubagent(msg.parentToolUseId) && msg.toolName !== TOOL_AGENT) {
         subagentStore.addToolCallToSubagent(msg.parentToolUseId, {
@@ -137,11 +138,12 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
           input: {},
           status,
           errorMessage: msg.error,
+          ...(feedback !== undefined && { feedback }),
           ...(msg.durationMs !== undefined && { durationMs: msg.durationMs }),
         });
       }
 
-      const found = subagentStore.updateSubagentToolStatus(msg.toolUseId, status, undefined, msg.error, msg.durationMs);
+      const found = subagentStore.updateSubagentToolStatus(msg.toolUseId, status, undefined, msg.error, msg.durationMs, undefined, undefined, feedback);
       if (!found) {
         streamingStore.updateToolStatus(msg.toolUseId, status, {
           errorMessage: msg.error,

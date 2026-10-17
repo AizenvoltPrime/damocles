@@ -24,10 +24,12 @@ const behind = computed(() => props.snapshot.upstream?.behind ?? 0);
 const ahead = computed(() => props.snapshot.upstream?.ahead ?? 0);
 const enabled = computed(() => mode.value !== 'none' && !spinning.value && !props.committing);
 
-// VS Code's statusbar tooltips (SyncStatusBar.command, Repository.syncTooltip).
+// VS Code's statusbar tooltips (SyncStatusBar.command, Repository.syncTooltip); with no command, where VS Code's tooltip is
+// empty, the reason, since a disabled control still needs a name.
 const tooltip = computed(() => {
   if (spinning.value) return t('scm.sync.running');
   if (props.committing) return t('scm.sync.committing');
+  if (mode.value === 'none') return props.snapshot.head?.type === 'detached' ? t('scm.sync.detached') : t('scm.sync.unborn');
   const upstream = props.snapshot.upstream;
   if (mode.value === 'publish') return t('scm.sync.publish');
   if (!upstream || (upstream.ahead === 0 && upstream.behind === 0)) return t('scm.sync.sync');
@@ -100,7 +102,7 @@ watch(spinning, (on, was) => {
     :aria-disabled="!enabled || undefined"
     :aria-busy="spinning || undefined"
     class="h-7 shrink-0 gap-1.25 rounded-7 py-0 border border-(--d-border2) bg-(--d-card) px-2.25 font-mono text-11 font-normal text-(--d-muted) transition-colors duration-150 hover:bg-(--d-card) focus-visible:border-(--d-accent) focus-visible:ring-0 focus-visible:ring-offset-0 [&_svg]:size-3"
-    :class="enabled ? 'd-press hover:border-(--d-accent) hover:text-(--d-text)' : 'cursor-default hover:text-(--d-muted)'"
+    :class="[enabled ? 'd-press hover:border-(--d-accent) hover:text-(--d-text)' : 'cursor-default hover:text-(--d-muted)', mode === 'none' && !spinning && !committing ? 'opacity-50' : '']"
     @click="run"
   >
     <span

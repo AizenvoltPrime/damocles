@@ -14,7 +14,7 @@ vi.mock('@/composables/usePlatformBridge', () => ({
 }));
 
 const STATUSES: Record<ToolCall['status'], true> = {
-  pending: true, running: true, awaiting_approval: true, approved: true, denied: true,
+  pending: true, running: true, awaiting_approval: true, approved: true, denied: true, blocked: true,
   completed: true, failed: true, abandoned: true, cancelled: true, unrecorded: true,
 };
 

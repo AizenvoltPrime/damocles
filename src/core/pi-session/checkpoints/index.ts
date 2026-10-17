@@ -81,6 +81,7 @@ export {
   type AutoCheckpointStartResult,
   type AutoCheckpointFinalizeResult,
   type AutoCheckpointSnapshotResult,
+  type PendingBaseline,
   type RestoreOptions,
 } from './auto-checkpoint';
 export {

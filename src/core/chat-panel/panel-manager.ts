@@ -1,11 +1,11 @@
 import * as path from "path";
 import type { Disposable } from "../../platform/disposable";
-import type { Platform } from "../../platform/platform";
+import type { PlatformWithWorktrees } from "../worktrees/host";
 import type { PanelHost } from "../../platform/window-service";
 import { PermissionHandler } from "../permission-handler";
 import { IdeContextManager } from "./ide-context-manager";
 import { MAX_PENDING_TERMINAL_ATTACHMENT_CHARS, TerminalAttachmentManager } from "./terminal-attachment-manager";
-import type { TerminalAttachmentInput } from "../../shared/types/terminal-attachment";
+import type { ChatAttachmentInput } from "../../shared/types/chat-attachment";
 import { log } from "../logger";
 import { mentionInChat, type MentionTarget } from "./mention-resolver";
 import { t } from "../l10n";
@@ -16,14 +16,20 @@ import type { ForkContext, ForkSpawnArgs, StoredSession } from "../../shared/typ
 import type { AttachedView, HostInstance } from "./types";
 import type { PromptTarget } from "./webview-prompts";
 import { claimStoredSession } from "./session-ownership";
+import { PanelWorktrees, type PanelWorktreeStateEvent, type WorktreeOptIn } from "./panel-worktrees";
+import { sessionLeaseBlocker } from "../pi-session/session-store/session-lease";
+import { folderContains } from "../worktrees/registry";
+import type { ChatPlace, WorktreeAction, WorktreeFinishAction } from "../../shared/types/messages";
+import type { UserContentBlock } from "../../shared/types/content";
 import { settingsFolderOf, type FolderChange, type FolderTarget, type WorkspaceFolderRegistry } from "../workspace-folders/folder-registry";
 import { HOST_THEME_STYLE_ID } from "../../shared/host-theme";
-import { PanelActivity, type PanelActivityListener, type PanelTurnSettledListener, type UsageThresholdListener } from "./activity";
+import { PanelActivity, type PanelActivityListener, type PanelChatChangesListener, type PanelTurnSettledListener, type UsageThresholdListener } from "./activity";
 import type { UsageThresholdCrossing } from "../pi-session/usage-thresholds";
 import { SETTINGS_VIEW_MESSAGE_TYPES, SETTINGS_VIEW_REQUEST_TYPES } from "../../shared/settings-view-messages";
 
 /** Why a panel changes folder. Only `'user'` asks before discarding a conversation. */
-export type FolderSwitchReason = "user" | "resume" | "restore" | "folderRemoved";
+/** chatMove: a hand-off (D61) or a worktree chat's first send, which keeps or has no conversation, so nothing is asked. */
+export type FolderSwitchReason = "user" | "resume" | "restore" | "folderRemoved" | "chatMove";
 
 /** Runs on the panel's instance inside the folder task, before queued webview messages are delivered and before a replacement session starts. */
 export type AfterFolderSwitch = (instance: HostInstance) => Promise<void>;
@@ -78,7 +84,7 @@ interface MessageGate {
 }
 
 export interface PanelManagerConfig {
-  platform: Platform;
+  platform: PlatformWithWorktrees;
   createSessionForPanel: (
     host: PanelHost,
     permissionHandler: PermissionHandler,
@@ -106,6 +112,16 @@ export interface PanelManagerConfig {
   inheritSettingsFromPanel: (sourcePanelId: string, newPanelId: string) => void;
   /** Full-session replay (pi fork resumes a pre-truncated branched session — US-013c). */
   loadHistory: (cwd: string, sessionId: string, host: PanelHost, session: ChatSession) => Promise<string[] | null>;
+  /** The stored sessions listed under the open project `projectKey` (a worktree's share count). */
+  storedSessionsOf: (projectKey: string) => Promise<readonly StoredSession[]>;
+}
+
+/** How a host is set up: a fork of a panel, a folder the webview saved, or a new chat bound to a live chat worktree. */
+interface HostSetUpOptions {
+  forkContext?: ForkContext;
+  sourcePanelId?: string;
+  initialFolderKey?: string;
+  worktree?: { readonly projectKey: string; readonly worktreeId: string };
 }
 
 export class PanelManager {
@@ -114,7 +130,7 @@ export class PanelManager {
   private lastActivePanelId: string | null = null;
   private readonly allClosedListeners: Set<() => void> = new Set();
   private readonly resourceRoot: string;
-  private readonly platform: Platform;
+  private readonly platform: PlatformWithWorktrees;
   private readonly createSessionForPanel: PanelManagerConfig["createSessionForPanel"];
   private readonly handleWebviewMessage: PanelManagerConfig["handleWebviewMessage"];
   private readonly sendCurrentSettings: PanelManagerConfig["sendCurrentSettings"];
@@ -144,6 +160,8 @@ export class PanelManager {
   /** At most one settings view per panel. */
   private readonly attachments = new Map<string, AttachedView>();
   private readonly attachmentListeners = new Set<(panelId: string) => void>();
+  /** Opt-ins, held first prompts, hand-offs and owned working folders (slice 12a). */
+  readonly worktrees: PanelWorktrees;
 
   constructor(config: PanelManagerConfig) {
     this.platform = config.platform;
@@ -163,6 +181,23 @@ export class PanelManager {
     this.folderRegistry = config.folderRegistry;
     this.sendFolderState = config.sendFolderState;
     this.releaseFolder = config.releaseFolder;
+    this.worktrees = new PanelWorktrees({
+      platform: this.platform,
+      folderRegistry: this.folderRegistry,
+      panels: () => this.panels,
+      moveTo: (panelId, key, afterSwitch) => this.switchPanelFolder(panelId, key, "chatMove", afterSwitch),
+      post: (panelId, message) => {
+        const instance = this.panels.get(panelId);
+        if (instance) this.postMessage(instance.host, message);
+      },
+      dispatch: (panelId, message) => this.handleWebviewMessage(message, panelId),
+      resumeInto: (instance, sessionId) => this.resumeInto(instance, sessionId),
+      releaseFolder: (key) => this.releaseFolder(key),
+      sessionsClosed: async () => {
+        await Promise.all([...this.closingSessions]);
+      },
+      storedSessionsOf: config.storedSessionsOf,
+    });
     this.folderChangeSubscription = this.folderRegistry.onDidChange((change) => {
       this.onFoldersChanged(change).catch((err) => log("[PanelManager] workspace folder change failed: %O", err));
     });
@@ -183,14 +218,29 @@ export class PanelManager {
     );
   }
 
-  /** Adds terminal output to a loaded chat's composer as a pending attachment; the host has already capped and cleaned it. False when refused. */
-  addTerminalAttachment(panelId: string, attachment: TerminalAttachmentInput): boolean {
+  /**
+   * Adds terminal output or a commit to a loaded chat's composer as a pending attachment; the host has already capped and
+   * cleaned it. False when refused.
+   */
+  addTerminalAttachment(panelId: string, attachment: ChatAttachmentInput): boolean {
     const instance = this.panels.get(panelId);
     if (!instance) throw new Error('The chat is not loaded');
     if (instance.terminalAttachments.add(attachment)) return true;
     const limit = MAX_PENDING_TERMINAL_ATTACHMENT_CHARS.toLocaleString(this.platform.localization.language);
-    void this.platform.notifications.warn(t('Not added to the chat: its attached terminal output would pass {0} characters. Send or remove an attachment first.', limit));
+    void this.platform.notifications.warn(attachment.kind === 'commit'
+      ? t('Not added to the chat: with this commit its attachments would pass {0} characters. Send or remove an attachment first.', limit)
+      : t('Not added to the chat: its attached terminal output would pass {0} characters. Send or remove an attachment first.', limit));
     return false;
+  }
+
+  /** Puts text in a loaded chat's composer after its draft, which it never replaces; nothing is sent. */
+  async appendToComposer(panelId: string, text: string): Promise<void> {
+    const instance = this.panels.get(panelId);
+    if (!instance) throw new Error("The chat is not loaded");
+    await instance.webviewReady;
+    // The ready gate also settles when the panel closes, which leaves no composer to write into.
+    if (this.panels.get(panelId) !== instance) return;
+    this.postMessage(instance.host, { type: "composerAppend", text });
   }
 
   /** Fires once each time a panel's session is bound, then on every change of its activity or stored session id. */
@@ -200,6 +250,11 @@ export class PanelManager {
 
   onTurnSettled(listener: PanelTurnSettledListener): Disposable {
     return this.activity.onTurnSettled(listener);
+  }
+
+  /** What each panel's chat changed (D60), on every recompute; only a host with HostCapabilities.chatReview reports it. */
+  onChatChanges(listener: PanelChatChangesListener): Disposable {
+    return this.activity.onChatChanges(listener);
   }
 
   /** A subscription usage window crossed 80% or 95%; process-wide, not tied to a panel. */
@@ -344,9 +399,19 @@ export class PanelManager {
     }
   }
 
+  /**
+   * Opens a new chat on `host` bound to the live chat worktree `worktreeId` of the open project `projectKey`; its first
+   * session starts in the working folder. Resolves the panel id; rejects, with no panel left registered, when the worktree is
+   * refused or the session cannot start.
+   */
+  async startInWorktree(host: PanelHost, projectKey: string, worktreeId: string): Promise<string> {
+    host.setHtml(this.getHtmlContent(host));
+    return this.initializeHost(host, { worktree: { projectKey, worktreeId } });
+  }
+
   initializeHost(
     host: PanelHost,
-    options?: { forkContext?: ForkContext; sourcePanelId?: string; initialFolderKey?: string },
+    options?: HostSetUpOptions,
   ): Promise<string> {
     const setUp = this.trackOpening(this.setUpHost(host, options));
     this.setUpOf(host).start(setUp);
@@ -373,7 +438,7 @@ export class PanelManager {
 
   private async setUpHost(
     host: PanelHost,
-    options?: { forkContext?: ForkContext; sourcePanelId?: string; initialFolderKey?: string },
+    options?: HostSetUpOptions,
   ): Promise<string> {
     const panelId = `host-${++this.hostCounter}`;
     const disposables: Disposable[] = [];
@@ -412,6 +477,7 @@ export class PanelManager {
         if (!instance) return;
         this.detachPanelView(panelId);
         this.releasePanel(panelId, instance);
+        this.worktrees.panelClosed(panelId);
         this.panels.delete(panelId);
         this.messageGates.delete(panelId);
         this.folderChains.delete(panelId);
@@ -431,10 +497,20 @@ export class PanelManager {
     );
 
     const source = options?.sourcePanelId ? this.panels.get(options.sourcePanelId) : undefined;
-    // A fork continues its source's conversation, whose session file lives under the source's folder.
-    const folder = source?.folder
-      ?? (options?.initialFolderKey !== undefined ? this.folderRegistry.resolve(options.initialFolderKey) : undefined)
-      ?? this.folderRegistry.defaultTarget();
+    // A fork continues its source's conversation, whose session file lives under the source's folder. A new chat in a worktree
+    // is bound before its session exists, so no session ever starts in the project folder for it.
+    let folder: FolderTarget;
+    try {
+      folder = options?.worktree
+        ? this.worktrees.bindNewPanel(panelId, options.worktree.projectKey, options.worktree.worktreeId)
+        : source?.folder
+          ?? (options?.initialFolderKey !== undefined ? this.folderRegistry.resolve(options.initialFolderKey) : undefined)
+          ?? this.folderRegistry.defaultTarget();
+    } catch (err) {
+      disposables.forEach((d) => d.dispose());
+      this.messageGates.delete(panelId);
+      throw err;
+    }
 
     const permissionHandler = new PermissionHandler(this.platform, panelId, settingsFolderOf(folder));
     permissionHandler.setPostMessage((msg) => this.postMessage(host, msg));
@@ -448,6 +524,10 @@ export class PanelManager {
 
     const ideContextManager = new IdeContextManager(this.platform.editor, (context) => {
       this.postMessage(host, { type: "ideContextUpdate", context });
+    }, (filePath) => {
+      // AD12's wrong-copy guard: a worktree chat takes IDE context only from files in its working folder.
+      const current = this.panels.get(panelId)?.folder ?? folder;
+      return current.ownerKey === undefined || folderContains(current.fsPath, filePath);
     });
     const terminalAttachments = new TerminalAttachmentManager((attachments, added) => {
       this.postMessage(host, { type: "terminalAttachmentsUpdate", attachments, ...(added ? { focusComposer: true as const } : {}) });
@@ -463,7 +543,19 @@ export class PanelManager {
       this.postMessage(host, msg);
     }
 
-    const session = await this.createSessionForPanel(host, permissionHandler, panelId, folder, options?.forkContext);
+    let session: ChatSession;
+    try {
+      session = await this.createSessionForPanel(host, permissionHandler, panelId, folder, options?.forkContext);
+    } catch (err) {
+      // Nothing registered the panel yet, so its worktree hold and what it set up go here.
+      this.worktrees.panelClosed(panelId);
+      ideContextManager.dispose();
+      disposables.forEach((d) => d.dispose());
+      void permissionHandler.dispose().catch((disposeErr: unknown) => log("[PanelManager] permission handler dispose failed: %O", disposeErr));
+      this.cleanupPanelModel(panelId);
+      this.messageGates.delete(panelId);
+      throw err;
+    }
 
     const instance: HostInstance = {
       host,
@@ -480,10 +572,13 @@ export class PanelManager {
     if (closed) {
       // The host closed while the session was being created, before the panel was registered.
       this.releasePanel(panelId, instance);
+      this.worktrees.panelClosed(panelId);
       this.messageGates.delete(panelId);
+      if (options?.worktree) throw new Error("The chat closed before its session started");
       return panelId;
     }
     this.panels.set(panelId, instance);
+    if (options?.worktree) this.worktrees.markUsed(options.worktree.worktreeId);
     this.bindSessionCallbacks(panelId, instance);
     this.applyFolderTitle(instance);
 
@@ -554,6 +649,75 @@ export class PanelManager {
     return panelId;
   }
 
+  onDidChangeWorktreeState(listener: (event: PanelWorktreeStateEvent) => void): Disposable {
+    return this.worktrees.onDidChangeState(listener);
+  }
+
+  /** D30's opt-in for a new chat, from the New menu; nothing is created before its first send. */
+  setWorktreeOptIn(panelId: string, optIn: WorktreeOptIn): Promise<void> {
+    return this.worktrees.setOptIn(panelId, optIn);
+  }
+
+  /** D61's hand-off from the palette or the header button; core re-checks that the chat is idle. */
+  chatMove(panelId: string, to: ChatPlace): Promise<void> {
+    return this.worktrees.chatMove(panelId, to);
+  }
+
+  /**
+   * D33: holds the worktree for a finish action, after its last question; dispose in finally. Undefined, holding nothing, when a
+   * loaded chat working in it is busy now (D33). While held, its chats show `finishing` and core refuses their sends.
+   */
+  beginWorktreeFinish(worktreeId: string, action: WorktreeFinishAction): Disposable | undefined {
+    return this.worktrees.beginFinish(worktreeId, action);
+  }
+
+  /** The Setup terminal's Restart of worktree `worktreeId` (D32). */
+  retrySetup(worktreeId: string): Promise<void> {
+    return this.worktrees.retrySetup(worktreeId);
+  }
+
+  /** The first prompt the chat holds for its worktree, for the host to keep as the chat's draft when it unloads or quits. */
+  heldPrompt(panelId: string): UserContentBlock[] | undefined {
+    return this.worktrees.heldPrompt(panelId);
+  }
+
+  /** Puts a draft the host kept back into the chat's composer, once its webview listens. */
+  async restoreDraft(panelId: string, content: UserContentBlock[]): Promise<void> {
+    const instance = this.panels.get(panelId);
+    if (!instance) throw new Error("The chat is not loaded");
+    await instance.webviewReady;
+    // The ready gate also settles when the panel closes, which leaves nothing to restore into.
+    if (this.panels.get(panelId) !== instance) return;
+    this.postMessage(instance.host, { type: "promptReturned", content, reason: "heldPromptKept" });
+  }
+
+  worktreeAction(panelId: string, action: WorktreeAction): Promise<void> {
+    return this.worktrees.action(panelId, action);
+  }
+
+  /** Settles once no panel holds the folder and core released its per-folder services (rule 14). */
+  whenFolderReleased(fsPath: string): Promise<void> {
+    return this.worktrees.whenFolderReleased(fsPath);
+  }
+
+  /** Settles once the unused worktree a closed chat was creating or setting up for its held first prompt is discarded. */
+  whenWorktreeDiscarded(panelId: string): Promise<void> {
+    return this.worktrees.whenDiscarded(panelId);
+  }
+
+  // A hand-off's afterSwitch: the new session continues the stored conversation, as a resume does.
+  private async resumeInto(instance: HostInstance, sessionId: string): Promise<boolean> {
+    const panelId = [...this.panels].find(([, candidate]) => candidate === instance)?.[0];
+    if (panelId === undefined) return false;
+    const refusal = claimStoredSession(this.platform.notifications, this.panels, { panelId, session: instance.session }, sessionId);
+    if (refusal) return false;
+    this.postMessage(instance.host, { type: "resumeAccepted", sessionId, continued: true });
+    const rewindableIds = await this.loadHistory(instance.folder.fsPath, sessionId, instance.host, instance.session);
+    instance.session.seedCheckpoints(rewindableIds ?? []);
+    this.postMessage(instance.host, { type: "sessionStarted", sessionId, stored: rewindableIds !== null });
+    return true;
+  }
+
   /** Dispose what the panel owns; the session's disposal is tracked until it settles, so `dispose()` awaits it. */
   private releasePanel(panelId: string, instance: HostInstance): void {
     this.disposeSession(instance.session).catch((err: unknown) => log("[PanelManager] session dispose failed: %O", err));
@@ -603,6 +767,7 @@ export class PanelManager {
     const { session, host, permissionHandler } = instance;
     // A session that replaced another (a folder switch, a recovery) names the same panel in its lease owner records.
     session.setPanelToken(instance.panelToken);
+    this.worktrees.bind(panelId, instance);
     permissionHandler.setOnPlanModeActivated(async () => {
       await session.setPermissionMode("plan");
       await this.sendCurrentSettings(host, permissionHandler, instance.folder);
@@ -685,8 +850,9 @@ export class PanelManager {
   ): Promise<HostInstance | undefined> {
     const instance = this.panels.get(panelId);
     if (!instance) return undefined;
-    // The key comes from the webview, so only a folder that is open right now is accepted.
-    const target = this.folderRegistry.resolve(key);
+    // The key comes from the webview, so only a folder that is open right now is accepted; a user switch only to a project,
+    // never into a chat's working folder (AD12 Folders).
+    const target = reason === "user" ? this.folderRegistry.targets().find((t) => t.key === key) : this.folderRegistry.resolve(key);
     if (!target) {
       log("[PanelManager] Ignoring a switch of %s to a folder key that is not open: %s", panelId, key);
       this.postWorkspaceFolderUpdate(instance, false);
@@ -696,6 +862,11 @@ export class PanelManager {
       this.postWorkspaceFolderUpdate(instance, false);
       await afterSwitch?.(instance);
       return instance;
+    }
+    const movingSession = instance.session.storedSessionId;
+    if (reason === "chatMove" && movingSession !== null && sessionLeaseBlocker(movingSession)) {
+      this.postWorkspaceFolderUpdate(instance, false);
+      return undefined;
     }
     if (reason === "user" && instance.session.hasConversation()) {
       const confirm = t("Start new conversation");
@@ -742,8 +913,9 @@ export class PanelManager {
         await this.disposeSession(session);
         return undefined;
       }
-      // A restore lands in a webview that has just loaded, so it has no conversation on screen to clear.
-      await this.adoptSession(panelId, instance, session, target, reason !== "restore");
+      // A restore lands in a webview that has just loaded, so it has no conversation on screen to clear. A chatMove keeps the
+      // conversation (resumed in afterSwitch), and the worktree state says where the chat now works.
+      await this.adoptSession(panelId, instance, session, target, reason !== "restore" && reason !== "chatMove", reason);
       if (!open()) return undefined;
       await afterSwitch?.(instance);
       if (!open()) return undefined;
@@ -762,10 +934,16 @@ export class PanelManager {
     session: ChatSession,
     folder: FolderTarget,
     switched: boolean,
+    reason?: FolderSwitchReason,
   ): Promise<void> {
     const moved = folder.key !== instance.folder.key;
+    // An opt-in belongs to the folder it was made in; only the worktree moves keep it.
+    if (moved && reason !== "chatMove") this.worktrees.folderChanged(panelId);
+    if (moved && folder.ownerKey === undefined) this.worktrees.dropHold(panelId);
     instance.session = session;
     instance.folder = folder;
+    // The editor's context was filtered against the folder the panel left (AD12's wrong-copy guard).
+    if (moved) instance.ideContextManager.refresh();
     if (moved && this.lastActivePanelId === panelId) this.notifyActivePanelChanged();
     const { permissionHandler, host } = instance;
     permissionHandler.setWorkspacePath(folder.projectScope ? folder.fsPath : null);
@@ -1097,6 +1275,7 @@ export class PanelManager {
       instance.host.close();
     }
     this.panels.clear();
+    this.worktrees.dispose();
     this.messageGates.clear();
     this.folderChains.clear();
     return Promise.all([...this.closingSessions]).then(() => undefined);

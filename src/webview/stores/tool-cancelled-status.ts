@@ -5,13 +5,14 @@ import { CANCELLED_TOOL_DETAIL_KEY } from '@shared/types/session';
  * The extension marks a call stopped mid-run on the result's `details`, and it arrives as tool metadata:
  * a per-call cancel's normal result, or the error result of a call its aborted run cut short. Metadata
  * and completion arrive as two independent messages in either order, so both the status path and the
- * metadata path run this and neither assumes it is second.
+ * metadata path run this and neither assumes it is second. A prompt the Stop settled is an unasked deny
+ * whose error text carries a refusal marker, so a refusal with the stopped marker is stopped too.
  */
 export function resolveCancelledStatus(
   status: ToolCall['status'],
   metadata: Record<string, unknown> | undefined,
 ): ToolCall['status'] {
-  if (status !== 'completed' && status !== 'failed') return status;
+  if (status !== 'completed' && status !== 'failed' && status !== 'blocked' && status !== 'denied') return status;
   return metadata?.[CANCELLED_TOOL_DETAIL_KEY] === true ? 'cancelled' : status;
 }
 
@@ -29,6 +30,7 @@ const TOOL_STATUS_RANK: Readonly<Record<ToolCall['status'], number>> = {
   unrecorded: 2,
   abandoned: 3,
   denied: 3,
+  blocked: 3,
   failed: 3,
   completed: 4,
   cancelled: 4,

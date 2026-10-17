@@ -15,7 +15,7 @@ export const FILE_PATCH_MAX_CHANGED_LINES: number = 1000;
 const BINARY_PROBE_LENGTH = 8000;
 
 /** pi's edit diffs text with the BOM split off and line endings normalized (`splitBom`, `normalizeToLF`). */
-function normalized(text: string): string {
+export function normalized(text: string): string {
   const unmarked = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
   return unmarked.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 }

@@ -29,7 +29,7 @@ vi.mock('../../../logger', () => ({ log: vi.fn() }));
 
 import { getPiRewindHistory } from '../rewind';
 
-const block = formatTerminalAttachmentBlock({ source: 'command', commandLine: 'npm test', exitCode: 1, terminalTitle: 'pwsh', text: 'FAIL a.test.ts', omittedLines: 0 });
+const block = formatTerminalAttachmentBlock({ kind: 'terminal', source: 'command', commandLine: 'npm test', exitCode: 1, terminalTitle: 'pwsh', text: 'FAIL a.test.ts', omittedLines: 0 });
 const ide = formatIdeContextBlock({ type: 'opened_file', filePath: '/ws/a.ts' });
 const user = (id: string, text: string) => ({ type: 'message', id, timestamp: '2026-10-08T10:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text }] } });
 const attachments = (userEntryId: string) => ({ type: 'custom', id: `ta-${userEntryId}`, customType: DAMOCLES_TERMINAL_ATTACHMENTS_ENTRY, data: { userEntryId, count: 1 } });

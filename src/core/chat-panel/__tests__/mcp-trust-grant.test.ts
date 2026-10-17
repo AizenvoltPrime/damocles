@@ -40,6 +40,7 @@ import { ChatPanelProvider } from "../index";
 import { installLogSink } from "../../logger";
 import { installFakePlatform, type FakePlatform } from "../../../__mocks__/fake-platform";
 import { folderKey } from "../../workspace-folders/folder-key";
+import { installWorktreeProjectLookup } from "../../worktrees/personal-config";
 import type { McpScope } from "../../session-types";
 import type { ExtensionToWebviewMessage } from "../../../shared/types/messages";
 
@@ -197,6 +198,40 @@ describe("granting trust to an open workspace", () => {
     expect(scope.userUnion["github"]?.config).toEqual({ command: "user-github", cwd: fakeHome });
     expect(scope.folder).toEqual({});
     expect(settings.settingsManager.getEnabledMcpServers(KEY_B).folder).toEqual({});
+  });
+});
+
+describe("a worktree chat's working folder", () => {
+  it("gets its own servers, its project's personal servers and the user's, trust-gated by its project, and loses them on release", async () => {
+    const worktree = path.join(tmpRoot, "worktrees", "workspace-b-abcdef", "aaaaaaaa");
+    const worktreeKey = folderKey(worktree);
+    writeJson(path.join(worktree, ".mcp.json"), { mcpServers: { checkedOut: { command: "checked-out" } } });
+    const personal = path.join(fakeWorkspaceB, ".damocles", "mcp.local.json");
+    writeJson(personal, { mcpServers: { personal: { command: "personal" } } });
+    const lookup = installWorktreeProjectLookup({
+      projectOf: (folder) => (folderKey(folder) === worktreeKey ? fakeWorkspaceB : undefined),
+      recordsOfProject: () => [],
+      get: () => undefined,
+      chatRecordFor: () => undefined,
+    });
+    try {
+      const { provider } = await harness();
+      const settings = provider as unknown as { settingsManager: { getEnabledMcpServers: (key: string) => McpScope } };
+      const hold = provider.getFolderRegistry().acquireOwned(worktree, KEY_B);
+      await vi.waitFor(() => expect(settings.settingsManager.getEnabledMcpServers(worktreeKey).userVisible).toEqual(["github"]));
+      // Its project is untrusted, so every folder file is withheld, as in the project itself.
+      expect(settings.settingsManager.getEnabledMcpServers(worktreeKey).folder).toEqual({});
+
+      platform.trust.grantTrust();
+      await vi.waitFor(() => expect(Object.keys(settings.settingsManager.getEnabledMcpServers(worktreeKey).folder).sort()).toEqual(["checkedOut", "personal"]));
+      expect(settings.settingsManager.getEnabledMcpServers(worktreeKey).folder["checkedOut"]).toMatchObject({ trusted: true, config: { command: "checked-out", cwd: worktree } });
+
+      hold.dispose();
+      await vi.waitFor(() => expect(settings.settingsManager.getEnabledMcpServers(worktreeKey)).toEqual(expect.objectContaining({ userVisible: [], folder: {} })));
+    } finally {
+      lookup.dispose();
+      fs.rmSync(personal, { force: true });
+    }
   });
 });
 

@@ -10,6 +10,7 @@ import {
   type AutoCheckpointProducerOptions,
   type CheckpointEntry,
   type NotRewindableParams,
+  type PendingBaseline,
   type PreRewindRecord,
   type RestoreResult,
   type StoredCheckpointRecord,
@@ -24,7 +25,7 @@ export interface CheckpointTreeReader {
 }
 
 /** The producer calls the service makes; `AutoCheckpointProducer` in production. */
-export type CheckpointProducer = Pick<AutoCheckpointProducer, 'turnStart' | 'markNotRewindable' | 'finalizeRun' | 'snapshot' | 'restore' | 'restorePreRewind' | 'dispose'>;
+export type CheckpointProducer = Pick<AutoCheckpointProducer, 'turnStart' | 'markNotRewindable' | 'finalizeRun' | 'snapshot' | 'restore' | 'restorePreRewind' | 'dispose' | 'pendingBaseline'>;
 
 /**
  * A restore as the user sees it: the producer's result, or why no restore ran. `service-unavailable`
@@ -291,6 +292,11 @@ export class CheckpointService {
       return;
     }
     this.host.onBaselineTimeout(waitMs);
+  }
+
+  /** The running turn's baseline (the producer's in-memory before-commit), once taken; undefined when none is usable. */
+  pendingBaseline(): Promise<PendingBaseline | undefined> {
+    return this.producer && !this.disposed ? this.producer.pendingBaseline() : Promise.resolve(undefined);
   }
 
   /** Resolve once every queued step has finished, or after `timeoutMs`, whichever comes first. */

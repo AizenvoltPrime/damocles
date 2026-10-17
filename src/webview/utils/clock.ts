@@ -32,6 +32,21 @@ export function formatResetTime(time: number, now: number, locale?: string): { d
   return { day, time: clock };
 }
 
+/**
+ * A commit's time as every view words it (VS Code's one commit hover format): `full` "Sep 6, 2026, 19:50"; `day` and `clock`
+ * for a row too narrow for it, which drops the clock whole rather than cut it, the day naming the year (`otherYear`) only off
+ * `now`'s year.
+ */
+export function commitTime(time: number, locale: string, now = Date.now()): { full: string; day: string; clock: string; otherYear: boolean } {
+  const otherYear = new Date(time).getFullYear() !== new Date(now).getFullYear();
+  return {
+    full: formatDateTime(time, locale, { dateStyle: 'medium' }),
+    day: new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric', ...(otherYear ? { year: 'numeric' } : {}) }).format(time),
+    clock: formatClock(time, locale),
+    otherYear,
+  };
+}
+
 /** A date with its 24-hour clock time, e.g. "1/2/26, 14:05". */
 export function formatDateTime(time: Date | number, locale?: string, options: { dateStyle?: 'short' | 'medium'; seconds?: boolean } = {}): string {
   return new Intl.DateTimeFormat(locale, {

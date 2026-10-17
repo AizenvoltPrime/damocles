@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Archive, ArchiveRestore, ArrowUpRight, Check, ChevronRight, Folder, FolderGit2, FolderTree, GitBranch, Plus, Tag, Target, X } from 'lucide-vue-next';
+import { Archive, ArchiveRestore, ArrowUpRight, Check, ChevronRight, Folder, FolderGit2, FolderTree, GitBranch, MessageSquareCode, Plus, Tag, Target, X } from 'lucide-vue-next';
 import type { Component } from 'vue';
 import { Button } from '@/components/ui/button';
 import { visibleText } from '@shared/visible-text';
+import { branchLeaf } from '@/utils/branch-leaf';
 import { isExpandable, type RepositoryGroup, type RepositoryRow } from './repositories-tree';
 import { REPOSITORY_GROUP_ACTIONS, type ScmAction } from './scm-menus';
 
@@ -48,13 +49,14 @@ const icon = computed<Component | undefined>(() => {
     case 'branch': return head.value ? Target : GitBranch;
     case 'tag': return head.value ? Target : Tag;
     case 'stash': return Archive;
-    case 'worktree': return row.worktree.main ? FolderGit2 : FolderTree;
+    case 'worktree': return row.worktree.chat ? MessageSquareCode : row.worktree.main ? FolderGit2 : FolderTree;
     default: return undefined;
   }
 });
 const iconTone = computed(() => {
   if (head.value || (props.row.kind === 'repo' && props.selectedRepo)) return 'text-(--d-accent-text)';
   if (props.row.kind === 'stash') return 'text-(--d-info)';
+  if (props.row.kind === 'worktree' && props.row.worktree.chat) return 'text-(--d-accent-text)';
   return 'text-(--d-muted)';
 });
 
@@ -63,11 +65,16 @@ const label = computed(() => {
   if (row.kind === 'repo') return visibleText(row.repo.label);
   if (row.kind === 'group') return t(`repositories.group.${row.group}`);
   if (row.kind === 'note') return row.text === 'failed' ? t('repositories.note.failed') : t(`repositories.note.empty.${row.group}`);
+  // B45: a chat's worktree is named by its chat
+  if (row.kind === 'worktree' && row.worktree.chat) return row.worktree.chat.title === '' ? t('chats.newChat') : visibleText(row.worktree.chat.title);
   return visibleText(row.label);
 });
 const description = computed(() => {
   const row = props.row;
   if (row.kind === 'repo') return visibleText(row.repo.head);
+  if (row.kind === 'worktree' && row.worktree.chat?.place === 'project') return t('repositories.inProjectFolder');
+  // A chat worktree's branch shares its prefix with every other, so the row names its leaf
+  if (row.kind === 'worktree' && (row.worktree.chat || row.worktree.newChatIn) && row.worktree.branch) return visibleText(branchLeaf(row.worktree.branch));
   return row.kind === 'branch' || row.kind === 'tag' || row.kind === 'stash' || row.kind === 'worktree' ? visibleText(row.description) : '';
 });
 const count = computed(() => (props.row.kind === 'group' ? props.row.count : props.row.kind === 'folder' ? props.row.count : null));
@@ -89,7 +96,7 @@ const inline = computed<Inline[]>(() => {
     case 'branch':
     case 'tag': return head.value ? [] : [action('checkoutRef', Check)];
     case 'stash': return [action('applyStash', ArchiveRestore)];
-    case 'worktree': return [action('openWorktree', ArrowUpRight, openTitle.value)];
+    case 'worktree': return [...(row.worktree.newChatIn ? [action('newChatInWorktree', Plus)] : []), action('openWorktree', ArrowUpRight, openTitle.value)];
     default: return [];
   }
 });
@@ -176,42 +183,48 @@ function onAction(event: MouseEvent, action: ScmAction): void {
         />
       </Transition>
     </span>
+    <!-- One clipped line: a time that does not fit beside the name wraps out of sight whole, so the name keeps the room. -->
     <span
-      data-testid="repositories-label"
-      class="min-w-0 shrink truncate"
-      :class="[
-        row.kind === 'group' ? 'text-11.5 font-semibold text-(--d-muted)' : 'text-xs',
-        row.kind === 'note' ? (row.text === 'failed' ? 'text-(--d-danger-text)' : 'text-(--d-faint)') : '',
-        row.kind === 'repo' || head ? 'font-medium' : '',
-      ]"
-    >{{ label }}</span>
-    <span
-      v-if="count !== null"
-      data-testid="repositories-count"
-      class="relative inline-flex shrink-0 font-mono text-10.5 text-(--d-faint) tabular-nums group-hover/row:text-(--d-faint-text)"
-      :class="bump ? 'd-count-bump' : ''"
+      data-testid="repositories-line"
+      class="flex h-full min-w-0 flex-1 flex-wrap content-start items-center gap-x-1.5 overflow-hidden"
     >
-      <Transition
-        name="t-swap"
-        mode="out-in"
+      <span
+        data-testid="repositories-label"
+        class="h-full min-w-0 shrink content-center truncate"
+        :class="[
+          row.kind === 'group' ? 'text-11.5 font-semibold text-(--d-muted)' : 'text-xs',
+          row.kind === 'note' ? (row.text === 'failed' ? 'text-(--d-danger-text)' : 'text-(--d-faint)') : '',
+          row.kind === 'repo' || head ? 'font-medium' : '',
+        ]"
+      >{{ label }}</span>
+      <span
+        v-if="count !== null"
+        data-testid="repositories-count"
+        class="relative inline-flex shrink-0 font-mono text-10.5 text-(--d-faint) tabular-nums group-hover/row:text-(--d-faint-text)"
+        :class="bump ? 'd-count-bump' : ''"
       >
-        <span :key="count">{{ count }}</span>
-      </Transition>
-    </span>
-    <span
-      data-testid="repositories-description"
-      class="min-w-0 flex-1 truncate font-mono text-11 group-hover/row:text-(--d-faint-text)"
-      :class="selected ? 'text-(--d-faint-text)' : 'text-(--d-faint)'"
-    >{{ description }}</span>
-    <!-- VS Code's repeated time: a faint rule in its place until the row is hovered. -->
-    <span
-      v-if="time && time.text !== ''"
-      data-testid="repositories-time"
-      :data-hidden="time.hidden || undefined"
-      class="flex shrink-0 items-center text-10.5 whitespace-nowrap text-(--d-faint) group-hover/row:text-(--d-faint-text)"
-      :class="time.hidden ? 'h-3.5 min-w-1.5 border-l border-(--d-border2) group-hover/row:border-l-0 group-focus/row:border-l-0' : ''"
-    >
-      <span :class="time.hidden ? 'hidden group-hover/row:inline group-focus/row:inline' : ''">{{ time.text }}</span>
+        <Transition
+          name="t-swap"
+          mode="out-in"
+        >
+          <span :key="count">{{ count }}</span>
+        </Transition>
+      </span>
+      <span
+        data-testid="repositories-description"
+        class="min-w-0 flex-1 truncate font-mono text-11 group-hover/row:text-(--d-faint-text)"
+        :class="selected ? 'text-(--d-faint-text)' : 'text-(--d-faint)'"
+      >{{ description }}</span>
+      <!-- VS Code's repeated time: a faint rule the row's height in its place until hover, so repeats join into one line. -->
+      <span
+        v-if="time && time.text !== ''"
+        data-testid="repositories-time"
+        :data-hidden="time.hidden || undefined"
+        class="flex shrink-0 items-center text-10.5 whitespace-nowrap text-(--d-faint) group-hover/row:text-(--d-faint-text)"
+        :class="time.hidden ? 'h-full min-w-1.5 border-l border-(--d-border2) group-hover/row:border-l-0 group-focus/row:border-l-0' : ''"
+      >
+        <span :class="time.hidden ? 'hidden group-hover/row:inline group-focus/row:inline' : ''">{{ time.text }}</span>
+      </span>
     </span>
     <!-- Out of the row's flow until hover or focus, as VS Code's actions bar: revealing them moves no control. -->
     <span
@@ -228,7 +241,7 @@ function onAction(event: MouseEvent, action: ScmAction): void {
         tabindex="-1"
         :data-testid="`repositories-action-${entry.action}`"
         class="d-press size-5 rounded-5 text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3"
-        :disabled="busy && entry.action !== 'openWorktree'"
+        :disabled="busy && entry.action !== 'openWorktree' && entry.action !== 'newChatInWorktree'"
         :aria-label="entry.label"
         :title="entry.title"
         @click.stop="onAction($event, entry.action)"

@@ -15,40 +15,54 @@ export function toUserContentBlocks(blocks: ContentBlock[] | undefined): UserCon
   return narrowed?.length ? narrowed : undefined;
 }
 
+/** Who refused a tool call: the human at a prompt, or the runtime's own policy. */
+export interface DenialFeedback {
+  readonly kind: "feedback" | "policy";
+  readonly text: string;
+}
+
 /**
- * The reason text behind a denied tool call, or undefined when the error is an ordinary failure.
- * Either marker means "denied": the human rejected it at a prompt (FEEDBACK_MARKER) or the runtime
- * blocked it on its own (POLICY_BLOCK_MARKER). Sessions recorded before the policy marker existed
- * carry only FEEDBACK_MARKER, so it stays first and keeps rendering exactly as before.
+ * The reason behind a refused tool call, or undefined when the error is an ordinary failure. The human
+ * rejected it at a prompt (FEEDBACK_MARKER) or the runtime blocked it on its own (POLICY_BLOCK_MARKER).
+ * Sessions recorded before the policy marker existed carry only FEEDBACK_MARKER, so it stays first.
  */
-export function extractDenialFeedback(errorMessage: string): string | undefined {
-  for (const marker of [FEEDBACK_MARKER, POLICY_BLOCK_MARKER]) {
+export function extractDenialFeedback(errorMessage: string): DenialFeedback | undefined {
+  const markers = [["feedback", FEEDBACK_MARKER], ["policy", POLICY_BLOCK_MARKER]] as const;
+  for (const [kind, marker] of markers) {
     const markerIndex = errorMessage.indexOf(marker);
-    if (markerIndex !== -1) return errorMessage.slice(markerIndex + marker.length).trim();
+    if (markerIndex !== -1) return { kind, text: errorMessage.slice(markerIndex + marker.length).trim() };
   }
   return undefined;
 }
 
+/** A refusal's card status: a policy block shows "Blocked", a human rejection "denied". */
+export function refusedStatus(denial: DenialFeedback): "blocked" | "denied" {
+  return denial.kind === "policy" ? "blocked" : "denied";
+}
+
 /**
  * The status a replayed call carries, from the only two facts the transcript keeps: whether a result
- * was recorded at all, and whether it was an error. An error is a denial only when it carries a denial
- * marker, the same signal the live path reads off the error text; anything else errored on its own.
+ * was recorded at all, and whether it was an error. An error is a refusal only when it carries a denial
+ * marker, the same signal the live path reads off the error text; anything else errored on its own. A
+ * stored feedback with no marker in the result is the human's.
  */
-function historyToolStatus(tool: HistoryToolCall, denialFeedback: string | undefined): ToolCall["status"] {
+function historyToolStatus(tool: HistoryToolCall, denial: DenialFeedback | undefined): ToolCall["status"] {
   if (tool.abandoned !== undefined) return "abandoned";
-  if (tool.isError === true) return denialFeedback !== undefined ? "denied" : "failed";
+  if (tool.isError === true) return denial !== undefined ? refusedStatus(denial) : "failed";
   if (tool.result === undefined) return "unrecorded";
   return "completed";
 }
 
 export function convertHistoryTools(tools: HistoryToolCall[] | undefined): ToolCall[] | undefined {
   return tools?.map((t): ToolCall => {
-    const denialFeedback = t.feedback ?? (t.isError === true && t.result !== undefined ? extractDenialFeedback(t.result) : undefined);
+    const marked = t.isError === true && t.result !== undefined ? extractDenialFeedback(t.result) : undefined;
+    const denial = marked ?? (t.feedback !== undefined ? { kind: "feedback" as const, text: t.feedback } : undefined);
+    const denialFeedback = t.feedback ?? denial?.text;
     return {
       id: t.id,
       name: t.name,
       input: t.input,
-      status: resolveCancelledStatus(historyToolStatus(t, denialFeedback), t.metadata),
+      status: resolveCancelledStatus(historyToolStatus(t, denial), t.metadata),
       ...(t.result !== undefined && { result: t.result }),
       ...(t.isError !== undefined && { isError: t.isError }),
       ...(t.imageCount !== undefined && { imageCount: t.imageCount }),

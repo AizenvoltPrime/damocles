@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { CommitVariant } from '../scm-service';
+import { PLAIN_VARIANT, type CommitVariant } from '../scm-service';
 import { SCM_SETTING_KEYS } from '../settings-keys';
 import { generateCommitMessage } from '../commit-message';
 import { FakeSettings, folder, freshStatus, git, harness, HAS_GIT, makeRepo, MapMemento, ready, sandbox, statusOf, useGitSandbox, viewOf, waitFor, write, type Harness } from './git-harness';
@@ -175,6 +175,61 @@ describe.skipIf(!HAS_GIT)('source control engine against real git', { timeout: 1
     h.service.dispose();
   });
 
+  it('shows the control and bidi characters of file names in the discard and stage questions as escapes', async () => {
+    const project = makeRepo(folder('bidi-names'));
+    const [tracked, gone, conflicted, loose] = ['t\u202Ext.gnp', 'd\u202Eel.txt', 'c\u202Eon.txt', 'u\u202Ent.txt'];
+    for (const name of [tracked, gone, conflicted]) write(path.join(project, name), 'base\n');
+    git(['add', '.'], project);
+    git(['commit', '--quiet', '-m', 'names'], project);
+    git(['checkout', '--quiet', '-b', 'side'], project);
+    write(path.join(project, conflicted), 'side\n');
+    git(['commit', '--quiet', '-am', 'side'], project);
+    git(['checkout', '--quiet', 'main'], project);
+    write(path.join(project, conflicted), 'main\n');
+    git(['commit', '--quiet', '-am', 'main'], project);
+    expect(() => git(['merge', '--quiet', 'side'], project)).toThrow();
+    write(path.join(project, tracked), 'changed\n');
+    fs.rmSync(path.join(project, gone));
+    write(path.join(project, loose), 'loose\n');
+    const h = harness({ trusted: [project] });
+    h.service.setProjects([{ key: 'p', path: project }]);
+    const repoId = (await ready(h)).repos[0]!.repoId;
+    await freshStatus(h, repoId);
+    const asked = async (act: () => Promise<boolean>): Promise<string> => {
+      h.answers = [undefined];
+      expect(await act()).toBe(false);
+      return h.questions.at(-1)!.message;
+    };
+    const messages = [
+      await asked(() => h.service.discard(repoId, [tracked])),
+      await asked(() => h.service.discard(repoId, [gone])),
+      await asked(() => h.service.discard(repoId, [loose])),
+      await asked(() => h.service.discard(repoId, [tracked, loose])),
+      await asked(() => h.service.stage(repoId, [conflicted])),
+    ];
+    expect(h.questions).toHaveLength(messages.length);
+    for (const message of messages) {
+      expect(message).toContain('\\u{202E}');
+      expect(message).not.toContain('\u202E');
+    }
+    h.service.dispose();
+  });
+
+  it('shows the control and bidi characters of a parent repository\'s path in the parent notice and question as escapes', async () => {
+    const parent = makeRepo(folder('par\u202Eent'));
+    const project = path.join(parent, 'inner');
+    write(path.join(project, 'x.txt'), 'x\n');
+    const h = harness({ trusted: [project] });
+    h.service.setProjects([{ key: 'p', path: project }]);
+    await waitFor(() => h.notices.length > 0, 'the parent notice');
+    expect(await h.service.openFolder('p', project)).toBe('parent');
+    for (const text of [h.notices[0]!, ...h.questions[0]!.preview!]) {
+      expect(text).toContain('par\\u{202E}ent');
+      expect(text).not.toContain('\u202E');
+    }
+    h.service.dispose();
+  });
+
   it('commits staged changes; refuses an empty message, nothing staged and a missing user.name', async () => {
     const project = makeRepo(folder('commit'));
     const h = harness({ trusted: [project] });
@@ -226,6 +281,59 @@ describe.skipIf(!HAS_GIT)('source control engine against real git', { timeout: 1
     expect(await h.service.commit(repoId, status.mergeMessage!)).toEqual({ ok: true });
     status = await freshStatus(h, repoId);
     expect(status.operation).toBeNull();
+    h.service.dispose();
+  });
+
+  it('stages with Stage All and smart commit exactly the changes the list shows, never an untracked nested repository as a gitlink', async () => {
+    const project = makeRepo(folder('stage-nested'));
+    makeRepo(path.join(project, 'nested'));
+    write(path.join(project, 'a.txt'), 'changed\n');
+    write(path.join(project, 'u.txt'), 'untracked\n');
+    const h = harness({ trusted: [project] });
+    h.service.setProjects([{ key: 'p', path: project }]);
+    const view = await ready(h);
+    // the nested repository is its own repository, as VS Code's scan opens it, and no change of the outer one
+    expect(view.repos.map((repo) => path.relative(project, repo.root)).sort()).toEqual(['', 'nested']);
+    const repoId = view.repos.find((repo) => repo.root === project)!.repoId;
+    let status = await freshStatus(h, repoId);
+    const listed = [...status.groups.workingTree, ...status.groups.untracked].map((change) => change.path).sort();
+    expect(listed).toEqual(['a.txt', 'u.txt']);
+    status = await freshStatus(h, repoId, () => h.service.stageAll(repoId, 'all'));
+    expect(status.groups.index.map((change) => change.path).sort()).toEqual(listed);
+    expect(git(['ls-files', '-s', '--', 'nested'], project)).toBe('');
+    await freshStatus(h, repoId, () => h.service.unstage(repoId, 'all'));
+    h.answers.push(0);
+    expect(await h.service.commit(repoId, 'smart')).toEqual({ ok: true });
+    expect(h.questions.at(-1)?.message).toBe('There are no staged changes to commit.');
+    expect(git(['show', '--name-only', '--format=', 'HEAD'], project).trim().split('\n').sort()).toEqual(listed);
+    expect(git(['ls-tree', 'HEAD', '--', 'nested'], project)).toBe('');
+    h.service.dispose();
+  });
+
+  it('reads the input template VS Code reads: MERGE_MSG whenever git left one, a revert\'s included, else SQUASH_MSG', async () => {
+    const project = makeRepo(folder('templates'));
+    git(['checkout', '--quiet', '-b', 'feature'], project);
+    write(path.join(project, 'b.txt'), 'feature\n');
+    git(['add', 'b.txt'], project);
+    git(['commit', '--quiet', '-m', 'feature change'], project);
+    git(['checkout', '--quiet', 'main'], project);
+    const h = harness({ trusted: [project] });
+    h.service.setProjects([{ key: 'p', path: project }]);
+    const repoId = (await ready(h)).repos[0]!.repoId;
+    git(['merge', '--squash', '--quiet', 'feature'], project);
+    let status = await freshStatus(h, repoId);
+    expect(status.operation).toBeNull();
+    expect(status.mergeMessage).toContain('Squashed commit of the following:');
+    git(['commit', '--quiet', '--no-edit'], project);
+    status = await freshStatus(h, repoId);
+    expect(status.mergeMessage).toBeUndefined();
+    write(path.join(project, 'a.txt'), 'changed\n');
+    git(['commit', '--quiet', '-am', 'change a'], project);
+    write(path.join(project, 'a.txt'), 'changed again\n');
+    git(['commit', '--quiet', '-am', 'change a again'], project);
+    expect(() => git(['revert', '--no-edit', 'HEAD~1'], project)).toThrow();
+    status = await freshStatus(h, repoId);
+    expect(status.mergeMessage).toMatch(/^Revert "change a"/);
     h.service.dispose();
   });
 
@@ -308,6 +416,16 @@ describe.skipIf(!HAS_GIT)('source control engine against real git', { timeout: 1
     const status = await waitFor(() => statusOf(h, repoId), 'status');
     expect(status.tooManyChanges).toBe(true);
     expect(status.groups.workingTree).toHaveLength(10_000);
+    // Commit All and smart commit would stage only the listed changes, so they refuse before staging anything
+    const head = git(['rev-parse', 'HEAD'], project).trim();
+    const refused = 'The change list shows only the first 10000 changes, so nothing was committed. Stage the changes to commit, or commit from a terminal.';
+    const all = await h.service.commit(repoId, 'all of it', { ...PLAIN_VARIANT, scope: 'all' });
+    expect(all.ok === false && all.reason === 'failed' && (all.error as Error).message).toBe(refused);
+    h.answers.push(0);
+    const smart = await h.service.commit(repoId, 'smart');
+    expect(smart.ok === false && (smart.error as Error).message).toBe(refused);
+    expect(git(['rev-parse', 'HEAD'], project).trim()).toBe(head);
+    expect(git(['diff', '--cached', '--name-only'], project)).toBe('');
     h.service.dispose();
   });
 

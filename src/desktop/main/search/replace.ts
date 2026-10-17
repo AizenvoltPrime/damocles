@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { matchingPattern, replacementAt, replaceRegExp, type SearchPattern, type SearchRange } from '../../../shared/text-search';
+import { visibleText } from '../../../shared/visible-text';
 import type { SearchReplaceResult, SearchReplaceSkip, SearchSkipReason } from '../../preload/shell-channels';
 import type { ClosedFileRead, ClosedFileWrite } from '../documents/document-service';
 import type { RecordedMatch, RecordedSearch } from './search-service';
@@ -187,7 +188,7 @@ async function replaceInFiles(deps: ReplaceDeps, search: RecordedSearch, request
     }
   }
   if (skipped.length > 0) {
-    const lines = skipped.slice(0, MAX_NOTICE_FILES).map((skip) => `${skip.relativePath}: ${deps.reasonLabel(skip)}`);
+    const lines = skipped.slice(0, MAX_NOTICE_FILES).map((skip) => `${visibleText(skip.relativePath)}: ${deps.reasonLabel(skip)}`);
     deps.notifySkipped(lines, skipped.length - lines.length);
   }
   return { replacedFiles, replacedCount, skipped, replaced };

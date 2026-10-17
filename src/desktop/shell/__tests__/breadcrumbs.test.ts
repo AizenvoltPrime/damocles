@@ -35,15 +35,25 @@ describe('editor breadcrumbs', () => {
     expect(crumbsOf({ displayPath: '/tmp/notes/plan.md' }).texts).toEqual(['tmp', 'notes', 'plan.md']);
   });
 
+  it('shows control and bidi characters in a project file\'s folders and name as escapes', () => {
+    expect(crumbsOf({ displayPath: 'C:\\p\\s\u202Erc\\a\u2066b.ts', projectKey: 'p1', relativePath: 's\u202Erc/a\u2066b.ts' }, 'al\u0007pha').texts)
+      .toEqual(['al\\u{7}pha', 's\\u{202E}rc', 'a\\u{2066}b.ts']);
+  });
+
+  it('splits a file outside every project at its separators before escaping, so an escape never reads as a folder', () => {
+    expect(crumbsOf({ displayPath: 'C:\\x\\a\u202Eb.ts' })).toEqual({ texts: ['C:', 'x', 'a\\u{202E}b.ts'], current: 'a\\u{202E}b.ts' });
+  });
+
   it('keeps a name with no path as one crumb', () => {
     expect(crumbsOf({ displayPath: 'Untitled-1', kind: 'untitled' })).toEqual({ texts: ['Untitled-1'], current: 'Untitled-1' });
   });
 
-  it('lets only the folders give way, keeping the file crumb whole up to the bar width', () => {
+  it('gives way by weight: the folders first, the place next, and the file crumb truncates last', () => {
     const crumbs = mountTab({ displayPath: 'C:\\a\\b.ts', readOnly: true }).findAll('[data-crumb]');
     const folders = crumbs[0]!.element.parentElement!;
-    expect([...folders.classList]).toEqual(expect.arrayContaining(['min-w-0', 'overflow-hidden']));
+    expect([...folders.classList]).toEqual(expect.arrayContaining(['min-w-0', 'overflow-hidden', 'shrink-100000000']));
     expect(folders.contains(crumbs.at(-1)!.element)).toBe(false);
-    expect(crumbs.at(-1)!.classes()).toEqual(expect.arrayContaining(['shrink-0', 'max-w-full', 'truncate']));
+    expect(crumbs.at(-1)!.classes()).toEqual(expect.arrayContaining(['min-w-0', 'truncate']));
+    expect(crumbs.at(-1)!.classes()).not.toContain('shrink-0');
   });
 });

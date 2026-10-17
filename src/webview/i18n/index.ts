@@ -36,9 +36,15 @@ function normalizeLocale(locale: string): SupportedLocale {
   return isSupportedLocale(normalized) ? normalized : 'en';
 }
 
+// The page's language too: text-transform: uppercase drops Greek accents only under lang="el".
+function showLocale(locale: SupportedLocale): void {
+  i18n.global.locale.value = locale;
+  document.documentElement.lang = locale;
+}
+
 export function setLocale(locale: string) {
   const normalizedLocale = normalizeLocale(locale);
-  i18n.global.locale.value = normalizedLocale;
+  showLocale(normalizedLocale);
 
   if (sendMessage) {
     sendMessage({ type: "setLanguagePreference", locale: normalizedLocale });
@@ -46,5 +52,5 @@ export function setLocale(locale: string) {
 }
 
 export function applyLocale(locale: string): void {
-  i18n.global.locale.value = normalizeLocale(locale);
+  showLocale(normalizeLocale(locale));
 }

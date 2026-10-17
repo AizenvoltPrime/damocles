@@ -6,7 +6,8 @@ import type { Component } from 'vue';
 import { Button } from '@/components/ui/button';
 import { fileIcon } from '../file-icons';
 import { rowActions, type RowInlineAction } from './scm-menus';
-import { TONE_TEXT, type ScmRow } from './scm-list';
+import type { ScmRow } from './scm-list';
+import StatusLetter from './StatusLetter.vue';
 import { visibleText } from '@shared/visible-text';
 
 type ItemRow = Extract<ScmRow, { kind: 'change' | 'folder' }>;
@@ -137,18 +138,12 @@ const title = computed(() => {
         />
       </Button>
     </span>
-    <span
+    <StatusLetter
       v-if="change"
-      class="flex w-4 shrink-0 justify-center text-11 font-semibold"
-      :style="{ color: TONE_TEXT[change.tone] }"
+      :letter="change.letter"
+      :tone="change.tone"
       :title="statusText"
-    >
-      <Transition name="t-letter">
-        <span
-          :key="change.letter"
-          data-testid="scm-letter"
-        >{{ change.letter }}</span>
-      </Transition>
-    </span>
+      letter-test-id="scm-letter"
+    />
   </div>
 </template>

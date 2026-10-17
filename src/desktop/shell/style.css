@@ -2,6 +2,8 @@
 @source "../../webview/components/ui";
 /* A shared webview component the shell page renders itself; Tailwind emits only the utilities it finds in scanned files. */
 @source "../../webview/components/SlidingIndicator.vue";
+@source "../../webview/components/SegmentedToggle.vue";
+@source "../../webview/components/RollingNumber.vue";
 
 @theme {
   --font-mono: var(--d-mono);
@@ -756,4 +758,260 @@
 .terminal-new-group:focus-within .terminal-new-divider,
 .terminal-new-group:has([aria-expanded="true"]) .terminal-new-divider {
   opacity: 1;
+}
+
+/*
+ * Quick diff gutter (quickDiffDecorator.ts, dirtydiffDecorator.css): a bar in the line decorations lane beside added and
+ * changed lines and a wedge where lines were removed. Unstaged marks are solid; staged ones are hollow, so the state reads by
+ * shape as well as colour. A mark that just moved to staged fades its solid fill out over the hollow one (.qd-arrive).
+ */
+.monaco-editor .qd-mark {
+  --qd-color: var(--d-info);
+  cursor: pointer;
+  margin-left: 0.25rem;
+  width: 0.25rem !important;
+  z-index: 5;
+}
+
+.monaco-editor .qd-mark.qd-added { --qd-color: var(--d-success); }
+.monaco-editor .qd-mark.qd-deleted { --qd-color: var(--d-danger); }
+
+.monaco-editor .qd-mark::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 0.0625rem;
+  background: var(--qd-color);
+  transition: opacity 0.15s;
+}
+
+.monaco-editor .qd-mark.qd-staged::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--qd-color);
+}
+
+.monaco-editor .qd-mark.qd-arrive::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 0.0625rem;
+  background: var(--qd-color);
+  animation: o-fade-out 0.45s ease-in both;
+}
+
+/*
+ * A removal is a wedge on the boundary under its line (or over the first line), as VS Code draws it. A staged one is hollow:
+ * a smaller wedge in the editor's background sits inside it, and fades in as the mark arrives staged.
+ */
+.monaco-editor .qd-mark.qd-deleted::before {
+  inset: auto auto -0.25rem 0;
+  width: 0;
+  height: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  border-block: 0.25rem solid transparent;
+  border-inline-start: 0.375rem solid var(--qd-color);
+}
+
+.monaco-editor .qd-mark.qd-deleted.qd-staged::after {
+  content: "";
+  position: absolute;
+  inset: auto auto -0.125rem 0.0625rem;
+  width: 0;
+  height: 0;
+  border-block: 0.125rem solid transparent;
+  border-inline-start: 0.1875rem solid var(--d-bg);
+}
+
+.monaco-editor .qd-mark.qd-deleted.qd-staged.qd-arrive::after {
+  background: transparent;
+  border-radius: 0;
+  animation: o-fade 0.45s var(--ease-out) both;
+}
+
+.monaco-editor .qd-mark.qd-deleted.qd-top::before {
+  inset: -0.25rem auto auto 0;
+}
+
+.monaco-editor .qd-mark.qd-deleted.qd-top.qd-staged::after {
+  inset: -0.125rem auto auto 0.0625rem;
+}
+
+.monaco-editor .margin:hover .qd-mark::before {
+  filter: brightness(1.15);
+}
+
+/* The peek: an overlay over a view zone (peek.ts), dropping open under its change and lifting away before it is removed. */
+.qd-peek {
+  position: absolute;
+  left: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-block: 1px solid var(--d-border2);
+  border-inline-start: 2px solid var(--qd-peek-color, var(--d-info));
+  background: var(--d-bg);
+  box-shadow: var(--d-shadow);
+  transform-origin: top;
+}
+
+/* The frame takes its change's gutter colour. */
+.qd-peek-added { --qd-peek-color: var(--d-success); }
+.qd-peek-modified { --qd-peek-color: var(--d-info); }
+.qd-peek-deleted { --qd-peek-color: var(--d-danger); }
+.qd-peek-in { animation: d-tuck-in 0.22s var(--ease-out) both; }
+/* Next and Previous Change move the peek: it fades in at its new place so the eye follows it. */
+.qd-peek-move { animation: o-fade 0.16s var(--ease-out) both; }
+.qd-peek-out { pointer-events: none; animation: d-tuck-out 0.14s ease-in both; }
+
+.qd-peek-header {
+  height: 2.25rem;
+  flex: none;
+}
+
+.qd-peek-body {
+  position: relative;
+  flex: none;
+}
+
+/*
+ * Inline blame on the cursor line: faint text after the line's end, which fades in once the cursor rests (blame.ts). Clicks and
+ * drags pass through it to the editor; blame.ts finds the pointer over it from the editor's mouse moves.
+ */
+.monaco-editor .qd-blame {
+  margin-inline-start: 2.5rem;
+  color: var(--d-faint-text) !important;
+  font-family: var(--d-font);
+  font-style: italic;
+  font-size: 0.75rem;
+  white-space: pre;
+  pointer-events: none;
+}
+
+.monaco-editor .qd-blame-in {
+  animation: o-fade 0.3s var(--ease-out) both;
+}
+
+/* An overlay widget placed by editor-git.ts from the card's own size, so it takes the card's width; the block padding is the gap to the text. */
+.qd-blame-card-host {
+  z-index: 50;
+  width: max-content;
+  padding-block: 0.375rem;
+  pointer-events: none;
+}
+
+.qd-blame-card {
+  pointer-events: auto;
+  animation: d-pop 0.16s var(--ease-out);
+}
+
+/* Inline conflicts (mergeDecorator.ts): each side tinted, its marker line stronger, the base block neutral. */
+.monaco-editor .qd-conflict-current-header { background: color-mix(in srgb, var(--d-success) 18%, transparent); }
+.monaco-editor .qd-conflict-current { background: color-mix(in srgb, var(--d-success) 12%, transparent); }
+.monaco-editor .qd-conflict-incoming-header { background: color-mix(in srgb, var(--d-info) 18%, transparent); }
+.monaco-editor .qd-conflict-incoming { background: color-mix(in srgb, var(--d-info) 12%, transparent); }
+.monaco-editor .qd-conflict-base { background: color-mix(in srgb, var(--d-muted) 10%, transparent); }
+.monaco-editor .qd-conflict-splitter { background: color-mix(in srgb, var(--d-muted) 18%, transparent); }
+/* Marker lines are not code: syntax colours such as light --s-type fall under AA on the header tints, so they read in --d-text. */
+.monaco-editor .view-line .qd-conflict-marker-text { color: var(--d-text); }
+
+/* Review comments: a box or card unfolds when the user opens or adds it and folds away before it goes; a scrolled-in row stays still. */
+.review-comment-in {
+  transform-origin: top;
+  animation: d-expand-in 0.2s var(--ease-out) both;
+}
+
+.review-comment-out {
+  transform-origin: top;
+  pointer-events: none;
+  animation: d-expand-out 0.14s ease-in both;
+}
+
+/*
+ * Merge editor regions (MergeEditor.vue): each side's conflict tinted in its pill's colour, lighter once the Result no longer
+ * holds it; the region that just resolved fades its open tint out over the new one. Bars sit in the line decorations lane.
+ */
+.monaco-editor .qd-merge-incoming { --qd-merge: var(--d-info); }
+.monaco-editor .qd-merge-current { --qd-merge: var(--d-accent); }
+.monaco-editor .qd-merge-open { background: color-mix(in srgb, var(--qd-merge) 16%, transparent); }
+.monaco-editor .qd-merge-resolved { background: color-mix(in srgb, var(--qd-merge) 7%, transparent); }
+
+.monaco-editor .qd-merge-resolved.qd-merge-arrive::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--qd-merge) 16%, transparent);
+  animation: o-fade-out 0.45s ease-in both;
+}
+
+/* The focused conflict reads stronger than the others; a per-line ring would box every line apart. */
+.monaco-editor .qd-merge-open.qd-merge-focus { background: color-mix(in srgb, var(--qd-merge) 26%, transparent); }
+.monaco-editor .qd-merge-result-open.qd-merge-focus { background: color-mix(in srgb, var(--d-warning) 15%, transparent); }
+.monaco-editor .qd-merge-result-open { background: color-mix(in srgb, var(--d-warning) 8%, transparent); }
+
+.monaco-editor .qd-merge-bar {
+  margin-left: 0.25rem;
+  width: 0.1875rem !important;
+  border-radius: 0.0625rem;
+}
+
+.monaco-editor .qd-merge-incoming-bar { background: var(--d-info); }
+.monaco-editor .qd-merge-current-bar { background: var(--d-accent); }
+.monaco-editor .qd-merge-open-bar { background: var(--d-warning); }
+.monaco-editor .qd-merge-done-bar { background: var(--d-success); }
+
+.monaco-editor .qd-merge-done-bar.qd-merge-arrive {
+  transform-origin: top;
+  animation: o-grow 0.32s var(--ease-out) both;
+}
+
+.qd-merge-actions-focus {
+  background: color-mix(in srgb, var(--d-accent) 8%, transparent);
+}
+
+/* A diff tab against the index: Stage Block beside each hunk and Stage Selection beside a selection, in the glyph margin. */
+.monaco-editor .qd-stage-glyph {
+  cursor: pointer;
+  border-radius: 0.25rem;
+  color: var(--d-success-text);
+  transition: background-color 0.15s;
+}
+
+.monaco-editor .qd-stage-glyph::before {
+  content: "+";
+  display: flex;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--d-font);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+.monaco-editor .qd-stage-glyph:hover {
+  background: var(--d-hover);
+}
+
+.monaco-editor .qd-stage-selection {
+  color: var(--d-on-accent);
+  background: var(--d-accent);
+}
+
+.monaco-editor .qd-stage-selection:hover {
+  background: var(--d-accent);
+  filter: brightness(1.1);
+}
+
+.qd-blame-card-out {
+  pointer-events: none;
+  animation: d-pop-out 0.12s ease-in both;
+}
+
+/* A merge editor input's action row, an overlay widget over the empty view zone above its region. */
+.qd-merge-actions {
+  position: absolute;
+  z-index: 5;
+  overflow: hidden;
 }

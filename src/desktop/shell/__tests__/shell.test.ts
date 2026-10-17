@@ -409,7 +409,7 @@ const CHATS: ShellChat[] = [
 
 function mountChats(api: DamoclesShellApi, selectedChatId: string | undefined = 'c1') {
   return track(mount(ChatsSection, {
-    props: { api, projectKey: 'p1', stateRevision: 1, projectName: 'alpha', selectedChatId, newChatShortcut: 'Ctrl+N', collapsed: false },
+    props: { api, projectKey: 'p1', stateRevision: 1, projectName: 'alpha', selectedChatId, newChatShortcut: 'Ctrl+N', newChatInWorktreeShortcut: 'Shift+Alt+N', collapsed: false },
     global: { plugins: [shellI18n] },
     attachTo: document.body,
   }));
@@ -794,11 +794,12 @@ describe('sidebar layout', () => {
     await wrapper.get('[data-testid="sidebar-projects"] button[aria-expanded]').trigger('click');
     expect(api.reportSidebarLayout).toHaveBeenLastCalledWith({
       sidebarWidth: 300,
-      sections: { projects: { collapsed: true, size: 60 }, chats: { collapsed: false }, files: { collapsed: false, size: 230 }, search: { collapsed: true, size: 260 }, repos: { collapsed: true, size: 220 }, scm: { collapsed: true, size: 300 } },
-      sectionOrder: ['projects', 'chats', 'files', 'scm', 'repos', 'search'],
+      sections: { projects: { collapsed: true, size: 60 }, chats: { collapsed: false }, files: { collapsed: false, size: 230 }, search: { collapsed: true, size: 260 }, repos: { collapsed: true, size: 220 }, scm: { collapsed: true, size: 300 }, graph: { collapsed: true, size: 190 } },
+      sectionOrder: ['projects', 'chats', 'files', 'scm', 'graph', 'repos', 'search'],
       search: {},
       scm: { viewMode: 'list', sortKey: 'path' },
       repositories: {},
+      graph: {},
     });
     // Nothing above the first gap can give or take height now: its sash stays, disabled, as VS Code's does.
     expect(sashBetween(wrapper, 'projects', 'chats').attributes()).toMatchObject({ 'data-disabled': 'true' });
@@ -833,7 +834,7 @@ describe('sidebar layout', () => {
     await push({ collapsed: false, size: 120 });
     expect(projects()).toBe(250);
     await sash.trigger('pointerup', { pointerId: 1, clientY: 300 });
-    expect(api.reportSidebarLayout).toHaveBeenLastCalledWith(expect.objectContaining({ sections: { projects: { collapsed: false, size: 250 }, chats: { collapsed: false }, files: { collapsed: false, size: 230 }, search: { collapsed: true, size: 260 }, repos: { collapsed: true, size: 220 }, scm: { collapsed: true, size: 300 } } }));
+    expect(api.reportSidebarLayout).toHaveBeenLastCalledWith(expect.objectContaining({ sections: { projects: { collapsed: false, size: 250 }, chats: { collapsed: false }, files: { collapsed: false, size: 230 }, search: { collapsed: true, size: 260 }, repos: { collapsed: true, size: 220 }, scm: { collapsed: true, size: 300 }, graph: { collapsed: true, size: 190 } } }));
 
     // A push main made for another reason carries older sizes; only Restore default layout (a new revision) replaces them.
     await push({ collapsed: false, size: 120 });
@@ -870,8 +871,8 @@ describe('sidebar layout', () => {
   it('puts a sash between every two sections, and one beside collapsed sections moves the height of the open ones past them', async () => {
     const api = fakeShellApi(CHATS);
     const sections = { ...STATE.layout.sections, scm: { collapsed: false, size: 300 } };
-    // Search and Repositories, collapsed, between Files and Source control, both open
-    const sectionOrder = ['projects', 'chats', 'files', 'search', 'repos', 'scm'] as const;
+    // Search and Repositories, collapsed, between Files and Source control, both open; Graph collapsed below
+    const sectionOrder = ['projects', 'chats', 'files', 'search', 'repos', 'scm', 'graph'] as const;
     const wrapper = track(mount(Sidebar, { props: { api, state: { ...STATE, layout: { ...STATE.layout, sections, sectionOrder } } }, global: sidebarGlobal(api), attachTo: document.body }));
     await flushPromises();
     await setSidebarHeight(1200);
@@ -882,6 +883,7 @@ describe('sidebar layout', () => {
       ['files search', null, '6'],
       ['search repos', null, '8'],
       ['repos scm', null, '10'],
+      ['scm graph', 'true', '12'],
     ]);
     expect(sashBetween(wrapper, 'search', 'repos').attributes('aria-label')).toBe('Resize the Search and Repositories sections');
 
@@ -894,13 +896,13 @@ describe('sidebar layout', () => {
 
     // With Source control collapsed nothing below Files can take height, so the sashes under it are disabled.
     await section(wrapper, 'scm').get('button[aria-expanded]').trigger('click');
-    expect(['files search', 'search repos', 'repos scm'].map((between) => sashBetween(wrapper, ...(between.split(' ') as [string, string])).attributes('data-disabled'))).toEqual(['true', 'true', 'true']);
+    expect(['files search', 'search repos', 'repos scm', 'scm graph'].map((between) => sashBetween(wrapper, ...(between.split(' ') as [string, string])).attributes('data-disabled'))).toEqual(['true', 'true', 'true', 'true']);
     expect(sashBetween(wrapper, 'chats', 'files').attributes('data-disabled')).toBeUndefined();
   });
 
   it('moves the height of the two sections beside a sash after a reorder, wherever the filler sits', async () => {
     const api = fakeShellApi(CHATS);
-    const layout = { ...STATE.layout, sectionOrder: ['scm', 'projects', 'chats', 'files', 'search', 'repos'] as const, sections: { ...STATE.layout.sections, scm: { collapsed: false, size: 300 } } };
+    const layout = { ...STATE.layout, sectionOrder: ['scm', 'projects', 'chats', 'files', 'search', 'repos', 'graph'] as const, sections: { ...STATE.layout.sections, scm: { collapsed: false, size: 300 } } };
     const wrapper = track(mount(Sidebar, { props: { api, state: { ...STATE, layout } }, global: sidebarGlobal(api), attachTo: document.body }));
     await flushPromises();
     await setSidebarHeight(1200);
@@ -951,16 +953,16 @@ describe('sidebar layout', () => {
     await section(wrapper, 'chats').trigger('dragover', { dataTransfer, clientY: 150 });
     await section(wrapper, 'chats').trigger('drop', { dataTransfer, clientY: 150 });
 
-    expect(api.reportSidebarLayout).toHaveBeenLastCalledWith(expect.objectContaining({ sectionOrder: ['projects', 'files', 'chats', 'scm', 'repos', 'search'] }));
+    expect(api.reportSidebarLayout).toHaveBeenLastCalledWith(expect.objectContaining({ sectionOrder: ['projects', 'files', 'chats', 'scm', 'graph', 'repos', 'search'] }));
     expect(() => structuredClone(vi.mocked(api.reportSidebarLayout).mock.lastCall![0])).not.toThrow();
     expect(wrapper.find('[data-testid="sidebar-section-drop"]').exists()).toBe(false);
     expect([cssOrder(wrapper, 'projects'), cssOrder(wrapper, 'files'), cssOrder(wrapper, 'chats')]).toEqual(['1', '3', '5']);
     // The DOM keeps its order (and the section its node), so its lists keep their scroll and focus.
     expect(section(wrapper, 'files').element).toBe(filesNode);
-    expect(wrapper.findAll('section[data-section]').map((node) => node.attributes('data-section'))).toEqual(['projects', 'chats', 'files', 'scm', 'repos', 'search']);
+    expect(wrapper.findAll('section[data-section]').map((node) => node.attributes('data-section'))).toEqual(['projects', 'chats', 'files', 'scm', 'graph', 'repos', 'search']);
     // The sashes stay in the gaps, between the sections now on either side.
-    expect(wrapper.findAll('[data-testid="section-sash"]').map((sash) => sash.attributes('data-between'))).toEqual(['projects files', 'files chats', 'chats scm', 'scm repos', 'repos search']);
-    expect(wrapper.get('[data-testid="sidebar-announcement"]').text()).toBe('Files moved to position 2 of 6');
+    expect(wrapper.findAll('[data-testid="section-sash"]').map((sash) => sash.attributes('data-between'))).toEqual(['projects files', 'files chats', 'chats scm', 'scm graph', 'graph repos', 'repos search']);
+    expect(wrapper.get('[data-testid="sidebar-announcement"]').text()).toBe('Files moved to position 2 of 7');
   });
 
   it('ignores a file drag and a section dropped on itself', async () => {
@@ -998,8 +1000,8 @@ describe('sidebar layout', () => {
     api.answerNext({ kind: 'menu', itemId: 'up' });
     await section(wrapper, 'scm').get('button[aria-expanded]').trigger('keydown', { key: 'F10', shiftKey: true });
     await flushPromises();
-    expect(api.reportSidebarLayout).toHaveBeenLastCalledWith(expect.objectContaining({ sectionOrder: ['projects', 'chats', 'scm', 'files', 'repos', 'search'] }));
-    expect(wrapper.get('[data-testid="sidebar-announcement"]').text()).toBe('Source control moved to position 3 of 6');
+    expect(api.reportSidebarLayout).toHaveBeenLastCalledWith(expect.objectContaining({ sectionOrder: ['projects', 'chats', 'scm', 'files', 'graph', 'repos', 'search'] }));
+    expect(wrapper.get('[data-testid="sidebar-announcement"]').text()).toBe('Source control moved to position 3 of 7');
 
     await header('search').trigger('contextmenu', { clientX: 0, clientY: 0 });
     await flushPromises();
@@ -1008,7 +1010,7 @@ describe('sidebar layout', () => {
     api.answerNext({ kind: 'menu', itemId: 'reset' });
     await section(wrapper, 'files').get('button[aria-expanded]').trigger('keydown', { key: 'ContextMenu' });
     await flushPromises();
-    expect(api.reportSidebarLayout).toHaveBeenLastCalledWith(expect.objectContaining({ sectionOrder: ['projects', 'chats', 'files', 'scm', 'repos', 'search'] }));
+    expect(api.reportSidebarLayout).toHaveBeenLastCalledWith(expect.objectContaining({ sectionOrder: ['projects', 'chats', 'files', 'scm', 'graph', 'repos', 'search'] }));
     expect(wrapper.get('[data-testid="sidebar-announcement"]').text()).toBe('Sections back in their default order');
   });
 
@@ -1018,7 +1020,7 @@ describe('sidebar layout', () => {
     await flushPromises();
     await setSidebarHeight(800);
     const sashes = wrapper.findAllComponents(Sash);
-    expect(sashes).toHaveLength(5);
+    expect(sashes).toHaveLength(6);
     const projects = sashes[0]!;
     expect(projects.attributes('aria-valuenow')).toBe('150');
     expect(projects.classes()).toEqual(expect.arrayContaining(['grid-sash', 'z-3']));

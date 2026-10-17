@@ -5,6 +5,7 @@ export type TerminalAttachmentSource = 'selection' | 'command';
 
 /** What the desktop host hands core. The host has already capped and cleaned the text; core never re-caps it. */
 export interface TerminalAttachmentInput {
+  readonly kind: 'terminal';
   readonly source: TerminalAttachmentSource;
   // The command line from the host's own record for source 'command'; null for a selection or an unrecorded command.
   readonly commandLine: string | null;
@@ -22,6 +23,7 @@ export interface TerminalAttachmentInput {
 export interface TerminalAttachmentInfo {
   // Issued by core for a pending attachment; `${userEntryId}:${index}` on a message.
   readonly id: string;
+  readonly kind: 'terminal';
   readonly source: TerminalAttachmentSource;
   readonly commandLine: string | null;
   readonly exitCode: number | null;

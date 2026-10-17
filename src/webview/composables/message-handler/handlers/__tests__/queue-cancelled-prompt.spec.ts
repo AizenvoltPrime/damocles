@@ -10,7 +10,7 @@ const toastMock = vi.hoisted(() => ({ info: vi.fn() }));
 vi.mock('vue-sonner', () => ({ toast: toastMock }));
 
 const IMAGE = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'AAAA' } };
-const CHIP = { id: 't1', source: 'command' as const, commandLine: 'npm test', exitCode: 1, terminalTitle: 'pwsh', lineCount: 1, omittedLines: 0, preview: 'FAIL' };
+const CHIP = { id: 't1', kind: 'terminal' as const, source: 'command' as const, commandLine: 'npm test', exitCode: 1, terminalTitle: 'pwsh', lineCount: 1, omittedLines: 0, preview: 'FAIL' };
 
 function context(restoreQueued = vi.fn()): HandlerContext {
   const stores = { streamingStore: useStreamingStore() };

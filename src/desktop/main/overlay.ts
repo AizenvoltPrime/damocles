@@ -13,6 +13,7 @@ import {
   MAX_MESSAGE_PREVIEW_LINES,
   MAX_OVERLAY_TEXT_LENGTH,
   MAX_RASTER_PNG_BYTES,
+  MAX_REF_PICKER_REFS,
   OVERLAY_ACK_TIMEOUT_MS,
   OVERLAY_CHANNELS,
   OVERLAY_CLIPBOARD_ACTIONS,
@@ -28,6 +29,8 @@ import {
   type OverlayPoint,
   type OverlayRasterRequest,
   type OverlayRect,
+  type OverlayRefChoice,
+  type OverlayRefPickerRef,
   type RasterArt,
   type OverlayRequest,
   type OverlayState,
@@ -37,12 +40,20 @@ import {
   parseInputAnswer,
   parseInputRequest,
   parseValueSelection,
+  MAX_WORKTREE_COMMIT_MESSAGE_CHARS,
+  MAX_WORKTREE_DIALOG_ITEMS,
+  type WorktreeDialog,
+  type WorktreeDialogAnswer,
+  type WorktreeDialogRequest,
+  type WorktreeFile,
 } from '../preload/overlay-channels';
+import { isFullRefName, MAX_SCM_HISTORY_REFS } from '../preload/scm-channels';
 import { MAX_INPUT_VALUE_LENGTH } from '../../shared/input-validation';
 import type { PanelTheme } from '../preload/panel-channels';
 import { TERMINAL_COLORS, TERMINAL_CUSTOM_ICONS, TERMINAL_ICONS, type TerminalColor, type TerminalGlyph } from '../preload/terminal-channels';
 import { DEFAULT_GRID_LAYOUT, GRID_PANES, GRID_SLOTS, MAX_EDITOR_LINE, MAX_TAG_LENGTH, type GridPane, type GridSlot } from '../preload/shell-channels';
 import { isRelativeFilePath } from '../../shared/relative-path';
+import { isWorktreeId } from '../../shared/worktree-id';
 import { visibleText } from '../../shared/visible-text';
 import { validPng } from './notification-art';
 import { APP_ORIGIN, OVERLAY_PAGE_URL } from './protocol';
@@ -300,6 +311,39 @@ function parseTagPicker(raw: Record<string, unknown>): OverlayRequest | undefine
   return { kind: 'tagPicker', anchor, ...(current !== undefined ? { current } : {}), tags: [...(tags as string[])], placeholder };
 }
 
+const REF_PICKER_PREFIXES = ['refs/heads/', 'refs/remotes/', 'refs/tags/'] as const;
+
+// A ref choice naming only refs in `offered`: 'auto', 'all', or 1 to MAX_SCM_HISTORY_REFS distinct full refnames.
+function parseRefChoice(raw: unknown, offered: ReadonlySet<string>): OverlayRefChoice | undefined {
+  if (raw === 'auto' || raw === 'all') return raw;
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_SCM_HISTORY_REFS) return undefined;
+  const refs = raw as unknown[];
+  if (!refs.every((ref): ref is string => typeof ref === 'string' && offered.has(ref)) || new Set(refs).size !== refs.length) return undefined;
+  return [...refs];
+}
+
+function parseRefPicker(raw: Record<string, unknown>): OverlayRequest | undefined {
+  if (Object.keys(raw).length !== 6) return undefined;
+  const anchor = parseRect(field(raw, 'anchor'));
+  const list = field(raw, 'refs');
+  const failed = field(raw, 'failed');
+  const omitted = field(raw, 'omitted');
+  if (!anchor || !Array.isArray(list) || list.length > MAX_REF_PICKER_REFS || typeof failed !== 'boolean') return undefined;
+  if (typeof omitted !== 'number' || !Number.isSafeInteger(omitted) || omitted < 0) return undefined;
+  const refs: OverlayRefPickerRef[] = [];
+  for (const entry of list as unknown[]) {
+    if (!isRecord(entry) || Object.keys(entry).length !== 2) return undefined;
+    const id = field(entry, 'id');
+    const name = field(entry, 'name');
+    if (!isFullRefName(id, REF_PICKER_PREFIXES) || !isNonEmptyText(name, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
+    refs.push({ id, name });
+  }
+  const offered = new Set(refs.map((ref) => ref.id));
+  if (offered.size !== refs.length) return undefined;
+  const selected = parseRefChoice(field(raw, 'selected'), offered);
+  return selected === undefined ? undefined : { kind: 'refPicker', anchor, refs, selected, failed, omitted };
+}
+
 function parseNotifications(raw: Record<string, unknown>): OverlayRequest | undefined {
   const anchor = parseRect(field(raw, 'anchor'));
   return anchor ? { kind: 'notifications', anchor } : undefined;
@@ -328,9 +372,65 @@ export function parseOverlayRequest(raw: unknown): OverlayRequest | undefined {
     case 'menu': return parseMenu(raw);
     case 'confirm': return parseConfirm(raw);
     case 'tagPicker': return parseTagPicker(raw);
+    case 'refPicker': return parseRefPicker(raw);
     case 'notifications': return parseNotifications(raw);
     case 'dropZones': return parseDropZones(raw);
+    case 'newChatMenu': return parseNewChatMenu(raw);
     default: return undefined;
+  }
+}
+
+function parseNewChatMenu(raw: Record<string, unknown>): OverlayRequest | undefined {
+  if (Object.keys(raw).length !== 5) return undefined;
+  const anchor = parseRect(field(raw, 'anchor'));
+  const projectKey = field(raw, 'projectKey');
+  const projectName = field(raw, 'projectName');
+  const shortcut = field(raw, 'shortcut');
+  if (!anchor || !isNonEmptyText(projectKey, MAX_OVERLAY_ID_LENGTH) || !isNonEmptyText(projectName, MAX_OVERLAY_LABEL_LENGTH) || !isText(shortcut, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
+  return { kind: 'newChatMenu', anchor, projectKey, projectName, shortcut };
+}
+
+// Texts of a worktree dialog main asks: git and disk text shows its control and bidi characters as escapes, cut to bounds.
+const dialogText = (value: string): string => shownLabel(visibleText(value)) ?? '';
+const dialogFiles = (files: readonly WorktreeFile[]): WorktreeFile[] => files.slice(0, MAX_WORKTREE_DIALOG_ITEMS).map((file) => ({ path: dialogText(file.path), letter: file.letter }));
+
+/** A worktree dialog main asks (D41), its lists cut to MAX_WORKTREE_DIALOG_ITEMS and its texts made visible. */
+export function boundWorktreeDialog(dialog: WorktreeDialog): WorktreeDialogRequest {
+  switch (dialog.dialog) {
+    case 'setupReview':
+      return { kind: 'worktreeDialog', dialog: 'setupReview', projectName: dialogText(dialog.projectName), commands: dialog.commands.slice(0, MAX_WORKTREE_DIALOG_ITEMS).map((command) => visibleText(command)) };
+    case 'delete':
+      return {
+        kind: 'worktreeDialog',
+        dialog: 'delete',
+        path: dialogText(dialog.path),
+        branch: dialogText(dialog.branch),
+        uncommitted: dialogFiles(dialog.uncommitted),
+        submoduleChanges: dialogFiles(dialog.submoduleChanges),
+        unmergedCommits: dialog.unmergedCommits.slice(0, MAX_WORKTREE_DIALOG_ITEMS).map((commit) => ({ hash: commit.hash.slice(0, 40), subject: dialogText(commit.subject) })),
+        deleteBranchDefault: dialog.deleteBranchDefault,
+        deleteBranchLocked: dialog.deleteBranchLocked,
+      };
+    case 'mergeMessage':
+      return { kind: 'worktreeDialog', dialog: 'mergeMessage', branch: dialogText(dialog.branch), target: dialogText(dialog.target), files: dialogFiles(dialog.files) };
+    case 'rewritten':
+      return { kind: 'worktreeDialog', dialog: 'rewritten', branch: dialogText(dialog.branch) };
+    case 'refusal':
+      return { kind: 'worktreeDialog', dialog: 'refusal', action: dialog.action, files: dialogFiles(dialog.files) };
+    case 'handOffConfirm':
+      return {
+        kind: 'worktreeDialog',
+        dialog: 'handOffConfirm',
+        direction: dialog.direction,
+        ...(dialog.branch !== undefined ? { branch: dialogText(dialog.branch) } : {}),
+        files: dialog.files.slice(0, MAX_WORKTREE_DIALOG_ITEMS).map((file) => ({ path: dialogText(file.path), letter: file.letter, alsoUserEdits: file.alsoUserEdits })),
+      };
+    case 'leftovers':
+      return {
+        kind: 'worktreeDialog',
+        dialog: 'leftovers',
+        items: dialog.items.slice(0, MAX_WORKTREE_DIALOG_ITEMS).map((item) => ({ path: dialogText(item.path), reason: item.reason, ...(item.repository !== undefined ? { repository: dialogText(item.repository) } : {}) })),
+      };
   }
 }
 
@@ -464,6 +564,60 @@ function parseQuickOpenAnswer(raw: Record<string, unknown>): OverlayAnswer | und
   return { kind: 'quickOpen', pick: { projectKey, relativePath, mention, ...(line !== undefined ? { line } : {}) } };
 }
 
+// The ref is checked against fresh options when the shell asks for the chat; here only its form.
+function parseNewChatMenuAnswer(raw: Record<string, unknown>): OverlayAnswer | undefined {
+  const choice = field(raw, 'choice');
+  if (choice === 'plain') return Object.keys(raw).length === 2 ? { kind: 'newChatMenu', choice: 'plain' } : undefined;
+  if (choice === 'continueInWorktree') {
+    const worktreeId = field(raw, 'worktreeId');
+    return Object.keys(raw).length === 3 && isWorktreeId(worktreeId) ? { kind: 'newChatMenu', choice, worktreeId } : undefined;
+  }
+  if (choice !== 'worktree' || Object.keys(raw).length !== 4) return undefined;
+  const startRef = field(raw, 'startRef');
+  const bringChanges = field(raw, 'bringChanges');
+  // HEAD is a detached HEAD's option (D61); any other start ref is a branch's full refname.
+  if (!(startRef === 'HEAD' || isFullRefName(startRef, ['refs/heads/', 'refs/remotes/'])) || typeof bringChanges !== 'boolean') return undefined;
+  return { kind: 'newChatMenu', choice: 'worktree', startRef, bringChanges };
+}
+
+/** A worktree dialog's answer when it answers this dialog: its own choices, a bounded message, a path the dialog listed. */
+export function parseWorktreeDialogAnswer(raw: Record<string, unknown>, request: WorktreeDialogRequest): WorktreeDialogAnswer | undefined {
+  if (field(raw, 'dialog') !== request.dialog) return undefined;
+  const choice = field(raw, 'choice');
+  const keys = Object.keys(raw).length;
+  switch (request.dialog) {
+    case 'setupReview':
+      return keys === 3 && (choice === 'run' || choice === 'skip') ? { dialog: 'setupReview', choice } : undefined;
+    case 'delete': {
+      const deleteBranch = field(raw, 'deleteBranch');
+      if (keys !== 4 || (choice !== 'delete' && choice !== 'cancel') || typeof deleteBranch !== 'boolean') return undefined;
+      if (request.deleteBranchLocked && deleteBranch !== request.deleteBranchDefault) return undefined;
+      return { dialog: 'delete', choice, deleteBranch };
+    }
+    case 'mergeMessage': {
+      const message = field(raw, 'message');
+      if (keys !== 4 || (choice !== 'commit' && choice !== 'cancel') || !isText(message, MAX_WORKTREE_COMMIT_MESSAGE_CHARS)) return undefined;
+      if (choice === 'commit' && message.trim() === '') return undefined;
+      return { dialog: 'mergeMessage', choice, message };
+    }
+    case 'rewritten':
+      return keys === 3 && (choice === 'rebase' || choice === 'apply' || choice === 'cancel') ? { dialog: 'rewritten', choice } : undefined;
+    case 'refusal':
+      return keys === 3 && choice === 'ok' ? { dialog: 'refusal', choice } : undefined;
+    case 'handOffConfirm':
+      return keys === 3 && (choice === 'move' || choice === 'cancel') ? { dialog: 'handOffConfirm', choice } : undefined;
+    case 'leftovers': {
+      if (choice === 'close') return keys === 3 ? { dialog: 'leftovers', choice } : undefined;
+      const path = field(raw, 'path');
+      const reason = request.items.find((item) => item.path === path)?.reason;
+      // each action only for the finding it fits
+      const fits = { prune: 'gitRecordOnly', reveal: 'unregistered', delete: 'noChat', keep: 'noChat' } as const;
+      if (keys !== 4 || (choice !== 'prune' && choice !== 'reveal' && choice !== 'delete' && choice !== 'keep') || reason !== fits[choice]) return undefined;
+      return { dialog: 'leftovers', choice, path: path as string };
+    }
+  }
+}
+
 /** The overlay's answer as a clean copy, when it answers this request; a menu answer must name one of its enabled items. */
 export function parseOverlayAnswer(raw: unknown, request: OverlayRequest): OverlayAnswer | undefined {
   if (!isRecord(raw)) return undefined;
@@ -507,6 +661,16 @@ export function parseOverlayAnswer(raw: unknown, request: OverlayRequest): Overl
     const slot = field(raw, 'slot');
     if (slot === null) return { kind: 'dropZones', slot: null };
     return (GRID_SLOTS as readonly unknown[]).includes(slot) ? { kind: 'dropZones', slot: slot as GridSlot } : undefined;
+  }
+  if (request.kind === 'newChatMenu') return parseNewChatMenuAnswer(raw);
+  if (request.kind === 'refPicker') {
+    if (Object.keys(raw).length !== 2) return undefined;
+    const choice = parseRefChoice(field(raw, 'choice'), new Set(request.refs.map((ref) => ref.id)));
+    return choice === undefined ? undefined : { kind: 'refPicker', choice };
+  }
+  if (request.kind === 'worktreeDialog') {
+    const answer = parseWorktreeDialogAnswer(raw, request);
+    return answer && { kind: 'worktreeDialog', ...answer };
   }
   const tag = field(raw, 'tag');
   if (tag === null) return { kind: 'tagPicker', tag: null };
@@ -665,6 +829,11 @@ interface HeldRequest {
 // none: no page, and none is loading (before the first load, or a page left dead)
 type PageState = 'none' | 'loading' | 'loaded';
 
+// Main's questions, which only main asks: they stack above whatever is open, and only their own answer closes them.
+function stacks(request: OverlayRequest): boolean {
+  return request.kind === 'message' || request.kind === 'worktreeDialog';
+}
+
 interface PendingRaster {
   readonly width: number;
   readonly height: number;
@@ -675,7 +844,7 @@ interface PendingRaster {
 /**
  * The window's top-most view: menus, dialogs and the settings modal drawn above every other view (plan AD1). It is
  * hidden, or covers the whole content area while a popup is open; toasts show in the desktop popup window (D52). A message
- * dialog stacks above whatever is open; any other new request dismisses every open request except those dialogs.
+ * or worktree dialog stacks above whatever is open; any other new request dismisses every open request except those dialogs.
  */
 export class OverlayHost {
   readonly view: WebContentsView;
@@ -879,6 +1048,11 @@ export class OverlayHost {
     return this.open.some((entry) => entry.request.kind === kind);
   }
 
+  /** The newest open request of this kind, for a channel that answers for it (the New menu's options, a dialog's Generate). */
+  openRequestOf<K extends OverlayRequest['kind']>(kind: K): Extract<OverlayRequest, { kind: K }> | undefined {
+    return [...this.open].reverse().find((entry) => entry.request.kind === kind)?.request as Extract<OverlayRequest, { kind: K }> | undefined;
+  }
+
   load(): void {
     this.page = 'loading';
     this.navigating = false;
@@ -911,8 +1085,8 @@ export class OverlayHost {
     if (this.view.webContents.isCrashed()) return Promise.reject(new Error('The overlay is not available'));
     // Focus returns where it was before the first of the requests that are open together.
     if (this.open.length === 0) this.returnFocus = returnFocus === this.view.webContents ? undefined : returnFocus;
-    if (request.kind !== 'message') {
-      for (const previous of this.open.filter((entry) => entry.request.kind !== 'message')) this.settle(previous, { kind: 'dismissed' }, { keepFocus: true });
+    if (!stacks(request)) {
+      for (const previous of this.open.filter((entry) => !stacks(entry.request))) this.settle(previous, { kind: 'dismissed' }, { keepFocus: true });
     }
     return new Promise<OverlayAnswer>((resolve, reject) => {
       const withdraw = (): void => this.withdraw(open);
@@ -1034,11 +1208,11 @@ export class OverlayHost {
     return this.open.find((entry) => entry.id === requestId);
   }
 
-  // Held as they would be open: a later request dismisses every earlier one but a message dialog.
+  // Held as they would be open: a later request dismisses every earlier one but main's questions.
   private hold(request: OverlayRequest, returnFocus: WebContents | undefined, shown: (() => void) | undefined, browse: InputBrowseHandler | undefined, signal: AbortSignal | undefined): Promise<OverlayAnswer> {
-    if (request.kind !== 'message') {
-      const replaced = this.held.filter((entry) => entry.request.kind !== 'message');
-      this.held = this.held.filter((entry) => entry.request.kind === 'message');
+    if (!stacks(request)) {
+      const replaced = this.held.filter((entry) => !stacks(entry.request));
+      this.held = this.held.filter((entry) => stacks(entry.request));
       for (const entry of replaced) entry.resolve({ kind: 'dismissed' });
     }
     return new Promise<OverlayAnswer>((resolve, reject) => {

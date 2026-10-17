@@ -2,27 +2,33 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as os from 'os';
 import * as path from 'path';
 import type { TerminalAttachmentInfo, TerminalAttachmentInput } from '@shared/types/terminal-attachment';
+import type { ChatAttachmentInfo, CommitAttachmentInput } from '@shared/types/chat-attachment';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@shared/types/messages';
 import { MAX_PENDING_TERMINAL_ATTACHMENT_CHARS, MAX_PENDING_TERMINAL_ATTACHMENTS, TerminalAttachmentManager } from '../terminal-attachment-manager';
 import { createChatHandlers } from '../message-router/handlers/chat-handlers';
 import type { HandlerContext, HandlerDependencies } from '../message-router/types';
 import { splitTerminalAttachments } from '../../terminal-attachment';
 import type { SendOutcome, SlashInvocation } from '../../chat-session';
-import { createHarness, folderEntry, type Harness } from './panel-manager-harness';
+import { createHarness, folderEntry, makeFakeHost, type Harness } from './panel-manager-harness';
 
 vi.mock('../ide-context-manager', () => ({
   IdeContextManager: class {
+    refresh(): void {}
     dispose(): void {}
   },
 }));
 
 const input = (text: string, overrides: Partial<TerminalAttachmentInput> = {}): TerminalAttachmentInput => ({
-  source: 'command', commandLine: 'npm test', exitCode: 1, terminalTitle: 'pwsh', text, omittedLines: 0, ...overrides,
+  kind: 'terminal', source: 'command', commandLine: 'npm test', exitCode: 1, terminalTitle: 'pwsh', text, omittedLines: 0, ...overrides,
 });
+
+const COMMIT: CommitAttachmentInput = {
+  kind: 'commit', hash: 'c'.repeat(40), subject: 'Fix the parser', author: 'Ada', authorDate: Date.UTC(2026, 4, 1), text: `commit ${'c'.repeat(40)}\n\n    Fix the parser\n\n+x`, omittedLines: 0,
+};
 
 describe('TerminalAttachmentManager', () => {
   it('publishes the whole list on every add, remove and take, and takes only named ids in added order', () => {
-    const published: TerminalAttachmentInfo[][] = [];
+    const published: ChatAttachmentInfo[][] = [];
     const added: boolean[] = [];
     const manager = new TerminalAttachmentManager((list, isAdd) => {
       published.push(list);
@@ -101,6 +107,7 @@ function harness(options: { ideContext?: boolean } = {}) {
     storageManager: { broadcastPromptHistoryEntry: vi.fn() },
     workspaceManager: { findSkill: async () => undefined, findCommand: async () => undefined },
     markUserTypedDuringTurn: vi.fn(),
+    worktrees: () => ({ interceptSend: () => false }),
   } as unknown as HandlerDependencies;
   const terminalAttachments = new TerminalAttachmentManager((attachments) => sent.push({ type: 'terminalAttachmentsUpdate', attachments }));
   const ideContext = options.ideContext ?? true;
@@ -242,6 +249,43 @@ describe('sendMessage with terminal attachments', () => {
     expect(h.sendMessage.mock.calls.map((call) => call[0])).toEqual(['/review 7', '/review 7']);
   });
 
+  it('sends a commit and terminal output each as its own block of its kind, in the order they were added, ahead of the typed text', async () => {
+    const h = harness({ ideContext: false });
+    h.terminalAttachments.add(COMMIT);
+    h.terminalAttachments.add(input('FAIL a.test.ts'));
+    const pending = h.terminalAttachments.displayInfo();
+    expect(pending.map((info) => info.kind)).toEqual(['commit', 'terminal']);
+    await h.send({ content: 'Explain the changes in this commit.', terminalAttachmentIds: pending.map((info) => info.id) });
+
+    const [content, , , broadcast] = h.sendMessage.mock.calls[0] as unknown as [Array<{ type: string; text: string }>, unknown, unknown, { content: string; terminalAttachments: ChatAttachmentInfo[] }];
+    expect(content.map((block) => block.text.split('\n')[0]!.split(' ')[0])).toEqual(['<damocles_commit', '<damocles_terminal_output', 'Explain']);
+    const split = splitTerminalAttachments(content.map((block) => block.text).join('\n'), 2);
+    expect(split.attachments).toEqual([COMMIT, input('FAIL a.test.ts')]);
+    expect(split.text).toBe('Explain the changes in this commit.');
+    expect(broadcast).toEqual({ content: 'Explain the changes in this commit.', terminalAttachments: pending });
+    expect(h.terminalAttachments.displayInfo()).toEqual([]);
+  });
+
+  it('names the kinds of the attachments sent with a command, never those of others still waiting', async () => {
+    const h = harness();
+    h.resolveSlashInvocation.mockResolvedValueOnce({ kind: 'command' });
+    h.terminalAttachments.add(input('sent along'));
+    h.terminalAttachments.add(COMMIT);
+    const [terminal] = h.terminalAttachments.displayInfo();
+    await h.send({ content: '/todos', terminalAttachmentIds: [terminal!.id] });
+    expect(h.sent).toContainEqual({ type: 'notification', notificationType: 'info', message: 'A command takes no terminal output, so the attached output stays in the composer for your next message.' });
+  });
+
+  it('says a command takes no attachments when a commit waits, and keeps it pending', async () => {
+    const h = harness();
+    h.resolveSlashInvocation.mockResolvedValueOnce({ kind: 'command' });
+    h.terminalAttachments.add(COMMIT);
+    const pending = h.terminalAttachments.displayInfo();
+    await h.send({ content: '/todos', terminalAttachmentIds: pending.map((info) => info.id) });
+    expect(h.terminalAttachments.displayInfo()).toEqual(pending);
+    expect(h.sent).toContainEqual({ type: 'notification', notificationType: 'info', message: 'A command takes no attachments, so they stay in the composer for your next message.' });
+  });
+
   it('removes one pending attachment on the composer\'s request', () => {
     const h = harness();
     h.terminalAttachments.add(input('a'));
@@ -271,5 +315,37 @@ describe('PanelManager.addTerminalAttachment', () => {
     expect(h.platform.notifications.calls).toEqual([
       { level: 'warn', message: 'Not added to the chat: its attached terminal output would pass 128,000 characters. Send or remove an attachment first.', actions: [] },
     ]);
+  });
+
+  it('counts a commit against the same budget, and names the commit when it is the one refused', async () => {
+    h = createHarness([folderEntry(path.join(path.resolve(os.tmpdir(), 'attach-commit-budget'), 'alpha'))]);
+    const panelId = await h.manager.show();
+    const pending = h.instance(panelId).terminalAttachments;
+    expect(h.manager.addTerminalAttachment(panelId, input('a'.repeat(MAX_PENDING_TERMINAL_ATTACHMENT_CHARS - COMMIT.text.length)))).toBe(true);
+    expect(h.manager.addTerminalAttachment(panelId, COMMIT)).toBe(true);
+    expect(pending.displayInfo().map((info) => info.kind)).toEqual(['terminal', 'commit']);
+    expect(h.manager.addTerminalAttachment(panelId, { ...COMMIT, text: `${COMMIT.text}x` })).toBe(false);
+    expect(pending.displayInfo()).toHaveLength(2);
+    expect(h.platform.notifications.calls).toEqual([
+      { level: 'warn', message: 'Not added to the chat: with this commit its attachments would pass 128,000 characters. Send or remove an attachment first.', actions: [] },
+    ]);
+  });
+});
+
+describe('PanelManager.appendToComposer', () => {
+  let h: Harness | undefined;
+  afterEach(() => {
+    h?.dispose();
+    h = undefined;
+  });
+
+  it('posts the text for the composer to join its draft, and no send', async () => {
+    h = createHarness([folderEntry(path.join(path.resolve(os.tmpdir(), 'attach-append'), 'alpha'))]);
+    const host = makeFakeHost();
+    const panelId = await h.manager.initializeHost(host);
+    host.send({ type: 'ready', panelToken: '00000000-0000-4000-8000-000000000000' });
+    await h.manager.appendToComposer(panelId, 'Explain the changes in this commit.');
+    expect(host.posted).toContainEqual({ type: 'composerAppend', text: 'Explain the changes in this commit.' });
+    expect(h.routed.some((routed) => routed.message.type === 'sendMessage')).toBe(false);
   });
 });

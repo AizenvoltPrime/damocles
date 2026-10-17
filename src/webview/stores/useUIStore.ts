@@ -1,8 +1,10 @@
-import { ref, shallowRef } from 'vue';
+import { computed, ref, shallowRef } from 'vue';
 import { defineStore } from 'pinia';
+import type { WorktreeStateData } from '@shared/types/messages';
+import type { UserContentBlock } from '@shared/types/content';
 import type { ChatMessage, RewindHistoryItem, IdeContextDisplayInfo, RestorePoint, SkippedFile, SkippedFilesTarget } from '@shared/types/session';
 import type { MemoryKind } from '@shared/types/memory';
-import type { TerminalAttachmentInfo } from '@shared/types/terminal-attachment';
+import type { ChatAttachmentInfo } from '@shared/types/chat-attachment';
 import type { SettingsTarget } from '@shared/settings-sections';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 
@@ -53,8 +55,9 @@ export const useUIStore = defineStore('ui', () => {
   const ideContextDefaultEnabled = ref(true);
   // True once the user toggled the chip in this conversation — then the default no longer applies.
   const ideContextUserOverride = ref(false);
-  // The composer's pending terminal attachments as core holds them; core owns the list, a conversation reset keeps it.
-  const terminalAttachments = shallowRef<readonly TerminalAttachmentInfo[]>([]);
+  // The composer's pending attachments (terminal output and commits) as core holds them; core owns the list, a conversation
+  // reset keeps it.
+  const terminalAttachments = shallowRef<readonly ChatAttachmentInfo[]>([]);
   const isCompacting = ref(false);
   // Set while pi waits to re-send a failed model call; the status bar names the attempt.
   const retryStatus = ref<{ attempt: number; maxAttempts: number } | null>(null);
@@ -64,6 +67,18 @@ export const useUIStore = defineStore('ui', () => {
   // The desktop window's terminal pane, for the chat header's Terminal toggle (terminalShown); its shortcut's display label.
   const terminalShown = ref(false);
   const toggleTerminalShortcut = ref('');
+  // D60: what this chat changed, for the desktop header's +N −M counter (chatChanges, sent only where the host can review)
+  const chatChanges = ref<{ added: number; removed: number; files: number }>({ added: 0, removed: 0, files: 0 });
+  // D30, D61: the chat's worktree state, null until the host sends one (VS Code never does), so nothing worktree shows there
+  const worktree = ref<WorktreeStateData | null>(null);
+  // A stored session is resuming and core has not yet said where it works, so the composer stays unmounted.
+  const placePending = ref(false);
+  // A send core gave back while no composer was mounted (a kept draft restored before the place is known); the composer takes it on mount.
+  const returnedPrompt = shallowRef<UserContentBlock[] | null>(null);
+  // Text the host appended (composerAppend) before the composer mounted, in order.
+  const appendedPrompt = shallowRef<string[] | null>(null);
+  // Rule 18: a chat whose worktree was deleted is read-only history, so nothing rewinds or forks it.
+  const historyReadOnly = computed(() => worktree.value?.phase === 'deleted');
 
   function setProcessing(value: boolean) {
     isProcessing.value = value;
@@ -231,7 +246,7 @@ export const useUIStore = defineStore('ui', () => {
     ideContext.value = context;
   }
 
-  function setTerminalAttachments(attachments: readonly TerminalAttachmentInfo[]) {
+  function setTerminalAttachments(attachments: readonly ChatAttachmentInfo[]) {
     terminalAttachments.value = attachments;
   }
 
@@ -313,6 +328,12 @@ export const useUIStore = defineStore('ui', () => {
   return {
     isProcessing,
     terminalShown,
+    chatChanges,
+    worktree,
+    historyReadOnly,
+    placePending,
+    returnedPrompt,
+    appendedPrompt,
     toggleTerminalShortcut,
     showSettingsModal,
     settingsTarget,

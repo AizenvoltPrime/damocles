@@ -1,8 +1,9 @@
 import type { OpenFolder } from '../../platform/workspace-folders';
 import type { ChatCommand } from '../../shared/types/messages';
+import { visibleText } from '../../shared/visible-text';
 import type { PaletteCommand } from '../preload/overlay-channels';
 import type { ScmCommitVariant } from '../preload/scm-channels';
-import type { EditorMenuShortcut, SearchEditorCommand, SearchViewCommand } from '../preload/shell-channels';
+import { EDITOR_GIT_KEYBINDINGS, type EditorCommand, type EditorMenuShortcut, type SearchEditorCommand, type SearchViewCommand } from '../preload/shell-channels';
 import type { MenuActions, MenuState } from './menu';
 import type { DesktopLocalizationService } from './platform/localization-service';
 
@@ -125,6 +126,7 @@ export const MENU_IDS = {
   gitMergeAbort: 'damocles.git.mergeAbort',
   gitRebaseAbort: 'damocles.git.rebaseAbort',
   gitCherryPickAbort: 'damocles.git.cherryPickAbort',
+  gitCherryPick: 'damocles.git.cherryPick',
   gitViewChanges: 'damocles.git.viewChanges',
   gitViewStagedChanges: 'damocles.git.viewStagedChanges',
   gitViewUntrackedChanges: 'damocles.git.viewUntrackedChanges',
@@ -199,6 +201,30 @@ export const MENU_IDS = {
   gitStashDrop: 'damocles.git.stashDrop',
   gitStashDropAll: 'damocles.git.stashDropAll',
   gitStashView: 'damocles.git.stashView',
+  gitStageSelectedRanges: 'damocles.git.stageSelectedRanges',
+  gitUnstageSelectedRanges: 'damocles.git.unstageSelectedRanges',
+  gitRevertSelectedRanges: 'damocles.git.revertSelectedRanges',
+  gitOpenTimeline: 'damocles.git.openTimeline',
+  gitToggleInlineBlame: 'damocles.git.blame.toggleEditorDecoration',
+  gitShowLineBlame: 'damocles.git.showLineBlame',
+  nextChange: 'damocles.editor.nextChange',
+  previousChange: 'damocles.editor.previousChange',
+  mergeAcceptCurrent: 'damocles.mergeConflict.acceptCurrent',
+  mergeAcceptIncoming: 'damocles.mergeConflict.acceptIncoming',
+  mergeAcceptBoth: 'damocles.mergeConflict.acceptBoth',
+  mergeAcceptAllCurrent: 'damocles.mergeConflict.acceptAllCurrent',
+  mergeAcceptAllIncoming: 'damocles.mergeConflict.acceptAllIncoming',
+  mergeNextConflict: 'damocles.mergeConflict.next',
+  mergePreviousConflict: 'damocles.mergeConflict.previous',
+  chatReviewChanges: 'damocles.chat.reviewChanges',
+  chatNewInWorktree: 'damocles.chat.newChatInWorktree',
+  chatHandOffToWorktree: 'damocles.chat.handOffToWorktree',
+  chatHandOffToProjectFolder: 'damocles.chat.handOffToProjectFolder',
+  worktreeApply: 'damocles.worktree.apply',
+  worktreeMerge: 'damocles.worktree.merge',
+  worktreeUpdate: 'damocles.worktree.update',
+  worktreePushBranch: 'damocles.worktree.pushBranch',
+  worktreeDelete: 'damocles.worktree.delete',
 } as const;
 
 // One command per project, "Open Chat in Project" in the File menu; the id carries the project's absolute path.
@@ -207,6 +233,11 @@ export function openChatForProjectId(fsPath: string): string {
 }
 
 export const NEW_CHAT_ACCELERATOR = 'CmdOrCtrl+N';
+// VS Code's per-OS pattern: no Ctrl+Alt letter chord on Windows, where Ctrl+Alt is AltGr.
+export function newChatInWorktreeAccelerator(platform: NodeJS.Platform): string {
+  if (platform === 'darwin') return 'Cmd+Alt+N';
+  return platform === 'linux' ? 'Ctrl+Alt+N' : 'Shift+Alt+N';
+}
 export const TOGGLE_SIDEBAR_ACCELERATOR = 'CmdOrCtrl+B';
 export const OPEN_SETTINGS_ACCELERATOR = 'CmdOrCtrl+,';
 export const QUICK_OPEN_ACCELERATOR = 'CmdOrCtrl+P';
@@ -272,6 +303,8 @@ export interface Command {
   readonly menuLabel?: Label;
   readonly sublabel?: string;
   readonly accelerator?: string;
+  // a Monaco keybinding (a chord) shown as the palette's hint; never a menu accelerator
+  readonly keybinding?: readonly string[];
   // the accelerator is only shown here: another owner (an item that routes it by focus, the xterm) handles the key
   readonly registerAccelerator?: false;
   // VS Code's precondition, which never reads keyboard focus: the menu item, the palette entry and the key; absent: always
@@ -354,6 +387,12 @@ export const CHAT_FEATURE_IDS: readonly string[] = CHAT_FEATURES.map((feature) =
 // (extensions/git/package.json).
 export const GIT_COMMAND_IDS: readonly string[] = Object.entries(MENU_IDS).filter(([key]) => key.startsWith('git')).map(([, id]) => id);
 
+// The editor's change navigation and merge-conflict commands, which the Edit menu lists in these groups.
+export const EDITOR_GIT_MENU_GROUPS: ReadonlyArray<readonly string[]> = [
+  [MENU_IDS.nextChange, MENU_IDS.previousChange],
+  [MENU_IDS.mergeAcceptCurrent, MENU_IDS.mergeAcceptIncoming, MENU_IDS.mergeAcceptBoth, MENU_IDS.mergeAcceptAllCurrent, MENU_IDS.mergeAcceptAllIncoming, MENU_IDS.mergeNextConflict, MENU_IDS.mergePreviousConflict],
+];
+
 // View › Source Control with a separator between groups, as VS Code's SCM menus group these commands. Holds each
 // GIT_COMMAND_IDS entry once.
 export const GIT_MENU_GROUPS: ReadonlyArray<readonly string[]> = [
@@ -374,10 +413,12 @@ export const GIT_MENU_GROUPS: ReadonlyArray<readonly string[]> = [
   [MENU_IDS.gitPushForce, MENU_IDS.gitPushToForce, MENU_IDS.gitPushWithTagsForce],
   [MENU_IDS.gitFetch, MENU_IDS.gitFetchPrune, MENU_IDS.gitFetchAll],
   [MENU_IDS.gitAddRemote, MENU_IDS.gitRemoveRemote],
-  [MENU_IDS.gitCheckout, MENU_IDS.gitCheckoutDetached, MENU_IDS.gitMerge, MENU_IDS.gitRebase, MENU_IDS.gitBranch, MENU_IDS.gitBranchFrom, MENU_IDS.gitRenameBranch, MENU_IDS.gitDeleteBranch, MENU_IDS.gitDeleteRemoteBranch],
+  [MENU_IDS.gitCheckout, MENU_IDS.gitCheckoutDetached, MENU_IDS.gitMerge, MENU_IDS.gitRebase, MENU_IDS.gitCherryPick, MENU_IDS.gitBranch, MENU_IDS.gitBranchFrom, MENU_IDS.gitRenameBranch, MENU_IDS.gitDeleteBranch, MENU_IDS.gitDeleteRemoteBranch],
   [MENU_IDS.gitStash, MENU_IDS.gitStashIncludeUntracked, MENU_IDS.gitStashStaged, MENU_IDS.gitStashApplyLatest, MENU_IDS.gitStashApply, MENU_IDS.gitStashPopLatest, MENU_IDS.gitStashPop, MENU_IDS.gitStashDrop, MENU_IDS.gitStashDropAll, MENU_IDS.gitStashView],
   [MENU_IDS.gitCreateTag, MENU_IDS.gitDeleteTag, MENU_IDS.gitDeleteRemoteTag, MENU_IDS.gitPushTags],
   [MENU_IDS.gitCreateWorktree, MENU_IDS.gitDeleteWorktree],
+  [MENU_IDS.gitStageSelectedRanges, MENU_IDS.gitUnstageSelectedRanges, MENU_IDS.gitRevertSelectedRanges],
+  [MENU_IDS.gitOpenTimeline, MENU_IDS.gitShowLineBlame, MENU_IDS.gitToggleInlineBlame],
   [MENU_IDS.gitShowOutput],
 ];
 
@@ -506,6 +547,8 @@ function gitCommands(actions: MenuActions): Command[] {
     idleCommand(MENU_IDS.gitDeleteRemoteBranch, t('Delete Remote Branch...'), { op: 'deleteRemoteBranch' }),
     command(MENU_IDS.gitMerge, t('Merge...'), open, () => actions.scmRun({ op: 'merge' })),
     command(MENU_IDS.gitRebase, t('Rebase Branch...'), open, () => actions.scmRun({ op: 'rebase' })),
+    // VS Code's git.cherryPick, enabled only with no merge, rebase or cherry-pick in progress
+    command(MENU_IDS.gitCherryPick, t('Cherry Pick...'), (context) => open(context) && context.scm.operation === null, () => actions.scmRun({ op: 'cherryPick' })),
     command(MENU_IDS.gitCreateTag, t('Create Tag...'), open, () => actions.scmRun({ op: 'createTag' })),
     command(MENU_IDS.gitDeleteTag, t('Delete Tag...'), open, () => actions.scmRun({ op: 'deleteTag' })),
     idleCommand(MENU_IDS.gitDeleteRemoteTag, t('Delete Remote Tag...'), { op: 'deleteRemoteTag' }),
@@ -527,6 +570,48 @@ function gitCommands(actions: MenuActions): Command[] {
     command(MENU_IDS.gitStashDropAll, t('Drop All Stashes...'), open, () => actions.scmRun({ op: 'stashDropAll' })),
     // VS Code lists View Stash... with config.git.enabled && !git.missing alone; with no repository it says so
     command(MENU_IDS.gitStashView, t('View Stash...'), available, () => actions.scmRun({ op: 'viewStash', target: 'pick' })),
+    // resourceScheme == file: a code tab of a repository file, or a diff tab against the index whose right side is that file
+    {
+      ...command(MENU_IDS.gitStageSelectedRanges, t('Stage Selected Ranges'), (context) => open(context) && (context.editorGit === 'file' || context.editorGit === 'workingTreeDiff'), () => actions.editorCommand('stageSelectedRanges')),
+      keybinding: EDITOR_GIT_KEYBINDINGS.stageSelectedRanges,
+    },
+    // resourceScheme == git: a diff tab of staged changes, whose right side is the index
+    {
+      ...command(MENU_IDS.gitUnstageSelectedRanges, t('Unstage Selected Ranges'), (context) => open(context) && context.editorGit === 'indexDiff', () => actions.editorCommand('unstageSelectedRanges')),
+      keybinding: EDITOR_GIT_KEYBINDINGS.unstageSelectedRanges,
+    },
+    {
+      ...command(MENU_IDS.gitRevertSelectedRanges, t('Revert Selected Ranges'), (context) => open(context) && (context.editorGit === 'file' || context.editorGit === 'workingTreeDiff'), () => actions.editorCommand('revertSelectedRanges')),
+      keybinding: EDITOR_GIT_KEYBINDINGS.revertSelectedRanges,
+    },
+    command(MENU_IDS.gitOpenTimeline, t('Open Timeline'), (context) => open(context) && context.editorGit !== null, () => actions.editorCommand('openTimeline')),
+    // the keyboard's way to the inline blame's card on a code tab of a repository file
+    command(MENU_IDS.gitShowLineBlame, t('Show Line Blame'), (context) => open(context) && context.editorGit === 'file', () => actions.editorCommand('showLineBlame')),
+    // git.blame.toggleEditorDecoration is always in VS Code's palette; it flips the setting
+    command(MENU_IDS.gitToggleInlineBlame, t('Toggle Inline Blame'), () => true, () => actions.toggleInlineBlame()),
+  ];
+}
+
+// The editor's change navigation (quickDiffWidget.ts Go to Next and Previous Change) and merge-conflict's commands, each on
+// the active editor; palette entries for what the gutter, the peek and the code lenses offer.
+function editorGitCommands(actions: MenuActions): Command[] {
+  const edit = t('Edit');
+  const merge = t('Merge Conflict');
+  // a text, diff or merge tab, where the editor carries the command out
+  const changes = (context: MenuState): boolean => context.editor && (context.editorGit !== null || context.editorKind === 'diff');
+  // merge-conflict reads text alone, so any editable text tab or the merge editor
+  const conflicts = (context: MenuState): boolean => context.editor && (context.editorKind === 'code' || context.editorKind === 'untitled' || context.editorKind === 'merge');
+  const conflictCommand = (id: string, title: Label, command: EditorCommand): Command => ({ id, title, category: merge, enabled: conflicts, run: () => actions.editorCommand(command) });
+  return [
+    { id: MENU_IDS.nextChange, title: t('Go to Next Change'), category: edit, keybinding: EDITOR_GIT_KEYBINDINGS.nextChange, enabled: changes, run: () => actions.editorCommand('nextChange') },
+    { id: MENU_IDS.previousChange, title: t('Go to Previous Change'), category: edit, keybinding: EDITOR_GIT_KEYBINDINGS.previousChange, enabled: changes, run: () => actions.editorCommand('previousChange') },
+    conflictCommand(MENU_IDS.mergeAcceptCurrent, t('Accept Current'), 'acceptCurrent'),
+    conflictCommand(MENU_IDS.mergeAcceptIncoming, t('Accept Incoming'), 'acceptIncoming'),
+    conflictCommand(MENU_IDS.mergeAcceptBoth, t('Accept Both'), 'acceptBoth'),
+    conflictCommand(MENU_IDS.mergeAcceptAllCurrent, t('Accept All Current'), 'acceptAllCurrent'),
+    conflictCommand(MENU_IDS.mergeAcceptAllIncoming, t('Accept All Incoming'), 'acceptAllIncoming'),
+    conflictCommand(MENU_IDS.mergeNextConflict, t('Next Conflict'), 'nextConflict'),
+    conflictCommand(MENU_IDS.mergePreviousConflict, t('Previous Conflict'), 'previousConflict'),
   ];
 }
 
@@ -548,6 +633,16 @@ export function desktopCommands(projects: readonly OpenFolder[], actions: MenuAc
   };
   return [
     { id: MENU_IDS.newChat, title: t('New Chat'), category: file, accelerator: NEW_CHAT_ACCELERATOR, inTerminal: true, run: () => actions.newChat() },
+    // the selected chat's live worktree; other callers name one through MenuActions.newChatInWorktree
+    {
+      id: MENU_IDS.chatNewInWorktree,
+      title: t('New Chat in This Worktree'),
+      category: chat,
+      accelerator: newChatInWorktreeAccelerator(platform),
+      inTerminal: true,
+      enabled: (context) => context.newChatInWorktree !== undefined,
+      run: (context) => actions.newChatInWorktree(context.newChatInWorktree),
+    },
     { id: MENU_IDS.openChat, title: pkg('command.openChat.title'), category: file, accelerator: 'CmdOrCtrl+Shift+U', run: () => actions.openChat() },
     ...projects.map((project): Command => ({
       id: openChatForProjectId(project.fsPath),
@@ -673,11 +768,34 @@ export function desktopCommands(projects: readonly OpenFolder[], actions: MenuAc
     { id: MENU_IDS.cancelSession, title: pkg('command.cancelSession.title'), category: chat, run: () => actions.cancelSession() },
     { id: MENU_IDS.togglePromptNavigator, title: t('Toggle Prompt Navigator'), category: chat, accelerator: 'CmdOrCtrl+K', enabled: hasChat, run: () => actions.togglePromptNavigator() },
     ...CHAT_FEATURES.map((feature): Command => ({ id: feature.id, title: feature.title, category: chat, enabled: hasChat, run: () => actions.runChatCommand(feature.command) })),
+    // D60: the selected chat's changes tab, in the Chat menu and the palette, while that chat has changes
+    { id: MENU_IDS.chatReviewChanges, title: t('Review Changes'), category: chat, enabled: (context) => context.selectedChatHasChanges, run: () => actions.reviewChatChanges() },
+    // D61: the selected chat moves between its project folder and its worktree while it is idle
+    { id: MENU_IDS.chatHandOffToWorktree, title: t('Hand Off to Worktree'), category: chat, enabled: (context) => context.handOff?.canHandOff === true && context.handOff.place === 'project', run: () => actions.handOff('worktree') },
+    { id: MENU_IDS.chatHandOffToProjectFolder, title: t('Hand Off to Project Folder'), category: chat, enabled: (context) => context.handOff?.canHandOff === true && context.handOff.place === 'worktree', run: () => actions.handOff('project') },
+    ...worktreeCommands(actions),
     { id: MENU_IDS.showLog, title: pkg('command.showLog.title'), category: chat, run: () => actions.showLog() },
     { id: MENU_IDS.about, title: t('About Damocles'), category: help, run: () => actions.about() },
     { id: MENU_IDS.releaseNotes, title: t('Release Notes'), category: help, run: () => actions.releaseNotes() },
     { id: MENU_IDS.checkForUpdates, title: t('Check for Updates...'), category: help, enabled: (context) => context.updateCheck, run: () => actions.checkForUpdates() },
     ...gitCommands(actions),
+    ...editorGitCommands(actions),
+  ];
+}
+
+// D33's finish actions on the selected chat's worktree; Apply, Merge, Update and Delete wait while a chat using it works.
+function worktreeCommands(actions: MenuActions): Command[] {
+  const worktree = t('Worktree');
+  const idle = (context: MenuState): boolean => context.worktree !== undefined && !context.worktree.finish.busy;
+  const onBranch = (context: MenuState): boolean => idle(context) && !context.worktree!.finish.detachedTarget;
+  // git's branch name, shown with its control and bidi characters visible in the native menu and the palette
+  const branchTitle = (message: string, fallback: string) => (context: MenuState): Label => (context.worktree?.baseBranch !== undefined ? t(message, visibleText(context.worktree.baseBranch)) : t(fallback));
+  return [
+    { id: MENU_IDS.worktreeApply, title: t('Apply to project folder'), category: worktree, enabled: idle, run: () => actions.worktreeFinish('apply') },
+    { id: MENU_IDS.worktreeMerge, title: t('Merge into branch'), titleIn: branchTitle('Merge into {0}', 'Merge into branch'), category: worktree, enabled: onBranch, run: () => actions.worktreeFinish('merge') },
+    { id: MENU_IDS.worktreeUpdate, title: t('Update from branch'), titleIn: branchTitle('Update from {0}', 'Update from branch'), category: worktree, enabled: onBranch, run: () => actions.worktreeFinish('update') },
+    { id: MENU_IDS.worktreePushBranch, title: t('Push branch'), category: worktree, enabled: (context) => context.worktree?.finish.hasRemote === true, run: () => actions.worktreeFinish('push') },
+    { id: MENU_IDS.worktreeDelete, title: t('Delete worktree'), category: worktree, enabled: idle, run: () => actions.worktreeFinish('delete') },
   ];
 }
 
@@ -769,7 +887,7 @@ export class CommandPalette {
         label: `${category}: ${resolveLabel(commandTitle(command, context), this.l10n)}`,
         englishLabel: `${resolveLabel(command.category, this.english)}: ${resolveLabel(commandTitle(command, context), this.english)}`,
         category,
-        accelerator: command.accelerator === undefined ? null : acceleratorLabel(command.accelerator, this.platform),
+        accelerator: command.accelerator !== undefined ? acceleratorLabel(command.accelerator, this.platform) : command.keybinding ? command.keybinding.map((part) => acceleratorLabel(part, this.platform)).join(' ') : null,
         enabled: isEnabled(command, context),
         recent: this.recent.includes(command.id),
       };

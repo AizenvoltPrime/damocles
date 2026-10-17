@@ -5,7 +5,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { MAX_MENU_ITEMS, MAX_OVERLAY_ITEMS, OVERLAY_ICONS, type OverlayMenuItem, type OverlayQuickPickItem } from '../../preload/overlay-channels';
 import type { ScmArtifactsResult, ScmChange, ScmChangesTab, ScmRepoSnapshot, ScmStashArtifact, ScmView } from '../../preload/scm-channels';
 import type { ShellEditorTab } from '../../preload/shell-channels';
-import ChangesTab from '../editor/ChangesTab.vue';
+import ScmChangesTabView from '../editor/ScmChangesTab.vue';
 import { shellI18n } from '../i18n';
 import { overlayPickModel } from '../overlay/quick-pick';
 import { createScmStore, SCM_STORE, type ScmStore } from '../scm/scm-store';
@@ -37,13 +37,14 @@ const snapshot = (extra: Partial<ScmRepoSnapshot> = {}): ScmRepoSnapshot => ({
   remotes: ['origin'],
   running: null,
   lastRemote: null,
+  revision: 0,
   ...extra,
 });
 
 const view: ScmView = {
   projectKey: 'p1',
   state: 'ready',
-  repos: [{ repoId: 'r1', label: 'r1', displayPath: '', kind: 'root' }],
+  repos: [{ repoId: 'r1', label: 'r1', displayPath: '', kind: 'root', root: '/w/r1' }],
   selectedRepoId: 'r1',
   closedCount: 0,
   unsafePaths: [],
@@ -463,7 +464,7 @@ describe("View Stash's title actions", () => {
   });
   async function mountTab(source: ScmChangesTab['source']) {
     const api = fakeScmApi();
-    const wrapper = mount(ChangesTab, { props: { tab: tab(source) }, global: { plugins: [shellI18n], provide: { [SCM_STORE]: createScmStore(api) } }, attachTo: document.body });
+    const wrapper = mount(ScmChangesTabView, { props: { tab: tab(source) }, global: { plugins: [shellI18n], provide: { [SCM_STORE]: createScmStore(api) } }, attachTo: document.body });
     mounted.push(wrapper);
     await flushPromises();
     return { api, wrapper };

@@ -3,6 +3,7 @@ import type { SettingsFolder, SettingsScope } from "../../../platform/settings-s
 import * as path from "path";
 import * as os from "os";
 import { log } from "../../logger";
+import { personalConfigRoot } from "../../worktrees/personal-config";
 import { writeJsonConfig } from "../../config/json-config-write";
 import { parseSettingsText } from "../../config/settings-file";
 import { t } from "../../l10n";
@@ -119,8 +120,10 @@ function getSettingsDestination(
   destination: PermissionUpdateDestination,
   workspacePath: string | null
 ): SettingsDestination | null {
+  // D34: the personal file of a worktree chat is its project's; the shared file is the working folder's copy in git.
   const inWorkspace = (file: string): SettingsDestination => {
-    const dir = path.join(workspacePath!, ".damocles");
+    const root = file === "settings.local.json" ? personalConfigRoot(workspacePath!) : workspacePath!;
+    const dir = path.join(root, ".damocles");
     return { path: path.join(dir, file), confineTo: dir };
   };
   switch (destination) {

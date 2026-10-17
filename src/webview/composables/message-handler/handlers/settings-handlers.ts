@@ -39,6 +39,8 @@ export const settingsViewHandlers: SettingsViewHandlers = {
   },
   hostCapabilities: (msg, ctx) => {
     ctx.stores.settingsStore.setHostCapabilities(msg.capabilities);
+    // Only a worktrees host sends where a resumed chat works, so any other has nothing to wait for.
+    if (!msg.capabilities.worktrees) ctx.stores.uiStore.placePending = false;
   },
   modelUpdate: (msg, ctx) => {
     ctx.stores.settingsStore.setModelState(msg.activeModel, msg.defaultModel);

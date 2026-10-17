@@ -4,7 +4,7 @@ import { PassThrough } from 'node:stream';
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
 import { createShellJob, type ShellSessionJob } from '../../pi-session/tools/process-tree';
-import { createGitRunner, gitAtLeast, gitEnv, GitError, GitQueueDisposedError, GitUntrustedError, isSafeRevision, parseGitVersion, redactUrls, RepoQueue, revision, type GitCall } from '../git-runner';
+import { createGitRunner, gitAtLeast, gitEnv, GitError, GitOutputTooLargeError, GitQueueDisposedError, GitUntrustedError, isSafeRevision, parseGitVersion, redactUrls, RepoQueue, revision, type GitCall } from '../git-runner';
 
 // Recorded rather than run: only a fake child with a pid reaches it, and the real one opens kernel handles.
 vi.mock('../../pi-session/tools/process-tree', () => ({ createShellJob: vi.fn(() => undefined), killProcessTree: vi.fn() }));
@@ -229,15 +229,55 @@ describe('git runner', () => {
     expect(spawned).toHaveLength(1);
   });
 
-  it('never kills an index write whose output passes the bound, and drops the rest of the output', async () => {
+  it('never kills an index write whose output passes the bound, and rejects it as too large once it ends', async () => {
     const { spawned, lines, instance } = runner();
     const done = instance.run(call({ kind: 'mutation', args: ['commit'], maxOutputBytes: 3 }));
     await settle();
     spawned[0]!.finish(0, 'abcdef');
-    const result = await done;
-    expect(result.exitCode).toBe(0);
+    await expect(done).rejects.toBeInstanceOf(GitOutputTooLargeError);
     expect(spawned[0]!.kills).toEqual([]);
-    expect(lines[0]).toBe('> git commit [0ms], output over 3 bytes dropped');
+    expect(lines[0]).toBe('> git commit [0ms], output over 3 bytes');
+  });
+
+  it('never resolves part of a read past the bound as its whole output', async () => {
+    const { spawned, instance } = runner();
+    const done = instance.run(call({ args: ['diff', '--binary'], maxOutputBytes: 3 }));
+    await settle();
+    spawned[0]!.finish(0, 'abcdef');
+    const error = await done.catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(GitOutputTooLargeError);
+    expect((error as GitOutputTooLargeError).maxBytes).toBe(3);
+  });
+
+  it('bounds a call that names no bound by the runner\'s own', async () => {
+    const fake = fakeSpawn();
+    const instance = createGitRunner({ git: GIT, log: { appendLine: () => undefined }, isTrusted: () => true, spawn: fake.spawn, now: () => 0, maxOutputBytes: 4 });
+    const done = instance.run(call());
+    await settle();
+    fake.spawned[0]!.finish(0, 'abcdef');
+    await expect(done).rejects.toBeInstanceOf(GitOutputTooLargeError);
+  });
+
+  it('keeps a preview call\'s output up to the bound and marks it truncated', async () => {
+    const { spawned, lines, instance } = runner();
+    const done = instance.run(call({ args: ['cat-file', '--batch'], maxOutputBytes: 3, preview: true }));
+    await settle();
+    spawned[0]!.finish(0, 'abcdef');
+    const result = await done;
+    expect(result.stdout.toString('utf8')).toBe('abc');
+    expect(result.truncated).toBe(true);
+    expect(spawned[0]!.kills).toEqual([]);
+    expect(lines[0]).toBe('> git cat-file --batch [0ms], output past 3 bytes not kept');
+  });
+
+  it('marks no preview truncated when its output fits the bound', async () => {
+    const { spawned, instance } = runner();
+    const done = instance.run(call({ maxOutputBytes: 6, preview: true }));
+    await settle();
+    spawned[0]!.finish(0, 'abcdef');
+    const result = await done;
+    expect(result.stdout.toString('utf8')).toBe('abcdef');
+    expect(result.truncated).toBeUndefined();
   });
 
   it('stops a streamed read when onData asks and resolves with what was read', async () => {
@@ -249,6 +289,21 @@ describe('git runner', () => {
     const result = await done;
     expect(chunks).toEqual(['first']);
     expect(result.exitCode).toBe(0);
+  });
+
+  it('keeps none of a streamed call\'s output itself, and its bound does not cut what onData reads', async () => {
+    const { spawned, lines, instance } = runner();
+    let read = '';
+    const done = instance.run(call({ maxOutputBytes: 3, onData: (chunk) => {
+      read += chunk;
+      return undefined;
+    } }));
+    await settle();
+    spawned[0]!.finish(0, 'abcdef');
+    const result = await done;
+    expect(read).toBe('abcdef');
+    expect(result.stdout.length).toBe(0);
+    expect(lines[0]).toBe('> git status [0ms]');
   });
 });
 

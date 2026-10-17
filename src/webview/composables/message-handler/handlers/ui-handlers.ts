@@ -41,6 +41,22 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
       if (msg.focusComposer) void nextTick(() => ctx.refs.chatInputRef.value?.focus());
     },
 
+    worktreeState: (msg, ctx) => {
+      const { type: _type, ...state } = msg;
+      ctx.stores.uiStore.worktree = state;
+      ctx.stores.uiStore.placePending = false;
+    },
+
+    // The chat works where no worktree applies (an untrusted or non-git project): no worktree UI, and its place is known.
+    noWorktreeState: (_msg, ctx) => {
+      ctx.stores.uiStore.worktree = null;
+      ctx.stores.uiStore.placePending = false;
+    },
+
+    chatChanges: (msg, ctx) => {
+      ctx.stores.uiStore.chatChanges = { added: msg.added, removed: msg.removed, files: msg.files };
+    },
+
     terminalShown: (msg, ctx) => {
       ctx.stores.uiStore.terminalShown = msg.shown;
       ctx.stores.uiStore.toggleTerminalShortcut = msg.shortcut;
@@ -76,6 +92,15 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
         contextMaxTokens: msg.maxTokens,
         contextPercentage: msg.percentage,
       });
+    },
+
+    // Core refused a send and gave it back; it lands in the composer with why.
+    promptReturned: (msg, ctx) => {
+      if (msg.content.length === 0) return;
+      const composer = ctx.refs.chatInputRef.value;
+      if (composer) composer.restoreQueued(msg.content);
+      else ctx.stores.uiStore.returnedPrompt = [...(ctx.stores.uiStore.returnedPrompt ?? []), ...msg.content];
+      toast.info(i18n.global.t(`toast.promptReturned.${msg.reason}`));
     },
 
     interruptRecovery: (msg, ctx) => {

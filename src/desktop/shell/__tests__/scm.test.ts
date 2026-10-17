@@ -26,10 +26,11 @@ const snapshot = (groups: Partial<ScmRepoSnapshot['groups']> = {}, extra: Partia
   remotes: [],
   running: null,
   lastRemote: null,
+  revision: 0,
   ...extra,
 });
 
-const view: ScmView = { projectKey: 'p1', state: 'ready', repos: [{ repoId: 'r1', label: 'alpha', displayPath: '', kind: 'root' }], selectedRepoId: 'r1', closedCount: 0, unsafePaths: [], parentCount: 0 };
+const view: ScmView = { projectKey: 'p1', state: 'ready', repos: [{ repoId: 'r1', label: 'alpha', displayPath: '', kind: 'root', root: '/w/alpha' }], selectedRepoId: 'r1', closedCount: 0, unsafePaths: [], parentCount: 0 };
 const options = { viewMode: 'list' as const, sortKey: 'path' as const, collapsed: new Set<string>(), statusText: (c: ScmChange) => c.status };
 
 describe('the Source control list', () => {
@@ -253,7 +254,7 @@ describe('the Source control menus', () => {
     expect(groupActions('untracked', 'separate').map((action) => action.label)).toEqual(['openUntrackedChanges', 'discardAllUntracked', 'stageAllUntracked']);
     const ids = (nodes: ReturnType<typeof rowMenu>) => toOverlayMenu(nodes, label).flatMap((item) => (item.kind === 'item' ? [item.id] : []));
     expect(ids(rowMenu('workingTree', change('a.ts', 'UNTRACKED', 'U')))).not.toContain('openFileHead');
-    expect(ids(rowMenu('index', change('a.ts', 'INDEX_MODIFIED')))).toEqual(['openChanges', 'openFile', 'openFileHead', 'unstage', 'stashChanges', 'copyPath', 'copyRelativePath', 'reveal', 'mention']);
+    expect(ids(rowMenu('index', change('a.ts', 'INDEX_MODIFIED')))).toEqual(['openChanges', 'openFile', 'openFileHead', 'openTimeline', 'unstage', 'stashChanges', 'copyPath', 'copyRelativePath', 'reveal', 'mention']);
   });
 });
 
@@ -353,6 +354,30 @@ describe('the commit box', () => {
     expect(store.draftOf('r1')).toBe("Merge branch 'feat'");
     expect(wrapper.get('[data-testid="scm-commit"]').text()).toContain('Commit Merge');
     expect(wrapper.get('[data-testid="scm-abort"]').text()).toBe('Abort Merge');
+  });
+
+  it('follows the input template as VS Code does: MERGE_MSG replaces an unedited template and gives way to it again, never an edited draft', async () => {
+    const plain = snapshot();
+    const { api, store, wrapper } = await mountBox(plain, false, { template: 'tmpl: subject' });
+    expect(store.draftOf('r1')).toBe('tmpl: subject');
+    api.pushSnapshot({ ...plain, operation: 'merge', mergeMessage: "Merge branch 'feat'" });
+    expect(store.draftOf('r1')).toBe("Merge branch 'feat'");
+    // a cherry-pick after it: the box still holds the merge's message, so the next one replaces it
+    api.pushSnapshot({ ...plain, operation: 'cherryPick', mergeMessage: 'Pick this' });
+    expect(store.draftOf('r1')).toBe('Pick this');
+    // the operation ended outside the app: the template comes back
+    api.pushSnapshot(plain);
+    expect(store.draftOf('r1')).toBe('tmpl: subject');
+    // an edited draft stays, whatever the operation
+    await wrapper.get('textarea').setValue('my words');
+    api.pushSnapshot({ ...plain, operation: 'merge', mergeMessage: "Merge branch 'feat'" });
+    expect(store.draftOf('r1')).toBe('my words');
+    api.pushSnapshot(plain);
+    expect(store.draftOf('r1')).toBe('my words');
+    // a box the user emptied takes the next template, as VS Code's input does
+    await wrapper.get('textarea').setValue('');
+    api.pushSnapshot({ ...plain, operation: 'merge', mergeMessage: 'Squashed' });
+    expect(store.draftOf('r1')).toBe('Squashed');
   });
 
   it('fills an empty box with the template once, and never a box holding a draft', async () => {
@@ -506,7 +531,7 @@ describe('the commit box', () => {
 
 describe('the Source control store', () => {
   it("never takes a repository from the first read that a newer pushed view closed, and forgets a removed project's state", async () => {
-    const two: ScmView = { ...view, repos: [...view.repos, { repoId: 'r2', label: 'beta', displayPath: 'beta', kind: 'nested' }] };
+    const two: ScmView = { ...view, repos: [...view.repos, { repoId: 'r2', label: 'beta', displayPath: 'beta', kind: 'nested', root: '/w/alpha/beta' }] };
     const api = fakeScmApi({ views: [two], snapshots: [snapshot(), snapshot({}, { repoId: 'r2' })], decorations: [{ projectKey: 'p1', files: { 'a.ts': { letter: 'M', tone: 'modified', staged: false, strike: false } } }], settings: SCM_SETTINGS, clone: NO_CLONE });
     let read: () => void = () => {};
     const state = api.getState();
@@ -518,6 +543,11 @@ describe('the Source control store', () => {
     await started;
     expect([...store.snapshots.value.keys()]).toEqual(['r1']);
     expect(store.decorationOf('p1', 'a.ts')).toMatchObject({ letter: 'M' });
+
+    // D31: a worktree root's view stays while its project does
+    api.pushView({ ...view, projectKey: 'p1\u0000a1b2c3d4' });
+    store.retainProjects(new Set(['p1']));
+    expect([...store.views.value.keys()].sort()).toEqual(['p1', 'p1\u0000a1b2c3d4']);
 
     store.retainProjects(new Set(['p2']));
     expect(store.views.value.size).toBe(0);

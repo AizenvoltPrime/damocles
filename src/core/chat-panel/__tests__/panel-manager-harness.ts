@@ -12,6 +12,20 @@ import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../..
 
 /** A `PanelManager` over fake webview hosts and fake sessions, with a real registry and permission handler. */
 
+/** A session worktree of a chat that never had one: no state is published and nothing is read-only. */
+export function inertSessionWorktree(): ChatSession['worktree'] {
+  return {
+    bindPanel: () => undefined,
+    setListener: () => undefined,
+    publish: () => undefined,
+    readOnly: () => false,
+    inLiveWorktree: () => undefined,
+    entry: () => undefined,
+    record: () => undefined,
+    place: () => 'project',
+  } as unknown as ChatSession['worktree'];
+}
+
 export interface FakeSession {
   cwd: string;
   conversation: boolean;
@@ -23,6 +37,7 @@ export interface FakeSession {
   activityListener: ((activity: ChatActivity) => void) | null;
   setActivityListener: (listener: ((activity: ChatActivity) => void) | null) => void;
   setTurnSettledListener: (listener: ((outcome: TurnOutcome) => void) | null) => void;
+  setChatChangesListener: (listener: unknown) => void;
   holdsSession: (sessionId: string) => boolean;
   setResumeSession: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
@@ -34,6 +49,7 @@ export interface FakeSession {
   /** The panel token the manager last handed this session, as PiSession records it for its lease owner records. */
   panelToken: string | null;
   setPanelToken: (token: string | null) => void;
+  worktree: ChatSession['worktree'];
 }
 
 export interface FakeHost extends PanelHost {
@@ -154,6 +170,7 @@ export function createHarness(initial: ReturnType<typeof folderEntry>[]): Harnes
           listener?.({ state: 'idle', pendingKinds: [], pendingPrompts: [], background: false });
         },
         setTurnSettledListener: () => undefined,
+        setChatChangesListener: () => undefined,
         holdsSession: (id) => session.storedId === id,
         setResumeSession: vi.fn((id: string | null) => { session.storedId = id; }),
         dispose: vi.fn(async () => undefined),
@@ -164,6 +181,7 @@ export function createHarness(initial: ReturnType<typeof folderEntry>[]): Harnes
         setMcpStatusListener: () => undefined,
         panelToken: null,
         setPanelToken: (token) => { session.panelToken = token; },
+        worktree: inertSessionWorktree(),
       };
       sessions.push(session);
       return session as unknown as ChatSession;
@@ -183,6 +201,7 @@ export function createHarness(initial: ReturnType<typeof folderEntry>[]): Harnes
     onActivePanelChanged: () => { activePanelChanges.count++; },
     inheritSettingsFromPanel: () => undefined,
     loadHistory: async () => [],
+    storedSessionsOf: async () => [],
     sendFolderState: async (instance) => {
       folderStatePushes.push(instance);
       if (holdFolderState.gate) await holdFolderState.gate;

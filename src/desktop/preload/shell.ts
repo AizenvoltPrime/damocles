@@ -5,6 +5,8 @@ import type { OverlayAnswer } from './overlay-channels';
 import {
   SHELL_CHANNELS,
   type ChatMutationResult,
+  type ChatsWorktreeOptions,
+  type ShownFolder,
   type EditorCommand,
   type EditorConflictResult,
   type EditorDocumentChange,
@@ -46,20 +48,29 @@ import {
   type DamoclesScmApi,
   type ScmArtifactsChanged,
   type ScmArtifactsResult,
+  type ScmBlameResult,
   type ScmCloneState,
   type ScmCommitInput,
   type ScmCommitResult,
   type ScmDecorations,
   type ScmFileDiffResult,
   type ScmGenerateResult,
+  type ScmMergeFileResult,
+  type ScmMergeInputsResult,
+  type ScmQuickDiffBaseResult,
   type ScmRepoSnapshot,
+  type ScmResource,
   type ScmRunResult,
   type ScmSetInput,
   type ScmSettings,
   type ScmShellCommand,
   type ScmShellState,
+  type ScmTimelineResult,
+  type ScmHistoryResult,
+  type ScmCommitDetailsResult,
   type ScmView,
 } from './scm-channels';
+import { REVIEW_CHANNELS, type ChatReviewFileDiffResult, type ChatReviewSendResult, type DamoclesReviewApi } from './review-channels';
 import {
   TERMINAL_CHANNELS,
   type DamoclesTerminalApi,
@@ -198,10 +209,26 @@ const scm: DamoclesScmApi = {
   copy: (request) => ipcRenderer.invoke(SCM_CHANNELS.copy, { repoId: request.repoId, kind: request.kind, value: request.value }) as Promise<void>,
   commitInput: (repoId) => ipcRenderer.invoke(SCM_CHANNELS.commitInput, { repoId }) as Promise<ScmCommitInput>,
   reportAmend: (report) => ipcRenderer.invoke(SCM_CHANNELS.amend, { repoId: report.repoId, amending: report.amending }) as Promise<void>,
+  quickDiffBase: (request) => ipcRenderer.invoke(SCM_CHANNELS.quickDiffBase, { repoId: request.repoId, path: request.path }) as Promise<ScmQuickDiffBaseResult>,
+  blame: (request) => ipcRenderer.invoke(SCM_CHANNELS.blame, { repoId: request.repoId, path: request.path }) as Promise<ScmBlameResult>,
+  timeline: (request) => ipcRenderer.invoke(SCM_CHANNELS.timeline, { repoId: request.repoId, path: request.path, ...(request.cursor !== undefined ? { cursor: request.cursor } : {}) }) as Promise<ScmTimelineResult>,
+  mergeInputs: (request) => ipcRenderer.invoke(SCM_CHANNELS.mergeInputs, { repoId: request.repoId, path: request.path }) as Promise<ScmMergeInputsResult>,
+  mergeFile: (request) => ipcRenderer.invoke(SCM_CHANNELS.mergeFile, { repoId: request.repoId, path: request.path, diff3: request.diff3 }) as Promise<ScmMergeFileResult>,
+  resource: (request) => ipcRenderer.invoke(SCM_CHANNELS.resource, { projectKey: request.projectKey, relativePath: request.relativePath }) as Promise<ScmResource | null>,
+  history: (request) => ipcRenderer.invoke(SCM_CHANNELS.history, { repoId: request.repoId, refs: plain(request.refs), ...(request.cursor !== undefined ? { cursor: request.cursor } : {}) }) as Promise<ScmHistoryResult>,
+  commitDetails: (request) => ipcRenderer.invoke(SCM_CHANNELS.commitDetails, { repoId: request.repoId, hash: request.hash }) as Promise<ScmCommitDetailsResult>,
 };
 
 // The shell HTML carries the theme from its creation; this keeps it current after a theme change.
 ipcRenderer.on(SHELL_CHANNELS.theme, (_event, theme: PanelTheme) => applyHostTheme(theme));
+
+const review: DamoclesReviewApi = {
+  fileDiff: (request) => ipcRenderer.invoke(REVIEW_CHANNELS.fileDiff, { reviewId: request.reviewId, path: request.path }) as Promise<ChatReviewFileDiffResult>,
+  setScope: (request) => ipcRenderer.invoke(REVIEW_CHANNELS.setScope, { reviewId: request.reviewId, scope: request.scope }) as Promise<void>,
+  send: (request) => ipcRenderer.invoke(REVIEW_CHANNELS.send, { reviewId: request.reviewId }) as Promise<ChatReviewSendResult>,
+  discard: (request) => ipcRenderer.invoke(REVIEW_CHANNELS.discard, { reviewId: request.reviewId }) as Promise<void>,
+  setDrafts: (request) => ipcRenderer.invoke(REVIEW_CHANNELS.setDrafts, { reviewId: request.reviewId, comments: plain(request.comments) }) as Promise<void>,
+};
 
 const api: DamoclesShellApi = {
   getState: () => ipcRenderer.invoke(SHELL_CHANNELS.getState) as Promise<ShellState>,
@@ -214,7 +241,12 @@ const api: DamoclesShellApi = {
   searchChats: (projectKey, query, stateRevision) => ipcRenderer.invoke(SHELL_CHANNELS.chatsSearch, projectKey, query, stateRevision) as Promise<ShellChatList | null>,
   onChatsChanged: (listener) => subscribe<string>(SHELL_CHANNELS.chatsChanged, listener),
   selectChat: (chatId) => ipcRenderer.invoke(SHELL_CHANNELS.chatsSelect, chatId) as Promise<SelectChatResult>,
-  newChat: (projectKey) => ipcRenderer.invoke(SHELL_CHANNELS.chatsNew, projectKey) as Promise<void>,
+  newChat: (projectKey, worktree) => ipcRenderer.invoke(SHELL_CHANNELS.chatsNew, projectKey, ...(worktree !== undefined ? [worktree] : [])) as Promise<void>,
+  newChatInWorktree: (request) => ipcRenderer.invoke(SHELL_CHANNELS.chatsNewInWorktree, { projectKey: request.projectKey, worktreeId: request.worktreeId }) as Promise<void>,
+  chatsWorktreeOptions: (projectKey) => ipcRenderer.invoke(SHELL_CHANNELS.chatsWorktreeOptions, { projectKey }) as Promise<ChatsWorktreeOptions>,
+  showFolder: (request) => ipcRenderer.invoke(SHELL_CHANNELS.showFolder, { projectKey: request.projectKey, show: request.show }) as Promise<void>,
+  onShownFolder: (listener) => subscribe<ShownFolder>(SHELL_CHANNELS.shownFolder, listener),
+  worktreeFinish: (request) => ipcRenderer.invoke(SHELL_CHANNELS.worktreeFinish, { projectKey: request.projectKey, worktreeId: request.worktreeId, action: request.action }) as Promise<void>,
   renameChat: (chatId, name) => ipcRenderer.invoke(SHELL_CHANNELS.chatsRename, chatId, name) as Promise<ChatMutationResult>,
   tagChat: (chatId, tag) => ipcRenderer.invoke(SHELL_CHANNELS.chatsTag, chatId, tag) as Promise<ChatMutationResult>,
   deleteChat: (chatId) => ipcRenderer.invoke(SHELL_CHANNELS.chatsDelete, chatId) as Promise<ChatMutationResult>,
@@ -229,7 +261,7 @@ const api: DamoclesShellApi = {
     ipcRenderer.send(SHELL_CHANNELS.contentBounds, { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height });
   },
   reportSidebarLayout: (layout) => {
-    ipcRenderer.send(SHELL_CHANNELS.sidebarLayout, { sidebarWidth: layout.sidebarWidth, sections: layout.sections, sectionOrder: layout.sectionOrder, search: layout.search, scm: layout.scm, repositories: layout.repositories });
+    ipcRenderer.send(SHELL_CHANNELS.sidebarLayout, { sidebarWidth: layout.sidebarWidth, sections: layout.sections, sectionOrder: layout.sectionOrder, search: layout.search, scm: layout.scm, repositories: layout.repositories, graph: layout.graph });
   },
   reportGridSizes: (sizes) => {
     ipcRenderer.send(SHELL_CHANNELS.gridSizes, { sideWidth: sizes.sideWidth, bottomHeight: sizes.bottomHeight });
@@ -342,6 +374,7 @@ const api: DamoclesShellApi = {
   runUpdateAction: (action) => ipcRenderer.invoke(SHELL_CHANNELS.updateRun, action) as Promise<void>,
   terminal,
   scm,
+  review,
 };
 
 contextBridge.exposeInMainWorld('damoclesShell', api);

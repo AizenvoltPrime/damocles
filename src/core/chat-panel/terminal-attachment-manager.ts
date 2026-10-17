@@ -1,39 +1,39 @@
 import { randomUUID } from "crypto";
-import type { TerminalAttachmentInfo, TerminalAttachmentInput } from "@shared/types/terminal-attachment";
-import { terminalAttachmentInfo } from "../terminal-attachment";
+import type { ChatAttachmentInfo, ChatAttachmentInput } from "@shared/types/chat-attachment";
+import { attachmentInfo } from "../terminal-attachment";
 
 // Pending attachments one composer holds; adding one more drops the oldest.
 export const MAX_PENDING_TERMINAL_ATTACHMENTS = 8;
-// Characters of terminal text one composer's pending attachments hold in total; an add past it is refused.
+// Characters of text (terminal output and commits) one composer's pending attachments hold in total; an add past it is refused.
 export const MAX_PENDING_TERMINAL_ATTACHMENT_CHARS = 128_000;
 
 interface PendingAttachment {
   readonly id: string;
-  readonly attachment: TerminalAttachmentInput;
-  readonly info: TerminalAttachmentInfo;
+  readonly attachment: ChatAttachmentInput;
+  readonly info: ChatAttachmentInfo;
 }
 
 export interface TakenAttachment {
-  readonly attachment: TerminalAttachmentInput;
-  readonly info: TerminalAttachmentInfo;
+  readonly attachment: ChatAttachmentInput;
+  readonly info: ChatAttachmentInfo;
 }
 
 const pendingChars = (entries: readonly PendingAttachment[]): number => entries.reduce((total, entry) => total + entry.attachment.text.length, 0);
 
-/** A panel's pending terminal attachments: the host adds them, the composer removes them or sends them with a message. */
+/** A panel's pending attachments, terminal output and commits: the host adds them, the composer removes them or sends them with a message. */
 export class TerminalAttachmentManager {
   private pending: PendingAttachment[] = [];
   // added: the change is an attachment the user just added, whose composer then takes focus
-  private readonly onChange: (attachments: TerminalAttachmentInfo[], added: boolean) => void;
+  private readonly onChange: (attachments: ChatAttachmentInfo[], added: boolean) => void;
 
-  constructor(onChange: (attachments: TerminalAttachmentInfo[], added: boolean) => void) {
+  constructor(onChange: (attachments: ChatAttachmentInfo[], added: boolean) => void) {
     this.onChange = onChange;
   }
 
   /** False, changing nothing, when the pending text would pass MAX_PENDING_TERMINAL_ATTACHMENT_CHARS. */
-  add(attachment: TerminalAttachmentInput): boolean {
+  add(attachment: ChatAttachmentInput): boolean {
     const id = randomUUID();
-    const next = [...this.pending, { id, attachment, info: terminalAttachmentInfo(id, attachment) }].slice(-MAX_PENDING_TERMINAL_ATTACHMENTS);
+    const next = [...this.pending, { id, attachment, info: attachmentInfo(id, attachment) }].slice(-MAX_PENDING_TERMINAL_ATTACHMENTS);
     if (pendingChars(next) > MAX_PENDING_TERMINAL_ATTACHMENT_CHARS) return false;
     this.pending = next;
     this.publish(true);
@@ -66,7 +66,7 @@ export class TerminalAttachmentManager {
     this.publish();
   }
 
-  displayInfo(): TerminalAttachmentInfo[] {
+  displayInfo(): ChatAttachmentInfo[] {
     return this.pending.map((entry) => entry.info);
   }
 

@@ -41,6 +41,7 @@ function makePanel(opts: {
     ...(opts.readOnlyShell ? { readOnlyShell: true } : {}),
     ...(opts.mcpReadOnly ? { isMcpReadOnly: opts.mcpReadOnly } : {}),
     getSessionModel: () => 'claude-opus-4-8',
+    memoryWorkspace: () => '/repo',
     getSystemPromptEnv: () => ({
       cwd: '/repo',
       model: 'claude-opus-4-8',

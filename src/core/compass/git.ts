@@ -1,7 +1,6 @@
 import * as childProcess from 'child_process';
 import * as path from 'path';
 import { gitExecutable } from '../git-executable';
-import { isWithinRoot } from './util';
 
 export const GIT_TIMEOUT: number = 30_000;
 export const SAFE_GIT_REF: RegExp = /^(?!-)[A-Za-z0-9_.~^/@{}-]+$/;
@@ -12,12 +11,6 @@ export const SAFE_GIT_REF: RegExp = /^(?!-)[A-Za-z0-9_.~^/@{}-]+$/;
  */
 export const GIT_HARDENING_ARGS: readonly string[] = ['-c', 'core.fsmonitor=false'];
 
-const repoRootCache = new Map<string, string | null>();
-
-export function resetRepoRootCacheForTests(): void {
-	repoRootCache.clear();
-}
-
 function runGit(args: string[], cwd: string): string {
 	// `execFileSync`, not `execSync`: no shell, so a ref or path that reaches argv is never re-parsed.
 	// No `ExecEnv` either, since the checkpoint engine's overrides retarget git at its private bare repo.
@@ -27,29 +20,10 @@ function runGit(args: string[], cwd: string): string {
 	});
 }
 
-export function resolveRepoRoot(workspaceRoot: string): string | null {
-	const cached = repoRootCache.get(workspaceRoot);
-	if (cached !== undefined) return cached;
-
-	let repoRoot: string | null;
-	try {
-		const stdout = runGit(['rev-parse', '--show-toplevel'], workspaceRoot);
-		const trimmed = stdout.trim();
-		repoRoot = trimmed ? path.resolve(trimmed) : null;
-	} catch {
-		return null;
-	}
-	if (repoRoot !== null) repoRootCache.set(workspaceRoot, repoRoot);
-	return repoRoot;
-}
-
-function toRepoAbsolute(repoRoot: string, gitRelativePath: string): string {
-	return path.resolve(repoRoot, gitRelativePath).replace(/\\/g, '/');
-}
-
-/** Git spells the drive letter/root its own way on Windows; downstream lookups are case-sensitive, so re-anchor onto the caller's workspace spelling. */
-function reanchorOnWorkspace(workspaceResolved: string, absolutePath: string): string {
-	return path.resolve(workspaceResolved, path.relative(workspaceResolved, absolutePath)).replace(/\\/g, '/');
+// The diffs run with --relative, so git prints paths relative to the workspace and leaves out the rest of the repository:
+// no path git spells (its toplevel is a realpath, 8.3 names expanded and links followed) meets the workspace's own spelling.
+function toWorkspaceAbsolute(workspaceRoot: string, relativePath: string): string {
+	return path.resolve(workspaceRoot, relativePath).replace(/\\/g, '/');
 }
 
 export function getChangedFiles(workspaceRoot: string, base: string = 'HEAD~1'): string[] {
@@ -57,23 +31,19 @@ export function getChangedFiles(workspaceRoot: string, base: string = 'HEAD~1'):
 
 	let stdout: string;
 	try {
-		stdout = runGit(['diff', '--name-only', base, '--'], workspaceRoot);
+		stdout = runGit(['diff', '--name-only', '--relative', base, '--'], workspaceRoot);
 	} catch {
 		try {
-			stdout = runGit(['diff', '--name-only', '--cached'], workspaceRoot);
+			stdout = runGit(['diff', '--name-only', '--relative', '--cached'], workspaceRoot);
 		} catch {
 			return [];
 		}
 	}
 
-	const repoRoot = resolveRepoRoot(workspaceRoot) ?? workspaceRoot;
-	const workspaceResolved = path.resolve(workspaceRoot);
 	return stdout.split('\n')
 		.map(l => l.trim())
 		.filter(Boolean)
-		.map(rel => toRepoAbsolute(repoRoot, rel))
-		.filter(abs => isWithinRoot(abs, workspaceResolved))
-		.map(abs => reanchorOnWorkspace(workspaceResolved, abs));
+		.map(rel => toWorkspaceAbsolute(workspaceRoot, rel));
 }
 
 export function parseGitDiffRanges(
@@ -86,15 +56,14 @@ export function parseGitDiffRanges(
 
 	let stdout: string;
 	try {
-		stdout = runGit(['diff', '--unified=0', base, '--'], workspaceRoot);
+		stdout = runGit(['diff', '--unified=0', '--relative', base, '--'], workspaceRoot);
 	} catch {
 		return new Map();
 	}
 
-	const repoRoot = resolveRepoRoot(workspaceRoot) ?? workspaceRoot;
 	const remapped = new Map<string, Array<[number, number]>>();
-	for (const [gitRelativePath, ranges] of parseUnifiedDiff(stdout)) {
-		remapped.set(toRepoAbsolute(repoRoot, gitRelativePath), ranges);
+	for (const [relativePath, ranges] of parseUnifiedDiff(stdout)) {
+		remapped.set(toWorkspaceAbsolute(workspaceRoot, relativePath), ranges);
 	}
 	return remapped;
 }

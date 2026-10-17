@@ -1,10 +1,10 @@
 import { vi } from 'vitest';
-import { DEFAULT_GRID_LAYOUT, SIDEBAR_SECTIONS, type DamoclesShellApi, type DropZonesPointer, type EditorCommand, type EditorDocumentChange, type EditorFlushRequest, type EditorReveal, type FileRef, type FilesChanged, type SearchCommandMessage, type SearchDone, type SearchEditorHighlights, type SearchFileUpdate, type SearchFocus, type SearchResultsBatch, type ShellSearchSettings, type ShellChat, type ShellChatList, type ShellEditorState, type ShellFocusPart, type ShellState } from '../../preload/shell-channels';
+import { DEFAULT_GRID_LAYOUT, SIDEBAR_SECTIONS, type DamoclesShellApi, type DropZonesPointer, type EditorCommand, type EditorDocumentChange, type EditorFlushRequest, type EditorReveal, type FileRef, type FilesChanged, type SearchCommandMessage, type SearchDone, type SearchEditorHighlights, type SearchFileUpdate, type SearchFocus, type SearchResultsBatch, type ShellSearchSettings, type ChatsContinueWorktree, type ChatsWorktreeOptions, type ShellChat, type ShellChatList, type ShownFolder, type ShellEditorState, type ShellFocusPart, type ShellState } from '../../preload/shell-channels';
 import type { DamoclesOverlayApi, InputBrowseResult, OverlayAnswer, PaletteCommand, OverlayPrefs, OverlayRasterRequest, OverlayRequest, OverlayState, OverlayToast, PopupAnswer, QuickOpenQuery, QuickOpenResponse } from '../../preload/overlay-channels';
 import type { ChimeTone, NotificationCenterState } from '../../preload/notifications';
 import type { DamoclesTerminalApi, TerminalData, TerminalProfileReport, TerminalRunAction, TerminalState } from '../../preload/terminal-channels';
 import type { ReleaseIndex, UpdateSnapshot, VersionInfo } from '../../preload/updates';
-import type { DamoclesScmApi, ScmArtifacts, ScmArtifactsChanged, ScmArtifactsRequest, ScmArtifactsResult, ScmCloneState, ScmCommitInput, ScmDecorations, ScmRepoSnapshot, ScmSetInput, ScmSettings, ScmShellCommand, ScmShellState, ScmView } from '../../preload/scm-channels';
+import type { DamoclesScmApi, ScmArtifacts, ScmArtifactsChanged, ScmArtifactsRequest, ScmArtifactsResult, ScmCloneState, ScmCommitDetailsResult, ScmCommitInput, ScmHistoryResult, ScmDecorations, ScmRepoSnapshot, ScmSetInput, ScmSettings, ScmShellCommand, ScmShellState, ScmView } from '../../preload/scm-channels';
 import type { SettingsTarget } from '../../../shared/settings-sections';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 
@@ -39,23 +39,28 @@ export const STATE: ShellState = {
   layout: {
     sidebarVisible: true,
     sidebarWidth: 300,
-    sections: { projects: { collapsed: false, size: 150 }, chats: { collapsed: false }, files: { collapsed: false, size: 230 }, search: { collapsed: true, size: 260 }, repos: { collapsed: true, size: 220 }, scm: { collapsed: true, size: 300 } },
+    sections: { projects: { collapsed: false, size: 150 }, chats: { collapsed: false }, files: { collapsed: false, size: 230 }, search: { collapsed: true, size: 260 }, repos: { collapsed: true, size: 220 }, scm: { collapsed: true, size: 300 }, graph: { collapsed: true, size: 190 } },
     sectionOrder: SIDEBAR_SECTIONS,
     grid: DEFAULT_GRID_LAYOUT,
     search: {},
     scm: { viewMode: 'list', sortKey: 'path' },
     repositories: {},
+    graph: {},
   },
   layoutRevision: 0,
-  shortcuts: { newChat: 'Ctrl+N', toggleSidebar: 'Ctrl+B', settings: 'Ctrl+,', quickOpen: 'Ctrl+P', toggleTerminal: 'Ctrl+`', newTerminal: 'Ctrl+Shift+`', splitTerminal: 'Ctrl+Shift+5', closeEditor: 'Ctrl+W', searchAgain: 'Ctrl+Shift+R', toggleQueryDetails: 'Ctrl+Shift+J', focusNextSearchResult: 'F4',
+  shortcuts: { newChat: 'Ctrl+N', newChatInWorktree: 'Shift+Alt+N', toggleSidebar: 'Ctrl+B', settings: 'Ctrl+,', quickOpen: 'Ctrl+P', toggleTerminal: 'Ctrl+`', newTerminal: 'Ctrl+Shift+`', splitTerminal: 'Ctrl+Shift+5', closeEditor: 'Ctrl+W', searchAgain: 'Ctrl+Shift+R', toggleQueryDetails: 'Ctrl+Shift+J', focusNextSearchResult: 'F4',
     editorMenu: { goToDefinition: 'F12', goToReferences: 'Shift+F12', renameSymbol: 'F2', changeAllOccurrences: 'Ctrl+F2', formatDocument: 'Shift+Alt+F', cut: 'Ctrl+X', copy: 'Ctrl+C', paste: 'Ctrl+V', commandPalette: 'Ctrl+Shift+P' } },
   notifications: { unseen: 0, doNotDisturb: false, popupsOff: false, attention: 0 },
   search: SEARCH_SETTINGS,
   sidebar: { alwaysShowHeaderActions: false },
+  shownFolders: {
+    p1: { projectKey: 'p1', root: { projectKey: 'p1' }, rootKey: 'p1', fsPath: '/w/alpha', canShowWorktree: false },
+    p2: { projectKey: 'p2', root: { projectKey: 'p2' }, rootKey: 'p2', fsPath: '/w/beta', canShowWorktree: false },
+  },
 };
 
 export function chat(overrides: Partial<ShellChat> & { id: string }): ShellChat {
-  return { title: overrides.id, timestamp: Date.now(), status: 'idle', loaded: false, ...overrides };
+  return { title: overrides.id, timestamp: Date.now(), status: 'idle', loaded: false, readOnly: false, ...overrides };
 }
 
 export const TERMINAL_STATE: TerminalState = {
@@ -143,7 +148,7 @@ export type FakeScmApi = DamoclesScmApi & {
   artifactsChanged: (changed: ScmArtifactsChanged) => void;
 };
 
-export const SCM_SETTINGS: ScmSettings = { untrackedChanges: 'mixed', inputValidation: false, inputValidationSubjectLength: 50, inputValidationLength: 72, allowNoVerifyCommit: false, allowForcePush: false };
+export const SCM_SETTINGS: ScmSettings = { untrackedChanges: 'mixed', inputValidation: false, inputValidationSubjectLength: 50, inputValidationLength: 72, allowNoVerifyCommit: false, allowForcePush: false, blameEditorDecoration: true };
 
 export const NO_CLONE: ScmCloneState = { running: null, last: null };
 
@@ -176,6 +181,14 @@ export function fakeScmApi(state: Omit<ScmShellState, 'capabilities'> & Partial<
     copy: vi.fn(async () => {}),
     commitInput: vi.fn(async (): Promise<ScmCommitInput> => ({ template: null, history: [], headMessage: null })),
     reportAmend: vi.fn(async () => {}),
+    quickDiffBase: vi.fn(async () => ({ ok: false as const, reason: 'untracked' as const })),
+    blame: vi.fn(async () => ({ ok: false as const, reason: 'notCommitted' as const })),
+    timeline: vi.fn(async () => ({ ok: true as const, entries: [], hasStaged: false, committed: false })),
+    mergeInputs: vi.fn(async () => ({ ok: false as const, reason: 'notConflicted' as const })),
+    mergeFile: vi.fn(async () => ({ ok: false as const, reason: 'notConflicted' as const })),
+    resource: vi.fn(async () => null),
+    history: vi.fn(async (): Promise<ScmHistoryResult> => ({ ok: false, reason: 'empty' })),
+    commitDetails: vi.fn(async (): Promise<ScmCommitDetailsResult> => ({ ok: false, reason: 'failed' })),
     pushView: views.emit,
     pushSnapshot: snapshots.emit,
     pushDecorations: decorations.emit,
@@ -192,6 +205,8 @@ export type FakeShellApi = DamoclesShellApi & {
   scm: FakeScmApi;
   push: (state: ShellState) => void;
   chatsChanged: (projectKey: string) => void;
+  // main's ShownFolder push for one project
+  pushShownFolder: (shown: ShownFolder) => void;
   focusPart: (part: ShellFocusPart) => void;
   // answers the next requestOverlay call; unanswered requests resolve dismissed
   answerNext: (answer: OverlayAnswer) => void;
@@ -236,6 +251,7 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
   const stateListeners = new Set<(s: ShellState) => void>();
   const changedListeners = new Set<(key: string) => void>();
   const focusListeners = new Set<(part: ShellFocusPart) => void>();
+  const shownFolder = emitter<ShownFolder>();
   const answers: OverlayAnswer[] = [];
   const overlayRequests: OverlayRequest[] = [];
   const updateListeners = new Set<(s: UpdateSnapshot) => void>();
@@ -269,6 +285,11 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
     onChatsChanged: vi.fn((listener) => { changedListeners.add(listener); return () => changedListeners.delete(listener); }),
     selectChat: vi.fn(async () => ({ ok: true as const })),
     newChat: vi.fn(async () => {}),
+    newChatInWorktree: vi.fn(async () => {}),
+    chatsWorktreeOptions: vi.fn(async (): Promise<ChatsWorktreeOptions> => ({ available: false, reason: 'notGit' })),
+    showFolder: vi.fn(async () => {}),
+    onShownFolder: vi.fn(shownFolder.listen),
+    worktreeFinish: vi.fn(async () => {}),
     renameChat: vi.fn(async () => ({ ok: true as const })),
     tagChat: vi.fn(async () => ({ ok: true as const })),
     deleteChat: vi.fn(async () => ({ ok: true as const })),
@@ -349,8 +370,16 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
     previewReplace: vi.fn(async () => ({ ok: true as const })),
     terminal: fakeTerminalApi(),
     scm: fakeScmApi(),
+    review: {
+      fileDiff: vi.fn(async () => ({ kind: 'missing' as const })),
+      setScope: vi.fn(async () => {}),
+      send: vi.fn(async () => ({ ok: true as const })),
+      discard: vi.fn(async () => {}),
+      setDrafts: vi.fn(async () => {}),
+    },
     push: (state) => { for (const l of stateListeners) l(state); },
     chatsChanged: (key) => { for (const l of changedListeners) l(key); },
+    pushShownFolder: shownFolder.emit,
     focusPart: (part) => { for (const l of focusListeners) l(part); },
     answerNext: (answer) => { answers.push(answer); },
     overlayRequests,
@@ -404,6 +433,8 @@ export type FakeOverlayApi = DamoclesOverlayApi & {
   terminalProfiles: { report: TerminalProfileReport };
   pushTerminalProfiles: (report: TerminalProfileReport) => void;
   dropZonesPointer: (pointer: DropZonesPointer) => void;
+  // what worktreeOptions and generateWorktreeMessage answer
+  worktree: { options: PopupAnswer<ChatsWorktreeOptions>; continue: PopupAnswer<readonly ChatsContinueWorktree[]>; message: PopupAnswer<{ readonly message: string } | null> };
 };
 
 export const VERSION_INFO: VersionInfo = { version: '3.4.0', packaged: false, platform: 'win32', arch: 'x64', electron: '38.0.0', chromium: '140.0.0.0', node: '22.19.0' };
@@ -433,6 +464,7 @@ export function fakeOverlayApi(): FakeOverlayApi {
   const commands: { list: PaletteCommand[] } = { list: [] };
   const terminalProfiles: { report: TerminalProfileReport } = { report: { profiles: [], hidden: [], problems: [] } };
   const profilesChanged = emitter<TerminalProfileReport>();
+  const worktree: FakeOverlayApi['worktree'] = { options: opened({ available: false, reason: 'notGit' }), continue: opened([]), message: opened(null) };
   return {
     getState: vi.fn(async () => ({ locale: 'en' as const, platform: 'win32' as const })),
     onState: vi.fn((listener) => { stateListeners.add(listener); return () => stateListeners.delete(listener); }),
@@ -481,6 +513,10 @@ export function fakeOverlayApi(): FakeOverlayApi {
     onTerminalProfiles: vi.fn(profilesChanged.listen),
     onDropZonesPointer: vi.fn(pointer.listen),
     browseInput: vi.fn(async (): Promise<PopupAnswer<InputBrowseResult | null>> => opened(null)),
+    worktreeOptions: vi.fn(async () => worktree.options),
+    continueWorktrees: vi.fn(async () => worktree.continue),
+    generateWorktreeMessage: vi.fn(async () => worktree.message),
+    worktree,
     request: (id, request) => { for (const l of requestListeners) l(id, request); },
     cancel: (id) => { for (const l of cancelListeners) l(id); },
     toast: (toast) => { for (const l of toastListeners) l(toast); },

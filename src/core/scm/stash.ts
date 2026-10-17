@@ -2,7 +2,7 @@
 // named by the commit main listed: apply takes the commit itself, and pop and drop, which need its reflog entry, check that
 // stash@{n} still names that commit in the same mutation slot.
 import { gitAtLeast, type GitVersion } from './git-runner';
-import { failed } from './branches';
+import { failed, hasUnmerged } from './branches';
 import { isObjectName } from './artifacts';
 import { checkRepoPath, type Repository } from './repository';
 
@@ -50,20 +50,21 @@ const stashRef = (index: number): string => {
 
 /**
  * Apply or Pop: conflict when git stopped with unmerged entries (the stash is kept, as git keeps it); moved when stash@{n}
- * no longer names the commit (pop only).
+ * no longer names the commit (pop only). Refused with conflicted as the message while the index has unmerged entries, which
+ * git cannot write, so any found after the apply are its own; `--quiet` prints no CONFLICT line to read instead.
  */
-export async function stashApply(repo: Repository, target: StashTarget, pop: boolean): Promise<'ok' | 'conflict' | 'moved'> {
+export function stashApply(repo: Repository, target: StashTarget, pop: boolean, conflicted: string): Promise<'ok' | 'conflict' | 'moved'> {
   if (!isObjectName(target.hash)) throw new Error('A stash is named by its full object name');
-  const outcome = await repo.mutate(async (git) => {
-    if (pop && !(await names(git, target))) return 'moved' as const;
+  return repo.mutate(async (git) => {
+    if (await hasUnmerged(git)) throw new Error(conflicted);
+    if (pop && !(await names(git, target))) return 'moved';
     // --quiet: otherwise git runs a status that enters every submodule, a declined project's included
     const args = ['stash', pop ? 'pop' : 'apply', '--quiet', ...repo.endOfOptions(), pop ? stashRef(target.index) : target.hash];
     const result = await git(args, { allowFailure: true });
-    return result.exitCode === 0 ? ('ok' as const) : { args, result };
+    if (result.exitCode === 0) return 'ok';
+    if (await hasUnmerged(git)) return 'conflict';
+    throw failed(args, result);
   });
-  if (typeof outcome === 'string') return outcome;
-  if (await repo.hasConflicts()) return 'conflict';
-  throw failed(outcome.args, outcome.result);
 }
 
 /** Drop: moved when stash@{n} no longer names the commit. */

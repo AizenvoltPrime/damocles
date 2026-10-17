@@ -173,6 +173,9 @@ export function createVsCodeEditorService(subscriptions: Disposable[]): EditorSe
     // VS Code keeps its own settings, not the .damocles files (settingsSources is false).
     openSettingsFile: () => Promise.reject(new Error('VS Code has no Damocles settings files to edit')),
 
+    // VS Code keeps its own source control view and has no chat review tab (chatReview is false).
+    showChatReview: () => Promise.reject(new Error('VS Code has no chat review tab')),
+
     isHostExtensionActive: (id) => vscode.extensions.getExtension(id)?.isActive ?? false,
 
     searchHostExtensions: async (query) => {

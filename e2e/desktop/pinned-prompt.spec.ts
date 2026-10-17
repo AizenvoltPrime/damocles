@@ -29,7 +29,7 @@ test('the pinned prompt yields while it would cover more than half the message l
     const scrollPadding = (): Promise<string> => tab.locator('.message-container').evaluate((el) => (el as HTMLElement).style.scrollPaddingTop);
     await expect(prompt).toBeVisible();
     await expect(pin).toHaveCount(0);
-    await expect(tab.getByTestId('pinned-restore-chip')).toHaveCount(0);
+    await expect(tab.getByTestId('chat-header-pinned')).toHaveCount(0);
     expect(await scrollPadding()).toBe('');
 
     await prompt.getByRole('option', { name: 'No', exact: true }).click();

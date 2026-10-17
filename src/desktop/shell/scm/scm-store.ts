@@ -1,4 +1,5 @@
 import { computed, shallowRef, triggerRef, type InjectionKey } from 'vue';
+import { parseRootKey } from '../../preload/folder-root';
 import type {
   DamoclesScmApi,
   ScmArtifactsChanged,
@@ -30,7 +31,7 @@ export function createScmStore(api: DamoclesScmApi) {
   const views = shallowRef(new Map<string, ScmView>());
   const snapshots = shallowRef(new Map<string, ScmRepoSnapshot>());
   const decorations = shallowRef(new Map<string, Readonly<Record<string, ScmDecoration>>>());
-  const settings = shallowRef<ScmSettings>({ untrackedChanges: 'mixed', inputValidation: false, inputValidationSubjectLength: 50, inputValidationLength: 72, allowNoVerifyCommit: false, allowForcePush: false });
+  const settings = shallowRef<ScmSettings>({ untrackedChanges: 'mixed', inputValidation: false, inputValidationSubjectLength: 50, inputValidationLength: 72, allowNoVerifyCommit: false, allowForcePush: false, blameEditorDecoration: true });
   // the window's clone, whatever the project, and how the last one ended
   const clone = shallowRef<ScmCloneState>({ running: null, last: null });
   // what the window's git can do; read once, since git does not change under a running app
@@ -42,14 +43,12 @@ export function createScmStore(api: DamoclesScmApi) {
   const committing = shallowRef(new Set<string>());
   const generating = shallowRef(new Set<string>());
   const inputs = shallowRef(new Map<string, ScmCommitInput>());
-  // repositories whose template already had its chance to fill an empty box this run
-  const templated = new Set<string>();
+  // each repository's input template as the box last followed it (followTemplate)
+  const templates = new Map<string, string>();
   // the latest commitInput read per repository; an older read answering later is dropped
   const inputReads = new Map<string, number>();
   let inputRead = 0;
   const setInputListeners = new Set<(input: BoxText, previous: string) => void>();
-  // the operation each repository's draft was prefilled for, so MERGE_MSG fills an empty box once per merge
-  const prefilled = new Map<string, string>();
   const commandListeners = new Set<(command: ScmShellCommand) => void>();
   const artifactListeners = new Set<(changed: ScmArtifactsChanged) => void>();
   const stops: Array<() => void> = [];
@@ -69,9 +68,12 @@ export function createScmStore(api: DamoclesScmApi) {
     dropClosedSnapshots();
   }
 
-  /** Forgets the views and decorations of projects no longer registered; main sends nothing for a removed project. */
+  /**
+   * Forgets the views and decorations of projects no longer registered; main sends nothing for a removed project. Views are
+   * keyed by root key (D31), so a project's worktree roots stay while their project does.
+   */
   function retainProjects(projectKeys: ReadonlySet<string>): void {
-    const gone = (key: string): boolean => !projectKeys.has(key);
+    const gone = (key: string): boolean => !projectKeys.has(parseRootKey(key)?.projectKey ?? key);
     if (![...views.value.keys(), ...decorations.value.keys()].some(gone)) return;
     for (const key of [...views.value.keys()].filter(gone)) views.value.delete(key);
     for (const key of [...decorations.value.keys()].filter(gone)) decorations.value.delete(key);
@@ -83,12 +85,20 @@ export function createScmStore(api: DamoclesScmApi) {
   function setSnapshot(snapshot: ScmRepoSnapshot): void {
     snapshots.value.set(snapshot.repoId, snapshot);
     triggerRef(snapshots);
-    const operation = snapshot.operation;
-    if (operation === null) prefilled.delete(snapshot.repoId);
-    else if (snapshot.mergeMessage !== undefined && prefilled.get(snapshot.repoId) !== operation) {
-      prefilled.set(snapshot.repoId, operation);
-      if ((drafts.value.get(snapshot.repoId) ?? '') === '') setDraft(snapshot.repoId, snapshot.mergeMessage);
-    }
+    followTemplate(snapshot.repoId);
+  }
+
+  /**
+   * VS Code's getInputTemplate (MERGE_MSG, else SQUASH_MSG, from main's snapshot, else the commit template) and scmInput.ts's
+   * rule for it: a changed template replaces the box only while the box is empty or still holds the previous one.
+   */
+  function followTemplate(repoId: string): void {
+    const next = snapshots.value.get(repoId)?.mergeMessage ?? inputs.value.get(repoId)?.template ?? '';
+    const previous = templates.get(repoId) ?? '';
+    if (next === previous) return;
+    templates.set(repoId, next);
+    const draft = drafts.value.get(repoId) ?? '';
+    if (draft === '' || draft === previous) setDraft(repoId, next);
   }
 
   function setDecorations(projectKey: string, files: Readonly<Record<string, ScmDecoration>>): void {
@@ -124,12 +134,13 @@ export function createScmStore(api: DamoclesScmApi) {
       inputReads.set(input.repoId, ++inputRead);
       inputs.value.set(input.repoId, input.commitInput);
       triggerRef(inputs);
+      followTemplate(input.repoId);
     }
     for (const listener of setInputListeners) listener(input, previous);
     if (input.cause !== 'template' && !input.commitInput) void loadCommitInput(input.repoId);
   }
 
-  /** Reads the repository's commit input again; the first read of the run fills an empty box with the template. */
+  /** Reads the repository's commit input again; its template joins the input template the box follows. */
   async function loadCommitInput(repoId: string): Promise<ScmCommitInput> {
     const read = ++inputRead;
     inputReads.set(repoId, read);
@@ -137,10 +148,7 @@ export function createScmStore(api: DamoclesScmApi) {
     if (inputReads.get(repoId) !== read) return inputs.value.get(repoId) ?? input;
     inputs.value.set(repoId, input);
     triggerRef(inputs);
-    if (!templated.has(repoId)) {
-      templated.add(repoId);
-      if (input.template !== null && (drafts.value.get(repoId) ?? '') === '') setDraft(repoId, input.template);
-    }
+    followTemplate(repoId);
     return input;
   }
 

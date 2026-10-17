@@ -10,6 +10,7 @@ import { codeEditor, diffEditor, DOCUMENT_END, editorShows, editorState, editorT
 import { writeUserSettings } from './support/hermetic';
 import { selectedProjectKey } from './support/shell';
 import { clickSectionAction, sectionAction } from './support/shell-ui';
+import { setSection } from './support/scm';
 
 const searchQuery = (shell: Page): Locator => shell.getByTestId('search-query');
 const fileRow = (shell: Page, relativePath: string): Locator => shell.locator(`[data-testid="search-row"][data-row-kind="file"][data-path="${relativePath}"]`);
@@ -18,9 +19,13 @@ const resultFiles = (shell: Page): Locator => shell.locator('[data-testid="searc
 // The primary modifier as Playwright names it in the page: Control, or Meta on macOS.
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control';
 
+// Search fills the sidebar, so its results have room whatever the screen size and however many sections open by default.
+const OTHER_SECTIONS = ['sidebar-projects', 'sidebar-chats', 'files-section', 'scm-section', 'graph-section', 'repositories-section'] as const;
+
 /** Find in Files (Replace in Files with `replace`) from the shell, as the accelerator does; resolves once the query has focus. */
 async function openSearch(app: ElectronApplication, replace = false): Promise<Page> {
   const shell = await shellPage(app);
+  for (const id of OTHER_SECTIONS) await setSection(shell, id, false);
   await pressKeys(app, '/shell/', replace ? 'H' : 'F', [PRIMARY, 'shift']);
   await expect(searchQuery(shell)).toBeFocused();
   return shell;
@@ -438,12 +443,6 @@ test('Enter adds a query to its history; Up and Down walk it inside the input wi
   const { app } = await launch();
   await openProjectChat(app, home.project);
   const shell = await openSearch(app);
-  // Chats and Files fold so Search has room: a section shorter than its widget scrolls it to keep the caret in view.
-  for (const id of ['sidebar-chats', 'files-section']) {
-    const header = shell.getByTestId(id).locator('button[aria-expanded]').first();
-    await header.click();
-    await expect(header).toHaveAttribute('aria-expanded', 'false');
-  }
   await search(shell, 'alpha');
   await search(shell, 'beta');
   await expect(searchQuery(shell)).toHaveAttribute('placeholder', 'Search (⇅ for history)');

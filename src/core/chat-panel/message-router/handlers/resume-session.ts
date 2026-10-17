@@ -22,26 +22,34 @@ export async function resumeStoredSession(deps: HandlerDependencies, panelId: st
   // The session file lives under its folder's session dir, so the panel moves there first. The claim
   // runs inside the switch, so a message the webview sent meanwhile reaches the resumed session.
   // An unknown session stays on the panel's folder as it is now, which may differ from the folder at dispatch.
-  const folder = (await storageManager.folderOf(sessionId)) ?? deps.getPanels().get(panelId)?.folder;
-  if (!folder) return;
-  await deps.switchPanelFolder(panelId, folder.key, "resume", async (instance) => {
-    // Another panel or process can claim the session while this one switches; the claim then refuses.
-    const refusal = claimStoredSession(platform.notifications, deps.getPanels(), { panelId, session: instance.session }, sessionId);
-    if (refusal) {
-      refusal.holder?.host.reveal();
-      return;
-    }
-    // The webview keeps its current conversation on screen until this arrives.
-    postMessage(instance.host, { type: "resumeAccepted", sessionId });
+  const listed = (await storageManager.folderOf(sessionId)) ?? deps.getPanels().get(panelId)?.folder;
+  if (!listed) return;
+  // A worktree chat resumes in its working folder, from its latest entry rather than the folder that listed it (AD12).
+  const binding = await deps.worktrees().resumeFolder(panelId, sessionId, listed);
+  try {
+    await deps.switchPanelFolder(panelId, binding.folder.key, "resume", async (instance) => {
+      // Another panel or process can claim the session while this one switches; the claim then refuses.
+      const refusal = claimStoredSession(platform.notifications, deps.getPanels(), { panelId, session: instance.session }, sessionId);
+      if (refusal) {
+        refusal.holder?.host.reveal();
+        return;
+      }
+      // The webview keeps its current conversation on screen until this arrives.
+      postMessage(instance.host, { type: "resumeAccepted", sessionId });
+      // The stored file's place reaches the webview before the replay, so its first render is the right composer.
+      if (binding.state !== undefined) instance.session.worktree.publishStored(binding.state, sessionId);
 
-    try {
-      const rewindableIds = await deps.historyManager.loadSessionHistory(instance.folder.fsPath, sessionId, instance.host, instance.session);
-      instance.session.seedCheckpoints(rewindableIds ?? []);
-      postMessage(instance.host, { type: "sessionStarted", sessionId, stored: rewindableIds !== null });
-    } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') return;
-      log("[MessageRouter] Error loading session history:", err);
-      postMessage(instance.host, { type: "sessionStarted", sessionId });
-    }
-  });
+      try {
+        const rewindableIds = await deps.historyManager.loadSessionHistory(instance.folder.fsPath, sessionId, instance.host, instance.session);
+        instance.session.seedCheckpoints(rewindableIds ?? []);
+        postMessage(instance.host, { type: "sessionStarted", sessionId, stored: rewindableIds !== null });
+      } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') return;
+        log("[MessageRouter] Error loading session history:", err);
+        postMessage(instance.host, { type: "sessionStarted", sessionId });
+      }
+    });
+  } finally {
+    binding.settle(deps.getPanels().get(panelId));
+  }
 }

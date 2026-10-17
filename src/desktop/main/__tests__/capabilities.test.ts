@@ -19,6 +19,8 @@ describe('desktop host capabilities', () => {
       folderPickerInPanel: false,
       fileMentionDrop: true,
       windowLayout: true,
+      chatReview: true,
+      worktrees: true,
     });
   });
 });

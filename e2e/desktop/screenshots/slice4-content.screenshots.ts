@@ -96,8 +96,8 @@ test('message column, dock cards and an overlay in Dark and Light', async ({ hom
     await expect(tab.getByTestId('pinned-hide')).toBeVisible();
     await shoot(app, tab, testInfo, 'pinned-header');
     await tab.getByTestId('pinned-hide').click();
-    await expect(tab.getByTestId('pinned-restore-chip')).toBeVisible();
-    await shoot(app, tab, testInfo, 'pinned-restore-chip');
+    await expect(tab.getByTestId('chat-header-pinned')).toBeVisible();
+    await shoot(app, tab, testInfo, 'pinned-header-button');
   } finally {
     await stub.close();
   }

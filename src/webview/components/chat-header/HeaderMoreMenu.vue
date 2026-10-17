@@ -2,10 +2,12 @@
 import { computed, type Component } from 'vue';
 import { useI18n } from 'vue-i18n';
 import {
+  ArrowLeftRight,
   Brain,
   ChartLine,
   ChartPie,
   Ellipsis,
+  FileDiff,
   FileText,
   Gauge,
   Globe,
@@ -20,6 +22,7 @@ import {
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { MENU_CONTENT, MENU_HINT, MENU_ITEM } from './menuStyles';
 import type { HeaderAction } from './headerActions';
+import type { ChatPlace } from '@shared/types/messages';
 import { remPx } from '@/composables/useRemPx';
 
 const props = defineProps<{
@@ -35,9 +38,13 @@ const props = defineProps<{
   /** The host lays out a terminal pane, whose header toggle folds in below 560px. */
   terminal: boolean;
   terminalShortcut?: string | undefined;
+  /** The chat's changes (D60), folded in below 560px with the other tool controls; null when the host shows no counter. */
+  changes: { readonly added: number; readonly removed: number; readonly files: number } | null;
+  /** D61's Hand off, folded in as the move it offers when the header is too narrow for its button; null otherwise. */
+  handOff?: { readonly place: ChatPlace; readonly canHandOff: boolean } | null;
 }>();
 
-const emit = defineEmits<{ action: [action: HeaderAction] }>();
+const emit = defineEmits<{ action: [action: HeaderAction]; handOff: [to: ChatPlace] }>();
 const { t } = useI18n();
 
 interface MoreItem {
@@ -60,6 +67,7 @@ const folded = computed<MoreItem[]>(() => [
         { action: 'mcp' as const, icon: Plug, label: t('chatHeader.mcpCount', { n: props.mcpConnected }), disabled: props.panelsDisabled },
         { action: 'tools' as const, icon: Wrench, label: t('chatHeader.toolsCount', { n: props.toolsEnabled }), disabled: props.panelsDisabled },
         ...(props.terminal ? [{ action: 'terminal' as const, icon: SquareTerminal, label: t('chatHeader.toggleTerminal'), ...(props.terminalShortcut ? { hint: props.terminalShortcut } : {}) }] : []),
+        ...(props.changes ? [{ action: 'reviewChanges' as const, icon: FileDiff, label: t('chatHeader.reviewChangesItem'), hint: `+${props.changes.added} −${props.changes.removed}` }] : []),
       ]),
 ]);
 
@@ -111,6 +119,28 @@ const always = computed<MoreItem[]>(() => [
             v-if="item.hint"
             :class="MENU_HINT"
           >{{ item.hint }}</span>
+        </DropdownMenuItem>
+        <!-- A disabled item takes no pointer events, so its reason is text in the item, not a tooltip. Only its label and icon
+             dim, so the reason keeps its token's contrast (palette-contrast.test.ts). -->
+        <DropdownMenuItem
+          v-if="handOff"
+          :class="[MENU_ITEM, !handOff.canHandOff && 'items-start data-disabled:opacity-100 [&>svg]:mt-0.5 [&>svg]:opacity-50']"
+          :disabled="!handOff.canHandOff"
+          data-action="handOff"
+          @select="emit('handOff', handOff.place === 'worktree' ? 'project' : 'worktree')"
+        >
+          <ArrowLeftRight aria-hidden="true" />
+          <span class="flex min-w-0 flex-col">
+            <span
+              class="truncate"
+              :class="!handOff.canHandOff && 'opacity-50'"
+            >{{ handOff.place === 'worktree' ? t('worktree.moveToProject') : t('worktree.moveToWorktree') }}</span>
+            <span
+              v-if="!handOff.canHandOff"
+              class="text-11 text-pretty text-(--d-muted)"
+              data-testid="hand-off-disabled-reason"
+            >{{ t('worktree.handOffDisabled') }}</span>
+          </span>
         </DropdownMenuItem>
         <DropdownMenuSeparator class="mx-1 my-1.25 bg-(--d-border)" />
       </template>

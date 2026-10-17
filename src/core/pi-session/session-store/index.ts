@@ -15,6 +15,7 @@ export {
   readLiveSessionMetadata,
   forgetSessionMetadata,
   resolvePiSessionFile,
+  piSessionDirOf,
   piSessionIdFromFile,
   extractPiPromptHistory,
   type LiveSessionMetaSource,
@@ -24,7 +25,7 @@ export { loadPiSessionHistory } from './history-loader';
 export { storedTypedText } from './prompt-context';
 export { extractTerminalAttachmentCounts } from './terminal-attachments';
 export { renamePiSession, deletePiSession, tagPiSession, titleStoredPiSession, type LiveTitleOutcome } from './mutations';
-export { getPiRewindHistory, getPiFileCheckpointContent, getPiSkippedFiles } from './rewind';
+export { getPiRewindHistory, getPiFileCheckpointContent, getPiSkippedFiles, precedesHandOff } from './rewind';
 export { DAMOCLES_CHECKPOINT_ENTRY, DAMOCLES_USER_RENAMED_ENTRY, DAMOCLES_TAG_ENTRY, DAMOCLES_ORIGINAL_INPUT_ENTRY, DAMOCLES_TERMINAL_ATTACHMENTS_ENTRY, DAMOCLES_MID_STREAM_ENTRY, DAMOCLES_STEER_ENTRY, DAMOCLES_AGENT_INVOCATION_ENTRY, DAMOCLES_TURN_STOPPED_ENTRY } from './constants';
 export { extractOriginalInputs, type OriginalInputData } from './original-input';
 export { extractMidStreamEntryIds, type MidStreamData } from './mid-stream';

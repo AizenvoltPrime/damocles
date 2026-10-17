@@ -6,6 +6,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { hasUnsafeWindowsSegment, isRelativeFilePath } from '../../shared/relative-path';
+import { LETTER_TONE, type StatusLetter, type StatusTone } from '../../shared/scm/status-letter';
 import { followsLocalLinksOnly } from '../local-links';
 import { endOfOptions, MAX_CLI_LENGTH, RepoQueue, revision, splitInChunks, GitError, type GitCall, type GitResult, type GitRunner, type GitVersion } from './git-runner';
 import { isInside, readSubmodules, samePath } from './discovery';
@@ -34,8 +35,8 @@ export type ChangeStatus =
   | 'BOTH_DELETED'
   | 'BOTH_MODIFIED';
 
-export type ChangeLetter = 'M' | 'A' | 'D' | 'R' | 'C' | 'U' | 'T' | '!' | 'S' | 'I';
-export type ChangeTone = 'modified' | 'added' | 'deleted' | 'untracked' | 'conflict' | 'renamed' | 'submodule' | 'ignored';
+export type ChangeLetter = StatusLetter;
+export type ChangeTone = StatusTone;
 export type ChangeGroup = 'merge' | 'index' | 'workingTree' | 'untracked';
 
 export interface Change {
@@ -71,6 +72,7 @@ export interface RepositoryStatus {
   // null on an unborn branch
   readonly commit: HeadCommitSummary | null;
   readonly operation: Operation | null;
+  // MERGE_MSG, else SQUASH_MSG, without comment lines (inputTemplateMessage)
   readonly mergeMessage?: string;
   readonly groups: Groups;
   readonly tooManyChanges: boolean;
@@ -116,30 +118,7 @@ function letterOf(status: ChangeStatus): ChangeLetter {
   }
 }
 
-function toneOf(status: ChangeStatus): ChangeTone {
-  switch (status) {
-    case 'INDEX_MODIFIED':
-    case 'MODIFIED':
-    case 'TYPE_CHANGED':
-      return 'modified';
-    case 'INDEX_DELETED':
-    case 'DELETED':
-      return 'deleted';
-    case 'INDEX_ADDED':
-    case 'INTENT_TO_ADD':
-      return 'added';
-    case 'INDEX_COPIED':
-    case 'INDEX_RENAMED':
-    case 'INTENT_TO_RENAME':
-      return 'renamed';
-    case 'UNTRACKED':
-      return 'untracked';
-    case 'IGNORED':
-      return 'ignored';
-    default:
-      return 'conflict';
-  }
-}
+const toneOf = (status: ChangeStatus): ChangeTone => LETTER_TONE[letterOf(status)];
 
 const STRUCK: ReadonlySet<ChangeStatus> = new Set(['DELETED', 'BOTH_DELETED', 'DELETED_BY_THEM', 'DELETED_BY_US', 'INDEX_DELETED']);
 const CONFLICTS: ReadonlySet<ChangeStatus> = new Set(['BOTH_DELETED', 'ADDED_BY_US', 'DELETED_BY_THEM', 'ADDED_BY_THEM', 'DELETED_BY_US', 'BOTH_ADDED', 'BOTH_MODIFIED']);
@@ -286,7 +265,7 @@ export interface CommitOptions {
 }
 
 // What a caller of Repository.read and Repository.write may set on its call.
-export type GitCallOptions = Pick<GitCall, 'allowFailure' | 'maxOutputBytes' | 'literalPathspecs' | 'input'>;
+export type GitCallOptions = Pick<GitCall, 'allowFailure' | 'maxOutputBytes' | 'literalPathspecs' | 'input' | 'onData'>;
 
 // english: LC_ALL=C, for a caller that tells one refusal from another by git's words
 export type WriteOptions = GitCallOptions & { readonly english?: boolean };
@@ -377,14 +356,14 @@ export class Repository {
       const { entries, tooManyChanges } = await this.readStatus([untrackedChanges === 'hidden' ? '-uno' : '-uall']);
       const [{ head, hash }, operation, submodules, remotes] = await Promise.all([this.head(), this.operation(), this.submodulePaths(), this.remoteNames()]);
       const upstream = await this.upstreamOf(head);
-      const mergeMessage = operation === 'merge' || operation === 'cherryPick' ? await this.readGitFile('MERGE_MSG') : undefined;
+      const mergeMessage = await this.inputTemplateMessage();
       const known = this.last?.commit;
       const commit = hash === undefined ? null : known?.hash === hash ? known : { hash, subject: subjectOf((await this.readCommit(hash)).message) };
       const status: RepositoryStatus = {
         head,
         commit,
         operation,
-        ...(mergeMessage !== undefined ? { mergeMessage: stripCommitMessageComments(mergeMessage) } : {}),
+        ...(mergeMessage !== undefined ? { mergeMessage } : {}),
         groups: groupStatus(entries, untrackedChanges, new Set(submodules)),
         tooManyChanges,
         submodules,
@@ -401,12 +380,14 @@ export class Repository {
     return this.queue.mutation(() => this.chunked(['add', '-A'], paths));
   }
 
-  // VS Code's stageAll: every working change at mixed, tracked ones only otherwise; tracked: -u; untracked and merge: the listed paths.
+  // VS Code's stageAll: the listed working changes at mixed, tracked ones only otherwise; tracked: -u; untracked and merge: the
+  // listed paths. A listed path, never `.`, whenever untracked files are staged: `add -A -- .` would add an untracked nested
+  // repository, which status lists as no change, as a gitlink.
   stageAll(scope: 'all' | 'tracked' | 'untracked' | 'merge', untrackedChanges: UntrackedChanges): Promise<void> {
     const status = this.last;
     return this.queue.mutation(async () => {
-      if (scope === 'all') await this.run(['add', untrackedChanges === 'mixed' ? '-A' : '-u', '--', '.'], 'mutation', true);
-      else if (scope === 'tracked') await this.run(['add', '-u', '--', '.'], 'mutation', true);
+      if (scope === 'all' && untrackedChanges === 'mixed') await this.chunked(['add', '-A'], listedChanges(status));
+      else if (scope === 'all' || scope === 'tracked') await this.run(['add', '-u', '--', '.'], 'mutation', true);
       else if (scope === 'untracked') {
         const groups = status?.groups ?? EMPTY_GROUPS;
         await this.chunked(['add', '-A'], [...groups.workingTree, ...groups.untracked].filter((entry) => isUntrackedStatus(entry.status)).map((entry) => entry.path));
@@ -481,7 +462,8 @@ export class Repository {
       let committing = false;
       try {
         if (opts.branch !== undefined) await this.run(['checkout', '-q', '-b', revision(opts.branch)], 'mutation');
-        if (opts.all) await this.run(['add', opts.all === 'tracked' ? '-u' : '-A', '--', '.'], 'mutation', true);
+        if (opts.all === 'tracked') await this.run(['add', '-u', '--', '.'], 'mutation', true);
+        else if (opts.all === 'all') await this.chunked(['add', '-A'], listedChanges(status));
         if (opts.restage.length > 0) await this.chunked(['add', '-A'], opts.restage);
         if (status?.operation === 'rebase') {
           await this.run(['rebase', '--continue'], 'mutation');
@@ -580,6 +562,19 @@ export class Repository {
     return this.runner.git.version;
   }
 
+  /**
+   * Whether a linked worktree of this repository holds modified or untracked files, by the status git worktree remove runs
+   * before it refuses. It runs in the worktree, so the gate decides on that folder and fences what it holds; a folder git
+   * cannot read answers false and is left to the remove, which says why.
+   */
+  worktreeDirty(worktreePath: string): Promise<boolean> {
+    if (!path.isAbsolute(worktreePath)) throw new Error('A worktree path is absolute');
+    return this.queue.read(async () => {
+      const result = await this.runner.run({ ...this.call(['status', '--porcelain', '-z', '--ignore-submodules=none'], 'status', true), cwd: worktreePath, allowFailure: true });
+      return result.exitCode === 0 && result.stdout.length > 0;
+    });
+  }
+
   /** A read whose output a caller parses (LC_ALL=C), in the read queue; a non-zero exit throws unless allowFailure. */
   read(args: readonly string[], options: GitCallOptions = {}): Promise<GitResult> {
     return this.queue.read(() => this.runner.run({ ...this.call(args, 'read', true), ...options }));
@@ -608,11 +603,6 @@ export class Repository {
   /** A commit's parents and message (cat-file), in the read queue. */
   commitObject(hash: string): Promise<HeadCommit> {
     return this.queue.read(() => this.readCommit(hash));
-  }
-
-  /** Whether the index holds unmerged entries: a merge, rebase or stash apply stopped on conflicts. */
-  hasConflicts(): Promise<boolean> {
-    return this.queue.read(async () => (await this.runner.run(this.call(['ls-files', '--unmerged', '-z'], 'read', true))).stdout.length > 0);
   }
 
   /** --end-of-options from git 2.24, for the subcommands that parse it on every git the engine runs (never checkout or reset). */
@@ -1105,6 +1095,13 @@ export class Repository {
     return (await readSubmodules(this.root)).map((submodule) => submodule.relativePath);
   }
 
+  // VS Code's getInputTemplate before the commit template: MERGE_MSG, else SQUASH_MSG, whichever holds text once its comment
+  // lines are dropped, whatever operation is in progress.
+  private async inputTemplateMessage(): Promise<string | undefined> {
+    const messages = await Promise.all([this.readGitFile('MERGE_MSG'), this.readGitFile('SQUASH_MSG')]);
+    return messages.map((message) => (message === undefined ? '' : stripCommitMessageComments(message))).find((message) => message !== '');
+  }
+
   private readGitFile(name: string): Promise<string | undefined> {
     return readRegularFile(path.join(this.info.gitDir, name), MAX_MERGE_MESSAGE_BYTES);
   }
@@ -1168,6 +1165,13 @@ async function plainFileUnder(dir: string, segments: readonly string[]): Promise
     if (!(index === segments.length - 1 ? stat?.isFile() : stat?.isDirectory())) return undefined;
   }
   return current;
+}
+
+// The working-tree and untracked changes status listed: what Stage All and smart commit stage (VS Code's stageAll stages its
+// listed resources).
+function listedChanges(status: RepositoryStatus | undefined): string[] {
+  const groups = status?.groups ?? EMPTY_GROUPS;
+  return [...groups.workingTree, ...groups.untracked].map((entry) => entry.path);
 }
 
 function subjectOf(message: string): string {

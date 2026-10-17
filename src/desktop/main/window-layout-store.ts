@@ -22,6 +22,11 @@ import {
   MAX_EXPANDED_REPOSITORY_ROWS,
   MAX_REPOSITORY_ROW_ID_LENGTH,
   boundRepositoryViewStates,
+  boundGraphChoices,
+  MAX_GRAPH_CHOICE_REFS,
+  MAX_GRAPH_REF_LENGTH,
+  MAX_GRAPH_ROOT_LENGTH,
+  type GraphRefChoice,
   EMPTY_SEARCH_HISTORY,
   type SearchEditorConfig,
   type SearchHistory,
@@ -46,6 +51,7 @@ import {
   type PersistedTerminals,
 } from './terminal/terminal-service';
 import { MAX_TERMINAL_GROUP_PANES } from '../preload/terminal-channels';
+import { isFullRefName } from '../preload/scm-channels';
 
 // An absolute path saved for a tab outside every project.
 const MAX_PATH_LENGTH = MAX_RELATIVE_PATH_LENGTH;
@@ -96,13 +102,14 @@ export const DEFAULT_SHELL_LAYOUT: ShellLayout = {
   sidebarVisible: true,
   sidebarWidth: 264,
   // Repositories starts collapsed (D58)
-  sections: { projects: { collapsed: false, size: 180 }, files: { collapsed: false, size: 230 }, search: { collapsed: true, size: 260 }, repos: { collapsed: true, size: 220 }, scm: { collapsed: false, size: 300 }, chats: { collapsed: false } },
+  sections: { projects: { collapsed: false, size: 180 }, files: { collapsed: false, size: 230 }, search: { collapsed: true, size: 260 }, repos: { collapsed: true, size: 220 }, scm: { collapsed: false, size: 300 }, graph: { collapsed: false, size: 190 }, chats: { collapsed: false } },
   sectionOrder: SIDEBAR_SECTIONS,
   grid: DEFAULT_GRID_LAYOUT,
   search: {},
   // VS Code's scm.defaultViewMode and scm.defaultViewSortKey
   scm: { viewMode: 'list', sortKey: 'path' },
   repositories: {},
+  graph: {},
 };
 
 // Projects whose selected repository the layout keeps.
@@ -252,11 +259,53 @@ function parseScmViewOptions(raw: unknown): ScmViewOptions | undefined {
     : undefined;
 }
 
-/** The sidebar's section order, or undefined unless it names every section exactly once. */
+/**
+ * The sidebar's section order, or undefined unless it names every section exactly once. An order 3.9.0 saved names every
+ * section but the Graph, which goes right after Source control, as in the default order.
+ */
 export function parseSectionOrder(raw: unknown): ShellLayout['sectionOrder'] | undefined {
-  if (!Array.isArray(raw) || raw.length !== SIDEBAR_SECTIONS.length) return undefined;
+  if (!Array.isArray(raw)) return undefined;
   const order = raw.filter((name): name is ShellLayout['sectionOrder'][number] => (SIDEBAR_SECTIONS as readonly unknown[]).includes(name));
-  return new Set(order).size === SIDEBAR_SECTIONS.length ? order : undefined;
+  if (order.length !== raw.length || new Set(order).size !== order.length) return undefined;
+  if (order.length === SIDEBAR_SECTIONS.length) return order;
+  if (order.length !== SIDEBAR_SECTIONS.length - 1 || order.includes('graph')) return undefined;
+  const scm = order.indexOf('scm');
+  return [...order.slice(0, scm + 1), 'graph', ...order.slice(scm + 1)];
+}
+
+// A repository root key: an absolute path with no NUL, as ScmRepoSummary.root gives it.
+function isGraphRoot(key: string): boolean {
+  return key.length > 0 && key.length <= MAX_GRAPH_ROOT_LENGTH && !key.includes('\0') && path.isAbsolute(key);
+}
+
+function parseGraphChoice(raw: unknown): GraphRefChoice | undefined {
+  if (raw === 'auto' || raw === 'all') return raw;
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_GRAPH_CHOICE_REFS) return undefined;
+  const refs = raw as unknown[];
+  const valid = refs.every((ref) => typeof ref === 'string' && ref.length <= MAX_GRAPH_REF_LENGTH && isFullRefName(ref, ['refs/heads/', 'refs/remotes/', 'refs/tags/']));
+  return valid && new Set(refs).size === refs.length ? [...(refs as string[])] : undefined;
+}
+
+/**
+ * The Graph's ref choices by repository root, within boundGraphChoices' bounds. A shell report is taken only whole, so a
+ * malformed or out-of-bounds entry refuses it. With fileLog (reading the file), a malformed entry is dropped and the oldest
+ * past the bounds go, each logged. Undefined unless raw is a record.
+ */
+export function parseGraphChoices(raw: unknown, fileLog?: Log): Record<string, GraphRefChoice> | undefined {
+  if (!isRecord(raw)) return undefined;
+  const entries: Array<[string, GraphRefChoice]> = [];
+  for (const [key, value] of Object.entries(raw)) {
+    const choice = isGraphRoot(key) ? parseGraphChoice(value) : undefined;
+    if (choice !== undefined) entries.push([key, choice]);
+    else if (fileLog) fileLog('[layout] dropping a malformed Graph ref choice');
+    else return undefined;
+  }
+  // fromEntries defines each key, so a "__proto__" key stays an entry and never sets the prototype
+  const choices = boundGraphChoices(Object.fromEntries(entries));
+  if (Object.keys(choices).length === entries.length) return choices;
+  if (!fileLog) return undefined;
+  fileLog('[layout] dropping the oldest Graph ref choices past the layout\'s bounds');
+  return choices;
 }
 
 /**
@@ -330,18 +379,21 @@ export function parseSidebarLayout(raw: unknown, fileLog?: Log): ShellSidebarLay
   const chatsCollapsed = isRecord(chats) ? field(chats, 'collapsed') : undefined;
   const scmSection = orDefault(field(sections, 'scm'), parseSection, DEFAULT_SHELL_LAYOUT.sections.scm, 'Source Control section size');
   const reposSection = orDefault(field(sections, 'repos'), parseSection, DEFAULT_SHELL_LAYOUT.sections.repos, 'Repositories section size');
+  const graphSection = orDefault(field(sections, 'graph'), parseSection, DEFAULT_SHELL_LAYOUT.sections.graph, 'Graph section size');
   const search = orDefault(field(raw, 'search'), parseSearchViewStates, {}, 'Search states');
   const scm = orDefault(field(raw, 'scm'), parseScmViewOptions, DEFAULT_SHELL_LAYOUT.scm, 'Source Control view options');
   const repositories = orDefault(field(raw, 'repositories'), (value) => parseRepositoryViewStates(value, fileLog), {}, 'Repositories expanded rows');
+  const graph = orDefault(field(raw, 'graph'), (value) => parseGraphChoices(value, fileLog), {}, 'Graph ref choices');
   const sectionOrder = orDefault(field(raw, 'sectionOrder'), parseSectionOrder, DEFAULT_SHELL_LAYOUT.sectionOrder, 'section order');
-  if (!projects || !files || !searchSection || !reposSection || !scmSection || typeof chatsCollapsed !== 'boolean' || !search || !scm || !repositories || !sectionOrder) return undefined;
+  if (!projects || !files || !searchSection || !reposSection || !scmSection || !graphSection || typeof chatsCollapsed !== 'boolean' || !search || !scm || !repositories || !graph || !sectionOrder) return undefined;
   return {
     sidebarWidth,
-    sections: { projects, files, search: searchSection, repos: reposSection, scm: scmSection, chats: { collapsed: chatsCollapsed } },
+    sections: { projects, files, search: searchSection, repos: reposSection, scm: scmSection, graph: graphSection, chats: { collapsed: chatsCollapsed } },
     sectionOrder,
     search,
     scm,
     repositories,
+    graph,
   };
 }
 
@@ -697,6 +749,16 @@ export class WindowLayoutStore {
     this.persist();
   }
 
+  /** A deleted worktree's root key: its selected repository, Search state and expanded Repositories rows go. */
+  forgetRoot(key: string): void {
+    const { search, repositories } = this.sidebarLayout;
+    if (this.sealed || !(Object.hasOwn(this.scmSelectedLayout, key) || Object.hasOwn(search, key) || Object.hasOwn(repositories, key))) return;
+    const without = <T>(record: Readonly<Record<string, T>>): Record<string, T> => Object.fromEntries(Object.entries(record).filter(([candidate]) => candidate !== key));
+    this.scmSelectedLayout = without(this.scmSelectedLayout);
+    this.sidebarLayout = { ...this.sidebarLayout, search: without(search), repositories: without(repositories) };
+    this.persist();
+  }
+
   setSidebar(layout: ShellLayout): void {
     if (this.sealed || JSON.stringify(this.sidebarLayout) === JSON.stringify(layout)) return;
     this.sidebarLayout = layout;
@@ -714,7 +776,7 @@ export class WindowLayoutStore {
   reset(): void {
     if (this.sealed) return;
     this.placement = undefined;
-    this.sidebarLayout = { ...DEFAULT_SHELL_LAYOUT, search: this.sidebarLayout.search, repositories: this.sidebarLayout.repositories };
+    this.sidebarLayout = { ...DEFAULT_SHELL_LAYOUT, search: this.sidebarLayout.search, repositories: this.sidebarLayout.repositories, graph: this.sidebarLayout.graph };
     this.persist();
   }
 

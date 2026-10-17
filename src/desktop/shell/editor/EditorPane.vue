@@ -8,6 +8,7 @@ import PaneGrip from '../layout/PaneGrip.vue';
 import { EDITOR_STORE } from './editor-store';
 import EditorTabs from './EditorTabs.vue';
 import Breadcrumbs from './Breadcrumbs.vue';
+import { placeOf, tabFileName, tabPlaces } from './editor-place';
 import ConflictBar from './ConflictBar.vue';
 import CodeEditor from './CodeEditor.vue';
 import DiffEditor from './DiffEditor.vue';
@@ -15,8 +16,12 @@ import MarkdownPreview from './MarkdownPreview.vue';
 import ImagePreview from './ImagePreview.vue';
 import BrowserTab from './BrowserTab.vue';
 import SearchEditorTab from './SearchEditorTab.vue';
-import ChangesTab from './ChangesTab.vue';
+import ScmChangesTab from './ScmChangesTab.vue';
+import ChatReviewTab from './ChatReviewTab.vue';
+import TimelineTab from './TimelineTab.vue';
+import MergeEditor from './merge/MergeEditor.vue';
 import NotDisplayedNotice from './NotDisplayedNotice.vue';
+import { parseRootKey } from '../../preload/folder-root';
 
 const props = defineProps<{ api: DamoclesShellApi; state: ShellState }>();
 const emit = defineEmits<{ revealInFiles: [file: FileRef] }>();
@@ -26,7 +31,9 @@ const store = inject(EDITOR_STORE)!;
 const root = ref<HTMLElement | null>(null);
 const tab = computed(() => store.activeTab.value);
 const TEXT_KINDS: ReadonlySet<ShellEditorTab['kind']> = new Set(['code', 'untitled', 'settings', 'log']);
-const projectName = computed(() => props.state.projects.find((project) => project.key === tab.value?.projectKey)?.name);
+// A tab's key is its root's (D31); its breadcrumb names the place first, then the project.
+const projectName = computed(() => props.state.projects.find((project) => project.key === parseRootKey(tab.value?.projectKey)?.projectKey)?.name);
+const place = computed(() => (tab.value ? placeOf(tab.value, tabPlaces(store.tabs.value)) : undefined));
 const notDisplayed = computed(() => {
   const documentId = tab.value?.kind === 'notDisplayed' ? tab.value.documentId : undefined;
   const content = documentId === undefined ? undefined : store.contents.value.get(documentId);
@@ -42,11 +49,14 @@ const diffTab = computed(() => (tab.value?.diff ? (tab.value as ShellEditorTab &
 const searchEditorTab = computed(() => (tab.value?.searchEditor && tab.value.documentId !== undefined ? (tab.value as ShellEditorTab & { searchEditor: NonNullable<ShellEditorTab['searchEditor']> }) : undefined));
 const changesTab = computed(() => (tab.value?.changes ? (tab.value as ShellEditorTab & { changes: NonNullable<ShellEditorTab['changes']> }) : undefined));
 const browserTab = computed(() => (tab.value?.browser ? (tab.value as ShellEditorTab & { browser: NonNullable<ShellEditorTab['browser']> }) : undefined));
-const canMention = computed(() => tab.value !== null && tab.value.kind !== 'untitled' && tab.value.kind !== 'diff' && tab.value.kind !== 'browser' && tab.value.kind !== 'changes');
+const reviewTab = computed(() => (tab.value?.review ? (tab.value as ShellEditorTab & { review: NonNullable<ShellEditorTab['review']> }) : undefined));
+const timelineTab = computed(() => (tab.value?.timeline && tab.value.kind === 'timeline' ? (tab.value as ShellEditorTab & { timeline: NonNullable<ShellEditorTab['timeline']> }) : undefined));
+const mergeTab = computed(() => (tab.value?.merge ? (tab.value as ShellEditorTab & { merge: NonNullable<ShellEditorTab['merge']> }) : undefined));
+// Tabs that are no file of their own: no mention and no breadcrumbs; each names what it shows in its own header.
+const OWN_HEADER_KINDS: ReadonlySet<ShellEditorTab['kind']> = new Set(['changes', 'review', 'timeline', 'merge']);
+const canMention = computed(() => tab.value !== null && tab.value.kind !== 'untitled' && tab.value.kind !== 'diff' && tab.value.kind !== 'browser' && !OWN_HEADER_KINDS.has(tab.value.kind));
 const formatting = computed(() => tab.value?.documentId !== undefined && store.formatting.value.has(tab.value.documentId));
 const conflictBusy = ref(false);
-// The file's own name: a Compare tab's title names the comparison, a path names the file on any tab.
-const fileNameOf = (current: ShellEditorTab): string => current.displayPath.split(/[\\/]/).at(-1) || current.title;
 
 async function resolve(action: 'compare' | 'overwrite' | 'revert'): Promise<void> {
   if (!tab.value) return;
@@ -186,9 +196,10 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
     <template v-else>
       <!-- A changes tab names its group in its own header and is no file, so it has no breadcrumbs. -->
       <Breadcrumbs
-        v-if="tab.kind !== 'changes'"
+        v-if="!OWN_HEADER_KINDS.has(tab.kind)"
         :tab="tab"
         :project-name="projectName"
+        :place="place"
       >
         <!-- A status chip, which no shadcn part draws; the store sets formatting only past FORMATTING_INDICATOR_DELAY_MS. -->
         <span
@@ -212,7 +223,7 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
       <Transition name="t-up">
         <ConflictBar
           v-if="tab.conflict"
-          :name="fileNameOf(tab)"
+          :name="tabFileName(tab)"
           :compare="tab.diff?.conflictCompare === true"
           :busy="conflictBusy"
           @resolve="resolve"
@@ -241,6 +252,7 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
           :api="api"
           :tab="tab"
           :menu-shortcuts="state.shortcuts.editorMenu"
+          :platform="state.platform"
         />
         <SearchEditorTab
           v-else-if="searchEditorTab"
@@ -269,10 +281,29 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
           :key="tab.id"
           :tab="tab"
         />
-        <ChangesTab
+        <ScmChangesTab
           v-else-if="changesTab"
           :key="changesTab.id"
           :tab="changesTab"
+        />
+        <ChatReviewTab
+          v-else-if="reviewTab"
+          :key="reviewTab.id"
+          :api="api"
+          :tab="reviewTab"
+          :platform="state.platform"
+        />
+        <TimelineTab
+          v-else-if="timelineTab"
+          :key="timelineTab.id"
+          :api="api"
+          :tab="timelineTab"
+        />
+        <MergeEditor
+          v-else-if="mergeTab"
+          :key="mergeTab.id"
+          :api="api"
+          :tab="mergeTab"
         />
         <BrowserTab
           v-else-if="browserTab"

@@ -2,7 +2,7 @@
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useEventListener, useResizeObserver } from '@vueuse/core';
-import { FileDiff, GitCompare, Globe, Image as ImageIcon, LoaderCircle, ScrollText, Search, Settings2, X } from 'lucide-vue-next';
+import { FileDiff, GitCompare, GitMerge, Globe, History, Image as ImageIcon, LoaderCircle, MessageSquareDiff, ScrollText, Search, Settings2, X } from 'lucide-vue-next';
 import type { Component } from 'vue';
 import type { DamoclesShellApi, FileRef, ShellEditorTab } from '../../preload/shell-channels';
 import type { OverlayMenuItem } from '../../preload/overlay-channels';
@@ -10,17 +10,23 @@ import { useSlidingIndicator, type IndicatorBox } from '@/composables/useSliding
 import { remPx } from '@/composables/useRemPx';
 import SlidingIndicator from '@/components/SlidingIndicator.vue';
 import { FILE_DRAG_MIME, serializeFileDragPayload } from '@shared/file-drag';
+import { visibleText } from '@shared/visible-text';
 import { fileIcon } from '../file-icons';
 import { tidyMenu } from '../../preload/overlay-channels';
 import { EDITOR_STORE } from './editor-store';
+import { placeChipFolds, placeOf, tabPlaces } from './editor-place';
+import TabPlaceChip from './TabPlaceChip.vue';
 import { SCM_STORE } from '../scm/scm-store';
 import { TONE_TEXT } from '../scm/scm-list';
+import StatusLetter from '../scm/StatusLetter.vue';
 import { isBlankPage, pageText, pageTitle } from './browser-page';
 
 const props = defineProps<{ api: DamoclesShellApi; closeShortcut: string }>();
 const emit = defineEmits<{ revealInFiles: [file: FileRef]; focusOverlay: [] }>();
 const { t } = useI18n();
 const store = inject(EDITOR_STORE)!;
+const places = computed(() => tabPlaces(store.tabs.value));
+
 const scm = inject(SCM_STORE)!;
 
 // The strip scrolls; the tabs and the active tab's bar sit in its content row, so the bar scrolls and clips with the tabs.
@@ -68,10 +74,40 @@ const KIND_ICONS: Partial<Record<ShellEditorTab['kind'], { icon: Component; colo
   settings: { icon: Settings2, color: 'var(--d-muted)' },
   log: { icon: ScrollText, color: 'var(--d-muted)' },
   searchEditor: { icon: Search, color: 'var(--d-accent)' },
+  review: { icon: MessageSquareDiff, color: 'var(--d-accent)' },
+  timeline: { icon: History, color: 'var(--d-info)' },
+  merge: { icon: GitMerge, color: 'var(--d-warning)' },
 };
 const iconOf = (tab: ShellEditorTab): { icon: Component; color: string } => KIND_ICONS[tab.kind] ?? fileIcon(tab.title);
 const titleOf = (tab: ShellEditorTab): string => (tab.browser ? pageTitle(tab, t('editor.browser.newPage')) : tab.title);
-const tooltipOf = (tab: ShellEditorTab): string => (tab.browser ? pageText(tab.displayPath) : tab.displayPath);
+
+// A tab is capped at 12.5rem; one with a place chip gets 9rem more, so the chip's label shows whole beside a fair title.
+const TAB_WIDTH = 'max-w-50';
+const PLACE_TAB_WIDTH = 'max-w-86';
+// rem a title keeps before its tab's place chip folds to its icon
+const MIN_TITLE_REM = 2;
+
+// The tabs whose place chip shows only its icon. On any change to what the chips or titles say, or to the strip's size,
+// every chip shows its label again and the ones that do not fit fold, all before the next paint.
+const foldedChips = shallowRef<ReadonlySet<string>>(new Set());
+const stripResizes = ref(0);
+const chipInputs = computed(() => store.tabs.value.map((tab) => {
+  const place = placeOf(tab, places.value);
+  return place ? `${tab.id}\u0000${titleOf(tab)}\u0000${place.kind === 'worktree' ? place.label ?? '' : ''}` : '';
+}).join('\n'));
+watch([chipInputs, stripResizes], async () => {
+  foldedChips.value = new Set();
+  await nextTick();
+  const folded = new Set<string>();
+  for (const element of strip.value?.querySelectorAll<HTMLElement>('[data-editor-tab]') ?? []) {
+    const chip = element.querySelector<HTMLElement>('[data-place-chip]');
+    const title = element.querySelector<HTMLElement>('[data-testid="editor-tab-title"]');
+    const id = element.dataset['tabId'];
+    if (chip && title && id && placeChipFolds(title, remPx(MIN_TITLE_REM))) folded.add(id);
+  }
+  foldedChips.value = folded;
+}, { flush: 'post' });
+const tooltipOf = (tab: ShellEditorTab): string => (tab.browser ? pageText(tab.displayPath) : visibleText(tab.displayPath));
 // A deleted or conflicted file's tab says so under its path, as VS Code's "Deleted" decoration does.
 const hoverOf = (tab: ShellEditorTab): string =>
   [tooltipOf(tab), ...(tab.deleted ? [t('editor.tab.deleted')] : []), ...(tab.conflict ? [t('editor.tab.conflict')] : [])].join('\n');
@@ -82,9 +118,9 @@ const badgeOf = (tab: ShellEditorTab): string | undefined => {
 };
 // B3: a project file's tab takes its source control letter and tint; the tab's own deleted and conflict states win over them.
 const decorationOf = (tab: ShellEditorTab) => {
-  if (tab.deleted || tab.conflict || tab.kind === 'diff' || tab.kind === 'changes' || tab.relativePath === undefined) return undefined;
+  if (tab.deleted || tab.conflict || NO_PATH_KINDS.has(tab.kind) || tab.kind === 'diff' || tab.relativePath === undefined) return undefined;
   const decoration = scm.decorationOf(tab.projectKey, tab.relativePath);
-  return decoration?.letter === undefined ? undefined : { letter: decoration.letter, color: TONE_TEXT[decoration.tone], strike: decoration.strike, title: decoration.status ? t(`scm.status.${decoration.status}`) : undefined };
+  return decoration?.letter === undefined ? undefined : { letter: decoration.letter, tone: decoration.tone, color: TONE_TEXT[decoration.tone], strike: decoration.strike, title: decoration.status ? t(`scm.status.${decoration.status}`) : undefined };
 };
 const isMarkdown = (tab: ShellEditorTab): boolean => tab.kind === 'markdownPreview' || (tab.kind === 'code' && /\.md$/i.test(tab.title));
 const fileOf = (tab: ShellEditorTab): FileRef | undefined =>
@@ -117,6 +153,14 @@ function measureOverflow(): void {
   slider.value = { width, left: ((clientWidth - width) * scrollLeft) / (scrollWidth - clientWidth) };
 }
 useResizeObserver([strip, content], measureOverflow);
+// only a change of width can fold or unfold a chip, and each re-measure unfolds every chip for a frame
+let stripWidth: number | undefined;
+useResizeObserver(strip, (entries) => {
+  const width = entries[0]?.contentRect.width;
+  if (width === stripWidth) return;
+  stripWidth = width;
+  stripResizes.value++;
+});
 
 function revealSlider(): void {
   sliderShown.value = true;
@@ -219,6 +263,9 @@ function onKeydown(event: KeyboardEvent, index: number, tab: ShellEditorTab): vo
   }
 }
 
+// Tabs that are no file: no path to copy or reveal.
+const NO_PATH_KINDS: ReadonlySet<ShellEditorTab['kind']> = new Set(['untitled', 'changes', 'review', 'timeline', 'merge']);
+
 async function openMenu(tab: ShellEditorTab, anchor: { left: number; top: number; width: number; height: number }): Promise<void> {
   const item = (id: string, label: string, icon: Extract<OverlayMenuItem, { kind: 'item' }>['icon'], extra: Partial<Extract<OverlayMenuItem, { kind: 'item' }>> = {}): OverlayMenuItem =>
     ({ kind: 'item', id, label, ...(icon ? { icon } : {}), ...extra });
@@ -249,10 +296,11 @@ async function openMenu(tab: ShellEditorTab, anchor: { left: number; top: number
     ...(tab.kind === 'diff' && file ? [item('openFile', t('editor.menu.openFile'), 'file')] : []),
     item('focusOverlay', t('editor.menu.focusOverlay'), 'maximize-2'),
     ...(file ? [item('mention', t('editor.menu.mention'), 'at-sign')] : []),
+    ...(tab.git ? [item('openTimeline', t('editor.menu.openTimeline'), 'history')] : []),
     separator,
-    ...(tab.kind === 'untitled' || tab.kind === 'changes' ? [] : [item('copyPath', t('editor.menu.copyPath'), 'copy')]),
+    ...(NO_PATH_KINDS.has(tab.kind) ? [] : [item('copyPath', t('editor.menu.copyPath'), 'copy')]),
     ...(file ? [item('revealInFiles', t('editor.menu.revealInFiles'), 'list-tree')] : []),
-    ...(tab.kind === 'untitled' || tab.kind === 'changes' ? [] : [item('revealInExplorer', t('editor.menu.revealInExplorer'), 'folder-search')]),
+    ...(NO_PATH_KINDS.has(tab.kind) ? [] : [item('revealInExplorer', t('editor.menu.revealInExplorer'), 'folder-search')]),
   ];
   const answer = await props.api.requestOverlay({
     kind: 'menu',
@@ -267,6 +315,7 @@ async function openMenu(tab: ShellEditorTab, anchor: { left: number; top: number
     await store.activate(tab.id);
     emit('focusOverlay');
   } else if (id === 'mention') await props.api.mentionTab(tab.id);
+  else if (id === 'openTimeline' && tab.git) await props.api.scm.run({ op: 'openTimeline', repoId: tab.git.repoId, path: tab.git.path });
   else if (id === 'revealInFiles' && file) emit('revealInFiles', file);
   // Main tells the user of a failure they should see; a refusal for a page that closed meanwhile leaves nothing to do.
   else if (id === 'reloadPage' || id === 'devTools' || id === 'copyUrl') await props.api.browserAction({ tabId: tab.id, action: id === 'reloadPage' ? 'reload' : id }).catch(() => undefined);
@@ -330,8 +379,8 @@ function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
             :tabindex="tab.id === store.state.value?.activeTabId || (activeIndex < 0 && index === 0) ? 0 : -1"
             :title="hoverOf(tab)"
             :draggable="fileOf(tab) !== undefined"
-            class="editor-tab group/tab relative flex max-w-50 shrink-0 cursor-pointer items-center gap-1.75 border-r border-(--d-border) pr-2 pl-3 outline-none select-none"
-            :class="tab.id === store.state.value?.activeTabId ? 'bg-(--d-bg) text-(--d-text)' : 'text-(--d-muted) hover:text-(--d-text)'"
+            class="editor-tab group/tab relative flex shrink-0 cursor-pointer items-center gap-1.75 border-r border-(--d-border) pr-2 pl-3 outline-none select-none"
+            :class="[tab.id === store.state.value?.activeTabId ? 'bg-(--d-bg) text-(--d-text)' : 'text-(--d-muted) hover:text-(--d-text)', placeOf(tab, places) ? PLACE_TAB_WIDTH : TAB_WIDTH]"
             @click="select(tab)"
             @mousedown="onMouseDown"
             @auxclick="onAuxClick($event, tab)"
@@ -365,18 +414,25 @@ function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
               :class="tab.deleted ? 'text-(--d-danger-text) line-through' : tab.conflict ? 'text-(--d-warning-text)' : decorationOf(tab)?.strike ? 'line-through' : ''"
               :style="decorationOf(tab) ? { color: decorationOf(tab)!.color } : undefined"
             >{{ titleOf(tab) }}</span>
-            <span
+            <!-- D31: a worktree file's tab names the branch; the project folder's copy says so while its project has worktree tabs open. -->
+            <Transition
+              name="t-chip"
+              appear
+            >
+              <TabPlaceChip
+                v-if="placeOf(tab, places)"
+                :place="placeOf(tab, places)!"
+                :folded="foldedChips.has(tab.id)"
+              />
+            </Transition>
+            <StatusLetter
               v-if="decorationOf(tab)"
               data-testid="editor-tab-decoration"
               aria-hidden="true"
-              class="shrink-0 text-11 font-semibold"
-              :style="{ color: decorationOf(tab)!.color }"
+              :letter="decorationOf(tab)!.letter"
+              :tone="decorationOf(tab)!.tone"
               :title="decorationOf(tab)!.title"
-            >
-              <Transition name="t-letter">
-                <span :key="decorationOf(tab)!.letter">{{ decorationOf(tab)!.letter }}</span>
-              </Transition>
-            </span>
+            />
             <span
               v-if="decorationOf(tab)?.title"
               class="sr-only"

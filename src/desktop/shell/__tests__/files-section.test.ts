@@ -153,3 +153,88 @@ describe('Files folder expand', () => {
     expect(api.listFiles).toHaveBeenCalledWith({ projectKey: 'home', relativeDir: 'src' });
   });
 });
+
+describe('Files names with control and bidi characters', () => {
+  it('shows a name, its tooltip, its menu and its name box message with escapes, keeps the real name in the rename box and in the actions', async () => {
+    const api = fakeShellApi([], {
+      listFiles: vi.fn(async () => ({ ok: true as const, entries: [{ name: 'a\u202Ebc.txt', kind: 'file' as const }, { name: 'x\u2066y.md', kind: 'file' as const }] })),
+    });
+    const wrapper = mount(FilesSection, {
+      props: { api, projectKey: 'home', projectName: 'Home', platform: 'win32', collapsed: false },
+      global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: createEditorStore(api), [SCM_STORE]: createScmStore(api.scm) } },
+      attachTo: document.body,
+    });
+    mounted.push(wrapper);
+    await flushPromises();
+    const shown = row(wrapper, 'a\u202Ebc.txt');
+    expect(shown.find('[data-testid="files-name"]').text()).toBe('a\\u{202E}bc.txt');
+    expect(shown.attributes('title')).toBe('a\\u{202E}bc.txt');
+    await shown.trigger('contextmenu');
+    await flushPromises();
+    expect(api.overlayRequests.at(-1)).toMatchObject({ kind: 'menu', caption: 'a\\u{202E}bc.txt' });
+    await startRename(wrapper, 'a\u202Ebc.txt');
+    expect(input(wrapper).element.value).toBe('a\u202Ebc.txt');
+    await input(wrapper).setValue('x\u2066y.md');
+    expect(message(wrapper).text()).toContain('x\\u{2066}y.md');
+    await input(wrapper).setValue('a\u202Ebcd.txt');
+    await input(wrapper).trigger('keydown', { key: 'Enter' });
+    await flushPromises();
+    expect(api.renameFile).toHaveBeenCalledWith({ projectKey: 'home', relativePath: 'a\u202Ebc.txt', newName: 'a\u202Ebcd.txt' });
+  });
+});
+
+describe('Files menu and Reveal in Files', () => {
+  it('opens a file\'s menu without Open Timeline when its repository lookup fails, and logs why', async () => {
+    const { wrapper, api } = await mountFiles();
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.mocked(api.scm.resource).mockRejectedValueOnce(new Error('Source control used before startup finished'));
+    await row(wrapper, 'notes.txt').trigger('contextmenu');
+    await flushPromises();
+    const menu = api.overlayRequests.at(-1);
+    expect(menu?.kind).toBe('menu');
+    expect(menu?.kind === 'menu' && menu.items.some((item) => item.kind === 'item' && item.id === 'openTimeline')).toBe(false);
+    expect(menu?.kind === 'menu' && menu.items.some((item) => item.kind === 'item' && item.id === 'rename')).toBe(true);
+    expect(logged).toHaveBeenCalled();
+    logged.mockRestore();
+  });
+
+  it('shows the project folder before it reveals one of its files while the worktree shows, and the worktree for one of the worktree\'s', async () => {
+    const worktreeKey = 'p1\u0000a1b2c3d4';
+    const shown = (rootKey: string) => ({
+      projectKey: 'p1',
+      root: rootKey === 'p1' ? { projectKey: 'p1' } : { projectKey: 'p1', worktreeId: 'a1b2c3d4' },
+      rootKey,
+      fsPath: '/w/alpha',
+      canShowWorktree: true,
+      worktree: { worktreeId: 'a1b2c3d4', chatId: 'w1', branch: 'damocles/fix', behind: 0, targetRewritten: false, place: 'worktree' as const, finish: { busy: false, hasRemote: false, detachedTarget: false } },
+    });
+    const api = fakeShellApi([], {
+      listFiles: vi.fn(async () => ({ ok: true as const, entries: [{ name: 'notes.txt', kind: 'file' as const }] })),
+    });
+    const wrapper = mount(FilesSection, {
+      props: { api, projectKey: worktreeKey, projectName: 'alpha', platform: 'win32', collapsed: false, shown: shown(worktreeKey) },
+      global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: createEditorStore(api), [SCM_STORE]: createScmStore(api.scm) } },
+      attachTo: document.body,
+    });
+    mounted.push(wrapper);
+    await flushPromises();
+    // main sends the new shown folder before it answers
+    vi.mocked(api.showFolder).mockImplementation(async ({ show }) => {
+      const key = show === 'project' ? 'p1' : worktreeKey;
+      await wrapper.setProps({ projectKey: key, shown: shown(key) });
+    });
+    const reveal = (wrapper.vm as unknown as { reveal: (file: { projectKey: string; relativePath: string }) => Promise<void> }).reveal;
+    await reveal({ projectKey: 'p1', relativePath: 'notes.txt' });
+    await flushPromises();
+    expect(api.showFolder).toHaveBeenLastCalledWith({ projectKey: 'p1', show: 'project' });
+    expect(document.activeElement).toBe(row(wrapper, 'notes.txt').element);
+
+    await reveal({ projectKey: worktreeKey, relativePath: 'notes.txt' });
+    await flushPromises();
+    expect(api.showFolder).toHaveBeenLastCalledWith({ projectKey: 'p1', show: 'worktree' });
+    // another worktree of the project is no folder this section can show
+    vi.mocked(api.showFolder).mockClear();
+    await reveal({ projectKey: 'p1\u0000ffffffff', relativePath: 'notes.txt' });
+    expect(api.showFolder).not.toHaveBeenCalled();
+  });
+});

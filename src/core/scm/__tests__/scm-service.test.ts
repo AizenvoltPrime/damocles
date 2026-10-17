@@ -31,9 +31,9 @@ const inertWatchers = { watch: () => inert, watchWorkspace: () => inert, onDidRe
 const noSettings = { get: () => undefined, inspect: () => ({}), update: async () => undefined, onDidChange: () => ({ dispose: () => undefined }), scopeFile: () => undefined } as never;
 
 // A project whose 'deep' folder holds a repository git refuses for dubious ownership until safe.directory lists it.
-function unsafeDeep(trusted: (folder: string) => boolean, onAsk: () => void = () => undefined) {
+function unsafeDeep(trusted: (folder: string) => boolean, onAsk: (question: ScmQuestion) => void = () => undefined, leaf = 'deep') {
   const project = path.join(sandbox, 'unsafe-project');
-  const deep = path.join(project, 'a', 'b', 'deep');
+  const deep = path.join(project, 'a', 'b', leaf);
   fs.mkdirSync(deep, { recursive: true });
   const owner = deep.replace(/\\/g, '/');
   const calls: GitCall[] = [];
@@ -63,10 +63,10 @@ function unsafeDeep(trusted: (folder: string) => boolean, onAsk: () => void = ()
     watchers: inertWatchers,
     settings: noSettings,
     globalState: { get: (_key: string, fallback?: unknown) => fallback, update: async () => undefined } as never,
-    ask: async () => (onAsk(), 0),
+    ask: async (question) => (onAsk(question), 0),
     notify: async () => undefined,
     trash: async () => undefined,
-    t: (message) => message,
+    t: (message, ...args) => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)])),
     log: () => undefined,
   });
   return { service, project, deep, owner, calls };
@@ -103,6 +103,18 @@ describe('scm service', () => {
     expect(config.cwd).toBe(os.homedir());
     expect(service.view('p')!.repos.map((repo) => repo.root)).toEqual([deep]);
     expect(service.view('p')!.unsafe).toEqual([]);
+    service.dispose();
+  });
+
+  it('shows the control and bidi characters of the unsafe path in the safe.directory question as escapes', async () => {
+    const questions: ScmQuestion[] = [];
+    const { service, project, deep, owner } = unsafeDeep(() => true, (question) => questions.push(question), 'evil\u202Etxt');
+    service.setProjects([{ key: 'p', path: project }]);
+    for (let i = 0; i < 100 && service.view('p')!.state === 'loading'; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(await service.openFolder('p', deep)).toBe('unsafe');
+    expect(await service.trustUnsafe('p', owner)).toBe(true);
+    expect(questions[0]!.detail).toContain('evil\\u{202E}txt');
+    expect(questions[0]!.detail).not.toContain('\u202E');
     service.dispose();
   });
 

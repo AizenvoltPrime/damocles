@@ -70,6 +70,23 @@ class FakeCodeEditor {
   getPosition(): null { return null; }
   focus(): void {}
   dispose(): void { this.disposed = true; }
+  // what the git, conflict and keybinding attachments register; none of it acts in these tests
+  createDecorationsCollection(): { set(): void; clear(): void } { return { set: () => undefined, clear: () => undefined }; }
+  createContextKey(): { set(): void } { return { set: () => undefined }; }
+  readonly id = `editor-${Math.random()}`;
+  getId(): string { return this.id; }
+  hasWidgetFocus(): boolean { return false; }
+  readonly actions: string[] = [];
+  addAction(action: { id: string }): typeof disposable { this.actions.push(action.id); return { dispose: () => { this.actions.splice(this.actions.indexOf(action.id), 1); } }; }
+  onMouseDown(): typeof disposable { return disposable; }
+  onMouseLeave(): typeof disposable { return disposable; }
+  onMouseMove(): typeof disposable { return disposable; }
+  onDidChangeCursorPosition(): typeof disposable { return disposable; }
+  onDidChangeModel(): typeof disposable { return disposable; }
+  onDidChangeModelContent(): typeof disposable { return disposable; }
+  onDidLayoutChange(): typeof disposable { return disposable; }
+  onDidChangeConfiguration(): typeof disposable { return disposable; }
+  getOption(): number { return 18; }
 }
 
 // A diff editor double: its view state is the modified side's scroll position.
@@ -84,6 +101,8 @@ class FakeDiffEditor {
   updateOptions(options: Record<string, unknown>): void { this.options.push(options); }
   getOriginalEditor(): FakeCodeEditor { return this.sides[0]!; }
   getModifiedEditor(): FakeCodeEditor { return this.sides[1]!; }
+  readonly moves: string[] = [];
+  goToDiff(target: string): void { this.moves.push(target); }
   dispose(): void {}
 }
 
@@ -92,6 +111,9 @@ const diffEditors: FakeDiffEditor[] = [];
 const models = new Map<string, FakeModel>();
 const monacoModule = {
   useMonaco: () => ({
+    KeyMod: { chord: () => 0, CtrlCmd: 0, Alt: 0, Shift: 0 },
+    KeyCode: {},
+    languages: { registerCodeLensProvider: () => disposable },
     Uri: {
       from: (parts: { scheme: string; authority?: string; path: string }) => ({ path: parts.path, toString: () => `${parts.scheme}://${parts.authority ?? ''}${parts.path}` }),
       file: (fsPath: string) => ({ path: `/${fsPath}`, toString: () => `file:///${fsPath}` }),
@@ -99,6 +121,7 @@ const monacoModule = {
     },
     editor: {
       EndOfLineSequence: { LF: 0, CRLF: 1 },
+      EditorOption: { lineHeight: 75 },
       createModel: (text: string, _language: string, uri: { toString(): string }) => {
         const model = new FakeModel(text, uri);
         models.set(uri.toString(), model);
@@ -110,6 +133,7 @@ const monacoModule = {
         editors.push(editor);
         return editor;
       },
+      registerCommand: () => disposable,
       createDiffEditor: () => {
         const editor = new FakeDiffEditor();
         diffEditors.push(editor);
@@ -288,6 +312,20 @@ describe('a diff tab', () => {
     expect(editors[1]!.options[0]).toMatchObject({ readOnly: true });
     await modified.get('[data-testid="diff-open-anyway"]').trigger('click');
     expect(api.editorTab).toHaveBeenCalledWith({ action: 'openFile', tabId: 'd2' });
+  });
+
+  it('moves between the changes of a diff with no git behind it, from the palette and from either side\'s keys', async () => {
+    const diff = diffTab();
+    const { api, store } = await setup(state([diff]), { 'doc-old': text('doc-old', 'a'), 'doc-new': text('doc-new', 'b') });
+    const wrapper = mountWith(DiffEditor, store, { api, tab: diff, menuShortcuts: STATE.shortcuts.editorMenu });
+    await flushPromises();
+    await store.runCommand('nextChange');
+    await store.runCommand('previousChange');
+    expect(diffEditors[0]!.moves).toEqual(['next', 'previous']);
+    for (const side of diffEditors[0]!.sides) expect(side.actions).toContain('damocles.git.nextChange');
+    wrapper.unmount();
+    mounted.splice(mounted.indexOf(wrapper), 1);
+    for (const side of diffEditors[0]!.sides) expect(side.actions).toEqual([]);
   });
 
   it('takes the editor settings live, as every other editor does', async () => {

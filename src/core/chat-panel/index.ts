@@ -1,9 +1,9 @@
 import type { Disposable } from "../../platform/disposable";
-import type { Platform } from "../../platform/platform";
+import type { PlatformWithWorktrees } from "../worktrees/host";
 import type { PanelHost } from "../../platform/window-service";
 import * as path from "path";
 import { PanelManager } from "./panel-manager";
-import { StorageManager } from "./storage-manager";
+import { onListingChange, StorageManager } from "./storage-manager";
 import { createSessionCatalog, type SessionCatalog } from "./session-catalog";
 import { HistoryManager } from "./history-manager";
 import { SettingsManager } from "./settings-manager";
@@ -38,6 +38,7 @@ import { log } from "../logger";
 import { perfSpan } from "../perf";
 import { checkpointMaxFileSizeBytes } from "../pi-session/checkpoint-service";
 import { allJsonConfigWritesSettled } from "../config/json-config-write";
+import { installWorktreeProjectLookup } from "../worktrees/personal-config";
 
 /**
  * Settles once every config file write core started (MCP, settings and permission files), one queued meanwhile included,
@@ -73,22 +74,26 @@ export class ChatPanelProvider {
   private readonly webviewPrompts: WebviewPrompts;
 
   private readonly subscriptions: Disposable[];
-  private readonly platform: Platform;
+  private readonly platform: PlatformWithWorktrees;
   private memoryJudgeReads = 0;
 
-  constructor(platform: Platform, hostDeps: ChatPanelHostDeps) {
+  constructor(platform: PlatformWithWorktrees, hostDeps: ChatPanelHostDeps) {
     this.subscriptions = hostDeps.subscriptions;
     this.platform = platform;
     this.folderRegistry = new WorkspaceFolderRegistry(platform.workspaceFolders, platform.state.workspace, platform.fileWatchers);
+    // D34 and rule 1: personal files and session lookups of a chat worktree resolve through its project; VS Code has no registry.
+    const worktreeHost = platform.capabilities.worktrees ? platform.worktrees : undefined;
+    if (worktreeHost) this.subscriptions.push(installWorktreeProjectLookup(worktreeHost.registry));
 
     const postMessage = (host: PanelHost, message: unknown) => {
       this.panelManager.postMessage(host, message as Parameters<typeof this.panelManager.postMessage>[1]);
     };
 
+    // MCP reads every folder a chat works in: the projects and the working folders loaded worktree chats hold (D34, rule 8).
     this.settingsManager = new SettingsManager({
       postMessage,
       platform,
-      folders: () => this.folderRegistry.targets(),
+      folders: () => [...this.folderRegistry.targets(), ...this.folderRegistry.ownedFolders()],
     });
 
     // Before the first session list: the persisted list metadata is only valid for the version that wrote it.
@@ -242,6 +247,7 @@ export class ChatPanelProvider {
         this.panelManager.switchPanelFolder(panelId, folderKey, reason, afterSwitch),
       postWorkspaceFolderState: (panelId) => this.panelManager.postWorkspaceFolderState(panelId),
       webviewPrompts: this.webviewPrompts,
+      worktrees: () => this.panelManager.worktrees,
     });
 
     this.panelManager = new PanelManager({
@@ -294,7 +300,10 @@ export class ChatPanelProvider {
       },
       loadHistory: (cwd, sessionId, host, session) =>
         this.historyManager.loadSessionHistory(cwd, sessionId, host, session),
+      storedSessionsOf: (projectKey) => this.storageManager.sessionsOf(projectKey),
     });
+    // A chat created, deleted or handed off changes how many chats share a worktree, and which deleted records any chat uses.
+    if (worktreeHost) this.subscriptions.push(this.storageManager.onDidChangeSessions(() => void this.panelManager.worktrees.storedSessionsChanged()));
 
     this.subscriptions.push(this.panelManager.onDidChangeAttachment((panelId) => this.webviewPrompts.resurface(panelId)));
 
@@ -307,6 +316,21 @@ export class ChatPanelProvider {
     }));
 
     void this.storageManager.setupSessionWatcher();
+    // A new, deleted or adopted worktree changes which session dirs a project lists (AD12 Listing).
+    if (worktreeHost) {
+      const registry = worktreeHost.registry;
+      this.subscriptions.push(onListingChange(registry, () => {
+        this.storageManager.reloadFolders().catch((err) => log("[ChatPanelProvider] Failed to re-list sessions after a worktree change: %O", err));
+      }));
+      const announceUnreadable = (error: string): void => {
+        platform.notifications
+          .warn(t("Damocles can't read {0}, so worktree chats can't be created, moved or finished until it is fixed: {1}", registry.file, error))
+          .catch((err: unknown) => log("[ChatPanelProvider] Could not show the registry notice: %O", err));
+      };
+      this.subscriptions.push(registry.onDidBecomeUnreadable(announceUnreadable));
+      const unreadable = registry.unreadable();
+      if (unreadable !== undefined) announceUnreadable(unreadable);
+    }
 
     showOpenAIKeyMovedNotice({
       secrets: platform.secrets,
@@ -337,6 +361,10 @@ export class ChatPanelProvider {
     this.subscriptions.push(this.folderRegistry.onDidChange(({ added, removed }) => {
       if (added.length === 0 && removed.length === 0) return;
       this.settingsManager.handleMcpFoldersChanged().catch((err) => log("[ChatPanelProvider] MCP reload after a folder change failed:", err));
+    }));
+    // A working folder's MCP state and watchers exist exactly while a loaded chat holds it.
+    this.subscriptions.push(this.folderRegistry.onDidChangeOwned(() => {
+      this.settingsManager.handleMcpFoldersChanged().catch((err) => log("[ChatPanelProvider] MCP reload after a working folder change failed:", err));
     }));
 
     // Granting workspace trust unblocks workspace `.mcp.json` servers (M3). The re-read has to come
@@ -514,6 +542,11 @@ export class ChatPanelProvider {
 
   async restorePanel(host: PanelHost, workspaceFolderKey: string | undefined): Promise<void> {
     await this.panelManager.restorePanel(host, workspaceFolderKey);
+  }
+
+  /** A new chat on `host` working in the live chat worktree `worktreeId` of project `projectKey`; rejects when refused. */
+  startInWorktree(host: PanelHost, projectKey: string, worktreeId: string): Promise<string> {
+    return this.panelManager.startInWorktree(host, projectKey, worktreeId);
   }
 
   async restoreBrowserPanel(host: PanelHost, url: string): Promise<void> {

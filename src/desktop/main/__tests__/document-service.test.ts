@@ -277,6 +277,16 @@ describe('save, conflicts and reloads', () => {
     expect(asked).toHaveLength(2);
   });
 
+  it('names a file with control and bidi characters by their escapes in the Overwrite question', async () => {
+    const file = write('a\u202Eb.ts', 'base');
+    const document = await open('a\u202Eb.ts');
+    service.edit(document.id, { version: document.version, seq: 1, text: 'mine', overReload: false });
+    fs.writeFileSync(file, 'theirs');
+    answer = undefined;
+    await service.overwrite(document.id);
+    expect(asked.at(-1)?.message).toBe('Overwrite a\\u{202E}b.ts?');
+  });
+
   it('does not call a touch that keeps the bytes a conflict', async () => {
     const file = write('touch.ts', 'same');
     const document = await open('touch.ts');
@@ -1161,6 +1171,13 @@ describe('save failure messages (textFileSaveErrorHandler.ts genericSaveError)',
     failWrite(file, code, 'none');
     expect(await saveText(document, 'mine')).toEqual({ ok: false, reason: 'failed', message: `Failed to save 'named.ts': ${reason}` });
     expect(logged.some((line) => line.includes(file) && line.includes('raw failure'))).toBe(true);
+  });
+
+  it('names a file with control and bidi characters by their escapes', async () => {
+    const file = write('src/a\u202Eb\u2066.ts', 'base');
+    const document = await open('src/a\u202Eb\u2066.ts');
+    failWrite(file, 'EACCES', 'none');
+    expect(await saveText(document, 'mine')).toEqual({ ok: false, reason: 'failed', message: "Failed to save 'a\\u{202E}b\\u{2066}.ts': Insufficient permissions." });
   });
 
   it('names the chosen file when Save As fails, and the document stays where it was', async () => {

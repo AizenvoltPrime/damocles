@@ -10,6 +10,14 @@ export const TRUST_FILE = 'trusted-folders.json';
 
 export type Translate = (message: string, ...args: string[]) => string;
 
+// The worktree registry as trust reads it: live chat records only, never adopted or deleted ones.
+export interface TrustWorktrees {
+  // the project of the live chat worktree whose working folder this is
+  projectOf(folder: string): string | undefined;
+  // the working folders of the project's live chat worktrees
+  workingFolders(projectPath: string): readonly string[];
+}
+
 function parseFolders(text: string): string[] {
   const parsed = JSON.parse(text) as { version?: unknown; folders?: unknown } | null;
   if (parsed?.version !== SCHEMA_VERSION || !Array.isArray(parsed.folders)) throw new Error('unknown schema');
@@ -28,6 +36,7 @@ export class TrustStore {
   private readonly ask: AskMessage;
   private readonly t: Translate;
   private readonly log: (line: string) => void;
+  private worktrees: TrustWorktrees | undefined;
 
   constructor(userDataDir: string, ask: AskMessage, t: Translate, log: (line: string) => void) {
     this.filePath = path.join(userDataDir, TRUST_FILE);
@@ -49,8 +58,15 @@ export class TrustStore {
     }
   }
 
+  /** Lets a live chat worktree's working folder answer with its project's trust (AD12 Identity, slice 12a rule 8). */
+  setWorktrees(worktrees: TrustWorktrees): void {
+    this.worktrees = worktrees;
+  }
+
   isTrusted(folderPath: string): boolean {
-    return this.trusted.has(folderKey(folderPath));
+    if (this.trusted.has(folderKey(folderPath))) return true;
+    const project = this.worktrees?.projectOf(folderPath);
+    return project !== undefined && this.trusted.has(folderKey(project));
   }
 
   onDidGrant(listener: (folderPaths: readonly string[]) => void): Disposable {
@@ -69,7 +85,9 @@ export class TrustStore {
     if (this.trusted.has(key)) return;
     this.trusted.set(key, folderPath);
     this.log(`[trust] granted ${folderPath}`);
-    for (const listener of [...this.grantListeners]) listener([folderPath]);
+    // the listeners filter on the folders they hold, so the project's working folders are named too
+    const granted = [folderPath, ...(this.worktrees?.workingFolders(folderPath) ?? [])];
+    for (const listener of [...this.grantListeners]) listener(granted);
   }
 
   /** Settles once every write to the file, one queued meanwhile included, has landed or failed; a quit awaits it. */
@@ -78,8 +96,10 @@ export class TrustStore {
   }
 
   /** Asks once per pending request; resolves whether the folder is trusted afterwards. */
-  requestTrust(folderPath: string): Promise<boolean> {
-    if (this.isTrusted(folderPath)) return Promise.resolve(true);
+  requestTrust(folder: string): Promise<boolean> {
+    if (this.isTrusted(folder)) return Promise.resolve(true);
+    // a working folder's trust is its project's, so the question names the project
+    const folderPath = this.worktrees?.projectOf(folder) ?? folder;
     const key = folderKey(folderPath);
     const pending = this.prompts.get(key);
     if (pending) return pending;

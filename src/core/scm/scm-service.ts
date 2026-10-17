@@ -2,6 +2,7 @@
 // Trust is asked about the project folder: a repository found in it takes its trust (TrustStore matches folders exactly),
 // except one inside another registered project that is not trusted, where no git runs whichever project found it (gate()).
 // An untrusted project starts no git process, discovery, watcher and check-ignore included.
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -19,20 +20,31 @@ import { discover, inspectFolder, isInside, samePath, type FoundRepository } fro
 import type { AskpassRegistration, AskpassServer } from './askpass/askpass-server';
 import { autofetchPeriodSeconds, Autofetcher, type AutofetchTarget } from './autofetch';
 import { cloneArgs, cloneFolderName, freeCloneTarget, removeCloneTarget } from './clone';
-import { GitError, GitQueueDisposedError, GitUntrustedError, logText, MAX_CLI_LENGTH, revision, gitAtLeast, subcommandIndex, type GitCall, type GitCloner, type GitResult, type GitRunner, type GitVersion, type RepoQueue } from './git-runner';
+import { GitError, GitQueueDisposedError, GitUntrustedError, logText, MAX_CLI_LENGTH, redactUrls, revision, gitAtLeast, subcommandIndex, type GitCall, type GitCloner, type GitResult, type GitRunner, type GitVersion, type RepoQueue } from './git-runner';
 import type { Remote } from './remotes';
 import { diffRefs, diffStash, entryPatch, readArtifacts, type ArtifactGroup, type Artifacts, type CommitPairDiff, type CommitPairEntry } from './artifacts';
-import { checkout, createBranchArgs, deleteBranch, deleteRemoteRefArgs, fastForwardArgs, integrate, renameBranchArgs, type CheckoutTarget } from './branches';
+import { checkout, createBranchArgs, deleteBranch, deleteRemoteRefArgs, failed, fastForwardArgs, integrate, renameBranchArgs, type CheckoutTarget } from './branches';
+import { commitMessage, emptyTreeOf, isCommit, loadHistory, mergeBase, readCommitDetails, readHeadRefs, readHistoryPage, resolveTypedCommit, type CommitDetails, type HeadRefs, type HistoryChoice, type HistoryCommit, type HistoryLoad } from './history';
 import { stashApply, stashClear, stashDrop, stashPush, type StashScope, type StashTarget } from './stash';
+import { readCommitAttachment } from './commit-attachment';
+import type { CommitAttachmentInput } from '../../shared/types/chat-attachment';
+import { visibleLines, visibleText } from '../../shared/visible-text';
 import { createTagArgs, deleteTagArgs, parseRemoteTags, PUSH_TAGS_ARGS, remoteTagsArgs, type RemoteTag } from './tags';
 import { addWorktree, removeWorktree } from './worktrees';
 import { recordWorktreeRoot, worktreeRoot } from './worktree-roots';
 import { fetchArgs, needsStashAroundPull, pullArgs, pullTarget, pushArgs, type FetchOptions } from './sync';
 import { updateSerially } from './serial-update';
+import { BlameCache, type BlameRead } from './blame';
+import { mergeFile, mergeLabels, mergeOperationIn, readMergeInputs, type MergeFileResult, type MergeInputs, type MergeTitles } from './merge';
+import { quickDiffBase, readBlob, stageRanges, TREE_BLOB, type QuickDiffBase, type StageOutcome, type StageRangesRequest, type TextCodec } from './staging';
+import { readTimeline, type TimelineCursor, type TimelinePage } from './timeline';
 import {
+  checkRepoPath,
+  DIFF,
   EMPTY_GROUPS,
   isUntrackedStatus,
   Repository,
+  STATUS_LIMIT,
   type Change,
   type ChangeGroup,
   type ChangeLetter,
@@ -56,6 +68,11 @@ import {
 } from './repository';
 import { SCM_SETTING_KEYS, type BranchProtectionPrompt, type OpenRepositoryInParentFolders, type SmartCommitChanges, type UntrackedChanges } from './settings-keys';
 
+// The quick diff's base, or why the file gets none (VS Code's quickDiffProvider.ts cases and the blob checks).
+export type QuickDiffBaseOutcome =
+  | (Extract<QuickDiffBase, { ok: true }> & { readonly hasStaged: boolean })
+  | { readonly ok: false; readonly reason: Extract<QuickDiffBase, { ok: false }>['reason'] | 'notInRepository' | 'symlink' | 'ignored' };
+
 // AD4: the workspace and .git watchers feed a 500 ms trailing debounce
 export const WATCH_DEBOUNCE_MS = 500;
 const CLOSED_REPOSITORIES_KEY = 'damocles.scm.closedRepositories';
@@ -74,7 +91,7 @@ const ARTIFACT_PATHS: ReadonlyArray<readonly [RegExp, readonly ArtifactGroup[]]>
   [/^worktrees\//, ['worktrees']],
 ];
 // git dir entries whose change can change what status, HEAD, the upstream, the remotes or the operation in progress shows (AD4's .git watcher)
-const GIT_DIR_WATCHED = /^(HEAD|index|packed-refs|FETCH_HEAD|MERGE_HEAD|REBASE_HEAD|CHERRY_PICK_HEAD|MERGE_MSG|config)$|^(refs|rebase-merge|rebase-apply|worktrees)[\\/]/;
+const GIT_DIR_WATCHED = /^(HEAD|index|packed-refs|FETCH_HEAD|MERGE_HEAD|REBASE_HEAD|CHERRY_PICK_HEAD|MERGE_MSG|SQUASH_MSG|config)$|^(refs|rebase-merge|rebase-apply|worktrees)[\\/]/;
 
 export type ScmQuestionSeverity = 'info' | 'warning' | 'danger';
 
@@ -142,6 +159,8 @@ export interface RepoSnapshot {
   readonly busy: boolean;
   readonly running: RemoteOp | null;
   readonly lastRemote: RemoteOutcome | null;
+  // grows with every status that lands, whether or not it changed
+  readonly revision: number;
 }
 
 // The interactive remote operations a user can cancel; publish and Push Tags run as push, Add Remote's fetch as fetch and a
@@ -241,8 +260,15 @@ export type ScmEvent =
   | { readonly kind: 'ignores'; readonly projectKey: string }
   // the clone state changed (cloneState())
   | { readonly kind: 'clone' }
-  // the repository's ref, stash or worktree lists of these groups may have changed: the watcher (debounced) or an engine write
-  | { readonly kind: 'artifacts'; readonly repoId: string; readonly groups: readonly ArtifactGroup[] };
+  // the repository's ref, stash or worktree lists of these groups may have changed: the watcher (debounced) or an engine write.
+  // refs: a branch, remote branch or tag changed, by an engine operation or outside them (the watcher found refs other than
+  // the last ones reported); absent when no ref changed, as for the watcher's echo of an engine write
+  | { readonly kind: 'artifacts'; readonly repoId: string; readonly groups: readonly ArtifactGroup[]; readonly refs?: RefsChange };
+
+export type RefsChange = 'engine' | 'background';
+
+// The groups whose rows follow a branch, remote branch or tag.
+const REF_GROUPS: ReadonlySet<ArtifactGroup> = new Set(['branches', 'remoteBranches', 'tags']);
 
 export type OpenFolderOutcome = 'opened' | 'outside' | 'notRepository' | 'parent' | 'unsafe';
 
@@ -281,6 +307,10 @@ interface RepoEntry {
   readonly repo: Repository;
   kind: RepoKind;
   status: RepositoryStatus | undefined;
+  // statuses landed, the snapshot's revision
+  revision: number;
+  // HEAD's blames of its files, per HEAD commit
+  readonly blames: BlameCache;
   timer: NodeJS.Timeout | undefined;
   readonly disposables: Array<() => void>;
   running: { readonly op: RemoteOp; readonly controller: AbortController } | undefined;
@@ -288,6 +318,12 @@ interface RepoEntry {
   // the watcher's artifact groups waiting on the debounce
   readonly artifactGroups: Set<ArtifactGroup>;
   artifactTimer: NodeJS.Timeout | undefined;
+  // the refs as the newest listing that landed read them (recordRefs), the first read when the repository opens; undefined
+  // until one lands
+  refsDigest: string | undefined;
+  // listings started, and the number of the one refsDigest holds, so an older listing finishing later is dropped
+  refsReads: number;
+  refsLanded: number;
 }
 
 interface ProjectEntry {
@@ -340,6 +376,8 @@ export class ScmService implements Disposable {
   private autofetchProject: string | undefined;
   private autofetchReady = false;
   private readonly autofetcher: Autofetcher;
+  // repoId to (path to worktree branch): files a worktree Apply left in conflict, until they resolve
+  private readonly worktreeConflicts = new Map<string, Map<string, string>>();
 
   constructor(deps: ScmServiceDeps) {
     this.deps = deps;
@@ -428,7 +466,7 @@ export class ScmService implements Disposable {
   snapshot(repoId: string): RepoSnapshot | undefined {
     const entry = this.entry(repoId);
     return entry
-      ? { repoId, projectKey: entry.projectKey, status: entry.status, busy: entry.repo.queue.busy, running: entry.running?.op ?? null, lastRemote: entry.lastRemote ?? null }
+      ? { repoId, projectKey: entry.projectKey, status: entry.status, busy: entry.repo.queue.busy, running: entry.running?.op ?? null, lastRemote: entry.lastRemote ?? null, revision: entry.revision }
       : undefined;
   }
 
@@ -578,7 +616,7 @@ export class ScmService implements Disposable {
     const choice = await this.deps.ask({
       severity: 'warning',
       message: t('The git repository in the current folder is potentially unsafe as the folder is owned by someone other than the current user.'),
-      detail: t('Opening it adds "{0}" to safe.directory in your global git configuration, so git runs its configuration and hooks for you.', listed),
+      detail: t('Opening it adds "{0}" to safe.directory in your global git configuration, so git runs its configuration and hooks for you.', visibleText(listed)),
       actions: [t('Open Repository')],
       cancelLabel: t('Cancel'),
     });
@@ -642,6 +680,7 @@ export class ScmService implements Disposable {
     const status = await entry.repo.status(this.untrackedChanges());
     if (this.isLive(entry)) {
       entry.status = status;
+      entry.revision++;
       this.emit({ kind: 'repository', repoId: entry.id });
       this.emit({ kind: 'decorations', projectKey: entry.projectKey });
     }
@@ -666,7 +705,7 @@ export class ScmService implements Disposable {
     if (outcome.ok && status.operation !== 'rebase') {
       await recordCommitMessage(this.deps.globalState, entry.repo.root, message).catch((err: unknown) => this.deps.log(`[scm] the commit message history was not saved: ${errorText(err)}`));
     }
-    await this.wrote(entry);
+    await this.wrote(entry, ['branches']);
     return outcome;
   }
 
@@ -696,7 +735,7 @@ export class ScmService implements Disposable {
     try {
       undone = await entry.repo.undoCommit(head);
     } finally {
-      await this.wrote(entry);
+      await this.wrote(entry, ['branches']);
     }
     if (undone === 'moved') throw new Error(t('The last commit changed after you asked to undo it, so nothing was undone.'));
     if (undone === 'merging') throw new Error(t('Can\'t undo the last commit while a merge is in progress or files have merge conflicts.'));
@@ -727,8 +766,12 @@ export class ScmService implements Disposable {
     const entry = this.requireRepo(repoId);
     const operation = entry.status?.operation;
     if (!operation) return;
-    await entry.repo.abort(operation);
-    await this.wrote(entry);
+    try {
+      await entry.repo.abort(operation);
+    } finally {
+      // aborting a rebase or a cherry-pick sequence moves HEAD's branch back
+      await this.wrote(entry, ['branches']);
+    }
   }
 
   async addToGitignore(repoId: string, paths: readonly string[]): Promise<string> {
@@ -776,7 +819,7 @@ export class ScmService implements Disposable {
         throw err;
       }
     }, { branches: [branch], workTree: false });
-    this.listsChanged(entry, ['branches', 'remoteBranches']);
+    await this.listsChanged(entry, ['branches', 'remoteBranches']);
     return outcome;
   }
 
@@ -817,7 +860,7 @@ export class ScmService implements Disposable {
     await this.remoteOp(entry, op, async (net) => {
       await entry.repo.network(deleteRemoteRefArgs(remote, ref, entry.repo.gitVersion), net);
     }, REMOTE_LOCKS);
-    this.listsChanged(entry, op === 'deleteRemoteBranch' ? ['remoteBranches'] : []);
+    await this.listsChanged(entry, op === 'deleteRemoteBranch' ? ['remoteBranches'] : []);
   }
 
   /** A remote's tags (`ls-remote --tags`), listed as Delete Remote Tag's remoteOp, which may need credentials. */
@@ -829,7 +872,8 @@ export class ScmService implements Disposable {
   async integrate(repoId: string, command: 'merge' | 'rebase', name: string): Promise<'ok' | 'conflict'> {
     const entry = this.requireRepo(repoId);
     try {
-      const stashed = await integrate(entry.repo, command, name, () => (this.declinedInside(entry.repo.root).length > 0 ? 'fenced' : 'none'));
+      const conflicted = this.deps.t('Resolve the merge conflicts before merging or rebasing a branch.');
+      const stashed = await integrate(entry.repo, command, name, () => (this.declinedInside(entry.repo.root).length > 0 ? 'fenced' : 'none'), conflicted);
       return this.settleStash(stashed, (result) => (result.ok ? result.value : 'failed'));
     } finally {
       await this.wrote(entry, ['branches', 'worktrees']);
@@ -851,7 +895,7 @@ export class ScmService implements Disposable {
   async stashApply(repoId: string, target: StashTarget, pop: boolean): Promise<'ok' | 'conflict' | 'moved'> {
     const entry = this.requireRepo(repoId);
     try {
-      return await stashApply(entry.repo, target, pop);
+      return await stashApply(entry.repo, target, pop, this.deps.t('Resolve the merge conflicts before applying a stash.'));
     } finally {
       await this.wrote(entry, pop ? ['stashes'] : []);
     }
@@ -889,11 +933,192 @@ export class ScmService implements Disposable {
     return entryPatch(this.requireRepo(repoId).repo, left, entry);
   }
 
-  /** Create Tag at HEAD; a message makes it annotated, and goes in on stdin. */
-  async createTag(repoId: string, name: string, message: string): Promise<void> {
+  /** The empty tree's object name in this repository's hash, which a root commit is compared against. */
+  emptyTree(repoId: string): Promise<string> {
+    return emptyTreeOf(this.requireRepo(repoId).repo);
+  }
+
+  /** A blob of a commit (commit:path), up to MAX_SHOW_BYTES; undefined when the commit lacks the path. */
+  async commitBlob(repoId: string, commit: string, relativePath: string): Promise<Buffer | 'tooLarge' | undefined> {
+    checkRepoPath(relativePath);
+    const repo = this.requireRepo(repoId).repo;
+    const listed = await repo.read(['ls-tree', '-z', revision(commit), '--', relativePath], { literalPathspecs: true });
+    const match = TREE_BLOB.exec(listed.stdout.toString('utf8'));
+    return match ? readBlob(repo, match[1]!) : undefined;
+  }
+
+  /**
+   * The quick diff's base for a file of this repository, with VS Code's quickDiffProvider.ts refusals: a file of a nested
+   * repository or the git dir, a link, a merge-group, untracked or ignored file. hasStaged: the file is in the index group,
+   * so HEAD's text comes too.
+   */
+  async quickDiffBase(repoId: string, relativePath: string, codec: TextCodec | undefined): Promise<QuickDiffBaseOutcome> {
+    checkRepoPath(relativePath);
+    const entry = this.requireRepo(repoId);
+    const project = this.projects.get(entry.projectKey);
+    const absolute = path.join(entry.repo.root, ...relativePath.split('/'));
+    const { gitDir, commonDir } = entry.repo.info;
+    if (!project || this.deepestRepo(project, absolute) !== entry || isInside(gitDir, absolute) || isInside(commonDir, absolute)) return { ok: false, reason: 'notInRepository' };
+    const stat = await fs.lstat(absolute).catch((err: NodeJS.ErrnoException) => {
+      if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return undefined;
+      throw err;
+    });
+    if (stat?.isSymbolicLink()) return { ok: false, reason: 'symlink' };
+    const groups = entry.status?.groups ?? EMPTY_GROUPS;
+    const named = (changes: readonly Change[]): Change | undefined => changes.find((change) => change.path === relativePath);
+    if (named(groups.merge)) return { ok: false, reason: 'merge' };
+    const untracked = named(groups.untracked) ?? named(groups.workingTree);
+    if (untracked?.status === 'UNTRACKED') return { ok: false, reason: 'untracked' };
+    if (untracked?.status === 'IGNORED' || (await entry.repo.checkIgnore([relativePath])).has(relativePath)) return { ok: false, reason: 'ignored' };
+    const hasStaged = named(groups.index) !== undefined;
+    const base = await quickDiffBase(entry.repo, relativePath, codec, hasStaged);
+    return base.ok ? { ...base, hasStaged } : base;
+  }
+
+  /** Stage or Unstage Selected Ranges; the snapshot is fresh once it resolves (wrote). */
+  async stageRanges(repoId: string, request: StageRangesRequest): Promise<StageOutcome> {
+    const entry = this.requireRepo(repoId);
+    while (this.realpathPending()) await this.realpathsSettled();
+    const outcome = await stageRanges(entry.repo, request, this.declinedInside(entry.repo.root));
+    if (outcome.ok) await this.wrote(entry);
+    return outcome;
+  }
+
+  /** HEAD's blame of a file, cached per HEAD commit. */
+  blame(repoId: string, relativePath: string): Promise<BlameRead> {
+    const entry = this.requireRepo(repoId);
+    return entry.blames.read(entry.repo, relativePath);
+  }
+
+  /** One page of a file's timeline, after a cursor, and whether the file has staged changes (a Staged Changes entry leads). */
+  async timeline(repoId: string, relativePath: string, after?: TimelineCursor): Promise<TimelinePage & { readonly hasStaged: boolean }> {
+    const entry = this.requireRepo(repoId);
+    const page = await readTimeline(entry.repo, relativePath, after);
+    return { ...page, hasStaged: (entry.status?.groups.index ?? []).some((change) => change.path === relativePath) };
+  }
+
+  /** A Graph load: the ref choice resolved once, with its first page; undefined while HEAD is unborn. */
+  async historyLoad(repoId: string, choice: HistoryChoice): Promise<{ readonly load: HistoryLoad; readonly commits: readonly HistoryCommit[] } | undefined> {
+    const repo = this.requireRepo(repoId).repo;
+    const load = await loadHistory(repo, choice, this.deps.log);
+    if (!load) return undefined;
+    return { load, commits: await readHistoryPage(repo, load.tips, 0, load.headRefs.base?.id) };
+  }
+
+  /** A later page of a Graph load, logged from the commits its cursor carries. */
+  historyPage(repoId: string, tips: readonly string[], skip: number, baseRef: string | undefined): Promise<HistoryCommit[]> {
+    return readHistoryPage(this.requireRepo(repoId).repo, tips, skip, baseRef);
+  }
+
+  /** HEAD, its upstream and its base ref with their commits; undefined while HEAD is unborn. */
+  headRefs(repoId: string): Promise<HeadRefs | undefined> {
+    return readHeadRefs(this.requireRepo(repoId).repo, this.deps.log);
+  }
+
+  mergeBase(repoId: string, a: string, b: string): Promise<string | undefined> {
+    return mergeBase(this.requireRepo(repoId).repo, a, b);
+  }
+
+  /** Whether hash is a full object name of a commit of the repository (cat-file -t). */
+  isCommit(repoId: string, hash: string): Promise<boolean> {
+    return isCommit(this.requireRepo(repoId).repo, hash);
+  }
+
+  /** A commit the user typed, as rev-parse --verify <rev>^{commit} resolves it; undefined when it names none. */
+  resolveTypedCommit(repoId: string, typed: string): Promise<string | undefined> {
+    return resolveTypedCommit(this.requireRepo(repoId).repo, typed);
+  }
+
+  commitMessage(repoId: string, hash: string): Promise<string> {
+    return commitMessage(this.requireRepo(repoId).repo, hash);
+  }
+
+  commitDetails(repoId: string, hash: string): Promise<CommitDetails> {
+    return readCommitDetails(this.requireRepo(repoId).repo, hash);
+  }
+
+  /** The Graph's Add to Chat: a commit main checked, read as a bounded attachment with its patch against the first parent. */
+  commitAttachment(repoId: string, hash: string): Promise<CommitAttachmentInput> {
+    return readCommitAttachment(this.requireRepo(repoId).repo, hash);
+  }
+
+  /**
+   * VS Code's cherryPick of a commit main checked: conflict leaves the cherry-pick in progress with the conflicts in the
+   * index; empty (the changes are already there) aborts it, so none stays in progress. Told from the repository, never from
+   * git's words: CHERRY_PICK_HEAD, the unmerged entries and the index against HEAD. A refusal before git started (a merge
+   * commit without -m, local changes in the way) throws, and so does an operation already in progress, checked in the same
+   * slot: its state would read as this pick's, and an abort of the user's own cherry-pick sequence would drop its commits.
+   */
+  async cherryPick(repoId: string, commit: string): Promise<'ok' | 'conflict' | 'empty'> {
+    const entry = this.requireRepo(repoId);
+    const { gitDir } = entry.repo.info;
+    const picking = path.join(gitDir, 'CHERRY_PICK_HEAD');
+    const exists = (file: string): Promise<boolean> => fs.stat(file).then(() => true, () => false);
+    let ran = false;
+    try {
+      return await entry.repo.mutate(async (git) => {
+        // each lives in this worktree's own git dir, as git keeps them per worktree
+        const states = ['CHERRY_PICK_HEAD', 'MERGE_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply', 'sequencer'].map((name) => path.join(gitDir, name));
+        if ((await Promise.all(states.map(exists))).some(Boolean)) throw new Error(this.deps.t('A merge, rebase, revert or cherry-pick is in progress. Finish or abort it before cherry picking.'));
+        const args = ['cherry-pick', ...entry.repo.endOfOptions(), revision(commit)];
+        ran = true;
+        const result = await git(args, { allowFailure: true });
+        if (result.exitCode === 0) return 'ok';
+        if (!(await exists(picking))) throw failed(args, result);
+        if ((await git(['ls-files', '--unmerged', '-z'])).stdout.length > 0) return 'conflict';
+        // a staged gitlink counts whatever diff.ignoreSubmodules says, as it does for the commit cherry-pick makes
+        const staged = await git([...DIFF, '--cached', '--quiet', '--ignore-submodules=none'], { allowFailure: true });
+        if (staged.exitCode !== 0) throw failed(args, result);
+        await git(['cherry-pick', '--abort']);
+        return 'empty';
+      });
+    } finally {
+      // a refusal before git ran moved no ref, so the Graph gets no reload
+      await this.wrote(entry, ran ? ['branches'] : []);
+    }
+  }
+
+  /** The merge editor's inputs and labels; fileText is the conflicted file's text, whose markers tell a stash apply. */
+  async mergeInputs(repoId: string, relativePath: string, codec: TextCodec, fileText: string): Promise<MergeInputs> {
+    const branch = this.worktreeConflicts.get(repoId)?.get(relativePath);
+    const inputs = await readMergeInputs(this.requireRepo(repoId).repo, relativePath, codec, fileText, this.mergeTitles(), branch);
+    if (!inputs.ok && inputs.reason === 'notConflicted') this.worktreeConflicts.get(repoId)?.delete(relativePath);
+    return inputs;
+  }
+
+  /** Paths a worktree Apply left in conflict (`git apply --3way` writes no MERGE_HEAD), so the merge editor labels Incoming with the branch. */
+  noteWorktreeConflicts(repoId: string, paths: readonly string[], branch: string): void {
+    const noted = this.worktreeConflicts.get(repoId) ?? new Map<string, string>();
+    for (const p of paths) noted.set(p, branch);
+    this.worktreeConflicts.set(repoId, noted);
+  }
+
+  /** Compute Conflicts With Git (Diff3): git's merge of the file's three stages, labelled as the merge editor labels them. */
+  async mergeFile(repoId: string, relativePath: string, codec: TextCodec, diff3: boolean, fileText: string): Promise<MergeFileResult> {
+    const entry = this.requireRepo(repoId);
+    const branch = this.worktreeConflicts.get(repoId)?.get(relativePath);
+    const labels = await mergeLabels(entry.repo, mergeOperationIn(entry.repo, fileText, branch), this.mergeTitles(), branch);
+    return mergeFile(entry.repo, relativePath, codec, diff3, labels);
+  }
+
+  /** Complete Merge: the saved file staged as resolved, with no marker question (the merge editor asked its own). */
+  async completeMerge(repoId: string, relativePath: string): Promise<void> {
+    const entry = this.requireRepo(repoId);
+    await entry.repo.stage([relativePath]);
+    this.worktreeConflicts.get(repoId)?.delete(relativePath);
+    await this.wrote(entry);
+  }
+
+  private mergeTitles(): MergeTitles {
+    const t = this.deps.t;
+    return { current: t('Current'), incoming: t('Incoming'), base: t('Base'), stash: t('Stashed Changes'), worktree: (branch) => t('{0} (worktree)', branch) };
+  }
+
+  /** Create Tag at HEAD, or at commit; a message makes it annotated, and goes in on stdin. */
+  async createTag(repoId: string, name: string, message: string, commit?: string): Promise<void> {
     const entry = this.requireRepo(repoId);
     try {
-      await entry.repo.write(createTagArgs(name, message !== '', entry.repo.gitVersion), message !== '' ? { input: message } : {});
+      await entry.repo.write(createTagArgs(name, message !== '', entry.repo.gitVersion, commit), message !== '' ? { input: message } : {});
     } finally {
       await this.wrote(entry, ['tags']);
     }
@@ -934,6 +1159,11 @@ export class ScmService implements Disposable {
   /** The folder the repository's last worktree was created in, or undefined before its first. */
   worktreeFolder(repoId: string): string | undefined {
     return worktreeRoot(this.deps.globalState, this.requireRepo(repoId).repo.root);
+  }
+
+  /** Whether a linked worktree holds modified or untracked files, which git worktree remove refuses without --force. */
+  worktreeDirty(repoId: string, worktreePath: string): Promise<boolean> {
+    return this.requireRepo(repoId).repo.worktreeDirty(worktreePath);
   }
 
   /** dirty: the worktree holds modified or untracked files, and the caller asks before forcing. */
@@ -1049,7 +1279,7 @@ export class ScmService implements Disposable {
     if (this.flag(SCM_SETTING_KEYS.confirmSync, true)) {
       const choice = await this.deps.ask({
         severity: 'warning',
-        message: t('This action will pull and push commits from and to "{0}/{1}".', confirmed.remote, confirmed.upstreamBranch),
+        message: t('This action will pull and push commits from and to "{0}/{1}".', visibleText(confirmed.remote), visibleText(confirmed.upstreamBranch)),
         actions: [t('OK'), t('OK, Don\'t Show Again')],
         cancelLabel: t('Cancel'),
         defaultAction: 0,
@@ -1092,7 +1322,7 @@ export class ScmService implements Disposable {
       // the clone's project starts untrusted, so a folder name the trust store still lists is skipped
       target = await freeCloneTarget(parent, name, (folder) => this.deps.trust.isTrusted(folder));
       if (target === undefined) throw new Error(t('Every folder name for the clone already exists in {0}.', parent));
-      registration = await this.register('clone');
+      registration = await this.register('clone', controller);
       await runner.clone({ cwd: parent, args: cloneArgs(url, target, recursive), signal: controller.signal, ...(this.sessionJob ? { session: this.sessionJob } : {}), ...(registration ? { askpassEnv: registration.env } : {}) });
       outcome = 'ok';
       return target;
@@ -1170,6 +1400,11 @@ export class ScmService implements Disposable {
     const changes = this.smartCommitChanges();
     const nothing = (noStaged && noUnstaged) || (!all && noStaged) || (noStaged && changes === 'tracked' && status.groups.workingTree.every((change) => change.status === 'UNTRACKED'));
     if (nothing && !variant.amend && !variant.empty && status.operation !== 'merge' && !rebase) return { ok: false, reason: 'nothingToCommit' };
+    const staged = all && (changes === 'tracked' || this.untrackedChanges() !== 'mixed') ? 'tracked' : all ? 'all' : false;
+    // staging 'all' adds the listed changes only, so past the status limit it would commit part of them
+    if (staged === 'all' && status.tooManyChanges) {
+      return { ok: false, reason: 'failed', error: new Error(t('The change list shows only the first {0} changes, so nothing was committed. Stage the changes to commit, or commit from a terminal.', STATUS_LIMIT)) };
+    }
     if (variant.noVerify) {
       if (!this.flag(keys.allowNoVerifyCommit, false)) return { ok: false, reason: 'failed', error: new Error(t('Commits without verification are not allowed, please enable them with the "Allow no-verify commits" setting.')) };
       if (this.flag(keys.confirmNoVerifyCommit, true)) {
@@ -1185,7 +1420,6 @@ export class ScmService implements Disposable {
         if (choice === 1) await this.deps.settings.update(keys.confirmNoVerifyCommit, false, 'user');
       }
     }
-    const staged = all && (changes === 'tracked' || this.untrackedChanges() !== 'mixed') ? 'tracked' : all ? 'all' : false;
     let branch: string | undefined;
     const prompt = this.branchProtectionPrompt();
     const head = status.head;
@@ -1240,7 +1474,7 @@ export class ScmService implements Disposable {
     try {
       await this.autofetcher.yieldTo(commonDir);
       if (locks) before = await entry.repo.lockFiles(locks);
-      registration = await this.register(op);
+      registration = await this.register(op, controller);
       const result = await work({ signal: controller.signal, ...(registration ? { askpassEnv: registration.env } : {}) });
       outcome = 'ok';
       return result;
@@ -1259,7 +1493,7 @@ export class ScmService implements Disposable {
       entry.running = undefined;
       entry.lastRemote = { op, outcome, stashKept, seq: ++this.remoteSeq };
       if (this.isLive(entry)) this.emit({ kind: 'repository', repoId: entry.id });
-      await this.wrote(entry);
+      await this.wrote(entry, ['branches', 'remoteBranches', 'tags']);
     }
   }
 
@@ -1268,10 +1502,13 @@ export class ScmService implements Disposable {
     return false;
   }
 
-  // None when the server cannot start, and one line says so; the call then runs as with no server.
-  private async register(label: string): Promise<AskpassRegistration | undefined> {
+  // None when the server cannot start, and one line says so; the call then runs as with no server. A credential prompt the
+  // user cancels aborts the operation's own controller, so it ends as the Cancel button ends it.
+  private async register(label: string, controller: AbortController): Promise<AskpassRegistration | undefined> {
     try {
-      return await this.deps.askpass?.register('interactive', label);
+      const registration = await this.deps.askpass?.register('interactive', label);
+      registration?.cancelled.addEventListener('abort', () => controller.abort(), { once: true });
+      return registration;
     } catch (err) {
       this.deps.log(`[scm] credential prompts are unavailable for this ${label}: ${errorText(err)}`);
       return undefined;
@@ -1428,7 +1665,7 @@ export class ScmService implements Disposable {
     const t = this.deps.t;
     const message = unresolved.length > 1
       ? t('Are you sure you want to stage {0} files with merge conflicts?', unresolved.length)
-      : t('Are you sure you want to stage {0} with merge conflicts?', path.basename(unresolved[0]!));
+      : t('Are you sure you want to stage {0} with merge conflicts?', visibleText(path.basename(unresolved[0]!)));
     return (await this.deps.ask({ severity: 'warning', message, actions: [t('Yes')], cancelLabel: t('Cancel'), defaultAction: 0 })) === 0;
   }
 
@@ -1442,7 +1679,7 @@ export class ScmService implements Disposable {
     const t = this.deps.t;
     const [untrackedMessage, untrackedDetail] = this.untrackedQuestion(untracked);
     const trackedMessage = tracked.length === 1
-      ? t('\n\nAre you sure you want to discard changes in \'{0}\'?', path.basename(tracked[0]!.path))
+      ? t('\n\nAre you sure you want to discard changes in \'{0}\'?', visibleText(path.basename(tracked[0]!.path)))
       : t('\n\nAre you sure you want to discard ALL changes in {0} files?', tracked.length);
     const yesTracked = tracked.length === 1 ? t('Discard 1 Tracked File') : t('Discard All {0} Tracked Files', tracked.length);
     const yesAll = t('Discard All {0} Files', changes.length);
@@ -1461,7 +1698,7 @@ export class ScmService implements Disposable {
   private async cleanTracked(entry: RepoEntry, changes: readonly Change[]): Promise<boolean> {
     const t = this.deps.t;
     const allDeleted = changes.every((change) => change.status === 'DELETED');
-    const one = changes.length === 1 ? path.basename(changes[0]!.path) : '';
+    const one = changes.length === 1 ? visibleText(path.basename(changes[0]!.path)) : '';
     const message = allDeleted
       ? changes.length === 1 ? t('Are you sure you want to restore \'{0}\'?', one) : t('Are you sure you want to restore ALL {0} files?', changes.length)
       : changes.length === 1
@@ -1489,7 +1726,7 @@ export class ScmService implements Disposable {
   private untrackedQuestion(changes: readonly Change[]): [string, string] {
     const t = this.deps.t;
     const message = changes.length === 1
-      ? t('Are you sure you want to DELETE the following untracked file: \'{0}\'?', path.basename(changes[0]!.path))
+      ? t('Are you sure you want to DELETE the following untracked file: \'{0}\'?', visibleText(path.basename(changes[0]!.path)))
       : t('Are you sure you want to DELETE the {0} untracked files?', changes.length);
     const windows = this.platform() === 'win32';
     const detail = changes.length === 1
@@ -1751,8 +1988,8 @@ export class ScmService implements Disposable {
       : t('Git repositories were found in the parent folders of the workspace or the open file(s). Would you like to open the repositories?');
     const actions = [t('Yes'), t('Always'), t('Never')];
     const choice = again
-      ? await this.deps.ask({ severity: 'warning', message, preview: pending, actions, cancelLabel: t('Cancel') })
-      : await this.deps.notify([message, ...pending].join('\n'), ...actions).then((answer) => (answer === undefined ? undefined : actions.indexOf(answer)));
+      ? await this.deps.ask({ severity: 'warning', message, preview: pending.map(visibleText), actions, cancelLabel: t('Cancel') })
+      : await this.deps.notify([message, ...pending.map(visibleText)].join('\n'), ...actions).then((answer) => (answer === undefined ? undefined : actions.indexOf(answer)));
     if (choice === 0) await this.rememberParents(pending);
     else if (choice === 1 || choice === 2) await this.deps.settings.update(SCM_SETTING_KEYS.openRepositoryInParentFolders, choice === 1 ? 'always' : 'never', 'user');
     if (choice === 0 || choice === 1) await this.discoverProject(project);
@@ -1834,8 +2071,10 @@ export class ScmService implements Disposable {
   }
 
   private openRepo(project: ProjectEntry, key: string, found: FoundRepository, kind: RepoKind): void {
-    const repo = new Repository({ root: found.root, gitDir: found.gitDir, commonDir: found.commonDir, kind, project: project.path }, this.gate(this.deps.runner!, [found.gitDir, found.commonDir]));
-    const entry: RepoEntry = { id: `repo-${++this.nextRepoId}`, projectKey: project.key, repo, kind, status: undefined, timer: undefined, disposables: [], running: undefined, lastRemote: undefined, artifactGroups: new Set(), artifactTimer: undefined };
+    const gated = this.gate(this.deps.runner!, [found.gitDir, found.commonDir]);
+    const runner: GitRunner = { git: gated.git, envFor: (call) => gated.envFor(call), run: (call) => gated.run(call).catch((err: unknown) => this.closeIfGone(entry, err)) };
+    const repo = new Repository({ root: found.root, gitDir: found.gitDir, commonDir: found.commonDir, kind, project: project.path }, runner);
+    const entry: RepoEntry = { id: `repo-${++this.nextRepoId}`, projectKey: project.key, repo, kind, status: undefined, revision: 0, blames: new BlameCache(), timer: undefined, disposables: [], running: undefined, lastRemote: undefined, artifactGroups: new Set(), artifactTimer: undefined, refsDigest: undefined, refsReads: 0, refsLanded: 0 };
     entry.disposables.push(repo.queue.onIdleChange(() => this.emit({ kind: 'repository', repoId: entry.id })));
     // a git dir outside the project folder (a linked worktree's, a parent's) gets its own watch; the project's watch covers the rest
     const projectReal = project.real!;
@@ -1850,6 +2089,8 @@ export class ScmService implements Disposable {
     }
     project.repos.set(key, entry);
     this.scheduleStatus(entry, 0);
+    // the refs the first watcher event compares with, so an echo of refs the Graph's first load read reports no change
+    void this.recordRefs(entry);
   }
 
   private gitDirEvent(entry: RepoEntry, fsPath: string): void {
@@ -1941,6 +2182,7 @@ export class ScmService implements Disposable {
       (status) => {
         if (!this.isLive(entry)) return;
         entry.status = status;
+        entry.revision++;
         this.emit({ kind: 'repository', repoId: entry.id });
         this.emit({ kind: 'decorations', projectKey: entry.projectKey });
         if (entry.projectKey === this.autofetchProject) this.autofetchWhenReady();
@@ -1962,8 +2204,39 @@ export class ScmService implements Disposable {
       entry.artifactTimer = undefined;
       const changed = [...entry.artifactGroups];
       entry.artifactGroups.clear();
-      if (this.isLive(entry)) this.emit({ kind: 'artifacts', repoId: entry.id, groups: changed });
+      if (!changed.some((group) => REF_GROUPS.has(group))) {
+        if (this.isLive(entry)) this.emit({ kind: 'artifacts', repoId: entry.id, groups: changed });
+        return;
+      }
+      void this.recordRefs(entry).then((refs) => {
+        if (!this.isLive(entry)) return;
+        this.emit({ kind: 'artifacts', repoId: entry.id, groups: changed, ...(refs === 'moved' ? { refs: 'background' as const } : {}) });
+      });
     }, WATCH_DEBOUNCE_MS);
+  }
+
+  // Lists the refs and keeps their digest unless a later listing landed first: moved when they differ from the digest kept
+  // before or could not be listed, stale when a later listing landed.
+  private async recordRefs(entry: RepoEntry): Promise<'moved' | 'same' | 'stale'> {
+    const read = ++entry.refsReads;
+    const refs = await this.readRefs(entry);
+    if (read < entry.refsLanded) return 'stale';
+    if (refs === undefined) return 'moved';
+    const moved = refs !== entry.refsDigest;
+    entry.refsDigest = refs;
+    entry.refsLanded = read;
+    return moved ? 'moved' : 'same';
+  }
+
+  // A digest of every branch, remote branch and tag with its object; undefined (logged) when git could not list them.
+  private async readRefs(entry: RepoEntry): Promise<string | undefined> {
+    try {
+      const listed = await entry.repo.read(['for-each-ref', '--format=%(refname)%00%(objectname)', 'refs/heads', 'refs/remotes', 'refs/tags'], { maxOutputBytes: 64 * 1024 * 1024 });
+      return createHash('sha256').update(listed.stdout).digest('hex');
+    } catch (err) {
+      if (this.isLive(entry) && !(err instanceof GitQueueDisposedError)) this.deps.log(`[scm] listing the refs failed: ${errorText(err)}`);
+      return undefined;
+    }
   }
 
   // Every operation awaits this, so a caller reading the snapshot next sees what the operation left (VS Code's Repository.run).
@@ -1972,16 +2245,41 @@ export class ScmService implements Disposable {
     if (entry.timer) clearTimeout(entry.timer);
     entry.timer = undefined;
     await this.runStatus(entry);
-    this.listsChanged(entry, groups);
+    await this.listsChanged(entry, groups);
   }
 
-  private listsChanged(entry: RepoEntry, groups: readonly ArtifactGroup[]): void {
-    if (groups.length > 0 && this.isLive(entry)) this.emit({ kind: 'artifacts', repoId: entry.id, groups });
+  // An engine write's lists; one that may have moved a ref records the refs first, so the watcher's echo reports no ref change.
+  private async listsChanged(entry: RepoEntry, groups: readonly ArtifactGroup[]): Promise<void> {
+    if (groups.length === 0 || !this.isLive(entry)) return;
+    if (!groups.some((group) => REF_GROUPS.has(group))) {
+      this.emit({ kind: 'artifacts', repoId: entry.id, groups });
+      return;
+    }
+    await this.recordRefs(entry);
+    if (!this.isLive(entry)) return;
+    this.emit({ kind: 'artifacts', repoId: entry.id, groups, refs: 'engine' });
   }
 
   private isLive(entry: RepoEntry): boolean {
     const project = this.projects.get(entry.projectKey);
     return project !== undefined && !project.disposed && [...project.repos.values()].includes(entry);
+  }
+
+  // A failed call of a repository whose root or git dir no longer exists closes it and rejects as a closed repository's call,
+  // as VS Code disposes a repository on NotAGitRepository (git's own answer, or a spawn ENOENT in a removed folder).
+  private async closeIfGone(entry: RepoEntry, err: unknown): Promise<never> {
+    if (err instanceof GitQueueDisposedError || err instanceof GitUntrustedError) throw err;
+    const { root, gitDir } = entry.repo.info;
+    if (!(await isMissing(root)) && !(await isMissing(gitDir))) throw err;
+    const project = this.projects.get(entry.projectKey);
+    if (project && this.isLive(entry)) {
+      this.deps.log(`[scm] ${root} or its git dir no longer exists, so its repository closed`);
+      this.disposeRepo(project, entry);
+      if (project.repos.size === 0 && project.state === 'ready') project.state = 'noRepository';
+      this.emit({ kind: 'view', projectKey: project.key });
+      this.emit({ kind: 'decorations', projectKey: project.key });
+    }
+    throw new GitQueueDisposedError({ cause: err });
   }
 
   private clearProject(project: ProjectEntry, state: ProjectViewState): void {
@@ -2148,6 +2446,17 @@ async function holdsGitEntry(folder: string): Promise<boolean> {
   }
 }
 
+// Only lstat's own answer that nothing is there; any other failure (a denied folder) proves nothing is gone.
+async function isMissing(absolute: string): Promise<boolean> {
+  try {
+    await fs.lstat(absolute);
+    return false;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return code === 'ENOENT' || code === 'ENOTDIR';
+  }
+}
+
 // The submodule names of the .gitmodules git reads: the work tree's, else the index's or HEAD's. While the work tree's does not
 // parse (conflict markers), every one an abort may restore. A .gitmodules that does not parse names nothing, as git dies reading it.
 async function submoduleNames(runner: GitRunner, call: GitCall): Promise<string[]> {
@@ -2200,14 +2509,14 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-// git's own words for a failed call, fit for a notice and a log line (logText): its error and fatal lines, else its first
-// stderr lines (progress and hints come first), else the error's message
+// git's own words for a failed call, fit for a notice and a log line: its error and fatal lines, else its first stderr lines
+// (progress and hints come first), else the error's message; URL userinfo redacted, control and bidi characters as escapes
 export function gitErrorText(err: unknown): string {
   if (err instanceof GitError) {
     const lines = err.stderr.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
     const errors = lines.filter((line) => /^(error|fatal):/.test(line));
-    if (lines.length > 0) return logText((errors.length > 0 ? errors : lines).slice(0, 3).join(' '));
+    if (lines.length > 0) return visibleLines(redactUrls((errors.length > 0 ? errors : lines).slice(0, 3).join(' ')));
   }
-  return logText(errorText(err));
+  return visibleLines(redactUrls(errorText(err)));
 }
 

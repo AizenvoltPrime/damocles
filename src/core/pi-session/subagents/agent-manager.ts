@@ -23,6 +23,7 @@ import { log } from '../../logger';
 import { PI_EXCLUDED_TOOLS } from '../pi-models';
 import type { PiCreateSubagentSessionOptions } from '../folder-runtime';
 import type { CheckpointBaselineGate } from '../permission-gate';
+import type { WorktreeIsolation } from '../worktree-isolation';
 import type { ShellCancelRegistry } from '../tools/shell-cancel-registry';
 import type { DispatchDeps } from '../hooks';
 import { deferredToolNames } from '../tools/deferred-tools';
@@ -121,6 +122,8 @@ export interface SubagentEngine {
   isPlanMode: () => boolean;
   /** The parent panel's checkpoint wait, so this agent's file changes never precede the parent turn's baseline. Absent when the panel takes no checkpoints. */
   checkpointBaseline?: CheckpointBaselineGate;
+  /** D62: the parent chat's isolation, which its agents share because they run in its folder. */
+  worktreeIsolation?: () => WorktreeIsolation | undefined;
   /** The gate's cancel handle for one agent, delivering a note to that agent as its shell tools do. */
   shellCancelFor: (agentId: string) => ShellCancelRegistry;
   postMessage: (message: ExtensionToWebviewMessage) => void;
@@ -746,6 +749,7 @@ export class AgentManager {
       permissionHandler: this.engine.permissionHandler,
       isPlanMode: this.engine.isPlanMode,
       ...(this.engine.checkpointBaseline ? { checkpointBaseline: this.engine.checkpointBaseline } : {}),
+      ...(this.engine.worktreeIsolation ? { worktreeIsolation: this.engine.worktreeIsolation } : {}),
       shellCancel: this.engine.shellCancelFor(record.id),
       postMessage: this.engine.postMessage,
       // An agent with no write tool (Explore/Plan, or any read-only user agent) keeps that guarantee in

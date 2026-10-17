@@ -80,6 +80,8 @@ const THEME_COLORS: Readonly<Record<string, `--d-${string}`>> = {
   'editorWarning.foreground': '--d-warning',
   'editorInfo.foreground': '--d-info',
   'textLink.foreground': '--d-accent',
+  // Monaco's own light code lens grey is about 3:1 on --d-bg; the conflict lenses read at AA
+  'editorCodeLens.foreground': '--d-muted',
 };
 
 // Monarch token prefix -> the desktop-only syntax token; Monaco matches a rule against every token that starts with it.

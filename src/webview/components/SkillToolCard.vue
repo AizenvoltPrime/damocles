@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Ban, CircleCheck, CircleX, MessageSquare, Sparkles } from 'lucide-vue-next';
+import { Ban, CircleCheck, CircleX, MessageSquare, ShieldBan, Sparkles } from 'lucide-vue-next';
 import type { ToolCall } from '@shared/types/session';
 import ToolCardFrame from './ToolCardFrame.vue';
 import ToolCardNote from './ToolCardNote.vue';
@@ -27,6 +27,7 @@ const status = computed(() => props.toolCall.status);
 const headerText = computed(() => {
   if (status.value === 'completed') return t('skillTool.executed', { name: skillName.value });
   if (status.value === 'denied') return t('skillTool.denied', { name: skillName.value });
+  if (status.value === 'blocked') return t('skillTool.blocked', { name: skillName.value });
   if (status.value === 'abandoned') return t('skillTool.skipped', { name: skillName.value });
   return t('skillTool.useSkill', { name: skillName.value });
 });
@@ -63,6 +64,13 @@ const headerText = computed(() => {
       :icon="toolCall.feedback ? MessageSquare : CircleX"
       :text="toolCall.feedback ? t('skillTool.feedbackSent') : t('skillTool.userDenied')"
       :quote="toolCall.feedback"
+    />
+    <ToolCardNote
+      v-else-if="status === 'blocked' && toolCall.feedback"
+      tone="text-(--d-muted)"
+      :icon="ShieldBan"
+      :text="toolCall.feedback"
+      data-testid="tool-card-blocked-reason"
     />
     <ToolCardNote
       v-else-if="status === 'abandoned'"

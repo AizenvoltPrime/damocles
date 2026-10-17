@@ -226,6 +226,18 @@ describe('indexUsage layout', () => {
     expect(t.requests).toBe(3);
   });
 
+  it('attributes a worktree chat\'s spend to the project its worktree entry names, also after a hand-off', async () => {
+    const main = mainPath('sess-w');
+    const project = path.join(env.root, 'project');
+    const worktreeEntry = (place: string, ts: string) => ({ type: 'custom', customType: 'damocles.worktree', data: { worktreeId: 'abcd1234', projectPath: project, place }, id: `w-${place}`, timestamp: ts });
+    writeLines(main, [header('sess-w', at(0)), assistant('a0000001', at(1), 0.1), worktreeEntry('worktree', at(1.5)), assistant('a0000002', at(2), 0.2)]);
+    await scan();
+    expect(rows().map((r) => r.projectKey)).toEqual([projectKeyOf(project), projectKeyOf(project)]);
+    fs.appendFileSync(main, `${JSON.stringify(worktreeEntry('project', at(3)))}\n${JSON.stringify(assistant('a0000003', at(4), 0.3))}\n`);
+    await scan();
+    expect(new Set(rows().map((r) => r.projectKey))).toEqual(new Set([projectKeyOf(project)]));
+  });
+
   it('reports progress from zero to every file', async () => {
     writeLines(mainPath('sess-p'), [header('sess-p', at(0)), assistant('a0000001', at(1), 0.1)]);
     writeLines(mainPath('sess-q', '2025-06-10T10-00-00-000Z'), [header('sess-q', at(60)), assistant('a0000002', at(61), 0.1)]);

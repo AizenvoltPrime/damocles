@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BACKUP_DIR, BackupStore, parseBackup } from '../documents/backups';
 import type { TextDocument } from '../documents/document-service';
 import { flushAcrossHeldRename } from '../../../__mocks__/held-rename';
+import { MAX_ID_LENGTH } from '../../preload/shell-channels';
 
 let dir: string;
 let lines: string[];
@@ -208,7 +209,7 @@ describe('Search Editor backups', () => {
     const valid = { version: 1, backupId: BACKUP_ID, name: 'q.code-search', languageId: 'search-result', encoding: 'utf8', bom: false, eol: '\n', text: 'x' };
     expect(parseBackup(JSON.stringify({ ...valid, target: { kind: 'searchEditor', projectKey: 'p' } }), BACKUP_ID)?.target).toEqual({ kind: 'searchEditor', projectKey: 'p' });
     expect(parseBackup(JSON.stringify({ ...valid, target: { kind: 'searchEditor' } }), BACKUP_ID)?.target).toEqual({ kind: 'searchEditor' });
-    expect(parseBackup(JSON.stringify({ ...valid, target: { kind: 'searchEditor', projectKey: 'x'.repeat(201) } }), BACKUP_ID)).toBeUndefined();
+    expect(parseBackup(JSON.stringify({ ...valid, target: { kind: 'searchEditor', projectKey: 'x'.repeat(MAX_ID_LENGTH + 1) } }), BACKUP_ID)).toBeUndefined();
     expect(parseBackup(JSON.stringify({ ...valid, target: { kind: 'searchEditor', projectKey: 7 } }), BACKUP_ID)).toBeUndefined();
   });
 });

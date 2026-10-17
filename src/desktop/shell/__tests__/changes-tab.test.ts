@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import type { ScmChange, ScmChangesTab, ScmFileDiffRequest, ScmFileDiffResult } from '../../preload/scm-channels';
 import type { ShellEditorTab } from '../../preload/shell-channels';
-import ChangesTab from '../editor/ChangesTab.vue';
+import ScmChangesTabView from '../editor/ScmChangesTab.vue';
 import { shellI18n } from '../i18n';
 import { createScmStore, SCM_STORE } from '../scm/scm-store';
 import { FakeResizeObserver, fakeScmApi } from './fakes';
@@ -45,7 +45,7 @@ afterEach(() => {
 async function mountTab(entries: readonly ScmChange[], fileDiff: (request: ScmFileDiffRequest) => Promise<ScmFileDiffResult>) {
   const api = fakeScmApi();
   vi.mocked(api.fileDiff).mockImplementation(fileDiff);
-  const wrapper = mount(ChangesTab, {
+  const wrapper = mount(ScmChangesTabView, {
     props: { tab: tabOf(entries) },
     global: { plugins: [shellI18n], provide: { [SCM_STORE]: createScmStore(api) } },
     attachTo: document.body,

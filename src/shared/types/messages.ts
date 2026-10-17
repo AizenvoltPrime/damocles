@@ -1,5 +1,5 @@
 import type { UserContentBlock, ContentBlock, HistoryToolCall, HistoryAgentMessage, ImageBlock } from './content';
-import type { TerminalAttachmentInfo } from './terminal-attachment';
+import type { ChatAttachmentInfo } from './chat-attachment';
 import type {
   McpConfigError,
   McpRenamedToolRuleNotice,
@@ -58,7 +58,7 @@ export type { ObservationCursor } from './memory';
 
 export type WebviewToExtensionMessage =
   | { type: "log"; message: string }
-  // terminalAttachmentIds: pending terminal attachments sent with the message; absent on hosts without them
+  // terminalAttachmentIds: pending attachments (terminal output and commits) sent with the message; absent on hosts without them
   | { type: "sendMessage"; content: string | UserContentBlock[]; agentId?: string; includeIdeContext?: boolean; terminalAttachmentIds?: string[] }
   | { type: "removeTerminalAttachment"; id: string }
   | { type: "cancelSession" }
@@ -116,6 +116,12 @@ export type WebviewToExtensionMessage =
   | { type: "openAppSettings"; section?: SettingsSectionId; account?: SettingsAccountId }
   /** The chat header's Terminal toggle, posted only when `HostCapabilities.windowLayout`; the host runs its Toggle Terminal command. */
   | { type: "toggleTerminal" }
+  /** The header counter's click, posted only when `HostCapabilities.chatReview`: the host opens the chat's review tab (D60). */
+  | { type: "openChatReview"; scope: ChatReviewScope }
+  /** The composer's worktree controls (D30), posted only after a `worktreeState`; core re-checks the chat's phase. */
+  | { type: "worktreeAction"; action: WorktreeAction }
+  /** Hand off (D61): moves an idle chat between its project folder and its worktree; core re-checks that it is idle. */
+  | { type: "chatMove"; to: ChatPlace }
   /** An attached settings view's bootstrap, in place of the chat's `ready`: core re-posts the settings state the view renders. */
   | { type: "requestSettingsState" }
   /** Opens the scope's settings file in the host's editor (desktop: an editor pane tab saved under settings-file-editor's rules).
@@ -340,7 +346,64 @@ export interface HostCapabilities {
   fileMentionDrop: boolean;
   /** The host window has a layout grid with a terminal pane; the chat header shows a Terminal toggle that posts `toggleTerminal`. */
   windowLayout: boolean;
+  /** The host opens a chat's review tab (D60); the chat header shows the `chatChanges` counter, which posts `openChatReview`. */
+  chatReview: boolean;
+  /** Worktree chats (D30, D61): core posts `worktreeState` and accepts `worktreeAction` and `chatMove`. */
+  worktrees: boolean;
 }
+
+/** Where a worktree-capable chat works (D61). */
+export type ChatPlace = "project" | "worktree";
+
+export const WORKTREE_PHASES = ["none", "pending", "creating", "settingUp", "setupFailed", "createFailed", "ready", "deleted"] as const;
+/** none: a project-folder chat with no worktree; pending: opted in, nothing created yet; deleted: the chat is read-only. */
+export type WorktreePhase = (typeof WORKTREE_PHASES)[number];
+
+export const WORKTREE_ACTIONS = ["cancelOptIn", "sendNow", "retry", "runInProjectFolder", "newChatInProject", "showSetupTerminal", "newChatInWorktree"] as const;
+export type WorktreeAction = (typeof WORKTREE_ACTIONS)[number];
+
+/** A chat's worktree state (D30, D61), sent only when `HostCapabilities.worktrees`. */
+export interface WorktreeStateData {
+  phase: WorktreePhase;
+  place: ChatPlace;
+  /** Idle, writable, and with a worktree or a trusted git project to create one in. */
+  canHandOff: boolean;
+  branch?: string;
+  /** The branch checked out in the project folder. */
+  baseBranch?: string;
+  /** Uncommitted files the opt-in brings along (D63). */
+  uncommittedCount?: number;
+  /** Commits on `baseBranch` the worktree lacks. */
+  behind?: number;
+  /** `baseBranch` no longer holds the worktree's base commit. */
+  targetRewritten?: boolean;
+  /** The failed setup's exit code (phase setupFailed). */
+  exitCode?: number;
+  /** git's error (phase createFailed). */
+  error?: string;
+  /** The project's display name; present whenever the chat has a worktree or a pending opt-in. */
+  projectName?: string;
+  /** Other chats of the project whose latest worktree entry places them in this chat's worktree; absent when 0. */
+  sharedWith?: number;
+  /** The setup command running now; `index` is 1-based (phase settingUp). */
+  setupStep?: { command: string; index: number; total: number };
+  /** The first prompt held while the worktree is created and set up (every holding phase, createFailed included). */
+  heldPrompt?: { text: string; imageCount: number };
+  /** A finish action runs on this chat's worktree; core refuses the chat's sends meanwhile. */
+  finishing?: WorktreeFinishAction;
+}
+
+export type WorktreeFinishAction = "apply" | "merge" | "update" | "delete";
+
+/**
+ * heldPromptWaiting: a send while the first prompt waits for its worktree; worktreeFinishing: a send while a finish action
+ * runs on the chat's worktree; heldPromptKept: a held first prompt that will not be sent (the chat left its opt-in, or a
+ * draft the host kept across an unload or a quit).
+ */
+export type PromptReturnReason = "heldPromptWaiting" | "worktreeFinishing" | "heldPromptKept";
+
+/** A chat review's scope (D60): the whole chat, or only its latest turn. */
+export type ChatReviewScope = "chat" | "turn";
 
 /** What the VS Code host supplies, and the webview's value until the host says otherwise. */
 export const VSCODE_HOST_CAPABILITIES: Readonly<HostCapabilities> = {
@@ -357,6 +420,8 @@ export const VSCODE_HOST_CAPABILITIES: Readonly<HostCapabilities> = {
   folderPickerInPanel: true,
   fileMentionDrop: false,
   windowLayout: false,
+  chatReview: false,
+  worktrees: false,
 };
 
 /** Text of a file or buffer the host shows in a chat panel editor; the host decides the body, the webview never reads files. */
@@ -426,7 +491,7 @@ export type ExtensionToWebviewMessage =
   | { type: "assistantRetracted"; messageId: string; parentToolUseId?: string }
   | { type: "done"; data: ResultMessage }
   // `isCommandEcho` marks the echo of a slash command that commits no user entry; it is always injected too.
-  | { type: "userMessage"; content: string; contentBlocks?: UserContentBlock[]; terminalAttachments?: TerminalAttachmentInfo[]; correlationId: string; promptIndex: number; isInjected?: boolean; isCommandEcho?: boolean }
+  | { type: "userMessage"; content: string; contentBlocks?: UserContentBlock[]; terminalAttachments?: ChatAttachmentInfo[]; correlationId: string; promptIndex: number; isInjected?: boolean; isCommandEcho?: boolean }
   | { type: "userMessageIdAssigned"; sdkMessageId: string; correlationId: string }
   | { type: "toolPending"; toolUseId: string; toolName: string; input: unknown; parentToolUseId?: string | null }
   /** `parentToolUseId` names the nested agent the error belongs to: a subagent's `Agent` call id or a team agent's id. */
@@ -435,8 +500,11 @@ export type ExtensionToWebviewMessage =
   | { type: "authFailureCleared" }
   /** `stored`: the conversation has a session file, so it is what a restart restores. pi writes none before the first prompt. */
   | { type: "sessionStarted"; sessionId: string; stored?: boolean }
-  /** The host bound this panel to a stored session from `resumeSession`; its history replay follows. */
-  | { type: "resumeAccepted"; sessionId: string }
+  /**
+   * The host bound this panel to a stored session from `resumeSession`; its history replay follows. `continued`: the panel
+   * goes on with the conversation it shows (a hand-off, D61), so the composer and its draft stay.
+   */
+  | { type: "resumeAccepted"; sessionId: string; continued?: true }
   | { type: "processing"; isProcessing: boolean }
   | { type: "storedSessions"; sessions: StoredSession[]; hasMore?: boolean; nextOffset?: number; isFirstPage?: boolean }
   | { type: "sessionCleared"; pendingMessage?: { content: string; correlationId: string } }
@@ -517,7 +585,11 @@ export type ExtensionToWebviewMessage =
   | { type: "sessionUsage"; usage: AgentUsageTotals; numTurns: number }
   | { type: "rewindHistory"; prompts: RewindHistoryItem[]; restorePoints: RestorePoint[]; canFork: boolean }
   | { type: "prefillInput"; text: string }
-  | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; terminalAttachments?: TerminalAttachmentInfo[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean; isMidStream?: boolean; steerTarget?: { agentId: string; agentType?: string; description?: string }; promptIndex?: number; timestamp?: number }
+  // desktop: text the host puts in the composer after its draft, which it never replaces (the Graph's Explain Changes)
+  | { type: "composerAppend"; text: string }
+  /** A prompt core did not send goes back into the composer, text and images; `reason` says why. */
+  | { type: "promptReturned"; content: UserContentBlock[]; reason: PromptReturnReason }
+  | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; terminalAttachments?: ChatAttachmentInfo[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean; isMidStream?: boolean; steerTarget?: { agentId: string; agentType?: string; description?: string }; promptIndex?: number; timestamp?: number }
   | { type: "assistantReplay"; content: string; thinking?: string; tools?: HistoryToolCall[]; contentBlocks?: ContentBlock[]; effort?: import('../effort-badge').EffortBadgeLevel }
   | { type: "errorReplay"; content: string }
   | { type: "promptHistory"; history: string[]; hasMore: boolean }
@@ -583,8 +655,8 @@ export type ExtensionToWebviewMessage =
   | { type: "requestQuestion"; toolUseId: string; questions: Question[]; owner: PromptOwner; parentToolUseId?: string | null }
   | { type: "requestForm"; toolUseId: string; form: FormSchema; owner: PromptOwner; parentToolUseId?: string | null }
   | { type: "ideContextUpdate"; context: IdeContextDisplayInfo | null }
-  // the composer's pending terminal attachments, whole list, on every change; focusComposer: the user just added one
-  | { type: "terminalAttachmentsUpdate"; attachments: TerminalAttachmentInfo[]; focusComposer?: true }
+  // the composer's pending attachments (terminal output and commits), whole list, on every change; focusComposer: the user just added one
+  | { type: "terminalAttachmentsUpdate"; attachments: ChatAttachmentInfo[]; focusComposer?: true }
   | {
       type: "requestPlanApproval";
       toolUseId: string;
@@ -740,6 +812,15 @@ export type ExtensionToWebviewMessage =
   // Whether the window shows its terminal pane, and Toggle Terminal's shortcut as the platform writes it, for the chat header's
   // Terminal toggle (HostCapabilities.windowLayout).
   | { type: "terminalShown"; shown: boolean; shortcut: string }
+  // What the chat changed (D60), sent only when HostCapabilities.chatReview: lines added and removed over its files, and the
+  // number of files; all zero hides the counter.
+  | { type: "chatChanges"; added: number; removed: number; files: number }
+  // The chat's worktree state (D30, D61); its one publisher is the session's SessionWorktree (publish, and publishStored for
+  // the place a stored file gives before the session starts).
+  | ({ type: "worktreeState" } & WorktreeStateData)
+  // A resumed or restored chat has no worktree state to show (an untrusted project, or no repository source control has
+  // open); it answers a webview waiting for the place, as worktreeState does.
+  | { type: "noWorktreeState" }
   | { type: "compassStatusUpdate"; status: CompassIndexStatus }
   | { type: "compassBuildProgress"; current: number; total: number; phase: 'build' | 'postprocess' | 'serialize'; label?: string }
   | { type: "compassSearchResults"; results: CompassSearchResult[] }

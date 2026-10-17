@@ -578,8 +578,12 @@ mark.sm-mark {
 
 .sm-option[data-disabled],
 .sm-option[data-unavailable] {
-  opacity: 0.5;
   cursor: default;
+}
+
+/* Only the label and the check dim: the hint says why the option is unavailable and keeps its token's AA contrast. */
+.sm-option:is([data-disabled], [data-unavailable]) :is(.sm-option-text > :not(.sm-option-hint), .sm-option-check) {
+  opacity: 0.5;
 }
 
 .sm-option-text {

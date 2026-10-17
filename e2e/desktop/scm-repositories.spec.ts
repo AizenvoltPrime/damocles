@@ -10,6 +10,7 @@ import { overlayPage, shellPage, shellState } from './support/shell';
 import { clickSectionAction, cssString, sectionAction } from './support/shell-ui';
 import { quickPick } from './support/editor';
 import { addProject, answerDialogs, TRUST_PROMPT } from './support/ui';
+import { DEFAULT_GRID_LAYOUT, MIN_SIDEBAR_WIDTH } from '../../src/desktop/preload/shell-channels';
 
 // The Repositories section (slice 11a, D58): every acceptance criterion against real git in the hermetic home.
 const HOOKS = { DAMOCLES_E2E_HOOKS: '1' };
@@ -100,6 +101,44 @@ test('Branches shows the feat folder first and main with the HEAD icon, b above 
   await expand(row(shell, 'folder', 'team/ax'));
   await expect(labelOf(row(shell, 'branch', 'team/ax/fix'))).toHaveText('fix');
   await expect(row(shell, 'branch', 'team/ax/fix')).toHaveAttribute('aria-level', '3');
+});
+
+test('at the narrowest sidebar a name keeps its room: a time with no room gives way whole, and a repeated time is a rule the row\'s height', async ({ home, launch }) => {
+  await seed(home, home.project);
+  await git(home, home.project, 'branch', 'candidate-release-two', 'feat/a');
+  await git(home, home.project, 'tag', 'v1.1', 'v1.0');
+  fs.mkdirSync(home.userData, { recursive: true });
+  fs.writeFileSync(path.join(home.userData, 'window-layout.json'), JSON.stringify({
+    version: 2,
+    sidebar: {
+      sidebarVisible: true,
+      sidebarWidth: MIN_SIDEBAR_WIDTH,
+      sections: { projects: { collapsed: false, size: 180 }, chats: { collapsed: false }, files: { collapsed: false, size: 230 } },
+      grid: DEFAULT_GRID_LAYOUT,
+    },
+  }));
+  const { app } = await launch({ env: HOOKS });
+  const shell = await openRepositories(app, home.project);
+  await expand(row(shell, 'group', 'branches'));
+  await expand(row(shell, 'group', 'tags'));
+  const parts = (target: Locator): Promise<{ name: boolean; time: string; rule: number }> => target.evaluate((element) => {
+    const line = element.querySelector('[data-testid="repositories-line"]')!.getBoundingClientRect();
+    const label = element.querySelector<HTMLElement>('[data-testid="repositories-label"]')!;
+    const time = element.querySelector<HTMLElement>('[data-testid="repositories-time"]')!;
+    const box = time.getBoundingClientRect();
+    return {
+      name: label.scrollWidth <= label.clientWidth,
+      time: box.top >= line.bottom - 0.5 ? 'gone' : box.right <= line.right + 0.5 && time.scrollWidth <= time.clientWidth ? 'whole' : 'cut',
+      rule: time.dataset['hidden'] === 'true' && box.top < line.bottom ? Math.round(box.height - line.height) : 0,
+    };
+  });
+  // a short name keeps its time; a longer one keeps its name and its time goes whole
+  expect(await parts(row(shell, 'branch', 'main'))).toEqual({ name: true, time: 'whole', rule: 0 });
+  expect(await parts(row(shell, 'branch', 'candidate-release-two'))).toEqual({ name: true, time: 'gone', rule: 0 });
+  // the second of v1.0 and v1.1 repeats the first's time: its rule spans the row, never a short bar
+  const repeated = section(shell).locator('[data-testid="repositories-row"][data-kind="tag"]').filter({ has: shell.locator('[data-hidden="true"]') });
+  await expect(repeated).toHaveCount(1);
+  expect(await parts(repeated)).toEqual({ name: true, time: 'whole', rule: 0 });
 });
 
 test('a click selects a row without expanding it, the twistie expands a folder, and the expanded rows and Source control\'s View as Tree come back after a restart', async ({ foreground: _foreground, home, launch }) => {
@@ -333,7 +372,8 @@ test('with 5,000 tags, Tags reads its rows only once expanded, and fewer than 10
   await git(home, home.project, { input: lines }, 'update-ref', '--stdin');
   const { app } = await launch({ env: HOOKS });
   const shell = await openRepositories(app, home.project);
-  const tagReads = async (): Promise<number> => (await gitLog(app)).split('\n').filter((line) => line.includes('for-each-ref') && line.includes('refs/tags')).length;
+  // The Tags group's own listing; the refs digest the engine reads when the repository opens lists every namespace.
+  const tagReads = async (): Promise<number> => (await gitLog(app)).split('\n').filter((line) => line.includes('for-each-ref') && line.includes('--sort=-creatordate') && line.includes('refs/tags')).length;
   await expect(rows(shell)).toHaveCount(4);
   expect(await tagReads()).toBe(0);
 

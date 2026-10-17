@@ -22,9 +22,12 @@ export interface CredentialPrompt {
   readonly text: string;
 }
 
-// The answer, or undefined for a cancel; confirm resolves 'yes' only on the user's explicit Yes, and a notice resolves
-// undefined once closed. signal aborts when the helper goes away or the registration ends, and the prompt is then withdrawn.
-export type PromptCredential = (prompt: CredentialPrompt, signal: AbortSignal) => Promise<string | undefined>;
+// The user dismissed a prompt without answering it (Escape, Cancel, or No to a yes/no question); its call is then cancelled.
+export const PROMPT_CANCELLED: unique symbol = Symbol('promptCancelled');
+
+// The answer, PROMPT_CANCELLED, or undefined when nothing was asked (a notice, once closed) or the prompt was withdrawn;
+// confirm answers 'yes' only on the user's explicit Yes. signal aborts when the helper goes away or the registration ends.
+export type PromptCredential = (prompt: CredentialPrompt, signal: AbortSignal) => Promise<string | typeof PROMPT_CANCELLED | undefined>;
 
 export interface AskpassPaths {
   // resources/askpass/askpass.sh and ssh-askpass.sh as the build copies them, mode 0755
@@ -52,6 +55,8 @@ export type AskpassMode = 'interactive' | 'background';
 export interface AskpassRegistration {
   // the variables of the one git call this registration is for
   readonly env: Readonly<Record<string, string>>;
+  // aborts when the user cancels one of this call's prompts, before the helper hears the cancel
+  readonly cancelled: AbortSignal;
   // ends the registration: its connections are dropped, an open prompt is withdrawn and a late answer is discarded
   dispose(): void;
 }
@@ -145,6 +150,7 @@ interface Registration {
   readonly label: string;
   readonly nonce: Buffer;
   readonly ended: AbortController;
+  readonly cancelled: AbortController;
   loggedRefusal: boolean;
 }
 
@@ -235,6 +241,12 @@ export function createAskpassServer(deps: AskpassServerDeps): AskpassServer {
       const value = await Promise.race([run, gone]);
       if (withdrawn.signal.aborted) {
         socket.destroy();
+        return;
+      }
+      if (value === PROMPT_CANCELLED) {
+        // before the reply, so the call is cancelled before git can exit on the helper's failure
+        registration.cancelled.abort();
+        reply(socket, undefined);
         return;
       }
       if (value !== undefined && !isSendableAnswer(value)) {
@@ -387,7 +399,7 @@ export function createAskpassServer(deps: AskpassServerDeps): AskpassServer {
       const { handle } = await listening;
       if (disposed) throw new Error('The askpass server was disposed');
       const nonce = randomBytes(32);
-      const registration: Registration = { mode, label, nonce, ended: new AbortController(), loggedRefusal: false };
+      const registration: Registration = { mode, label, nonce, ended: new AbortController(), cancelled: new AbortController(), loggedRefusal: false };
       registrations.add(registration);
       const env: Record<string, string> = {
         GIT_ASKPASS: deps.paths.askpass,
@@ -402,6 +414,7 @@ export function createAskpassServer(deps: AskpassServerDeps): AskpassServer {
       };
       return {
         env,
+        cancelled: registration.cancelled.signal,
         dispose: () => {
           registration.ended.abort();
           registrations.delete(registration);

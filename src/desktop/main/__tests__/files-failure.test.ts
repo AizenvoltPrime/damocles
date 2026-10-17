@@ -18,6 +18,13 @@ describe('Files failures', () => {
     expect(filesFailureMessage(t, 'delete', 'a.ts', { ok: true })).toBeUndefined();
   });
 
+  it('names an entry, a new name and a failure that hold control or bidi characters by their escapes', () => {
+    expect(filesFailureMessage(t, 'rename', 'a\u202Eb.ts', { ok: false, reason: 'exists' }, 'c\u2066.ts'))
+      .toBe('Damocles could not rename a\\u{202E}b.ts: A file or folder named c\\u{2066}.ts already exists there.');
+    expect(filesFailureMessage(t, 'delete', 'a\u202Eb.ts', { ok: false, reason: 'failed', message: "EBUSY: resource busy or locked, unlink 'C:\\p\\a\u202Eb.ts'" }))
+      .toBe("Damocles could not delete a\\u{202E}b.ts: EBUSY: resource busy or locked, unlink 'C:\\p\\a\\u{202E}b.ts'");
+  });
+
   it('turns an action that throws into a failure carrying its message', async () => {
     const logged: string[] = [];
     expect(await settleFilesAction(async () => { throw new Error('boom'); }, (line) => logged.push(line))).toEqual({ ok: false, reason: 'failed', message: 'boom' });

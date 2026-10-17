@@ -32,7 +32,9 @@ notice**.
 
 > ⚠️ **A `tool_call` hook that returns `decision: "allow"` turns off human approval for matching tools.**
 > A force-allowed `Write` / `Edit` / `Bash` / `PowerShell` runs **without** the diff/approval prompt, and
-> the allow **also overrides plan mode** (the tool runs even while you're in a read-only plan). This is the
+> the allow **also overrides plan mode** (the tool runs even while you're in a read-only plan). It never
+> overrides worktree isolation: in a desktop worktree chat, a call that reaches the project folder stays
+> blocked ("Worktree chats" in `docs/invariants.md`). This is the
 > point of force-allow, and it is no more privileged than the hook command itself (which already runs
 > arbitrary local code), but treat any `allow` hook as "I trust this tool to run unattended in this
 > workspace." Use `match` to scope it as tightly as possible, and prefer global (`~/.damocles`) over

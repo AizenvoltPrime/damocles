@@ -20,6 +20,8 @@ vi.mock('electron', () => ({
 
 import { MAX_EDITOR_TEXT_CHARS, MAX_FORMAT_ERROR_CHARS, MAX_ID_LENGTH, SHELL_CHANNELS, type ShellChatList, type ShellState } from '../../preload/shell-channels';
 import { DEFAULT_SHELL_LAYOUT } from '../window-layout-store';
+import { MAX_PROJECT_KEY_LENGTH, parseRootKey, rootKey } from '../../preload/folder-root';
+import { parseFileDragPayload, serializeFileDragPayload } from '../../../shared/file-drag';
 import { SHELL_PAGE_URL, resolveAppRequest } from '../protocol';
 import { ShellHost, browserPageAreaToDip, chatName, chatTag, contentBoundsToDip, isShellId, parseTerminalCreate, reportFailure, shellHtml, shellPoint, type ShellActions } from '../shell';
 import { MAX_TERMINAL_ATTACHMENT_CHARS, MAX_TERMINAL_ATTACHMENT_OMITTED_LINES } from '../../preload/terminal-attachment-cap';
@@ -33,7 +35,8 @@ import {
   TERMINAL_CHANNELS,
   isTerminalPasteChord,
 } from '../../preload/terminal-channels';
-import { SCM_CHANNELS } from '../../preload/scm-channels';
+import { MAX_SCM_ID_LENGTH, SCM_CHANNELS } from '../../preload/scm-channels';
+import { REVIEW_CHANNELS } from '../../preload/review-channels';
 import { PASTE_CHORD_CASES } from './paste-chords';
 import { isPanelSender } from '../views';
 
@@ -77,6 +80,14 @@ describe('shell argument validation', () => {
     expect(isShellId('x'.repeat(MAX_ID_LENGTH + 1))).toBe(false);
     expect(isShellId(3)).toBe(false);
     expect(isShellId({ toString: () => 'a' })).toBe(false);
+  });
+
+  it('takes the root key of a worktree of the longest project key wherever a root key is bounded', () => {
+    const key = rootKey({ projectKey: 'x'.repeat(MAX_PROJECT_KEY_LENGTH), worktreeId: 'abcd1234' });
+    expect(parseRootKey(key)).toEqual({ projectKey: 'x'.repeat(MAX_PROJECT_KEY_LENGTH), worktreeId: 'abcd1234' });
+    expect(isShellId(key)).toBe(true);
+    expect(key.length).toBeLessThanOrEqual(MAX_SCM_ID_LENGTH);
+    expect(parseFileDragPayload(serializeFileDragPayload({ projectKey: key, relativePath: 'a.ts' }))).toEqual({ projectKey: key, relativePath: 'a.ts' });
   });
 
   it('trims a chat name and accepts 1 to 200 characters', () => {
@@ -237,7 +248,7 @@ describe('ShellHost', () => {
 
   it('accepts only the sender\'s own in-range layout fields and only the shell parts as focused part', () => {
     host();
-    const { sidebarWidth, sections, sectionOrder, search, scm, repositories } = DEFAULT_SHELL_LAYOUT;
+    const { sidebarWidth, sections, sectionOrder, search, scm, repositories, graph } = DEFAULT_SHELL_LAYOUT;
     ipc.listeners.get(SHELL_CHANNELS.sidebarLayout)!(own, { sidebarWidth: 100, sections, search });
     // A whole layout reaches main as the sidebar's fields alone, so a stale copy of the grid or the visibility never lands.
     ipc.listeners.get(SHELL_CHANNELS.sidebarLayout)!(own, { ...DEFAULT_SHELL_LAYOUT, sidebarVisible: false });
@@ -247,7 +258,7 @@ describe('ShellHost', () => {
     ipc.listeners.get(SHELL_CHANNELS.focusedPart)!(own, 'sidebar');
     ipc.listeners.get(SHELL_CHANNELS.focusedPart)!(own, 'editor');
     ipc.listeners.get(SHELL_CHANNELS.focusedPart)!(own, null);
-    expect(vi.mocked(actions.setSidebarLayout).mock.calls).toEqual([[{ sidebarWidth, sections, sectionOrder, search, scm, repositories }]]);
+    expect(vi.mocked(actions.setSidebarLayout).mock.calls).toEqual([[{ sidebarWidth, sections, sectionOrder, search, scm, repositories, graph }]]);
     expect(vi.mocked(actions.setGridSizes).mock.calls).toEqual([[{ sideWidth: 640, bottomHeight: 300 }]]);
     expect((actions.setFocusedPart as ReturnType<typeof vi.fn>).mock.calls).toEqual([['sidebar'], ['editor'], [null]]);
     expect(lines).toContain('[shell] ignoring a malformed sidebar layout');
@@ -1015,18 +1026,19 @@ describe('ShellHost source control channels', () => {
     { sender: contents, senderFrame: { url: 'app://damocles/webview/index.html', parent: null } },
   ];
 
-  it('refuses every damocles:scm:* invoke from a sender other than the window page\'s main frame, before main sees it', async () => {
+  it('refuses every damocles:scm:* and damocles:review:* invoke from a sender other than the window page\'s main frame, before main sees it', async () => {
     ipc.handlers.clear();
     ipc.listeners.clear();
     contents.removeAllListeners();
-    const scm = Object.fromEntries(['state', 'select', 'run', 'commit', 'generateMessage', 'fileDiff', 'copy', 'commitInput', 'amend', 'artifacts'].map((name) => [name, vi.fn(async () => ({ ok: true }))]));
-    new ShellHost(window, { scm } as unknown as ShellActions, () => undefined, () => undefined);
-    const invokes = Object.values(SCM_CHANNELS).filter((channel) => ipc.handlers.has(channel));
-    expect(invokes).toHaveLength(10);
+    const scm = Object.fromEntries(['state', 'select', 'run', 'commit', 'generateMessage', 'fileDiff', 'copy', 'commitInput', 'amend', 'artifacts', 'quickDiffBase', 'blame', 'timeline', 'history', 'commitDetails', 'mergeInputs', 'mergeFile', 'resource'].map((name) => [name, vi.fn(async () => ({ ok: true }))]));
+    const review = Object.fromEntries(['fileDiff', 'setScope', 'send', 'discard', 'setDrafts'].map((name) => [name, vi.fn(async () => ({ ok: true }))]));
+    new ShellHost(window, { scm, review } as unknown as ShellActions, () => undefined, () => undefined);
+    const invokes = [...Object.values(SCM_CHANNELS), ...Object.values(REVIEW_CHANNELS)].filter((channel) => ipc.handlers.has(channel));
+    expect(invokes).toHaveLength(23);
     for (const channel of invokes) {
       for (const sender of foreigners) await expect(Promise.resolve(ipc.handlers.get(channel)!(sender, { repoId: 'repo-1' })), channel).rejects.toThrow('Rejected');
     }
-    for (const action of Object.values(scm)) expect(action).not.toHaveBeenCalled();
+    for (const action of [...Object.values(scm), ...Object.values(review)]) expect(action).not.toHaveBeenCalled();
     await ipc.handlers.get(SCM_CHANNELS.commitInput)!(own, { repoId: 'repo-1' });
     expect(scm['commitInput']).toHaveBeenCalledWith({ repoId: 'repo-1' });
   });

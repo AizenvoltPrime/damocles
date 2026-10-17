@@ -1,15 +1,19 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, reactive, ref, shallowRef, triggerRef, useId, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { useVirtualList } from '@vueuse/core';
 import { Check, Ellipsis, List, ListTree, RefreshCw, TriangleAlert } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import { remPx } from '@/composables/useRemPx';
 import { FILE_DRAG_MIME, serializeFileDragPayload } from '@shared/file-drag';
 import { SCM_STATUS_LIMIT, type ScmChange, type ScmCommitVariant, type ScmGroup, type ScmRepoSnapshot, type ScmArtifactsResult, type ScmRunRequest, type ScmStashArtifact } from '../../preload/scm-channels';
-import type { DamoclesShellApi, ShellPlatform } from '../../preload/shell-channels';
+import type { DamoclesShellApi, ShellPlatform, ShownFolder } from '../../preload/shell-channels';
+import { parseRootKey } from '../../preload/folder-root';
 import SidebarSection from '../components/SidebarSection.vue';
+import FilesBranchChip from '../components/FilesBranchChip.vue';
+import { useOuterVirtualList } from '../outer-virtual-list';
 import { SCM_STORE } from './scm-store';
+import { EDITOR_STORE } from '../editor/editor-store';
+import { resolveAll } from '../editor/merge/conflict-parser';
 import { changeCount, changesUnder, flattenChanges, groupKey, STASH_GROUP_KEY, type ScmRow, type StashList } from './scm-list';
 import { visibleText } from '@shared/visible-text';
 import { actionOf, actionsMenu, COMMIT_VARIANTS, folderMenu, groupActions, groupMenu, isStashRowAction, moreActionsMenu, rowMenu, STASH_GROUP_ACTIONS, stashRowCall, stashRowMenu, toOverlayMenu, type ScmAction, type ScmMenuNode, type ScmSortKey, type ScmViewMode, type StashRowAction } from './scm-menus';
@@ -33,16 +37,18 @@ const props = defineProps<{
   sortKey: ScmSortKey;
   collapsed: boolean;
   bodySize?: number | undefined;
+  // the selected project's shown folder: the header names the place source control works on
+  shown?: ShownFolder | undefined;
+  newChatInWorktreeShortcut?: string | undefined;
 }>();
 const emit = defineEmits<{ toggle: []; expand: []; viewOptions: [patch: { viewMode?: ScmViewMode; sortKey?: ScmSortKey }] }>();
 const { t } = useI18n();
 const store = inject(SCM_STORE)!;
+const editor = inject(EDITOR_STORE)!;
 
 // rem of a group header (the prototype's 24px) and of a change row (26px).
 const GROUP_REM = 1.5;
 const ROW_REM = 1.625;
-// rem the tree keeps when the section is shorter than its controls: three change rows and its pb-2. The body scrolls instead.
-const TREE_MIN_REM = 3 * ROW_REM + 0.5;
 // ms a small change keeps the list's leave and move transitions armed, past their .22s
 const ARMED_MS = 600;
 // More added and removed rows than this in one update snap into place instead of animating (a checkout, a big stage).
@@ -56,6 +62,7 @@ const helpId = useId();
 const commitBox = ref<InstanceType<typeof CommitBox> | null>(null);
 const listWrapper = ref<HTMLElement | null>(null);
 const body = ref<HTMLElement | null>(null);
+const tree = ref<HTMLElement | null>(null);
 const refreshing = ref(false);
 // keys of collapsed groups and folders per repository, for the run
 const collapsedKeys = shallowRef(new Map<string, Set<string>>());
@@ -128,7 +135,7 @@ const rows = computed<ScmRow[]>(() => (snapshot.value
   ? flattenChanges(snapshot.value, { viewMode: props.viewMode, sortKey: props.sortKey, collapsed: collapsedOf(repoId.value), statusText }, stashes.value)
   : []));
 const rowHeight = (row: ScmRow | undefined): number => remPx(row?.kind === 'group' || row?.kind === 'stashGroup' ? GROUP_REM : ROW_REM);
-const { list: visibleRows, containerProps, wrapperProps } = useVirtualList(rows, { itemHeight: (index) => rowHeight(rows.value[index]), overscan: 10 });
+const { list: visibleRows, wrapperStyle, reveal, viewHeight } = useOuterVirtualList(rows, { scroller: body, list: tree, itemHeight: rowHeight, overscan: 10 });
 
 const branchOf = (id: string): string => {
   const head = store.snapshots.value.get(id)?.head;
@@ -324,7 +331,17 @@ async function runAction(action: ScmAction, target?: { group: ScmGroup; row?: Ex
     }
     case 'openChanges': if (path !== undefined && target) await run({ op: 'openChanges', repoId: id, path, group: target.group }); break;
     case 'openFile': if (path !== undefined) await run({ op: 'openFile', repoId: id, path }); break;
+    case 'compareWithWorkspace': if (path !== undefined) await run({ op: 'compareWithWorkspace', repoId: id, path }); break;
     case 'openFileHead': if (path !== undefined) await run({ op: 'openFileHead', repoId: id, path }); break;
+    case 'openTimeline': if (path !== undefined) await run({ op: 'openTimeline', repoId: id, path }); break;
+    case 'resolveInMergeEditor': if (path !== undefined) await run({ op: 'openMergeEditor', repoId: id, path }); break;
+    case 'acceptAllCurrent':
+    case 'acceptAllIncoming': {
+      if (path === undefined) break;
+      const choice = action === 'acceptAllCurrent' ? 'current' : 'incoming';
+      await editor.editRepoFile(id, path, () => run({ op: 'openFile', repoId: id, path }), (text) => resolveAll(text, choice));
+      break;
+    }
     case 'reveal': if (path !== undefined) await run({ op: 'reveal', repoId: id, path }); break;
     case 'mention': if (path !== undefined) await run({ op: 'mention', repoId: id, path }); break;
     case 'copyPath': if (path !== undefined) await store.api.copy({ repoId: id, kind: 'path', value: path }); break;
@@ -418,7 +435,7 @@ async function openRowMenu(row: ScmRow, anchor: Anchor | undefined): Promise<voi
     if (action) await runAction(action, { group: row.group });
     return;
   }
-  const nodes: ScmMenuNode[] = row.kind === 'change' ? rowMenu(row.group, row.change) : folderMenu(row.group);
+  const nodes: ScmMenuNode[] = row.kind === 'change' ? rowMenu(row.group, row.change, parseRootKey(props.projectKey)?.worktreeId !== undefined) : folderMenu(row.group);
   const caption = row.kind === 'change' ? visibleText(row.change.path) : visibleText(row.path);
   const action = await showMenu(nodes, t('scm.rowMenu', { name: visibleText(row.name) }), anchor, caption);
   if (action) await runAction(action, { group: row.group, row });
@@ -456,44 +473,22 @@ const focusedIndex = computed(() => {
   return index >= 0 ? index : 0;
 });
 const rowElement = (key: string): HTMLElement | null =>
-  containerProps.ref.value?.querySelector<HTMLElement>(`[data-row-key="${CSS.escape(key)}"]`) ?? null;
-
-function revealIndex(index: number): void {
-  const container = containerProps.ref.value;
-  if (!container || index < 0) return;
-  const top = rows.value.slice(0, index).reduce((sum, row) => sum + rowHeight(row), 0);
-  const height = rowHeight(rows.value[index]);
-  if (top < container.scrollTop) container.scrollTop = top;
-  else if (top + height > container.scrollTop + container.clientHeight) container.scrollTop = top + height - container.clientHeight;
-}
+  tree.value?.querySelector<HTMLElement>(`[data-row-key="${CSS.escape(key)}"]`) ?? null;
 
 async function focusRow(index: number): Promise<void> {
   const clamped = Math.min(Math.max(index, 0), rows.value.length - 1);
   const row = rows.value[clamped];
   if (!row) return;
   focusedKey.value = row.key;
-  revealIndex(clamped);
+  reveal(clamped);
   await nextTick();
-  const element = rowElement(row.key);
-  if (!element) return;
-  element.focus({ preventScroll: true });
-  revealInBody(element);
-}
-
-// A row the tree shows can still sit past the body's edge while the body is scrolled.
-function revealInBody(element: HTMLElement): void {
-  const scroller = body.value;
-  if (!scroller) return;
-  const view = scroller.getBoundingClientRect();
-  const box = element.getBoundingClientRect();
-  if (box.top < view.top) scroller.scrollTop -= view.top - box.top;
-  else if (box.bottom > view.bottom) scroller.scrollTop += box.bottom - view.bottom;
+  rowElement(row.key)?.focus({ preventScroll: true });
 }
 
 // A focused row the list scrolls out of view unmounts; the tree keeps focus so the keys still reach it. This runs before the
 // patch, so it reads the rendered window, not the DOM, which still holds the row.
 watch(visibleRows, (list) => {
-  const container = containerProps.ref.value;
+  const container = tree.value;
   const key = focusedKey.value;
   if (!container || key === null || !container.contains(document.activeElement) || document.activeElement === container) return;
   if (!list.some(({ data }) => data.key === key)) container.focus({ preventScroll: true });
@@ -515,7 +510,7 @@ function onKeydown(event: KeyboardEvent): void {
   const index = focusedIndex.value;
   const row = rows.value[index];
   if (!row || event.ctrlKey || event.metaKey || event.altKey) return;
-  const page = Math.max(1, Math.floor((containerProps.ref.value?.clientHeight ?? 0) / remPx(ROW_REM)) - 1);
+  const page = Math.max(1, Math.floor(viewHeight.value / remPx(ROW_REM)) - 1);
   const expandable = row.kind === 'group' || row.kind === 'folder' || row.kind === 'stashGroup';
   switch (event.key) {
     case 'ArrowDown': void focusRow(index + 1); break;
@@ -589,8 +584,19 @@ const toolbarButton = 'size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border
     :collapsed="collapsed"
     :body-size="bodySize"
     data-testid="scm-section"
+    :has-chip="!!shown?.worktree"
     @toggle="emit('toggle')"
   >
+    <template #chip>
+      <Transition name="t-chip">
+        <FilesBranchChip
+          v-if="shown?.worktree"
+          :api="api"
+          :shown="shown"
+          :new-chat-shortcut="newChatInWorktreeShortcut"
+        />
+      </Transition>
+    </template>
     <template #badge>
       <Transition name="t-badge">
         <span
@@ -701,14 +707,14 @@ const toolbarButton = 'size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border
           :key="card.id"
           :card="card"
         />
-        <!-- One scroll container when the section is shorter than the controls and the tree's minimum, as VS Code's SCM view
-             scrolls its input with its changes, so every change stays reachable. -->
+        <!-- The one scroll container for the controls and the tree, as VS Code's SCM view renders its input as a row of its
+             tree. relative: the tree's offsetTop must be in the body's scroll space (useOuterVirtualList). -->
         <div
           v-else-if="ready && snapshot && view"
           ref="body"
           :key="'ready'"
           data-testid="scm-body"
-          class="flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto"
+          class="relative flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto"
         >
           <div class="flex shrink-0 flex-col gap-2 px-2.5 pt-0.5 pb-2">
             <RepoPicker
@@ -768,10 +774,11 @@ const toolbarButton = 'size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border
               />{{ t('scm.tooManyChanges', { limit: String(SCM_STATUS_LIMIT) }) }}
             </p>
           </div>
-          <!-- A virtualized tree (groups, folders and changes flattened, roving tabindex); no shadcn part virtualizes a tree. -->
+          <!-- A virtualized tree (groups, folders and changes flattened, roving tabindex); no shadcn part virtualizes a tree.
+               overflow-x-clip, not hidden: hidden would make the tree a vertical scroll container of its own. -->
           <div
-            v-bind="containerProps"
             :id="treeId"
+            ref="tree"
             role="tree"
             tabindex="-1"
             data-testid="scm-tree"
@@ -779,13 +786,12 @@ const toolbarButton = 'size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border
             :aria-label="t('scm.treeLabel', { name: repo ? visibleText(repo.label) : projectName })"
             :aria-describedby="helpId"
             :aria-busy="busy || undefined"
-            :style="{ minHeight: `${TREE_MIN_REM}rem` }"
-            class="flex-1 overflow-x-hidden px-1.5 pb-2 outline-none"
+            class="shrink-0 grow overflow-x-clip px-1.5 pb-2 outline-none"
             @keydown="onKeydown"
           >
             <div
               ref="listWrapper"
-              v-bind="wrapperProps"
+              :style="wrapperStyle"
             >
               <!-- css off unless armed: a CSS-mode leave keeps a row a scroll unmounted in the DOM for two frames, and Chromium's
                  scroll anchoring then pulls the scroll position back. -->

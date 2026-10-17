@@ -23,8 +23,8 @@ import {
   type AgentInvocationData,
 } from '../agent-records';
 import { TOOL_AGENT } from '../../../shared/tool-names';
-import { ensurePiSessionDir } from './session-dir';
-import { resolvePiSessionFile } from './reading';
+import * as path from 'path';
+import { piSessionDirOf, resolvePiSessionFile } from './reading';
 import { promptUserIdsOnBranch, rewindableUserIdsOnBranch } from './rewind';
 import { promptTest } from './prompt-index';
 import { extractOriginalInputs } from './original-input';
@@ -34,8 +34,8 @@ import { isSteerData } from './steer';
 import { DAMOCLES_STEER_ENTRY } from './constants';
 import { storedTypedText } from './prompt-context';
 import { extractTerminalAttachmentCounts } from './terminal-attachments';
-import { splitTerminalAttachments, terminalAttachmentInfo } from '../../terminal-attachment';
-import type { TerminalAttachmentInfo } from '../../../shared/types/terminal-attachment';
+import { attachmentInfo, splitTerminalAttachments } from '../../terminal-attachment';
+import type { ChatAttachmentInfo } from '../../../shared/types/chat-attachment';
 import { toImageBlocks } from '../branch-text';
 import { resultImageCount } from '../tool-result-text';
 import { sessionUsageMessage, type SessionUsageMessage } from '../session-usage';
@@ -61,7 +61,7 @@ interface ReplayUser {
   entryId: string;
   content: string;
   contentBlocks?: ContentBlock[];
-  terminalAttachments?: TerminalAttachmentInfo[];
+  terminalAttachments?: ChatAttachmentInfo[];
   isMidStream?: boolean;
   /** Present on a prompt only; a user entry delivered mid-run consumes no index. */
   promptIndex?: number;
@@ -245,7 +245,7 @@ export function reconstructMessages(
       if (!content && !Array.isArray(message?.content)) continue;
       const blocks = userContentBlocks(message?.content, attachmentCount, original);
       const sentAt = sentAtOf(entry);
-      const attachments = splitTerminalAttachments(textOf(message?.content), attachmentCount).attachments.map((attachment, index) => terminalAttachmentInfo(`${entry.id}:${index}`, attachment));
+      const attachments = splitTerminalAttachments(textOf(message?.content), attachmentCount).attachments.map((attachment, index) => attachmentInfo(`${entry.id}:${index}`, attachment));
       messages.push({
         kind: 'user',
         entryId: entry.id,
@@ -383,7 +383,7 @@ async function hydrateSubagentCards(
 
   let files: Map<string, string>;
   try {
-    files = (await indexAgentFiles(subagentsDir(ensurePiSessionDir(cwd), sessionId))).paths;
+    files = (await indexAgentFiles(subagentsDir(piSessionDirOf(cwd, sessionId), sessionId))).paths;
   } catch (err) {
     log('[session-store] indexing subagent files failed for %s: %O', sessionId, err);
     files = new Map();
@@ -499,7 +499,7 @@ export async function loadPiSessionHistory(
   let checkpointUserIds: string[];
   try {
     const openSpan = perfSpan('replay.open');
-    const sm = pi.SessionManager.open(filePath, ensurePiSessionDir(cwd));
+    const sm = pi.SessionManager.open(filePath, path.dirname(filePath));
     openSpan.end();
     const reconstructSpan = perfSpan('replay.reconstruct');
     const leafId = sm.getLeafId();

@@ -7,13 +7,14 @@ import { hasUnsafeWindowsSegment, isRelativeFilePath } from '../../shared/relati
 import { folderKey } from '../workspace-folders/folder-key';
 import type { WorkspaceFolderRegistry } from '../workspace-folders/folder-registry';
 import { t } from '../l10n';
+import { worktreeProjectOf } from '../worktrees/personal-config';
 
 // A file a renderer or main names for a chat mention: a project by key and a relative path, or a path main already holds.
 export type MentionTarget = { readonly projectKey: string; readonly relativePath: string } | { readonly path: string };
 
 export type MentionResolution =
   | { readonly ok: true; readonly path: string; readonly display: string }
-  | { readonly ok: false; readonly reason: 'outsideProject' | 'outsideChat' | 'missing' };
+  | { readonly ok: false; readonly reason: 'outsideProject' | 'outsideChat' | 'projectCopy' | 'missing' };
 
 function inside(realRoot: string, realTarget: string): boolean {
   const relative = path.relative(folderKey(realRoot), folderKey(realTarget));
@@ -68,7 +69,12 @@ export async function resolveMention(deps: MentionDeps, target: MentionTarget, c
     realFile = confined.path;
   }
   if (realChat === undefined) return { ok: false, reason: 'missing' };
-  if (!inside(realChat, realFile)) return { ok: false, reason: 'outsideChat' };
+  if (!inside(realChat, realFile)) {
+    // AD12's wrong-copy guard: the project folder's copy of a file a worktree chat has its own copy of.
+    const project = worktreeProjectOf(chatFolder);
+    const realProject = project !== undefined ? await realpathOrMissing(project) : undefined;
+    return { ok: false, reason: realProject !== undefined && inside(realProject, realFile) ? 'projectCopy' : 'outsideChat' };
+  }
   return { ok: true, path: realFile, display: path.relative(realChat, realFile).split(path.sep).join('/') };
 }
 
@@ -83,6 +89,9 @@ export async function mentionInChat(
     deps.post({ type: 'insertMention', path: resolved.path, display: resolved.display });
     return true;
   }
-  void deps.notifications.warn(resolved.reason === 'missing' ? t('The file no longer exists.') : t("This file is outside this chat's project"));
+  const message = resolved.reason === 'missing' ? t('The file no longer exists.')
+    : resolved.reason === 'projectCopy' ? t('This file is in the project folder. This chat works in its worktree.')
+      : t("This file is outside this chat's project");
+  void deps.notifications.warn(message);
   return false;
 }

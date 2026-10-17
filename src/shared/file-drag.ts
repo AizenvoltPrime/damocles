@@ -5,8 +5,8 @@ import { isRelativeFilePath } from './relative-path';
 
 export const FILE_DRAG_MIME = 'application/x-damocles-file';
 
-// Must stay equal to MAX_ID_LENGTH in src/desktop/preload/shell-channels.ts.
-const MAX_PROJECT_KEY_LENGTH = 200;
+// Must stay equal to MAX_ID_LENGTH in src/desktop/preload/shell-channels.ts; the key may be a worktree's root key.
+const MAX_PROJECT_KEY_LENGTH = 209;
 // The DataTransfer string holds two bounded fields and their JSON escaping.
 const MAX_PAYLOAD_CHARS = 16 * 1024;
 

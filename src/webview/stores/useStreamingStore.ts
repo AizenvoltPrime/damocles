@@ -2,7 +2,7 @@ import { ref, computed } from "vue";
 import { defineStore } from "pinia";
 import type { ChatMessage, ToolAbandonReason, ToolCall, QueuedMessage } from "@shared/types/session";
 import type { ContentBlock, ImageBlock, UserContentBlock } from "@shared/types/content";
-import type { TerminalAttachmentInfo } from "@shared/types/terminal-attachment";
+import type { ChatAttachmentInfo } from "@shared/types/chat-attachment";
 import { replacesToolStatus, resolveCancelledStatus, TERMINAL_TOOL_STATUSES } from "./tool-cancelled-status";
 
 export interface ToolStatusEntry {
@@ -44,7 +44,7 @@ export function buildUserMessage(
   promptIndex?: number,
   isMidStream?: boolean,
   isCommandEcho?: boolean,
-  terminalAttachments?: readonly TerminalAttachmentInfo[],
+  terminalAttachments?: readonly ChatAttachmentInfo[],
   timestamp: number = Date.now(),
 ): ChatMessage {
   const blocks = contentBlocksFromUserContent(content);
@@ -432,7 +432,7 @@ export const useStreamingStore = defineStore("streaming", () => {
     promptIndex?: number,
     isMidStream?: boolean,
     isCommandEcho?: boolean,
-    terminalAttachments?: readonly TerminalAttachmentInfo[],
+    terminalAttachments?: readonly ChatAttachmentInfo[],
   ): ChatMessage {
     flushReplayQueue();
     const msg = buildUserMessage(content, isReplay, sdkMessageId, isInjected, correlationId, promptIndex, isMidStream, isCommandEcho, terminalAttachments);

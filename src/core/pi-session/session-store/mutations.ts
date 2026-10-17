@@ -5,8 +5,8 @@ import { log } from '../../logger';
 import { deleteSessionCheckpointRefs, folderIdsInSessionFile, getRepoDir } from '../checkpoints';
 import { DAMOCLES_HOME_DIR, findSessionPlanFiles } from '../../paths';
 import { agentDataRoot, isSafeAgentPathId, subagentsDir, teamsDir } from '../agent-records';
-import { ensurePiSessionDir } from './session-dir';
 import { resolvePiSessionFile, forgetSessionMetadata } from './reading';
+import { piSessionDir } from './session-dir';
 import { DAMOCLES_USER_RENAMED_ENTRY, DAMOCLES_TAG_ENTRY } from './constants';
 import { writeUnderSessionLease } from './session-lease';
 
@@ -23,7 +23,7 @@ export async function renamePiSession(cwd: string, sessionId: string, newName: s
   const filePath = await resolvePiSessionFile(cwd, sessionId);
   if (!filePath) return;
   try {
-    const sm = pi.SessionManager.open(filePath, ensurePiSessionDir(cwd));
+    const sm = pi.SessionManager.open(filePath, path.dirname(filePath));
     sm.appendSessionInfo(newName);
     sm.appendCustomEntry(DAMOCLES_USER_RENAMED_ENTRY);
   } catch (err) {
@@ -84,7 +84,7 @@ export async function tagPiSession(cwd: string, sessionId: string, tag: string |
   const filePath = await resolvePiSessionFile(cwd, sessionId);
   if (!filePath) return;
   try {
-    const sm = pi.SessionManager.open(filePath, ensurePiSessionDir(cwd));
+    const sm = pi.SessionManager.open(filePath, path.dirname(filePath));
     sm.appendCustomEntry(DAMOCLES_TAG_ENTRY, { tag });
   } catch (err) {
     log('[session-store] tagPiSession failed for %s: %O', sessionId, err);
@@ -101,13 +101,13 @@ function legacySubagentTranscriptDir(cwd: string, sessionId: string): string {
   return path.join(DAMOCLES_HOME_DIR, 'pi', 'subagents', encodedCwd, sessionId);
 }
 
-async function deleteAgentData(cwd: string, sessionId: string): Promise<void> {
+/** Removes the agent data in `sessionDir`, the directory that holds (or held) the session's file. */
+async function deleteAgentData(cwd: string, sessionDir: string, sessionId: string): Promise<void> {
   // The id becomes a path segment, so anything that could climb out of the session dir is refused.
   if (!isSafeAgentPathId(sessionId)) {
     log('[session-store] agent data of session %s left in place: the id is not a safe path segment', sessionId);
     return;
   }
-  const sessionDir = ensurePiSessionDir(cwd);
   for (const dir of [subagentsDir(sessionDir, sessionId), teamsDir(sessionDir, sessionId), legacySubagentTranscriptDir(cwd, sessionId)]) {
     await fs.promises.rm(dir, { recursive: true, force: true }).catch((err) => log('[session-store] delete agent data %s failed: %O', dir, err));
   }
@@ -144,7 +144,8 @@ export async function deletePiSession(cwd: string, sessionId: string): Promise<{
   for (const planPath of await findSessionPlanFiles(sessionId)) {
     await fs.promises.rm(planPath, { force: true }).catch((err) => log('[session-store] delete plan file failed: %O', err));
   }
-  await deleteAgentData(cwd, sessionId);
+  // Taken from the file, which a hand-off leaves in another folder's directory; the lookup cannot find it once it is gone.
+  await deleteAgentData(cwd, filePath ? path.dirname(filePath) : piSessionDir(cwd), sessionId);
   // A folder lock can be held by another conversation's first baseline for minutes, so nothing waits on
   // this; refs it fails to remove are left to maintenance's orphan sweep (docs/invariants.md, "Checkpoints").
   // Every holder has detached, so no producer of this session writes a ref after this.

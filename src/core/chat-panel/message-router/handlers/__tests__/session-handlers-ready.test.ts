@@ -29,7 +29,8 @@ describe('ready handler — releases dialogs the restarted webview can no longer
       platform: createFakePlatform(),
       postMessage: () => calls.push('postMessage'),
       postWorkspaceFolderState: () => undefined,
-      folderRegistry: { resolve: () => undefined },
+      folderRegistry: { resolve: () => undefined, targets: () => [] },
+      worktrees: () => ({ interceptSend: () => false, resumeFolder: async (_panelId: string, _sessionId: string, folder: unknown) => ({ folder, settle: () => undefined }), viewOf: () => undefined }),
       getPanels: () => new Map(),
       storageManager: {
         getStoredSessions: async () => {
@@ -53,6 +54,53 @@ describe('ready handler — releases dialogs the restarted webview can no longer
     const ctx = { session, host: {}, panelId: 'p1', permissionHandler: {}, terminalAttachments: new TerminalAttachmentManager(() => {}), folder: { key: '/ws', fsPath: '/ws' } } as never;
     return { calls, deps, ctx, session };
   }
+
+  function waitingForPlace(overrides: (deps: Record<string, unknown>) => Record<string, unknown>) {
+    const { deps, ctx } = harness();
+    const published: unknown[] = [];
+    const place = { phase: 'none', place: 'project', canHandOff: false };
+    const live = ctx as unknown as { host: unknown; session: Record<string, unknown>; folder: object };
+    Object.assign(live.session, { setPanelToken: () => undefined, holdsSession: () => false, worktree: { publishStored: (state: unknown) => published.push(state) } });
+    const panels = new Map([['p1', { host: live.host, folder: live.folder, session: live.session }]]);
+    const base = {
+      ...deps,
+      platform: createFakePlatform({ capabilities: { worktrees: true } }),
+      getPanels: () => panels,
+      worktrees: () => ({ interceptSend: () => false, viewOf: () => undefined, placeOf: () => place }),
+    };
+    return { deps: { ...base, ...overrides(base) } as unknown as Parameters<typeof createSessionHandlers>[0], ctx, published, place };
+  }
+
+  it('tells a webview waiting to restore where the panel works when the restore fails', async () => {
+    const h = waitingForPlace((base) => ({ storageManager: { ...(base['storageManager'] as object), folderOf: async () => { throw new Error('unreadable'); } } }));
+    await expect(createSessionHandlers(h.deps).ready!({ type: 'ready', savedSessionId: 'missing' } as never, h.ctx)).rejects.toThrow('unreadable');
+    expect(h.published).toEqual([h.place]);
+  });
+
+  it('tells a webview waiting to restore where the panel works when posting the settings throws', async () => {
+    const h = waitingForPlace((base) => ({ settingsManager: { ...(base['settingsManager'] as object), sendCurrentSettings: async () => { throw new Error('settings unreadable'); } } }));
+    await expect(createSessionHandlers(h.deps).ready!({ type: 'ready', savedSessionId: 's1' } as never, h.ctx)).rejects.toThrow('settings unreadable');
+    expect(h.published).toEqual([h.place]);
+  });
+
+  it('gives the stored file\'s place to the session\'s own publisher before the replay, never to the webview directly', async () => {
+    const sent: Array<{ type: string }> = [];
+    const order: string[] = [];
+    const stored = { phase: 'ready', place: 'worktree', canHandOff: false };
+    const h = waitingForPlace((base) => ({
+      postMessage: (_host: unknown, m: { type: string }) => sent.push(m),
+      historyManager: { loadSessionHistory: async () => { order.push('replay'); return []; } },
+      storageManager: { ...(base['storageManager'] as object), folderOf: async () => (h.ctx as unknown as { folder: object }).folder },
+      worktrees: () => ({ interceptSend: () => false, viewOf: () => undefined, placeOf: () => undefined, resumeFolder: async (_p: string, _s: string, folder: unknown) => ({ folder, state: stored, settle: () => order.push('settle') }) }),
+    }));
+    const publishStored = (h.ctx as unknown as { session: { worktree: { publishStored: (state: unknown) => void } } }).session.worktree;
+    const original = publishStored.publishStored;
+    publishStored.publishStored = (state) => { order.push('place'); original(state); };
+    await createSessionHandlers(h.deps).ready!({ type: 'ready', savedSessionId: 'live-place' } as never, h.ctx);
+    expect(h.published).toEqual([stored]);
+    expect(order).toEqual(['place', 'replay', 'settle']);
+    expect(sent.some((m) => m.type === 'worktreeState' || m.type === 'noWorktreeState')).toBe(false);
+  });
 
   it('calls session.onWebviewReady()', async () => {
     const { calls, deps, ctx } = harness();
@@ -103,7 +151,7 @@ describe('ready handler — releases dialogs the restarted webview can no longer
     const recording = { ...deps, postMessage: (_host: unknown, m: { type: string }) => sent.push(m) } as unknown as Parameters<typeof createSessionHandlers>[0];
     await createSessionHandlers(recording).ready!({ type: 'ready' } as never, ctx);
     expect(sent.some((message) => message.type === 'terminalAttachmentsUpdate')).toBe(false);
-    (ctx as { terminalAttachments: TerminalAttachmentManager }).terminalAttachments.add({ source: 'selection', commandLine: null, exitCode: null, terminalTitle: 'bash', text: 'ok', omittedLines: 0 });
+    (ctx as { terminalAttachments: TerminalAttachmentManager }).terminalAttachments.add({ kind: 'terminal', source: 'selection', commandLine: null, exitCode: null, terminalTitle: 'bash', text: 'ok', omittedLines: 0 });
     await createSessionHandlers(recording).ready!({ type: 'ready' } as never, ctx);
     expect(sent.filter((message) => message.type === 'terminalAttachmentsUpdate').map((message) => message.attachments?.length)).toEqual([1]);
   });
@@ -154,7 +202,8 @@ describe('ready handler: restores the panel into the right folder', () => {
       postWorkspaceFolderState,
       switchPanelFolder,
       compassRegistry,
-      folderRegistry: { resolve: (key: string) => [A, B].find((f) => f.key === key) },
+      folderRegistry: { resolve: (key: string) => [A, B].find((f) => f.key === key), targets: () => [A, B] },
+      worktrees: () => ({ interceptSend: () => false, resumeFolder: async (_panelId: string, _sessionId: string, folder: unknown) => ({ folder, settle: () => undefined }), viewOf: () => undefined }),
       getPanels: () => new Map<string, unknown>([
         ['p1', instance],
         ...(opts.heldElsewhere ? [['p2', { host: { id: 'other' }, session: { holdsSession: (id: string) => id === opts.heldElsewhere } }] as const] : []),
@@ -285,7 +334,8 @@ describe('ready handler: paints the conversation before the session-wide lists',
       platform: createFakePlatform(),
       postMessage: (_host: unknown, m: { type: string }) => { if (m.type === 'sessionStarted') order.push('sessionStarted'); },
       postWorkspaceFolderState: () => undefined,
-      folderRegistry: { resolve: () => undefined },
+      folderRegistry: { resolve: () => undefined, targets: () => [] },
+      worktrees: () => ({ interceptSend: () => false, resumeFolder: async (_panelId: string, _sessionId: string, folder: unknown) => ({ folder, settle: () => undefined }), viewOf: () => undefined }),
       getPanels: () => new Map([['p1', panel]]),
       historyManager: { loadSessionHistory: async () => { order.push('loadSessionHistory'); } },
       storageManager: {
@@ -372,7 +422,8 @@ describe('ready handler: a conversation pi has not written yet', () => {
       platform: createFakePlatform(),
       postMessage: (_host: unknown, m: { type: string } & Record<string, unknown>) => { posted.push(m); },
       postWorkspaceFolderState: () => undefined,
-      folderRegistry: { resolve: () => undefined },
+      folderRegistry: { resolve: () => undefined, targets: () => [] },
+      worktrees: () => ({ interceptSend: () => false, resumeFolder: async (_panelId: string, _sessionId: string, folder: unknown) => ({ folder, settle: () => undefined }), viewOf: () => undefined }),
       getPanels: () => new Map([['p1', { host, session: panelSession, folder }]]),
       historyManager: { loadSessionHistory },
       storageManager: {

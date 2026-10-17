@@ -1,4 +1,4 @@
-import { computed, nextTick, shallowRef, triggerRef, type InjectionKey } from 'vue';
+import { computed, nextTick, shallowRef, triggerRef, watch, type InjectionKey } from 'vue';
 import type { editor as MonacoEditor, Uri } from 'monaco-editor/editor/editor.api';
 import {
   EDITOR_EDIT_THROTTLE_MS,
@@ -19,10 +19,17 @@ import {
   type ShellEditorTab,
 } from '../../preload/shell-channels';
 import { replaceRegExp, replacementAt } from '../../../shared/text-search';
+import { visibleText } from '@shared/visible-text';
 import { shellI18n } from '../i18n';
-import type { FormatEdit } from './format-edits';
+import { lineEdits, type FormatEdit } from './format-edits';
 
 export type ShellMonacoModule = typeof import('./monaco');
+// The commands the shown editor carries out itself: quick diff, selected ranges and conflicts (EditorCommand's git part).
+export type EditorTargetCommand = Exclude<EditorCommand, 'save' | 'saveAs' | 'close' | 'next' | 'previous' | 'formatDocument' | 'openTimeline'>;
+const TARGET_COMMANDS: ReadonlySet<EditorCommand> = new Set<EditorTargetCommand>([
+  'nextChange', 'previousChange', 'stageSelectedRanges', 'unstageSelectedRanges', 'revertSelectedRanges',
+  'acceptCurrent', 'acceptIncoming', 'acceptBoth', 'acceptAllCurrent', 'acceptAllIncoming', 'nextConflict', 'previousConflict', 'showLineBlame',
+]);
 type TextContent = Extract<ShellDocumentContent, { kind: 'text' }>;
 
 // VS Code's files.autoSaveDelay default.
@@ -409,7 +416,7 @@ export function createEditorStore(api: DamoclesShellApi, loadMonaco: () => Promi
     } catch (err) {
       // The renderer and main boundary: a rejected invoke (main logged its handler's throw) is a failed save the tab names.
       console.error(`[editor] saving ${documentId} failed`, err);
-      const name = state.value?.documents[documentId]?.name ?? tab.title;
+      const name = visibleText(state.value?.documents[documentId]?.name ?? tab.title);
       result = { ok: false, reason: 'failed', message: shellI18n.global.t('editor.saveFailed', { name }) };
     }
     if (result.ok) buffer.saved = sent;
@@ -427,9 +434,30 @@ export function createEditorStore(api: DamoclesShellApi, loadMonaco: () => Promi
     return list.length === 0 || index < 0 ? undefined : list[(index + step + list.length) % list.length];
   }
 
+  // the editor showing the active tab, which runs EditorTargetCommands on it
+  let commandTarget: { tabId: string; run: (command: EditorTargetCommand) => Promise<void> } | null = null;
+
+  /** The mounted editor of tabId takes the target commands; the returned function stops it. */
+  function setCommandTarget(tabId: string, run: (command: EditorTargetCommand) => Promise<void>): () => void {
+    const target = { tabId, run };
+    commandTarget = target;
+    return () => {
+      if (commandTarget === target) commandTarget = null;
+    };
+  }
+
   async function runCommand(command: EditorCommand): Promise<void> {
     const tab = activeTab.value;
     if (!tab) return;
+    if (TARGET_COMMANDS.has(command)) {
+      if (commandTarget?.tabId === tab.id) await commandTarget.run(command as EditorTargetCommand);
+      return;
+    }
+    if (command === 'openTimeline') {
+      const git = tab.git ?? tab.diff?.git ?? tab.timeline;
+      if (git) await api.scm.run({ op: 'openTimeline', repoId: git.repoId, path: git.path });
+      return;
+    }
     if (command === 'save' || command === 'saveAs') await save(tab, { as: command === 'saveAs' });
     else if (command === 'formatDocument') {
       const documentId = editedDocumentOf(tab);
@@ -588,6 +616,43 @@ export function createEditorStore(api: DamoclesShellApi, loadMonaco: () => Promi
     return { ok: true, replaced: edits.length };
   }
 
+  // ms an edit of a repository file waits for main to show the tab it asked to open
+  const OPEN_TAB_TIMEOUT_MS = 10_000;
+
+  /**
+   * Rewrites a repository file's open buffer as one undoable edit, opening the file first when no tab shows it, and leaves it
+   * unsaved, as VS Code's merge-conflict Accept All does on an editor it opens. False when no editable tab came to show it.
+   */
+  async function editRepoFile(repoId: string, path: string, open: () => Promise<unknown>, transform: (text: string) => string): Promise<boolean> {
+    const find = (): ShellEditorTab | undefined => tabs.value.find((tab) => tab.git?.repoId === repoId && tab.git.path === path && tab.documentId !== undefined && !tab.readOnly);
+    let tab = find();
+    if (!tab) {
+      await open();
+      tab = find() ?? await new Promise<ShellEditorTab | undefined>((resolve) => {
+        const timer = setTimeout(() => {
+          stopWatch();
+          resolve(undefined);
+        }, OPEN_TAB_TIMEOUT_MS);
+        const stopWatch = watch(tabs, () => {
+          const found = find();
+          if (!found) return;
+          clearTimeout(timer);
+          stopWatch();
+          resolve(found);
+        });
+      });
+    }
+    if (tab?.documentId === undefined) return false;
+    const target = await model(tab.documentId);
+    const text = target.getValue();
+    const edits = lineEdits(text, transform(text));
+    if (edits.length === 0) return true;
+    target.pushStackElement();
+    target.pushEditOperations([], edits.map((edit) => ({ range: edit.range, text: edit.text })), () => null);
+    target.pushStackElement();
+    return true;
+  }
+
   // Documents no tab shows any more: their models go after the editors showing them unmounted, and after main has every keystroke.
   function release(): void {
     const open = new Set(tabs.value.map((tab) => tab.id));
@@ -736,6 +801,8 @@ export function createEditorStore(api: DamoclesShellApi, loadMonaco: () => Promi
     focusOverlay,
     formatting,
     setFocusOverlay,
+    setCommandTarget,
+    editRepoFile,
     resolveConflict,
     monaco,
     load,

@@ -84,6 +84,26 @@ body {
   animation: d-pop-out 0.12s ease-in both;
 }
 
+/* The New split button's menu drops from under the button and shrinks back there; flipped above it, it rises from it. */
+.new-chat-menu {
+  transform-origin: top;
+  animation: d-pop 0.16s var(--ease-out) both;
+}
+
+.overlay-pop-leave-active > .new-chat-menu {
+  transition: none;
+  animation: d-pop-out 0.12s ease-in both;
+}
+
+.new-chat-menu[data-placement="above"] {
+  transform-origin: bottom;
+  animation-name: d-pop-top;
+}
+
+.overlay-pop-leave-active > .new-chat-menu[data-placement="above"] {
+  animation-name: d-pop-top-out;
+}
+
 /* A center row arriving with the open center rises in, a step after the one above it; virtualized rows never animate. */
 .center-row-arrive {
   animation: o-up 0.22s var(--ease-out) both;

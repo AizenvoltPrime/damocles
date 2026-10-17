@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import type { TerminalAttachmentInfo } from "@shared/types/terminal-attachment";
-import { terminalAttachmentLabel } from "@/utils/terminal-attachment-label";
+import type { ChatAttachmentInfo } from "@shared/types/chat-attachment";
+import { chatAttachmentLabel } from "@/utils/chat-attachment-label";
+import CommitAttachmentChip from "./CommitAttachmentChip.vue";
 import TerminalAttachmentChip from "./TerminalAttachmentChip.vue";
 
-// The composer's pending terminal attachments; each chip pops in when the host adds it and shrinks out when it leaves.
-const props = defineProps<{ attachments: readonly TerminalAttachmentInfo[] }>();
+// The composer's pending attachments, terminal output and commits; each chip pops in when the host adds it and shrinks out
+// when it leaves.
+const props = defineProps<{ attachments: readonly ChatAttachmentInfo[] }>();
 const emit = defineEmits<{ remove: [id: string]; focusComposer: [] }>();
 const { t } = useI18n();
 
@@ -29,13 +31,13 @@ function onRemove(id: string): void {
 watch(() => props.attachments, (next, before) => {
   const known = new Set(before?.map((attachment) => attachment.id));
   const added = next.filter((attachment) => !known.has(attachment.id));
-  if (added.length > 0) announcement.value = added.map((attachment) => t("terminalAttachment.added", { label: terminalAttachmentLabel(attachment, t) })).join(" ");
+  if (added.length > 0) announcement.value = added.map((attachment) => t(attachment.kind === "commit" ? "commitAttachment.added" : "terminalAttachment.added", { label: chatAttachmentLabel(attachment, t) })).join(" ");
   const pending = refocus;
   if (!pending || next.some((attachment) => attachment.id === pending.id)) return;
   refocus = null;
   const target = next[Math.min(pending.index, next.length - 1)];
   void nextTick(() => {
-    if (target) chipItem(target.id)?.querySelector<HTMLElement>('[data-testid="terminal-attachment-preview-button"]')?.focus();
+    if (target) chipItem(target.id)?.querySelector<HTMLElement>('[data-testid$="-attachment-preview-button"]')?.focus();
     else emit("focusComposer");
   });
 });
@@ -68,7 +70,14 @@ function pinLeaving(element: Element): void {
         role="listitem"
         class="min-w-0"
       >
+        <CommitAttachmentChip
+          v-if="attachment.kind === 'commit'"
+          :attachment="attachment"
+          removable
+          @remove="onRemove"
+        />
         <TerminalAttachmentChip
+          v-else
           :attachment="attachment"
           removable
           @remove="onRemove"

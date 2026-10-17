@@ -227,7 +227,7 @@ async function buildMemoryContext(
     await memory.ensureInitialized();
     return await memory.buildInjectionContext({
       sessionId: sessionId || null,
-      workspace: panel.getSystemPromptEnv().cwd,
+      workspace: panel.memoryWorkspace(),
       activeFile,
       prompt: userText,
       live,

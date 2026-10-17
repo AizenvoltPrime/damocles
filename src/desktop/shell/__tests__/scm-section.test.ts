@@ -25,12 +25,13 @@ const snapshot = (repoId: string, groups: Partial<ScmRepoSnapshot['groups']>): S
   remotes: [],
   running: null,
   lastRemote: null,
+  revision: 0,
 });
 
 const view = (repoIds: readonly string[], selected: string): ScmView => ({
   projectKey: 'p1',
   state: 'ready',
-  repos: repoIds.map((repoId) => ({ repoId, label: repoId, displayPath: repoId, kind: 'nested' as const })),
+  repos: repoIds.map((repoId) => ({ repoId, label: repoId, displayPath: repoId, kind: 'nested' as const, root: `/w/alpha/${repoId}` })),
   selectedRepoId: selected,
   closedCount: 0,
   unsafePaths: [],
@@ -74,6 +75,7 @@ async function mountSection(snapshots: readonly ScmRepoSnapshot[], viewMode: 'li
 }
 
 const tree = (wrapper: VueWrapper) => wrapper.get('[data-testid="scm-tree"]');
+const body = (wrapper: VueWrapper) => wrapper.get('[data-testid="scm-body"]');
 const focusedKey = (): string | null | undefined => document.activeElement?.getAttribute('data-row-key');
 
 async function press(key: string, init: KeyboardEventInit = {}): Promise<void> {
@@ -161,19 +163,20 @@ describe('the Source control tree', () => {
     const many = snapshot('r1', { workingTree: Array.from({ length: 80 }, (_, index) => change(`f${String(index).padStart(2, '0')}.ts`)) });
     const { wrapper } = await mountSection([many]);
     const container = tree(wrapper).element as HTMLElement;
-    Object.defineProperty(container, 'clientHeight', { configurable: true, value: 200 });
-    container.dispatchEvent(new Event('scroll'));
+    const scroller = body(wrapper).element as HTMLElement;
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 200 });
+    scroller.dispatchEvent(new Event('scroll'));
     await flushPromises();
     await focusRow(wrapper, 'workingTree:f00.ts');
     expect(focusedKey()).toBe('workingTree:f00.ts');
-    container.scrollTop = 1500;
-    container.dispatchEvent(new Event('scroll'));
+    scroller.scrollTop = 1500;
+    scroller.dispatchEvent(new Event('scroll'));
     await flushPromises();
     expect(wrapper.find('[data-row-key="workingTree:f00.ts"]').exists()).toBe(false);
     expect(document.activeElement).toBe(container);
     await press('End');
-    expect(container.scrollTop).toBeGreaterThan(1500);
-    expect(container.contains(document.activeElement)).toBe(true);
+    expect(scroller.scrollTop).toBeGreaterThan(1500);
+    expect(focusedKey()).toBe('stashes:note');
   });
 
   it('fades a row\'s inline actions in as hover or focus reveals them, and keeps a selected row\'s still', async () => {

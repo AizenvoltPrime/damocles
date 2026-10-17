@@ -236,6 +236,7 @@ const extensionPanel = (h: PermissionHandler): PanelGateContext => ({
   isPlanMode: () => false,
   budgetStopRequested: () => false,
   getSessionModel: () => 'claude-opus-4-8',
+  memoryWorkspace: () => WS,
   getSystemPromptEnv: () => ({ cwd: WS, model: 'claude-opus-4-8', isGitRepo: false, platform: process.platform, shell: 'bash', osVersion: 'test', compassEnabled: false, thinkingDisabled: false }),
   getPlanFilePath: () => path.join(DAMOCLES_PLANS_DIR, 'plan-test.md'),
   postMessage: () => undefined,

@@ -2,7 +2,7 @@
 import { computed, provide, ref, shallowRef, toRaw, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useElementSize, useWindowSize } from '@vueuse/core';
-import { boundRepositoryViewStates, MAX_SEARCH_VIEW_STATES, MIN_SECTION_SIZE, MIN_SIDEBAR_WIDTH, SIDEBAR_SECTIONS, type DamoclesShellApi, type FileRef, type SearchViewState, type ShellLayout, type ScmViewOptions, type ShellSidebarLayout, type ShellState, type SidebarSectionId } from '../../preload/shell-channels';
+import { boundGraphChoices, boundRepositoryViewStates, MAX_SEARCH_VIEW_STATES, MIN_SECTION_SIZE, MIN_SIDEBAR_WIDTH, SIDEBAR_SECTIONS, type DamoclesShellApi, type FileRef, type GraphRefChoice, type SearchViewState, type ShellLayout, type ScmViewOptions, type ShellSidebarLayout, type ShellState, type SidebarSectionId } from '../../preload/shell-channels';
 import type { OverlayMenuItem } from '../../preload/overlay-channels';
 import { remPx } from '@/composables/useRemPx';
 import { atRootFont, GRID_SASH_REM, ROW_SASH_OVERLAP_REM, ROW_SASH_REM, SASH_KEY_STEP_REM, SECTION_HEADER_REM } from '../layout';
@@ -12,6 +12,7 @@ import FilesSection from './FilesSection.vue';
 import SearchSection from '../search/SearchSection.vue';
 import ScmSection from '../scm/ScmSection.vue';
 import RepositoriesSection from '../scm/RepositoriesSection.vue';
+import GraphSection from '../graph/GraphSection.vue';
 import { ALWAYS_SHOW_SECTION_ACTIONS, SECTION_ORDER, SECTION_TITLES } from './sidebar-section';
 import Sash from '../layout/Sash.vue';
 import { COLUMN_MIN_PX, gridAreas, gridMinWidth } from '../layout/layout-model';
@@ -24,8 +25,8 @@ const props = defineProps<{ api: DamoclesShellApi; state: ShellState }>();
 const { t } = useI18n();
 provide(ALWAYS_SHOW_SECTION_ACTIONS, computed(() => props.state.sidebar.alwaysShowHeaderActions));
 
-// rem: six section headers plus the five row sashes between them.
-const SECTION_CHROME_REM = 6 * SECTION_HEADER_REM + 5 * (ROW_SASH_REM - 2 * ROW_SASH_OVERLAP_REM);
+// rem: seven section headers plus the six row sashes between them.
+const SECTION_CHROME_REM = 7 * SECTION_HEADER_REM + 6 * (ROW_SASH_REM - 2 * ROW_SASH_OVERLAP_REM);
 
 const root = ref<HTMLElement | null>(null);
 const projects = ref<InstanceType<typeof ProjectsSection> | null>(null);
@@ -38,8 +39,8 @@ const { height: sidebarHeight } = useElementSize(root);
 // only when main replaced the layout itself, so a state push carrying older ones never undoes a change.
 // Shallow and raw: every change replaces the whole object, and the context bridge cannot clone a Vue proxy.
 const sidebarPart = (state: ShellLayout): ShellSidebarLayout => {
-  const { sidebarWidth, sections, sectionOrder, search, scm, repositories } = toRaw(state);
-  return { sidebarWidth, sections, sectionOrder, search, scm, repositories };
+  const { sidebarWidth, sections, sectionOrder, search, scm, repositories, graph } = toRaw(state);
+  return { sidebarWidth, sections, sectionOrder, search, scm, repositories, graph };
 };
 const layout = shallowRef<ShellSidebarLayout>(sidebarPart(props.state.layout));
 watch(() => props.state.layoutRevision, () => {
@@ -54,12 +55,12 @@ const minSection = computed(() => atRootFont(MIN_SECTION_SIZE));
 const gridMin = computed(() => gridMinWidth(gridAreas(props.state.layout.grid), atRootFont(COLUMN_MIN_PX), remPx(GRID_SASH_REM)));
 const maxWidth = computed(() => Math.max(minWidth.value, windowWidth.value - gridMin.value));
 const width = computed(() => Math.min(Math.max(layout.value.sidebarWidth, minWidth.value), maxWidth.value));
-// The first open section of Chats, Files, Search, Projects, Repositories and Source control fills the height the others leave,
+// The first open section of Chats, Files, Search, Projects, Repositories, Source control and Graph fills the height the others leave,
 // wherever the user put it, and keeps at least a section's minimum; the other open sections keep their sizes, shrinking in
 // proportion when the sidebar is too short for them.
 const sections = computed(() => layout.value.sections);
 const order = computed(() => layout.value.sectionOrder);
-const filler = computed(() => (['chats', 'files', 'search', 'projects', 'repos', 'scm'] as const).find((name) => !sections.value[name].collapsed));
+const filler = computed(() => (['chats', 'files', 'search', 'projects', 'repos', 'scm', 'graph'] as const).find((name) => !sections.value[name].collapsed));
 const sectionRoom = computed(() => sidebarHeight.value - remPx(SECTION_CHROME_REM) - minSection.value);
 const fixedSections = computed(() => order.value.filter(isSizedSection).filter((name) => !sections.value[name].collapsed && filler.value !== name));
 const sizes = computed(() => {
@@ -71,6 +72,7 @@ const filesSize = computed(() => sizes.value.files);
 const searchSize = computed(() => sizes.value.search);
 const reposSize = computed(() => sizes.value.repos);
 const scmSize = computed(() => sizes.value.scm);
+const graphSize = computed(() => sizes.value.graph);
 // Reference motion: the sidebar slides out by its own width; no transition while the user drags its edge.
 const slideStyle = computed(() => ({
   width: `${width.value}px`,
@@ -140,6 +142,9 @@ provide(SECTION_ORDER, {
 });
 
 const selectedProject = computed(() => props.state.projects.find((project) => project.key === props.state.selected.projectKey));
+// D31: Files, Search, Source control and Repositories read the folder shown for the selected project, by its root key.
+const shownFolder = computed(() => (selectedProject.value ? props.state.shownFolders[selectedProject.value.key] : undefined));
+const viewKey = computed(() => shownFolder.value?.rootKey ?? selectedProject.value?.key);
 
 // A collapsed section keeps the size it had, so it reopens at that size even after the sidebar got shorter.
 function report(): void {
@@ -155,6 +160,7 @@ function report(): void {
       search: settled('search', searchSize.value),
       repos: settled('repos', reposSize.value),
       scm: settled('scm', scmSize.value),
+      graph: settled('graph', graphSize.value),
     },
   };
   props.api.reportSidebarLayout(layout.value);
@@ -217,6 +223,14 @@ function saveSearchView(projectKey: string, state: SearchViewState): void {
 function saveRepositoryRows(projectKey: string, rows: readonly string[]): void {
   const { [projectKey]: _previous, ...others } = layout.value.repositories;
   layout.value = { ...layout.value, repositories: boundRepositoryViewStates({ ...others, [projectKey]: rows }) };
+  report();
+}
+
+// The Graph's ref choice for a repository (AD8), that repository now the newest; main takes the report only within the bounds
+// boundGraphChoices keeps.
+function saveGraphChoice(root: string, choice: GraphRefChoice): void {
+  const { [root]: _previous, ...others } = layout.value.graph;
+  layout.value = { ...layout.value, graph: boundGraphChoices({ ...others, [root]: choice }) };
   report();
 }
 
@@ -327,6 +341,7 @@ defineExpose({
       :project-name="selectedProject?.name ?? t('projects.home')"
       :selected-chat-id="state.selected.chatId"
       :new-chat-shortcut="state.shortcuts.newChat"
+      :new-chat-in-worktree-shortcut="state.shortcuts.newChatInWorktree"
       :collapsed="layout.sections.chats.collapsed"
       @toggle="toggleSection('chats')"
     />
@@ -334,7 +349,9 @@ defineExpose({
     <FilesSection
       ref="files"
       :api="api"
-      :project-key="selectedProject?.key"
+      :project-key="viewKey"
+      :shown="shownFolder"
+      :new-chat-in-worktree-shortcut="state.shortcuts.newChatInWorktree"
       :project-name="selectedProject?.name ?? t('projects.home')"
       :platform="state.platform"
       :collapsed="layout.sections.files.collapsed"
@@ -345,7 +362,9 @@ defineExpose({
     <!-- In SIDEBAR_SECTIONS' order, so the default layout's DOM order is its visual order. -->
     <ScmSection
       :api="api"
-      :project-key="selectedProject?.key"
+      :project-key="viewKey"
+      :shown="shownFolder"
+      :new-chat-in-worktree-shortcut="state.shortcuts.newChatInWorktree"
       :project-name="selectedProject?.name ?? t('projects.home')"
       :platform="state.platform"
       :view-mode="layout.scm.viewMode"
@@ -356,9 +375,18 @@ defineExpose({
       @expand="expand('scm')"
       @view-options="saveScmView"
     />
+    <GraphSection
+      :api="api"
+      :project-key="viewKey"
+      :choices="layout.graph"
+      :collapsed="layout.sections.graph.collapsed"
+      :body-size="bodySize('graph')"
+      @toggle="toggleSection('graph')"
+      @choice="saveGraphChoice"
+    />
     <RepositoriesSection
       :api="api"
-      :project-key="selectedProject?.key"
+      :project-key="viewKey"
       :platform="state.platform"
       :expanded="selectedProject ? layout.repositories[selectedProject.key] : undefined"
       :collapsed="layout.sections.repos.collapsed"
@@ -368,7 +396,7 @@ defineExpose({
     />
     <SearchSection
       :api="api"
-      :project-key="selectedProject?.key"
+      :project-key="viewKey"
       :project-name="selectedProject?.name ?? t('projects.home')"
       :platform="state.platform"
       :saved="selectedProject ? layout.search[selectedProject.key] : undefined"

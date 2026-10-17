@@ -62,6 +62,7 @@ export interface ChatInputExposed {
   voiceSetError: (msg: string) => void;
   settleSteer: (requestId: string, delivered: boolean) => void;
   restoreQueued: (blocks: readonly UserContentBlock[]) => void;
+  appendPrompt: (text: string) => void;
 }
 
 export interface RefContext {

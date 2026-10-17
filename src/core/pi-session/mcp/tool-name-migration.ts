@@ -1,6 +1,7 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { McpRenamedToolRuleNotice } from '../../../shared/types/mcp';
+import { personalConfigRoot } from '../../worktrees/personal-config';
 import type { McpToolNameEntry } from './mcp-client-manager';
 import { legacyMcpToolName, legacyServerPrefixMap } from './naming';
 import { parseHooksFile } from '../hooks/config';
@@ -61,7 +62,7 @@ export function ownedRuleFiles(folder: string | null): { path: string; confineTo
   return [
     { path: path.join(home, '.damocles', 'settings.json') },
     { path: path.join(home, '.damocles', 'settings.local.json') },
-    ...(folder ? [{ path: path.join(folder, '.damocles', 'settings.local.json'), confineTo: path.join(folder, '.damocles') }] : []),
+    ...(folder ? [{ path: path.join(personalConfigRoot(folder), '.damocles', 'settings.local.json'), confineTo: path.join(personalConfigRoot(folder), '.damocles') }] : []),
   ];
 }
 

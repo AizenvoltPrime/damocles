@@ -4,6 +4,7 @@ import {
   clampSlotSize,
   gridMinWidth,
   slotMax,
+  slotMin,
   gridAreas,
   moveGridPane,
   slotOf,
@@ -108,6 +109,14 @@ describe('clamps', () => {
   it('scales with the minimums the caller passes at the root font', () => {
     expect(clampSlotSize(100, 2000, 375)).toBe(375);
     expect(clampSlotSize(1900, 2000, 375)).toBe(1625);
+  });
+
+  it('shares a room too narrow for two minimums equally, so the grid never reaches past the window', () => {
+    // 16px root: 300px columns are 369px, and a 1000px window less the 271px sidebar leaves 723px beside the sash
+    expect(slotMin(723, 369)).toBe(361);
+    expect(clampSlotSize(369, 723, slotMin(723, 369))).toBe(362);
+    expect(slotMin(2000, 369)).toBe(369);
+    expect(slotMin(0, 369)).toBe(369);
   });
 
   it('needs room for both columns and the sash only while both show', () => {

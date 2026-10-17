@@ -369,7 +369,7 @@ vi.mock('../fork-agent-data', async (importOriginal) => {
   return { ...actual, copyForkAgentData: vi.fn(actual.copyForkAgentData) };
 });
 
-import { PiSession } from '../pi-session';
+import { PiSession, workingFolderNote } from '../pi-session';
 import type { CheckpointService } from '../checkpoint-service';
 import { RepoManager, getGitDir, getRepoDir } from '../checkpoints';
 import { PiRuntime } from '../pi-runtime';
@@ -415,6 +415,10 @@ import type { AgentRecord } from '../subagents/types';
 import { emptyAgentUsage } from '../../../shared/usage-accounting';
 import { buildAgentStartResult, type ProjectionReader } from '../agent-start';
 import type { PanelGateContext } from '../permission-gate';
+import { worktreeIsolationBlock, WORKTREE_ISOLATION_REASON } from '../worktree-isolation';
+import { WORKTREE_ENTRY } from '../../worktrees/hand-off';
+import { installWorktreeProjectLookup } from '../../worktrees/personal-config';
+import type { WorktreeHostServices } from '../../worktrees/host';
 import { DAMOCLES_AGENT_INVOCATION_ENTRY, DAMOCLES_INTERRUPTION_NOTICE, DAMOCLES_TURN_STOPPED_ENTRY, DAMOCLES_USER_RENAMED_ENTRY } from '../session-store/constants';
 import { FORK_AT_SECOND_PROMPT, FORK_PROMPT_COUNT, STORED_CONVERSATION, STORED_PROMPT_COUNT, withPrompt } from '../session-store/__tests__/prompt-index-fixtures';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
@@ -1586,7 +1590,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
   });
 
   // --- terminal attachment sidecar and send outcome -------------------------------------------------
-  const attachmentInfo = (id: string) => ({ id, source: 'command' as const, commandLine: 'npm test', exitCode: 1, terminalTitle: 'pwsh', lineCount: 1, omittedLines: 0, preview: 'FAIL' });
+  const attachmentInfo = (id: string) => ({ id, kind: 'terminal' as const, source: 'command' as const, commandLine: 'npm test', exitCode: 1, terminalTitle: 'pwsh', lineCount: 1, omittedLines: 0, preview: 'FAIL' });
   const ATTACHED = { content: 'what failed?', terminalAttachments: [attachmentInfo('t1'), attachmentInfo('t2')] };
   const attachmentSidecars = (append: ReturnType<typeof vi.fn>) => append.mock.calls.filter((c) => c[0] === 'damocles-terminal-attachments').map((c) => c[1]);
 
@@ -5836,9 +5840,9 @@ describe('PiSession — the on-disk invariant, against a REAL pi SessionManager'
   });
 
   describe("a prompt's sidecars land when pi commits its entry", () => {
-    const output = (text: string) => ({ source: 'command' as const, commandLine: 'npm test', exitCode: 1, terminalTitle: 'pwsh', text, omittedLines: 0 });
+    const output = (text: string) => ({ kind: 'terminal' as const, source: 'command' as const, commandLine: 'npm test', exitCode: 1, terminalTitle: 'pwsh', text, omittedLines: 0 });
     const blocks = [output('FAIL a.test.ts'), output('FAIL b.test.ts')].map(formatTerminalAttachmentBlock).join('\n');
-    const info = (id: string) => ({ id, source: 'command' as const, commandLine: 'npm test', exitCode: 1, terminalTitle: 'pwsh', lineCount: 1, omittedLines: 0, preview: 'FAIL' });
+    const info = (id: string) => ({ id, kind: 'terminal' as const, source: 'command' as const, commandLine: 'npm test', exitCode: 1, terminalTitle: 'pwsh', lineCount: 1, omittedLines: 0, preview: 'FAIL' });
     const TWO_ATTACHED = [info('t1'), info('t2')];
 
     async function panelOn(file: string, messages: ExtensionToWebviewMessage[] = []): Promise<{ session: PiSession; pi: NonNullable<ReturnType<typeof H.getLastSession>>; live: realPi.SessionManager }> {
@@ -9734,5 +9738,327 @@ describe('a resumed conversation continues on the model and thinking level its f
     expect(modelValue).toBe(successor);
     expect(restored).toHaveBeenCalledExactlyOnceWith(successor, 'low');
     await session.dispose();
+  });
+});
+
+describe("PiSession's worktree isolation (D62)", () => {
+  it('checks the shell command prefix pi runs before every Bash command', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const gate = (cwdFolder() as unknown as { _panelRegistry: Map<string, PanelGateContext> })._panelRegistry.get(live.sessionId as string)!;
+    const project = path.resolve('/projects/app');
+    vi.spyOn(session.worktree, 'isolation').mockReturnValue({ workingFolder: path.resolve('/worktrees/app/aaaaaaaa'), projectPath: project, repositoryRoot: project, otherWorktrees: [], homeDir: path.resolve('/home') });
+    const prefix = H.getServices().settingsManager.getShellCommandPrefix as ReturnType<typeof vi.fn>;
+    prefix.mockReturnValue(`cd ${JSON.stringify(project)}`);
+    expect(worktreeIsolationBlock('Bash', { command: 'git add .' }, gate.worktreeIsolation!()!)).toContain(WORKTREE_ISOLATION_REASON);
+    prefix.mockReturnValue('set -e');
+    expect(worktreeIsolationBlock('Bash', { command: 'git add .' }, gate.worktreeIsolation!()!)).toBeUndefined();
+    await session.dispose();
+  });
+
+  it('reads only the command prefix, and nothing for a chat without isolation', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const gate = (cwdFolder() as unknown as { _panelRegistry: Map<string, PanelGateContext> })._panelRegistry.get(live.sessionId as string)!;
+    const settings = H.getServices().settingsManager;
+    const prefix = settings.getShellCommandPrefix as ReturnType<typeof vi.fn>;
+    const shellPath = settings.getShellPath as ReturnType<typeof vi.fn>;
+    const environment = vi.spyOn(session.worktree, 'shellEnvironment');
+    const isolation = vi.spyOn(session.worktree, 'isolation').mockReturnValue(undefined);
+    prefix.mockClear();
+    shellPath.mockClear();
+    expect(gate.worktreeIsolation!()).toBeUndefined();
+    expect(prefix).not.toHaveBeenCalled();
+    const project = path.resolve('/projects/app');
+    isolation.mockReturnValue({ workingFolder: path.resolve('/worktrees/app/aaaaaaaa'), projectPath: project, repositoryRoot: project, otherWorktrees: [], homeDir: path.resolve('/home') });
+    gate.worktreeIsolation!();
+    expect(prefix).toHaveBeenCalledTimes(1);
+    expect(shellPath).not.toHaveBeenCalled();
+    expect(environment).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+});
+
+describe("PiSession's working-folder note after a hand-off (rule 11)", () => {
+  it('holds the note given before the session started and delivers it once it starts, without a turn', async () => {
+    const session = new PiSession(makeOptions([]));
+    session.noteWorkingFolder('/worktrees/app/aaaaaaaa');
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const send = live.sendCustomMessage as ReturnType<typeof vi.fn>;
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]).toEqual([
+      { customType: 'damocles.workingFolderNote', content: workingFolderNote('/worktrees/app/aaaaaaaa'), display: false },
+      { triggerTurn: false },
+    ]);
+    expect(workingFolderNote('/worktrees/app/aaaaaaaa')).toBe('This chat now works in /worktrees/app/aaaaaaaa. Read and edit files there from now on.');
+    expect(live.prompt).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  // A guard for the first prompt after Stop then Move to project folder: no stop of the old chat reaches the resumed one.
+  it('runs the first prompt after a stopped turn and a hand-off to the project folder without aborting it', async () => {
+    const before = new PiSession(makeOptions([]));
+    await before.initializeEarly();
+    const stopped = H.getLastSession()!;
+    let finishRun = (): void => undefined;
+    (stopped.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(() => new Promise<void>((resolve) => { finishRun = resolve; }));
+    (stopped.abort as ReturnType<typeof vi.fn>).mockImplementation(async () => finishRun());
+    const running = before.sendMessage('Run sleep 30', undefined, 'c1', { content: 'Run sleep 30' });
+    await vi.waitFor(() => expect(stopped.prompt).toHaveBeenCalledTimes(1));
+    before.cancel();
+    await running;
+    await before.dispose();
+
+    const messages: ExtensionToWebviewMessage[] = [];
+    const after = new PiSession(makeOptions(messages));
+    after.setResumeSession(stopped.sessionId);
+    after.noteWorkingFolder('/project');
+    await after.initializeEarly();
+    const resumed = H.getLastSession()!;
+    expect(resumed).not.toBe(stopped);
+    await after.sendMessage('Edit c.ts', undefined, 'c2', { content: 'Edit c.ts' });
+    expect(resumed.prompt).toHaveBeenCalledTimes(1);
+    expect(resumed.abort).not.toHaveBeenCalled();
+    expect(messages.some((message) => message.type === 'sessionCancelled')).toBe(false);
+    await after.dispose();
+  });
+
+  it('delivers a note pi refused at start before the next prompt', async () => {
+    H.setSessionSetup((live) => {
+      const send = (live as unknown as { sendCustomMessage: ReturnType<typeof vi.fn> }).sendCustomMessage;
+      send.mockRejectedValueOnce(new Error('busy'));
+    });
+    try {
+      const session = new PiSession(makeOptions([]));
+      session.noteWorkingFolder('/project');
+      await session.initializeEarly();
+      const live = H.getLastSession()!;
+      const send = live.sendCustomMessage as ReturnType<typeof vi.fn>;
+      const prompt = live.prompt as ReturnType<typeof vi.fn>;
+      expect(send).toHaveBeenCalledTimes(1);
+      await session.sendMessage('go on', undefined, 'c1', { content: 'go on' });
+      const notes = send.mock.calls.filter((call) => (call[0] as { customType?: string }).customType === 'damocles.workingFolderNote');
+      expect(notes).toHaveLength(2);
+      expect(prompt).toHaveBeenCalledTimes(1);
+      expect(send.mock.invocationCallOrder[1]!).toBeLessThan(prompt.mock.invocationCallOrder[0]!);
+      await session.dispose();
+    } finally {
+      H.setSessionSetup(null);
+    }
+  });
+});
+
+describe('a read-only chat is refused by core whether or not its session started (rules 17 and 18)', () => {
+  const placedInWorktree = { type: 'custom', id: 'w1', customType: WORKTREE_ENTRY, data: { worktreeId: 'aaaaaaaa', projectPath: '/cwd', place: 'worktree' } };
+  const NO_WORKTREES_HERE = 'This chat works in a worktree, which only the Damocles app can open.';
+  const DELETED = "This chat's worktree was deleted";
+
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+    vi.mocked(resolvePiSessionFile).mockImplementation(async (_cwd, id) => `/fake/agent/sessions/cwd/2026-01-01T00-00-00-000Z_${id}.jsonl`);
+    (H.fakePi.SessionManager as Record<string, unknown>)['open'] = () => ({ kind: 'opened', getBranch: () => [] });
+    H.setSessionSetup((live) => {
+      (live as unknown as { sessionManager: Record<string, unknown> }).sessionManager['getEntries'] = () => [placedInWorktree];
+    });
+  });
+  afterEach(async () => {
+    H.setSessionSetup(null);
+    delete (H.fakePi.SessionManager as Record<string, unknown>)['open'];
+    vi.mocked(resolvePiSessionFile).mockReset();
+    await PiRuntime.disposeInstance();
+  });
+
+  /** A panel resuming a stored conversation whose latest entry places it in a worktree, before its session starts. */
+  function resumedReadOnly(messages: ExtensionToWebviewMessage[], extra?: Partial<SessionOptions>) {
+    const onSpawnFork = vi.fn<(args: ForkSpawnArgs) => Promise<void>>(async () => undefined);
+    const session = new PiSession({ ...makeOptions(messages, extra), onSpawnFork });
+    session.setResumeSession('stored');
+    return { session, onSpawnFork };
+  }
+
+  const errors = (messages: ExtensionToWebviewMessage[], type: 'error' | 'rewindError') =>
+    messages.flatMap((m) => (m.type === type ? [m.message] : []));
+
+  it('refuses a send that arrives before the session started, and runs no prompt', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session } = resumedReadOnly(messages);
+    expect(await session.sendMessage('hi', undefined, 'c1', { content: 'hi' })).toBe('unsent');
+    expect(H.getLastSession()!.prompt).not.toHaveBeenCalled();
+    expect(errors(messages, 'error')).toEqual([NO_WORKTREES_HERE]);
+    expect(messages).toContainEqual(expect.objectContaining({ type: 'interruptRecovery', correlationId: 'c1', promptContent: 'hi' }));
+    await session.dispose();
+  });
+
+  it('refuses a compaction that arrives before the session started, with no echo', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session } = resumedReadOnly(messages);
+    const accepted = vi.fn();
+    await session.compact(undefined, accepted);
+    expect(accepted).not.toHaveBeenCalled();
+    expect(H.getLastSession()!.compact).not.toHaveBeenCalled();
+    expect(errors(messages, 'error')).toEqual([NO_WORKTREES_HERE]);
+    await session.dispose();
+  });
+
+  it.each([
+    ['a file rewind', (s: PiSession) => s.rewindFiles('u1', 'code-only')],
+    ['a fork', (s: PiSession) => s.rewindFiles('u1', 'fork-conversation')],
+    ['an undo', (s: PiSession) => s.undoRewind('r1')],
+  ])('refuses %s that arrives before the session started', async (_name, act) => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session, onSpawnFork } = resumedReadOnly(messages);
+    await act(session);
+    expect(onSpawnFork).not.toHaveBeenCalled();
+    expect(errors(messages, 'rewindError')).toEqual([NO_WORKTREES_HERE]);
+    await session.dispose();
+  });
+
+  it('says the worktree was deleted on a host with worktrees, and reads a host offering the service without the capability as one without', async () => {
+    const registry = { get: () => undefined, liveChatRecordAt: () => undefined, records: () => [], liveChatRecords: () => [], onDidChange: () => ({ dispose: () => undefined }) };
+    const worktrees = {
+      registry,
+      git: () => undefined,
+      projectRepository: () => undefined,
+      onDidChangeRefs: () => ({ dispose: () => undefined }),
+      onDidChangeProjectRepository: () => ({ dispose: () => undefined }),
+    } as unknown as WorktreeHostServices;
+    for (const [capability, expected] of [[true, DELETED], [false, NO_WORKTREES_HERE]] as const) {
+      const messages: ExtensionToWebviewMessage[] = [];
+      const platform = { ...testPlatform, worktrees, capabilities: { ...testPlatform.capabilities, worktrees: capability } };
+      const { session } = resumedReadOnly(messages, { platform });
+      expect(await session.sendMessage('hi', undefined, 'c1', { content: 'hi' })).toBe('unsent');
+      expect(errors(messages, 'error')).toEqual([expected]);
+      await session.dispose();
+      await PiRuntime.disposeInstance();
+    }
+  });
+});
+
+describe('a send while a finish action holds the chat\'s worktree (D33)', () => {
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+  });
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+  });
+
+  it('goes back to the composer from every send path, with no turn started', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    vi.spyOn(session.worktree, 'finishing').mockReturnValue('apply');
+    const blocks = [{ type: 'text' as const, text: 'look' }, { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'AA==' } }];
+    expect(await session.sendMessage('expanded look', undefined, 'c1', { content: 'look', contentBlocks: blocks })).toBe('unsent');
+    expect(await session.sendMessage('internal')).toBe('unsent');
+    expect(messages.filter((m) => m.type === 'promptReturned')).toEqual([
+      { type: 'promptReturned', content: blocks, reason: 'worktreeFinishing' },
+      { type: 'promptReturned', content: [{ type: 'text', text: 'internal' }], reason: 'worktreeFinishing' },
+    ]);
+    expect(messages.some((m) => m.type === 'userMessage')).toBe(false);
+    expect((H.getLastSession() as unknown as { prompt: ReturnType<typeof vi.fn> }).prompt).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('keeps a review in its tab: nothing is sent and nothing lands in the composer', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    vi.spyOn(session.worktree, 'finishing').mockReturnValue('merge');
+    expect(await session.submitReview([{ path: 'a.ts', line: 1, side: 'new', scope: 'chat', text: 'why?' }] as never)).toBe('unsent');
+    expect(messages.some((m) => m.type === 'promptReturned' || m.type === 'userMessage')).toBe(false);
+    expect((H.getLastSession() as unknown as { prompt: ReturnType<typeof vi.fn> }).prompt).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+});
+
+describe('a resumed session stays bound to the folder the panel works in (rule 2)', () => {
+  const opened = () => vi.fn((file: string, dir: string) => ({ kind: 'opened', file, dir, getBranch: () => [] }));
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+    vi.mocked(resolvePiSessionFile).mockImplementation(async (_cwd, id) => `/fake/agent/sessions/worktree/2026-01-01T00-00-00-000Z_${id}.jsonl`);
+    (H.fakePi.SessionManager as Record<string, unknown>)['open'] = opened();
+  });
+  afterEach(async () => {
+    delete (H.fakePi.SessionManager as Record<string, unknown>)['open'];
+    vi.mocked(resolvePiSessionFile).mockReset();
+    await PiRuntime.disposeInstance();
+  });
+
+  it('opens a file another folder created with this folder as its cwd and as the directory of the next new session', async () => {
+    const open = vi.fn(() => ({ kind: 'opened', getBranch: () => [] }));
+    (H.fakePi.SessionManager as Record<string, unknown>)['open'] = open;
+    const session = new PiSession(makeOptions([]));
+    session.setResumeSession('stored');
+    await session.initializeEarly();
+    expect(open).toHaveBeenCalledWith('/fake/agent/sessions/worktree/2026-01-01T00-00-00-000Z_stored.jsonl', '/fake/agent/sessions//cwd', '/cwd');
+    await session.dispose();
+  });
+
+  it('switches a started panel to a stored file with this folder as its cwd', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const runtime = (session as unknown as { runtime: { switchSession: (...args: unknown[]) => Promise<unknown> } }).runtime;
+    const switchSession = vi.spyOn(runtime, 'switchSession');
+    session.setResumeSession('stored');
+    await session.whenReplaced();
+    expect(switchSession).toHaveBeenCalledWith('/fake/agent/sessions/worktree/2026-01-01T00-00-00-000Z_stored.jsonl', { cwdOverride: '/cwd' });
+    await session.dispose();
+  });
+
+  it('gives a switched-in file from another folder\'s directory this folder\'s directory for the next session a /clear or fork creates', async () => {
+    const open = opened();
+    (H.fakePi.SessionManager as Record<string, unknown>)['open'] = open;
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    session.setResumeSession('stored');
+    await session.whenReplaced();
+    expect(open).toHaveBeenCalledWith('/fake/agent/sessions/worktree/2026-01-01T00-00-00-000Z_stored.jsonl', '/fake/agent/sessions//cwd', '/cwd');
+    expect(H.fakePi.createAgentSessionFromServices).toHaveBeenLastCalledWith(expect.objectContaining({ sessionManager: open.mock.results[0]!.value }));
+    // A file already in this folder's directory keeps the manager pi opened.
+    vi.mocked(resolvePiSessionFile).mockImplementation(async (_cwd, id) => `/fake/agent/sessions//cwd/2026-01-01T00-00-00-000Z_${id}.jsonl`);
+    session.setResumeSession('own');
+    await session.whenReplaced();
+    expect(open).toHaveBeenCalledTimes(1);
+    await session.dispose();
+  });
+});
+
+describe("memory injection keys a worktree chat's prompts to its project (identity follows the project)", () => {
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+  });
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+  });
+
+  it("gives the injection the project as its workspace while the prompt env keeps the working folder", async () => {
+    const lookup = installWorktreeProjectLookup({
+      projectOf: (folder) => (folder === '/cwd' ? '/project' : undefined),
+      recordsOfProject: () => [],
+      get: () => undefined,
+      chatRecordFor: () => undefined,
+    });
+    try {
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      const live = H.getLastSession()!;
+      const gate = (cwdFolder() as unknown as { _panelRegistry: Map<string, PanelGateContext> })._panelRegistry.get(live.sessionId as string)!;
+      expect(gate.memoryWorkspace()).toBe('/project');
+      expect(gate.getSystemPromptEnv().cwd).toBe('/cwd');
+      await session.dispose();
+    } finally {
+      lookup.dispose();
+    }
   });
 });

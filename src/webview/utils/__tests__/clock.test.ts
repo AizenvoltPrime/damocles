@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clockFormatter, formatClock, formatDateTime, formatResetTime } from '../clock';
+import { clockFormatter, commitTime, formatClock, formatDateTime, formatResetTime } from '../clock';
 
 const AFTERNOON = new Date(2026, 4, 12, 14, 5, 9);
 const PAST_MIDNIGHT = new Date(2026, 4, 12, 0, 5, 9);
@@ -23,6 +23,24 @@ describe('24-hour clock', () => {
   it('uses the runtime locale when none is given, still on a 24-hour clock', () => {
     expect(formatClock(AFTERNOON)).toMatch(/^14.05$/);
     expect(formatClock(PAST_MIDNIGHT)).toMatch(/^00.05$/);
+  });
+});
+
+describe('commit time', () => {
+  const AT = new Date(2026, 8, 6, 19, 50).getTime();
+  const SAME_YEAR = new Date(2026, 11, 31, 9, 0).getTime();
+  const NEXT_YEAR = new Date(2027, 0, 1, 9, 0).getTime();
+
+  it('words a commit\'s time one way in every view, on a 24-hour clock in the app\'s language', () => {
+    expect(commitTime(AT, 'en', SAME_YEAR).full).toBe('Sep 6, 2026, 19:50');
+    expect(commitTime(AT, 'en-US', SAME_YEAR).full).toBe('Sep 6, 2026, 19:50');
+    expect(commitTime(AT, 'el', SAME_YEAR).full).toBe('6 Σεπ 2026, 19:50');
+  });
+
+  it('splits it into the day and the clock time for a narrow row, naming the year only when it is not this one', () => {
+    expect(commitTime(AT, 'en', SAME_YEAR)).toMatchObject({ day: 'Sep 6', clock: '19:50' });
+    expect(commitTime(AT, 'el', SAME_YEAR)).toMatchObject({ day: '6 Σεπ', clock: '19:50' });
+    expect(commitTime(AT, 'en', NEXT_YEAR)).toMatchObject({ day: 'Sep 6, 2026', clock: '19:50' });
   });
 });
 

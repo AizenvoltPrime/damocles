@@ -70,6 +70,10 @@ onMounted(async () => {
   // Subscribed before the first read, so a change between the two is not lost.
   stops.push(props.api.onState(applyState));
   stops.push(props.api.onFocusPart(focusPart));
+  // One project's shown folder (D31) between full states; the next state carries it too.
+  stops.push(props.api.onShownFolder((shown) => {
+    if (state.value) state.value = { ...state.value, shownFolders: { ...state.value.shownFolders, [shown.projectKey]: shown } };
+  }));
   // A folder link in a terminal opens it in Files, as Reveal in Files does.
   stops.push(props.api.terminal.onRevealInFiles((file) => void revealInFiles(file)));
   applyState(await props.api.getState());
