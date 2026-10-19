@@ -33,6 +33,8 @@ Line format: `[perf] <label> <ms>ms k=v ...`, with ms at one decimal. No line is
 
 The desktop app keeps V8's sampling profiler running on the main process (`src/desktop/main/stall-monitor.ts`). When its 100 ms heartbeat lands 1 s or more late, it logs a `[stall]` entry to `<userData>/logs/Damocles.log`: the blocked time, how much of it the profiler sampled busy and idle, the four heaviest call stacks with their ms, and a `.cpuprofile` of the stalled stretch in `<userData>/logs/stalls/`, which keeps the newest 20. A stall sampled busy for under 100 ms (a sleep, a pause, or a native loop outside JavaScript) logs a line that says so and keeps no profile. Open a profile in Chrome DevTools' Performance panel.
 
+On macOS the monitor runs no profiler (`mainProcessProfiler`) and logs only the blocked time. With V8 sampling main, two launches on the release workflow's macOS arm64 runners hung at the startup `git --version` spawn: the probe's own timeout never fired, and `app.close()` could not quit the app. No Windows or Linux launch hung.
+
 ## Manual procedure
 
 1. Run `npm run build`, then launch with F5 or install the VSIX. Record the machine, VS Code version, session file count and total MB, and the test conversation's size.

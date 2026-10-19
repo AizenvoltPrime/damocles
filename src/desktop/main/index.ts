@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { app, BrowserWindow, clipboard, dialog, Menu, powerMonitor, screen, session, shell as electronShell, webContents, WebContentsView, type WebContents } from 'electron';
 import { installLogSink, log, showLog } from '../../core/logger';
-import { StallMonitor } from './stall-monitor';
+import { mainProcessProfiler, StallMonitor } from './stall-monitor';
 import { getRipgrepSearchOptions, resolveRgPath } from '../../core/chat-panel/ripgrep';
 import { locateSettingsFile, saveSettingsFileText } from '../../core/chat-panel/settings-file-editor';
 import type { MentionTarget } from '../../core/chat-panel/mention-resolver';
@@ -559,7 +559,7 @@ class DesktopApp {
 
   private startStallMonitor(bootLog: (line: string) => void): StallMonitor | undefined {
     try {
-      const monitor = new StallMonitor({ dir: path.join(this.logsDir, 'stalls'), log: bootLog });
+      const monitor = new StallMonitor({ dir: path.join(this.logsDir, 'stalls'), log: bootLog, startProfile: mainProcessProfiler(process.platform) });
       this.disposables.push(monitor);
       return monitor;
     } catch (err) {

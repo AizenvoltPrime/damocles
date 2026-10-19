@@ -121,9 +121,26 @@ function formatUnsampled(blockedMs: number, summary: StallSummary): string {
 
 // Electron starts V8 with --no-freeze-flags-after-init, without which this aborts; Node's profiler reads it when created.
 // The flag is process-wide, so a DevTools profile of main that sets no interval of its own also samples at this one.
-function startV8Profile(): ProfileHandle {
+export function startV8Profile(): ProfileHandle {
   v8.setFlagsFromString(`--cpu-profiler-sampling-interval=${SAMPLE_INTERVAL_US}`);
   return v8.startCpuProfile();
+}
+
+/** The profiler that samples main on `platform`; null on macOS, where main has hung inside a child process spawn while V8 sampled it. */
+export function mainProcessProfiler(platform: NodeJS.Platform): (() => ProfileHandle) | null {
+  return platform === 'darwin' ? null : startV8Profile;
+}
+
+function formatUnprofiled(blockedMs: number): string {
+  return `[stall] the main process was blocked for ${Math.round(blockedMs)} ms; main is not sampled on this platform, so no profile`;
+}
+
+/** The running profile and the profiler that started it. */
+interface Sampling {
+  readonly start: () => ProfileHandle;
+  profile: ProfileHandle;
+  // performance.now() just before the running segment started; the profile's startTime is that moment in V8's clock
+  segmentStart: number;
 }
 
 const isProfile = (name: string): boolean => name.startsWith('stall-') && name.endsWith('.cpuprofile');
@@ -133,16 +150,13 @@ export interface StallMonitorOptions {
   // where stall profiles are written, newest KEPT_PROFILES kept
   readonly dir: string;
   readonly log: (line: string) => void;
-  // V8's sampling profiler unless a test supplies one
-  readonly startProfile?: () => ProfileHandle;
+  // null times stalls without sampling main
+  readonly startProfile: (() => ProfileHandle) | null;
 }
 
 export class StallMonitor implements Disposable {
   private readonly options: StallMonitorOptions;
-  private readonly startProfile: () => ProfileHandle;
-  private profile: ProfileHandle;
-  // performance.now() just before the running segment started; the profile's startTime is that moment in V8's clock
-  private segmentStart: number;
+  private readonly sampling: Sampling | undefined;
   private lastTick: number;
   private readonly timer: NodeJS.Timeout;
   private suspended = false;
@@ -151,9 +165,11 @@ export class StallMonitor implements Disposable {
 
   constructor(options: StallMonitorOptions) {
     this.options = options;
-    this.startProfile = options.startProfile ?? startV8Profile;
-    this.segmentStart = performance.now();
-    this.profile = this.startProfile();
+    const start = options.startProfile;
+    if (start) {
+      const segmentStart = performance.now();
+      this.sampling = { start, profile: start(), segmentStart };
+    }
     this.lastTick = performance.now();
     this.timer = setInterval(() => this.guarded(() => this.tick()), TICK_MS);
     this.timer.unref();
@@ -167,7 +183,7 @@ export class StallMonitor implements Disposable {
   resume(): void {
     this.guarded(() => {
       this.suspended = false;
-      this.rollOver();
+      if (this.sampling) this.rollOver(this.sampling);
       this.lastTick = performance.now();
     });
   }
@@ -177,7 +193,7 @@ export class StallMonitor implements Disposable {
     this.disposed = true;
     clearInterval(this.timer);
     try {
-      this.profile.stop();
+      this.sampling?.profile.stop();
     } catch (err) {
       this.options.log(`[stall] stopping the profiler failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -196,13 +212,13 @@ export class StallMonitor implements Disposable {
 
   // The next segment starts before the running one stops: a profiler left with no profile is torn down, and starting
   // one afresh walks the whole heap on this thread, measured at about 2.5 ms per MB in Electron's main process.
-  private rollOver(): { json: string; segmentStart: number } {
-    const segmentStart = this.segmentStart;
+  private rollOver(sampling: Sampling): { json: string; segmentStart: number } {
+    const segmentStart = sampling.segmentStart;
     const start = performance.now();
-    const next = this.startProfile();
-    const stopped = this.profile;
-    this.profile = next;
-    this.segmentStart = start;
+    const next = sampling.start();
+    const stopped = sampling.profile;
+    sampling.profile = next;
+    sampling.segmentStart = start;
     return { json: stopped.stop(), segmentStart };
   }
 
@@ -212,8 +228,13 @@ export class StallMonitor implements Disposable {
     const stallFrom = this.lastTick;
     this.lastTick = now;
     if (this.suspended) return;
-    if (blockedMs >= STALL_MS) this.report(this.rollOver(), stallFrom, now, blockedMs);
-    else if (now - this.segmentStart >= SEGMENT_MS) this.rollOver();
+    const sampling = this.sampling;
+    if (!sampling) {
+      if (blockedMs >= STALL_MS) this.options.log(formatUnprofiled(blockedMs));
+      return;
+    }
+    if (blockedMs >= STALL_MS) this.report(this.rollOver(sampling), stallFrom, now, blockedMs);
+    else if (now - sampling.segmentStart >= SEGMENT_MS) this.rollOver(sampling);
     else return;
     this.lastTick = performance.now();
     const spentMs = this.lastTick - now;

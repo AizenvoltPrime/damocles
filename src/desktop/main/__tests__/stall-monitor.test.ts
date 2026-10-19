@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { StallMonitor, summarizeStall, type CpuProfile, type ProfileHandle } from '../stall-monitor';
+import { mainProcessProfiler, StallMonitor, startV8Profile, summarizeStall, type CpuProfile, type ProfileHandle } from '../stall-monitor';
 
 const frame = (functionName: string, url = '', lineNumber = 0) => ({ functionName, url, lineNumber, columnNumber: 0 });
 
@@ -269,6 +269,29 @@ describe('StallMonitor', () => {
     expect(events).toEqual(['start 0', 'stop 0']);
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  it('without a profiler logs how long main was blocked, keeps no profile and stops cleanly', async () => {
+    monitor = new StallMonitor({ dir, log: (line) => lines.push(line), startProfile: null });
+    tickOnTime(700);
+    blockFor(1500);
+    monitor.suspend();
+    blockFor(60_000);
+    monitor.resume();
+    tickOnTime();
+    expect(lines).toEqual(['[stall] the main process was blocked for 1400 ms; main is not sampled on this platform, so no profile']);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(profiles()).toEqual([]);
+    monitor.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('mainProcessProfiler', () => {
+  it('samples main with V8 on Windows and Linux, and not on macOS', () => {
+    expect(mainProcessProfiler('win32')).toBe(startV8Profile);
+    expect(mainProcessProfiler('linux')).toBe(startV8Profile);
+    expect(mainProcessProfiler('darwin')).toBeNull();
+  });
 });
 
 describe('StallMonitor on V8\'s profiler', () => {
@@ -282,7 +305,7 @@ describe('StallMonitor on V8\'s profiler', () => {
   it('names the function that blocked the event loop and writes its profile', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stall-monitor-'));
     const lines: string[] = [];
-    monitor = new StallMonitor({ dir, log: (line) => lines.push(line) });
+    monitor = new StallMonitor({ dir, log: (line) => lines.push(line), startProfile: startV8Profile });
     await new Promise((resolve) => setTimeout(resolve, 150));
     function blockTheLoop(): number {
       const end = performance.now() + 1300;
