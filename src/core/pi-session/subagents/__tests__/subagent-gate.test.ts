@@ -63,6 +63,7 @@ describe('nested agents and the parent turn checkpoint', () => {
     createSubagentExtensionFactory({
       ...ctx,
       parentToolUseId: 'agent-parent-1',
+      stopSignal: new AbortController().signal,
       deferrableToolNames: [],
       checkpointBaseline: {
         folder: path.resolve('/'),
@@ -91,7 +92,7 @@ describe('nested shell cancel entries', () => {
     const shellCancel = store.forContext(() => undefined);
     const admit = vi.spyOn(shellCancel, 'admit');
     const handlers: Record<string, (event: unknown, hookCtx: unknown) => unknown> = {};
-    createSubagentExtensionFactory({ ...makeGate(false).ctx, shellCancel, parentToolUseId: 'agent-parent-1', deferrableToolNames: [] })(
+    createSubagentExtensionFactory({ ...makeGate(false).ctx, shellCancel, parentToolUseId: 'agent-parent-1', stopSignal: new AbortController().signal, deferrableToolNames: [] })(
       { on: (event: string, handler: (e: unknown, c: unknown) => unknown) => { handlers[event] = handler; } } as never,
     );
     const hookCtx = { signal: undefined, sessionManager: { getSessionId: () => 'nested' } };

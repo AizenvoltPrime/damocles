@@ -55,7 +55,7 @@ export const useUIStore = defineStore('ui', () => {
   const ideContextDefaultEnabled = ref(true);
   // True once the user toggled the chip in this conversation — then the default no longer applies.
   const ideContextUserOverride = ref(false);
-  // The composer's pending attachments (terminal output and commits) as core holds them; core owns the list, a conversation
+  // The composer's pending attachments (terminal output, commits, MCP resources) as core holds them; core owns the list, a conversation
   // reset keeps it.
   const terminalAttachments = shallowRef<readonly ChatAttachmentInfo[]>([]);
   const isCompacting = ref(false);

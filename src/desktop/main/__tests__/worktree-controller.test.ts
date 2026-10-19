@@ -552,6 +552,7 @@ describe('Delete with a dirty editor tab of the worktree', () => {
       focusTab: () => undefined,
       revealLine: () => undefined,
       showPane: () => undefined,
+      hidePane: () => undefined,
       showPaneBeside: () => undefined,
       projects: () => roots.all(),
       copy: async () => undefined,

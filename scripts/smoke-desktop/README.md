@@ -30,7 +30,7 @@ await shot(t, 'shell-prompt');
 return { options: await prompt(t).getByRole('option').allInnerTexts(), running: await running(t) };
 ```
 
-`helpers.mjs` lists every helper: `active`, `newChat`, `goTo`, `addProject`, `prepare` (YOLO off, a mode, a model and effort), `setMode`, `setYolo`, `setModel`, `send`, `slash`, `prompt`, `answerQuestion`, `waitCard` (desktop pop-up cards), `running`, `tail`, `shot`, `state`, `shell`, `overlay`, `popup`, and `app()` for the Electron main process.
+`helpers.mjs` lists every helper: `active`, `newChat` (File > New Chat), `goTo`, `addProject`, `runMenuItem` (an application menu item by its id in `src/desktop/main/commands.ts`), `prepare` (YOLO off, a mode, a model and effort), `setMode`, `setYolo`, `setModel`, `send`, `slash`, `prompt`, `answerQuestion`, `waitCard` (desktop pop-up cards), `running`, `tail`, `shot`, `state`, `shell`, `overlay`, `popup`, and `app()` for the Electron main process.
 
 Use a scratch copy of a project, never your own checkout: the agent really edits files.
 

@@ -2,6 +2,7 @@ import type { ChatMessage, ToolCall } from './session';
 import type { TeamAgentStatus } from './team';
 import type { AgentUsageTotals } from '../usage-accounting';
 import type { EffortBadgeLevel } from '../effort-badge';
+import type { AgentWindDown } from './wind-down';
 
 export interface SubagentResult {
   content: string;
@@ -34,6 +35,8 @@ export interface SubagentState {
   progressSummary?: string;
   /** Set while pi waits out the backoff before re-sending the agent's failed model call. */
   retry?: { attempt: number; maxAttempts: number };
+  /** Set while a stopped run outlasts core's notice delay winding down; never persisted. */
+  windDown?: AgentWindDown;
   isBackground?: boolean;
   /** Set on a resume call's card. `loaded` turns true once the agent's own details replace the id. */
   resume?: { agentId: string; loaded: boolean };

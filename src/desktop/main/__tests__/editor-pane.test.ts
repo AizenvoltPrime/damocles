@@ -97,6 +97,7 @@ beforeEach(() => {
     focusTab: (tabId) => events.push(`focus:${tabId}`),
     revealLine: (tabId, line, range) => events.push(`reveal:${tabId}:${line}${range ? `:${range.startColumn}` : ''}`),
     showPane: () => events.push('showPane'),
+    hidePane: () => events.push('hidePane'),
     showPaneBeside: () => events.push('showPaneBeside'),
     projects: () => roots,
     copy: async (text) => { events.push(`copy:${text}`); },
@@ -1043,5 +1044,67 @@ describe('source control tab actions', () => {
     answers = [1];
     await pane.closeActive({ cleanOnly: false });
     expect(pane.state().tabs).toHaveLength(0);
+  });
+});
+
+describe('hiding the pane with its last tab', () => {
+  const settled = () => new Promise((resolve) => setImmediate(resolve));
+
+  it('hides the pane when the last file tab closes, and not before', async () => {
+    write('a.ts', 'a');
+    write('b.ts', 'b');
+    const a = await pane.openFromUser(project.key, 'a.ts');
+    const b = await pane.openFromUser(project.key, 'b.ts');
+    if (!a.ok || !b.ok) throw new Error('not opened');
+    await pane.tabAction('close', a.tabId);
+    await settled();
+    expect(events).not.toContain('hidePane');
+    await pane.tabAction('close', b.tabId);
+    await settled();
+    expect(events.filter((event) => event === 'hidePane')).toHaveLength(1);
+  });
+
+  it('keeps the pane while a page tab is left, and hides it when the page tabs go for any reason (a close, a chat switch, the browser turned off)', async () => {
+    write('a.ts', 'a');
+    const source = pages(['p1']);
+    browser = source;
+    const a = await pane.openFromUser(project.key, 'a.ts');
+    if (!a.ok) throw new Error('not opened');
+    await pane.tabAction('close', a.tabId);
+    await settled();
+    expect(events).not.toContain('hidePane');
+    source.ids = [];
+    pane.browserTabsChanged();
+    await settled();
+    expect(events.filter((event) => event === 'hidePane')).toHaveLength(1);
+  });
+
+  it('leaves a pane the user showed with no tabs alone', async () => {
+    browser = pages([]);
+    pane.browserTabsChanged();
+    await settled();
+    pane.browserTabsChanged();
+    await settled();
+    expect(events).not.toContain('hidePane');
+  });
+
+  it('hides the pane when a worktree delete closes its last tabs', async () => {
+    write('a.ts', 'a');
+    const a = await pane.openFromUser(project.key, 'a.ts');
+    if (!a.ok) throw new Error('not opened');
+    await settled();
+    expect(pane.closeRoot(project.key, new Map())).toBe(true);
+    await settled();
+    expect(events).toContain('hidePane');
+  });
+
+  it('keeps the pane when a replace preview takes over the only tab', async () => {
+    write('src/app.ts', 'disk');
+    pane.openReplacePreview({ projectKey: project.key, relativePath: 'src/app.ts' }, 'disk', 'replaced');
+    await settled();
+    pane.openReplacePreview({ projectKey: project.key, relativePath: 'src/app.ts' }, 'disk', 'again');
+    await settled();
+    expect(pane.state().tabs).toHaveLength(1);
+    expect(events).not.toContain('hidePane');
   });
 });

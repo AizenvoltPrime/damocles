@@ -79,6 +79,12 @@ describe('Quick Open rows', () => {
     expect(quickOpenModel({ ...response, mention: true }, false, labels).hint).toBe('mention');
   });
 
+  it('gives each file row its project-relative path for its file icon, and no icon of its own', () => {
+    const items = quickOpenModel(response, false, labels).rows.flatMap((row) => (row.kind === 'item' ? [row.item] : []));
+    expect(items.map((item) => item.file)).toEqual(['src/x.ts', 'src/y.ts', 'z.ts']);
+    expect(items.every((item) => item.icon === undefined)).toBe(true);
+  });
+
   it('ids each file by project and path, so equal paths in two projects stay apart', () => {
     expect(quickOpenItemId({ projectKey: 'a', relativePath: 'x' })).not.toBe(quickOpenItemId({ projectKey: 'b', relativePath: 'x' }));
   });

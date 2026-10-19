@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { promisify } from 'node:util';
 import { asarFiles, readAsarHeader } from '../../scripts/asar-archive.mjs';
 import { DESKTOP_FONT_FILES, DESKTOP_FONT_LICENSES } from '../../src/desktop/main/desktop-fonts';
+import { MATERIAL_ICON_DIR, materialIconNames } from '../../src/desktop/shell/material-icons';
 import { logBeforeQuit, mainLog } from './support/app';
 import { filesRow, quickPick } from './support/editor';
 import { activeChat, expect, test } from './support/fixtures';
@@ -36,12 +37,15 @@ const GRAMMAR_SAMPLES: Record<string, string> = {
   'Probe.vue': '<script setup lang="ts">\nfunction probe_vue(): number { return 1; }\n</script>\n',
 };
 
-// The overlay's preload and page, and the desktop fonts with their OFL texts, which ship only in the desktop build.
+// The overlay's preload and page, the desktop fonts with their OFL texts, and the Material file icons with their licence,
+// which ship only in the desktop build.
 const SHELL_FILES = [
   'dist/desktop/preload-overlay.js',
   'dist/desktop-shell/assets/overlay.js',
   'dist/desktop-shell/assets/overlay.css',
   ...[...DESKTOP_FONT_FILES, ...DESKTOP_FONT_LICENSES].map((file) => `dist/desktop-shell/fonts/${file.output}`),
+  ...[...materialIconNames()].map((name) => `dist/desktop-shell/${MATERIAL_ICON_DIR}/${name}.svg`),
+  `dist/desktop-shell/${MATERIAL_ICON_DIR}/LICENSE`,
 ];
 
 /** The SHELL_FILES the app under test lacks: inside app.asar for a packaged app, else in the repo's build output. */
@@ -213,6 +217,8 @@ test('bundled assets resolve: first window, overlay, fonts, pi chat, shell, ripg
     expect(fs.existsSync(path.join(home.userData, 'logs', 'Damocles.log'))).toBe(true);
     await desktop.close();
     expect(logBeforeQuit(home)).not.toContain('[ShellSentinel] ERROR');
+    // The stall monitor's profiler starts and keeps running in the build.
+    expect(logBeforeQuit(home)).not.toMatch(/stall monitor (could not start|stopped)/);
   } finally {
     await stub.close();
   }

@@ -208,7 +208,7 @@ export class SubagentStreamBridge {
           queueMicrotask(() => this.emitUsage());
         }
         break;
-      // pi emits it after every error stop (`agent-loop.js:141-152`, `agent.js:375-378` in pi-agent-core 1.1.0).
+      // pi emits it after every error stop (`agent-loop.js:141-152`, `agent.js:375-378` in pi-agent-core 1.3.0).
       case 'turn_end':
         this.decideErrorStop();
         break;
@@ -286,7 +286,7 @@ export class SubagentStreamBridge {
   /**
    * Decide an error stop from the record a reload reads: `registerWindDownErrorRecord` names it at its `turn_end`
    * boundary when the run was aborted then, and pi commits that record before this `turn_end` (`agent-session.js:515`,
-   * `:636-641` in pi-coding-agent 1.1.0). A named stop is the abort's wind-down, handled as an aborted stop.
+   * `:636-641` in pi-coding-agent 1.3.0). A named stop is the abort's wind-down, handled as an aborted stop.
    */
   private decideErrorStop(): void {
     const pending = this.undecidedError;

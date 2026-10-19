@@ -48,8 +48,8 @@ describe('shell page', () => {
   });
 
   it('locks script-src to a fresh nonce and allows no inline script or remote origin', () => {
-    const first = shellHtml({ kind: 'dark', css: ':root{--d-text:#ccc}', reducedMotion: false });
-    const second = shellHtml({ kind: 'light', css: '', reducedMotion: true });
+    const first = shellHtml({ kind: 'dark', css: ':root{--d-text:#ccc}', reducedMotion: false, fileIconTheme: 'material' });
+    const second = shellHtml({ kind: 'light', css: '', reducedMotion: true, fileIconTheme: 'minimal' });
     const csp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(first)?.[1] ?? '';
     const nonce = /'nonce-([^']+)'/.exec(csp)?.[1];
     expect(nonce).toBeDefined();
@@ -58,9 +58,9 @@ describe('shell page', () => {
     expect(first).toContain(`<script nonce="${nonce}" type="module" src="app://damocles/desktop-shell/assets/index.js"></script>`);
     expect(first).toContain('<body class="vscode-dark"');
     expect(first).toContain('<style id="damocles-host-theme">:root{--d-text:#ccc}</style>');
-    expect(first).toContain('<html lang="en">');
+    expect(first).toContain('<html lang="en" data-file-icon-theme="material">');
     expect(second).toContain('<body class="vscode-light"');
-    expect(second).toContain('<html lang="en" data-reduced-motion>');
+    expect(second).toContain('<html lang="en" data-reduced-motion data-file-icon-theme="minimal">');
     expect(second).not.toContain(`'nonce-${nonce}'`);
   });
 

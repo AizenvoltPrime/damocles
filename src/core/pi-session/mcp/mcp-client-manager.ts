@@ -1,12 +1,17 @@
-import type { ReadResourceResult } from '@earendil-works/pi-mcp';
-import type { McpServerErrorInfo, McpServerStatusInfo, McpToolInfo } from '../../../shared/types/mcp';
+import type {
+  ListResourcesResult,
+  ListResourceTemplatesResult,
+  ReadResourceResult,
+  Resource,
+  ResourceTemplate,
+} from '@earendil-works/pi-mcp';
+import type { McpServerErrorInfo, McpServerStatusInfo, McpToolExposureSetting, McpToolInfo } from '../../../shared/types/mcp';
 import {
   normalizeServerConfig,
   type McpServerDefinition,
   type McpServerSpec,
   type McpToolDescriptor,
   type McpTool,
-  type McpResource,
   type McpContent,
   type McpElicitationHandler,
 } from './types';
@@ -16,24 +21,31 @@ import {
   McpServerManager,
   timeoutMsOf,
   type AuthProviderFactory,
+  type McpRequestCallOptions,
   type McpServerManagerOptions,
+  type ServerConnection,
 } from './server-manager';
 import { McpLifecycleManager } from './lifecycle';
 import {
-  loadServerCache,
+  readServerCacheEntry,
+  usableServerCache,
   saveServerCache,
   clearServerCache,
   cachedToolsToMcp,
-  cachedResourcesToMcp,
+  cachedHasResources,
+  cachedRetiredResources,
   stableStringify,
+  type CachedResource,
+  type ServerCacheEntry,
 } from './metadata-cache';
-import { assignServerToolNames, resourceNameToToolName } from './naming';
+import { assignServerToolNames } from './naming';
 import { parallelLimit } from './utils';
 import { resolveMcpServerValues } from './config-value';
-import { configMayExposeDirect, configToolExposure } from './exposure';
+import { configMayExposeDirect, configResourceExposure, configToolExposure } from './exposure';
 import { supportsOAuth, authenticateMcpServer, revokeAndRemoveAuth } from './mcp-auth-flow';
 import { createElicitationHandler, type ElicitationUI } from './elicitation-handler';
-import type { McpToolCallOptions, McpToolSource } from './tool-source';
+import type { McpResourceServer, McpToolCallOptions, McpToolSource } from './tool-source';
+import { McpResourceServerGoneError, noResourcesError, resourcesOffError, unknownResourceServerError } from './resource-errors';
 import { stripBidiControls, stripControlChars } from '../untrusted-text';
 import { t } from '../../l10n';
 import { log } from '../../logger';
@@ -67,6 +79,14 @@ export interface McpCallResult {
   isError: boolean;
 }
 
+/** One server's tools and the resource list an older build cached for it, from which that build named its `get_*` tools. */
+export interface RetiredResourceEntry {
+  serverName: string;
+  rawToolNames: string[];
+  /** Empty when the server has none, or older builds made it no `get_*` tool (`exposeResources: false`). */
+  resources: CachedResource[];
+}
+
 /** One tool's identity across the two naming schemes, for migrating stored names. */
 export interface McpToolNameEntry {
   serverName: string;
@@ -85,11 +105,15 @@ function serverDescriptionOf(def: McpServerDefinition, instructions: string | un
     : chars.join('');
 }
 
+/** In place of a resource exposure, a request the user made from the MCP panel (D13): every check but exposure applies. */
+export const USER_RESOURCE_REQUEST = 'user';
+export type ResourceRequestAccess = McpToolExposureSetting | typeof USER_RESOURCE_REQUEST;
+
 /**
  * One MCP connection pool: `PiRuntime` owns the user-scope one, each `FolderRuntime` its folder's.
  * Loads pi-mcp, eagerly connects enabled servers, maintains the pi-facing tool descriptors (live
- * tools/list, cache fallback), and exposes cancellable tool/resource calls. Panels reach it only
- * through their folder's `FolderMcpView`.
+ * tools/list, cache fallback), and exposes cancellable tool calls and resource requests. Panels reach
+ * it only through their folder's `FolderMcpView`, which overlays `damocles.mcp.resourceExposure`.
  */
 export class McpClientManager implements McpToolSource {
   private readonly managerId = `mcp${++managerCount}`;
@@ -122,7 +146,9 @@ export class McpClientManager implements McpToolSource {
   private serversSignature = '';
   /** In-memory metadata for non-connected servers so descriptor rebuilds don't re-read+re-hash disk (M2).
    *  Invalidated on a server-set change and whenever fresh live metadata is cached for a server. */
-  private metadataMemo = new Map<string, { tools: McpTool[]; resources: McpResource[] }>();
+  private metadataMemo = new Map<string, { tools: McpTool[]; hasResources: boolean | undefined }>();
+  /** Each server's cache entry whatever its config, read once per server set and then replaced by what this manager writes. */
+  private cacheEntries = new Map<string, ServerCacheEntry | null>();
 
   private initialized = false;
   private disposed = false;
@@ -402,7 +428,7 @@ export class McpClientManager implements McpToolSource {
    *  cache, mark needs-auth, and clear transient error/backoff state. */
   private async doClearConnection(name: string): Promise<void> {
     await this.serverManager?.close(name);
-    clearServerCache(name);
+    this.cacheEntries.set(name, clearServerCache(name, this.cacheEntry(name)));
     this.metadataMemo.delete(name);
     this.failureAt.delete(name);
     this.lastError.delete(name);
@@ -431,6 +457,7 @@ export class McpClientManager implements McpToolSource {
     this.definitions = new Map(Object.entries(servers).map(([name, spec]) => [name, normalizeServerConfig(spec.config)]));
     // A config change can alter each server's cache identity (configHash); drop memoized metadata.
     this.metadataMemo.clear();
+    this.cacheEntries.clear();
     this.rebuildDescriptors();
   }
 
@@ -498,8 +525,7 @@ export class McpClientManager implements McpToolSource {
         this.needsAuth.add(name);
       } else {
         this.needsAuth.delete(name);
-        saveServerCache(name, def, connection.tools, connection.resources);
-        this.metadataMemo.delete(name);
+        this.writeCache(name, def, connection);
       }
     } catch (error) {
       this.failureAt.set(name, Date.now());
@@ -530,12 +556,19 @@ export class McpClientManager implements McpToolSource {
   private onServerListChanged(name: string): void {
     const connection = this.serverManager?.getConnection(name);
     const def = this.definitions.get(name);
-    if (connection && def && connection.status === 'connected') {
-      saveServerCache(name, def, connection.tools, connection.resources);
-      this.metadataMemo.delete(name);
-    }
+    if (connection && def && connection.status === 'connected') this.writeCache(name, def, connection);
     this.rebuildDescriptors();
     this.emitToolsChanged();
+  }
+
+  private cacheEntry(name: string): ServerCacheEntry | null {
+    if (!this.cacheEntries.has(name)) this.cacheEntries.set(name, readServerCacheEntry(name));
+    return this.cacheEntries.get(name) ?? null;
+  }
+
+  private writeCache(name: string, def: McpServerDefinition, connection: ServerConnection): void {
+    this.cacheEntries.set(name, saveServerCache(name, def, connection.tools, connection.hasResources, this.cacheEntry(name)));
+    this.metadataMemo.delete(name);
   }
 
   /**
@@ -582,16 +615,13 @@ export class McpClientManager implements McpToolSource {
     const taken = new Set<string>(this.reservedToolNames?.());
     for (const name of [...this.servers.keys()].sort()) {
       const def = this.definitions.get(name)!;
-      const serverId = `${this.managerId}/${name}`;
-      const { tools, resources } = this.metadataFor(name, def);
+      const serverId = this.serverIdOf(name);
+      const { tools } = this.metadataFor(name, def);
       const connection = this.serverManager?.getConnection(name);
       const serverDescription = serverDescriptionOf(def, connection?.status === 'connected' ? connection.instructions : undefined);
 
       const namedTools = tools.filter((tool) => tool.name);
-      const namedResources =
-        def.exposeResources !== false ? resources.filter((resource) => resource.name && resource.uri) : [];
-      const resourceToolNames = namedResources.map((resource) => `get_${resourceNameToToolName(resource.name)}`);
-      const piNames = assignServerToolNames(name, [...namedTools.map((tool) => tool.name), ...resourceToolNames], taken);
+      const piNames = assignServerToolNames(name, namedTools.map((tool) => tool.name), taken);
 
       for (const tool of namedTools) {
         const piName = piNames.get(tool.name)!;
@@ -602,7 +632,6 @@ export class McpClientManager implements McpToolSource {
           piName,
           serverName: name,
           serverId,
-          kind: 'tool',
           rawToolName: tool.name,
           description: tool.description ?? '',
           ...(serverDescription ? { serverDescription } : {}),
@@ -619,45 +648,149 @@ export class McpClientManager implements McpToolSource {
           configExposure: exposure,
         });
       }
-
-      namedResources.forEach((resource, index) => {
-        const rawToolName = resourceToolNames[index]!;
-        const piName = piNames.get(rawToolName)!;
-        if (next.has(piName)) return;
-        taken.add(piName);
-        const exposure = configToolExposure(def, rawToolName);
-        next.set(piName, {
-          piName,
-          serverName: name,
-          serverId,
-          kind: 'resource',
-          rawToolName,
-          resourceUri: resource.uri,
-          description: resource.description ?? `Read resource: ${resource.uri}`,
-          ...(serverDescription ? { serverDescription } : {}),
-          readOnly: true,
-          exposure,
-          exposureSource: 'config',
-          configExposure: exposure,
-        });
-      });
     }
     this.descriptors = next;
   }
 
-  private metadataFor(name: string, def: McpServerDefinition): { tools: McpTool[]; resources: McpResource[] } {
+  /** The live tools and capability, else the cache's; `hasResources` is undefined while neither knows. */
+  private metadataFor(name: string, def: McpServerDefinition): { tools: McpTool[]; hasResources: boolean | undefined } {
     const connection = this.serverManager?.getConnection(name);
     if (connection && connection.status === 'connected') {
-      return { tools: connection.tools, resources: connection.resources };
+      return { tools: connection.tools, hasResources: connection.hasResources };
     }
     const memo = this.metadataMemo.get(name);
     if (memo) return memo;
-    const cached = loadServerCache(name, def);
+    const cached = usableServerCache(this.cacheEntry(name), def);
     const result = cached
-      ? { tools: cachedToolsToMcp(cached), resources: cachedResourcesToMcp(cached) }
-      : { tools: [], resources: [] };
+      ? { tools: cachedToolsToMcp(cached), hasResources: cachedHasResources(cached) }
+      : { tools: [], hasResources: undefined };
     this.metadataMemo.set(name, result);
     return result;
+  }
+
+  private serverIdOf(name: string): string {
+    return `${this.managerId}/${name}`;
+  }
+
+  /** An enabled server's `serverId`, undefined for a name this manager does not serve. */
+  enabledServerId(name: string): string | undefined {
+    return this.servers.has(name) ? this.serverIdOf(name) : undefined;
+  }
+
+  /** Whether an enabled server offers resources, from its live capability, else its cache; undefined while unknown. */
+  serverHasResources(name: string): boolean | undefined {
+    const def = this.definitions.get(name);
+    return def ? this.metadataFor(name, def).hasResources : undefined;
+  }
+
+  /** An enabled server's resource exposure from its config alone. */
+  configResourceExposureOf(name: string): McpToolExposureSetting {
+    const def = this.definitions.get(name);
+    return def ? configResourceExposure(def) : 'off';
+  }
+
+  /** `resourceServers()` over the given names, each with the exposure `exposureOf` gives it. */
+  resourceServersAmong(names: Iterable<string>, exposureOf: (name: string) => McpToolExposureSetting): McpResourceServer[] {
+    const servers: McpResourceServer[] = [];
+    for (const name of names) {
+      if (!this.servers.has(name) || this.serverHasResources(name) !== true) continue;
+      const exposure = exposureOf(name);
+      if (exposure === 'off') continue;
+      servers.push({ serverName: name, serverId: this.serverIdOf(name), exposure });
+    }
+    return servers;
+  }
+
+  resourceServers(): McpResourceServer[] {
+    return this.resourceServersAmong([...this.servers.keys()].sort(), (name) => this.configResourceExposureOf(name));
+  }
+
+  // The trailing `exposure` lets `FolderMcpView` pass the exposure its settings layers give the server, or
+  // USER_RESOURCE_REQUEST for the MCP panel's own requests.
+  listResourcesPage(
+    server: string,
+    cursor: string | undefined,
+    opts: McpToolCallOptions = {},
+    exposure: ResourceRequestAccess = this.configResourceExposureOf(server),
+  ): Promise<ListResourcesResult> {
+    return this.resourceRequest(server, opts, exposure, (callOpts) => this.requireServerManager().listResourcesPage(server, cursor, callOpts));
+  }
+
+  listResources(server: string, opts: McpToolCallOptions = {}, exposure: McpToolExposureSetting = this.configResourceExposureOf(server)): Promise<Resource[]> {
+    return this.resourceRequest(server, opts, exposure, (callOpts) => this.requireServerManager().listResources(server, callOpts));
+  }
+
+  listResourceTemplatesPage(
+    server: string,
+    cursor: string | undefined,
+    opts: McpToolCallOptions = {},
+    exposure: ResourceRequestAccess = this.configResourceExposureOf(server),
+  ): Promise<ListResourceTemplatesResult> {
+    return this.resourceRequest(server, opts, exposure, (callOpts) =>
+      this.requireServerManager().listResourceTemplatesPage(server, cursor, callOpts));
+  }
+
+  listResourceTemplates(server: string, opts: McpToolCallOptions = {}, exposure: McpToolExposureSetting = this.configResourceExposureOf(server)): Promise<ResourceTemplate[]> {
+    return this.resourceRequest(server, opts, exposure, (callOpts) => this.requireServerManager().listResourceTemplates(server, callOpts));
+  }
+
+  readResource(server: string, uri: string, opts: McpToolCallOptions = {}, exposure: ResourceRequestAccess = this.configResourceExposureOf(server)): Promise<ReadResourceResult> {
+    return this.resourceRequest(server, opts, exposure, (callOpts) => this.requireServerManager().readResource(server, uri, callOpts));
+  }
+
+  /** Only the MCP panel completes a template argument, so no resource exposure applies. */
+  completeResourceArgument(
+    server: string,
+    templateUri: string,
+    argument: string,
+    value: string,
+    context: Readonly<Record<string, string>>,
+    opts: McpToolCallOptions = {},
+  ): Promise<string[]> {
+    return this.resourceRequest(server, opts, USER_RESOURCE_REQUEST, (callOpts) =>
+      this.requireServerManager().completeResourceArgument(server, { uri: templateUri, argument, value, context }, callOpts));
+  }
+
+  private requireServerManager(): McpServerManager {
+    if (!this.serverManager) throw new Error('MCP client is not initialized');
+    return this.serverManager;
+  }
+
+  /** Checks the server before and after connecting, then sends one resource request with the server's timeout and the caller's UI. */
+  private async resourceRequest<T>(
+    server: string,
+    opts: McpToolCallOptions,
+    exposure: ResourceRequestAccess,
+    send: (callOpts: McpRequestCallOptions) => Promise<T>,
+  ): Promise<T> {
+    const serverId = this.serverIdOf(server);
+    const reachable = (): McpResourceServer[] => opts.reachableResourceServers?.() ?? this.resourceServers();
+    if (opts.expectedServerId !== undefined && opts.expectedServerId !== serverId) throw new McpResourceServerGoneError(server);
+    if (!this.servers.has(server)) {
+      if (opts.expectedServerId !== undefined) throw new McpResourceServerGoneError(server);
+      throw unknownResourceServerError(server, reachable());
+    }
+    if (exposure === 'off') throw resourcesOffError(server);
+    const serverManager = this.requireServerManager();
+    await this.ensureConnected(server);
+    // A reconcile during the connect may have removed the server.
+    if (!this.servers.has(server)) throw new McpResourceServerGoneError(server);
+    if (this.serverHasResources(server) !== true) throw noResourcesError(server, reachable());
+    const def = this.definitions.get(server);
+    const callOpts: McpRequestCallOptions = {
+      timeoutMs: opts.timeoutMs ?? this.callTimeoutMs ?? timeoutMsOf(def ?? {}),
+      ...(opts.signal ? { signal: opts.signal } : {}),
+    };
+    const releaseUi = opts.elicitationUi ? this.pushCallUi(server, opts.elicitationUi) : undefined;
+    try {
+      return await send(callOpts);
+    } finally {
+      releaseUi?.();
+      if (serverManager.getConnection(server)?.status !== 'connected') {
+        this.rebuildDescriptors();
+        this.emitToolsChanged();
+      }
+    }
   }
 
   private emitToolsChanged(): void {
@@ -702,8 +835,16 @@ export class McpClientManager implements McpToolSource {
 
   pendingDirectServers(): string[] {
     return this.connectingServerNames().filter(
-      (name) => this.serverConfigMayExposeDirect(name) || this.getAllToolDescriptors().some((d) => d.serverName === name && d.exposure === 'direct'),
+      (name) =>
+        this.serverConfigMayExposeDirect(name) ||
+        this.getAllToolDescriptors().some((d) => d.serverName === name && d.exposure === 'direct') ||
+        this.mayExposeResourcesDirect(name, this.configResourceExposureOf(name)),
     );
+  }
+
+  /** Whether a server with this resource exposure may make the resource tools Always loaded once its capability is known. */
+  mayExposeResourcesDirect(name: string, exposure: McpToolExposureSetting): boolean {
+    return exposure === 'direct' && this.serverHasResources(name) !== false;
   }
 
   /** Enabled servers neither connected, failed, waiting for sign-in nor connect-on-use. */
@@ -757,15 +898,6 @@ export class McpClientManager implements McpToolSource {
     const releaseUi = opts.elicitationUi ? this.pushCallUi(descriptor.serverName, opts.elicitationUi) : undefined;
 
     try {
-      if (descriptor.kind === 'resource') {
-        const result = await this.serverManager.readResource(
-          descriptor.serverName,
-          descriptor.resourceUri as string,
-          callOpts,
-        );
-        return { content: resourceReadToContent(result), isError: false };
-      }
-
       const result = await this.serverManager.callTool(descriptor.serverName, descriptor.rawToolName, args, callOpts);
       return { content: (result.content ?? []) as McpContent[], isError: result.isError === true };
     } finally {
@@ -805,6 +937,24 @@ export class McpClientManager implements McpToolSource {
     return [...this.descriptors.values()].map((d) => ({ serverName: d.serverName, rawToolName: d.rawToolName, piName: d.piName }));
   }
 
+  /**
+   * Every enabled server whose tools are known, live or from a cache entry its current config wrote at any
+   * age, with the resource list older builds cached for it: what they named their `get_*` tools from.
+   */
+  retiredResourceEntries(): RetiredResourceEntry[] {
+    return [...this.servers.keys()].sort().flatMap((name): RetiredResourceEntry[] => {
+      const def = this.definitions.get(name)!;
+      const entry = this.cacheEntry(name);
+      const connection = this.serverManager?.getConnection(name);
+      const sameConfig = usableServerCache(entry, def, 0);
+      const tools = connection?.status === 'connected' ? connection.tools : sameConfig ? cachedToolsToMcp(sameConfig) : null;
+      if (tools === null) return [];
+      // Older builds made no `get_*` tool for a server with `exposeResources: false`.
+      const resources = entry && def.exposeResources !== false ? cachedRetiredResources(entry) : [];
+      return [{ serverName: name, rawToolNames: tools.map((tool) => tool.name).filter(Boolean), resources }];
+    });
+  }
+
   private statusKind(name: string): McpServerStatusInfo['status'] {
     if (this.clientUnavailable) return 'failed';
     const connection = this.serverManager?.getConnection(name);
@@ -836,6 +986,12 @@ export class McpClientManager implements McpToolSource {
     }
     const tools = this.toolInfosFor(name);
     if (tools.length > 0) info.tools = tools;
+    const hasResources = this.serverHasResources(name);
+    if (hasResources !== undefined) info.hasResources = hasResources;
+    const resourceExposure = this.configResourceExposureOf(name);
+    info.resourceExposure = resourceExposure;
+    info.resourceExposureSource = 'config';
+    info.configResourceExposure = resourceExposure;
     return info;
   }
 
@@ -882,22 +1038,4 @@ function signatureOf(servers: Record<string, McpServerSpec>): string {
 export function isSupervised(def: McpServerDefinition): boolean {
   if (def.lifecycle === 'keep-alive') return true;
   return def.lifecycle !== 'lazy' && def.idleTimeout === undefined;
-}
-
-function resourceReadToContent(result: ReadResourceResult): McpContent[] {
-  const out: McpContent[] = [];
-  for (const entry of result.contents ?? []) {
-    const c = entry as { uri: string; mimeType?: string; text?: string; blob?: string };
-    if (typeof c.text === 'string') {
-      out.push({ type: 'text', text: `[Resource: ${c.uri}]\n${c.text}` });
-    } else if (typeof c.blob === 'string') {
-      out.push({
-        type: 'text',
-        text: `[Resource: ${c.uri}] (binary ${c.mimeType ?? 'application/octet-stream'})`,
-      });
-    } else {
-      out.push({ type: 'text', text: `[Resource: ${c.uri}]` });
-    }
-  }
-  return out;
 }

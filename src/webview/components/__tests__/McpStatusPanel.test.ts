@@ -1074,3 +1074,116 @@ describe('McpStatusPanel — the overlay stack', () => {
     expect(wrapper.emitted('close')).toBeUndefined();
   });
 });
+
+describe('McpStatusPanel — the Resources row', () => {
+  const docs: McpServerStatusInfo = {
+    name: 'docs',
+    status: 'connected',
+    enabled: true,
+    source: 'pi',
+    hasResources: true,
+    resourceExposure: 'deferred',
+    resourceExposureSource: 'project',
+    configResourceExposure: 'off',
+    tools: [{ name: 'search', exposure: 'deferred', exposureSource: 'config', configExposure: 'deferred' }],
+  };
+
+  async function mountWith(servers: McpServerStatusInfo[], scopes?: ('user' | 'project' | 'local')[]) {
+    const wrapper = track(mount(McpStatusPanel, {
+      props: {
+        servers,
+        configErrors: [],
+        mcpWriteInFlight: false,
+        mcpWriteError: null,
+        mcpEnabled: true,
+        localMcpUnignored: false,
+        configRevision: 0,
+        ...(scopes ? { toolExposureScopes: scopes } : {}),
+      },
+      attachTo: document.body,
+      global: { plugins: [i18n] },
+    }));
+    await nextTick();
+    return wrapper;
+  }
+  const expandFirst = async (): Promise<void> => {
+    await click(document.body.querySelector<HTMLButtonElement>('button[aria-expanded]')!);
+  };
+  const resourceControl = (): HTMLElement | null => document.body.querySelector<HTMLElement>('[data-testid="mcp-resource-exposure"]');
+
+  it('shows an Off / On / Always loaded control for a server that may offer resources, with its source', async () => {
+    await mountWith([docs]);
+    await expandFirst();
+
+    const control = resourceControl()!;
+    expect(control.getAttribute('aria-label')).toBe('docs resources exposure');
+    expect(Array.from(control.querySelectorAll('[data-exposure]')).map((el) => el.textContent?.trim())).toEqual(['Off', 'On', 'Always loaded']);
+    expect(control.querySelector('[data-state="on"]')?.getAttribute('data-exposure')).toBe('deferred');
+    expect(document.body.querySelector('[data-testid="mcp-resource-exposure-source"]')?.textContent?.trim()).toBe('Project');
+  });
+
+  it('emits setResourceExposure with the server, the choice and the chosen save scope', async () => {
+    const wrapper = await mountWith([docs], ['user', 'project']);
+    await expandFirst();
+    await click(document.body.querySelector<HTMLButtonElement>('[data-testid="mcp-tool-exposure-scope"] [data-scope="project"]')!);
+    await click(resourceControl()!.querySelector<HTMLButtonElement>('[data-exposure="direct"]')!);
+
+    expect(wrapper.emitted('setResourceExposure')).toEqual([['docs', 'direct', 'project']]);
+    expect(wrapper.emitted('setToolExposure')).toBeUndefined();
+  });
+
+  it('expands a server with resources and no tools, and shows no row for a server known to have none', async () => {
+    await mountWith([{ ...docs, tools: [] }, { ...docs, name: 'plain', tools: [], hasResources: false }]);
+    const chevrons = document.body.querySelectorAll<HTMLButtonElement>('button[aria-controls][aria-label]');
+    expect(chevrons[0]!.disabled).toBe(false);
+    expect(chevrons[1]!.disabled).toBe(true);
+    await click(chevrons[0]!);
+    expect(document.body.querySelectorAll('[data-testid="mcp-resources-row"]')).toHaveLength(1);
+  });
+
+  it('labels a server by what it offers: resources without tools never reads as empty', async () => {
+    await mountWith([{ ...docs, tools: [] }, docs, { ...docs, name: 'plain', hasResources: false }]);
+    const rows = Array.from(document.body.querySelectorAll<HTMLElement>('[data-testid="mcp-server-row"]'));
+    const chevron = (row: HTMLElement) => row.querySelector<HTMLButtonElement>('button[aria-controls][aria-label]')!;
+    expect(rows.map((row) => chevron(row).getAttribute('aria-label'))).toEqual(['Show resources', 'Show tools and resources', 'Show tools']);
+    expect(rows[0]!.textContent).toContain('Resources, no tools');
+    expect(rows[0]!.textContent).not.toContain('No tools');
+
+    await click(chevron(rows[0]!));
+    expect(chevron(rows[0]!).getAttribute('aria-label')).toBe('Hide resources');
+    expect(rows[0]!.textContent).not.toContain('0 of 0 available');
+    expect(rows[0]!.querySelector('[data-testid="mcp-resources-row"]')).not.toBeNull();
+  });
+});
+
+describe('McpStatusPanel — Browse resources', () => {
+  const server = (name: string, over: Partial<McpServerStatusInfo>): McpServerStatusInfo => ({ name, status: 'connected', enabled: true, ...over });
+
+  it('offers it for a server with resources or an unknown capability, never for one known to have none, a disabled one or an untrusted one', () => {
+    const wrapper = mountPanel([
+      server('docs', { hasResources: true, resourceExposure: 'off' }),
+      server('fresh', { status: 'pending' }),
+      server('plain', { hasResources: false }),
+      server('off', { enabled: false, status: 'disabled', hasResources: true }),
+      server('repo', { untrusted: true, hasResources: true }),
+    ]);
+    const offered = wrapper.findAll('[data-testid="mcp-server-row"]').map((row) => row.find('[data-row-action="browseResources"]').exists());
+    expect(offered).toEqual([true, true, false, false, false]);
+    expect(wrapper.get('[data-row-action="browseResources"]').text()).toBe('Browse resources');
+  });
+
+  it('emits the server name, so the picker opens and connects it', async () => {
+    const wrapper = mountPanel([server('fresh', { status: 'pending' })]);
+    await wrapper.get('[data-row-action="browseResources"]').trigger('click');
+    expect(wrapper.emitted('browseResources')).toEqual([['fresh']]);
+  });
+
+  it('withholds it while MCP is off', () => {
+    const wrapper = track(mount(McpStatusPanel, {
+      props: { servers: [server('docs', { hasResources: true })], configErrors: [], mcpWriteInFlight: false, mcpWriteError: null, mcpEnabled: false, localMcpUnignored: false, configRevision: 0 },
+      attachTo: document.body,
+      global: { plugins: [i18n] },
+    }));
+    expect(wrapper.find('[data-row-action="browseResources"]').exists()).toBe(false);
+  });
+});

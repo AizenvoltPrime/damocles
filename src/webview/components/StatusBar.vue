@@ -14,10 +14,12 @@ const props = defineProps<{
   currentToolName?: string | undefined;
   statusOverride?: string | undefined;
   activeHooks?: Map<string, { hookName: string; hookEvent: string }> | undefined;
+  /** What the main chat's stopped run still waits for, as core published it. */
+  windDown?: string | undefined;
 }>();
 
-// A pending prompt outranks the turn lifecycle, so the bar stays up even once processing has stopped.
-const isVisible = computed(() => props.isProcessing || props.awaitingUserAction);
+// A pending prompt outranks the turn lifecycle, and a Stop's wind-down outlasts it, so the bar stays up once processing has stopped.
+const isVisible = computed(() => props.isProcessing || props.awaitingUserAction || props.windDown !== undefined);
 
 // The bar can be up before the first sessionStateChanged lands, so anything not parked draws as working.
 const treatment = computed(() => sessionStateTreatment(props.awaitingUserAction ? 'requires_action' : 'running'));
@@ -76,13 +78,13 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <!-- Always mounted so a text change is announced, and only the parked label goes in it because the phrases would talk over everything. -->
+  <!-- Always mounted so a text change is announced, and only the parked label and the wind-down go in it because the phrases would talk over everything. -->
   <span
     class="sr-only"
     role="status"
     aria-live="polite"
   >
-    {{ awaitingUserAction ? t('status.requiresAction') : '' }}
+    {{ awaitingUserAction ? t('status.requiresAction') : windDown ?? '' }}
   </span>
 
   <Transition name="t-up">
@@ -104,6 +106,24 @@ onUnmounted(() => {
           aria-hidden="true"
           data-testid="status-label"
         >{{ t('status.requiresAction') }}</span>
+      </template>
+      <template v-else-if="windDown">
+        <LoaderCircle
+          class="size-3.75 flex-none"
+          :class="treatment.iconClass"
+          aria-hidden="true"
+        />
+        <!-- Hidden from a reader because the live region above already carries this exact string. -->
+        <span
+          class="min-w-0 flex-1 truncate text-xs text-(--d-accent) italic"
+          :title="windDown"
+          aria-hidden="true"
+          data-testid="status-wind-down"
+        >{{ windDown }}</span>
+        <span
+          v-if="isProcessing"
+          class="flex-none text-11 text-(--d-faint)"
+        >{{ t('status.escToInterrupt') }}</span>
       </template>
       <template v-else>
         <LoaderCircle

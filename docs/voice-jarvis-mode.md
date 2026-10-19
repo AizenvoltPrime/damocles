@@ -82,6 +82,8 @@ useJarvisLifecycle ──ws──> voice-stream-handlers ──ws/json──> se
 - Health check: ping every 2 s; 3 missed pongs → restart.
 - Restart strategy: parses stderr for fatal signatures (`CUDA error`, `ImportError`, etc.); on those, surfaces the actual error and stops. Otherwise restarts up to 2 times in 60 s.
 - Cold-start: ~5–10 s warm, ~15–30 s on first launch (cuDNN handle creation + weight load). Mic is gated until `ready` arrives.
+- One start or stop runs at a time (`VoiceService.enqueue`): a settings change supersedes the start in flight and waits for it to end before its own, so no sidecar outlives its owner.
+- Spoken replies: replies that wait for a start are not queued; once the sidecar is ready, only the latest is spoken (`VoiceService.speakReply`). A reply that arrives while the sidecar restarts itself after a crash is not spoken, and does not replace it.
 
 ### Wake-phrase exclusion (FR-11)
 
@@ -108,7 +110,16 @@ The bundled venv is corrupt or missing dependencies. Fix:
 rm -rf ~/.damocles/voice/runtime
 ```
 
-Then re-enable wake-word mode to trigger a fresh install.
+Then turn wake-word mode or `damocles.voice.tts.enabled` off and on, or press Test voice, to install it again.
+
+These actions install the runtime when it is missing or broken:
+
+- changing `damocles.voice.mode`, `damocles.voice.tts.enabled` or, in wake-word mode, `damocles.voice.wakeWord`;
+- opening a chat in wake-word mode, or switching to it (`voiceStreamEnable`, which `useJarvisLifecycle` sends as the chat loads);
+- pressing Test voice;
+- accepting the first-run download, which starts voice once the models are in place.
+
+Speaking a reply uses a runtime that is already installed and never downloads or repairs one. A start that failed, or a sidecar that failed after it was ready and used up its own restarts, is not tried again under the same voice settings until a settings change, Test voice or the first-run download (`VoiceService.ensureStarted`). Opening a chat tries again only after a start that was not allowed to install. The reason shows as the Jarvis error in the chat input and in Test voice.
 
 ### "Need ~16 GB free, have 4 GB"
 

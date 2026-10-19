@@ -104,7 +104,7 @@ describe('PanelManager view attachment', () => {
 
     await h!.manager.dispatchFromView(panelId, { type: 'setBudgetLimit', budgetUsd: 5 });
     await h!.manager.dispatchFromView(panelId, { type: 'ready', panelToken: '00000000-0000-4000-8000-000000000000' });
-    await h!.manager.dispatchFromView(panelId, { type: 'sendMessage', content: SENTINEL_KEY });
+    await h!.manager.dispatchFromView(panelId, { type: 'sendMessage', content: SENTINEL_KEY, sessionId: null });
     await h!.manager.dispatchFromView(panelId, { type: '__proto__' } as unknown as WebviewToExtensionMessage);
 
     expect(h!.routed.map((r) => [r.message.type, r.panelId, r.view])).toEqual([['setBudgetLimit', panelId, view]]);

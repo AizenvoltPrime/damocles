@@ -182,12 +182,21 @@ export function logBeforeQuit(h: HermeticHome): string {
   return log.slice(0, log.lastIndexOf('[shutdown] quitting'));
 }
 
-/** Attaches the main-process output and every log file under userData, so a failure is debuggable offline. */
+/** Every file under userData's logs, subfolders such as `stalls` included; read them only once the app has quit. */
+export function logFiles(h: HermeticHome): string[] {
+  return fs
+    .readdirSync(path.join(h.userData, 'logs'), { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => path.join(entry.parentPath, entry.name));
+}
+
+/** Attaches the main-process output and every file under userData's logs, so a failure is debuggable offline. */
 export async function attachDiagnostics(testInfo: TestInfo, name: string, desktop: DesktopApp, h: HermeticHome): Promise<void> {
   await testInfo.attach(`${name}-main-output.txt`, { body: desktop.output(), contentType: 'text/plain' });
   const logs = path.join(h.userData, 'logs');
   if (!fs.existsSync(logs)) return;
-  for (const file of fs.readdirSync(logs)) {
-    await testInfo.attach(`${name}-${file}`, { path: path.join(logs, file), contentType: 'text/plain' });
+  for (const file of logFiles(h)) {
+    const relative = path.relative(logs, file).split(path.sep).join('-');
+    await testInfo.attach(`${name}-${relative}`, { path: file, contentType: file.endsWith('.cpuprofile') ? 'application/json' : 'text/plain' });
   }
 }

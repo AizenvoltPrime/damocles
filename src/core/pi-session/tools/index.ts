@@ -41,6 +41,8 @@ import { buildSubagentTools } from './subagent-tools';
 import { buildTeamMainPiTools, type TeamServiceRef } from './team-tools';
 import type { AgentManager } from '../subagents/agent-manager';
 import { identityFolder } from '../../worktrees/personal-config';
+import { createMcpResourceTools } from './mcp-resource-tools';
+import type { McpToolSource } from '../mcp/tool-source';
 
 /**
  * The inputs `buildCustomTools` needs. Note what is NOT here: MCP tool definitions. A nested agent's
@@ -100,6 +102,15 @@ export interface CustomToolDeps {
   /** Whether the multi-agent Team feature is live (`teamService` present AND `damocles.team.enabled`).
    *  Selects whether the team rung appears in the EnterPlanMode guidance's delivery-mechanism ladder. */
   isTeamEnabled?: () => boolean;
+  /**
+   * The panel's MCP source and the resources its tool list turns off, both read per call. When present,
+   * the three MCP resource tools are appended over its live resource servers. Only the panel passes it: a
+   * nested agent's resource tools come from its frozen `NestedMcpToolset`.
+   */
+  mcpResources?: {
+    source: () => McpToolSource | null;
+    disabledResource: () => (server: string, uri: string) => boolean;
+  };
 }
 
 /**
@@ -146,7 +157,7 @@ export const CUSTOM_TOOL_NAMES: readonly string[] = [
  * re-registered so a write that replaces a file records its patch.
  */
 export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
-  const { pi, cwd, permissionHandler, getShellOptions, shellCancel, deliverUserNote, shellJob, memoryService, compassService, browserService, browserScopeId, browserChat, getSessionId, getPlanFilePath, subagentManager, teamService, imageGeneration, isTeamEnabled } = deps;
+  const { pi, cwd, permissionHandler, getShellOptions, shellCancel, deliverUserNote, shellJob, memoryService, compassService, browserService, browserScopeId, browserChat, getSessionId, getPlanFilePath, subagentManager, teamService, imageGeneration, isTeamEnabled, mcpResources } = deps;
   // Bound here because this is the only place that knows which agent the tools being built run in.
   const cancelRegistry = shellCancel.forContext(deliverUserNote);
   const rgPath = (): Promise<string> => resolveRgPath(platform().paths);
@@ -211,6 +222,15 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
   // Built while inert, like the web tools, so enabling it mid-conversation activates it live.
   if (imageGeneration) {
     tools.push(createGenerateImageTool({ pi, cwd, ...imageGeneration }));
+  }
+
+  // Built while inert, like the web tools: whether they are active follows the resource servers.
+  if (mcpResources) {
+    tools.push(...createMcpResourceTools({
+      source: mcpResources.source,
+      disabledResource: mcpResources.disabledResource,
+      ruleFilter: (toolName) => permissionHandler.mcpResourceRuleFilter(toolName),
+    }));
   }
 
   return tools;

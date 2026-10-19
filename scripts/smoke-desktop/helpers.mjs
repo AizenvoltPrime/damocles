@@ -129,9 +129,17 @@ export function createHelpers(getApp, dir) {
     await setModel(t, model, effort);
   }
 
+  /** Runs an application menu item by its id from `src/desktop/main/commands.ts`. */
+  async function runMenuItem(id) {
+    await app().evaluate(({ Menu, BrowserWindow }, itemId) => {
+      Menu.getApplicationMenu().getMenuItemById(itemId).click(undefined, BrowserWindow.getAllWindows()[0], undefined);
+    }, id);
+  }
+
+  // File > New Chat: the sidebar's New chat button is hidden until its section header is hovered.
   async function newChat() {
     const known = new Set(chatPages().map((p) => p.url()));
-    await (await shell()).getByRole('button', { name: 'New chat', exact: true }).click();
+    await runMenuItem('damocles.newChat');
     const t = await poll(async () => {
       const p = await active();
       return p && !known.has(p.url()) ? p : undefined;
@@ -166,9 +174,7 @@ export function createHelpers(getApp, dir) {
     await app().evaluate(({ dialog }, d) => {
       dialog.showOpenDialog = () => Promise.resolve({ canceled: false, filePaths: [d] });
     }, target);
-    await app().evaluate(({ Menu, BrowserWindow }) => {
-      Menu.getApplicationMenu().getMenuItemById('damocles.addProject').click(undefined, BrowserWindow.getAllWindows()[0], undefined);
-    });
+    await runMenuItem('damocles.addProject');
     const dialog = (await overlay()).getByRole('alertdialog');
     await dialog.waitFor({ timeout: 15_000 });
     await dialog.getByRole('button', { name: trust ? 'Trust Folder' : "Don't Trust" }).click();
@@ -190,7 +196,7 @@ export function createHelpers(getApp, dir) {
   }
 
   return {
-    sleep, poll, app, dir, fs, path, pageBy, shell, overlay, popup, state, chatPages, findChat, active,
+    sleep, poll, app, dir, fs, path, pageBy, shell, overlay, popup, state, chatPages, findChat, active, runMenuItem,
     input, prompt, modeBtn, yoloBtn, modelBtn, send, slash, running, tail, shot,
     setMode, setYolo, setModel, prepare, newChat, goTo, addProject, answerQuestion, waitCard,
   };

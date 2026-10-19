@@ -2,7 +2,7 @@
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useEventListener, useResizeObserver } from '@vueuse/core';
-import { FileDiff, GitCompare, GitMerge, Globe, History, Image as ImageIcon, LoaderCircle, MessageSquareDiff, ScrollText, Search, Settings2, X } from 'lucide-vue-next';
+import { FileDiff, GitCompare, GitMerge, Globe, History, LoaderCircle, MessageSquareDiff, ScrollText, Search, Settings2, X } from 'lucide-vue-next';
 import type { Component } from 'vue';
 import type { DamoclesShellApi, FileRef, ShellEditorTab } from '../../preload/shell-channels';
 import type { OverlayMenuItem } from '../../preload/overlay-channels';
@@ -11,7 +11,7 @@ import { remPx } from '@/composables/useRemPx';
 import SlidingIndicator from '@/components/SlidingIndicator.vue';
 import { FILE_DRAG_MIME, serializeFileDragPayload } from '@shared/file-drag';
 import { visibleText } from '@shared/visible-text';
-import { fileIcon } from '../file-icons';
+import FileIcon from '../components/FileIcon.vue';
 import { tidyMenu } from '../../preload/overlay-channels';
 import { EDITOR_STORE } from './editor-store';
 import { placeChipFolds, placeOf, tabPlaces } from './editor-place';
@@ -70,7 +70,6 @@ const KIND_ICONS: Partial<Record<ShellEditorTab['kind'], { icon: Component; colo
   browser: { icon: Globe, color: 'var(--d-info)' },
   diff: { icon: GitCompare, color: 'var(--d-warning)' },
   changes: { icon: FileDiff, color: 'var(--d-warning)' },
-  image: { icon: ImageIcon, color: 'var(--d-info)' },
   settings: { icon: Settings2, color: 'var(--d-muted)' },
   log: { icon: ScrollText, color: 'var(--d-muted)' },
   searchEditor: { icon: Search, color: 'var(--d-accent)' },
@@ -78,7 +77,6 @@ const KIND_ICONS: Partial<Record<ShellEditorTab['kind'], { icon: Component; colo
   timeline: { icon: History, color: 'var(--d-info)' },
   merge: { icon: GitMerge, color: 'var(--d-warning)' },
 };
-const iconOf = (tab: ShellEditorTab): { icon: Component; color: string } => KIND_ICONS[tab.kind] ?? fileIcon(tab.title);
 const titleOf = (tab: ShellEditorTab): string => (tab.browser ? pageTitle(tab, t('editor.browser.newPage')) : tab.title);
 
 // A tab is capped at 12.5rem; one with a place chip gets 9rem more, so the chip's label shows whole beside a fair title.
@@ -402,11 +400,16 @@ function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
               class="size-3.25 shrink-0 rounded-xs object-contain"
             >
             <component
-              :is="iconOf(tab).icon"
-              v-else
+              :is="KIND_ICONS[tab.kind]!.icon"
+              v-else-if="KIND_ICONS[tab.kind]"
               aria-hidden="true"
               class="size-3.25 shrink-0"
-              :style="{ color: iconOf(tab).color }"
+              :style="{ color: KIND_ICONS[tab.kind]!.color }"
+            />
+            <FileIcon
+              v-else
+              :path="tab.displayPath || tab.title"
+              class="size-3.25 shrink-0"
             />
             <span
               data-testid="editor-tab-title"

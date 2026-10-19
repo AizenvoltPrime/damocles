@@ -207,6 +207,7 @@ export class TeamPersistence implements TeamPersistenceWriter {
                 name: spec.name,
                 role: spec.role as 'lead' | 'specialist',
                 description: null,
+                task: null,
                 model: spec.model ?? '',
                 profileId: null,
                 attempt: 0,
@@ -234,6 +235,7 @@ export class TeamPersistence implements TeamPersistenceWriter {
             if (agent) {
               agent.agentId = entry['agentId'] as string;
               agent.description = typeof entry['description'] === 'string' ? entry['description'] : null;
+              agent.task = spawnedTask(entry);
               agent.model = (entry['model'] as string) ?? '';
               if (typeof entry['dollarBilled'] === 'boolean') agent.dollarBilled = entry['dollarBilled'];
               agent.profileId = (entry['profileId'] as string) ?? null;
@@ -399,6 +401,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const isString = (v: unknown): v is string => typeof v === 'string';
 const isCount = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
 const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every(isString);
+
+/** The task an `agent-spawned` entry gave its attempt. A log written before `task` was recorded holds a specialist's task as its `specialization`. */
+export function spawnedTask(entry: Record<string, unknown>): string | null {
+  if (isString(entry['task'])) return entry['task'];
+  return entry['role'] === 'specialist' && isString(entry['specialization']) ? entry['specialization'] : null;
+}
 
 function isPairArray(v: unknown, second: (x: unknown) => boolean): boolean {
   return Array.isArray(v) && v.every((p) => Array.isArray(p) && p.length === 2 && isString(p[0]) && second(p[1]));
@@ -574,6 +582,7 @@ export function parseTeamEventLog(teamId: string, content: string): TeamEventLog
           role,
           specialization: str('specialization'),
           description: isString(description) ? description : null,
+          task: spawnedTask(e),
           model: str('model'),
           dollarBilled: e['dollarBilled'] === true,
           profileId: isString(profileId) ? profileId : null,

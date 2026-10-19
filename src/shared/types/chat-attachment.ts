@@ -1,5 +1,6 @@
-// What a chat's composer can hold as a pending attachment (desktop only): terminal output, or a commit the Graph attached.
-// Both travel one path: core holds them, sends them as data blocks before the typed text, and the webview shows chips.
+// What a chat's composer can hold as a pending attachment: terminal output or a commit the Graph attached (desktop only), or
+// an MCP resource the MCP panel attached (both hosts). All travel one path: core holds them, sends them as data blocks
+// before the typed text, and the webview shows chips.
 import type { TerminalAttachmentInfo, TerminalAttachmentInput } from './terminal-attachment';
 
 /** A commit as core read it: bounded, its start kept, and every control or bidi character but tab escaped (visibleLines). */
@@ -34,8 +35,35 @@ export interface CommitAttachmentInfo {
   readonly preview: string;
 }
 
-export type ChatAttachmentInput = TerminalAttachmentInput | CommitAttachmentInput;
-export type ChatAttachmentInfo = TerminalAttachmentInfo | CommitAttachmentInfo;
+/** An MCP resource by reference: core reads it when the message is sent, so its content never waits in the composer. */
+export interface McpResourceAttachmentInput {
+  readonly kind: 'mcpResource';
+  // the server and URI exactly as the server listed them, which the deny rules match
+  readonly server: string;
+  readonly uri: string;
+  // server text flattened to one line (oneLine) and cut at MAX_MCP_RESOURCE_LABEL_CHARS
+  readonly name: string;
+  readonly mimeType?: string;
+  // the serving manager's identity at attach (`McpResourceServer.serverId`); the read at send refuses another server
+  readonly serverId: string;
+}
+
+/** A resource attachment as its prompt block records it, which keeps no server identity. */
+export type McpResourceReference = Omit<McpResourceAttachmentInput, 'serverId'>;
+
+export interface McpResourceAttachmentInfo {
+  readonly id: string;
+  readonly kind: 'mcpResource';
+  readonly server: string;
+  readonly uri: string;
+  readonly name: string;
+  readonly mimeType?: string;
+}
+
+export type ChatAttachmentInput = TerminalAttachmentInput | CommitAttachmentInput | McpResourceAttachmentInput;
+export type ChatAttachmentInfo = TerminalAttachmentInfo | CommitAttachmentInfo | McpResourceAttachmentInfo;
+
+export const MAX_MCP_RESOURCE_LABEL_CHARS = 200;
 
 // The terminal attachment's bounds (MAX_TERMINAL_ATTACHMENT_LINES and _CHARS); a commit keeps its start.
 export const MAX_COMMIT_ATTACHMENT_LINES = 2000;

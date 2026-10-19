@@ -298,6 +298,19 @@
         },
         "description": "Per-tool MCP control, keyed by server name and then by the tool name the server uses. \"off\" removes the tool, \"deferred\" keeps it loadable through ToolSearch, and \"direct\" loads it from the first turn, which costs context on every turn. A tool with no entry takes its exposure from the server config. Local beats project beats user, per tool; project and local values apply only in a trusted folder."
       },
+      "damocles.mcp.resourceExposure": {
+        "type": "object",
+        "default": {},
+        "additionalProperties": {
+          "type": "string",
+          "enum": [
+            "off",
+            "deferred",
+            "direct"
+          ]
+        },
+        "description": "Per-server control of MCP resources, keyed by server name. \"off\" keeps the resource tools away from the server, \"deferred\" lets them reach it once ToolSearch loads them, and \"direct\" loads list_mcp_resources, list_mcp_resource_templates and read_mcp_resource from the first turn. A server with no entry takes its value from its config: Off for exposeResources false or exposure hidden, Always loaded for exposure direct, otherwise deferred. Local beats project beats user, per server; project and local values apply only in a trusted folder."
+      },
       "damocles.team.enabled": {
         "type": "boolean",
         "default": false,
@@ -765,6 +778,19 @@
         "type": "boolean",
         "default": false,
         "description": "Stop non-essential animation in the desktop app. The operating system's reduced-motion preference applies as well."
+      },
+      "damocles.desktop.fileIconTheme": {
+        "type": "string",
+        "enum": [
+          "material",
+          "minimal"
+        ],
+        "enumDescriptions": [
+          "Material Icon Theme: a distinct colored icon for each file type and well-known folder, with light theme variants.",
+          "A few monochrome icons in the color theme's colors."
+        ],
+        "default": "material",
+        "description": "File and folder icons throughout the desktop app."
       },
       "damocles.desktop.language": {
         "type": "string",
@@ -1821,6 +1847,19 @@
         },
         "description": "Per-tool MCP control, keyed by server name and then by the tool name the server uses. \"off\" removes the tool, \"deferred\" keeps it loadable through ToolSearch, and \"direct\" loads it from the first turn, which costs context on every turn. A tool with no entry takes its exposure from the server config. Local beats project beats user, per tool; project and local values apply only in a trusted folder."
       },
+      "damocles.mcp.resourceExposure": {
+        "type": "object",
+        "default": {},
+        "additionalProperties": {
+          "type": "string",
+          "enum": [
+            "off",
+            "deferred",
+            "direct"
+          ]
+        },
+        "description": "Per-server control of MCP resources, keyed by server name. \"off\" keeps the resource tools away from the server, \"deferred\" lets them reach it once ToolSearch loads them, and \"direct\" loads list_mcp_resources, list_mcp_resource_templates and read_mcp_resource from the first turn. A server with no entry takes its value from its config: Off for exposeResources false or exposure hidden, Always loaded for exposure direct, otherwise deferred. Local beats project beats user, per server; project and local values apply only in a trusted folder."
+      },
       "damocles.team.enabled": {
         "type": "boolean",
         "default": false,
@@ -2212,6 +2251,12 @@
         "errorMessage": "damocles.desktop.reduceMotion applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
         "doNotSuggest": true,
         "description": "damocles.desktop.reduceMotion applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nStop non-essential animation in the desktop app. The operating system's reduced-motion preference applies as well."
+      },
+      "damocles.desktop.fileIconTheme": {
+        "not": {},
+        "errorMessage": "damocles.desktop.fileIconTheme applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.fileIconTheme applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nFile and folder icons throughout the desktop app."
       },
       "damocles.desktop.language": {
         "not": {},

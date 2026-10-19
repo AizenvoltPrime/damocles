@@ -25,15 +25,7 @@ export interface McpToolAnnotations {
   openWorldHint?: boolean;
 }
 
-/** A resource advertised by an MCP server (`resources/list`). */
-export interface McpResource {
-  uri: string;
-  name: string;
-  description?: string;
-  mimeType?: string;
-}
-
-/** Content block returned by `tools/call` / `resources/read` over the wire. */
+/** Content block returned by `tools/call` over the wire. */
 export interface McpContent {
   type: 'text' | 'image' | 'audio' | 'resource' | 'resource_link';
   text?: string;
@@ -47,7 +39,10 @@ export interface McpContent {
   };
   uri?: string;
   name?: string;
+  title?: string;
   description?: string;
+  /** Bytes, on a `resource_link`. */
+  size?: number;
 }
 
 /** pi content block (the inference layer's text/image union). */
@@ -104,8 +99,8 @@ export type McpElicitationHandler = (
 ) => Promise<{ action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }>;
 
 /**
- * A single pi-facing MCP tool, resolved from a server's `tools/list` or `resources/list`. `piName` is
- * what the model and the permission gate see; ToolSearch groups by `serverName`, never by parsing it.
+ * A single pi-facing MCP tool, resolved from a server's `tools/list`. `piName` is what the model and
+ * the permission gate see; ToolSearch groups by `serverName`, never by parsing it.
  */
 export interface McpToolDescriptor {
   piName: string;
@@ -116,15 +111,12 @@ export interface McpToolDescriptor {
    * server when names move, so a frozen snapshot compares this, never `piName` or `serverName`.
    */
   serverId: string;
-  kind: 'tool' | 'resource';
-  /** The server's own tool name (kind='tool'), or `get_<slug>` (kind='resource'). */
+  /** The server's own tool name. */
   rawToolName: string;
-  /** Resource URI to read (kind='resource'). */
-  resourceUri?: string;
   description: string;
   /** The server's ToolSearch menu line: control characters stripped, at most 120 characters. */
   serverDescription?: string;
-  /** JSON Schema for parameters (kind='tool'); resources take no parameters. */
+  /** JSON Schema for parameters. */
   inputSchema?: unknown;
   readOnly: boolean;
   /** Effective exposure: `off` is never eligible, `deferred` waits for ToolSearch, `direct` is active from the first turn. */

@@ -7,6 +7,7 @@ import { remPx } from '@/composables/useRemPx';
 import { useSlidingIndicator } from '@/composables/useSlidingIndicator';
 import SlidingIndicator from '@/components/SlidingIndicator.vue';
 import ProjectAvatar from '../../components/ProjectAvatar.vue';
+import FileIcon from '../../components/FileIcon.vue';
 import { ariaKeyshortcuts, highlightSegments, keycaps, type QuickPickItem, type QuickPickModel, type QuickPickRow } from '../quick-pick';
 import { createPointerMoveFilter } from '../pointer-moved';
 
@@ -277,9 +278,14 @@ onMounted(() => {
             @mousedown.prevent
             @click="accept(index, $event.shiftKey)"
           >
+            <FileIcon
+              v-if="row.item.file !== undefined"
+              :path="row.item.file"
+              class="size-3.25 shrink-0"
+            />
             <component
               :is="row.item.icon"
-              v-if="row.item.icon"
+              v-else-if="row.item.icon"
               aria-hidden="true"
               class="size-3.25 shrink-0"
               :style="{ color: row.item.iconColor }"

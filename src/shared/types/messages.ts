@@ -3,6 +3,8 @@ import type { ChatAttachmentInfo } from './chat-attachment';
 import type {
   McpConfigError,
   McpRenamedToolRuleNotice,
+  McpResourceRow,
+  McpResourceTemplateRow,
   McpServerConfig,
   McpServerStatusInfo,
   McpToolExposureScope,
@@ -58,8 +60,9 @@ export type { ObservationCursor } from './memory';
 
 export type WebviewToExtensionMessage =
   | { type: "log"; message: string }
-  // terminalAttachmentIds: pending attachments (terminal output and commits) sent with the message; absent on hosts without them
-  | { type: "sendMessage"; content: string | UserContentBlock[]; agentId?: string; includeIdeContext?: boolean; terminalAttachmentIds?: string[] }
+  // terminalAttachmentIds: pending attachments (terminal output, commits, MCP resources) sent with the message; absent when none are pending
+  // sessionId: the conversation the webview showed at send (its last `sessionStarted`), null while it showed none; core refuses a send for another
+  | { type: "sendMessage"; content: string | UserContentBlock[]; sessionId: string | null; includeIdeContext?: boolean; terminalAttachmentIds?: string[] }
   | { type: "removeTerminalAttachment"; id: string }
   | { type: "cancelSession" }
   | { type: "cancelAutoCompact" }
@@ -111,7 +114,11 @@ export type WebviewToExtensionMessage =
   | { type: "cancelToolCall"; toolUseId: string; note?: string; requestId?: string }
   | { type: "requestMcpStatus" }
   | { type: "requestSupportedCommands" }
-  | { type: "openSettings" }
+  /**
+   * Opens the host's settings. VS Code filters its settings editor to `query`, a `damocles.` setting key, or to every
+   * Damocles setting; the desktop app opens its settings modal, whose search box stays the user's, so it ignores `query`.
+   */
+  | { type: "openSettings"; query?: string }
   /** Opens the host's settings modal outside the chat page (desktop overlay); the section must be a SETTINGS_SECTION_IDS entry. */
   | { type: "openAppSettings"; section?: SettingsSectionId; account?: SettingsAccountId }
   /** The chat header's Terminal toggle, posted only when `HostCapabilities.windowLayout`; the host runs its Toggle Terminal command. */
@@ -149,12 +156,24 @@ export type WebviewToExtensionMessage =
   | { type: "openExternalUrl"; url: string }
   | { type: "requestCustomSlashCommands" }
   | { type: "requestCustomAgents" }
-  | { type: "queueMessage"; content: string | UserContentBlock[] }
+  /** `sessionId` as `sendMessage`'s. */
+  | { type: "queueMessage"; content: string | UserContentBlock[]; sessionId: string | null }
   | { type: "cancelQueuedMessage"; messageId: string }
   | { type: "toggleMcpServer"; serverName: string; enabled: boolean }
   | { type: "setMcpEnabled"; enabled: boolean }
   /** `toolName` is the server's own tool name; sets or removes that one entry of `damocles.mcp.toolExposure` at `scope`. */
   | { type: "mcpSetToolExposure"; serverName: string; toolName: string; exposure: McpToolExposureSetting; scope: McpToolExposureScope }
+  /** Sets or removes the server's entry of `damocles.mcp.resourceExposure` at `scope`. */
+  | { type: "mcpSetResourceExposure"; serverName: string; exposure: McpToolExposureSetting; scope: McpToolExposureScope }
+  // The MCP panel's resource picker (D13: the user's own browse and attach, which resource exposure never restricts).
+  // Each request gets one reply with its requestId; omitting `cursor` asks for the first page.
+  | { type: "requestMcpResources"; requestId: string; serverName: string; cursor?: string }
+  | { type: "requestMcpResourceTemplates"; requestId: string; serverName: string; cursor?: string }
+  | { type: "requestMcpResourceChildren"; requestId: string; serverName: string; uri: string }
+  // `context` holds the template's other variables the user has filled in.
+  | { type: "requestMcpResourceCompletion"; requestId: string; serverName: string; template: string; argument: string; value: string; context: Record<string, string> }
+  // name and mimeType are the listed row's, for the chip; core reads the resource only when the message is sent.
+  | { type: "attachMcpResource"; requestId: string; serverName: string; uri: string; name: string; mimeType?: string }
   | { type: "reconnectMcpServer"; serverName: string }
   // Re-read every MCP source and re-feed the live client. `~/.claude.json` is deliberately unwatched,
   // so a server added there needs an explicit prompt to be picked up without a window reload.
@@ -254,7 +273,8 @@ export type WebviewToExtensionMessage =
   | { type: "requestUsageStats"; requestId: string; query: UsageStatsQuery }
   | { type: "answerElicitation"; elicitationId: string; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }
   | { type: "tagSession"; sessionId: string; tag: string | null }
-  | { type: "sendBtw"; btwId: string; question: string }
+  /** `sessionId` as `sendMessage`'s. */
+  | { type: "sendBtw"; btwId: string; question: string; sessionId: string | null }
   | { type: "cancelBtw"; btwId: string }
   /** `agentId` is the subagent record id `subagentStart` names, foreground or background. */
   | { type: "stopSubagent"; agentId: string }
@@ -398,9 +418,10 @@ export type WorktreeFinishAction = "apply" | "merge" | "update" | "delete";
 /**
  * heldPromptWaiting: a send while the first prompt waits for its worktree; worktreeFinishing: a send while a finish action
  * runs on the chat's worktree; heldPromptKept: a held first prompt that will not be sent (the chat left its opt-in, or a
- * draft the host kept across an unload or a quit).
+ * draft the host kept across an unload or a quit); mcpResourceUnavailable: an attached MCP resource could not be sent (the
+ * message's `detail` says which and why).
  */
-export type PromptReturnReason = "heldPromptWaiting" | "worktreeFinishing" | "heldPromptKept";
+export type PromptReturnReason = "heldPromptWaiting" | "worktreeFinishing" | "heldPromptKept" | "mcpResourceUnavailable" | "conversationChanged";
 
 /** A chat review's scope (D60): the whole chat, or only its latest turn. */
 export type ChatReviewScope = "chat" | "turn";
@@ -537,6 +558,15 @@ export type ExtensionToWebviewMessage =
   | { type: "budgetExceeded"; finalSpend: number; limit: number }
   /** `toolExposureScopes` lists the settings scopes a per-tool exposure can be saved to in this panel's folder, lowest first. */
   | ({ type: "mcpServerStatus"; servers: McpServerStatusInfo[]; mcpEnabled: boolean; configErrors: McpConfigError[]; toolExposureScopes: McpToolExposureScope[] } & McpLocalUnignoredFlag)
+  // Replies to the resource picker's requests; `error` is the localized reason a request failed, with its lists empty.
+  | { type: "mcpResources"; requestId: string; resources: McpResourceRow[]; nextCursor?: string; error?: string }
+  | { type: "mcpResourceTemplates"; requestId: string; templates: McpResourceTemplateRow[]; nextCursor?: string; error?: string }
+  // notDirectory: the read returned content under the URI itself, so the row is a resource to attach
+  | { type: "mcpResourceChildren"; requestId: string; children: McpResourceRow[]; error?: string; notDirectory?: true }
+  // No values from a server without the `completions` capability or on a failed request.
+  | { type: "mcpResourceCompletion"; requestId: string; values: string[] }
+  // refused: the localized reason nothing was attached
+  | { type: "mcpResourceAttached"; requestId: string; refused?: string }
   | { type: "checkpointInfo"; userMessageIds: string[] }
   | { type: "togglePromptNavigator" }
   | { type: "rewindComplete"; rewindToMessageId: string; option: RewindOption; promptContent?: string; fileRewindWarning?: string }
@@ -588,7 +618,8 @@ export type ExtensionToWebviewMessage =
   // desktop: text the host puts in the composer after its draft, which it never replaces (the Graph's Explain Changes)
   | { type: "composerAppend"; text: string }
   /** A prompt core did not send goes back into the composer, text and images; `reason` says why. */
-  | { type: "promptReturned"; content: UserContentBlock[]; reason: PromptReturnReason }
+  // detail: localized text the reason alone cannot carry
+  | { type: "promptReturned"; content: UserContentBlock[]; reason: PromptReturnReason; detail?: string }
   | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; terminalAttachments?: ChatAttachmentInfo[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean; isMidStream?: boolean; steerTarget?: { agentId: string; agentType?: string; description?: string }; promptIndex?: number; timestamp?: number }
   | { type: "assistantReplay"; content: string; thinking?: string; tools?: HistoryToolCall[]; contentBlocks?: ContentBlock[]; effort?: import('../effort-badge').EffortBadgeLevel }
   | { type: "errorReplay"; content: string }
@@ -655,7 +686,7 @@ export type ExtensionToWebviewMessage =
   | { type: "requestQuestion"; toolUseId: string; questions: Question[]; owner: PromptOwner; parentToolUseId?: string | null }
   | { type: "requestForm"; toolUseId: string; form: FormSchema; owner: PromptOwner; parentToolUseId?: string | null }
   | { type: "ideContextUpdate"; context: IdeContextDisplayInfo | null }
-  // the composer's pending attachments (terminal output and commits), whole list, on every change; focusComposer: the user just added one
+  // the composer's pending attachments (terminal output, commits, MCP resources), whole list, on every change; focusComposer: the user just added one
   | { type: "terminalAttachmentsUpdate"; attachments: ChatAttachmentInfo[]; focusComposer?: true }
   | {
       type: "requestPlanApproval";
@@ -763,6 +794,8 @@ export type ExtensionToWebviewMessage =
   | { type: "statusUpdate"; status: "compacting" | "ready"; permissionMode?: string; parentToolUseId?: string }
   /** pi is waiting out the backoff before re-sending a failed model call; `attempt` of `maxAttempts` retries. A `ready` status, sent when the retried call starts or the retry ends, ends it. `parentToolUseId` names the nested agent waiting. */
   | { type: "statusUpdate"; status: "retrying"; attempt: number; maxAttempts: number; parentToolUseId?: string }
+  /** A stopped nested agent whose run outlasted `WIND_DOWN_NOTICE_MS` winding down, and what pi awaits; null once the run settled. Display only. */
+  | { type: "statusUpdate"; status: "windingDown"; windDown: import('./wind-down').AgentWindDown | null; parentToolUseId: string }
   | { type: "taskStarted"; taskId: string; toolUseId?: string; description: string; taskType?: string; isBackground?: boolean }
   | { type: "taskNotification"; taskId: string; toolUseId?: string; status: "completed" | "failed" | "stopped"; summary: string; outputFile: string | null; usage?: { totalTokens: number; toolUses: number; durationMs: number } }
   | { type: "toolProgress"; toolUseId: string; toolName: string; parentToolUseId: string | null; elapsedTimeSeconds: number; taskId?: string; output?: string; outputTruncated?: boolean }
@@ -789,7 +822,7 @@ export type ExtensionToWebviewMessage =
   // A partial delta. An absent field means the sender has nothing new to say about it, not a reset.
   // `attempt` rides only on a launch, and an advance is what tells the card its work fields start over.
   // `result` is what the settle recorded in `agent-completed`, so the card matches a reload.
-  | { type: "teamAgentStatusUpdate"; teamId: string; agentId: string; status: import('./team').TeamAgentStatus; description?: string | null; progressSummary?: string; logFilePath?: string | null; model?: string; dollarBilled?: boolean; attempt?: number; effort?: import('../effort-badge').EffortBadgeLevel | null; stopwatch?: import('../team-stopwatch').Stopwatch; result?: string | null }
+  | { type: "teamAgentStatusUpdate"; teamId: string; agentId: string; status: import('./team').TeamAgentStatus; description?: string | null; task?: string | null; progressSummary?: string; logFilePath?: string | null; model?: string; dollarBilled?: boolean; attempt?: number; effort?: import('../effort-badge').EffortBadgeLevel | null; stopwatch?: import('../team-stopwatch').Stopwatch; result?: string | null }
   | { type: "teamAgentToolCall"; teamId: string; agentId: string; toolName: string; toolInput: Record<string, unknown> }
   | { type: "teamMessage"; teamId: string; message: import('./team').TeamMessage }
   | { type: "teamScratchpadUpdate"; teamId: string; entry: import('./team').ScratchpadEntry }
@@ -802,8 +835,11 @@ export type ExtensionToWebviewMessage =
   | { type: "teamAgentToolResult"; teamId: string; agentId: string; toolUseId: string; result: string; isError?: boolean; imageCount?: number; metadata?: Record<string, unknown> }
   | { type: "teamAgentUsageUpdate"; teamId: string; agentId: string; totalInputTokens: number; totalOutputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; costUsd: number }
   | { type: "teamAgentDataLoaded"; teamId: string; agentId: string; messages: import('./team').TeamAgentHistoryMessage[] }
-  /** `pendingPrompts` is every unanswered prompt with its owner, in the order raised; non-empty exactly when `state` is `requires_action`. */
-  | { type: "sessionStateChanged"; state: 'idle' | 'running' | 'requires_action'; sessionId: string; pendingPrompts: readonly PendingPromptOwner[] }
+  /**
+   * `pendingPrompts` is every unanswered prompt with its owner, in the order raised; non-empty exactly when `state` is `requires_action`.
+   * `windDown` is present while the main chat's stopped run outlasts `WIND_DOWN_NOTICE_MS` winding down. Display only.
+   */
+  | { type: "sessionStateChanged"; state: 'idle' | 'running' | 'requires_action'; sessionId: string; pendingPrompts: readonly PendingPromptOwner[]; windDown?: import('./wind-down').AgentWindDown }
   // The user chose a notification's action: focus that prompt's card (a user action, so it takes focus).
   | { type: "focusAttention"; kind: AttentionKind }
   | { type: "openTeamOverlay"; teamId: string }

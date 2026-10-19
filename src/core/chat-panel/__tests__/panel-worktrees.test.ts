@@ -130,7 +130,11 @@ function harness(name: string, options: HarnessOptions = {}) {
   const releaseFolder = vi.fn(async () => undefined);
   let sessionsClosed: Promise<void> = Promise.resolve();
   const warn = vi.fn(async () => undefined);
-  const resumeInto = vi.fn(async (_instance: HostInstance, _sessionId: string) => true);
+  // As PanelManager.resumeInto: once the claim passes, the session gets what its start writes first, then it opens.
+  const resumeInto = vi.fn(async (instance: HostInstance, _sessionId: string, beforeOpen?: (session: HostInstance['session']) => void) => {
+    beforeOpen?.(instance.session);
+    return true;
+  });
   const moveTo = vi.fn(async (_panelId: string, key: string, afterSwitch?: (instance: HostInstance) => Promise<void>): Promise<HostInstance | undefined> => {
     instance.folder = folderRegistry.resolve(key)!;
     await afterSwitch?.(instance);
@@ -159,8 +163,10 @@ function harness(name: string, options: HarnessOptions = {}) {
   };
 }
 
-const prompt: WebviewToExtensionMessage = { type: 'sendMessage', content: 'Fix the login page now' } as WebviewToExtensionMessage;
-const second: WebviewToExtensionMessage = { type: 'sendMessage', content: [{ type: 'text', text: 'And the logout' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA==' } }] } as WebviewToExtensionMessage;
+const prompt: WebviewToExtensionMessage = { type: 'sendMessage', content: 'Fix the login page now', sessionId: 'sess-project' };
+const second: WebviewToExtensionMessage = { type: 'sendMessage', content: [{ type: 'text', text: 'And the logout' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA==' } }], sessionId: 'sess-project' };
+// The move to the worktree gives the chat a new session, so the held prompt names no conversation once it is sent there.
+const promptInWorktree: WebviewToExtensionMessage = { ...prompt, sessionId: null };
 
 async function settled(check: () => boolean): Promise<void> {
   for (let i = 0; i < 400 && !check(); i++) await new Promise((r) => setTimeout(r, 25));
@@ -188,7 +194,7 @@ describe.skipIf(!HAS_GIT)('panel worktrees: opt-in and first send', { timeout: 1
     expect(h.worktrees.interceptSend('p1', prompt)).toBe(true);
     expect(h.posted).toEqual([{ type: 'processing', isProcessing: false }]);
     await settled(() => h.dispatched.length === 1);
-    expect(h.dispatched[0]).toBe(prompt);
+    expect(h.dispatched[0]).toEqual(promptInWorktree);
     const record = h.registry.liveChatRecords(h.project)[0]!;
     expect(fs.existsSync(record.workingFolder)).toBe(true);
     expect(h.instance.folder.key).toBe(folderKey(record.workingFolder));
@@ -212,7 +218,7 @@ describe.skipIf(!HAS_GIT)('panel worktrees: opt-in and first send', { timeout: 1
     expect(h.worktrees.viewOf('p1')).toMatchObject({ exitCode: 3, heldPrompt: { text: 'Fix the login page now', imageCount: 0 } });
     expect(h.dispatched).toEqual([]);
     await h.worktrees.action('p1', 'sendNow');
-    expect(h.dispatched).toEqual([prompt]);
+    expect(h.dispatched).toEqual([promptInWorktree]);
   });
 
   it('keeps the prompt when creation fails, and Run in project folder sends it there', async () => {
@@ -275,7 +281,7 @@ describe.skipIf(!HAS_GIT)('panel worktrees: opt-in and first send', { timeout: 1
     expect(h.posted.at(-1)).toEqual({ type: 'promptReturned', content: (second as { content: unknown }).content, reason: 'heldPromptWaiting' });
     finish({ exitCode: 0 });
     await settled(() => h.dispatched.length === 1);
-    expect(h.dispatched).toEqual([prompt]);
+    expect(h.dispatched).toEqual([promptInWorktree]);
   });
 
   it('shows the setup step as each command starts, and Restart reruns the setup after the prompt was sent', async () => {
@@ -598,7 +604,7 @@ describe.skipIf(!HAS_GIT)('panel worktrees: hand-off', { timeout: 120_000 }, () 
     expect(h.host.showRefusal).not.toHaveBeenCalled();
     const record = h.registry.liveChatRecords(h.project)[0]!;
     expect(record.baseCommit).toBe(head);
-    expect(h.resumeInto).toHaveBeenCalledWith(h.instance, 'detached-session');
+    expect(h.resumeInto).toHaveBeenCalledWith(h.instance, 'detached-session', expect.any(Function));
     expect(session.noteWorkingFolder).toHaveBeenCalledWith(record.workingFolder);
   });
 
@@ -798,8 +804,9 @@ describe.skipIf(!HAS_GIT)('panel worktrees: hand-off', { timeout: 120_000 }, () 
     h.instance.session = session as never;
     h.instance.folder = { ...target(record.workingFolder, h.projectTarget.key) };
     const resumed = fakeSession(true, 'to-project');
-    h.resumeInto.mockImplementation(async (instance: HostInstance) => {
+    h.resumeInto.mockImplementation(async (instance: HostInstance, _sessionId: string, beforeOpen?: (session: HostInstance['session']) => void) => {
       instance.session = resumed as never;
+      beforeOpen?.(instance.session);
       return true;
     });
     await h.worktrees.chatMove('p1', 'project');

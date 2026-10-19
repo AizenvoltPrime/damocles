@@ -28,9 +28,20 @@ export const TOOL_POWERSHELL = "PowerShell";
 export const TOOL_STRUCTURED_OUTPUT = "StructuredOutput";
 export const TOOL_GENERATE_IMAGE = "GenerateImage";
 
+/** The cross-server MCP resource tools (pi 1.3.0's names); each call names its server in `input.server`. */
+export const MCP_RESOURCE_TOOL_NAMES = ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource'] as const;
+export type McpResourceToolName = typeof MCP_RESOURCE_TOOL_NAMES[number];
+export function isMcpResourceToolName(name: string): name is McpResourceToolName {
+  return (MCP_RESOURCE_TOOL_NAMES as readonly string[]).includes(name);
+}
+/** A server's own tool (`mcp__<server>__<tool>`) or one of the cross-server resource tools. */
+export function isMcpToolName(name: string): boolean {
+  return name.startsWith("mcp__") || isMcpResourceToolName(name);
+}
+
 export const FILE_TOOLS: Set<string> = new Set([TOOL_READ, TOOL_WRITE, TOOL_EDIT, TOOL_GLOB, TOOL_GREP]);
 export const WRITE_TOOLS: Set<string> = new Set([TOOL_WRITE, TOOL_EDIT, TOOL_GENERATE_IMAGE]);
-export const READ_ONLY_TOOLS: Set<string> = new Set([TOOL_READ, TOOL_GLOB, TOOL_GREP, TOOL_LS, TOOL_WEB_FETCH, TOOL_WEB_SEARCH, TOOL_CODE_SEARCH, TOOL_FEED_READ, TOOL_YOUTUBE_TRANSCRIPT, TOOL_LSP, TOOL_TOOL_SEARCH]);
+export const READ_ONLY_TOOLS: Set<string> = new Set([TOOL_READ, TOOL_GLOB, TOOL_GREP, TOOL_LS, TOOL_WEB_FETCH, TOOL_WEB_SEARCH, TOOL_CODE_SEARCH, TOOL_FEED_READ, TOOL_YOUTUBE_TRANSCRIPT, TOOL_LSP, TOOL_TOOL_SEARCH, ...MCP_RESOURCE_TOOL_NAMES]);
 export const IGNORED_TOOLS: Set<string> = new Set([TOOL_ENTER_PLAN_MODE, TOOL_EXIT_PLAN_MODE, TOOL_ASK_USER_QUESTION]);
 export const CRON_TOOLS: Set<string> = new Set([TOOL_CRON_CREATE, TOOL_CRON_DELETE, TOOL_CRON_LIST]);
 export const ORCHESTRATION_TOOLS: Set<string> = new Set([TOOL_AGENT]);

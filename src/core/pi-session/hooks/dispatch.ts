@@ -2,6 +2,8 @@ import { log } from '../../logger';
 import type { HooksConfigService } from './config';
 import type { HookEntry } from './types';
 import { runHook, type RunHookContext } from './runner';
+import { isMcpResourceToolName } from '../../../shared/tool-names';
+import { createMcpToolName } from '../mcp/naming';
 import {
   buildToolCallPayload,
   buildToolResultPayload,
@@ -36,7 +38,7 @@ function buildRunContext(deps: DispatchDeps, eventKey: string, cwd: string): Run
  */
 const matchRegexCache = new Map<string, RegExp | null>();
 
-function compileMatch(pattern: string): RegExp | null {
+export function compileMatch(pattern: string): RegExp | null {
   const cached = matchRegexCache.get(pattern);
   if (cached !== undefined) return cached;
   let compiled: RegExp | null;
@@ -50,12 +52,19 @@ function compileMatch(pattern: string): RegExp | null {
   return compiled;
 }
 
-/** Keep only entries whose optional `match` regex tests true against the Damocles tool name (FR-8). */
-function matchEntries(entries: HookEntry[], toolName: string): HookEntry[] {
+/**
+ * Keep only entries whose optional `match` regex tests true against the Damocles tool name (FR-8), or,
+ * for an MCP resource call naming a server, against the `mcp__<server>__<tool>` name its server's tools have.
+ */
+function matchEntries(entries: HookEntry[], toolName: string, toolInput: Record<string, unknown>): HookEntry[] {
+  const server = toolInput['server'];
+  const names = isMcpResourceToolName(toolName) && typeof server === 'string' && server !== ''
+    ? [toolName, createMcpToolName(server, toolName)]
+    : [toolName];
   return entries.filter((entry) => {
     if (!entry.match) return true;
     const regex = compileMatch(entry.match);
-    return regex ? regex.test(toolName) : false;
+    return regex ? names.some((name) => regex.test(name)) : false;
   });
 }
 
@@ -74,17 +83,28 @@ export interface ToolCallHookResult {
   systemMessages: string[];
 }
 
+/** A PreToolUse chain an abort ended. It carries no decision, input or context from the hooks that finished first, since the killed one may have denied; only their notices to the user. */
+export interface ToolCallHooksAborted {
+  aborted: true;
+  systemMessages: string[];
+}
+
+/** Null when no hook matches (the FR-14 zero-cost path). */
+export type ToolCallHookOutcome = ToolCallHookResult | ToolCallHooksAborted | null;
+
 /**
  * Run the `tool_call` (PreToolUse) hooks for one tool call. Each hook sees the prior hook's `updatedInput`
  * mutations (payload rebuilt per hook), matching pi's "later tool_call handlers see earlier mutations".
- * Returns null when no hook matches (the FR-14 zero-cost path). The CALLER applies `finalInput` to the pi
- * event (after `denormalizeToolInput`) and branches on `decision` inside the gate (Section 3.3).
+ * The CALLER applies `finalInput` to the pi event (after `denormalizeToolInput`) and branches on
+ * `decision` inside the gate (Section 3.3). An abort of `signal` kills the running hook, starts no later
+ * one and reports the chain aborted.
  */
 export async function dispatchToolCall(
   deps: DispatchDeps,
   params: { common: HookCommon; toolName: string; toolInput: Record<string, unknown> },
-): Promise<ToolCallHookResult | null> {
-  const entries = matchEntries(deps.config.getEntries('tool_call'), params.toolName);
+  signal?: AbortSignal,
+): Promise<ToolCallHookOutcome> {
+  const entries = matchEntries(deps.config.getEntries('tool_call'), params.toolName, params.toolInput);
   if (entries.length === 0) return null;
 
   const ctx = buildRunContext(deps, 'tool_call', params.common.cwd);
@@ -101,7 +121,8 @@ export async function dispatchToolCall(
 
   for (const entry of entries) {
     const payload = buildToolCallPayload(params.common, params.toolName, working);
-    const decision = await runHook(entry, payload, ctx);
+    const decision = await runHook(entry, payload, ctx, signal);
+    if (signal?.aborted) return { aborted: true, systemMessages };
     if (decision.failed) anyFailed = true;
     if (decision.updatedInput) {
       working = { ...working, ...decision.updatedInput };
@@ -163,11 +184,13 @@ export interface ToolResultHookResult {
   systemMessages: string[];
 }
 
+/** Null when no hook matches, or when `signal` aborted, which kills the running hook and skips the rest. */
 export async function dispatchToolResult(
   deps: DispatchDeps,
   params: { common: HookCommon; toolName: string; toolInput: Record<string, unknown>; toolResponse: unknown },
+  signal?: AbortSignal,
 ): Promise<ToolResultHookResult | null> {
-  const entries = matchEntries(deps.config.getEntries('tool_result'), params.toolName);
+  const entries = matchEntries(deps.config.getEntries('tool_result'), params.toolName, params.toolInput);
   if (entries.length === 0) return null;
 
   const ctx = buildRunContext(deps, 'tool_result', params.common.cwd);
@@ -182,7 +205,8 @@ export async function dispatchToolResult(
   const systemMessages: string[] = [];
   for (const entry of entries) {
     const payload = buildToolResultPayload(params.common, params.toolName, params.toolInput, currentResponse);
-    const decision = await runHook(entry, payload, ctx);
+    const decision = await runHook(entry, payload, ctx, signal);
+    if (signal?.aborted) return null;
     if (decision.block) {
       block = true;
       if (decision.reason) reasons.push(decision.reason);
@@ -213,9 +237,11 @@ export interface InputHookResult {
   systemMessages: string[];
 }
 
+/** Null when no hook is configured, or when `signal` aborted, which kills the running hook and skips the rest. */
 export async function dispatchInput(
   deps: DispatchDeps,
   params: { common: HookCommon; prompt: string },
+  signal?: AbortSignal,
 ): Promise<InputHookResult | null> {
   const entries = deps.config.getEntries('input');
   if (entries.length === 0) return null;
@@ -229,7 +255,8 @@ export async function dispatchInput(
   const contexts: string[] = [];
   const systemMessages: string[] = [];
   for (const entry of entries) {
-    const decision = await runHook(entry, payload, ctx);
+    const decision = await runHook(entry, payload, ctx, signal);
+    if (signal?.aborted) return null;
     if (decision.block) {
       block = true;
       if (decision.reason) reasons.push(decision.reason);
@@ -277,16 +304,18 @@ export async function dispatchContext(
  *
  * Entries run CONCURRENTLY: the result is discarded so order is irrelevant, and serializing them would
  * let one slow/hung hook stall the turn for the sum of every hook's timeout instead of just the slowest.
+ * An abort of `signal` kills every running hook, and an already aborted one starts none.
  */
 export async function dispatchObserveOnly(
   deps: DispatchDeps,
   eventKey: string,
   cwd: string,
   payload: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<number> {
   const entries = deps.config.getEntries(eventKey);
   if (entries.length === 0) return 0;
   const ctx = buildRunContext(deps, eventKey, cwd);
-  await Promise.all(entries.map((entry) => runHook(entry, payload, ctx)));
+  await Promise.all(entries.map((entry) => runHook(entry, payload, ctx, signal)));
   return entries.length;
 }

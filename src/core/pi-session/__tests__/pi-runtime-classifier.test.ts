@@ -530,9 +530,10 @@ describe('PiRuntime memory judge', () => {
     expect(runtime.describeMemoryJudge()).toEqual({ kind: 'classifier', via: 'typesafe' });
     await runtime.runStructuredCompletion({ ...SUB_CALL, purpose: 'memory-rerank' });
     await runtime.runStructuredCompletion({ ...SUB_CALL, purpose: 'session-title' });
-    expect(sent).toEqual([
-      { model: 'anthropic/claude-haiku-5-5', reasoning: 'low' },
-      { model: 'anthropic/claude-haiku-5-5', reasoning: 'low' },
+    // Merge and rerank run with thinking off, which Haiku 5.5 sends as no reasoning.
+    expect(sent).toStrictEqual([
+      { model: 'anthropic/claude-haiku-5-5', reasoning: undefined },
+      { model: 'anthropic/claude-haiku-5-5', reasoning: undefined },
       { model: 'anthropic/claude-sonnet-5-5', reasoning: 'high' },
     ]);
   });

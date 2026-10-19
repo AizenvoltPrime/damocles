@@ -7,11 +7,11 @@ import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { log } from '../../logger';
 import { mapPiToolName, normalizeToolInput } from '../tool-normalization';
 import {
-  dispatchInput,
   dispatchToolResult,
   dispatchObserveOnly,
   dispatchContext,
   type DispatchDeps,
+  type InputHookResult,
 } from './dispatch';
 import {
   buildAgentEndPayload,
@@ -26,7 +26,7 @@ import {
 import { takePreToolUseContext, clearSessionPreToolUseContext, type PreToolUseContextStash } from './context-stash';
 
 export { HooksConfigService } from './config';
-export type { DispatchDeps } from './dispatch';
+export type { DispatchDeps, InputHookResult } from './dispatch';
 export {
   createPreToolUseContextStash,
   stashPreToolUseContext,
@@ -35,7 +35,7 @@ export {
   type PreToolUseContextStash,
 } from './context-stash';
 
-/** customType for the per-prompt UserPromptSubmit context the drain handler injects (hidden from chat). */
+/** customType of the hidden message carrying hook context: a run's `before_agent_start` hooks, or one message's UserPromptSubmit hooks. */
 export const HOOK_CONTEXT_CUSTOM_TYPE = 'damocles-hook-context';
 
 /** The subset of pi's `ToolResultEventResult` the PostToolUse path returns (the package omits the type). */
@@ -79,17 +79,15 @@ const TIER2_EVENTS: readonly string[] = [
   'resources_discover',
 ];
 
-/** The slice of the panel registry the configured hooks need: scope-guard, a webview emitter, and the typed prompt. */
+/** The slice of the panel registry the configured hooks need: scope-guard and a webview emitter. */
 export interface HookPanelReader {
-  get(sessionId: string): { postMessage: (message: ExtensionToWebviewMessage) => void; typedPromptOf?: (text: string) => string | undefined } | undefined;
+  get(sessionId: string): { postMessage: (message: ExtensionToWebviewMessage) => void } | undefined;
 }
 
-/** Everything `registerConfiguredHooks` needs: dispatch deps, the panel registry, and a session rename. */
+/** Everything `registerConfiguredHooks` needs: dispatch deps and the panel registry. */
 export interface ConfiguredHooksDeps {
   dispatch: DispatchDeps;
   registry: HookPanelReader;
-  /** Rename the session — prefers the live mutator (anti-fork) over the file writer; routed by sessionId. */
-  renameSession: (sessionId: string, cwd: string, newName: string) => Promise<void>;
   /** PreToolUse `additionalContext` stashed at the gate (keyed by toolCallId), drained onto the result. */
   preToolUseContextStash?: PreToolUseContextStash;
 }
@@ -102,6 +100,12 @@ export function postHookSystemMessages(
   for (const message of messages) {
     post({ type: 'notification', notificationType: 'warning', message });
   }
+}
+
+/** Tell the user what the UserPromptSubmit hooks said about a prompt: each `systemMessage`, then a block's reason. */
+export function postUserPromptVerdict(post: (message: ExtensionToWebviewMessage) => void, verdict: InputHookResult): void {
+  postHookSystemMessages(post, verdict.systemMessages);
+  if (verdict.block) post({ type: 'notification', notificationType: 'warning', message: verdict.reason ?? 'Your prompt was blocked by a hook.' });
 }
 
 /** Build the CC common-keys block (Appendix A) from a pi extension context. Shared by every event. */
@@ -131,6 +135,8 @@ export interface ToolResultPatchOptions {
   preToolUseContext?: readonly string[];
   /** Surface any PostToolUse `systemMessage`(s) (panel notification on the primary; log for subagents). */
   notify?: (messages: readonly string[]) => void;
+  /** Kills the running PostToolUse hook; an aborted dispatch contributes nothing to the patch. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -151,7 +157,7 @@ export async function buildToolResultPatch(
     toolName: mapPiToolName(event.toolName),
     toolInput: normalizeToolInput(event.toolName, event.input),
     toolResponse: buildToolResponse(event.content, event.isError, event.details),
-  });
+  }, opts.signal);
 
   if (result?.systemMessages.length && opts.notify) opts.notify(result.systemMessages);
 
@@ -179,75 +185,29 @@ export async function buildToolResultPatch(
  * handler is scope-guarded to a real panel session (internal sub-calls register no panel, so they never
  * fire), gated by `hasEntries` for zero cost when unconfigured (FR-14), and fail-soft (a hook error never
  * breaks the turn — FR-12). PreToolUse (`tool_call`) is NOT here: it runs inside the permission gate
- * (Section 3.3); this wires `tool_result`, `input`, `before_agent_start` (configured-hook context +
- * UserPromptSubmit drain), `agent_end` (Stop), and the session lifecycle events.
+ * (Section 3.3), and UserPromptSubmit (`input`) runs in `PiSession` before `prompt()`, which also delivers
+ * its context; this wires `tool_result`, `before_agent_start` (configured-hook context), `agent_end` (Stop),
+ * and the session lifecycle events.
  */
 export function registerConfiguredHooks(pi: ExtensionAPI, deps: ConfiguredHooksDeps): void {
   const config = deps.dispatch.config;
-  /** Per-session UserPromptSubmit context stash, drained into a hidden message at before_agent_start. */
-  const contextStash = new Map<string, string[]>();
 
-  // --- UserPromptSubmit (input) ----------------------------------------------
-  pi.on('input', async (event, ctx) => {
-    if (event.source !== 'interactive') return undefined;
-    const sessionId = ctx.sessionManager.getSessionId();
-    const panel = deps.registry.get(sessionId);
-    if (!panel || !config.hasEntries('input')) return undefined;
-    try {
-      // `prompt` is the text the user submitted, as in Claude Code, never a block or an expansion Damocles or pi added.
-      const prompt = panel.typedPromptOf?.(event.text) ?? event.text;
-      const result = await dispatchInput(deps.dispatch, { common: buildHookCommon(ctx), prompt });
-      if (!result) return undefined;
-      if (result.systemMessages.length) postHookSystemMessages((m) => panel.postMessage(m), result.systemMessages);
-      if (result.block) {
-        const reason = result.reason ?? 'Your prompt was blocked by a hook.';
-        panel.postMessage({ type: 'notification', notificationType: 'warning', message: reason });
-        return { action: 'handled' };
-      }
-      if (result.additionalContext) {
-        const existing = contextStash.get(sessionId) ?? [];
-        existing.push(result.additionalContext);
-        contextStash.set(sessionId, existing);
-      }
-      if (result.sessionTitle) {
-        deps.renameSession(sessionId, ctx.cwd, result.sessionTitle).catch((err) =>
-          log('[Hooks] sessionTitle rename failed: %O', err),
-        );
-      }
-      return undefined;
-    } catch (err) {
-      log('[Hooks] input handler failed: %O', err);
-      return undefined;
-    }
-  });
-
-  // --- before_agent_start: configured-hook context + UserPromptSubmit drain --
-  // Runs hooks under the `before_agent_start` key (their stdout is injected as run context — US-004) and
-  // drains the UserPromptSubmit context stash. Both are merged into one hidden message that coexists with
-  // the Damocles memory injection message, when one is sent (pi collects every handler's message).
+  // --- before_agent_start: configured-hook context ---------------------------
+  // Runs hooks under the `before_agent_start` key (their stdout is injected as run context — US-004) into
+  // one hidden message that coexists with the Damocles memory injection message, when one is sent (pi
+  // collects every handler's message).
   pi.on('before_agent_start', async (event, ctx) => {
-    const sessionId = ctx.sessionManager.getSessionId();
-    if (!deps.registry.get(sessionId)) return undefined;
-
-    const parts: string[] = [];
+    if (event.messageType !== 'user' || !config.hasEntries('before_agent_start')) return undefined;
+    if (!deps.registry.get(ctx.sessionManager.getSessionId())) return undefined;
     try {
-      if (config.hasEntries('before_agent_start')) {
-        const payload = { ...buildGenericPayload(buildHookCommon(ctx), 'before_agent_start'), prompt: event.prompt };
-        const injected = await dispatchContext(deps.dispatch, 'before_agent_start', ctx.cwd, payload);
-        if (injected) parts.push(injected);
-      }
+      const payload = { ...buildGenericPayload(buildHookCommon(ctx), 'before_agent_start'), prompt: event.prompt };
+      const injected = await dispatchContext(deps.dispatch, 'before_agent_start', ctx.cwd, payload);
+      if (!injected) return undefined;
+      return { message: { customType: HOOK_CONTEXT_CUSTOM_TYPE, content: injected, display: false } };
     } catch (err) {
       log('[Hooks] before_agent_start handler failed: %O', err);
+      return undefined;
     }
-
-    const drained = contextStash.get(sessionId);
-    if (drained?.length) {
-      contextStash.delete(sessionId);
-      parts.push(drained.join('\n\n'));
-    }
-
-    if (parts.length === 0) return undefined;
-    return { message: { customType: HOOK_CONTEXT_CUSTOM_TYPE, content: parts.join('\n\n'), display: false } };
   });
 
   // --- PostToolUse (tool_result) --------------------------------------------
@@ -323,10 +283,6 @@ export function registerConfiguredHooks(pi: ExtensionAPI, deps: ConfiguredHooksD
     // `reason: 'reload'` is an internal rebuild, not a user-meaningful stop — skip the hook (keep the
     // sweep above). Mirrors the session_start skip.
     if (event.reason === 'reload') return;
-    // A session that ends between `input` and its next `before_agent_start` leaves its stashed context
-    // undrainable. Below the reload guard, unlike the sweep above: an internal rebuild keeps the same
-    // session, so its pending context is still owed to the turn that follows.
-    contextStash.delete(sessionId);
     if (!deps.registry.get(sessionId) || !config.hasEntries('session_shutdown')) return;
     try {
       await dispatchObserveOnly(deps.dispatch, 'session_shutdown', ctx.cwd, buildSessionEndPayload(buildHookCommon(ctx), event.reason));

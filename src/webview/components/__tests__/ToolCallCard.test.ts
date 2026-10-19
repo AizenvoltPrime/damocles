@@ -8,6 +8,7 @@ import { TEAM_TOOL_LABELS } from '@shared/team-tool-labels';
 import ToolCallCard from '../ToolCallCard.vue';
 import { convertHistoryTools } from '@/composables/message-handler/utils';
 import ToolOverlay from '../ToolOverlay.vue';
+import ToolCardFrame from '../ToolCardFrame.vue';
 import SkillToolCard from '../SkillToolCard.vue';
 import LoadingSpinner from '../LoadingSpinner.vue';
 import { useSettingsStore } from '@/stores/useSettingsStore';
@@ -423,5 +424,15 @@ describe('a call replayed from history', () => {
 
   it('shows no time for a session recorded before pi kept one', () => {
     expect(card(replay()).text()).not.toMatch(/\d(ms|\.\ds)\b/);
+  });
+});
+
+describe('an MCP resource tool call', () => {
+  const read: ToolCall = { id: 'r-1', name: 'read_mcp_resource', input: { server: 'docs', uri: 'docs://a' }, status: 'completed', result: 'body' };
+
+  it('renders as an MCP call: the plug icon and an expandable card, like an mcp__ tool', () => {
+    const wrapper = card(read);
+    expect(headerPaths(wrapper)).toContain('plug');
+    expect(wrapper.findComponent(ToolCardFrame).props('expandable')).toBe(true);
   });
 });

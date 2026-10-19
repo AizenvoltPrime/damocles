@@ -13,6 +13,8 @@ import { isPlanFilePath } from '../../paths';
 import { canonicalPath, spelledPath } from '../../canonical-path';
 import { resolveToCwd } from '../../pi-session/tools/search-tools';
 import { MCP_TOOL_PREFIX } from '../../pi-session/mcp/naming';
+import { matchesToolPattern } from '../../pi-session/mcp/exposure';
+import { READ_MCP_RESOURCE, uriRuleCovers, type McpResourceRuleFilter } from '../mcp-resource-rule';
 
 /** Every built-in tool that edits a file; an `Edit` rule covers each of them. */
 const EDIT_RULE_TOOLS: ReadonlySet<string> = new Set([TOOL_EDIT, TOOL_WRITE, TOOL_GENERATE_IMAGE]);
@@ -30,9 +32,9 @@ function resolveReadPath(resolved: string): string {
   return candidates.find((candidate) => existsSync(candidate)) ?? resolved;
 }
 
-/** Whether a rule's tool name, in which `*` matches any run of characters, names the whole of `name`. */
+/** Whether a rule's tool name, in which `*` matches any run of characters, names the whole of `name`; linear, since `name` can be a model-written server. */
 function namesTool(ruleName: string, name: string): boolean {
-  return new RegExp(`^${ruleName.split('*').map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`).test(name);
+  return matchesToolPattern(ruleName, name);
 }
 
 /** Whether a rule's server or tool part names `raw` as written or as Claude Code spells it (`[^A-Za-z0-9_-]` as `_`). */
@@ -46,17 +48,31 @@ function namesMcp(ruleName: string, raw: string): boolean {
  * so can be shared by another server's tools. A rule equal to the pi name, as the renamed-tool migration
  * writes rules, names that one tool.
  */
-function matchesMcpRule(rule: string, toolName: string, mcpTool: McpToolIdentity | undefined): boolean {
+export function matchesMcpRule(rule: string, toolName: string, mcpTool: McpToolIdentity | undefined): boolean {
   if (rule === toolName) return true;
   if (!mcpTool) return false;
   const body = rule.slice(MCP_TOOL_PREFIX.length);
   const server = body.endsWith('__*') ? body.slice(0, -3) : body.includes('__') ? null : body;
   if (server !== null) return namesMcp(server, mcpTool.server);
-  // Either name may contain `__`.
+  return mcpRuleSplits(rule, mcpTool).length > 0;
+}
+
+/** Each `mcp__<server>__<tool>` reading of a rule under which it names `mcpTool`; either name may contain `__`. */
+export function mcpRuleSplits(rule: string, mcpTool: McpToolIdentity): { server: string; tool: string }[] {
+  const body = rule.slice(MCP_TOOL_PREFIX.length);
+  const splits: { server: string; tool: string }[] = [];
   for (let at = body.indexOf('__'); at !== -1; at = body.indexOf('__', at + 1)) {
-    if (namesMcp(body.slice(0, at), mcpTool.server) && namesMcp(body.slice(at + 2), mcpTool.tool)) return true;
+    const split = { server: body.slice(0, at), tool: body.slice(at + 2) };
+    if (namesMcp(split.server, mcpTool.server) && namesMcp(split.tool, mcpTool.tool)) splits.push(split);
   }
-  return false;
+  return splits;
+}
+
+/** Damocles' `mcp__<server>__read_mcp_resource(<uri pattern>)`, for a `read_mcp_resource` call naming the server and a URI. */
+function matchesMcpResourceUriRule(rule: string, toolName: string, input: Record<string, unknown>, mcpTool: McpToolIdentity | undefined): boolean {
+  if (toolName !== READ_MCP_RESOURCE || mcpTool?.tool !== READ_MCP_RESOURCE) return false;
+  const uri = input['uri'];
+  return typeof uri === 'string' && uriRuleCovers(rule, mcpTool.server, uri);
 }
 
 /** `resolve` memoized for one evaluation, which resolves the cwd and each rule's folder once per call. */
@@ -190,6 +206,41 @@ export class EvaluatorManager {
   }
 
   /**
+   * What an MCP resource list call of `toolName` leaves out: servers a deny or ask rule covers for that
+   * tool, and resources a deny rule covers for `read_mcp_resource`; and the contents a read leaves out.
+   * Nothing is covered under YOLO.
+   */
+  async mcpResourceRuleFilter(toolName: string, workspacePath: string | null): Promise<McpResourceRuleFilter> {
+    if (this.state.dangerouslySkipPermissions) {
+      return { serverCovered: () => false, resourceDenied: () => false, resourceDenyRule: () => undefined, contentCovered: () => false };
+    }
+    const permissions = await this.getPermissions(this.trustedWorkspace(workspacePath));
+    const resolvers = pathResolvers();
+    const coveringRule = (behaviors: readonly PermissionBehavior[], tool: string, input: Record<string, unknown>, server: string): string | undefined => {
+      for (const file of permissions) {
+        for (const behavior of behaviors) {
+          const rule = file[behavior].find((pattern, index, rules) => this.matchesPattern(tool, input, pattern, behavior, file.root, { server, tool }, resolvers, rules.slice(index + 1)));
+          if (rule !== undefined) return rule;
+        }
+      }
+      return undefined;
+    };
+    const resourceDenyRule = (server: string, uri: string): string | undefined => coveringRule(['deny'], READ_MCP_RESOURCE, { server, uri }, server);
+    const coveredByAnotherAsk = (server: string, uri: string, readUri: string): boolean => permissions.some((file) =>
+      file.ask.some((pattern, index, rules) => {
+        const covers = (target: string) =>
+          this.matchesPattern(READ_MCP_RESOURCE, { server, uri: target }, pattern, 'ask', file.root, { server, tool: READ_MCP_RESOURCE }, resolvers, rules.slice(index + 1));
+        return covers(uri) && !covers(readUri);
+      }));
+    return {
+      serverCovered: (server) => coveringRule(['deny', 'ask'], toolName, { server }, server) !== undefined,
+      resourceDenied: (server, uri) => resourceDenyRule(server, uri) !== undefined,
+      resourceDenyRule,
+      contentCovered: (server, uri, readUri) => resourceDenyRule(server, uri) !== undefined || coveredByAnotherAsk(server, uri, readUri),
+    };
+  }
+
+  /**
    * A repository's own settings files could allow anything, so they count only once the window is
    * trusted. Read per call: granting trust changes the cache key, so the next call reloads.
    */
@@ -269,8 +320,10 @@ export class EvaluatorManager {
     resolvers: PathResolvers,
     later: readonly string[],
   ): boolean {
-    // Claude Code skips an `mcp__` rule with parentheses.
-    if (pattern.startsWith(MCP_TOOL_PREFIX)) return !/[()]/.test(pattern) && matchesMcpRule(pattern, toolName, mcpTool);
+    // Claude Code skips an `mcp__` rule with parentheses; the URI-scoped resource form is Damocles' one exception.
+    if (pattern.startsWith(MCP_TOOL_PREFIX)) {
+      return /[()]/.test(pattern) ? matchesMcpResourceUriRule(pattern, toolName, input, mcpTool) : matchesMcpRule(pattern, toolName, mcpTool);
+    }
     const match = pattern.match(RULE_SHAPE);
     if (!match) return false;
 

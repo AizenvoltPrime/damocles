@@ -39,6 +39,15 @@ describe('reconcileMcpServers', () => {
     expect(server.tools).toHaveLength(2);
   });
 
+  it('keeps a surviving server\'s resource capability and exposure when a config reload lands', () => {
+    const store = useSettingsStore();
+    store.setMcpServers([live({ hasResources: true, resourceExposure: 'direct', resourceExposureSource: 'user', configResourceExposure: 'deferred' })]);
+
+    store.reconcileMcpServers([config()]);
+
+    expect(store.mcpServers[0]).toMatchObject({ hasResources: true, resourceExposure: 'direct', resourceExposureSource: 'user', configResourceExposure: 'deferred' });
+  });
+
   it('keeps a failure and its error message', () => {
     const store = useSettingsStore();
     store.setMcpServers([live({ status: 'failed', error: 'MCP error -32000: Connection closed', tools: undefined })]);

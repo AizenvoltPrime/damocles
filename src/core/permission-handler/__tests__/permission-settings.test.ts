@@ -223,6 +223,40 @@ describe('loadPermissionsByPriority — unusable files', () => {
     expect(logged).not.toContain('secret');
     expect(logMock).toHaveBeenCalledTimes(7);
   });
+
+  it('keeps a URI-scoped MCP resource rule in every list exactly as written', async () => {
+    const rules = [
+      'mcp__secret__read_mcp_resource(secret://passwords)',
+      'mcp__docs__read_mcp_resource(repo://docs/*)',
+      'mcp__docs__read_mcp_resource(file:///a (copy)/b))',
+      'mcp__my.srv__read_mcp_resource(x://#a!b*)',
+    ];
+    writeSettings(ORDERED_FILES[0], { allow: rules, deny: rules, ask: rules });
+
+    const result = await loadPermissionsByPriority(workspace);
+
+    expect(result[0]).toMatchObject({ allow: rules, deny: rules, ask: rules });
+    expect(logMock).not.toHaveBeenCalled();
+  });
+
+  // A deny or ask that silently matches nothing fails open, so the user needs a signal.
+  it('drops a deny or ask MCP rule whose parentheses no tool takes and logs its file and index, never its value', async () => {
+    const inert = ['mcp__*__read_mcp_resource(file:///secret/*)', 'mcp__srv__get_secret(x)', 'mcp__srv__read_mcp_resource()', 'mcp__srv(secret)'];
+    const live = ['mcp__srv__read_mcp_resource(file:///secret/*)', `${'mcp__' + 's'.repeat(50)}_0123abcd(x://secret)`, 'mcp__srv__*'];
+    writeSettings(ORDERED_FILES[0], { deny: [...inert, ...live], ask: inert });
+
+    const result = await loadPermissionsByPriority(workspace);
+
+    expect(result[0]).toMatchObject({ deny: live, ask: [] });
+    const logged = logMock.mock.calls.flat().join('\n');
+    const file = path.join(...ORDERED_FILES[0]);
+    expect(logged).toContain(`${file} permissions.deny[0] has a wildcard in its tool name`);
+    for (const index of [1, 3]) expect(logged).toContain(`${file} permissions.deny[${index}] names a tool other than read_mcp_resource`);
+    expect(logged).toContain(`${file} permissions.deny[2] is not an mcp__<server>__read_mcp_resource(<uri pattern>) rule`);
+    for (const index of [0, 1, 2, 3]) expect(logged).toContain(`${file} permissions.ask[${index}]`);
+    expect(logged).not.toContain('secret');
+    expect(logMock).toHaveBeenCalledTimes(8);
+  });
 });
 
 /**
@@ -262,5 +296,19 @@ describe('PermissionHandler follows the panel folder', () => {
 
     handler.setWorkspacePath(null);
     expect(await handler.evaluatePermission('Bash', npmTest)).toBe('ask');
+  });
+
+  it("filters MCP resource lists by the panel folder's rules", async () => {
+    writeSettings([folderB, '.damocles', 'settings.json'], { deny: ['mcp__secret', 'mcp__docs__read_mcp_resource(docs://x)'] });
+    const handler = makeHandler();
+    handler.setWorkspacePath(folderB);
+    const onB = await handler.mcpResourceRuleFilter('list_mcp_resources');
+    expect(onB.serverCovered('secret')).toBe(true);
+    expect(onB.resourceDenied('docs', 'docs://x')).toBe(true);
+
+    handler.setWorkspacePath(workspace);
+    const onA = await handler.mcpResourceRuleFilter('list_mcp_resources');
+    expect(onA.serverCovered('secret')).toBe(false);
+    expect(onA.resourceDenied('docs', 'docs://x')).toBe(false);
   });
 });

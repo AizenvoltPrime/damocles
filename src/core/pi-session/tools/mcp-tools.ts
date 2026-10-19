@@ -3,14 +3,32 @@ import type { ToolDefinition, ExtensionAPI } from '@earendil-works/pi-coding-age
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { PiCodingAgentModule } from '../pi-loader';
 import type { McpToolSource } from '../mcp/tool-source';
+import type { McpCallResult } from '../mcp/mcp-client-manager';
 import type { McpToolDescriptor } from '../mcp/types';
 import type { ElicitationUI } from '../mcp/elicitation-handler';
 import type { McpToolIdentity } from '../../permission-handler/types';
-import { limitMcpContent, transformMcpContent } from '../mcp/content';
+import { disabledResourceMatcher, type McpResourceRuleFilter } from '../../permission-handler/mcp-resource-rule';
+import { MCP_RESOURCE_TOOL_NAMES, TOOL_TOOL_SEARCH, type McpResourceToolName } from '../../../shared/tool-names';
+import { limitMcpContent, NO_RESOURCE_READ, transformMcpContent, type ResourceReadReach } from '../mcp/content';
 import { failureForLog } from '../mcp/connect-failure';
+import { resourceToolsExposure } from '../mcp/exposure';
 import { abortableTool } from './abortable-tool';
 import { mcpToolSearchGroup, type McpToolMenuEntry } from './tool-search-tool';
+import { createMcpResourceTools, READ_MCP_RESOURCE_TOOL } from './mcp-resource-tools';
 import { log } from '../../logger';
+
+/** What a resource-link hint reads off a tool call's pi context (`ExtensionToolContext`). */
+export interface ToolCallCaller {
+  sessionManager?: { getSessionId(): string };
+  /** The tools the calling session can call now (pi's `_getCallableTools`): the active ones, since no Damocles tool sets a pi `exposure`. */
+  tools?: readonly { name: string }[];
+}
+
+/**
+ * Binds one call to its caller, before the call while pi's context is live; the returned lookup runs only for a
+ * result holding a resource link, and says how `read_mcp_resource` reaches that agent for links from `server`.
+ */
+export type ResourceReachResolver = (ctx: ToolCallCaller | undefined) => (server: string) => Promise<ResourceReadReach>;
 
 interface McpToolDetails {
   isError: boolean;
@@ -26,7 +44,7 @@ function isSchemaObject(value: unknown): value is Record<string, unknown> {
  * Build one pi tool for an MCP tool/resource descriptor. The raw MCP JSON Schema is wrapped with
  * `Type.Unsafe` (pi's validator coerces it); `execute` lazily connects + calls the server with the pi
  * `AbortSignal` (real cancellation) and converts the result to pi blocks. Wrapped with `abortableTool`
- * so the pi side also unblocks instantly on abort. Never throws — errors return a structured result.
+ * so the pi side also unblocks instantly on abort. A failed call returns a structured result, never a throw.
  *
  * `opts.elicitationUi` is the NESTED route: a subagent/team-agent session never binds the panel's
  * extension UI, so its elicitation bridge has to be handed in explicitly at spawn. Omit it for the
@@ -39,7 +57,12 @@ export function buildMcpPiTool(
   pi: PiCodingAgentModule,
   descriptor: McpToolDescriptor,
   manager: McpToolSource,
-  opts?: { elicitationUi?: ElicitationUI; frozen?: boolean },
+  opts: {
+    elicitationUi?: ElicitationUI;
+    frozen?: boolean;
+    /** How a resource link's server reads through `read_mcp_resource` for the calling agent. */
+    resourceReach: ResourceReachResolver;
+  },
 ): ToolDefinition {
   const rawSchema = isSchemaObject(descriptor.inputSchema)
     ? descriptor.inputSchema
@@ -61,27 +84,20 @@ export function buildMcpPiTool(
       // And the key must be OMITTED, not set to `undefined`: `callTool` decides whether to push onto
       // `activeCallUis` by KEY PRESENCE (`opts.elicitationUi ? …`), and pushing a no-op is what strands
       // a server's elicitation on a dead bridge.
-      const elicitationUi = opts?.elicitationUi ?? (ctx?.hasUI ? ctx.ui : undefined);
+      const elicitationUi = opts.elicitationUi ?? (ctx?.hasUI ? ctx.ui : undefined);
+      const reachFor = opts.resourceReach(ctx);
+      let result: McpCallResult;
       try {
-        const result = await manager.callTool(
+        result = await manager.callTool(
           descriptor.piName,
           (params ?? {}) as Record<string, unknown>,
           {
             ...(signal ? { signal } : {}),
             ...(elicitationUi ? { elicitationUi } : {}),
             // A frozen snapshot's read-only classification belongs to this server, so the name must not reach another.
-            ...(opts?.frozen ? { expectedServerId: descriptor.serverId } : {}),
+            ...(opts.frozen ? { expectedServerId: descriptor.serverId } : {}),
           },
         );
-        const { content, fullOutputPath } = await limitMcpContent(transformMcpContent(result.content));
-        const details: McpToolDetails | undefined =
-          result.isError || fullOutputPath
-            ? { isError: result.isError, ...(fullOutputPath ? { fullOutputPath } : {}) }
-            : undefined;
-        return {
-          content: content.length > 0 ? content : [{ type: 'text', text: '(no content)' }],
-          details,
-        };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         log('[McpTools] %s failed: %s', descriptor.piName, failureForLog(err));
@@ -97,10 +113,10 @@ export function buildMcpPiTool(
         // `callTool` resolves live — so telling a user who toggled a server off and on that a working
         // capability is permanently dead, in wording engineered to prevent retries, is simply false.
         const live = manager.getToolDescriptor(descriptor.piName);
-        const gone = live === undefined || (opts?.frozen === true && live.serverId !== descriptor.serverId);
+        const gone = live === undefined || (opts.frozen === true && live.serverId !== descriptor.serverId);
         const text = !gone
           ? `MCP tool "${descriptor.piName}" failed: ${message}`
-          : opts?.frozen
+          : opts.frozen
             ? `MCP tool "${descriptor.piName}" is no longer available: its server stopped advertising it. ` +
               `This is permanent for the rest of this agent's life — retrying it will fail the same way. ` +
               `Use a different tool or report the missing capability. (${message})`
@@ -111,6 +127,18 @@ export function buildMcpPiTool(
           details: { isError: true },
         };
       }
+      const reach = result.content.some((block) => block.type === 'resource_link') ? await reachFor(descriptor.serverName) : NO_RESOURCE_READ;
+      const { content, fullOutputPath } = await limitMcpContent(
+        transformMcpContent(result.content, { server: descriptor.serverName, ...reach }),
+      );
+      const details: McpToolDetails | undefined =
+        result.isError || fullOutputPath
+          ? { isError: result.isError, ...(fullOutputPath ? { fullOutputPath } : {}) }
+          : undefined;
+      return {
+        content: content.length > 0 ? content : [{ type: 'text', text: '(no content)' }],
+        details,
+      };
     },
   });
 
@@ -161,6 +189,11 @@ export interface NestedMcpToolsetOptions {
   /** The agent's `disallowed_tools`, post-`mapName`. Exact-case, exact-name (agent-toolset.ts G1). */
   disallowed?: ReadonlySet<string>;
   /**
+   * The panel's `damocles.tools.disabled` entries, read with `eligible`. Its URI-scoped entries, and the
+   * agent's own in `disallowed`, turn resources off for this agent's whole life.
+   */
+  disabledEntries: readonly string[];
+  /**
    * The elicitation bridge every tool in this snapshot calls the server with. A nested session never
    * binds the panel's `ExtensionUIContext`, so without this an `elicitation/create` mid-call has no
    * surface to render on and the server is answered `cancel`. Supply
@@ -169,6 +202,8 @@ export interface NestedMcpToolsetOptions {
    * degradation, not a silent cancel.
    */
   elicitationUi?: ElicitationUI;
+  /** What the settings rules leave out of a resource list, per list call (`PermissionHandler.mcpResourceRuleFilter`). */
+  resourceRuleFilter: (toolName: McpResourceToolName) => Promise<McpResourceRuleFilter>;
 }
 
 /**
@@ -193,8 +228,8 @@ export const EMPTY_NESTED_MCP_TOOLSET: NestedMcpToolset = Object.freeze({
  * Build the frozen per-spawn MCP snapshot for one nested session.
  *
  * THREE properties this function exists to guarantee:
- *  - **One read.** `getAllToolDescriptors()` is called exactly ONCE and every field is derived
- *    from that single array in one pass. Three separate live reads inside one spawn is precisely the
+ *  - **One read.** `getAllToolDescriptors()` and `resourceServers()` are each called exactly ONCE and
+ *    every field is derived from those two reads. Three separate live reads inside one spawn is precisely the
  *    divergence that let team agents pass `mcp__*` names into a registry with no matching definitions,
  *    where pi dropped them silently. What ToolSearch advertises is what the session can load, by
  *    construction rather than by agreement.
@@ -225,6 +260,25 @@ export function buildNestedMcpToolset(
   const readOnlyNames = new Set<string>();
   const identities = new Map<string, McpToolIdentity>();
 
+  // The resource tools reach the servers visible now; one that appears later reaches the next spawn.
+  const resourceServers = manager.resourceServers();
+  const resourceNames = resourceServers.length > 0
+    ? MCP_RESOURCE_TOOL_NAMES.filter((name) => opts.eligible.has(name) && !opts.disallowed?.has(name))
+    : [];
+  const readGranted = resourceNames.includes(READ_MCP_RESOURCE_TOOL);
+  const turnedOff = disabledResourceMatcher([...opts.disabledEntries, ...(opts.disallowed ?? [])]);
+  // Active, or loadable through the agent's ToolSearch; an agent without ToolSearch has its resource tools active.
+  const resourceReach: ResourceReachResolver = (ctx) => {
+    if (!readGranted) return async () => NO_RESOURCE_READ;
+    const callable = new Set(ctx?.tools?.map((tool) => tool.name) ?? []);
+    const readTool = callable.has(READ_MCP_RESOURCE_TOOL) ? 'direct' : callable.has(TOOL_TOOL_SEARCH) ? 'deferred' : null;
+    return async (server) => {
+      if (readTool === null || !resourceServers.some((candidate) => candidate.serverName === server)) return NO_RESOURCE_READ;
+      const rules = await opts.resourceRuleFilter(READ_MCP_RESOURCE_TOOL);
+      return { readTool, unreadable: (uri) => turnedOff(server, uri) || rules.resourceDenied(server, uri) };
+    };
+  };
+
   for (const descriptor of manager.getAllToolDescriptors()) {
     if (!opts.eligible.has(descriptor.piName)) continue;
     if (opts.disallowed?.has(descriptor.piName)) continue;
@@ -235,6 +289,7 @@ export function buildNestedMcpToolset(
     tools.push(
       buildMcpPiTool(pi, descriptor, manager, {
         frozen: true,
+        resourceReach,
         ...(opts.elicitationUi ? { elicitationUi: opts.elicitationUi } : {}),
       }),
     );
@@ -251,6 +306,25 @@ export function buildNestedMcpToolset(
     }
     if (descriptor.readOnly === true) readOnlyNames.add(descriptor.piName);
     identities.set(descriptor.piName, { server: descriptor.serverName, tool: descriptor.rawToolName });
+  }
+
+  if (resourceNames.length > 0) {
+    // Filed by the widest exposure among the frozen servers: Always loaded if any of them is.
+    const exposure = resourceToolsExposure(resourceServers);
+    const definitions = createMcpResourceTools({
+      source: () => manager,
+      ruleFilter: opts.resourceRuleFilter,
+      disabledResource: () => turnedOff,
+      frozenServers: resourceServers,
+      ...(opts.elicitationUi ? { elicitationUi: opts.elicitationUi } : {}),
+    });
+    for (const definition of definitions) {
+      if (!resourceNames.includes(definition.name as McpResourceToolName)) continue;
+      names.push(definition.name);
+      tools.push(definition);
+      if (exposure === 'direct') direct.push(definition.name);
+      else deferrable.push(definition.name);
+    }
   }
 
   return {
@@ -283,12 +357,15 @@ export function buildNestedMcpToolset(
 export class McpToolRegistrar {
   private readonly pi: PiCodingAgentModule;
   private readonly manager: McpToolSource;
+  /** The folder's tools serve every panel in it, so each call asks the panel whose session made it. */
+  private readonly resourceReach: ResourceReachResolver;
   /** Attached instances and the tool names already registered on each. */
   private readonly instances = new Map<ExtensionAPI, Set<string>>();
 
-  constructor(pi: PiCodingAgentModule, manager: McpToolSource) {
+  constructor(pi: PiCodingAgentModule, manager: McpToolSource, resourceReach: ResourceReachResolver) {
     this.pi = pi;
     this.manager = manager;
+    this.resourceReach = resourceReach;
   }
 
   /** Track `extensionApi`, register the current descriptors on it, and return its detach. */
@@ -316,7 +393,7 @@ export class McpToolRegistrar {
       if (registered.has(descriptor.piName)) continue;
       // Per tool: a server-supplied schema pi rejects must not keep the other servers' tools out.
       try {
-        extensionApi.registerTool(buildMcpPiTool(this.pi, descriptor, this.manager));
+        extensionApi.registerTool(buildMcpPiTool(this.pi, descriptor, this.manager, { resourceReach: this.resourceReach }));
         registered.add(descriptor.piName);
       } catch (err) {
         log('[McpToolRegistrar] failed to register %s: %O', descriptor.piName, err);

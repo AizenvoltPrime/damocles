@@ -5,6 +5,11 @@ import { dirname, join } from 'node:path';
 import type { McpHttpServerConfig, McpServerConfig, McpStdioServerConfig } from '../../../../shared/types/mcp';
 import { CONFIG_COMMAND_TIMEOUT_MS, resolveMcpServerValues, runConfigCommand } from '../config-value';
 import { migrateOwnedMcpFile } from '../../../chat-panel/settings-manager/managers/mcp-config-write';
+import { initPiLoader } from '../../pi-loader';
+import { SPAWN_TEST_TIMEOUT_MS } from '../../../../__mocks__/spawn-budget';
+
+// A command runs in pi's shell on Windows, so pi is loaded before any test and a command test times only its shell.
+if (process.platform === 'win32') await initPiLoader();
 
 // `~/.damocles/mcp.json` is resolved from homedir() at module load, so home points into a temp dir.
 const { fakeRoot, fakeHome } = vi.hoisted(() => {
@@ -121,7 +126,7 @@ describe('pi format', () => {
   it('runs a value starting with ! as a command and uses its trimmed stdout', async () => {
     const out = (await resolved(http({ Authorization: '!echo from-command' }), pi)) as McpHttpServerConfig;
     expect(out.headers).toEqual({ Authorization: 'from-command' });
-  });
+  }, SPAWN_TEST_TIMEOUT_MS);
 
   it('re-runs the command on every resolve, so a rotated credential applies on the next connect', async () => {
     const counter = shPath(join(dir, 'count'));
@@ -130,7 +135,7 @@ describe('pi format', () => {
     const second = (await resolved(stdio({ N: command }), pi)) as McpStdioServerConfig;
     expect(first.env?.['N']).toBe('1');
     expect(second.env?.['N']).toBe('2');
-  });
+  }, SPAWN_TEST_TIMEOUT_MS);
 
   it('reports a failing command as commandFailed with the field only, never the command or its output', async () => {
     const result = await resolveMcpServerValues(stdio({ SECRET: '!echo leaked-output; exit 3' }), pi);
@@ -139,13 +144,13 @@ describe('pi format', () => {
     expect(result.errorInfo).toEqual({ code: 'commandFailed', params: { field: 'env.SECRET' } });
     expect(JSON.stringify(result)).not.toContain('leaked-output');
     expect(JSON.stringify(result)).not.toContain('exit 3');
-  });
+  }, SPAWN_TEST_TIMEOUT_MS);
 
   it('reports a command with empty output as failed', async () => {
     const result = await resolveMcpServerValues(stdio({ SECRET: '!true' }), pi);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.errorInfo.code).toBe('commandFailed');
-  });
+  }, SPAWN_TEST_TIMEOUT_MS);
 
   it('never runs a command from an untrusted folder file, and fails closed as commandUntrusted', async () => {
     const marker = join(dir, 'ran');
@@ -161,7 +166,7 @@ describe('pi format', () => {
   it('runs a command from a trusted folder file', async () => {
     const out = (await resolved(stdio({ SECRET: '!echo folder-ok' }), { format: 'pi', trusted: true, folderScoped: true })) as McpStdioServerConfig;
     expect(out.env).toEqual({ SECRET: 'folder-ok' });
-  });
+  }, SPAWN_TEST_TIMEOUT_MS);
 
   it('does not change the input config', async () => {
     const input = stdio({ A: `$${VAR}` });
@@ -222,7 +227,7 @@ describe('values the transport would reject', () => {
     if (result.ok) return;
     expect(result.errorInfo).toEqual({ code: 'invalidConfig', params: { detail: detail('headers.Authorization') } });
     expect(JSON.stringify(result)).not.toContain('secret-');
-  });
+  }, SPAWN_TEST_TIMEOUT_MS);
 
   it('refuses a bearerToken with a line break and an env value with a NUL', async () => {
     vi.stubEnv('DAMOCLES_CV_MULTILINE', 'x\ny');
@@ -265,12 +270,12 @@ describe('runConfigCommand', () => {
     const batchShell = join(dir, 'shell.cmd');
     writeFileSync(batchShell, '@echo off\r\n', 'utf-8');
     await expect(runConfigCommand('echo fallback-ok', { shellPath: batchShell })).resolves.toBe('fallback-ok');
-  });
+  }, SPAWN_TEST_TIMEOUT_MS);
 
   it('resolves trimmed stdout, and undefined for a non-zero exit', async () => {
     await expect(runConfigCommand('echo "  padded  "', {})).resolves.toBe('padded');
     await expect(runConfigCommand('echo out; exit 1', {})).resolves.toBeUndefined();
-  });
+  }, SPAWN_TEST_TIMEOUT_MS);
 });
 
 describe('migrateOwnedMcpFile: Damocles-owned files adopt the pi format', () => {

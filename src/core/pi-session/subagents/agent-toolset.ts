@@ -47,6 +47,7 @@ import {
   TOOL_GENERATE_IMAGE,
 } from '../../../shared/tool-names';
 import { mapPiToolName, toolCategory } from '../tool-normalization';
+import { isNestedMcpName } from '../mcp/naming';
 import type { AgentConfig } from './types';
 
 /** pi-native frontmatter tool name → Damocles active-set name. */
@@ -140,8 +141,9 @@ export function resolveAgentToolset(config: AgentConfig, parentFullToolNames: re
   // ToolSearch blurbs. Letting a `tools: *` agent inherit `mcp__…` here would put a second, unrelated
   // list of MCP names into the same spawn — exactly the divergence that used to make team agents pass
   // names the nested registry had no definitions for, which pi drops silently. The caller concatenates
-  // `[...names, ...mcp.names]`; this filter keeps that concatenation the only source.
-  names = names.filter((n) => !n.startsWith('mcp__'));
+  // `[...names, ...mcp.names]`; this filter keeps that concatenation the only source. The MCP resource
+  // tools come from the same snapshot, frozen to the resource servers visible at spawn.
+  names = names.filter((n) => !isNestedMcpName(n));
 
   const unique = [...new Set(names)];
   return {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-let captured: { onModelChange?: (model: string) => void } | null = null;
+let captured: { onModelChange?: (model: string, contextWindow: number) => void } | null = null;
 vi.mock('../../pi-session/pi-session', () => ({
   PiSession: class {
     constructor(options: typeof captured) {
@@ -47,20 +47,20 @@ describe("the panel's model is the one its session committed", () => {
     } as unknown as SessionManagerConfig);
     await manager.createSessionForPanel(host, { getPermissionMode: () => 'default' } as never, 'panel-1', FOLDER);
 
-    captured!.onModelChange!('claude-haiku-5-5');
+    captured!.onModelChange!('claude-haiku-5-5', 200_000);
 
-    expect(adopt).toHaveBeenCalledExactlyOnceWith(host, 'panel-1', FOLDER, 'claude-haiku-5-5');
+    expect(adopt).toHaveBeenCalledExactlyOnceWith(host, 'panel-1', FOLDER, 'claude-haiku-5-5', 200_000);
   });
 
   it('posts the committed model and the thinking state for it', () => {
     const posted: ExtensionToWebviewMessage[] = [];
     const settings = settingsWith(posted);
 
-    settings.adoptSessionModel({} as PanelHost, 'panel-1', FOLDER, 'claude-haiku-5-5');
+    settings.adoptSessionModel({} as PanelHost, 'panel-1', FOLDER, 'claude-haiku-5-5', 200_000);
 
     expect(settings.getActiveModelForPanel('panel-1')).toBe('claude-haiku-5-5');
     expect(posted).toEqual([
-      expect.objectContaining({ type: 'modelUpdate', activeModel: 'claude-haiku-5-5', defaultModel: 'claude-opus-5-5' }),
+      expect.objectContaining({ type: 'modelUpdate', activeModel: 'claude-haiku-5-5', defaultModel: 'claude-opus-5-5', contextWindowSize: 200_000 }),
       expect.objectContaining({ type: 'panelThinkingUpdate', panelModel: 'claude-haiku-5-5' }),
     ]);
   });

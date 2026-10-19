@@ -1,6 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as fs from 'fs';
-import type { BeforeAgentStartEvent, NormalizedBuildSystemPromptOptions, SessionEntry } from '@earendil-works/pi-coding-agent';
+import type {
+  BeforeAgentStartCustomEvent,
+  BeforeAgentStartEvent,
+  BeforeAgentStartUserEvent,
+  NormalizedBuildSystemPromptOptions,
+  SessionEntry,
+} from '@earendil-works/pi-coding-agent';
 
 const { tmpHome } = vi.hoisted(() => {
   /* eslint-disable @typescript-eslint/no-require-imports */
@@ -76,9 +82,10 @@ function promptOptions(over: Partial<NormalizedBuildSystemPromptOptions> = {}): 
   };
 }
 
-function event(over: Partial<BeforeAgentStartEvent> = {}): BeforeAgentStartEvent {
+function event(over: Partial<BeforeAgentStartUserEvent> = {}): BeforeAgentStartUserEvent {
   return {
     type: 'before_agent_start',
+    messageType: 'user',
     prompt: 'do the thing',
     systemPrompt: 'PI BASE — operating inside pi',
     systemPromptOptions: promptOptions(),
@@ -235,17 +242,19 @@ beforeEach(() => {
 
 describe('assembleDamoclesSystemPrompt — section map', () => {
   it('builds the contract key order for a representative set of inputs', () => {
-    expect(Object.keys(assembleDamoclesSystemPrompt(inputs()).sections)).toEqual(['damocles_tone']);
+    const tail = ['damocles_environment', 'damocles_model', 'damocles_tone'];
+    expect(Object.keys(assembleDamoclesSystemPrompt(inputs()).sections)).toEqual(['damocles_explore', ...tail]);
 
     expect(Object.keys(assembleDamoclesSystemPrompt(inputs({ memoryEnabled: true, planMode: true })).sections)).toEqual([
+      'damocles_explore',
       'damocles_memory',
       'damocles_plan_mode',
-      'damocles_tone',
+      ...tail,
     ]);
 
     expect(
       Object.keys(assembleDamoclesSystemPrompt(inputs({ existingPlanFile: '/p/plan.md', teamEnabled: true })).sections),
-    ).toEqual(['damocles_plan_file', 'damocles_plan_execution', 'damocles_tone']);
+    ).toEqual(['damocles_explore', 'damocles_team', 'damocles_plan_file', 'damocles_plan_execution', ...tail]);
 
     expect(
       Object.keys(
@@ -258,14 +267,36 @@ describe('assembleDamoclesSystemPrompt — section map', () => {
           }),
         ).sections,
       ),
-    ).toEqual(['damocles_memory', 'damocles_plan_mode', 'project_context', 'skills', 'damocles_tone']);
+    ).toEqual(['damocles_explore', 'damocles_memory', 'damocles_plan_mode', 'project_context', 'skills', ...tail]);
+
+    expect(
+      Object.keys(
+        assembleDamoclesSystemPrompt(
+          inputs({
+            env: { ...inputs().env, compassEnabled: true, thinkingDisabled: true },
+            webSearchEnabled: true,
+            teamEnabled: true,
+            memoryEnabled: true,
+          }),
+        ).sections,
+      ),
+    ).toEqual([
+      'compass',
+      'damocles_web_verification',
+      'damocles_team',
+      'damocles_memory',
+      'damocles_environment',
+      'damocles_model',
+      'damocles_output_form',
+      'damocles_tone',
+    ]);
   });
 
   it('keeps plan mode and the plan-file reminder mutually exclusive', () => {
     const keys = Object.keys(
       assembleDamoclesSystemPrompt(inputs({ planMode: true, existingPlanFile: '/p/plan.md', teamEnabled: true })).sections,
     );
-    expect(keys).toEqual(['damocles_plan_mode', 'damocles_tone']);
+    expect(keys).toEqual(['damocles_explore', 'damocles_team', 'damocles_plan_mode', 'damocles_environment', 'damocles_model', 'damocles_tone']);
   });
 
   it('omits a toggled-off key entirely instead of emitting an empty value', () => {
@@ -347,7 +378,13 @@ describe('buildAgentStartResult — system prompt (US-007)', () => {
     const result = await runAgentStart(ev, makePanel({ memoryEnabled: true }).panel, 'sess-1');
     expect(result).not.toHaveProperty('systemPrompt');
     expect(ev.systemPromptOptions.customPrompt).toContain('AI coding agent');
-    expect(Object.keys(ev.systemPromptOptions.sections)).toEqual(['damocles_memory', 'damocles_tone']);
+    expect(Object.keys(ev.systemPromptOptions.sections)).toEqual([
+      'damocles_explore',
+      'damocles_memory',
+      'damocles_environment',
+      'damocles_model',
+      'damocles_tone',
+    ]);
   });
 
   it('drops a section that this build did not produce rather than emptying it', async () => {
@@ -438,8 +475,12 @@ describe('buildAgentStartResult — system prompt (US-007)', () => {
     expect(text).toContain('You may pick a different mechanism for a slice');
     expect(text).toContain('which slice, which mechanism, and why, in your next message');
     expect(Object.keys(ev.systemPromptOptions.sections)).toEqual([
+      'damocles_explore',
+      'damocles_team',
       'damocles_plan_file',
       'damocles_plan_execution',
+      'damocles_environment',
+      'damocles_model',
       'damocles_tone',
     ]);
   });
@@ -460,8 +501,11 @@ describe('buildAgentStartResult — system prompt (US-007)', () => {
     expect(text).toContain('You may pick a different mechanism for a slice');
     expect(text).not.toContain('create_team');
     expect(Object.keys(ev.systemPromptOptions.sections)).toEqual([
+      'damocles_explore',
       'damocles_plan_file',
       'damocles_plan_execution',
+      'damocles_environment',
+      'damocles_model',
       'damocles_tone',
     ]);
   });
@@ -559,6 +603,24 @@ describe('buildAgentStartResult — injection (US-005)', () => {
     const compassKey = buildCompassContext(panel)!.key;
     expect(result?.message?.details).toEqual({ ...MEMORY_DETAILS, compassKey });
     expect(persist).toHaveBeenCalledWith('sess-1', 3, expect.objectContaining({ exactText: content }));
+  });
+
+  it('builds the system prompt for a run a custom message started, but injects no memory or Compass context', async () => {
+    const { panel, persist, build, messages } = makePanel({ memoryEnabled: true, compassEnabled: true });
+    const custom: BeforeAgentStartCustomEvent = {
+      type: 'before_agent_start',
+      messageType: 'custom',
+      systemPrompt: 'PI BASE',
+      systemPromptOptions: promptOptions(),
+      message: { role: 'custom', customType: 'ext.note', content: 'from an extension', display: true, timestamp: 0 },
+    };
+    const result = await runAgentStart(custom, panel, 'sess-1');
+    expect(custom.systemPromptOptions.customPrompt).toBeTruthy();
+    expect(Object.keys(custom.systemPromptOptions.sections).length).toBeGreaterThan(0);
+    expect(result?.message).toBeUndefined();
+    expect(build).not.toHaveBeenCalled();
+    expect(persist).not.toHaveBeenCalled();
+    expect(messages).toEqual([]);
   });
 
   it('sets exactText, the compass state and its tokens after the join', async () => {

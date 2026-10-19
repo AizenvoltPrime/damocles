@@ -30,6 +30,9 @@ import { recordResultText } from '../status-note';
 import { DAMOCLES_AGENT_STATUS_ENTRY } from '../../session-store/constants';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
 import { ShellCancelStore } from '../../tools/shell-cancel-registry';
+import type { McpResourceRuleFilter } from '../../../permission-handler/mcp-resource-rule';
+
+const NO_RESOURCE_RULES = async (): Promise<McpResourceRuleFilter> => ({ serverCovered: () => false, resourceDenied: () => false, resourceDenyRule: () => undefined, contentCovered: () => false });
 
 // Pass-through spies so a test can prove a rejected resume id never reached the filesystem.
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -124,7 +127,8 @@ function makeEngine(): { engine: SubagentEngine; gates: Gate[] } {
         abort: async () => {},
         dispose: () => {},
         sessionId: 'sid',
-        agent: {},
+        // pi-agent-core's Agent: a stop subscribes to stop a run pi still prepares at its start.
+        agent: { subscribe: () => () => {}, abort: () => {} },
         sessionManager: {
           appendCustomEntry: (customType: string, data: unknown) => void customEntries.push({ customType, data }),
           getSessionFile: () => `/store/${customEntries.length}.jsonl`,
@@ -154,7 +158,7 @@ function makeEngine(): { engine: SubagentEngine; gates: Gate[] } {
     // production values and every `tools:`/`customTools` assertion below stays honest.
     buildAgentToolset: (input) => {
       buildAgentToolsetCalls.push(input);
-      return { customTools: [], mcp: buildNestedMcpToolset(piStub, null, { eligible: new Set() }) };
+      return { customTools: [], mcp: buildNestedMcpToolset(piStub, null, { eligible: new Set(), disabledEntries: [], resourceRuleFilter: NO_RESOURCE_RULES }) };
     },
     disposeBrowserScope: () => {},
     // Slice 2: the subagent's MCP tools are handed an attributed dialog bridge, so teardown must
@@ -527,6 +531,25 @@ describe('AgentManager background keep-alive', () => {
     mgr.dispose();
   });
 
+  it("hands the subagent's hooks the signal its own Stop aborts, and no other agent's", async () => {
+    const { engine } = makeEngine();
+    const mgr = new AgentManager(engine, 4);
+    vi.mocked(createSubagentExtensionFactory).mockClear();
+    const stopped = mgr.spawn(spec(0));
+    await flush();
+    const kept = mgr.spawn(spec(1));
+    await flush();
+    const [stoppedSignal, keptSignal] = vi.mocked(createSubagentExtensionFactory).mock.calls.map(([ctx]) => ctx.stopSignal);
+    expect(stoppedSignal!.aborted).toBe(false);
+
+    expect(mgr.abort(stopped, 'user')).toBe(true);
+
+    expect(stoppedSignal!.aborted).toBe(true);
+    expect(keptSignal!.aborted).toBe(false);
+    expect(mgr.getRecord(kept)!.status).toBe('running');
+    mgr.dispose();
+  });
+
   it('aborting a running background subagent emits exactly one stopped completion', async () => {
     const { engine, gates } = makeEngine();
     const msgs: { type: string; status?: string }[] = [];
@@ -816,7 +839,8 @@ describe('AgentManager thinkingLevel precedence', () => {
         abort: async () => {},
         dispose: () => {},
         sessionId: 'sid',
-        agent: {},
+        // pi-agent-core's Agent: a stop subscribes to stop a run pi still prepares at its start.
+        agent: { subscribe: () => () => {}, abort: () => {} },
         sessionManager: { appendCustomEntry: () => 'e', getSessionFile: () => '/store/x.jsonl', getEntries: () => statsAsEntries(session) },
       };
       return session as unknown as AgentSession;
@@ -962,7 +986,7 @@ describe('AgentManager — per-subagent browser scope', () => {
     const builtWith: string[] = [];
     engine.buildAgentToolset = (input) => {
       builtWith.push(input.agentId);
-      return { customTools: [], mcp: buildNestedMcpToolset(piStub, null, { eligible: new Set() }) };
+      return { customTools: [], mcp: buildNestedMcpToolset(piStub, null, { eligible: new Set(), disabledEntries: [], resourceRuleFilter: NO_RESOURCE_RULES }) };
     };
     const mgr = new AgentManager(engine, 2);
 
@@ -1191,6 +1215,8 @@ describe('AgentManager → capability-gated prompt blocks', () => {
   }
 
   const PARENT_WITH_COMPASS = ['read', 'bash', 'grep', 'find', 'ls', 'Write', ...COMPASS_PI_TOOL_NAMES, 'ToolSearch'];
+  // The main prompt's `compass` section as pi renders it; system-prompt.test.ts pins that the assembled prompt carries this text.
+  const PARENT_COMPASS_SECTION = `<compass>\n${COMPASS_SYSTEM_PROMPT}\n</compass>`;
 
   it('briefs a `tools: *` agent that INHERITED the Compass tools on how to use them', async () => {
     // `general-purpose` omits `builtinToolNames`, so it mirrors the parent's full set; `resolveAgentToolset`
@@ -1216,9 +1242,9 @@ describe('AgentManager → capability-gated prompt blocks', () => {
     // `COMPASS_SYSTEM_PROMPT` whenever Compass is enabled. Appending the agent variant on top briefed
     // the model twice, in two voices, on one subsystem (observed live: a general-purpose spawn quoted
     // two `<compass>` blocks). The inherited section wins; the agent variant is dropped.
-    const prompt = await capturePrompt('general-purpose', PARENT_WITH_COMPASS, COMPASS_SYSTEM_PROMPT);
+    const prompt = await capturePrompt('general-purpose', PARENT_WITH_COMPASS, PARENT_COMPASS_SECTION);
     expect(prompt.match(/<compass>/g) ?? [], 'exactly one <compass> section').toHaveLength(1);
-    expect(prompt).toContain(COMPASS_SYSTEM_PROMPT);
+    expect(prompt).toContain(PARENT_COMPASS_SECTION);
     expect(prompt).not.toContain(COMPASS_AGENT_PROMPT);
   });
 
@@ -1239,7 +1265,7 @@ describe('AgentManager → capability-gated prompt blocks', () => {
       config,
       'c:/tmp',
       { isGitRepo: false, branch: '', platform: 'win32' },
-      COMPASS_SYSTEM_PROMPT,
+      PARENT_COMPASS_SECTION,
       { compassBlock: COMPASS_AGENT_PROMPT },
     );
     expect(prompt).toContain(COMPASS_AGENT_PROMPT);
@@ -1323,7 +1349,6 @@ function mcpDescriptor(over: Partial<McpToolDescriptor> & Pick<McpToolDescriptor
   return {
     serverName: 'git',
     serverId: `test/${over.serverName ?? 'git'}`,
-    kind: 'tool',
     rawToolName: over.piName.split('__').slice(2).join('__'),
     description: `desc of ${over.piName}`,
     inputSchema: { type: 'object', properties: {} },
@@ -1352,6 +1377,7 @@ function mcpPanel(initial: McpToolDescriptor[]) {
     getToolDescriptor: (piName: string) => descriptors.find((d) => d.piName === piName),
     allToolNames: () => descriptors.map((d) => d.piName),
     callTool,
+    resourceServers: () => [],
   } as unknown as McpClientManager;
   return {
     manager,
@@ -1371,6 +1397,7 @@ function toolStatusDeps(over: { mcpEnabled?: boolean; mcpToolNames?: string[]; d
     browserEnabled: false,
     mcpEnabled: over.mcpEnabled ?? true,
     mcpToolNames: over.mcpToolNames ?? [],
+    mcpResourceExposure: null,
     disabled: over.disabled ?? new Set<string>(),
   };
 }
@@ -1405,7 +1432,7 @@ function makeMcpEngine(opts: {
     // The production derivation, verbatim in shape: ONE eligibility read, ONE snapshot, definitions
     // appended to the agent's customTools exactly as `PiSession.buildSubagentEngine` does.
     const eligible = new Set(fullActiveToolNames({ ...opts.deps, mcpToolNames: opts.panel.manager.allToolNames() } as never));
-    const mcp = buildNestedMcpToolset(piStub, opts.panel.manager, { eligible, disallowed: input.mcpDisallowed });
+    const mcp = buildNestedMcpToolset(piStub, opts.panel.manager, { eligible, disabledEntries: [], disallowed: input.mcpDisallowed, resourceRuleFilter: NO_RESOURCE_RULES });
     snapshots.push(mcp);
     return { customTools: [...mcp.tools], mcp };
   };
@@ -1848,7 +1875,12 @@ describe('AgentManager agent records', () => {
 
 describe('AgentManager resume', () => {
   const made: string[] = [];
-  afterEach(() => {
+  const opened: Gate[][] = [];
+  afterEach(async () => {
+    // Every case resumes the same id, and a run that never settled would still own its file for the next case.
+    for (const gate of opened.splice(0).flat()) gate.resolve();
+    await flush();
+    await flush();
     for (const dir of made.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -1857,6 +1889,7 @@ describe('AgentManager resume', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-resume-'));
     made.push(dir);
     const { engine, gates } = makeEngine();
+    opened.push(gates);
     engine.subagentStoreDir = () => dir;
     return { engine, gates, dir };
   }

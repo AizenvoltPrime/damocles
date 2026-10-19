@@ -37,9 +37,10 @@ describe('COMPASS_SYSTEM_PROMPT — Opus 4.8 value-prop reframe', () => {
     expect(COMPASS_SYSTEM_PROMPT).toContain('resolved');
   });
 
-  it('preserves the <compass> XML wrapper', () => {
-    expect(COMPASS_SYSTEM_PROMPT.startsWith('<compass>')).toBe(true);
-    expect(COMPASS_SYSTEM_PROMPT.endsWith('</compass>')).toBe(true);
+  // The main prompt's `compass` section supplies the `<compass>` wrapper, so a body tag would nest a second one.
+  it('carries no <compass> wrapper of its own', () => {
+    expect(COMPASS_SYSTEM_PROMPT).not.toContain('<compass>');
+    expect(COMPASS_SYSTEM_PROMPT).not.toContain('</compass>');
   });
 
   // A prompt must never name a tool outside the active set without saying how to obtain it. Compass is a
@@ -66,8 +67,7 @@ describe('COMPASS_SYSTEM_PROMPT — Opus 4.8 value-prop reframe', () => {
 
   it('matches snapshot', () => {
     expect(COMPASS_SYSTEM_PROMPT).toMatchInlineSnapshot(`
-      "<compass>
-      Compass is a workspace knowledge graph of every function, class, type, and file and how they connect (calls, imports, inheritance, references).
+      "Compass is a workspace knowledge graph of every function, class, type, and file and how they connect (calls, imports, inheritance, references).
 
       Use Compass when finding where something is defined, who calls/imports it, assessing change impact, or understanding architecture. Use Glob/Grep/Read directly when you already know the path/glob, need a known config file, or need a literal text search.
 
@@ -77,8 +77,7 @@ describe('COMPASS_SYSTEM_PROMPT — Opus 4.8 value-prop reframe', () => {
 
       Search ONE entity name per call — CompassSearch "AuthManager", not "AuthManager validateToken".
 
-      Empty results: CompassSearch returns nothing → the symbol likely doesn't exist by that name (it indexes symbols, not text); try a related name. CompassQuery "none" → read the first line for what the target resolved to; if it's the right entity but you expected results, verify with one Grep, since relationship coverage isn't guaranteed.
-      </compass>"
+      Empty results: CompassSearch returns nothing → the symbol likely doesn't exist by that name (it indexes symbols, not text); try a related name. CompassQuery "none" → read the first line for what the target resolved to; if it's the right entity but you expected results, verify with one Grep, since relationship coverage isn't guaranteed."
     `);
   });
 });

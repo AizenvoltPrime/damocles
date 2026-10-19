@@ -30,7 +30,7 @@ export interface CanUseToolContext {
   suggestions?: PermissionUpdate[];
   blockedPath?: string;
   decisionReason?: string;
-  /** Set for an MCP call whose descriptor the caller found; `mcp__` rules match it. */
+  /** Set for an MCP call whose descriptor the caller found, or an MCP resource call naming a server; `mcp__` rules match it. */
   mcpTool?: McpToolIdentity;
   /** The version core stamped on an `ExitPlanMode` call (`plan-version.ts`), shown on its approval prompt. */
   planVersion?: number;

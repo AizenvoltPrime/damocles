@@ -10,6 +10,8 @@
  */
 
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
+import { abortRunAtStart } from '../abort-run-at-start';
+import { runLifecycleOf } from '../run-lifecycle';
 
 /** Info about a tool event in the subagent (drives the parent card's tool-use count). */
 export interface ToolActivity {
@@ -26,7 +28,10 @@ export interface RunSubagentOptions {
   /** Additional turns allowed after the soft-limit steer before a hard abort. */
   graceTurns?: number;
   signal?: AbortSignal;
-  onSessionCreated?: (session: AgentSession) => void;
+  /** Binds the session's run lifecycle (`trackRunLifecycle`), which the run reads. */
+  onSessionCreated: (session: AgentSession) => void;
+  /** Called as the task is handed to pi, after which a run that settles is the task's own. */
+  onPrompted?: () => void;
   onToolActivity?: (activity: ToolActivity) => void;
   onTurnEnd?: (turnCount: number) => void;
   onAssistantUsage?: (usage: { input: number; output: number; cacheWrite: number }) => void;
@@ -84,20 +89,25 @@ function getLastAssistantText(session: AgentSession, from: number): string {
   return '';
 }
 
-/** Wire an AbortSignal to abort a session. Returns a cleanup function. */
+/** Wire an AbortSignal to abort a session: the run open now, and one pi still prepares at its start. Returns a cleanup function. */
 function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => void {
   if (!signal) return () => {};
-  const onAbort = () => void session.abort();
+  const onAbort = (): void => {
+    abortRunAtStart(session).catch((err: unknown) => console.error('[subagent-runner] stopping the run failed:', err));
+  };
+  if (signal.aborted) {
+    onAbort();
+    return () => {};
+  }
   signal.addEventListener('abort', onAbort, { once: true });
   return () => signal.removeEventListener('abort', onAbort);
 }
 
-/** Run a subagent session to completion. An abort before the run starts skips the prompt entirely. */
+/** Run a subagent session to completion. An abort before the task reaches pi skips the prompt entirely. */
 export async function runSubagent(options: RunSubagentOptions): Promise<RunResult> {
   const session = await options.createSession();
-  options.onSessionCreated?.(session);
-  // pi's abort acts only on a started run, so a signal that fired while the session was built never reached it.
-  if (options.signal?.aborted) return { responseText: '', session, aborted: false, steered: false };
+  options.onSessionCreated(session);
+  const run = runLifecycleOf(session);
 
   const maxTurns = normalizeMaxTurns(options.maxTurns);
   const graceTurns = Math.max(1, options.graceTurns ?? DEFAULT_GRACE_TURNS);
@@ -107,8 +117,6 @@ export async function runSubagent(options: RunSubagentOptions): Promise<RunResul
   let error: string | undefined;
 
   const unsub = session.subscribe((event: AgentSessionEvent) => {
-    // An abort during prompt()'s preflight preceded the run it was meant to stop, so repeat it now.
-    if (event.type === 'agent_start' && options.signal?.aborted) void session.abort();
     if (event.type === 'turn_end') {
       turnCount++;
       options.onTurnEnd?.(turnCount);
@@ -136,15 +144,27 @@ export async function runSubagent(options: RunSubagentOptions): Promise<RunResul
 
   const collector = collectResponseText(session);
   const cleanupAbort = forwardAbortSignal(session, options.signal);
-  const runStart = session.messages.length;
+  let runStart = session.messages.length;
+  let prompted = false;
 
   try {
-    await session.prompt(options.prompt);
+    // The task opens a run of its own once pi has none open, and joins as a follow-up a run another prompt opens meanwhile.
+    await run.untilIdle(options.signal);
+    if (!options.signal?.aborted) {
+      prompted = true;
+      runStart = session.messages.length;
+      options.onPrompted?.();
+      await session.prompt(options.prompt, { streamingBehavior: 'followUp' });
+      await run.untilIdle(options.signal);
+    }
   } finally {
+    // The session is let go of only once pi ended the run it has open, which a stop aborted.
+    if (run.phase !== 'start') await run.untilRunEnds();
     unsub();
     collector.unsubscribe();
     cleanupAbort();
   }
+  if (!prompted) return { responseText: '', session, aborted: false, steered: false };
 
   const responseText = collector.getText().trim() || getLastAssistantText(session, runStart);
   // A hard abort after the grace window sets both flags; report only `aborted` so the pair can't

@@ -47,9 +47,13 @@ describe('SUBCALL_THINKING', () => {
 });
 
 describe('subCallReasoning with pi-ai clampThinkingLevel', () => {
-  it('sends low on Haiku 5.5 for both off and low, since Haiku 5.5 cannot disable thinking', () => {
-    expect(subCallReasoning(clampThinkingLevel, haiku, 'off')).toBe('low');
+  it('omits reasoning for off on Haiku 5.5 and sends low for low', () => {
+    expect(subCallReasoning(clampThinkingLevel, haiku, 'off')).toBeUndefined();
     expect(subCallReasoning(clampThinkingLevel, haiku, 'low')).toBe('low');
+  });
+
+  it('sends low for off on Sonnet 5.5, which cannot disable thinking', () => {
+    expect(subCallReasoning(clampThinkingLevel, sonnet, 'off')).toBe('low');
   });
 
   it('omits reasoning for off on GPT-6 Luna and sends low for low', () => {

@@ -132,7 +132,8 @@ export function createVoiceStreamHandlers(
     }
   }
 
-  async function downloadAllMissing(host: PanelHost): Promise<void> {
+  /** Whether every missing or outdated model is now in place. */
+  async function downloadAllMissing(host: PanelHost): Promise<boolean> {
     if (voiceService === undefined) {
       postMessage(host, {
         type: "voiceModelDownloadProgress",
@@ -142,7 +143,7 @@ export function createVoiceStreamHandlers(
         status: "error",
         message: "Voice runtime not configured",
       });
-      return;
+      return false;
     }
     const paths = voiceService.getPaths();
     let manifest: VoiceModelManifest;
@@ -157,13 +158,14 @@ export function createVoiceStreamHandlers(
         status: "error",
         message: err instanceof Error ? err.message : "Failed to load manifest",
       });
-      return;
+      return false;
     }
     if (manifest.status === "placeholder-checksums") {
       log("[VoiceStreamHandlers] Manifest declares placeholder-checksums; downloads will still SHA-256 verify against whatever is recorded.");
     }
     const compare = await compareInstalled(paths.modelsDir, manifest);
     const targets: ModelEntry[] = [...compare.missing, ...compare.outdated];
+    let complete = true;
     const session = await runDownloadSession(async (signal) => {
       for (const entry of targets) {
         try {
@@ -184,6 +186,7 @@ export function createVoiceStreamHandlers(
             },
           });
           if (result.status === "license-required") {
+            complete = false;
             postMessage(host, {
               type: "voiceModelDownloadProgress",
               modelId: result.modelId,
@@ -194,6 +197,7 @@ export function createVoiceStreamHandlers(
             });
           }
         } catch (err) {
+          complete = false;
           if (signal.aborted) return;
           postMessage(host, {
             type: "voiceModelDownloadProgress",
@@ -207,7 +211,16 @@ export function createVoiceStreamHandlers(
         }
       }
     });
-    if (!session.aborted) postMessage(host, { type: "voiceModelDownloadAllDone" });
+    if (session.aborted) return false;
+    postMessage(host, { type: "voiceModelDownloadAllDone" });
+    return complete;
+  }
+
+  /** Shows why voice is not running, when the service recorded a reason. */
+  function postStartFailure(host: PanelHost): void {
+    if (voiceService === undefined || voiceService.isReady()) return;
+    const reason = voiceService.failureMessage();
+    if (reason !== null) postMessage(host, { type: "voiceSidecarStatus", state: "error", message: reason });
   }
 
   function broadcastSidecar(host: PanelHost, msg: SidecarOutbound): void {
@@ -390,9 +403,8 @@ export function createVoiceStreamHandlers(
         return;
       }
       attachedClientRelease = voiceService.attachClient();
-      if (!voiceService.isReady()) {
-        await voiceService.start();
-      }
+      await voiceService.ensureStarted({ install: true });
+      postStartFailure(ctx.host);
       // An upgrade notice would offer a model download the runtime can never use.
       if (unsupportedVoicePlatformMessage(process.platform, process.arch) !== null) return;
       try {
@@ -419,11 +431,10 @@ export function createVoiceStreamHandlers(
     },
 
     voiceAcceptFirstRunModal: async (_msg, ctx) => {
-      // Webview accepted the privacy disclosure. Trigger the bundle
-      // download so the next start() finds runtime + models in place.
-      // Mirrors the runtime install path used by the manual
-      // "Re-download models" button.
-      await downloadAllMissing(ctx.host);
+      // The user accepted the disclosure, so the start may install the runtime and retry one that failed.
+      if (voiceService === undefined || !(await downloadAllMissing(ctx.host))) return;
+      await voiceService.ensureStarted({ install: true, retry: true });
+      postStartFailure(ctx.host);
     },
 
     voiceCancelFirstRunModal: async () => {
@@ -460,24 +471,12 @@ export function createVoiceStreamHandlers(
         });
         return;
       }
-      if (!voiceService.isReady()) {
-        try {
-          await voiceService.start();
-        } catch (err) {
-          log("[VoiceStreamHandlers] test-voice start failed:", err);
-          postMessage(ctx.host, {
-            type: "voiceSidecarStatus",
-            state: "error",
-            message: err instanceof Error ? err.message : String(err),
-          });
-          return;
-        }
-      }
+      if (!voiceService.isReady()) await voiceService.ensureStarted({ install: true, retry: true });
       if (!voiceService.isReady()) {
         postMessage(ctx.host, {
           type: "voiceSidecarStatus",
           state: "error",
-          message: "Voice runtime did not become ready.",
+          message: voiceService.failureMessage() ?? "Voice runtime did not become ready.",
         });
         return;
       }
@@ -610,10 +609,7 @@ export function createVoiceStreamHandlers(
       });
       if (session.aborted) return;
       postMessage(ctx.host, { type: "voiceModelDownloadAllDone" });
-      if (voiceService.isReady()) {
-        await voiceService.stop();
-        await voiceService.start();
-      }
+      if (voiceService.isReady()) await voiceService.restart();
     },
 
     voiceDismissModelUpgrade: () => {

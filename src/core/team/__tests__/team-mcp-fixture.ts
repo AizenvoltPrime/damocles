@@ -1,5 +1,6 @@
 import { buildNestedMcpToolset, type NestedMcpToolset } from '../../pi-session/tools/mcp-tools';
 import type { McpClientManager } from '../../pi-session/mcp/mcp-client-manager';
+import type { McpResourceRuleFilter } from '../../permission-handler/mcp-resource-rule';
 import type { PiCodingAgentModule } from '../../pi-session/pi-loader';
 
 /**
@@ -34,7 +35,6 @@ const teamMcpManager = {
       piName: 'mcp__srv__read',
       serverName: 'srv',
       serverId: 'test/srv',
-      kind: 'tool',
       rawToolName: 'read',
       description: 'read a thing',
       inputSchema: { type: 'object', properties: {} },
@@ -44,21 +44,23 @@ const teamMcpManager = {
       piName: 'mcp__srv__write',
       serverName: 'srv',
       serverId: 'test/srv',
-      kind: 'tool',
       rawToolName: 'write',
       description: 'write a thing',
       inputSchema: { type: 'object', properties: {} },
       readOnly: false,
     },
   ],
+  resourceServers: () => [],
 } as unknown as McpClientManager;
+
+const NO_RESOURCE_RULES = async (): Promise<McpResourceRuleFilter> => ({ serverCovered: () => false, resourceDenied: () => false, resourceDenyRule: () => undefined, contentCovered: () => false });
 
 /**
  * A FRESH snapshot per call, through the real builder — `buildNestedMcpToolset` allocates, which is
  * what lets object identity distinguish "the spawn threaded one snapshot" from "it read twice".
  */
 export function teamMcpSnapshot(): NestedMcpToolset {
-  return buildNestedMcpToolset(teamPiStub, teamMcpManager, { eligible: new Set(TEAM_MCP_NAMES) });
+  return buildNestedMcpToolset(teamPiStub, teamMcpManager, { resourceRuleFilter: NO_RESOURCE_RULES, eligible: new Set(TEAM_MCP_NAMES), disabledEntries: [] });
 }
 
 /** What a `TeamEngine.buildAgentToolset` fake returns: the real shape, over a real snapshot. */

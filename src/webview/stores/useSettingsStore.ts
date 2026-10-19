@@ -1,7 +1,7 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
 import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, AutoCompactConfig, CacheWarmingMode, ContextWarningLevel, PanelThinkingState, MemoryJudge, ClassifierProvider, ClassifierCredential, ImageGenerationSettings } from '@shared/types/settings';
-import type { McpConfigError, McpRenamedToolRuleNotice, McpServerStatusInfo, McpToolExposureScope, McpWriteErrorInfo } from '@shared/types/mcp';
+import { renamedRuleNoticeKey, type McpConfigError, type McpRenamedToolRuleNotice, type McpServerStatusInfo, type McpToolExposureScope, type McpWriteErrorInfo } from '@shared/types/mcp';
 import type { ToolsSnapshot } from '@shared/types/tools';
 import type { VoiceConfig } from '@shared/types/voice';
 import type { WorkspaceFolderInfo } from '@shared/types/workspace-folders';
@@ -250,6 +250,10 @@ export const useSettingsStore = defineStore('settings', () => {
       if (!prior || server.status !== "idle" || !LIVE_MCP_STATUSES.has(prior.status)) return server;
       const merged: McpServerStatusInfo = { ...server, status: prior.status };
       if (prior.tools !== undefined) merged.tools = prior.tools;
+      if (prior.hasResources !== undefined) merged.hasResources = prior.hasResources;
+      if (prior.resourceExposure !== undefined) merged.resourceExposure = prior.resourceExposure;
+      if (prior.resourceExposureSource !== undefined) merged.resourceExposureSource = prior.resourceExposureSource;
+      if (prior.configResourceExposure !== undefined) merged.configResourceExposure = prior.configResourceExposure;
       if (prior.serverInfo !== undefined) merged.serverInfo = prior.serverInfo;
       if (prior.error !== undefined) merged.error = prior.error;
       // `supportsOAuth` is deliberately NOT carried. It is runtime-derived, and a server just edited
@@ -272,17 +276,22 @@ export const useSettingsStore = defineStore('settings', () => {
     mcpToolExposureScopes.value = scopes;
   }
 
-  /** Later notices for a file already on screen join its list, so one file never shows twice. */
+  /**
+   * Later notices for a location already on screen join its list, so one file or setting never shows twice; a
+   * later replacement for a listed rule takes its place, since core remembers it as shown.
+   */
   function addMcpRenamedToolRules(notices: McpRenamedToolRuleNotice[]) {
     const merged = mcpRenamedToolRules.value.map((notice) => ({ ...notice, rules: [...notice.rules] }));
     for (const notice of notices) {
-      const existing = merged.find((entry) => entry.path === notice.path);
+      const existing = merged.find((entry) => renamedRuleNoticeKey(entry) === renamedRuleNoticeKey(notice));
       if (!existing) {
         merged.push({ ...notice, rules: [...notice.rules] });
         continue;
       }
       for (const rule of notice.rules) {
-        if (!existing.rules.some((known) => known.old === rule.old)) existing.rules.push(rule);
+        const listed = existing.rules.findIndex((known) => known.old === rule.old);
+        if (listed < 0) existing.rules.push(rule);
+        else existing.rules[listed] = rule;
       }
     }
     mcpRenamedToolRules.value = merged;

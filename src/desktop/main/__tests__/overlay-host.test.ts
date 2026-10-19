@@ -103,7 +103,7 @@ describe('overlay page', () => {
     expect(OVERLAY_PAGE_URL).toBe('app://damocles/overlay/index.html');
     expect(resolveAppRequest(OVERLAY_PAGE_URL, process.cwd())).toEqual({ kind: 'overlay' });
     expect(resolveAppRequest('app://damocles/overlay/other.html', process.cwd())).toBeUndefined();
-    const html = overlayHtml({ kind: 'dark', css: ':root{}', reducedMotion: false });
+    const html = overlayHtml({ kind: 'dark', css: ':root{}', reducedMotion: false, fileIconTheme: 'material' });
     const csp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(html)?.[1] ?? '';
     const nonce = /'nonce-([^']+)'/.exec(csp)?.[1];
     expect(csp).toBe(`default-src 'none'; style-src app://damocles 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src app://damocles; img-src app://damocles data:; base-uri 'none'; form-action 'none';`);

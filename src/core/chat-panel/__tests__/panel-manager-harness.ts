@@ -40,6 +40,8 @@ export interface FakeSession {
   setChatChangesListener: (listener: unknown) => void;
   holdsSession: (sessionId: string) => boolean;
   setResumeSession: ReturnType<typeof vi.fn>;
+  openResumeTarget: ReturnType<typeof vi.fn>;
+  seedCheckpoints: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
   initializeEarly: ReturnType<typeof vi.fn>;
   setPermissionMode: ReturnType<typeof vi.fn>;
@@ -135,7 +137,13 @@ export interface Harness {
   dispose(): void;
 }
 
-export function createHarness(initial: ReturnType<typeof folderEntry>[]): Harness {
+export interface HarnessOptions {
+  /** Builds each panel's session in place of a fake one; such a session is not listed in `sessions`. */
+  readonly createSession?: (folder: FolderTarget) => ChatSession;
+  readonly loadHistory?: (cwd: string, sessionId: string, host: PanelHost, session: ChatSession) => Promise<string[] | null>;
+}
+
+export function createHarness(initial: ReturnType<typeof folderEntry>[], options: HarnessOptions = {}): Harness {
   const openFolders = (folders: ReturnType<typeof folderEntry>[]) => folders.map((f) => ({ fsPath: f.uri.fsPath, name: f.name }));
   const platform = createFakePlatform({ folders: openFolders(initial) });
   const registry = new WorkspaceFolderRegistry(platform.workspaceFolders, platform.state.workspace, platform.fileWatchers);
@@ -158,6 +166,7 @@ export function createHarness(initial: ReturnType<typeof folderEntry>[]): Harnes
       if (holdCreation.gate) await holdCreation.gate;
       const error = failCreation.errors.shift();
       if (error) throw error;
+      if (options.createSession) return options.createSession(folder);
       const session: FakeSession = {
         cwd: folder.fsPath,
         conversation: false,
@@ -173,6 +182,9 @@ export function createHarness(initial: ReturnType<typeof folderEntry>[]): Harnes
         setChatChangesListener: () => undefined,
         holdsSession: (id) => session.storedId === id,
         setResumeSession: vi.fn((id: string | null) => { session.storedId = id; }),
+        // Binds the target it still holds, as PiSession does once pi installed it.
+        openResumeTarget: vi.fn(async (id: string) => (session.storedId === id ? { kind: 'switched' as const } : { kind: 'cancelled' as const })),
+        seedCheckpoints: vi.fn(),
         dispose: vi.fn(async () => undefined),
         initializeEarly: vi.fn(async () => undefined),
         setPermissionMode: vi.fn(async () => undefined),
@@ -200,7 +212,7 @@ export function createHarness(initial: ReturnType<typeof folderEntry>[]): Harnes
     getInitialMessages: (folder) => { initialMessageFolders.push(folder.key); return []; },
     onActivePanelChanged: () => { activePanelChanges.count++; },
     inheritSettingsFromPanel: () => undefined,
-    loadHistory: async () => [],
+    loadHistory: options.loadHistory ?? (async () => []),
     storedSessionsOf: async () => [],
     sendFolderState: async (instance) => {
       folderStatePushes.push(instance);

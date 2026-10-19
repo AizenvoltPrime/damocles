@@ -412,7 +412,10 @@ function userMessageText(message: ChatMessage): string {
             class="size-3.5 d-spinning flex-none text-(--d-accent)"
             aria-hidden="true"
           />
-          <span class="d-glint min-w-0 truncate italic text-(--d-muted)">{{ workingLine }}<span
+          <span
+            class="d-glint min-w-0 truncate italic text-(--d-muted)"
+            :title="workingLine"
+          >{{ workingLine }}<span
             class="d-glint-window text-(--d-text)"
             aria-hidden="true"
           ><span>{{ workingLine }}</span></span></span>

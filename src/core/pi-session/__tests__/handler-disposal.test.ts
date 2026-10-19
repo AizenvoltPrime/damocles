@@ -10,7 +10,7 @@ type Handler = (event: unknown, ctx: unknown) => unknown;
 
 /**
  * A pi stub faithful to three properties of `ExtensionRunner` that this file is about: `on` returns the
- * unsubscribe (`extensions/loader.ts:272-287` in pi 1.1.0), a dispatch runs against a `.slice()` snapshot taken
+ * unsubscribe (`extensions/loader.js:213-229` in pi 1.3.0), a dispatch runs against a `.slice()` snapshot taken
  * before the first handler (`extensions/runner.ts`, `snapshotEventHandlers`), and a `tool_call` is
  * skipped outright when the handler list is empty (`agent-session.ts`, `beforeToolCall` consults
  * `hasHandlers('tool_call')` and treats a miss as proceed). That last one is why an emptied handler map
@@ -116,6 +116,7 @@ const PAYLOADS: Record<string, unknown> = {
   // pi normalizes the options before emitting, so `selectedTools` and `sections` are always present.
   before_agent_start: {
     type: 'before_agent_start',
+    messageType: 'user',
     prompt: 'hi',
     systemPrompt: '',
     systemPromptOptions: { selectedTools: ['read', 'bash', 'edit', 'write'], sections: {} },
@@ -180,7 +181,6 @@ function hooksWiring(): HooksWiring {
     config: { getEntries: () => [], hasEntries: () => false } as unknown as HooksConfigService,
     workspaceRoot: '/repo',
     userHome: '/home/u',
-    renameSession: async () => undefined,
   };
 }
 
@@ -220,6 +220,7 @@ function buildSubagentExtension(): ReturnType<typeof fakePi> & { gate: ReturnTyp
     isPlanMode: () => false,
     shellCancel: new ShellCancelStore().forContext(() => undefined),
     parentToolUseId: 'call-1',
+    stopSignal: new AbortController().signal,
     deferrableToolNames: [],
     hooks: { config: { getEntries: () => [], hasEntries: () => false } as unknown as HooksConfigService, workspaceRoot: '/repo', userHome: '/home/u' },
   };
@@ -255,13 +256,14 @@ describe('the shared extension instance outlives the sessions bound to it', () =
     // would leave this asserting the handler's caught-exception path rather than its success path.
     const startEvent = {
       type: 'before_agent_start',
+      messageType: 'user',
       prompt: 'hi',
       systemPrompt: '',
       systemPromptOptions: { selectedTools: ['read'], sections: {} } as Record<string, unknown>,
     };
     await pi.emit('before_agent_start', startEvent, ctxFor('session-B'));
     await pi.emit('message_start', payloadFor('message_start'), ctxFor('session-B'));
-    const hookResults = await pi.emit('input', payloadFor('input'), ctxFor('session-B'));
+    const hookResults = await pi.emit('session_before_compact', payloadFor('session_before_compact'), ctxFor('session-B'));
 
     expect(second.permissionHandler.matchRule).toHaveBeenCalledTimes(1);
     expect(startEvent.systemPromptOptions.customPrompt).toEqual(expect.any(String));

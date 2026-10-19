@@ -173,6 +173,7 @@ describe('createDamoclesExtensionFactory (US-004 routing)', () => {
     // handler rewrites the first in place and reads the second.
     const eventFor = (): { systemPromptOptions: { customPrompt?: string; sections: Record<string, string> } } => ({
       type: 'before_agent_start',
+      messageType: 'user',
       prompt: 'hi',
       systemPrompt: 'PI BASE',
       systemPromptOptions: { cwd: '/repo', selectedTools: ['read', 'bash', 'edit', 'write'], sections: {} },
@@ -197,38 +198,6 @@ describe('createDamoclesExtensionFactory (US-004 routing)', () => {
     expect(missingEvent.systemPromptOptions.customPrompt).toBeUndefined();
   });
 
-  it('holds the prompt on the dispatching panel’s Always-loaded MCP wait, by session id, before building it', async () => {
-    // The instance is shared by every panel of the folder, so the wait is the panel's, chosen per
-    // dispatch; the extension keeps no record of which session already waited.
-    let release!: () => void;
-    const panelA = { ...panel('allow'), waitForAlwaysLoadedMcp: vi.fn(() => new Promise<void>((resolve) => { release = resolve; })) };
-    const panelB = { ...panel('allow'), waitForAlwaysLoadedMcp: vi.fn(async () => undefined) };
-    const registry = new Map<string, PanelGateContext>([['A', panelA], ['B', panelB]]);
-    const { pi, run } = fakePiAll();
-    createDamoclesExtensionFactory(reader(registry), noCheckpoints())(pi as never);
-    const event = { type: 'before_agent_start', prompt: 'hi', systemPrompt: '', systemPromptOptions: { cwd: '/repo', selectedTools: [], sections: {} as Record<string, string> } } as { systemPromptOptions: { customPrompt?: string } };
-
-    const started = run('before_agent_start', event, ctxFor('A'));
-    await vi.waitFor(() => expect(panelA.waitForAlwaysLoadedMcp).toHaveBeenCalledWith('A'));
-    expect(panelB.waitForAlwaysLoadedMcp).not.toHaveBeenCalled();
-    expect(event.systemPromptOptions.customPrompt).toBeUndefined();
-
-    release();
-    await started;
-    expect(event.systemPromptOptions.customPrompt).toContain('AI coding agent');
-  });
-
-  it('a failing Always-loaded MCP wait still builds the Damocles prompt', async () => {
-    const failing = { ...panel('allow'), waitForAlwaysLoadedMcp: vi.fn(async () => { throw new Error('inspect failed'); }) };
-    const { pi, run } = fakePiAll();
-    createDamoclesExtensionFactory(readerOf(failing), noCheckpoints())(pi as never);
-    const event = { type: 'before_agent_start', prompt: 'hi', systemPrompt: '', systemPromptOptions: { cwd: '/repo', selectedTools: [], sections: {} as Record<string, string> } } as { systemPromptOptions: { customPrompt?: string } };
-
-    await run('before_agent_start', event, ctxFor('A'));
-    expect(failing.waitForAlwaysLoadedMcp).toHaveBeenCalledWith('A');
-    expect(event.systemPromptOptions.customPrompt).toContain('AI coding agent');
-  });
-
   it('tells the model at a prompt start that plan mode ended when the last statement it read is a stale notice', async () => {
     // Plan mode was entered mid-run (notice) and left before this prompt, so no section patch corrects it.
     const { pi, run } = fakePiAll();
@@ -239,7 +208,7 @@ describe('createDamoclesExtensionFactory (US-004 routing)', () => {
       { role: 'custom', customType: 'damocles-plan-mode-change', content: 'x', display: false, details: { planMode: true } },
     ];
     const ctx = { sessionManager: { getSessionId: () => 'A', buildSessionProjection: () => ({ messages: history }) }, signal: undefined };
-    const eventFor = () => ({ type: 'before_agent_start', prompt: 'hi', systemPrompt: '', systemPromptOptions: { cwd: '/repo', selectedTools: [], sections: {} } });
+    const eventFor = () => ({ type: 'before_agent_start', messageType: 'user', prompt: 'hi', systemPrompt: '', systemPromptOptions: { cwd: '/repo', selectedTools: [], sections: {} } });
 
     expect((await run('before_agent_start', eventFor(), ctx)).at(-1)).toMatchObject({
       message: { customType: 'damocles-plan-mode-change', display: false, details: { planMode: false } },
@@ -474,7 +443,7 @@ describe('context image pruning registration', () => {
     await dispatch(
       pi,
       'before_agent_start',
-      { type: 'before_agent_start', prompt: 'hi', systemPrompt: '', systemPromptOptions: { selectedTools: [], sections: {} } },
+      { type: 'before_agent_start', messageType: 'user', prompt: 'hi', systemPrompt: '', systemPromptOptions: { selectedTools: [], sections: {} } },
       { sessionManager, model: undefined },
     );
 
@@ -886,9 +855,11 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
         userMcp: new McpClientManager({ clientVersion: 'test' }),
         createFolderMcp: (reservedToolNames) => new McpClientManager({ clientVersion: 'test', reservedToolNames }),
         noticeMemory: { has: () => false, add: async () => {} },
+        additionMemory: { has: () => false, add: async () => {} },
         projectDisabledTools: () => null,
+        personalDisabledTools: () => ({ rewrite: async () => undefined, lists: () => [] }),
         toolExposureSetting: () => ({}),
-        renameSession: async () => undefined,
+        resourceExposureSetting: () => ({}),
         trust: testPlatform.trust,
         fileWatchers: testPlatform.fileWatchers,
       });

@@ -11,9 +11,10 @@ import { definedProps } from "@/lib/definedProps"
 const props = defineProps<ListboxGroupProps & {
   class?: HTMLAttributes["class"]
   heading?: string
+  headingClass?: HTMLAttributes["class"]
 }>()
 
-const delegatedProps = reactiveOmit(props, "class")
+const delegatedProps = reactiveOmit(props, "class", "headingClass")
 
 const { allGroups, filterState } = useCommand()
 const id = useId()
@@ -39,7 +40,7 @@ onUnmounted(() => {
   >
     <ListboxGroupLabel
       v-if="heading"
-      class="px-2 py-1.5 text-xs font-medium text-muted-foreground"
+      :class="cn('px-2 py-1.5 text-xs font-medium text-muted-foreground', props.headingClass)"
     >
       {{ heading }}
     </ListboxGroupLabel>

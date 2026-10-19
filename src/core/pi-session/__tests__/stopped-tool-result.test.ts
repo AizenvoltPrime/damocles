@@ -85,7 +85,7 @@ describe('registerWindDownErrorRecord', () => {
   }
 
   const earlier = { type: 'context_edit', targetId: 'e1', replacement: { content: [] } };
-  // pi-ai's lazy stream turns a request setup rejected by the aborted signal into an error stop (lazy.js:41-44 in pi-ai 1.1.0).
+  // pi-ai's lazy stream turns a request setup rejected by the aborted signal into an error stop (lazy.js:41-44 in pi-ai 1.3.0).
   const windDown = { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'This operation was aborted' };
   const turnEnd = (message: unknown) => ({ type: 'turn_end', message, toolResults: [], messageEntryId: 'a7', entries: [earlier] });
 

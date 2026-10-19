@@ -1,5 +1,10 @@
 import { describe, it, expect, afterAll, afterEach, vi } from 'vitest';
-import { rmSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { join } from 'node:path';
+import { MCP_METADATA_CACHE_DIR } from '../paths';
+import { createMcpToolName } from '../naming';
+import { retiredResourceToolNames } from '../tool-name-migration';
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { FolderMcpView } from '../folder-mcp-view';
 import { McpClientManager } from '../mcp-client-manager';
@@ -201,6 +206,30 @@ describe('FolderMcpView: what a folder sees', () => {
     expect(input.folderTools.map((t) => t.rawToolName)).toEqual(['x-y']);
   });
 
+  it('describes every user server\u2019s retired resources, a hidden one\u2019s too, which older builds named the visible ones beside', async () => {
+    const cacheFile = (server: string) => join(MCP_METADATA_CACHE_DIR, `${createHash('sha256').update(server).digest('hex').slice(0, 32)}.json`);
+    mkdirSync(MCP_METADATA_CACHE_DIR, { recursive: true });
+    for (const [server, uri] of [['a.b', 'dot://x'], ['a_b', 'under://x'], ['docs', 'docs://x']] as const) {
+      writeFileSync(cacheFile(server), JSON.stringify({ version: 1, configHash: 'older', tools: [], resources: [{ uri, name: 'x' }], cachedAt: Date.now() }));
+    }
+    try {
+      const user = userManager({ 'a.b': [], a_b: [] });
+      await user.manager.reconcile({ 'a.b': cfg('dot'), a_b: cfg('under') });
+      const { view, folder } = viewOver(user.manager, { docs: [] });
+      view.setUserVisible(['a_b']);
+      await folder.manager.reconcile({ docs: cfg('docs') });
+
+      const input = view.legacyToolNameInput();
+      expect(input.retiredResources.user.map((entry) => entry.serverName)).toEqual(['a.b', 'a_b']);
+      expect(input.retiredResources.folder.map((entry) => entry.serverName)).toEqual(['docs']);
+      const retired = retiredResourceToolNames(input);
+      expect(retired.get(createMcpToolName('a_b', 'get_x', () => true))!.map((tool) => tool.uri)).toEqual(['under://x']);
+      expect([...retired.values()].flat().map((tool) => tool.uri)).not.toContain('dot://x');
+    } finally {
+      for (const server of ['a.b', 'a_b', 'docs']) rmSync(cacheFile(server), { force: true });
+    }
+  });
+
   it('connects only what it is fed: a server absent from the folder partition never connects', async () => {
     const user = userManager();
     await user.manager.reconcile({ shared: cfg('shared') });
@@ -318,9 +347,11 @@ describe('FolderRuntime: one folder manager per folder over the one user manager
       createFolderMcp: (reservedToolNames) =>
         new McpClientManager({ clientVersion: 'test', serverManagerFactory: pool.factory, reservedToolNames }),
       noticeMemory: { has: () => false, add: async () => {} },
+      additionMemory: { has: () => false, add: async () => {} },
       projectDisabledTools: () => null,
+      personalDisabledTools: () => ({ rewrite: async () => undefined, lists: () => [] }),
       toolExposureSetting: () => ({}),
-      renameSession: async () => undefined,
+      resourceExposureSetting: () => ({}),
       trust: testPlatform.trust,
       fileWatchers: testPlatform.fileWatchers,
     });
@@ -411,7 +442,7 @@ describe('FolderMcpView: per-tool exposure', () => {
     const holder: { view?: FolderMcpView } = {};
     const folder = managerWithFake(C7, () => holder.view!.reservedToolNames());
     track(folder.manager);
-    const context = { inspection, trusted };
+    const context = { inspection, resourceInspection: {} as Record<string, unknown>, trusted };
     const view = track(new FolderMcpView(user.manager, folder.manager, () => context));
     holder.view = view;
     return { user, folder, view, context, ready: async () => {
@@ -492,5 +523,132 @@ describe('FolderMcpView: per-tool exposure', () => {
     const { view, ready } = exposedView({ command: 'c7', exposure: 'direct' });
     await ready();
     expect(view.pendingDirectServers()).toEqual([]);
+  });
+});
+
+describe('FolderMcpView: resource servers', () => {
+  const docs = { resources: [{ uri: 'docs://a', name: 'a' }] };
+
+  /** A user manager and a folder manager with resources, behind a view whose resource layers and trust are mutable. */
+  async function resourceView(context: { resourceInspection: Record<string, unknown>; trusted: boolean }) {
+    const user = managerWithFake({}, undefined, { docs, shared: docs });
+    track(user.manager);
+    const holder: { view?: FolderMcpView } = {};
+    const folder = managerWithFake({}, () => holder.view!.reservedToolNames(), { local: docs, shared: docs });
+    track(folder.manager);
+    const view = track(new FolderMcpView(user.manager, folder.manager, () => ({ inspection: {}, ...context })));
+    holder.view = view;
+    await user.manager.reconcile({ docs: cfg('docs'), hidden: cfg('hidden'), shared: cfg('user-shared') });
+    await folder.manager.reconcile({ local: cfg('local'), shared: cfg('folder-shared') });
+    return { view, user, folder };
+  }
+
+  it('lists visible servers with resources; an invisible user server is unknown and a shadowed one routes to the folder', async () => {
+    const { view, user, folder } = await resourceView({ resourceInspection: {}, trusted: true });
+    view.setUserVisible(['shared']);
+
+    expect(view.resourceServers().map((s) => s.serverName)).toEqual(['local', 'shared']);
+    const folderShared = folder.manager.resourceServers().find((s) => s.serverName === 'shared')!;
+    expect(view.resourceServers().find((s) => s.serverName === 'shared')!.serverId).toBe(folderShared.serverId);
+    await expect(view.readResource('docs', 'docs://a')).rejects.toThrow('MCP server "docs" is not available here. Servers with resources: local, shared.');
+    await view.readResource('shared', 'docs://a');
+    expect(folder.fake.readResource).toHaveBeenCalledWith('shared', 'docs://a', expect.anything());
+    expect(user.fake.readResource).not.toHaveBeenCalled();
+  });
+
+  it('applies project and local values only in a trusted folder, and an explicit value overrides an Off default', async () => {
+    const context = { resourceInspection: { userValue: { docs: 'direct' }, projectValue: { docs: 'off' }, localValue: { local: 'off' } } as Record<string, unknown>, trusted: false };
+    const { view } = await resourceView(context);
+    view.setUserVisible(['docs']);
+
+    expect(view.resourceServers().map((s) => [s.serverName, s.exposure])).toEqual([['docs', 'direct'], ['local', 'deferred'], ['shared', 'deferred']]);
+    expect(view.getServerStatuses().find((s) => s.name === 'docs')).toMatchObject({ resourceExposure: 'direct', resourceExposureSource: 'user' });
+
+    context.trusted = true;
+    expect(view.resourceServers().map((s) => s.serverName)).toEqual(['shared']);
+    await expect(view.readResource('docs', 'docs://a')).rejects.toThrow(/resources of MCP server "docs" are turned off/);
+  });
+
+  it('the expected server id of a frozen call fails as gone once the name routes to another manager', async () => {
+    const { view } = await resourceView({ resourceInspection: {}, trusted: true });
+    view.setUserVisible(['docs']);
+    const frozen = view.resourceServers().find((s) => s.serverName === 'docs')!;
+
+    await expect(view.readResource('docs', 'docs://a', { expectedServerId: `${frozen.serverId}-other` })).rejects.toThrow('MCP server "docs" is no longer available');
+    await expect(view.readResource('docs', 'docs://a', { expectedServerId: frozen.serverId })).resolves.toBeDefined();
+  });
+
+  it('routes the MCP panel’s own requests like the agent’s: folder first, then a visible user server, else unknown', async () => {
+    const { view, user, folder } = await resourceView({ resourceInspection: {}, trusted: true });
+    view.setUserVisible(['docs', 'shared']);
+    const port = view.userResources();
+
+    await port.listResourcesPage('shared', undefined);
+    expect(folder.fake.listResourcesPage).toHaveBeenCalledWith('shared', undefined, expect.anything());
+    await port.readResource('docs', 'docs://a');
+    expect(user.fake.readResource).toHaveBeenCalledWith('docs', 'docs://a', expect.anything());
+    await expect(port.readResource('hidden', 'docs://a')).rejects.toThrow('MCP server "hidden" is not available here.');
+    await expect(port.listResourceTemplatesPage('nope', undefined)).rejects.toThrow('MCP server "nope" is not available here.');
+  });
+
+  it('the panel’s port names the identity a server routes to, which a folder server of the same name replaces', async () => {
+    const { view, user, folder } = await resourceView({ resourceInspection: {}, trusted: true });
+    view.setUserVisible(['docs', 'shared']);
+    const port = view.userResources();
+    const attachedFrom = port.serverIdOf('docs')!;
+
+    expect(attachedFrom).toBe(user.manager.resourceServers().find((s) => s.serverName === 'docs')!.serverId);
+    expect(port.serverIdOf('shared')).toBe(folder.manager.resourceServers().find((s) => s.serverName === 'shared')!.serverId);
+    expect(port.serverIdOf('hidden')).toBeUndefined();
+    await folder.manager.reconcile({ local: cfg('local'), shared: cfg('folder-shared'), docs: cfg('folder-docs') });
+    expect(port.serverIdOf('docs')).not.toBe(attachedFrom);
+    await expect(port.readResource('docs', 'docs://a', { expectedServerId: attachedFrom })).rejects.toThrow('MCP server "docs" is no longer available');
+  });
+
+  it('the panel’s requests ignore an Off resource exposure while the agent’s port still refuses it', async () => {
+    const context = { resourceInspection: { userValue: { docs: 'off', local: 'off' } } as Record<string, unknown>, trusted: true };
+    const { view, folder } = await resourceView(context);
+    view.setUserVisible(['docs']);
+    const port = view.userResources();
+
+    await expect(view.readResource('docs', 'docs://a')).rejects.toThrow(/resources of MCP server "docs" are turned off/);
+    await expect(view.listResourcesPage('local', undefined)).rejects.toThrow(/resources of MCP server "local" are turned off/);
+    await expect(port.readResource('docs', 'docs://a')).resolves.toBeDefined();
+    await expect(port.listResourcesPage('local', undefined)).resolves.toMatchObject({ resources: [{ uri: 'docs://a' }] });
+    expect(folder.fake.listResourcesPage).toHaveBeenCalledTimes(1);
+  });
+
+  it('a server without resources names the servers this folder reaches, never a hidden user server or an Off one', async () => {
+    const user = managerWithFake({ git: [{ name: 'status' }] }, undefined, { docs, hidden: docs });
+    track(user.manager);
+    const holder: { view?: FolderMcpView } = {};
+    const folder = managerWithFake({}, () => holder.view!.reservedToolNames(), { local: docs });
+    track(folder.manager);
+    const view = track(new FolderMcpView(user.manager, folder.manager, () => ({ inspection: {}, resourceInspection: { userValue: { docs: 'off' } }, trusted: true })));
+    holder.view = view;
+    await user.manager.reconcile({ docs: cfg('docs'), hidden: cfg('hidden'), git: cfg('git') });
+    await folder.manager.reconcile({ local: cfg('local') });
+    view.setUserVisible(['docs', 'git']);
+
+    const named = 'MCP server "git" offers no resources. Servers with resources: local.';
+    await expect(view.readResource('git', 'x://a')).rejects.toThrow(named);
+    await expect(view.listResources('git')).rejects.toThrow(named);
+    await expect(view.userResources().readResource('git', 'x://a')).rejects.toThrow(named);
+  });
+
+  it('the panel’s requests still refuse a server without resources, and complete only through the server’s answer', async () => {
+    const user = managerWithFake({ git: [{ name: 'status' }] }, undefined, { docs: { completions: { id: ['alpha', 'beta'] } } });
+    track(user.manager);
+    const folder = managerWithFake({});
+    track(folder.manager);
+    const view = track(new FolderMcpView(user.manager, folder.manager, () => ({ inspection: {}, resourceInspection: { userValue: { docs: 'off' } }, trusted: true })));
+    await user.manager.reconcile({ docs: specOf({ command: 'docs', exposeResources: false }), git: cfg('git') });
+    view.setUserVisible(['docs', 'git']);
+    const port = view.userResources();
+
+    await expect(port.readResource('git', 'x://a')).rejects.toThrow('MCP server "git" offers no resources.');
+    await expect(port.completeResourceArgument('git', 'x://{id}', 'id', 'a', {})).rejects.toThrow('MCP server "git" offers no resources.');
+    await expect(port.completeResourceArgument('docs', 'docs://{id}', 'id', 'a', { other: 'x' })).resolves.toEqual(['alpha']);
+    expect(user.fake.completeResourceArgument).toHaveBeenCalledWith('docs', { uri: 'docs://{id}', argument: 'id', value: 'a', context: { other: 'x' } }, expect.anything());
   });
 });

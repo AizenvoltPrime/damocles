@@ -100,7 +100,9 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
       const composer = ctx.refs.chatInputRef.value;
       if (composer) composer.restoreQueued(msg.content);
       else ctx.stores.uiStore.returnedPrompt = [...(ctx.stores.uiStore.returnedPrompt ?? []), ...msg.content];
-      toast.info(i18n.global.t(`toast.promptReturned.${msg.reason}`));
+      const title = i18n.global.t(`toast.promptReturned.${msg.reason}`);
+      if (msg.detail) toast.info(title, { description: msg.detail });
+      else toast.info(title);
     },
 
     interruptRecovery: (msg, ctx) => {
@@ -144,7 +146,11 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
 
     statusUpdate: (msg, ctx) => {
       const { uiStore, settingsStore } = ctx.stores;
-      // A nested agent's retry wait is its own card's, never the main status bar's.
+      // A nested agent's retry wait and wind-down are its own card's, never the main status bar's.
+      if (msg.status === "windingDown") {
+        nestedTranscript(ctx.stores, msg.parentToolUseId)?.setWindDown(msg.windDown);
+        return;
+      }
       if (msg.parentToolUseId !== undefined) {
         nestedTranscript(ctx.stores, msg.parentToolUseId)?.setRetry(msg.status === "retrying" ? { attempt: msg.attempt, maxAttempts: msg.maxAttempts } : null);
         return;

@@ -372,7 +372,7 @@ describe('the before_agent_start reconcile', () => {
     const { pi, handlers } = fakePi();
     registerAgentStartImageReconcile(pi as never);
 
-    handlers.get('before_agent_start')!({ type: 'before_agent_start', prompt: 'go' }, ctxFor(manager));
+    handlers.get('before_agent_start')!({ type: 'before_agent_start', messageType: 'user', prompt: 'go' }, ctxFor(manager));
 
     expect(contextEdits(manager)).toHaveLength(12);
     const projected = manager.buildSessionProjection().messages;
@@ -385,7 +385,7 @@ describe('the before_agent_start reconcile', () => {
     const { pi, handlers } = fakePi();
     registerAgentStartImageReconcile(pi as never);
     const run = (): void => {
-      handlers.get('before_agent_start')!({ type: 'before_agent_start', prompt: 'go' }, ctxFor(manager));
+      handlers.get('before_agent_start')!({ type: 'before_agent_start', messageType: 'user', prompt: 'go' }, ctxFor(manager));
     };
 
     run();
@@ -400,7 +400,7 @@ describe('the before_agent_start reconcile', () => {
     const { pi, handlers } = fakePi();
     registerAgentStartImageReconcile(pi as never);
 
-    handlers.get('before_agent_start')!({ type: 'before_agent_start', prompt: 'go' }, ctxFor(manager));
+    handlers.get('before_agent_start')!({ type: 'before_agent_start', messageType: 'user', prompt: 'go' }, ctxFor(manager));
 
     const lines = readFileSync(manager.getSessionFile()!, 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
     const edits = lines.filter((entry: { type: string }) => entry.type === 'context_edit');
@@ -424,7 +424,7 @@ describe('the before_agent_start reconcile', () => {
     const { pi, handlers } = fakePi();
     registerAgentStartImageReconcile(pi as never);
     const run = (): void => {
-      handlers.get('before_agent_start')!({ type: 'before_agent_start', prompt: 'go' }, ctxFor(manager));
+      handlers.get('before_agent_start')!({ type: 'before_agent_start', messageType: 'user', prompt: 'go' }, ctxFor(manager));
     };
 
     run();
@@ -440,7 +440,7 @@ describe('the before_agent_start reconcile', () => {
     registerAgentStartImageReconcile(pi as never);
     const readOnly = { buildSessionProjection: vi.fn() };
 
-    expect(handlers.get('before_agent_start')!({ type: 'before_agent_start', prompt: 'go' }, { sessionManager: readOnly })).toBeUndefined();
+    expect(handlers.get('before_agent_start')!({ type: 'before_agent_start', messageType: 'user', prompt: 'go' }, { sessionManager: readOnly })).toBeUndefined();
     expect(readOnly.buildSessionProjection).not.toHaveBeenCalled();
   });
 
@@ -454,7 +454,7 @@ describe('the before_agent_start reconcile', () => {
       },
     };
 
-    expect(handlers.get('before_agent_start')!({ type: 'before_agent_start', prompt: 'go' }, { sessionManager: broken })).toBeUndefined();
+    expect(handlers.get('before_agent_start')!({ type: 'before_agent_start', messageType: 'user', prompt: 'go' }, { sessionManager: broken })).toBeUndefined();
     expect(broken.appendContextEdit).not.toHaveBeenCalled();
   });
 });

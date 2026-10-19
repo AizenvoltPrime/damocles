@@ -442,7 +442,13 @@
     "hook": "Hook: {event}",
     "hooksCount": "{count} hooks",
     "requiresAction": "Αναμονή για την απάντησή σας",
-    "retrying": "Σφάλμα παρόχου, νέα προσπάθεια ({attempt}/{max})..."
+    "retrying": "Σφάλμα παρόχου, νέα προσπάθεια ({attempt}/{max})...",
+    "windDown": {
+      "run": "Γίνεται διακοπή: αναμονή να τελειώσουν οι κλήσεις εργαλείων και οι χειριστές συμβάντων της εκτέλεσης.",
+      "handlers": "Γίνεται διακοπή: αναμονή να επιστρέψουν οι χειριστές {events} του pi. Το pi δεν τους δίνει σήμα ακύρωσης.",
+      "loaded": "Φορτωμένες επεκτάσεις pi: {extensions}.",
+      "withHandler": "Επεκτάσεις pi με τέτοιον χειριστή: {extensions}."
+    }
   },
   "subagent": {
     "duration": "{seconds}δ",
@@ -490,6 +496,10 @@
     },
     "toolExposureSourceTitle": "Ορίστηκε από: {source}",
     "toolExposureSaveTo": "Αποθήκευση σε",
+    "resources": "Πόροι",
+    "resourceExposureLabel": "Έκθεση πόρων του {name}",
+    "resourceExposureTooltip": "Ανενεργό: τα εργαλεία πόρων δεν φτάνουν σε αυτόν τον διακομιστή. Ενεργό: ο πράκτορας φορτώνει τα list_mcp_resources, list_mcp_resource_templates και read_mcp_resource με το ToolSearch όταν τα χρειάζεται. Πάντα φορτωμένο: αυτά τα εργαλεία δηλώνονται από τον πρώτο γύρο, κάτι που κοστίζει context σε κάθε γύρο.",
+    "resourcesDescription": "Δεδομένα που προσφέρει αυτός ο διακομιστής ανά URI, που διαβάζονται μέσω των list_mcp_resources, list_mcp_resource_templates και read_mcp_resource.",
     "fromWorkspace": "Από τον χώρο εργασίας",
     "fromDamoclesLocal": "Από το .damocles του έργου",
     "fromClaudeLocal": "Από το Claude Code (τοπικό)",
@@ -508,10 +518,12 @@
       "insufficientScope": "Ο διακομιστής χρειάζεται περισσότερα δικαιώματα. Κάντε ξανά πιστοποίηση για να τα παραχωρήσετε."
     },
     "renamedRules": {
-      "title": "Κανόνες αναφέρουν εργαλεία MCP που μετονομάστηκαν",
-      "description": "Αυτοί οι κανόνες χρησιμοποιούν ακόμη τα παλιά ονόματα εργαλείων, οπότε δεν ταιριάζουν πλέον. Το Damocles δεν επεξεργάζεται αυτά τα αρχεία· ενημερώστε κάθε κανόνα με το νέο όνομα.",
+      "title": "Κανόνες αναφέρουν εργαλεία MCP που μετονομάστηκαν ή αποσύρθηκαν",
+      "description": "Αυτοί οι κανόνες και οι λίστες εργαλείων χρησιμοποιούν ακόμη τα παλιά ονόματα εργαλείων, οπότε δεν ταιριάζουν πλέον. Ένα εργαλείο πόρου get_ είναι πλέον το read_mcp_resource, που ονομάζει τον πόρο σε παρενθέσεις. Το Damocles δεν τα επεξεργάζεται· ενημερώστε κάθε καταχώριση σε αυτό που γίνεται.",
       "openFile": "Άνοιγμα",
       "openFileAria": "Άνοιγμα του {file}",
+      "openSetting": "Άνοιγμα ρυθμίσεων",
+      "openSettingAria": "Άνοιγμα ρυθμίσεων στο {setting}",
       "becomes": "γίνεται"
     },
     "addServer": "Προσθήκη διακομιστή",
@@ -628,7 +640,48 @@
     "configErrorUnreadable": "Το αρχείο δεν μπόρεσε να διαβαστεί. Ελέγξτε τα δικαιώματά του. Οι διακομιστές που ορίζει δεν εμφανίζονται.",
     "addServerBlocked": "Διορθώστε πρώτα το αρχείο ρυθμίσεων παραπάνω. Κάθε αλλαγή γράφεται σε αυτό.",
     "localMcpUnignoredTitle": "Το Git μπορεί να κάνει commit τα διαπιστευτήριά σας MCP",
-    "localMcpUnignored": "Το Git δεν αγνοεί το {line}, τις προσωπικές σας ρυθμίσεις MCP, οπότε ένα commit μπορεί να δημοσιεύσει τα διαπιστευτήρια που περιέχουν. Προσθέστε αυτή τη γραμμή στο .gitignore."
+    "localMcpUnignored": "Το Git δεν αγνοεί το {line}, τις προσωπικές σας ρυθμίσεις MCP, οπότε ένα commit μπορεί να δημοσιεύσει τα διαπιστευτήρια που περιέχουν. Προσθέστε αυτή τη γραμμή στο .gitignore.",
+    "browseResources": "Περιήγηση στους πόρους",
+    "resourcePicker": {
+      "title": "Πόροι του {serverName}",
+      "subtitle": "Επισυνάψτε έναν πόρο σε αυτή τη συνομιλία. Διαβάζεται όταν στείλετε το μήνυμά σας.",
+      "filter": "Φιλτράρισμα των φορτωμένων πόρων",
+      "resources": "Πόροι",
+      "templates": "Πρότυπα",
+      "loading": "Φόρτωση...",
+      "list": "Πόροι και πρότυπα του {serverName}",
+      "loadMore": "Φόρτωση περισσότερων",
+      "retry": "Επανάληψη",
+      "noResources": "Αυτός ο διακομιστής δεν παραθέτει πόρους.",
+      "noTemplates": "Αυτός ο διακομιστής δεν παραθέτει πρότυπα.",
+      "noMatches": "Κανένας φορτωμένος πόρος δεν ταιριάζει με το φίλτρο.",
+      "emptyDirectory": "Αυτός ο κατάλογος είναι κενός.",
+      "attach": "Επισύναψη",
+      "open": "Άνοιγμα",
+      "backToDirectory": "Πίσω στον κατάλογο {name}",
+      "backToResources": "Πίσω στους Πόρους",
+      "backToTemplates": "Πίσω στα Πρότυπα",
+      "fill": "Συμπλήρωση",
+      "filledName": "{name} ({values})",
+      "details": "{type} · {size}",
+      "binary": "Το {type} είναι δυαδικό περιεχόμενο, που δεν μπορεί να σταλεί στο μοντέλο.",
+      "denied": "Ένας κανόνας άρνησης καλύπτει αυτόν τον πόρο: {rule}",
+      "templateHint": "Συμπληρώστε τις τιμές του προτύπου. Μια προαιρετική τιμή μπορεί να μείνει κενή.",
+      "optional": "προαιρετικό",
+      "suggestions": "Προτάσεις για το {name}",
+      "resolved": "URI πόρου",
+      "attaching": "Επισύναψη..."
+    },
+    "resourceChip": {
+      "label": "{name} · {serverName}",
+      "details": "{serverName} · {type}",
+      "title": "Πόρος MCP {name} από το {serverName}: {uri}",
+      "preview": "Λεπτομέρειες του {label}",
+      "readAtSend": "Διαβάζεται από τον διακομιστή όταν στείλετε το μήνυμά σας.",
+      "remove": "Αφαίρεση του {label}",
+      "removeTitle": "Αφαίρεση",
+      "added": "Επισυνάφθηκε πόρος MCP: {label}"
+    }
   },
   "tools": {
     "title": "Εργαλεία",
@@ -910,12 +963,19 @@
     },
     "promptSection": {
       "preamble": "Προοίμιο",
+      "compass": "Compass",
+      "damocles_explore": "Εναλλακτική εξερεύνηση",
+      "damocles_web_verification": "Επαλήθευση στο web",
+      "damocles_team": "Ομάδες",
       "damocles_memory": "Μνήμη",
       "damocles_plan_mode": "Λειτουργία σχεδίου",
       "damocles_plan_file": "Αρχείο σχεδίου",
       "damocles_plan_execution": "Εκτέλεση σχεδίου",
       "project_context": "Πλαίσιο έργου",
       "skills": "Δεξιότητες",
+      "damocles_environment": "Περιβάλλον",
+      "damocles_model": "Μοντέλο",
+      "damocles_output_form": "Μορφή εξόδου",
       "damocles_tone": "Ύφος"
     }
   },
@@ -1490,7 +1550,9 @@
     "promptReturned": {
       "heldPromptWaiting": "Το πρώτο σας μήνυμα περιμένει ακόμη το worktree, οπότε αυτό επέστρεψε στο πεδίο εισαγωγής.",
       "worktreeFinishing": "Εκτελείται μια ενέργεια ολοκλήρωσης στο worktree αυτής της συνομιλίας, οπότε το μήνυμά σας επέστρεψε στο πεδίο εισαγωγής.",
-      "heldPromptKept": "Το μήνυμά σας δεν στάλθηκε. Επέστρεψε στο πεδίο εισαγωγής."
+      "heldPromptKept": "Το μήνυμά σας δεν στάλθηκε. Επέστρεψε στο πεδίο εισαγωγής.",
+      "mcpResourceUnavailable": "Ένας συνημμένος πόρος MCP δεν μπόρεσε να σταλεί, οπότε το μήνυμά σας και τα συνημμένα του επέστρεψαν στο πεδίο εισαγωγής.",
+      "conversationChanged": "Αυτή η συνομιλία δεν δείχνει πλέον τη συζήτηση για την οποία γράφτηκε το μήνυμά σας, οπότε επέστρεψε στο πεδίο εισαγωγής."
     }
   },
   "backgroundTask": {
@@ -2648,6 +2710,11 @@
       "available": "{n} από {total} διαθέσιμα",
       "showTools": "Εμφάνιση εργαλείων",
       "hideTools": "Απόκρυψη εργαλείων",
+      "showResources": "Εμφάνιση πόρων",
+      "hideResources": "Απόκρυψη πόρων",
+      "showToolsAndResources": "Εμφάνιση εργαλείων και πόρων",
+      "hideToolsAndResources": "Απόκρυψη εργαλείων και πόρων",
+      "resourcesNoTools": "Πόροι, χωρίς εργαλεία",
       "form": {
         "fixFields": "Διορθώστε τα επισημασμένα πεδία για αποθήκευση.",
         "writtenTo": "Γράφεται στο ~/.damocles/mcp.json με δικαιώματα 0600."

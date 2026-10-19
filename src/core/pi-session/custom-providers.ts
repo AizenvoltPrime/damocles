@@ -134,6 +134,8 @@ export interface SyncCustomProvidersDeps {
   getSecret: SecretResolver;
   /** Cancels the sync — checked between providers and forwarded as `AuthOperationOptions.signal`. */
   signal?: AbortSignal;
+  /** Runs before a provider's credential is replaced or removed, each of which supersedes pi's running refresh of it. */
+  beforeCredentialChange?: (provider: string) => void;
 }
 
 export interface SyncCustomProvidersResult {
@@ -169,11 +171,13 @@ async function deauthCustomProvider(
   def: CustomProviderDef,
   cache: Map<string, string>,
   authOptions: AuthOperationOptions,
+  beforeCredentialChange: ((provider: string) => void) | undefined,
 ): Promise<boolean> {
   const hadOverride = cache.delete(def.provider);
   const status = runtime.getProviderAuthStatus(def.provider);
   const damoclesSupplied = status.configured && (status.source === 'runtime' || status.source === 'stored');
   if (!hadOverride && !damoclesSupplied) return false;
+  beforeCredentialChange?.(def.provider);
   // Fresh-registered providers (StepFun) are dropped entirely — the register config carries the key.
   // `unregisterProvider` is synchronous and takes no options, so it gets no signal.
   if (def.mode === 'register') runtime.unregisterProvider(def.provider);
@@ -293,13 +297,14 @@ export async function syncCustomProviders(deps: SyncCustomProvidersDeps): Promis
     if (key) sawSecret.add(def.provider);
     try {
       if (!key) {
-        if (await deauthCustomProvider(deps.modelRuntime, def, cache, authOptions)) changed.push(def.provider);
+        if (await deauthCustomProvider(deps.modelRuntime, def, cache, authOptions, deps.beforeCredentialChange)) changed.push(def.provider);
         continue;
       }
       if (cache.get(def.provider) === key) {
         wired.push(def.provider); // already live with this exact key — skip the re-apply
         continue;
       }
+      deps.beforeCredentialChange?.(def.provider);
       if (def.mode === 'register' && def.registerConfig) {
         deps.modelRuntime.registerProvider(def.provider, { ...def.registerConfig, apiKey: key });
       }

@@ -609,4 +609,14 @@ describe('Tool name wildcards', () => {
     settings('user', { allow: ['mcp__git*__get_issue', 'mcp__*__get_issue'] });
     expect(await mcp('github', 'get_issue')).toBeNull();
   });
+
+  // A resource call's `server` is model-written and unbounded; a backtracking matcher takes seconds here.
+  it('matches a glob with several literal segments against a long crafted server name in linear time', async () => {
+    settings('user', { deny: ['mcp__*prod*db*x*'] });
+    const server = 'proddb'.repeat(2000);
+    const started = performance.now();
+    expect(await mcp(server, 'read_mcp_resource')).toBeNull();
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(await mcp('proddbx', 'read_mcp_resource')).toBe('deny');
+  });
 });

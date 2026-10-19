@@ -19,8 +19,8 @@ import { PiRuntime, renamedRuleNoticeMemory } from '../pi-runtime';
 import { initPiLoader, type PiCodingAgentModule } from '../pi-loader';
 import { McpClientManager } from '../mcp/mcp-client-manager';
 import { assignServerToolNames } from '../mcp/naming';
-import type { LegacyToolNameInput, NoticeMemory } from '../mcp/tool-name-migration';
-import type { McpRenamedToolRuleNotice } from '../../../shared/types/mcp';
+import type { LegacyToolNameInput, NoticeMemory, PersonalToolLists } from '../mcp/tool-name-migration';
+import { renamedRuleNoticeKey, type McpRenamedToolRuleNotice } from '../../../shared/types/mcp';
 import type { PanelGateContext } from '../permission-gate';
 import type { CheckpointService } from '../checkpoint-service';
 import { folderKey } from '../../workspace-folders/folder-key';
@@ -40,9 +40,11 @@ function bareFolder(made: FolderRuntime[], cwd = '/tmp/ws'): FolderRuntime {
     userMcp: new McpClientManager({ clientVersion: 'test' }),
     createFolderMcp: (reservedToolNames) => new McpClientManager({ clientVersion: 'test', reservedToolNames }),
     noticeMemory: { has: () => false, add: async () => {} },
+    additionMemory: { has: () => false, add: async () => {} },
     projectDisabledTools: () => null,
+    personalDisabledTools: () => ({ rewrite: async () => undefined, lists: () => [] }),
     toolExposureSetting: () => ({}),
-    renameSession: async () => undefined,
+    resourceExposureSetting: () => ({}),
     trust: testPlatform.trust,
     fileWatchers: testPlatform.fileWatchers,
   });
@@ -122,17 +124,29 @@ describe('renamed-tool rule migration', () => {
   }
 
   function memory(): NoticeMemory {
-    const shown = new Map<string, Set<string>>();
+    const shown = new Set<string>();
+    const key = (location: Parameters<NoticeMemory['has']>[0], entry: { old: string; new: string }) => JSON.stringify([renamedRuleNoticeKey(location), entry.old, entry.new]);
     return {
-      has: (file, rule) => shown.get(file)?.has(rule) ?? false,
-      add: async (file, rules) => {
-        shown.set(file, new Set([...(shown.get(file) ?? []), ...rules]));
+      has: (location, entry) => shown.has(key(location, entry)),
+      add: async (location, entries) => {
+        for (const entry of entries) shown.add(key(location, entry));
       },
     };
   }
 
   /** A folder whose MCP view knows context7's renamed tool, with its own `.damocles` settings files. */
-  function migrationFolder(platform: ReturnType<typeof createFakePlatform>, noticeMemory: NoticeMemory = memory()) {
+  function migrationFolder(
+    platform: ReturnType<typeof createFakePlatform>,
+    {
+      noticeMemory = memory(),
+      personalDisabledTools = () => ({ rewrite: async () => undefined, lists: () => [] }),
+      retiredResources = { user: [], folder: [] },
+    }: {
+      noticeMemory?: NoticeMemory;
+      personalDisabledTools?: (trusted: boolean) => PersonalToolLists;
+      retiredResources?: LegacyToolNameInput['retiredResources'];
+    } = {},
+  ) {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-fr-rename-')));
     dirs.push(root);
     H.home = path.join(root, 'home');
@@ -149,20 +163,24 @@ describe('renamed-tool rule migration', () => {
       userMcp,
       createFolderMcp: (reservedToolNames) => new McpClientManager({ clientVersion: 'test', reservedToolNames }),
       noticeMemory,
+      additionMemory: { has: () => false, add: async () => {} },
       projectDisabledTools: () => null,
+      personalDisabledTools,
       toolExposureSetting: () => ({}),
-      renameSession: async () => undefined,
+      resourceExposureSetting: () => ({}),
       trust: platform.trust,
       fileWatchers: platform.fileWatchers,
     });
     made.push(folder);
     const tools = assignServerToolNames('context7', ['resolve-library-id'], new Set());
+    const userServers = ['context7', ...retiredResources.user.map((entry) => entry.serverName)];
     const input: LegacyToolNameInput = {
-      userServers: ['context7'],
-      visibleUserServers: ['context7'],
+      userServers,
+      visibleUserServers: userServers,
       folderServers: [],
       userTools: [{ serverName: 'context7', rawToolName: 'resolve-library-id', piName: tools.get('resolve-library-id')! }],
       folderTools: [],
+      retiredResources,
     };
     (folder as unknown as { _mcpView: { legacyToolNameInput(): LegacyToolNameInput } })._mcpView.legacyToolNameInput = () => input;
     const toolsChanged = () => (userMcp as unknown as { emitToolsChanged(): void }).emitToolsChanged();
@@ -194,13 +212,13 @@ describe('renamed-tool rule migration', () => {
     let failures = 1;
     const base = memory();
     const flaky: NoticeMemory = {
-      has: (file, rule) => {
+      has: (location, entry) => {
         if (failures-- > 0) throw new Error('state unavailable');
-        return base.has(file, rule);
+        return base.has(location, entry);
       },
       add: base.add,
     };
-    const { folder, toolsChanged, settled } = migrationFolder(platform, flaky);
+    const { folder, toolsChanged, settled } = migrationFolder(platform, { noticeMemory: flaky });
     const posted: McpRenamedToolRuleNotice[][] = [];
     folder.registerRuleNoticePoster('sess-a', (notices) => posted.push(notices));
 
@@ -228,20 +246,85 @@ describe('renamed-tool rule migration', () => {
     expect(posted).toEqual({ a: expected, b: expected });
   });
 
-  it('remembers notices for files outside the folder across workspaces, and the folder\u2019s own per workspace', async () => {
+  const everywhere = { old: OLD, new: NEW, perFolder: false };
+  const thisFolder = { old: 'mcp__docs__get_readme', new: 'mcp__docs__read_mcp_resource(docs://readme)', perFolder: true };
+
+  it('remembers a notice outside the folder across workspaces unless its replacement holds only in this folder, and the folder\u2019s own per workspace', async () => {
     const first = createFakePlatform();
     const second = createFakePlatform();
     const home = path.join(os.tmpdir(), 'home');
     const folderA = path.join(os.tmpdir(), 'ws-a');
-    const homeFile = path.join(home, '.damocles', 'hooks.json');
-    const folderFile = path.join(folderA, '.damocles', 'settings.json');
-    await renamedRuleNoticeMemory(first.state, folderA).add(homeFile, [OLD]);
-    await renamedRuleNoticeMemory(first.state, folderA).add(folderFile, [OLD]);
+    const homeFile = { path: path.join(home, '.damocles', 'hooks.json'), displayPath: '' };
+    const folderFile = { path: path.join(folderA, '.damocles', 'settings.json'), displayPath: '' };
+    await renamedRuleNoticeMemory(first.state, folderA).add(homeFile, [everywhere, thisFolder]);
+    await renamedRuleNoticeMemory(first.state, folderA).add(folderFile, [everywhere]);
 
     const otherWorkspace = renamedRuleNoticeMemory({ workspace: second.state.workspace, global: first.state.global }, folderA);
-    expect(otherWorkspace.has(homeFile, OLD)).toBe(true);
-    expect(otherWorkspace.has(folderFile, OLD)).toBe(false);
-    expect(renamedRuleNoticeMemory(first.state, folderA).has(folderFile, OLD)).toBe(true);
+    expect(otherWorkspace.has(homeFile, everywhere)).toBe(true);
+    expect(otherWorkspace.has(homeFile, thisFolder)).toBe(false);
+    expect(otherWorkspace.has(folderFile, everywhere)).toBe(false);
+    expect(renamedRuleNoticeMemory(first.state, folderA).has(homeFile, thisFolder)).toBe(true);
+    expect(renamedRuleNoticeMemory(first.state, folderA).has(folderFile, everywhere)).toBe(true);
+  });
+
+  // A setting names no path; resolving one against the process's working folder could land it in global state.
+  it('remembers a workspace setting\u2019s notice per workspace, and a user setting\u2019s by its replacement, wherever the process runs', async () => {
+    const first = createFakePlatform();
+    const second = createFakePlatform();
+    const workspaceSetting = { setting: 'damocles.tools.disabled', displayPath: '' };
+    const userSetting = { setting: 'damocles.tools.disabled', scope: 'user' as const, displayPath: '' };
+    const folderA = path.join(os.tmpdir(), 'ws-a');
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(path.join(os.tmpdir(), 'elsewhere'));
+    try {
+      await renamedRuleNoticeMemory(first.state, folderA).add(workspaceSetting, [everywhere]);
+      await renamedRuleNoticeMemory(first.state, folderA).add(userSetting, [everywhere, thisFolder]);
+    } finally {
+      cwd.mockRestore();
+    }
+
+    const otherWorkspace = renamedRuleNoticeMemory({ workspace: second.state.workspace, global: first.state.global }, folderA);
+    expect(renamedRuleNoticeMemory(first.state, folderA).has(workspaceSetting, everywhere)).toBe(true);
+    expect(otherWorkspace.has(workspaceSetting, everywhere)).toBe(false);
+    expect(otherWorkspace.has(userSetting, everywhere)).toBe(true);
+    expect(otherWorkspace.has(userSetting, thisFolder)).toBe(false);
+  });
+
+  const retiredSecret: LegacyToolNameInput['retiredResources'] = {
+    user: [{ serverName: 'secret', rawToolNames: [], resources: [{ uri: 'secret://passwords', name: 'passwords' }] }],
+    folder: [],
+  };
+
+  it('rewrites the personal lists at the user scope only in an untrusted folder', async () => {
+    const platform = createFakePlatform({ trusted: false });
+    const personal = vi.fn((_trusted: boolean): PersonalToolLists => ({ rewrite: async () => undefined, lists: () => [] }));
+    const { toolsChanged, settled } = migrationFolder(platform, { personalDisabledTools: personal, retiredResources: retiredSecret });
+
+    toolsChanged();
+    await settled();
+
+    expect(personal).toHaveBeenCalledWith(false);
+    expect(personal).not.toHaveBeenCalledWith(true);
+  });
+
+  it('runs again after a personal-list rewrite failed, with the same inputs', async () => {
+    const platform = createFakePlatform();
+    let failures = 1;
+    const rewrite = vi.fn(async () => {
+      if (failures-- > 0) throw Object.assign(new Error('locked'), { code: 'EBUSY' });
+    });
+    const { toolsChanged, settled } = migrationFolder(platform, {
+      personalDisabledTools: () => ({ rewrite, lists: () => [] }),
+      retiredResources: retiredSecret,
+    });
+
+    toolsChanged();
+    await settled();
+    toolsChanged();
+    await settled();
+    toolsChanged();
+    await settled();
+
+    expect(rewrite).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -5,16 +5,17 @@ import * as path from "path";
 import * as os from "os";
 import type { AgentSession, AgentSessionRuntime, BuildSystemPromptOptions, CreateAgentSessionRuntimeFactory, ToolDefinition, AgentBeforeSettleEvent, CustomMessageEntryDraft, SessionEntry, InputEventResult } from "@earendil-works/pi-coding-agent";
 import type { Model, Api, ImageContent } from "@earendil-works/pi-ai";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ChatSession, SendOutcome, SlashInvocation, UserBroadcast } from "../chat-session";
+import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ChatSession, ResumeOutcome, SendOutcome, SendTicket, SlashInvocation, UserBroadcast } from "../chat-session";
 import type { SessionOptions, ContentInput, McpScope, RewindOption } from "../session-types";
 import type { Disposable } from "../../platform/disposable";
-import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
+import type { ExtensionToWebviewMessage, PromptReturnReason } from "../../shared/types/messages";
 import type { ModelInfo, PermissionMode, AutoCompactConfig, EffortLevel } from "../../shared/types/settings";
 import type { SlashCommandInfo } from "../../shared/types/commands";
 import type { McpRenamedToolRuleNotice, McpServerStatusInfo } from "../../shared/types/mcp";
 import type { MemoryInjectionDisplay } from "../../shared/types/context-injection";
 import type { SteerTargetInfo } from "../../shared/types/subagents";
+import type { AgentWindDown } from "../../shared/types/wind-down";
 import type { TeamService } from "../team";
 import {
   isImageBlock,
@@ -44,10 +45,13 @@ import { cacheWarmingSetting, PI_AGENT_DIR } from "./agent-dir";
 import { installTurnDecider, BUDGET_STOP_HOOK } from "./finish-turn";
 import { installPlanModeChangeNotice, mainPlanModeStatement, planModeChangeNotice, planModeNoticeAtPromptStart, type PlanModeStatement } from "./plan-mode-change";
 import { buildPlanModeGuidance } from "./plan-mode-guidance";
-import { dispatchObserveOnly } from "./hooks/dispatch";
+import { dispatchInput, dispatchObserveOnly, type DispatchDeps, type InputHookResult } from "./hooks/dispatch";
+import { HOOK_CONTEXT_CUSTOM_TYPE, postUserPromptVerdict } from "./hooks";
 import { buildPermissionRequiredPayload, buildForkPayload } from "./hooks/payload";
 import { PiStreamAdapter, isNothingToCompact } from "./pi-stream-adapter";
 import { deriveSessionState, turnOutcomeOfError, type ChatActivity, type PendingPrompt, type RaisedPrompt, type SessionState, type TurnChange, type TurnOutcome, type TurnState } from "./session-state";
+import { noticeWindDown, type WindDownNotice } from "./wind-down-notice";
+import { trackRunLifecycle, type RunLifecycle } from "./run-lifecycle";
 import { pendingPromptDescriber, pendingPromptOwners, promptOwnerOf, type PromptOwners } from "./pending-prompts";
 import type { SubscriptionProvider, UsageMonitor } from "./usage-thresholds";
 import {
@@ -56,7 +60,9 @@ import {
   modelValueOfPiModel,
   providerDisplayName,
   piModelToModelInfo,
+  piContextWindow,
   effortToThinkingLevel,
+  recordedReasoning,
   PI_EXCLUDED_TOOLS,
   PLAN_MODE_EXCLUDED_TOOLS,
   type ModelResolution,
@@ -131,6 +137,7 @@ import {
   type LiveTitleOutcome,
 } from "./session-store";
 import { recordedSelection } from "./session-store/recorded-selection";
+import type { TerminalAttachmentsData } from "./session-store/terminal-attachments";
 import { acquireSessionLease, refreshSessionLeaseOwners, releaseSessionLease, sessionLeasesOf, type SessionLeaseHolder } from "./session-store/session-lease";
 import { computePlanFilePath, findSessionPlanFiles } from "../paths";
 import { CheckpointService, RESTORE_WAIT_MS, checkpointBaselineWaitMs, checkpointMaxFileSizeBytes, type ServiceRestoreResult } from "./checkpoint-service";
@@ -151,9 +158,11 @@ import { SUBAGENT_PI_TOOL_NAMES } from "./tools/tool-catalog";
 import { IMAGE_ENABLED_SETTING, IMAGE_MODEL_SETTING, IMAGE_PI_TOOL_NAMES } from "./tools/image-tool-specs";
 import { imageAvailability, type ImageRuntime } from "./tools/image-tools";
 import { assembleDamoclesSystemPrompt, renderSections, resolveSkillFileReadTool, type DamoclesPromptSections } from "./agent-start";
-import type { McpToolSource } from "./mcp/tool-source";
-import { isMcpToolName } from "./mcp/naming";
+import type { McpToolSource, McpUserResourcePort } from "./mcp/tool-source";
+import { isMcpToolName, isNestedMcpName } from "./mcp/naming";
 import { buildNestedMcpToolset, type NestedMcpToolset } from "./tools/mcp-tools";
+import { READ_MCP_RESOURCE, disabledResourceMatcher } from "../permission-handler/mcp-resource-rule";
+import { NO_RESOURCE_READ, type ResourceReadReach } from "./mcp/content";
 import { isWebSearchEnabled } from "./web-access";
 import { WebviewExtensionUIContext, type AgentUiAttribution } from "./extension-ui-context";
 import type { CheckpointBaselineGate, PanelGateContext, SystemPromptEnv } from "./permission-gate";
@@ -165,6 +174,7 @@ import {
   turnExchangeFrom,
   firstExchangeForTitle,
 } from "./branch-text";
+import { abortRunAtStart } from "./abort-run-at-start";
 import { queuedPromptEntries, watchPromptEntry, type PromptDisposition, type PromptEntry, type PromptEntryWatch, type QueuedPromptEntries, type RequeuedFollowUp } from "./prompt-entry";
 import { isExtensionCommand, resolveSlashInvocation } from "./slash-invocation";
 import {
@@ -193,9 +203,12 @@ import {
   fullActiveToolNames as fullActiveToolNamesFrom,
   activeToolNamesWithDeferral,
   buildToolStatus as buildToolStatusFrom,
+  mcpDeferrableNames,
   type ToolStatusDeps,
 } from "./tool-status";
 import { deferredToolNames } from "./tools/deferred-tools";
+import { resourceToolsExposure } from "./mcp/exposure";
+import { restoredDeferredTools } from "./tools/restored-tools";
 import { waitForPendingDirectServers } from "./mcp/startup-wait";
 import { mcpGroupsOf, mcpToolSearchGroup, type DeferrableSnapshot, type McpToolMenuEntry } from "./tools/tool-search-tool";
 
@@ -273,20 +286,23 @@ interface QueuedInput {
   images: ImageContent[];
   content: ContentInput;
   typed?: string;
+  /** The UserPromptSubmit context screening admitted it with, owed to the request pi delivers it in. */
+  hookContext?: string;
 }
 
-/** Refuses the run pi was about to open for a queued batch a stop withdrew. */
-class WithdrawnSteerError extends Error {}
-
-/** Refuses the run pi was about to open for a prompt that a stop or a session replacement overtook. */
-class StoppedBeforeRunError extends Error {}
-
-/** A `sendMessage` prompt on its way to pi. */
-interface OutgoingPrompt {
+/** A `sendMessage` prompt, from the start of its send until it settles (docs/invariants.md, "A send holds the session"). */
+interface OutgoingPrompt extends SendTicket {
+  /** Aborts `signal`: the send stops before `prompt()`, and a run pi opens with it afterwards is aborted at its start. */
+  stop: () => void;
+  /** `prompt()` holds it, so a Stop leaves it to pi's verdict instead of returning it. */
+  inPi: boolean;
+  /** pi queued it, opened a run with it, or handled it. */
+  accepted: boolean;
+  withdrawn: boolean;
   /** Returns it to the composer, `returnText` and then its chips, unless it already went back. */
   withdraw: (returnText: () => void) => void;
-  /** pi has queued it or opened a run with it, so the session's disposal no longer returns it. */
-  accepted: () => void;
+  /** Returns it as a message that never reached the model. */
+  returnUnsent: () => void;
 }
 
 /** A cancel note handed to pi; `echoed` once pi accepted it and the transcript says the agent was told. */
@@ -304,13 +320,66 @@ interface StoppedTurn {
   ending?: Promise<void>;
 }
 
+/** One stop's wind-down notice on the bound session, armed from the bind so it follows pi's run phases before the Stop. */
+interface WindDownWatch {
+  readonly run: RunLifecycle;
+  readonly stop: AbortController;
+  readonly notice: WindDownNotice;
+}
+
 /** What ended a turn's run: the user's Stop (`interrupt`, `cancel`) or a resume switch away from it. */
 type StopOrigin = "interrupt" | "cancel" | "resume";
 
-/** A resume switch queued behind earlier replacements; `cancelled` once the panel let go of its target before it switched. */
+/** A stored session `setResumeSession` pointed the panel at, settled once pi bound it, could not, or the panel let go of it. */
+interface ResumeRequest {
+  readonly sessionId: string;
+  /** The stored conversation the panel held before this run of unsettled requests, which it goes back to when pi binds none of them. */
+  readonly prior: string | null;
+  /** Made while nothing was started or starting, so the open shows the target first and the panel's start opens it. */
+  readonly atStart: boolean;
+  readonly outcome: Promise<ResumeOutcome>;
+  settled: boolean;
+  settle: (outcome: ResumeOutcome) => void;
+}
+
+const RESUME_SWITCHED: ResumeOutcome = { kind: "switched" };
+const RESUME_CANCELLED: ResumeOutcome = { kind: "cancelled" };
+const RESUME_DEFERRED: ResumeOutcome = { kind: "deferred" };
+
+function resumeRequestFor(sessionId: string, prior: string | null, atStart: boolean): ResumeRequest {
+  let resolve!: (outcome: ResumeOutcome) => void;
+  const request: ResumeRequest = {
+    sessionId,
+    prior,
+    atStart,
+    outcome: new Promise<ResumeOutcome>((settle) => { resolve = settle; }),
+    settled: false,
+    settle: (outcome) => {
+      if (request.settled) return;
+      request.settled = true;
+      resolve(outcome);
+    },
+  };
+  return request;
+}
+
+/** A resume that threw: pi's own error is what the user reads. */
+function resumeFailure(err: unknown): ResumeOutcome {
+  return { kind: "failed", reason: err instanceof Error ? err.message : String(err) };
+}
+
+/** A resume switch queued behind earlier replacements; `cancelled` once the panel let go of its target before pi installed it. */
 interface QueuedSwitch {
   readonly sessionId: string;
+  readonly request: ResumeRequest;
   cancelled: boolean;
+}
+
+/** A stored session's recorded model as this panel's model value, the pi model it resolved to, and the recorded pi thinking level. */
+interface BuiltSelection {
+  readonly value: string;
+  readonly model: Model<Api>;
+  readonly thinkingLevel: string | undefined;
 }
 
 /** The conversation and prompt a turn's memory candidate is filed under, read when the prompt starts. */
@@ -383,6 +452,7 @@ export class PiSession implements ChatSession {
   private pendingWorkingFolderNote: string | null = null;
   // The stored file a running switchSession opens, when it lies outside this folder's session directory.
   private switchedFromOtherDir: string | null = null;
+  private runningSwitch: QueuedSwitch | null = null;
   /** The last `chatChanges` sent, so a repeat is not posted again. */
   private lastChatChanges: string | null = null;
   private chatChangesListener: ((totals: ChatChangeTotals, generation: number) => void) | null = null;
@@ -390,7 +460,7 @@ export class PiSession implements ChatSession {
   private readonly checkpointUserIds = new Set<string>();
   /** Size of the last `checkpointInfo` broadcast, to suppress no-op re-emits. */
   private lastCheckpointBroadcast = -1;
-  /** The last `sessionStateChanged` sent, as its state, session id and pending prompt ids, so a
+  /** The last `sessionStateChanged` sent, as its state, session id, pending prompt ids and wind-down, so a
    *  re-derivation that changed nothing sends nothing. Only an identical message is ever dropped. */
   private lastSessionState: string | null = null;
   /** The turn's own lifecycle, the single value `publishSessionState` derives from. Written only by
@@ -409,6 +479,8 @@ export class PiSession implements ChatSession {
 
   private desiredModel: Model<Api> | undefined;
   private modelValue: string;
+  /** The recorded selection the factory handed pi for each session it built, which becomes the record once pi installs that session. */
+  private readonly builtSelections = new WeakMap<AgentSession, BuiltSelection>();
   // The catalog is static, so it is populated before start(): a resumed panel defers start() and still
   // has to resolve its model's billing.
   private supportedModelsCache: ModelInfo[] = piSupportedModels();
@@ -417,11 +489,21 @@ export class PiSession implements ChatSession {
   /** Set while a manual compaction runs. Distinct from `processingFlag` so it gates a concurrent
    * sendMessage without arming the budget-abort / context-busy behavior keyed off processingFlag. */
   private compacting = false;
+  /** A manual compaction before pi's `compact()`, which `stopSends` stops as it stops a send there. */
+  private compactionBeforePi: AbortController | null = null;
   /** Set while interrupt()/cancel() tears down the in-flight turn, so the prompt() rejection it
    * triggers doesn't surface an error card on top of the sessionCancelled already emitted. */
   private _aborting = false;
-  /** Bumped by every ESC, reset, resume switch and disposal, so a send still waiting to start its turn can tell it was cancelled. */
-  private abortEpoch = 0;
+  /** The send that set `processingFlag`; a Stop or replacement lets go of it, so a stopped send's late exit leaves the next send's state alone. */
+  private currentSend: OutgoingPrompt | null = null;
+  /** The `sendMessage` prompt `prompt()` holds, which a send after a Stop on the same session waits out before calling `prompt()` itself. */
+  private promptInPi: { session: AgentSession; settled: Promise<void>; openedRun: boolean } | null = null;
+  /** The bound session's run lifecycle, the one reader of its run state for the notices, the sends, the queue and compaction. */
+  private runLifecycle: RunLifecycle | null = null;
+  /** The bound session's wind-down notice, armed by the next Stop. */
+  private windDownWatch: WindDownWatch | null = null;
+  /** What the main chat's stopped run still waits for, as `windDownWatch` published it; carried by the session state. */
+  private windDown: AgentWindDown | null = null;
   /** Set when the hard budget limit is crossed mid-turn, so the turn finishes gracefully at the next
    * model round-trip boundary (the `finishTurn` decider) instead of being torn mid-stream by an abort. */
   private _budgetStopRequested = false;
@@ -439,6 +521,8 @@ export class PiSession implements ChatSession {
   private inFlightPromptIndex: number | null = null;
   /** A stored session id to resume on next start(), or to switch the live runtime to (US-010b). */
   private resumeSessionId: string | null = null;
+  /** The request that set `resumeSessionId`, until the panel lets go of it. */
+  private resumeRequest: ResumeRequest | null = null;
   /** Sessions whose lease another process took; this panel is detaching from them and never re-leases them. */
   private readonly lostLeases = new Set<string>();
   /** Resume switches queued and not yet finished, each cancelled when the panel lets go of its target first. */
@@ -449,6 +533,10 @@ export class PiSession implements ChatSession {
   private panelToken: string | null = null;
   /** The teardown `dispose()` started; a handover waits for it before letting the lease go. */
   private disposal: Promise<void> | null = null;
+  /** The runtime release in flight, which a dispose during a failed start joins rather than disposing the runtime twice. */
+  private runtimeRelease: Promise<void> | null = null;
+  /** Sessions pi tore down to replace them, after which a replacement that rejects leaves no session of this chat alive. */
+  private readonly tornDown = new WeakSet<AgentSession>();
   /** Guards the one-shot AI title generation after the first assistant turn (US-012). */
   private titleGenerationAttempted = false;
   /** The first real (non-internal, non-`<…>`) user message of this session, captured in `sendMessage`.
@@ -463,6 +551,16 @@ export class PiSession implements ChatSession {
   private queuedInputs: QueuedInput[] = [];
   /** Messages queued after every one in `queuedInputs`, still waiting on pi's input handlers, oldest first. */
   private screeningInputs: QueuedInput[] = [];
+  /** Messages queued while `currentSend` is on its way to pi, which steer into the run it opens or go back without it. */
+  private heldInputs: QueuedInput[] = [];
+  /** Messages queued while pi ran an ended run's `agent_settled` handlers, sent together as one send once pi settled it and no send holds the session. */
+  private afterSettleInputs: QueuedInput[] = [];
+  /** The conversation `afterSettleInputs` were written for. */
+  private afterSettleTarget: string | undefined;
+  /** The batch whose re-steer `prompt()` holds; a Stop leaves it to pi's verdict instead of returning its chips. */
+  private batchInPi: readonly QueuedInput[] | null = null;
+  /** The batch a Stop left to pi's verdict: sent and stopped if pi opens a run with it, returned if pi queues or rejects it. */
+  private stoppedBatch: readonly QueuedInput[] | null = null;
   private screeningRunning = false;
   /** How many leading `queuedInputs` the batch pi holds carries, so its delivery consumes exactly those; null counts them all. */
   private steeredCount: number | null = null;
@@ -477,10 +575,12 @@ export class PiSession implements ChatSession {
   private promptEntry: PromptEntryWatch | null = null;
   /** `sendMessage` prompts pi queued into a running run, until pi delivers or drops them. */
   private readonly queuedPrompts: QueuedPromptEntries = queuedPromptEntries();
-  /** Returns one `sendMessage` prompt pi has neither queued nor opened a run with to the composer, for each, oldest first. */
-  private readonly unacceptedSends = new Set<() => void>();
-  /** The typed text of each prompt pi's input handlers are screening, keyed by the text pi screens. */
-  private readonly typedPrompts = new Map<string, string>();
+  /** Every `sendMessage` prompt not settled yet, oldest first. */
+  private readonly outgoingSends = new Set<OutgoingPrompt>();
+  /** Aborts every UserPromptSubmit hook screening a queued message; replaced at each abort, so a message queued later is screened under a live signal. */
+  private screening = new AbortController();
+  /** UserPromptSubmit contexts steered for a run's opening prompt that pi may not have drained yet; no message a put-back pass re-queues carries them. */
+  private runStartContexts: { session: AgentSession; message: AgentMessage }[] = [];
   /** The native subagent engine (Phase 5): the shared workspace registry + a per-PiSession manager. */
   private agentRegistry: AgentRegistry | null = null;
   private subagentManager: AgentManager | null = null;
@@ -499,10 +599,10 @@ export class PiSession implements ChatSession {
    *  funnels through `applyActiveToolsForMode`, so re-applying this union there is what stops a settings
    *  toggle / MCP change / permission-mode change from silently deactivating a mid-conversation load. */
   private readonly toolSearchActivated = new Set<string>();
+  /** Restored loadout names that can become deferrable and are not yet; each joins `toolSearchActivated` once it is, until pi opens the session's next run (`runStarted`). */
+  private readonly pendingRestoredTools = new Set<string>();
   /** The session whose first prompt already ran the Always-loaded MCP wait; keyed by id so a replacement session waits again. */
   private mcpStartupWaitedSessionId: string | null = null;
-  /** Ends the running Always-loaded MCP wait when the user stops the turn, the session is replaced or the panel closes. */
-  private mcpStartupWaitAbort: AbortController | null = null;
   /** A field, not a per-session local, so a live call's entry survives session replacement. Each entry
    *  carries the delivery of the context that opened it, so a note still reaches the conversation
    *  that ran the command and not the one that replaced it. */
@@ -607,11 +707,27 @@ export class PiSession implements ChatSession {
     // A panel replaces a disposed session rather than reviving it, so a stale caller must fail here.
     if (this._disposed) return Promise.reject(new Error("PiSession: session was disposed"));
     if (!this.startPromise)
-      this.startPromise = timed("start.total", () => this.start()).catch((err) => {
+      this.startPromise = timed("start.total", () => this.start()).catch(async (err) => {
+        // A dispose under way releases the runtime itself.
+        if (!this._disposed) await this.releaseRuntime();
         this.startPromise = null;
+        // A queued switch settles its own request; any other one waited for this start to open it.
+        const request = this.resumeRequest;
+        if (request && ![...this.queuedSwitches].some((queued) => queued.request === request)) this.settleResume(request, resumeFailure(err));
         throw err;
       });
     return this.startPromise;
+  }
+
+  /** Wait out the replacements queued on the started session; one that released the runtime is followed by the start that builds the next. */
+  private async afterReplacements(): Promise<void> {
+    while (this.resetPromise) {
+      const pending = this.resetPromise;
+      // A failed replacement was reported where it failed; the session this leaves is read after the wait.
+      await pending.catch(() => undefined);
+      if (this.resetPromise === pending) this.resetPromise = null;
+      await this.ensureStarted();
+    }
   }
 
   /** The folder runtime, for paths that only run once `start()` has resolved it. */
@@ -674,7 +790,7 @@ export class PiSession implements ChatSession {
       const reopen = this.switchedFromOtherDir;
       this.switchedFromOtherDir = null;
       const sessionManager = reopen !== null ? pi.SessionManager.open(reopen, ensurePiSessionDir(this.cwd), this.cwd) : opts.sessionManager;
-      this.adoptRecordedSelection(sessionManager.getBranch());
+      const recorded = this.recordedSelectionOf(sessionManager.getBranch());
       // Built per session so per-session tool state (the task list) resets on reset/newSession.
       const customTools = buildCustomTools({
         pi,
@@ -697,19 +813,26 @@ export class PiSession implements ChatSession {
         shellCancel: this.shellCancel,
         deliverUserNote: this.noteDeliveryForMain(() => bound.session),
         shellJob: this.shellJob,
+        mcpResources: {
+          source: () => this.mcpClientManager(),
+          disabledResource: () => disabledResourceMatcher(this.disabledToolEntries()),
+        },
       });
       // No `tools:` on purpose. pi turns `options.tools` into an allowlist filter; since the
       // factory runs before `setMcpServers`, a frozen list would permanently exclude later-registered
       // mcp__ tools (the first-connect bug). Omitting it admits every non-excluded tool into the registry;
       // the active set is governed by `applyActiveToolsForMode`. `excludeTools` still drops pi's `edit`.
+      const model = recorded?.model ?? this.desiredModel;
+      // pi runs the given model as it is and the given level clamped to it (sdk.js:87, :121-144 and :253-258 in pi-coding-agent 1.3.0).
       const result = await pi.createAgentSessionFromServices({
         services: shared,
         sessionManager,
-        ...(this.desiredModel ? { model: this.desiredModel } : {}),
+        ...(model ? { model } : {}),
         excludeTools: [...PI_EXCLUDED_TOOLS],
         customTools,
-        thinkingLevel: this.resolveThinkingLevel(),
+        thinkingLevel: recorded ? this.resolveThinkingLevel(recorded.value, recorded.thinkingLevel) : this.resolveThinkingLevel(),
       });
+      if (recorded) this.builtSelections.set(result.session, recorded);
       bound.session = result.session;
       return { ...result, services: shared, diagnostics: shared.diagnostics ?? [] };
     };
@@ -723,26 +846,49 @@ export class PiSession implements ChatSession {
     const fork = this.options.forkContext;
     const forkResumeId = fork && !fork.consumed ? fork.piBranchedSessionId : undefined;
     const resumeTargetId = this.resumeSessionId ?? forkResumeId ?? null;
+    const resumingStored = this.resumeSessionId !== null;
     const resumePath = resumeTargetId ? await resolvePiSessionFile(this.cwd, resumeTargetId) : null;
     this.throwIfDisposedDuringStart();
+    // A stored conversation the panel let go of meanwhile (a reset, another resume) is not opened: the start opens a new
+    // conversation, and its tail switches to a later target.
+    const letGo = (): boolean => resumingStored && this.resumeSessionId !== resumeTargetId;
+    // A stored conversation whose file is gone fails to open; a new conversation in its place would take its sends.
+    if (resumingStored && resumePath === null && !letGo()) throw new Error(t("its file was not found"));
     // Opening can rewrite the file (a format migration), so a session whose lease was lost meanwhile is not opened; the pending detach resets this panel.
     if (resumeTargetId && this.lostLeases.has(resumeTargetId)) throw new Error("PiSession: the session's lease was lost during start");
-    if (resumePath && forkResumeId && fork) fork.consumed = true;
+    let openedPath = letGo() ? null : resumePath;
     // A hand-off moves a chat without moving its file, whose header and directory are the folder it was created in (rule 2):
     // cwdOverride keeps the chat in this folder, and sessionDir puts a /clear's new session in this folder's directory.
-    const sessionManager = resumePath ? pi.SessionManager.open(resumePath, sessionDir, this.cwd) : pi.SessionManager.create(this.cwd, sessionDir);
+    const sessionManager = openedPath ? pi.SessionManager.open(openedPath, sessionDir, this.cwd) : pi.SessionManager.create(this.cwd, sessionDir);
     const runtime = await timed("start.createRuntime", () =>
-      pi.createAgentSessionRuntime(factory, { cwd: this.cwd, agentDir: PI_AGENT_DIR, sessionManager }), { resumed: resumePath !== null });
+      pi.createAgentSessionRuntime(factory, { cwd: this.cwd, agentDir: PI_AGENT_DIR, sessionManager }), { resumed: openedPath !== null });
+    if (openedPath !== null && letGo()) {
+      // Let go of while pi built the runtime, before anything bound or wrote to it.
+      let replaced: { cancelled: boolean };
+      try {
+        replaced = await runtime.newSession();
+      } catch (err) {
+        await runtime.dispose();
+        throw err;
+      }
+      // A session_before_switch handler that cancels leaves the let-go conversation installed, which must not be bound.
+      if (replaced.cancelled) {
+        await runtime.dispose();
+        throw new Error("PiSession: replacing a conversation the panel let go of was cancelled");
+      }
+      openedPath = null;
+    }
     if (this._disposed) {
       // dispose() already ran with no runtime to tear down, so this one is ours to release.
       await runtime.dispose();
       this.throwIfDisposedDuringStart();
     }
     this.runtime = runtime;
+    this.adoptBuiltSelection(runtime.session);
 
     this.bindSession(this.runtime.session);
     // Continue the token/budget meter from the resumed session's loaded total rather than zero.
-    if (resumePath) {
+    if (openedPath) {
       this.seedResumedUsage();
       this.interruptionCheckPending = true;
       this.undeliveredScanPending = true;
@@ -755,7 +901,10 @@ export class PiSession implements ChatSession {
     this.runtime.setBeforeSessionInvalidate(() => {
       this.unsubscribe?.();
       this.unsubscribe = null;
+      // pi disposes this session right after the hook (agent-session-runtime.js:111-112 in pi-coding-agent 1.3.0).
+      this.tornDown.add(runtime.session);
     });
+    // A rebind that throws rejects pi's replacement, whose caller then releases the runtime (`releaseIfTornDown`).
     this.runtime.setRebindSession(async (session) => {
       // The dispose under way disposes the session pi installed; nothing may register it.
       if (this._disposed) return;
@@ -765,30 +914,84 @@ export class PiSession implements ChatSession {
       this.applyActiveToolsForMode(this.permissionMode);
       // A replacement session (reset/clear → newSession) carries a fresh sessionId; the consumer
       // re-arms the watcher and re-registers the session off this callback, so it must fire here too.
-      this.announceSessionId(session.sessionId);
+      this.announceSessionId(session.sessionId, this.runningSwitch !== null);
       // Both paths that reach here, a reset/clear and a resume switch, make the webview reset its own
       // store, so the cached key describes a state nothing on screen is showing any more.
       this.lastSessionState = null;
       this.publishSessionState();
+      // Last, so a rebind that throws leaves the model of the conversation the chat goes back to; a switch let go of is never the record.
+      if (!this.runningSwitch?.cancelled) this.adoptBuiltSelection(session);
     });
 
-    this.announceSessionId(this.runtime.session.sessionId);
+    this.announceSessionId(this.runtime.session.sessionId, resumingStored && openedPath !== null);
     await this.deliverWorkingFolderNote().catch((err: unknown) => log("[PiSession] the working-folder note waits for the next prompt: %O", err));
     // resolveInitialModel may have moved the model off the requested one, and the panel has had no
     // account state before this point.
     this.publishAccountInfo();
     this.publishModel();
+    // Only a start that completed retires the fork target, so the next start after a failed one reopens the branch.
+    if (openedPath && forkResumeId && fork) fork.consumed = true;
+    const request = this.resumeRequest;
     // A resume that landed while the runtime was being built found no runtime to switch.
-    if (this.resumeSessionId && this.resumeSessionId !== resumeTargetId) this.setResumeSession(this.resumeSessionId);
+    if (request && this.resumeSessionId !== resumeTargetId) this.queueResumeSwitch(request);
+    else request?.settle(RESUME_SWITCHED);
   }
 
   private subscribeEvents(session: AgentSession): void {
     const adapterUnsubscribe = this.adapter.subscribe(session);
     this.unpersistedImages.track(session);
+    const run = trackRunLifecycle(session);
+    this.runLifecycle = run;
+    this.watchWindDown(run);
     this.unsubscribe = () => {
       adapterUnsubscribe();
       this.unpersistedImages.untrack(session);
+      this.endWindDownWatch();
+      if (this.runLifecycle === run) this.runLifecycle = null;
+      run.dispose();
     };
+  }
+
+  /** Arm the next Stop's wind-down notice on `run`'s session; it publishes through the session state only. */
+  private watchWindDown(run: RunLifecycle): void {
+    const stop = new AbortController();
+    const notice = noticeWindDown(run, stop.signal, (windDown) => {
+      this.windDown = windDown;
+      this.publishSessionState();
+    });
+    this.windDownWatch = { run, stop, notice };
+  }
+
+  /** The run lifecycle of `session` while this panel binds it; a session pi installed and the panel has not bound yet has run nothing. */
+  private runOf(session: AgentSession | undefined): RunLifecycle | null {
+    const run = this.runLifecycle;
+    return session !== undefined && run?.session === session ? run : null;
+  }
+
+  /** pi defers a prompt made while it runs a run's `agent_settled` handlers and returns at once (agent-session.js:1603-1605), and `waitForIdle()` no longer waits then (:686, :1954-1956). */
+  private piSettling(session: AgentSession, signal?: AbortSignal): Promise<void> | null {
+    return this.runOf(session)?.untilSettled(signal) ?? null;
+  }
+
+  /** The notice ends, cleared if it showed, once its session is let go of or its stopped run wound down. */
+  private endWindDownWatch(): void {
+    this.windDownWatch?.notice.end();
+    this.windDownWatch = null;
+  }
+
+  /**
+   * A Stop of `session`'s run, whoever opened it: the notice shows once the wait outlasts its delay and ends when pi has
+   * finished the run it had open then (`runSettled`), and the next Stop gets a fresh one. Display only.
+   */
+  private stopWindDownWatch(session: AgentSession): void {
+    const watch = this.windDownWatch;
+    if (watch?.run.session !== session || watch.stop.signal.aborted) return;
+    watch.stop.abort();
+    void watch.notice.runSettled.then(() => {
+      if (this.windDownWatch !== watch) return;
+      this.endWindDownWatch();
+      this.watchWindDown(watch.run);
+    });
   }
 
   /**
@@ -819,10 +1022,13 @@ export class PiSession implements ChatSession {
 
     const folder = this.requireFolder();
     const sessionId = session.sessionId;
-    if (this.registeredSessionId && this.registeredSessionId !== sessionId) {
-      // Gate on the id ACTUALLY changing: a rebind onto the same session (refresh, mode change) must
-      // keep whatever ToolSearch loaded, while a replacement session starts from the deferred baseline.
+    // A rebind onto the same session (refresh, mode change) keeps what ToolSearch loaded since.
+    const newConversation = this.registeredSessionId !== sessionId;
+    if (newConversation) {
       this.toolSearchActivated.clear();
+      this.pendingRestoredTools.clear();
+    }
+    if (this.registeredSessionId && this.registeredSessionId !== sessionId) {
       this.unregisterFromRuntime(folder, this.registeredSessionId);
       // A replacement session gets a fresh checkpoint driver + rewindable set.
       this.checkpointService?.dispose();
@@ -830,6 +1036,8 @@ export class PiSession implements ChatSession {
       this.checkpointUserIds.clear();
       this.lastCheckpointBroadcast = -1;
     }
+    // Before the first registration, so the release after a throw below unregisters whatever this bind registered.
+    this.registeredSessionId = sessionId;
     const gate: PanelGateContext = {
       permissionHandler: this.options.permissionHandler,
       isPlanMode: () => this.options.permissionHandler.getPermissionMode() === "plan",
@@ -841,7 +1049,6 @@ export class PiSession implements ChatSession {
       getPlanFilePath: () => this.getPlanFilePath(),
       isTeamEnabled: () => !!this.options.teamService && this.isTeamEnabled(),
       postMessage: (message) => this.emit(message),
-      typedPromptOf: (text) => this.typedPrompts.get(text),
       budgetStopRequested: () => this._budgetStopRequested,
       onBeforeSettle: (event) => this.onBeforeSettle(event),
       isMcpReadOnly: (name) => this.mcpClientManager()?.isMcpReadOnly(name) ?? false,
@@ -850,8 +1057,8 @@ export class PiSession implements ChatSession {
         return descriptor ? { server: descriptor.serverName, tool: descriptor.rawToolName } : undefined;
       },
       deferrableTools: () => this.deferrableToolsSnapshot(),
+      mcpResourceReach: (server) => this.mcpResourceReach(server),
       activateDeferredTools: (names) => this.activateDeferredTools(names),
-      waitForAlwaysLoadedMcp: (id) => this.waitForAlwaysLoadedMcp(id),
       ...this.checkpointBaselineField(),
       shellCancel: this.shellCancel.forContext(this.noteDeliveryForMain(() => session)),
       worktreeIsolation: () => this.worktreeIsolation(),
@@ -875,7 +1082,6 @@ export class PiSession implements ChatSession {
     };
     folder.registerRuleNoticePoster(sessionId, postRuleNotices);
     this.registeredRuleNoticePoster = postRuleNotices;
-    this.registeredSessionId = sessionId;
 
     // permission_required notifier (US-009): lazy + debounced-per-turn. Fires only when a hook is
     // configured and only at the two genuine approval waits (file/shell), mapping onto the synthetic
@@ -934,6 +1140,7 @@ export class PiSession implements ChatSession {
     this._mcpStatusListener?.();
     // A fresh session has no file until pi's first write; its lease is taken here, on the path pi will write.
     this.syncSessionLeases();
+    if (newConversation) this.seedRestoredTools(session);
   }
 
   /**
@@ -989,7 +1196,7 @@ export class PiSession implements ChatSession {
       await this.startPromise?.catch(() => undefined);
       if (this._disposed || this.lostLeases.has(sessionId)) return;
       // The Stop path, so the stop marker lands in the file while the lease is still held.
-      if (this.processingFlag || this.runtime?.session.isStreaming) await this.interrupt();
+      if (this.processingFlag || this.runOf(this.runtime?.session)?.streaming) await this.interrupt();
       else await this.abortPromise;
       if (this._disposed || this.lostLeases.has(sessionId)) return;
       await this.detachSession();
@@ -1069,21 +1276,32 @@ export class PiSession implements ChatSession {
 
   /**
    * pi resumes a session on the model and thinking level its file recorded (sdk.js createAgentSession), which Damocles
-   * otherwise overrides by passing the panel's: a recorded model still curated and signed in becomes this panel's again,
-   * with its level. A retired recorded model continues on its `LEGACY_MODEL_MAP` successor. Anything else keeps the
-   * panel's model. Permission mode and YOLO are never restored.
+   * otherwise overrides by passing the panel's: a recorded model still curated and signed in is the one the session is
+   * built on, with its level. A retired recorded model continues on its `LEGACY_MODEL_MAP` successor. Anything else keeps
+   * the panel's model. Permission mode and YOLO are never restored.
    */
-  private adoptRecordedSelection(branch: readonly SessionEntry[]): void {
+  private recordedSelectionOf(branch: readonly SessionEntry[]): BuiltSelection | undefined {
     const recorded = recordedSelection(branch);
     const value = recorded?.model ? modelValueOfPiModel(recorded.model.provider, migrateLegacyModelValue(recorded.model.modelId)) : undefined;
     const piRuntime = PiRuntime.get();
     const registry = piRuntime.modelRuntime;
-    if (value === undefined || !registry) return;
+    if (value === undefined || !registry) return undefined;
     const resolution = resolvePiModel(value, registry, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey());
-    if (!resolution.model || !resolution.authed) return;
-    this.modelValue = value;
-    this.desiredModel = resolution.model;
-    this.options.onRecordedSelection?.(value, recorded?.thinkingLevel);
+    if (!resolution.model || !resolution.authed) return undefined;
+    return { value, model: resolution.model, thinkingLevel: recorded?.thinkingLevel };
+  }
+
+  /** The chat's model and effort become those of the session pi installed, and of no session it only built. */
+  private adoptBuiltSelection(session: AgentSession): void {
+    const built = this.builtSelections.get(session);
+    if (!built) return;
+    this.builtSelections.delete(session);
+    this.modelValue = built.value;
+    this.desiredModel = built.model;
+    this.options.onRecordedSelection?.(built.value, built.thinkingLevel);
+    // Published with the record, so what the panel shows never parts from it.
+    this.publishAccountInfo();
+    this.publishModel();
   }
 
   /**
@@ -1135,55 +1353,117 @@ export class PiSession implements ChatSession {
 
   async sendMessage(
     prompt: ContentInput,
-    _agentId?: string,
+    target?: string,
     correlationId?: string,
     userBroadcast?: UserBroadcast,
     onWithdrawn?: () => void,
+    ticket?: SendTicket,
   ): Promise<SendOutcome> {
+    const outgoing = ticket ? [...this.outgoingSends].find((candidate) => candidate === ticket) : this.claimSend(correlationId, userBroadcast, onWithdrawn);
+    // A ticket the session no longer lists ended, or went back to the composer, before this call.
+    if (!outgoing) return ticket?.signal.aborted ? "withdrawn" : "unsent";
+    try {
+      const outcome = await this.promptPi(prompt, target, correlationId, userBroadcast, outgoing);
+      return outgoing.withdrawn ? "withdrawn" : outcome;
+    } finally {
+      this.endSend(outgoing);
+    }
+  }
+
+  beginSend(correlationId: string, userBroadcast: UserBroadcast, onWithdrawn: () => void): SendTicket | null {
+    return this.claimSend(correlationId, userBroadcast, onWithdrawn);
+  }
+
+  /** The session's one send, from its first step; null, with the refusal reported, while a send, turn or compaction holds it. */
+  private claimSend(correlationId: string | undefined, userBroadcast: UserBroadcast | undefined, onWithdrawn: (() => void) | undefined): OutgoingPrompt | null {
     if (this.processingFlag || this.compacting) {
       this.adapter.emitAlreadyInProgress();
-      return "unsent";
+      return null;
     }
-    let withdrawn = false;
-    const withdraw = (returnText: () => void): void => {
-      if (withdrawn) return;
-      withdrawn = true;
-      returnText();
-      onWithdrawn?.();
+    const controller = new AbortController();
+    const outgoing: OutgoingPrompt = {
+      signal: controller.signal,
+      stop: () => controller.abort(),
+      end: () => this.endSend(outgoing),
+      inPi: false,
+      accepted: false,
+      withdrawn: false,
+      withdraw: (returnText) => {
+        if (outgoing.withdrawn) return;
+        outgoing.withdrawn = true;
+        returnText();
+        onWithdrawn?.();
+      },
+      returnUnsent: () => outgoing.withdraw(() => this.returnUnsentMessage(correlationId, userBroadcast)),
     };
-    const returnUnsent = (): void => withdraw(() => this.returnUnsentMessage(correlationId, userBroadcast));
-    this.unacceptedSends.add(returnUnsent);
-    try {
-      const outcome = await this.promptPi(prompt, correlationId, userBroadcast, {
-        withdraw,
-        accepted: () => this.unacceptedSends.delete(returnUnsent),
-      });
-      return withdrawn ? "withdrawn" : outcome;
-    } finally {
-      this.unacceptedSends.delete(returnUnsent);
+    this.outgoingSends.add(outgoing);
+    this.currentSend = outgoing;
+    this.processingFlag = true;
+    return outgoing;
+  }
+
+  private endSend(outgoing: OutgoingPrompt): void {
+    if (!this.outgoingSends.delete(outgoing) || this.currentSend !== outgoing) return;
+    this.currentSend = null;
+    this.processingFlag = false;
+    // Queued for the run this send would have opened, which never came.
+    this.returnHeldInputs();
+    this.sendAfterSettle();
+  }
+
+  /** Stop every send; one pi holds is left to pi's verdict unless the conversation is `leaving` the screen. */
+  private stopSends(leaving: boolean): void {
+    this.compactionBeforePi?.abort();
+    for (const outgoing of this.outgoingSends) {
+      outgoing.stop();
+      if (!outgoing.accepted && (!outgoing.inPi || leaving)) outgoing.returnUnsent();
     }
+    this.currentSend = null;
+    this.processingFlag = false;
+  }
+
+  /** Whether a Stop, a replacement or a disposal overtook `outgoing` before `prompt()`; it already went back to the composer. */
+  private sendOvertaken(outgoing: OutgoingPrompt, session: AgentSession): boolean {
+    if (!outgoing.signal.aborted && this.runtime?.session === session) return false;
+    outgoing.returnUnsent();
+    return true;
+  }
+
+  /**
+   * Whether a send written for `target` may prompt `session`: only the conversation it names. One that names none (a new
+   * chat) may prompt only a conversation with nothing stored yet, since the webview hears of every stored one before it
+   * shows it (docs/invariants.md, "A send names its conversation").
+   */
+  private sendsTo(session: AgentSession, target: string | undefined): boolean {
+    if (target !== undefined) return session.sessionId === target;
+    const file = session.sessionManager.getSessionFile();
+    return file === undefined || !existsSync(file);
+  }
+
+  /** Give a send core refused back to the composer, with why. */
+  private returnPrompt(prompt: ContentInput, userBroadcast: UserBroadcast | undefined, reason: PromptReturnReason): void {
+    const content: UserContentBlock[] = userBroadcast
+      ? userBroadcast.contentBlocks ?? [{ type: "text", text: userBroadcast.content }]
+      : typeof prompt === "string" ? [{ type: "text", text: prompt }] : prompt;
+    this.emit({ type: "promptReturned", content, reason });
   }
 
   private async promptPi(
     prompt: ContentInput,
+    target: string | undefined,
     correlationId: string | undefined,
     userBroadcast: UserBroadcast | undefined,
     outgoing: OutgoingPrompt,
   ): Promise<SendOutcome> {
-    const abortEpoch = this.abortEpoch;
+    // Waits for any in-flight session replacement so we prompt the FRESH session, not the old one that
+    // is still tearing down (else pi throws "Agent is already processing"). Drives the plan
+    // "clear context & start fresh" flow, which calls clear() then sendMessage() synchronously.
     try {
       await this.ensureStarted();
+      if (this.resetPromise) await this.afterReplacements();
     } catch (err) {
       this.emit({ type: "error", message: t("pi failed to start: {0}", err instanceof Error ? err.message : String(err)) });
       return "unsent";
-    }
-    // Wait for any in-flight session replacement so we prompt the FRESH session, not the old one that
-    // is still tearing down (else pi throws "Agent is already processing"). Drives the plan
-    // "clear context & start fresh" flow, which calls clear() then sendMessage() synchronously.
-    if (this.resetPromise) {
-      const pending = this.resetPromise;
-      await pending;
-      if (this.resetPromise === pending) this.resetPromise = null;
     }
     // A model picked before this send is the one the turn runs on and the composer shows.
     if (this.modelSwitch) await this.modelSwitch;
@@ -1194,6 +1474,14 @@ export class PiSession implements ChatSession {
     if (this.abortPromise) {
       await this.abortPromise;
     }
+    // A prompt a Stop left in pi's hands settles first, unless another run streams: on an idle session both would race
+    // to open a run and pi refuses the second, and the run it opens is being aborted.
+    const stoppedInPi = this.promptInPi;
+    if (stoppedInPi && stoppedInPi.session === this.runtime?.session && (stoppedInPi.openedRun || !this.runOf(stoppedInPi.session)?.streaming)) {
+      await stoppedInPi.settled;
+    }
+    const settling = this.runtime ? this.piSettling(this.runtime.session, outgoing.signal) : null;
+    if (settling) await settling;
     // Flush a deferred MCP reload (a connect that arrived mid-turn on an orphaned session): the prior
     // turn has settled, so rebuild now — awaited so this turn prompts against the rebuilt session.
     if (this.mcpReloadPendingAfterTurn) {
@@ -1204,17 +1492,38 @@ export class PiSession implements ChatSession {
       this.emit({ type: "error", message: t("Failed to initialize pi session") });
       return "unsent";
     }
+    if (this.sendOvertaken(outgoing, session)) return "withdrawn";
+    // After every wait above; from here on `sendOvertaken` keeps the send on this session.
+    if (!this.sendsTo(session, target)) {
+      this.emit({ type: "processing", isProcessing: false });
+      this.returnPrompt(prompt, userBroadcast, "conversationChanged");
+      return "unsent";
+    }
     const readOnly = this.readOnlyRefusal();
     if (readOnly) {
       this.emit({ type: "error", message: readOnly });
       this.returnUnsentMessage(correlationId, userBroadcast);
       return "unsent";
     }
+    const text = extractText(prompt);
+    // An extension command commits no user entry, so its echo is injected like every other row that
+    // names no prompt, and the next real prompt keeps the index it would have had.
+    const isPrompt = !isExtensionCommand(session, text);
+    // An extension command opens no run, and a prompt pi queues joins one already declared.
+    if (isPrompt && !this.runOf(session)?.streaming) {
+      try {
+        await this.waitForAlwaysLoadedMcp(session.sessionId, outgoing.signal);
+      } catch (err) {
+        log("[PiSession] Always-loaded MCP wait failed; sending without it: %O", err);
+      }
+      if (this.sendOvertaken(outgoing, session)) return "withdrawn";
+    }
     // The model must read where the chat works before the prompt that follows a hand-off.
     try {
       await this.deliverWorkingFolderNote();
     } catch (err) {
       log("[PiSession] the working-folder note was not delivered: %O", err);
+      if (this.sendOvertaken(outgoing, session)) return "withdrawn";
       this.emit({ type: "error", message: t("Damocles could not tell the agent where this chat now works: {0}", err instanceof Error ? err.message : String(err)) });
       this.returnUnsentMessage(correlationId, userBroadcast);
       return "unsent";
@@ -1228,29 +1537,18 @@ export class PiSession implements ChatSession {
       return "unsent";
     }
 
-    const text = extractText(prompt);
-    // An extension command commits no user entry, so its echo is injected like every other row that
-    // names no prompt, and the next real prompt keeps the index it would have had.
-    const isPrompt = !isExtensionCommand(session, text);
     // Before `beginTurn`: neither message's message_start may be read as this turn's user entry. Results
     // go first, so the notice skips every agent they delivered. Both introduce a user message, which a
     // refused prompt or an extension command never commits.
     if (isPrompt && (await this.deliverUndeliveredResults(session))) {
       await this.reconcileInterruptionsIfPending(session);
     }
-    // No await may follow this check before `prompt()`: an ESC or a session replacement that lands in
-    // one would be lost, and the message would run anyway.
-    if (this.abortEpoch !== abortEpoch || this.runtime?.session !== session) {
-      this.returnUnsentMessage(correlationId, userBroadcast);
-      return "unsent";
-    }
+    // Only the UserPromptSubmit hook and a settle wait await between this check and `prompt()`, and each checks again after it: past `prompt()` a Stop stops the run pi opens instead of returning the message.
+    if (this.sendOvertaken(outgoing, session)) return "withdrawn";
     // D33: a finish action holds the chat's worktree only while the chat is idle, so the check sits with the one above.
     if (this.worktree.finishing() !== undefined) {
       this.emit({ type: "processing", isProcessing: false });
-      const content: UserContentBlock[] = userBroadcast
-        ? userBroadcast.contentBlocks ?? [{ type: "text", text: userBroadcast.content }]
-        : typeof prompt === "string" ? [{ type: "text", text: prompt }] : prompt;
-      this.emit({ type: "promptReturned", content, reason: "worktreeFinishing" });
+      this.returnPrompt(prompt, userBroadcast, "worktreeFinishing");
       return "unsent";
     }
     // A turn run on the committed model means the user went on without the model that asked for sign-in.
@@ -1288,14 +1586,43 @@ export class PiSession implements ChatSession {
       });
     }
 
-    this.processingFlag = true;
     this._aborting = false;
     this._budgetStopRequested = false;
+    this.adapter.beginTurn(correlationId);
+
+    // After `beginTurn`, which makes the chat busy, so no finish action (D33) starts while the hook runs.
+    const hooks = isPrompt ? this.promptHooks() : undefined;
+    // Owed only to the request pi delivers this prompt in, so it lives with this send and nowhere else.
+    let hookContext: string | undefined;
+    const withdrawnAfterTurnBegan = (): SendOutcome => {
+      // A send claimed after the Stop or replacement owns the turn state now.
+      if (this.currentSend === outgoing || this.currentSend === null) {
+        this.inFlightPromptIndex = null;
+        this.setTurnState("idle", { kind: "cancelled" });
+      }
+      return "withdrawn";
+    };
+    if (hooks) {
+      const verdict = await this.judgePrompt(session, hooks, userBroadcast?.content ?? text, outgoing.signal);
+      if (this.sendOvertaken(outgoing, session)) return withdrawnAfterTurnBegan();
+      if (verdict && !this.admitPromptVerdict(session, verdict)) {
+        // Like pi's `handled` verdict: no run, and what was queued meanwhile is screened for a run of its own.
+        this.releaseHeldInputs();
+        this.inFlightPromptIndex = null;
+        this.adapter.endTurnWithoutAgentRun();
+        return "unsent";
+      }
+      hookContext = verdict?.additionalContext;
+    }
+    // A run that streamed at the settle wait above can reach its `agent_settled` handlers while the steps since awaited, and pi defers a prompt made then (agent-session.js:1603-1605).
+    for (let settling = this.piSettling(session, outgoing.signal); settling; settling = this.piSettling(session, outgoing.signal)) await settling;
+    if (this.sendOvertaken(outgoing, session)) return withdrawnAfterTurnBegan();
+
+    // After the hook: a thinking level change is a session entry, and a send stopped during the hook writes none.
     session.setThinkingLevel(this.resolveThinkingLevel());
     // Refresh the auto-compaction reserve against the current model's window before the turn, so the
     // configured trigger percent holds even after a model switch or a settings save() (US-030).
     this.refreshCompactionReserve();
-    this.adapter.beginTurn(correlationId);
 
     const images = extractImages(prompt);
     // Reaches the turn lifecycle only when no pi event already settled the turn.
@@ -1304,7 +1631,7 @@ export class PiSession implements ChatSession {
     let accepted: PromptDisposition | null = null;
     // The prompt's own entry is the earliest point its turn's checkpoint baseline can start.
     const committed = watchPromptEntry(session, (entry) => {
-      if (userBroadcast) this.recordPromptSidecars(session, entry, userBroadcast);
+      if (userBroadcast) this.recordPromptSidecars(session, entry, userBroadcast, images.length);
       const service = this.checkpointService;
       if (service?.sessionId === session.sessionId) service.startTurn(session.sessionManager, entry.id, entry.text);
       // With no file checkpoints the conversation can still be forked from any prompt.
@@ -1312,28 +1639,35 @@ export class PiSession implements ChatSession {
       if (this.runtime?.session === session) this.announceIfNewlyStored();
     });
     this.promptEntry = committed;
-    if (userBroadcast) this.typedPrompts.set(text, userBroadcast.content);
+    let settle!: () => void;
+    const inPi = { session, settled: new Promise<void>((resolve) => { settle = resolve; }), openedRun: false };
+    this.promptInPi = inPi;
+    outgoing.inPi = true;
     try {
-      // Defense in depth: under 0.80.5 `isStreaming` stays true for the whole agent run, including
-      // retry/auto-compaction windows. A prompt landing in one of those windows now queues as a
-      // follow-up instead of hitting pi's "Agent is already processing" rejection — the message runs
-      // as a continuation rather than being lost. Strictly better desync defense than before.
+      // `isStreaming` covers a run's retry and auto-compaction windows, where a prompt queues as a follow-up.
       await session.prompt(text, {
         ...(images.length > 0 ? { images } : {}),
-        ...(session.isStreaming ? { streamingBehavior: "followUp" as const } : {}),
-        // pi calls this synchronously right before `_runAgentPrompt`, after every `before_agent_start`
-        // handler, and a throw rejects `prompt()` before the run exists. Its `abort()` before then is a no-op.
+        ...(this.runOf(session)?.streaming ? { streamingBehavior: "followUp" as const } : {}),
+        // pi treats this as internal and calls it outside every try (#11044, #11065), so it only observes.
         preflightResult: (disposition) => {
-          if (disposition === "started" && (this.abortEpoch !== abortEpoch || this.runtime?.session !== session)) {
-            throw new StoppedBeforeRunError();
-          }
           accepted = disposition;
-          outgoing.accepted();
+          outgoing.accepted = true;
           committed.preflightResult(disposition);
+          if (this.currentSend === outgoing) this.releaseHeldInputs();
+          if (disposition === "started") {
+            inPi.openedRun = true;
+            this.runStarted(session);
+            if (outgoing.signal.aborted || this.runtime?.session !== session) {
+              outcome = { kind: "cancelled" };
+              this.stopRunAtStart(session);
+            } else {
+              this.steerRunStartContext(session, hookContext);
+            }
+          }
           if (disposition === "queued") {
-            const queued = this.queuedPrompts.add(session, images, {
+            const queued = this.queuedPrompts.add(session, images, hookContext, {
               onCommitted: (entry) => {
-                if (userBroadcast) this.recordPromptSidecars(session, entry, userBroadcast);
+                if (userBroadcast) this.recordPromptSidecars(session, entry, userBroadcast, images.length);
               },
               onWithdrawn: () => outgoing.withdraw(() => {
                 if (correlationId && userBroadcast) this.emit({ type: "queueCancelled", messageId: correlationId, returnToInput: true });
@@ -1342,20 +1676,20 @@ export class PiSession implements ChatSession {
             // A stop or a replacement can land while pi runs the input handlers, and that run delivers nothing more.
             if (this.runStopped() || this.runtime?.session !== session) {
               this.dropQueue(session);
-            } else if (this.abortEpoch !== abortEpoch && queued) {
+            } else if (outgoing.signal.aborted) {
               // The stop has wound down and pi queued the prompt into a newer run, which keeps everything else.
-              this.queuedPrompts.withdrawOne(queued);
-              this.takeBackQueued(session, queued.text);
+              if (queued) {
+                this.queuedPrompts.withdrawOne(queued);
+                this.takeBackQueued(session, queued.text);
+              }
+            } else {
+              this.queueHookContext(session, hookContext, "followUp");
             }
           }
         },
       });
-      // An extension slash command (e.g. `/todos`) is handled synchronously inside prompt() and starts
-      // no agent run, so no terminal event settles the turn — the spinner would hang. Under 0.80.5
-      // prompt() resolves only when the run is fully settled, so `isStreaming` is reliably false here
-      // for a slash command that started no run. When prompt() resolved without an observed run and the
-      // agent isn't streaming, release the turn ourselves.
-      if (!this._aborting && !session.isStreaming && !this.adapter.observedAgentRun()) {
+      // An extension command (`/todos`) opens no run, so no pi event ends its turn; `prompt()` resolves once a run settled.
+      if (this.currentSend === outgoing && !this._aborting && !this.runOf(session)?.streaming && !this.adapter.observedAgentRun()) {
         this.adapter.endTurnWithoutAgentRun();
       }
       const entry = committed.entry();
@@ -1366,9 +1700,11 @@ export class PiSession implements ChatSession {
       // something to extract from (and the idle timer arms). Symmetric with the harvesters above.
       if (userBroadcast && entry) this.enqueueMemoryCandidate(session, entry.id, candidateKey);
     } catch (err) {
-      if (err instanceof StoppedBeforeRunError) {
+      if (accepted === null && outgoing.signal.aborted) {
+        // pi refused a prompt a Stop had left to its verdict, so nothing committed it.
+        log("[PiSession] a stopped prompt was refused by pi: %O", err);
         outcome = { kind: "cancelled" };
-        this.returnUnsentMessage(correlationId, userBroadcast);
+        outgoing.returnUnsent();
       } else if (this._aborting) {
         // A user abort rejects prompt(); interrupt()/cancel() already emitted sessionCancelled + idle,
         // so swallow the rejection here rather than stacking a spurious error card on top of it.
@@ -1384,14 +1720,16 @@ export class PiSession implements ChatSession {
     } finally {
       committed.dispose();
       if (this.promptEntry === committed) this.promptEntry = null;
-      if (userBroadcast && this.typedPrompts.get(text) === userBroadcast.content) this.typedPrompts.delete(text);
-      this.processingFlag = false;
-      this.inFlightPromptIndex = null;
-      // The turn is over however it ended. A rejection that never reached an agent run emits no pi
-      // event, so without this the lifecycle would stay `running` with nothing left to move it.
-      this.setTurnState("idle", outcome);
-      this._aborting = false;
-      this._budgetStopRequested = false;
+      if (this.promptInPi === inPi) this.promptInPi = null;
+      // A send claimed after a Stop or replacement let go of this one owns the turn state now.
+      if (this.currentSend === outgoing || this.currentSend === null) {
+        this.inFlightPromptIndex = null;
+        // A rejection that never reached an agent run emits no pi event, so without this the lifecycle would stay `running`.
+        this.setTurnState("idle", outcome);
+        this._aborting = false;
+        this._budgetStopRequested = false;
+      }
+      settle();
     }
     return accepted === "queued" || committed.entry() !== null ? "sent" : "unsent";
   }
@@ -1401,6 +1739,104 @@ export class PiSession implements ChatSession {
     const session = this.runtime?.session;
     const pi = getPiCodingAgent();
     return session && pi ? resolveSlashInvocation(session, text, pi.stripFrontmatter) : { kind: "text" };
+  }
+
+  /** pi opened a run on `session` and dropped the restored names that did not register (agent-session.js:1416), so this panel drops them too. */
+  private runStarted(session: AgentSession): void {
+    if (this.runtime?.session === session) this.pendingRestoredTools.clear();
+  }
+
+  /**
+   * Abort the run pi just opened for a message a Stop or a replacement overtook while pi held it, at `agent_start`, before
+   * any request (agent-session.js:713-714); a session still connected keeps the message in its transcript as a stopped turn.
+   */
+  private stopRunAtStart(session: AgentSession): void {
+    // pi's run takes whatever its queue holds as it starts (agent-loop.js:85), and a stopped run delivers nothing.
+    this.dropQueue(session);
+    const ending = abortRunAtStart(session).catch((err) => log("[PiSession] stopping a run at its start failed: %O", err));
+    if (this.runtime?.session !== session) return;
+    this.stopWindDownWatch(session);
+    const pending = Promise.all([this.abortPromise, ending]).then(() => undefined);
+    this.abortPromise = pending;
+    void pending.finally(() => {
+      if (this.abortPromise === pending) this.abortPromise = null;
+    });
+  }
+
+  /** The folder's hooks, when a UserPromptSubmit hook is configured. */
+  private promptHooks(): DispatchDeps | undefined {
+    const deps = this.folder?.getHooksDispatchDeps();
+    return deps?.config.hasEntries("input") ? deps : undefined;
+  }
+
+  /** The UserPromptSubmit hooks' verdict on `prompt`, the text the user typed; null once `signal` cancelled them. */
+  private judgePrompt(session: AgentSession, hooks: DispatchDeps, prompt: string, signal?: AbortSignal): Promise<InputHookResult | null> {
+    const common = { session_id: session.sessionId, transcript_path: session.sessionManager.getSessionFile() ?? "", cwd: session.sessionManager.getCwd() };
+    return dispatchInput(hooks, { common, prompt }, signal);
+  }
+
+  /** Shows a verdict and, unless it blocks, applies its title; false on a block. Its context is the caller's to carry with the message. */
+  private admitPromptVerdict(session: AgentSession, verdict: InputHookResult): boolean {
+    postUserPromptVerdict((message) => this.emit(message), verdict);
+    if (verdict.block) return false;
+    if (verdict.sessionTitle) {
+      PiRuntime.get().renameSession(session.sessionId, session.sessionManager.getCwd(), verdict.sessionTitle).catch((err) =>
+        log("[Hooks] sessionTitle rename failed: %O", err),
+      );
+    }
+    return true;
+  }
+
+  /**
+   * Queues a message's UserPromptSubmit context right behind the message pi just accepted, so pi drains both into one
+   * request: call it from that message's `preflightResult`, `steer` for a run it opens or a steer, `followUp` for a follow-up
+   * (docs/invariants.md, "A UserPromptSubmit hook runs before pi").
+   */
+  private queueHookContext(session: AgentSession, context: string | undefined, deliverAs: "steer" | "followUp"): void {
+    if (!context) return;
+    session
+      .sendCustomMessage({ customType: HOOK_CONTEXT_CUSTOM_TYPE, content: context, display: false }, { deliverAs })
+      .catch((err) => log("[PiSession] queueing UserPromptSubmit context failed: %O", err));
+  }
+
+  /** `queueHookContext` for the prompt a run opens with, from its `started`: the run's first drain takes it (agent-loop.js:85 in pi-agent-core 1.3.0). */
+  private steerRunStartContext(session: AgentSession, context: string | undefined): void {
+    if (!context) return;
+    this.queueHookContext(session, context, "steer");
+    // pi enqueued it synchronously; with steers pending, `peekQueuedMessages()` lists the whole steering queue, newest last, only under steering mode `all` (`withQueuePolicy`).
+    const held = this.heldRunStartContexts(session);
+    const message = held.at(-1);
+    if (message) this.runStartContexts.push({ session, message });
+  }
+
+  /** Forgets every run-start context pi no longer holds on `session`, and returns pi's queued messages. */
+  private heldRunStartContexts(session: AgentSession): AgentMessage[] {
+    const held = session.agent.peekQueuedMessages();
+    this.runStartContexts = this.runStartContexts.filter((context) => context.session === session && held.includes(context.message));
+    return held;
+  }
+
+  /** `clearQueue()` for a pass that puts pi's queue back, keeping each run-start context pi has not drained yet in its place ahead of the rest. */
+  private clearQueueForPutBack(session: AgentSession): { steering: string[]; followUp: string[] } {
+    this.heldRunStartContexts(session);
+    const cleared = session.clearQueue();
+    for (const { message } of this.runStartContexts) session.agent.steer(message);
+    return cleared;
+  }
+
+  /** Let the messages queued while `currentSend` was on its way steer into the run pi now has. */
+  private releaseHeldInputs(): void {
+    if (this.heldInputs.length === 0) return;
+    this.screeningInputs.push(...this.heldInputs);
+    this.heldInputs = [];
+    // Not inside pi's `preflightResult`: a re-steer clears pi's queue.
+    queueMicrotask(() => this.screenQueuedInputs());
+  }
+
+  private returnHeldInputs(): void {
+    const held = this.heldInputs;
+    this.heldInputs = [];
+    for (const { id } of held) this.emit({ type: "queueCancelled", messageId: id, returnToInput: true });
   }
 
   /** A message cancelled or orphaned before its turn started never reached the model, so it goes back
@@ -1457,7 +1893,7 @@ export class PiSession implements ChatSession {
         send: async (message) => {
           // A replaced session's file may already be deleted, and an append would recreate it header-less.
           // A streaming session defers the message to its settle, after that settle's keep-alive read D.
-          if (this.runtime?.session !== session || session.isStreaming) {
+          if (this.runtime?.session !== session || this.runOf(session)?.streaming) {
             refused = true;
             return false;
           }
@@ -1511,34 +1947,70 @@ export class PiSession implements ChatSession {
    * boundary, redirecting the agent mid-task. Returns 'queued' so the webview shows a pending chip per
    * message; the chips collapse into the combined message once the adapter sees pi deliver it.
    */
-  queueInput(content: ContentInput, messageId?: string, typed?: string): "queued" | "flushed" | false {
+  queueInput(content: ContentInput, messageId?: string, typed?: string, target?: string): "queued" | "flushed" | "otherConversation" | false {
     const session = this.runtime?.session;
-    // Gate on pi's own streaming state, not `processingFlag`: the two can momentarily disagree. Under
-    // 0.80.5 `isStreaming` also stays true across retry/compaction windows, so input is now accepted
-    // during those (desirable — pi steers at the next boundary); the disagreement window is narrower.
-    // A queue routed to a non-streaming session must still be refused so the caller can fall back.
+    const run = this.runOf(session);
+    // Gate on pi's own run state, not `processingFlag`: the two can momentarily disagree. An idle session refuses so the
+    // caller can fall back.
     // Refused after a budget stop too, even though the run is still streaming: pi's settle boundary
     // continues on a non-empty queue whatever the decider answers, so accepting one bills a round trip
     // past a hard limit (the same hazard `stopForBudget` flushes the existing queue for).
-    if (!session || !session.isStreaming || this._budgetStopRequested) return false;
-    this.screeningInputs.push({
+    // A send on its way to pi holds the message for the run it opens.
+    const holding = this.currentSend !== null && !this.currentSend.accepted;
+    if (!session || !(run?.mayQueue || holding) || this._budgetStopRequested) return false;
+    if (!this.sendsTo(session, target)) return "otherConversation";
+    const input: QueuedInput = {
       id: messageId ?? `queue-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       text: extractText(content),
       images: extractImages(content),
       content,
       ...(typed !== undefined ? { typed } : {}),
-    });
+    };
+    // Behind every message held before it, even once pi counts the run as starting.
+    if (holding && (!run?.streaming || this.heldInputs.length > 0)) {
+      this.heldInputs.push(input);
+      return "queued";
+    }
+    // The run it was typed in has ended, so it is a send of its own once pi settled that run; behind messages already
+    // queued for that run it joins their batch instead (`resteerOnce` waits for the same settle).
+    const runEnded = run?.settling === true && this.screeningInputs.length === 0 && this.queuedInputs.length === 0 && !this.resteerRunning;
+    if (runEnded || this.afterSettleInputs.length > 0) {
+      this.afterSettleInputs.push(input);
+      this.afterSettleTarget = session.sessionId;
+      void run?.untilSettled(this.screening.signal)?.then(() => this.sendAfterSettle());
+      return "queued";
+    }
+    this.screeningInputs.push(input);
     this.screenQueuedInputs();
     return "queued";
   }
 
   /**
-   * Run pi's input handlers, a UserPromptSubmit hook among them, on each queued message once, as it is
-   * queued and oldest first, the way a typed prompt gets them. A message a handler consumes, which is
-   * what a hook's block is, loses its chip, and the hook has already posted its reason; the rest join
-   * `queuedInputs` with any rewrite applied. The combined re-steer is sent as `source: 'extension'`, so
-   * no hook sees a message twice or judges one by the messages around it. With no input handler loaded
-   * this admits synchronously, so the first re-steer still starts before `queueInput` returns.
+   * Send the messages queued while pi settled a run as one send, through `sendMessage` like a typed one (its hook, its
+   * prompt index, sidecars and memory candidate, a follow-up when pi has a run open), once that settle and the send
+   * holding the session ended. Their chips give way to the send's own echo; a Stop before then returns them.
+   */
+  private sendAfterSettle(): void {
+    const session = this.runtime?.session;
+    if (this.afterSettleInputs.length === 0 || !session || this.processingFlag || this.compacting || this.runOf(session)?.settling) return;
+    const inputs = this.afterSettleInputs.splice(0);
+    const target = this.afterSettleTarget;
+    const prompt: ContentInput = inputs.every((input) => typeof input.content === "string")
+      ? inputs.map((input) => input.text).join("\n\n")
+      : inputs.flatMap((input): UserContentBlock[] => (typeof input.content === "string" ? [{ type: "text", text: input.content }] : input.content));
+    const typed = inputs.map((input) => input.typed ?? input.text).join("\n\n");
+    const broadcast: UserBroadcast = typeof prompt === "string" ? { content: typed } : { content: typed, contentBlocks: prompt };
+    for (const { id } of inputs) this.emit({ type: "queueCancelled", messageId: id });
+    void this.sendMessage(prompt, target, `corr-${randomUUID()}`, broadcast).catch((err) => log("[PiSession] sending messages queued while pi settled a run failed: %O", err));
+  }
+
+  /**
+   * Run the UserPromptSubmit hook, then pi's input handlers, on each queued message once, as it is queued
+   * and oldest first, the way a typed prompt gets them. A message the hook blocks or a handler consumes
+   * loses its chip, and a block's reason is shown; the rest join `queuedInputs` with any rewrite applied.
+   * The combined re-steer is sent as `source: 'extension'`, so no handler sees a message twice or judges
+   * one by the messages around it. With no hook configured and no input handler loaded this admits
+   * synchronously, so the first re-steer still starts before `queueInput` returns.
    */
   private screenQueuedInputs(): void {
     if (this.screeningRunning) return;
@@ -1546,16 +2018,26 @@ export class PiSession implements ChatSession {
     void (async () => {
       try {
         for (let input = this.screeningInputs[0]; input; input = this.screeningInputs[0]) {
+          const session = this.runtime?.session;
+          const hooks = session ? this.promptHooks() : undefined;
+          if (session && hooks) {
+            const judged = await this.judgePrompt(session, hooks, input.typed ?? input.text, this.screening.signal);
+            // A stop or a session replacement took it back while the hook ran, and aborted the hook with it.
+            if (this.screeningInputs[0] !== input) continue;
+            if (judged && !this.admitPromptVerdict(session, judged)) {
+              this.screeningInputs.shift();
+              this.emit({ type: "queueCancelled", messageId: input.id });
+              continue;
+            }
+            if (judged?.additionalContext) input.hookContext = judged.additionalContext;
+          }
           const runner = this.runtime?.session.extensionRunner;
           let verdict: InputEventResult = { action: "continue" };
           if (runner?.hasHandlers("input")) {
-            if (input.typed !== undefined) this.typedPrompts.set(input.text, input.typed);
             try {
               verdict = await runner.emitInput(input.text, input.images.length > 0 ? input.images : undefined, "interactive", "steer");
             } catch (err) {
               log("[PiSession] input handlers failed on a queued message: %O", err);
-            } finally {
-              if (input.typed !== undefined && this.typedPrompts.get(input.text) === input.typed) this.typedPrompts.delete(input.text);
             }
           }
           // A stop or a session replacement took it back while the handlers ran.
@@ -1593,11 +2075,7 @@ export class PiSession implements ChatSession {
       do {
         this.resteerRequested = false;
         const session = this.runtime?.session;
-        if (session) {
-          await this.resteerOnce(session).catch((err) => {
-            if (!(err instanceof WithdrawnSteerError)) log("[PiSession] steered prompt failed: %O", err);
-          });
-        }
+        if (session) await this.resteerOnce(session).catch((err) => log("[PiSession] steered prompt failed: %O", err));
       } while (this.resteerRequested);
       this.resteerRunning = false;
     })();
@@ -1614,10 +2092,16 @@ export class PiSession implements ChatSession {
    * next boundary (`withQueuePolicy`), so that request carries the annotated result, the note, then the batch.
    */
   private async resteerOnce(session: AgentSession): Promise<void> {
+    // Before reading the buffer, so the pass steers what was queued during the settle with the rest.
+    const settled = this.piSettling(session);
+    if (settled) {
+      await settled;
+      if (this.runtime?.session !== session) return;
+    }
     const taken = this.takenSteers?.session === session ? this.takenSteers.steering : [];
     this.takenSteers = null;
     if (this.queuedInputs.length === 0 && this.heldNotes(taken).length === 0) return;
-    const { steering, followUp } = session.clearQueue();
+    const { steering, followUp } = this.clearQueueForPutBack(session);
     this.steeredCount = null;
     const notes = this.heldNotes([...taken, ...steering]);
     const batch = [...this.queuedInputs];
@@ -1634,20 +2118,34 @@ export class PiSession implements ChatSession {
         .catch((err) => log("[PiSession] re-queueing a cancel note failed: %O", err));
     }
     if (batch.length === 0) return;
-    // A prompt made while pi settles the ended run is deferred into that settle, where a veto would throw.
-    if (!session.isStreaming) await session.waitForIdle();
+    // A run can end while the notes go back, and a prompt made while pi settles it runs inside that settle, unseen by `batchInPi`.
+    const settling = this.piSettling(session);
+    if (settling) await settling;
     if (this.batchWithdrawn(session, batch)) return;
-    await session.prompt(text, {
-      streamingBehavior: "steer",
-      // Every message in it already passed the input handlers when it was queued.
-      source: "extension",
-      ...(images.length > 0 ? { images } : {}),
-      preflightResult: (disposition) => this.admitSteer(session, batch, disposition),
-    });
+    this.batchInPi = batch;
+    let dispositioned = false;
+    try {
+      await session.prompt(text, {
+        streamingBehavior: "steer",
+        // Every message in it already passed the input handlers when it was queued.
+        source: "extension",
+        ...(images.length > 0 ? { images } : {}),
+        preflightResult: (disposition) => {
+          dispositioned = true;
+          if (this.batchInPi === batch) this.batchInPi = null;
+          this.admitSteer(session, batch, disposition);
+        },
+      });
+    } finally {
+      if (this.batchInPi === batch) this.batchInPi = null;
+      // pi refused a batch a Stop had left to its verdict, so nothing committed it.
+      if (!dispositioned && this.stoppedBatch === batch) this.returnStoppedBatch(true);
+    }
   }
 
-  /** Puts one follow-up back with the content it was queued with, unless a stop withdrew it while pi ran the input handlers. */
+  /** Puts one follow-up back with the content it was queued with; one a Stop overtook in pi's hands is sent and stopped, or returned (`queued`). */
   private requeueFollowUp(session: AgentSession, queued: RequeuedFollowUp): void {
+    let dispositioned = false;
     void session
       .prompt(queued.text, {
         expandPromptTemplates: false,
@@ -1655,33 +2153,67 @@ export class PiSession implements ChatSession {
         source: "extension",
         ...(queued.images.length > 0 ? { images: [...queued.images] } : {}),
         preflightResult: (disposition) => {
-          if (!queued.withdrawn()) return;
-          if (disposition === "started") throw new WithdrawnSteerError();
+          dispositioned = true;
+          queued.dispatched();
+          if (disposition === "started") this.runStarted(session);
+          if (queued.stopped()) {
+            if (disposition === "started") {
+              const onCommitted = queued.release();
+              this.stopRunAtStart(session);
+              const watch = watchPromptEntry(session, (entry) => {
+                watch.dispose();
+                onCommitted(entry);
+              });
+              watch.preflightResult(disposition);
+            } else if (disposition === "queued") {
+              queued.giveBack();
+              this.takeBackQueued(session, queued.text);
+            } else {
+              queued.release();
+            }
+            return;
+          }
+          if (!queued.withdrawn()) {
+            if (disposition === "queued") this.queueHookContext(session, queued.hookContext, "followUp");
+            if (disposition === "started") this.steerRunStartContext(session, queued.hookContext);
+            return;
+          }
+          if (disposition === "started") this.stopRunAtStart(session);
           if (disposition === "queued") this.takeBackQueued(session, queued.text);
         },
       })
       .catch((err) => {
-        if (!(err instanceof WithdrawnSteerError)) log("[PiSession] re-queueing a preserved follow-up failed: %O", err);
+        log("[PiSession] re-queueing a preserved follow-up failed: %O", err);
+        if (dispositioned) return;
+        // pi refused it outright, so nothing committed it.
+        const stopped = queued.stopped();
+        queued.dispatched();
+        if (stopped) queued.giveBack();
       });
   }
 
-  /**
-   * pi's last word before a steered batch takes effect, after every input and `before_agent_start`
-   * handler, whatever their order and whichever extension registered them: it calls `preflightResult`
-   * synchronously right after queueing the batch into the running run (`queued`), right before opening
-   * a run with it when the run ended while those handlers ran (`started`), or once an extension command
-   * or input handler consumed it (`handled`), which queues and runs nothing. A batch a stop withdrew
-   * meanwhile is taken back out of the queue, or refused by throwing, which `prompt()` propagates
-   * before `_runAgentPrompt` starts the run.
-   */
+  /** pi's verdict on a steered batch, after every input and `before_agent_start` handler (docs/invariants.md, "A stopped run delivers nothing more"). */
   private admitSteer(session: AgentSession, batch: readonly QueuedInput[], disposition: PromptDisposition): void {
     const opensRun = disposition === "started";
+    if (opensRun) this.runStarted(session);
     if (this.batchWithdrawn(session, batch)) {
+      const leftToPi = this.stoppedBatch === batch;
       if (opensRun) {
-        session.clearQueue();
-        throw new WithdrawnSteerError();
+        this.stopRunAtStart(session);
+        if (leftToPi) {
+          this.stoppedBatch = null;
+          this.emitBatchProcessed(batch);
+          // The stopped turn's adapter skips the delivery, so the batch's entry gets its mid-stream marker here.
+          const watch = watchPromptEntry(session, (entry) => {
+            watch.dispose();
+            this.recordMidStreamMarker(entry.id);
+          });
+          watch.preflightResult(disposition);
+        }
+        return;
       }
       if (disposition === "queued") this.takeBackQueued(session);
+      if (leftToPi) this.returnStoppedBatch(disposition === "queued");
       return;
     }
     if (disposition === "handled") {
@@ -1691,6 +2223,9 @@ export class PiSession implements ChatSession {
       return;
     }
     this.steeredCount = batch.length;
+    const contexts = batch.flatMap((input) => (input.hookContext ? [input.hookContext] : [])).join("\n\n");
+    if (opensRun) this.steerRunStartContext(session, contexts);
+    else this.queueHookContext(session, contexts, "steer");
     // No `sendMessage` opened this run, so nothing else marks the session working while it streams.
     if (opensRun) this.adapter.beginTurn();
   }
@@ -1698,6 +2233,24 @@ export class PiSession implements ChatSession {
   /** Whether an ESC, a budget stop or a session replacement took `batch` back while it was being steered. */
   private batchWithdrawn(session: AgentSession, batch: readonly QueuedInput[]): boolean {
     return this.runtime?.session !== session || batch.some((queued, i) => this.queuedInputs[i] !== queued);
+  }
+
+  /** The batch a Stop left to pi's verdict ends without a run: back to the composer, or only off the queue when an input handler consumed it. */
+  private returnStoppedBatch(returnToInput: boolean): void {
+    const batch = this.stoppedBatch ?? [];
+    this.stoppedBatch = null;
+    for (const { id } of batch) this.emit({ type: "queueCancelled", messageId: id, ...(returnToInput ? { returnToInput: true } : {}) });
+  }
+
+  /** The webview collapses the batch's chips into the one message pi delivered. */
+  private emitBatchProcessed(batch: readonly QueuedInput[]): void {
+    const blocks = batch.flatMap((q) => (typeof q.content === "string" ? [] : q.content));
+    this.emit({
+      type: "queueBatchProcessed",
+      messageIds: batch.map((q) => q.id),
+      combinedContent: batch.map((q) => q.text).join("\n\n"),
+      ...(blocks.length > 0 ? { contentBlocks: blocks } : {}),
+    });
   }
 
   /** The cancel notes among pi's undelivered steers, matched one for one so a batch whose text equals a note stays a batch. */
@@ -1738,15 +2291,7 @@ export class PiSession implements ChatSession {
     // Inputs queued after the delivered batch was steered stay held for the re-steer they requested.
     const delivered = this.queuedInputs.splice(0, this.steeredCount ?? this.queuedInputs.length);
     this.steeredCount = null;
-    const messageIds = delivered.map((q) => q.id);
-    const combinedContent = delivered.map((q) => q.text).join("\n\n");
-    const blocks = delivered.flatMap((q) => (typeof q.content === "string" ? [] : q.content));
-    this.emit({
-      type: "queueBatchProcessed",
-      messageIds,
-      combinedContent,
-      ...(blocks.length > 0 ? { contentBlocks: blocks } : {}),
-    });
+    this.emitBatchProcessed(delivered);
     // The adapter resolves the committed entry id at the next assistant message_start (the delivery
     // event fires before pi persists the entry) and calls back into recordMidStreamMarker.
     return true;
@@ -1775,24 +2320,35 @@ export class PiSession implements ChatSession {
    * every chip goes back to the composer, and each note pi held is dropped with its echo corrected.
    */
   private withdrawQueue(session: AgentSession | undefined, noteDropped: string): void {
-    this.returnQueue(session);
+    this.returnQueue(session, false);
     this.dropEchoedNotes(noteDropped);
   }
 
-  /** Every chip, and every prompt pi queued, goes back to the composer, and pi's queue is dropped. */
-  private returnQueue(session: AgentSession | undefined): void {
+  /** Every chip and queued prompt goes back and pi's queue is dropped; unless `left`, a batch pi holds waits for its verdict. */
+  private returnQueue(session: AgentSession | undefined, left: boolean): void {
     this.steeredCount = null;
-    const withdrawn = [...this.queuedInputs, ...this.screeningInputs];
+    const inPi = this.batchInPi;
+    const queued = [...(this.stoppedBatch ?? []), ...this.queuedInputs, ...this.screeningInputs, ...this.heldInputs, ...this.afterSettleInputs];
+    if (left) this.stoppedBatch = null;
+    else if (!this.stoppedBatch && inPi && inPi.every((input, i) => this.queuedInputs[i] === input)) this.stoppedBatch = inPi;
     this.queuedInputs = [];
     this.screeningInputs = [];
-    for (const { id } of withdrawn) this.emit({ type: "queueCancelled", messageId: id, returnToInput: true });
-    if (session) this.dropQueue(session);
+    this.heldInputs = [];
+    this.afterSettleInputs = [];
+    // Kills every hook still screening a message just taken back; a message queued from here on is screened under the new signal.
+    this.screening.abort();
+    this.screening = new AbortController();
+    for (const input of queued) {
+      if (!this.stoppedBatch?.includes(input)) this.emit({ type: "queueCancelled", messageId: input.id, returnToInput: true });
+    }
+    if (session) this.dropQueue(session, left);
   }
 
-  /** Drops pi's queue for a run that delivers nothing more; each prompt pi held goes back to the composer. */
-  private dropQueue(session: AgentSession): void {
+  /** Drops pi's queue for a run that delivers nothing more; each prompt pi held goes back, unless `left` not one pi re-queues now. */
+  private dropQueue(session: AgentSession, left = false): void {
+    this.runStartContexts = this.runStartContexts.filter((context) => context.session !== session);
     session.clearQueue();
-    this.queuedPrompts.withdraw(session);
+    this.queuedPrompts.withdraw(session, !left);
   }
 
   /**
@@ -1806,7 +2362,7 @@ export class PiSession implements ChatSession {
       this.dropQueue(session);
       return;
     }
-    const { steering, followUp } = session.clearQueue();
+    const { steering, followUp } = this.clearQueueForPutBack(session);
     // A withdrawn batch needs no removal: the next pass puts back only the notes among the steers.
     if (withdrawnFollowUp !== undefined) {
       const index = followUp.lastIndexOf(withdrawnFollowUp);
@@ -1888,6 +2444,7 @@ export class PiSession implements ChatSession {
         }
         const startsRun = disposition === "started";
         const target = session();
+        if (startsRun && target) this.runStarted(target);
         // A stop can land while pi runs its input handlers, after the queue this note just joined was cleared.
         const withdrawn = startsRun ? null : this.noteRefusal(target);
         if (withdrawn) {
@@ -1954,12 +2511,11 @@ export class PiSession implements ChatSession {
   }
 
   /**
-   * End the running turn for the turn lifecycle, as a Stop does: refuse a prompt that has not opened its
-   * run, set the turn idle and abandon the calls pi has not started. The caller tells the webview through
-   * `publishTurnStopped`. Returns what the turn-stopped record needs once the run has settled.
+   * End the running turn as a Stop does: stop every send, set the turn idle and abandon the calls pi has not started.
+   * The caller tells the webview (`publishTurnStopped`); the result is what the turn-stopped record needs.
    */
-  private stopTurn(): StoppedTurn {
-    this.stopPromptBeforeRun();
+  private stopTurn(leaving = false): StoppedTurn {
+    this.stopSends(leaving);
     this._aborting = true;
     this.processingFlag = false;
     this.setTurnState("idle", { kind: "cancelled" });
@@ -2009,17 +2565,8 @@ export class PiSession implements ChatSession {
     void pending.finally(() => {
       if (this.abortPromise === pending) this.abortPromise = null;
     });
+    if (session) this.stopWindDownWatch(session);
     return pending;
-  }
-
-  /**
-   * Keep a prompt that has not opened its run yet from ever reaching the model. pi's `abort()` does
-   * nothing until the run exists, so a prompt held in `before_agent_start` (the Always-loaded MCP wait)
-   * is released here and refused by its `preflightResult` when the epoch moved.
-   */
-  private stopPromptBeforeRun(): void {
-    this.abortEpoch++;
-    this.mcpStartupWaitAbort?.abort();
   }
 
   async cancelAutoCompact(): Promise<void> {
@@ -2032,7 +2579,7 @@ export class PiSession implements ChatSession {
    * pi's `compaction_start`/`compaction_end` events into the existing webview compaction messages.
    */
   /** `onAccepted` runs once the compaction is accepted, before anything it reports; a refusal never calls it. */
-  async compact(instructions?: string, onAccepted?: () => void): Promise<void> {
+  async compact(instructions?: string, onAccepted?: () => void, target?: string): Promise<void> {
     if (this.processingFlag || this.compacting) {
       this.emit({ type: "notification", message: t("Finish or stop the current turn before compacting."), notificationType: "warning" });
       return;
@@ -2041,18 +2588,38 @@ export class PiSession implements ChatSession {
     // with the normal "already in progress" notice instead of racing into pi's raw "Agent is already
     // processing" error on the shared session.
     this.compacting = true;
+    const beforePi = new AbortController();
+    this.compactionBeforePi = beforePi;
     try {
       try {
         await this.ensureStarted();
+        if (this.resetPromise) await this.afterReplacements();
       } catch (err) {
         this.emit({ type: "error", message: t("pi failed to start: {0}", err instanceof Error ? err.message : String(err)) });
         return;
       }
-      if (this.resetPromise) await this.resetPromise;
       if (this.abortPromise) await this.abortPromise;
+      const waitedOn = this.runtime?.session;
+      // pi's `compact()` aborts and waits for idle first, which returns at once while it settles a run (agent-session.js:2202, :1954-1956).
+      const settling = waitedOn ? this.piSettling(waitedOn, beforePi.signal) : null;
+      if (settling) await settling;
+      if (beforePi.signal.aborted) {
+        // Only a Stop keeps the conversation this compaction was asked for on screen.
+        if (waitedOn && this.runtime?.session === waitedOn) this.emit({ type: "compactionAborted", trigger: "manual", willRetry: false, timestamp: Date.now() });
+        return;
+      }
+      // pi's `compact()` aborts the run it finds open (agent-session.js:2202), one no send opened included.
+      if (this.runOf(waitedOn)?.streaming) {
+        this.emit({ type: "notification", message: t("Finish or stop the current turn before compacting."), notificationType: "warning" });
+        return;
+      }
       const session = this.runtime?.session;
       if (!session) {
         this.emit({ type: "error", message: t("Failed to initialize pi session") });
+        return;
+      }
+      if (!this.sendsTo(session, target)) {
+        this.returnPrompt(instructions ? `/compact ${instructions}` : "/compact", undefined, "conversationChanged");
         return;
       }
       const readOnly = this.readOnlyRefusal();
@@ -2062,6 +2629,8 @@ export class PiSession implements ChatSession {
       }
       onAccepted?.();
       const trimmed = instructions?.trim();
+      // From here a Stop aborts the compaction through pi (`abort()` runs `abortCompaction()`, agent-session.js:1947).
+      this.compactionBeforePi = null;
       try {
         await session.compact(trimmed && trimmed.length > 0 ? trimmed : undefined);
       } catch (err) {
@@ -2079,7 +2648,9 @@ export class PiSession implements ChatSession {
         }
       }
     } finally {
+      if (this.compactionBeforePi === beforePi) this.compactionBeforePi = null;
       this.compacting = false;
+      this.sendAfterSettle();
     }
   }
 
@@ -2158,14 +2729,14 @@ export class PiSession implements ChatSession {
   }
 
   reset(): void {
-    this.stopPromptBeforeRun();
+    this.stopSends(true);
     this.dropPendingOpenAIPick();
     this.processingFlag = false;
     // The replacement session disposes the old one, which aborts whatever turn it was running.
     this.setTurnState("idle", { kind: "cancelled" });
     this._budgetStopRequested = false;
     // The old run streams until the replacement aborts it, so its queue is dropped here and every message goes back.
-    this.returnQueue(this.runtime?.session);
+    this.returnQueue(this.runtime?.session, true);
     this.queuedPrompts.withdraw();
     // The replaced session takes its undelivered notes with it, so nothing here can shadow a later batch.
     this.injectedNotes = [];
@@ -2184,6 +2755,8 @@ export class PiSession implements ChatSession {
     // fork target is retired the same way — otherwise `pendingSessionId` keeps naming a branch this
     // panel has let go of, and after a detach that means reporting a session id whose file is gone.
     this.resumeSessionId = null;
+    this.resumeRequest?.settle(RESUME_CANCELLED);
+    this.resumeRequest = null;
     if (this.options.forkContext) this.options.forkContext.consumed = true;
     this.syncSessionLeases();
     this.titleGenerationAttempted = false;
@@ -2227,13 +2800,20 @@ export class PiSession implements ChatSession {
       .then(() => modelSwitch)
       .then(() => checkpoints?.drain(CHECKPOINT_DRAIN_MS))
       .then(async () => {
-        // A dispose that began meanwhile tears the runtime down with the old session, so nothing is created on it.
-        if (this._disposed) return;
+        // A dispose that began meanwhile tears the runtime down with the old session, so nothing is created on it,
+        // and a runtime an earlier failed replacement released builds nothing either.
+        if (this._disposed || this.runtime !== runtime) return;
+        const left = runtime.session;
         const replacing = runtime.newSession();
         this.piReplacement = replacing.then(() => undefined, () => undefined);
         try {
           const { cancelled } = await replacing;
           if (cancelled) throw new Error("session replacement was cancelled");
+        } catch (err) {
+          if (await this.releaseIfTornDown(runtime, left)) {
+            void this.options.platform.notifications.error(t("Damocles could not open a new conversation: {0}", err instanceof Error ? err.message : String(err)));
+          }
+          throw err;
         } finally {
           this.piReplacement = null;
         }
@@ -2242,8 +2822,8 @@ export class PiSession implements ChatSession {
     // callers while never surfacing as an unhandled rejection when nobody awaits it.
     replacement.catch((err) => {
       log("[PiSession] reset newSession failed: %O", err);
-      // The old session stays installed and writable, so it reports to the webview again unless a later reset or a rebind took over.
-      if (this.resetPromise === replacement && this.unsubscribe === null && !this._disposed) this.subscribeEvents(runtime.session);
+      // A replacement that failed before pi's teardown leaves the old session installed and writable, so it reports to the webview again unless a later reset or a rebind took over.
+      if (this.resetPromise === replacement && this.unsubscribe === null && !this._disposed && this.runtime === runtime) this.subscribeEvents(runtime.session);
     });
     this.resetPromise = replacement;
   }
@@ -2268,13 +2848,12 @@ export class PiSession implements ChatSession {
     const reviewSettled = this.chatReview.dispose();
     this.worktree.dispose();
     // Before `_disposed`, which silences `emit`: nothing queued or still on its way to pi was sent, so it goes back to the composer.
-    this.returnQueue(this.runtime?.session);
-    for (const returnUnsent of this.unacceptedSends) returnUnsent();
+    this.returnQueue(this.runtime?.session, true);
+    this.stopSends(true);
     this._disposed = true;
     // Before any await, so no queued switch binds a session on the runtime this tears down.
     for (const queued of this.queuedSwitches) queued.cancelled = true;
-    // A prompt pi's input handlers still hold is refused when they release it, whether or not the runtime is still installed.
-    this.stopPromptBeforeRun();
+    this.resumeRequest?.settle(RESUME_CANCELLED);
     // Closing the handle is what kills whatever this panel's shells left running: the job object's
     // kill-on-close on Windows, the EOF the sentinel is waiting for on POSIX.
     this.shellJob?.dispose();
@@ -2334,6 +2913,30 @@ export class PiSession implements ChatSession {
     await teamSealed;
     // A folder's release, and a worktree's removal after it, wait for the closing sessions, so the review's last git read there ends first.
     await reviewSettled;
+    await this.releaseRuntime();
+    this.releaseBrowserScopes();
+  }
+
+  /** A replacement that rejected after pi tore `left` down (agent-session-runtime.js:102-127 in pi-coding-agent 1.3.0) left this chat no live session, so the runtime goes and the next start builds one. */
+  private async releaseIfTornDown(runtime: AgentSessionRuntime, left: AgentSession): Promise<boolean> {
+    if (this._disposed || this.runtime !== runtime || !this.tornDown.has(left)) return false;
+    await this.releaseRuntime();
+    this.startPromise = null;
+    this.publishSessionState();
+    return true;
+  }
+
+  /** Release the runtime with its session, registrations, subscription, checkpoint service and lease; a release in flight is joined. */
+  private releaseRuntime(): Promise<void> {
+    this.runtimeRelease ??= this.runReleaseRuntime().finally(() => {
+      this.runtimeRelease = null;
+    });
+    return this.runtimeRelease;
+  }
+
+  private async runReleaseRuntime(): Promise<void> {
+    this.unsubscribe?.();
+    this.unsubscribe = null;
     // Unregistered before the runtime is disposed, so no new hook can look the checkpoint service up; the
     // runtime emits `session_shutdown` to the extension runner, and a handler on that still needs a live
     // checkpoint service, so the service is only torn down after.
@@ -2344,7 +2947,8 @@ export class PiSession implements ChatSession {
     try {
       // The runtime owns the AgentSession it created via the factory and disposes it here; the
       // session was never registered with the folder runtime (createSession), so there is nothing to forget.
-      await this.runtime?.dispose();
+      // A session pi already tore down got its `session_shutdown`; runtime.dispose only repeats that teardown (agent-session-runtime.js:102-113, :296-303 in pi-coding-agent 1.3.0).
+      if (this.runtime && !this.tornDown.has(this.runtime.session)) await this.runtime.dispose();
     } catch (err) {
       log("[PiSession] dispose failed: %O", err);
     }
@@ -2353,7 +2957,6 @@ export class PiSession implements ChatSession {
     this.syncSessionLeases();
     this.checkpointService?.dispose();
     this.checkpointService = null;
-    this.releaseBrowserScopes();
   }
 
   /** Reclaim every browser tab scope this session handed out, closing the tabs failed agents left open
@@ -2573,7 +3176,7 @@ export class PiSession implements ChatSession {
 
   /** The only report of the chat's model to the panel, which shows no model this session did not commit. */
   private publishModel(): void {
-    if (!this._disposed && this.modelValue) this.options.onModelChange?.(this.modelValue);
+    if (!this._disposed && this.modelValue) this.options.onModelChange?.(this.modelValue, this.contextWindowForCurrentModel());
   }
 
   async getSupportedModels(): Promise<ModelInfo[]> {
@@ -2658,13 +3261,14 @@ export class PiSession implements ChatSession {
     return file !== undefined && existsSync(file);
   }
 
-  private announceSessionId(sessionId: string): void {
+  /** `resumed`: the session is a stored conversation a resume opened. */
+  private announceSessionId(sessionId: string, resumed: boolean): void {
     this.worktree.ensureEntry();
     this.worktree.refreshGit();
     this.worktree.publish();
     const stored = this.hasSessionFile();
     this.announcedStoredId = stored ? sessionId : null;
-    this.options.onSessionIdChange?.(sessionId, stored);
+    this.options.onSessionIdChange?.(sessionId, stored, resumed);
   }
 
   /** pi writes a new conversation's file when it commits the first prompt, which a turn ending always follows. */
@@ -2739,36 +3343,84 @@ export class PiSession implements ChatSession {
     this.publishSessionState();
   }
 
+  replayLiveAgents(sessionId: string): void {
+    if (this.runtime?.session.sessionId !== sessionId) return;
+    this.subagentManager?.replayLive();
+  }
+
   setResumeSession(sessionId: string | null): void {
+    const previous = this.resumeRequest;
+    // The stored conversation the panel holds, or the one before a target superseded before pi bound it, is what it goes back to.
+    const prior = previous && !previous.settled ? previous.prior : this.storedSessionId;
+    const request = sessionId === null ? null : resumeRequestFor(sessionId, prior, !this.runtime && !this.startPromise);
+    this.resumeRequest = request;
     this.resumeSessionId = sessionId;
     this.syncSessionLeases();
+    // A queued switch settles its own request; one waiting for a start is let go of here.
+    if (previous && ![...this.queuedSwitches].some((queued) => queued.request === previous)) previous.settle(RESUME_CANCELLED);
     // Before start the target is the stored session id; a started panel republishes when its switch rebinds.
     if (!this.runtime) this.publishSessionState();
-    // `start()` honors the target on a not-yet-started panel. If the runtime is already live on a
-    // different session (the resumeSession message can land on a running panel), switch it to the
-    // resume target now. Chained onto resetPromise so a following sendMessage awaits the switch.
-    if (sessionId && this.runtime && this.currentSessionId !== sessionId) {
+    if (request) this.queueResumeSwitch(request);
+  }
+
+  async openResumeTarget(sessionId: string): Promise<ResumeOutcome> {
+    const request = this.resumeRequest;
+    if (request?.sessionId !== sessionId) return RESUME_CANCELLED;
+    if (request.atStart) return RESUME_DEFERRED;
+    // A started panel has queued the switch; a start under way queues it at its end, or settles the request when it fails.
+    return request.outcome;
+  }
+
+  /**
+   * Switch the live runtime to `request`'s stored session, chained onto resetPromise so a following send awaits the switch.
+   * A panel that has not started opens it in `start()` instead.
+   */
+  private queueResumeSwitch(request: ResumeRequest): void {
+    const runtime = this.runtime;
+    if (!runtime) return;
+    let stopped: StoppedTurn | null = null;
+    if (runtime.session.sessionId !== request.sessionId) {
       // Synchronous, so a send made after this call is not taken for the prompt the switch replaces.
       // Leaving a running turn is a Stop; the switch records it in the old file.
-      let stopped: StoppedTurn | null = null;
       if (this.turnRunning) {
-        stopped = this.stopTurn();
+        stopped = this.stopTurn(true);
         this.publishTurnStopped();
       } else {
-        this.stopPromptBeforeRun();
+        this.stopSends(true);
       }
       this.dropPendingOpenAIPick();
       // Nothing queued in this conversation may reach the next one, and the transcript its echoes stood in is replaced.
-      this.returnQueue(this.runtime.session);
+      this.returnQueue(runtime.session, true);
       this.injectedNotes = [];
-      // The lease sync above already ran, so a lease refused there marks the switch here.
-      const target: QueuedSwitch = { sessionId, cancelled: this.lostLeases.has(sessionId) };
-      this.queuedSwitches.add(target);
-      this.resetPromise = (this.resetPromise ?? Promise.resolve())
-        .then(() => this.switchToResumeTarget(target, stopped))
-        .then(() => undefined)
-        .catch((err) => log("[PiSession] resume switch failed: %O", err));
     }
+    // The lease sync already ran, so a lease refused there marks the switch here.
+    const target: QueuedSwitch = { sessionId: request.sessionId, request, cancelled: this.lostLeases.has(request.sessionId) };
+    this.queuedSwitches.add(target);
+    this.resetPromise = (this.resetPromise ?? Promise.resolve())
+      .then(() => this.switchToResumeTarget(target, stopped))
+      .then((outcome) => this.settleResume(request, outcome), (err: unknown) => this.settleResume(request, resumeFailure(err)));
+  }
+
+  /**
+   * Settle `request`, telling the user when it failed. When pi bound none of it, the panel goes back to the stored
+   * conversation it held before, unless another target superseded it meanwhile: a live runtime holds its own session, which
+   * that conversation is or nothing is; with no runtime the next start reopens that conversation. A target the open showed
+   * before the start stays the one the next start opens (docs/invariants.md, "A start, or a replacement that fails after pi tore its session down").
+   */
+  private settleResume(request: ResumeRequest, outcome: ResumeOutcome): void {
+    if (request.settled) return;
+    if (outcome.kind === "failed") {
+      log("[PiSession] resume of %s failed: %s", request.sessionId, outcome.reason);
+      void this.options.platform.notifications.error(t("This conversation could not be opened: {0}", outcome.reason));
+    }
+    request.settle(outcome);
+    if (outcome.kind === "switched" || this.resumeRequest !== request) return;
+    this.resumeRequest = null;
+    if (!request.atStart) {
+      this.resumeSessionId = this.runtime && this.runtime.session.sessionId !== request.prior ? null : request.prior;
+      this.syncSessionLeases();
+    }
+    this.publishSessionState();
   }
 
   /**
@@ -2778,40 +3430,56 @@ export class PiSession implements ChatSession {
    * The stopped run is aborted only once the target resolved, so its subagents and team stop as a
    * `shutdown` only when the switch goes ahead; until then pi can still stream into it.
    */
-  private async switchToResumeTarget(target: QueuedSwitch, stopped: StoppedTurn | null): Promise<void> {
+  private async switchToResumeTarget(target: QueuedSwitch, stopped: StoppedTurn | null): Promise<ResumeOutcome> {
     const { sessionId } = target;
     try {
       const runtime = this.runtime;
-      if (!runtime) return;
+      if (!runtime) {
+        // An earlier failed replacement released the runtime, so a start opens the target.
+        if (target.cancelled) return RESUME_CANCELLED;
+        await this.ensureStarted();
+        return !target.cancelled && this.runtime?.session.sessionId === sessionId ? RESUME_SWITCHED : RESUME_CANCELLED;
+      }
+      if (runtime.session.sessionId === sessionId) return target.cancelled ? RESUME_CANCELLED : RESUME_SWITCHED;
       const filePath = await resolvePiSessionFile(this.cwd, sessionId);
-      if (!filePath) log("[PiSession] resume target %s not found on disk", sessionId);
       // Opening can rewrite the file (a format migration), so a target this panel let go of is never opened.
-      if (!filePath || target.cancelled) return;
+      if (target.cancelled) return RESUME_CANCELLED;
+      if (!filePath) return { kind: "failed", reason: t("its file was not found") };
       await this.retireAgents(runtime.session, stopped);
       // Before the switch: a switch that fails or is cancelled leaves the old session bound, and the retired agents are known only from their files.
       this.interruptionCheckPending = true;
       this.undeliveredScanPending = true;
       // The panel can let go of the target while the retired agents settle.
-      if (target.cancelled) return;
+      if (target.cancelled) return RESUME_CANCELLED;
       // The file's header names the folder it was created in, which a hand-off leaves behind (rule 2).
       this.switchedFromOtherDir = folderKey(path.dirname(filePath)) === folderKey(piSessionDir(this.cwd)) ? null : filePath;
+      this.runningSwitch = target;
+      const left = runtime.session;
       const switching = runtime.switchSession(filePath, { cwdOverride: this.cwd });
       this.piReplacement = switching.then(() => undefined, () => undefined);
       let cancelled: boolean;
       try {
         ({ cancelled } = await switching);
+      } catch (err) {
+        // Sent back (as `settleResume` does) before the release, so the conversation the chat goes back to keeps its lease throughout.
+        if (this.resumeRequest === target.request && !target.request.atStart && this.tornDown.has(left)) this.resumeSessionId = target.request.prior;
+        await this.releaseIfTornDown(runtime, left);
+        throw err;
       } finally {
         this.switchedFromOtherDir = null;
+        this.runningSwitch = null;
       }
-      // The rebind callback re-subscribed the adapter + re-registered the panel, unless a dispose began meanwhile;
-      // seed the meter from the now-current resumed session.
-      if (!cancelled && !this._disposed) {
-        // The factory may have moved the panel onto the switched-in session's recorded model.
-        this.publishAccountInfo();
-        this.seedResumedUsage();
-        // The switched-in session reads the current tool set on build, so a deferred reload is moot.
-        this.mcpReloadPendingAfterTurn = false;
-      }
+      // A session_before_switch handler refused the switch, which left the old session bound.
+      if (cancelled) return { kind: "failed", reason: t("an extension cancelled opening it") };
+      // The rebind callback re-subscribed the adapter + re-registered the panel, unless a dispose began meanwhile.
+      if (this._disposed) return RESUME_CANCELLED;
+      // Seed the meter from the now-current resumed session.
+      this.seedResumedUsage();
+      // The switched-in session reads the current tool set on build, so a deferred reload is moot.
+      this.mcpReloadPendingAfterTurn = false;
+      if (target.cancelled) return RESUME_CANCELLED;
+      // pi opens a file that went missing after the lookup as a new conversation (session-manager.js:685-689 in pi-coding-agent 1.3.0).
+      return this.runtime?.session.sessionId === sessionId ? RESUME_SWITCHED : { kind: "failed", reason: t("its file was not found") };
     } finally {
       this.piReplacement = null;
       this.queuedSwitches.delete(target);
@@ -2865,7 +3533,6 @@ export class PiSession implements ChatSession {
    */
   private async maybeGenerateTitle(): Promise<void> {
     if (this.titleGenerationAttempted) return;
-    this.titleGenerationAttempted = true;
     // Fully fail-soft: this runs fire-and-forget, so any throw here must not surface as an unhandled
     // rejection or affect the turn.
     try {
@@ -2873,7 +3540,9 @@ export class PiSession implements ChatSession {
       if (!session || session.sessionManager.getSessionName()) return;
 
       const exchange = firstExchangeForTitle(session);
+      // A prompt that committed nothing (an extension command, a hook block) leaves the attempt to the first exchange.
       if (!exchange) return;
+      this.titleGenerationAttempted = true;
 
       const { sessionId } = session;
       const cwd = this.cwd;
@@ -3015,15 +3684,21 @@ export class PiSession implements ChatSession {
   /**
    * Both sidecars of the entry a prompt committed, written at its commit whether it opened a run or joined one: the
    * count of attachment blocks leading it, and the typed text when the stored text differs. Blocks stay in that
-   * comparison, so a prompt sent with them records its typed text for the rewind list.
+   * comparison, so a prompt sent with them records its typed text for the rewind list. The attachments' images are
+   * recorded only when pi stored every one of the `sentImages` the prompt was given, since an image pi dropped
+   * would make the last ones stored include a typed image.
    */
-  private recordPromptSidecars(session: AgentSession, entry: PromptEntry, broadcast: UserBroadcast): void {
+  private recordPromptSidecars(session: AgentSession, entry: PromptEntry, broadcast: UserBroadcast, sentImages: number): void {
     // A queued prompt commits long after `sendMessage` returned, and a delete or replacement may have come first.
     if (this._disposed || this.runtime?.session !== session) return;
     const count = broadcast.terminalAttachments?.length ?? 0;
+    const images = entry.images === sentImages ? broadcast.attachmentImageCount ?? 0 : 0;
     const typed = broadcast.content.trim();
     try {
-      if (count > 0) session.sessionManager.appendCustomEntry(DAMOCLES_TERMINAL_ATTACHMENTS_ENTRY, { userEntryId: entry.id, count });
+      if (count > 0) {
+        const data: TerminalAttachmentsData = { userEntryId: entry.id, count, ...(images > 0 ? { images } : {}) };
+        session.sessionManager.appendCustomEntry(DAMOCLES_TERMINAL_ATTACHMENTS_ENTRY, data);
+      }
       if (typed && storedTypedText(entry.text, 0).trim() !== typed) {
         session.sessionManager.appendCustomEntry(DAMOCLES_ORIGINAL_INPUT_ENTRY, { userEntryId: entry.id, original: typed });
       }
@@ -3099,6 +3774,14 @@ export class PiSession implements ChatSession {
   private applyActiveToolsForMode(mode: PermissionMode): void {
     const session = this.runtime?.session;
     if (!session) return;
+    if (this.pendingRestoredTools.size > 0) {
+      const deferrable = this.deferrableNow();
+      for (const name of this.pendingRestoredTools) {
+        if (!deferrable.has(name)) continue;
+        this.toolSearchActivated.add(name);
+        this.pendingRestoredTools.delete(name);
+      }
+    }
     const full = activeToolNamesWithDeferral(this.toolStatusDeps(), this.toolSearchActivated);
     if (mode === "plan") {
       const excluded = new Set<string>(PLAN_MODE_EXCLUDED_TOOLS);
@@ -3106,6 +3789,38 @@ export class PiSession implements ChatSession {
       return;
     }
     session.setActiveToolsByName(full);
+  }
+
+  /**
+   * How `read_mcp_resource` reaches this panel's agent for `server`'s resources, from the same eligibility and
+   * active set `applyActiveToolsForMode` applies: active now, loadable through ToolSearch, or not at all; a URI
+   * its tool lists turn off or a deny rule covers cannot be read.
+   */
+  private async mcpResourceReach(server: string): Promise<ResourceReadReach> {
+    const readTool = this.mcpResourceReadTool(server);
+    if (readTool === null) return NO_RESOURCE_READ;
+    const turnedOff = disabledResourceMatcher(this.disabledToolEntries());
+    const rules = await this.options.permissionHandler.mcpResourceRuleFilter(READ_MCP_RESOURCE);
+    return { readTool, unreadable: (uri) => turnedOff(server, uri) || rules.resourceDenied(server, uri) };
+  }
+
+  private mcpResourceReadTool(server: string): ResourceReadReach["readTool"] {
+    if (!(this.mcpClientManager()?.resourceServers() ?? []).some((candidate) => candidate.serverName === server)) return null;
+    if (this.runtime?.session.getActiveToolNames().includes(READ_MCP_RESOURCE)) return "direct";
+    return this.deferrableNow().has(READ_MCP_RESOURCE) ? "deferred" : null;
+  }
+
+  /** The eligible tools ToolSearch may load right now. */
+  private deferrableNow(): Set<string> {
+    const deps = this.toolStatusDeps();
+    return new Set(deferredToolNames(fullActiveToolNamesFrom(deps), mcpDeferrableNames(deps)));
+  }
+
+  /** A newly bound conversation starts from the loadout its transcript recorded, the record pi restores a resumed session from. */
+  private seedRestoredTools(session: AgentSession): void {
+    const { active, pending } = restoredDeferredTools(session.sessionManager.buildSessionContext().messages, this.deferrableNow());
+    for (const name of active) this.toolSearchActivated.add(name);
+    for (const name of pending) this.pendingRestoredTools.add(name);
   }
 
   /** Snapshot the live flags/catalogs the tool-status pure functions consume. */
@@ -3123,6 +3838,7 @@ export class PiSession implements ChatSession {
       mcpEnabled: this.isMcpEnabled(),
       mcpToolNames: this.mcpToolNames(),
       mcpDeferrableToolNames: this.mcpClientManager()?.deferrableToolNames() ?? [],
+      mcpResourceExposure: resourceToolsExposure(this.mcpClientManager()?.resourceServers() ?? []),
       disabled: this.disabledToolSet(),
     };
   }
@@ -3166,8 +3882,9 @@ export class PiSession implements ChatSession {
    */
   deferrableToolsSnapshot(): DeferrableSnapshot {
     const session = this.runtime?.session;
-    const eligible = this.fullActiveToolNames();
-    const names = deferredToolNames(eligible, this.isMcpEnabled() ? (this.mcpClientManager()?.deferrableToolNames() ?? []) : []);
+    const deps = this.toolStatusDeps();
+    const eligible = fullActiveToolNamesFrom(deps);
+    const names = deferredToolNames(eligible, mcpDeferrableNames(deps));
     const pendingMcpServers = (this.mcpClientManager()?.getServerStatuses() ?? [])
       .filter((status) => status.enabled && status.status !== 'connected')
       .map((status) => status.name);
@@ -3202,9 +3919,10 @@ export class PiSession implements ChatSession {
    * Always-loaded tools and are still connecting, so those tools are declared in its first request.
    * Other servers never hold a prompt. A tool whose server connects later is active from the next turn.
    * The folder's own tools-changed listener registers and activates the tools before this wait sees
-   * the change, because it subscribed to the view first.
+   * the change, because it subscribed to the view first. `signal` is the waiting send's, which a Stop,
+   * New chat, resume switch or disposal aborts.
    */
-  async waitForAlwaysLoadedMcp(sessionId: string): Promise<void> {
+  async waitForAlwaysLoadedMcp(sessionId: string, signal: AbortSignal): Promise<void> {
     if (this.mcpStartupWaitedSessionId === sessionId) return;
     this.mcpStartupWaitedSessionId = sessionId;
     const source = this.mcpClientManager();
@@ -3216,23 +3934,17 @@ export class PiSession implements ChatSession {
       notificationType: "info",
       message: pending.length === 1 ? t("Waiting for MCP server {0}", pending[0]!) : t("Waiting for MCP servers {0}", pending.join(", ")),
     });
-    const abort = new AbortController();
-    this.mcpStartupWaitAbort = abort;
-    try {
-      const outcome = await waitForPendingDirectServers(source, abort.signal);
-      log("[PiSession] Always-loaded MCP wait ended: %s", outcome);
-      const late = outcome === "timeout" ? source.pendingDirectServers() : [];
-      if (late.length > 0) {
-        this.emit({
-          type: "notification",
-          notificationType: "info",
-          message: late.length === 1
-            ? t("MCP server {0} is still connecting. Its Always-loaded tools join from the next turn after it connects.", late[0]!)
-            : t("MCP servers {0} are still connecting. Their Always-loaded tools join from the next turn after they connect.", late.join(", ")),
-        });
-      }
-    } finally {
-      if (this.mcpStartupWaitAbort === abort) this.mcpStartupWaitAbort = null;
+    const outcome = await waitForPendingDirectServers(source, signal);
+    log("[PiSession] Always-loaded MCP wait ended: %s", outcome);
+    const late = outcome === "timeout" ? source.pendingDirectServers() : [];
+    if (late.length > 0) {
+      this.emit({
+        type: "notification",
+        notificationType: "info",
+        message: late.length === 1
+          ? t("MCP server {0} is still connecting. Its Always-loaded tools join from the next turn after it connects.", late[0]!)
+          : t("MCP servers {0} are still connecting. Their Always-loaded tools join from the next turn after they connect.", late.join(", ")),
+      });
     }
   }
 
@@ -3268,9 +3980,8 @@ export class PiSession implements ChatSession {
       return;
     }
     // Orphaned. `session.reload()` rebuilds the runtime + resets API providers, so never run it under any
-    // in-flight work — not just an agent run: manual `compact()` aborts first (`!isIdle` false, but
-    // `isCompacting` true), and `processingFlag` is set a tick before `prompt()` flips isIdle. Defer to
-    // next turn.
+    // in-flight work: a run, the `agent_settled` handlers of one, a compaction (`RunLifecycle.busy`), and a send
+    // whose `prompt()` has not opened its run yet (`processingFlag`). Defer to next turn.
     if (this.isSessionBusy(session)) {
       this.mcpReloadPendingAfterTurn = true;
       return;
@@ -3280,7 +3991,7 @@ export class PiSession implements ChatSession {
 
   /** Any turn-level work in flight, so a runtime-rebuilding `session.reload()` must be deferred. */
   private isSessionBusy(session: AgentSession): boolean {
-    return this.processingFlag || this.compacting || !session.isIdle || session.isCompacting;
+    return this.processingFlag || this.compacting || this.runOf(session)?.busy === true;
   }
 
   /**
@@ -3333,10 +4044,15 @@ export class PiSession implements ChatSession {
    * tools whose exposure is `off` in this folder.
    */
   private disabledToolSet(): Set<string> {
-    const list = this.options.platform.settings.get<string[]>("damocles.tools.disabled", []);
-    const disabled = new Set(Array.isArray(list) ? list : []);
+    const disabled = new Set(this.disabledToolEntries());
     for (const name of this.mcpClientManager()?.offToolNames() ?? []) disabled.add(name);
     return disabled;
+  }
+
+  /** `damocles.tools.disabled` as written: tool names, and URI-scoped entries that turn off one resource or a pattern. */
+  private disabledToolEntries(): string[] {
+    const list = this.options.platform.settings.get<unknown>("damocles.tools.disabled", []);
+    return Array.isArray(list) ? list.filter((entry): entry is string => typeof entry === "string") : [];
   }
 
   /** The live `damocles.browser.enabled` flag — the browser service is always wired; this gates it. */
@@ -3595,7 +4311,7 @@ export class PiSession implements ChatSession {
     // The boundary event carries no per-turn message list, so both predicates read the session
     // projection. `turnHasNonErrorExitPlanModeResult` scopes itself to the current turn; `lastAssistant`
     // does not need to, because every run reaching this boundary has appended an assistant message, a
-    // synthetic one even on hard failure (`agent.js:364-380` in pi-agent-core 1.1.0), so the last one is always this turn's.
+    // synthetic one even on hard failure (`agent.js:364-380` in pi-agent-core 1.3.0), so the last one is always this turn's.
     const messages = event.context.contextMessages;
     if (turnHasNonErrorExitPlanModeResult(messages)) return undefined;
     if (lastAssistant(messages)?.stopReason !== "stop") return undefined;
@@ -3629,6 +4345,8 @@ export class PiSession implements ChatSession {
   ): NestedMcpToolset {
     return buildNestedMcpToolset(pi, this.mcpClientManager(), {
       eligible: new Set(this.fullActiveToolNames()),
+      disabledEntries: this.disabledToolEntries(),
+      resourceRuleFilter: (toolName) => this.options.permissionHandler.mcpResourceRuleFilter(toolName),
       ...(opts.disallowed ? { disallowed: opts.disallowed } : {}),
       // A nested session never binds this panel's `ExtensionUIContext`, so its MCP tools would resolve
       // pi's no-op UI and answer every `elicitation/create` with a silent cancel. Handing the per-agent
@@ -3777,6 +4495,10 @@ export class PiSession implements ChatSession {
   /** Live MCP runtime status for the enabled servers; McpManager overlays disabled/imported entries. */
   async getMcpServerStatus(): Promise<McpServerStatusInfo[]> {
     return this.mcpClientManager()?.getServerStatuses() ?? [];
+  }
+
+  mcpUserResources(): McpUserResourcePort | null {
+    return this.folder?.mcpUserResources ?? null;
   }
 
   /**
@@ -4365,7 +5087,7 @@ export class PiSession implements ChatSession {
    * session store or checkpoints. Runs as a nested `createSubagentSession` (own prompt + zero tools), not
    * a main session, so it never carries the Damocles toolset or writes to disk.
    */
-  async sendBtw(btwId: string, question: string): Promise<void> {
+  async sendBtw(btwId: string, question: string, target?: string): Promise<void> {
     try {
       await this.ensureStarted();
     } catch (err) {
@@ -4386,6 +5108,11 @@ export class PiSession implements ChatSession {
     }
 
     const liveSession = this.runtime?.session;
+    // The aside reads the conversation it was asked in, so it is not asked of another.
+    if (liveSession && !this.sendsTo(liveSession, target)) {
+      this.emit({ type: "btwError", btwId, message: t("This chat no longer shows the conversation this question was asked in.") });
+      return;
+    }
     const contextBlock = liveSession ? buildBtwContextBlock(liveSession) : "";
     const prompt = contextBlock ? `<conversation_context>\n${contextBlock}\n</conversation_context>\n\n${question}` : question;
 
@@ -4555,6 +5282,7 @@ export class PiSession implements ChatSession {
         worktreeIsolation: () => this.worktreeIsolation(),
         readOnlyShell: readOnly,
         parentToolUseId: agent.agentId,
+        stopSignal: agent.stopSignal,
         // `buildExtensionFactory` is invoked PER AGENT SPAWN, not once at buildTeamEngine() time, so
         // `teamAgentBaseToolNames()` must be called HERE to read live panel state at spawn. Hoisting it
         // to a buildTeamEngine local would freeze the deferrable set at team-construction time and
@@ -4609,7 +5337,7 @@ export class PiSession implements ChatSession {
       ...PLAN_MODE_TOOLS,
       ...IMAGE_PI_TOOL_NAMES,
     ]);
-    return this.fullActiveToolNames().filter((name) => !exclude.has(name) && !isMcpToolName(name));
+    return this.fullActiveToolNames().filter((name) => !exclude.has(name) && !isNestedMcpName(name));
   }
 
   /**
@@ -4696,10 +5424,11 @@ export class PiSession implements ChatSession {
   }
 
   /** The pi thinking level for the next turn: forced off when bracketed by disableThinkingForNextQuery,
-   * else mapped from the panel's resolved effort for the active model. */
-  private resolveThinkingLevel(): ThinkingLevel {
+   * else mapped from the panel's resolved effort for `model`, as it reads once `recordedLevel` is restored. */
+  private resolveThinkingLevel(model = this.modelValue, recordedLevel?: string): ThinkingLevel {
     if (this.thinkingDisabledNextQuery) return "off";
-    return effortToThinkingLevel(this.options.resolveThinking(this.modelValue));
+    const panel = this.options.resolveThinking(model);
+    return effortToThinkingLevel(recordedLevel === undefined ? panel : { ...panel, ...recordedReasoning(model, recordedLevel) });
   }
 
   private contextWindowForCurrentModel(): number {
@@ -4707,7 +5436,7 @@ export class PiSession implements ChatSession {
     // carries one value per model id, and a GPT model is served by two providers (API key and Codex
     // subscription) whose windows pi has set differently before. Catalog value is the fallback for a
     // not-yet-resolved model (its 272k is the conservative floor).
-    return this.desiredModel?.contextWindow ?? this.getModelInfo(this.modelValue)?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+    return piContextWindow(this.desiredModel) ?? this.getModelInfo(this.modelValue)?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
   }
 
   /**
@@ -4753,7 +5482,7 @@ export class PiSession implements ChatSession {
    * bounded: enforcement fires at `message_end`, which pi emits BEFORE it executes the message's tool
    * calls, so those tools still run — including an `Agent`/`create_team` call that spawns agents this
    * `abortAll()` never saw. Auto-compaction does not add to that: pi reaches `prepareNextTurn` only at
-   * the top of the next inner-loop iteration (`@earendil-works/pi-agent-core@^1.1.0`,
+   * the top of the next inner-loop iteration (`@earendil-works/pi-agent-core@1.3.0`,
    * `agent-loop.ts:185-189`), and a decider answering `{ action: 'end' }` returns from the loop at
    * `:286-291` before it. So the bound is the tool calls of the message that tripped the limit and
    * nothing else.
@@ -4767,7 +5496,7 @@ export class PiSession implements ChatSession {
     this.subagentManager?.abortAll("budget");
     // A queued steer would force one more billed round trip past the limit: the loop itself ends the run
     // without polling, but `_runBeforeSettleBoundary` continues on `hasQueuedMessages()`
-    // (`agent-session.ts:1906` in pi 1.1.0) whatever the decider answered. `queueInput` and the cancel-note delivery
+    // (`agent-session.ts:1996` in pi 1.3.0) whatever the decider answered. `queueInput` and the cancel-note delivery
     // refuse new ones from here on. Restoring a held note would let that continuation drain it and bill
     // past the limit, so its echo is corrected instead of honoured.
     this.withdrawQueue(
@@ -4882,7 +5611,7 @@ export class PiSession implements ChatSession {
   /**
    * Publish the session state to the webview and the panel's activity. The inputs, the turn lifecycle,
    * the prompt maps owned by `PermissionState` and `WebviewExtensionUIContext`, the subagent and team
-   * runs and the stored session id, change independently of each other, so every mutation of one calls
+   * runs, the stored session id and the stopped run's wind-down, change independently of each other, so every mutation of one calls
    * this and nothing else emits `sessionStateChanged` or reports activity. Rebuilt on each call; only a
    * pending prompt's summary is kept, for as long as that prompt is raised.
    */
@@ -4892,11 +5621,12 @@ export class PiSession implements ChatSession {
     const raised = this.raisedPrompts();
     const pendingKinds = [...new Set(raised.map((prompt) => prompt.kind))].sort();
     const state: SessionState = deriveSessionState(this.turnState, pendingKinds.length > 0);
+    const windDown = this.windDown;
     // A prompt's owner never changes while it is pending, so its id stands for the whole entry.
-    const key = `${state}:${sessionId}:${raised.map((prompt) => prompt.id).join(",")}`;
+    const key = `${state}:${sessionId}:${raised.map((prompt) => prompt.id).join(",")}:${JSON.stringify(windDown)}`;
     if (this.lastSessionState !== key) {
       this.lastSessionState = key;
-      this.emit({ type: "sessionStateChanged", state, sessionId, pendingPrompts: pendingPromptOwners(raised) });
+      this.emit({ type: "sessionStateChanged", state, sessionId, pendingPrompts: pendingPromptOwners(raised), ...(windDown ? { windDown } : {}) });
       if (state === "idle") this.worktree.refreshGit();
     }
     this.worktree.publish();
@@ -4986,19 +5716,22 @@ export class PiSession implements ChatSession {
    * renderer. A running chat queues it like any message.
    */
   async submitReview(drafts: readonly DraftComment[]): Promise<ReviewSubmitOutcome> {
+    // The comments are on the changes of the conversation running when they are sent, so only it takes them.
+    const target = this.runtime?.session.sessionId;
     // The review tab keeps the drafts of a send core refuses (D33), so the text never goes to the composer.
     if (this.worktree.finishing() !== undefined) return "unsent";
     const composed = await this.chatReview.compose(drafts);
     if (!composed.ok) return composed.reason === "stale" ? { stale: composed.stale } : composed.reason;
-    if (this.worktree.finishing() !== undefined) return "unsent";
+    if (this.worktree.finishing() !== undefined || this.runtime?.session.sessionId !== target) return "unsent";
     const text = composed.message;
-    if (this.turnRunning) {
+    // A send still on its way to pi holds a queued message for the run it opens.
+    if (this.turnRunning || this.processingFlag) {
       const queued = createQueuedMessage(text);
-      const disposition = this.queueInput(text, queued.id, text);
+      const disposition = this.queueInput(text, queued.id, text, target);
       if (disposition === "queued") this.emit({ type: "messageQueued", message: queued });
-      return disposition === false ? "unsent" : "queued";
+      return disposition === "queued" || disposition === "flushed" ? "queued" : "unsent";
     }
-    const outcome = await this.sendMessage(text, undefined, `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`, { content: text });
+    const outcome = await this.sendMessage(text, target, `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`, { content: text });
     return outcome === "sent" ? "sent" : "unsent";
   }
 

@@ -221,6 +221,22 @@ describe('PiRuntime.init lifecycle', () => {
     expect(refreshA).toHaveBeenCalledTimes(1);
   });
 
+  it('re-applies every folder’s tools when damocles.mcp.resourceExposure changes, whoever wrote it, until disposed', async () => {
+    const runtime = PiRuntime.get('/agent');
+    const a = await runtime.folder('/a');
+    const b = await runtime.folder('/b');
+    const refreshA = vi.spyOn(a, 'refreshActiveTools');
+    const refreshB = vi.spyOn(b, 'refreshActiveTools');
+
+    await fake.settings.update('damocles.mcp.resourceExposure', { docs: 'direct' }, 'user');
+    expect(refreshA).toHaveBeenCalledTimes(1);
+    expect(refreshB).toHaveBeenCalledTimes(1);
+
+    await runtime.dispose();
+    await fake.settings.update('damocles.mcp.resourceExposure', { docs: 'off' }, 'local');
+    expect(refreshA).toHaveBeenCalledTimes(1);
+  });
+
   it('re-applies the custom-provider keys when any of their secrets changes, as another window does', async () => {
     const runtime = PiRuntime.get('/agent');
     await runtime.init();

@@ -14,7 +14,7 @@ import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../..
 import { SESSION_LEASE_DIR, SESSION_LEASE_STALE_MS, releaseSessionLease, sessionLeasePath, sessionLeasesOf, type SessionLeaseHolder } from "../../../../pi-session/session-store/session-lease";
 import { TerminalAttachmentManager } from "../../../terminal-attachment-manager";
 
-vi.mock("../../../../pi-session/session-store", () => ({ renamePiSession: vi.fn(), deletePiSession: vi.fn(), tagPiSession: vi.fn(), resolvePiSessionFile: vi.fn(async () => null) }));
+vi.mock("../../../../pi-session/session-store", () => ({ renamePiSession: vi.fn(), deletePiSession: vi.fn(), tagPiSession: vi.fn(), resolvePiSessionFile: vi.fn(async (_cwd: string, id: string) => `/sessions/${id}.jsonl`) }));
 vi.mock("../../../../pi-session/pi-runtime", () => ({ PiRuntime: { liveSessionMutator: () => undefined } }));
 vi.mock("../../../../logger", () => ({ log: vi.fn() }));
 
@@ -37,6 +37,8 @@ function makeSession(holding: string | null) {
     onSessionReleaseRequested: async () => undefined,
     setPanelToken: vi.fn(),
     setResumeSession: vi.fn((id: string | null) => { resumeTarget = id; }),
+    // Binds the target it still holds, as PiSession does once pi installed it.
+    openResumeTarget: vi.fn(async (id: string) => (resumeTarget === id ? { kind: 'switched' as const } : { kind: 'cancelled' as const })),
     initializeEarly: vi.fn(async () => undefined),
     onWebviewReady: () => undefined,
     getToolStatus: () => ({}),

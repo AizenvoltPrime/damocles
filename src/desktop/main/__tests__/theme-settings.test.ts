@@ -49,4 +49,24 @@ describe('desktop theme settings', () => {
     following.dispose();
     listening.dispose();
   });
+
+  it('carries the file icon theme, reading an unknown value as material, and tells theme listeners when it changes', () => {
+    const settings = fakeSettings({ 'damocles.desktop.fileIconTheme': 'sepia' });
+    const icons: string[] = [];
+    const listening = onThemeChange((theme) => icons.push(theme.fileIconTheme));
+    const following = followThemeSettings(settings);
+    expect(currentTheme().fileIconTheme).toBe('material');
+    expect(icons).toEqual([]);
+
+    settings.values['damocles.desktop.fileIconTheme'] = 'minimal';
+    settings.fire();
+    expect(icons).toEqual(['minimal']);
+    expect(currentTheme().fileIconTheme).toBe('minimal');
+
+    settings.values['damocles.desktop.fileIconTheme'] = 'material';
+    settings.fire();
+    expect(icons).toEqual(['minimal', 'material']);
+    following.dispose();
+    listening.dispose();
+  });
 });

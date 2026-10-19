@@ -19,17 +19,31 @@ import { assetSourceDirs, assetSources, type AssetSourceName } from '../asset-so
 import { HooksConfigService, type DispatchDeps } from './hooks';
 import type { McpClientManager } from './mcp/mcp-client-manager';
 import { FolderMcpView } from './mcp/folder-mcp-view';
-import type { McpToolSource } from './mcp/tool-source';
+import type { McpToolSource, McpUserResourcePort } from './mcp/tool-source';
 import type { McpRenamedToolRuleNotice } from '../../shared/types/mcp';
 import type { McpServerSpec } from './mcp/types';
-import { legacyToCurrentToolNames, migrateRenamedToolRules, type NoticeMemory, type ToolNameList } from './mcp/tool-name-migration';
-import { isMcpToolName } from './mcp/naming';
+import {
+  legacyToCurrentToolNames,
+  migrateRenamedToolRules,
+  noticeForDisplay,
+  retiredResourceToolNames,
+  toolRenames,
+  type AdditionMemory,
+  type FoundRuleNotice,
+  type MigrationMemory,
+  type NoticeMemory,
+  type PersonalToolLists,
+  type ToolNameList,
+} from './mcp/tool-name-migration';
+import { isNestedMcpName } from './mcp/naming';
 import { McpToolRegistrar } from './tools/mcp-tools';
+import { NO_RESOURCE_READ } from './mcp/content';
 import type { PanelGateContext } from './permission-gate';
 import type { CheckpointService } from './checkpoint-service';
 import { WorkspaceAgentRegistry } from './subagents';
 import { TOOL_TOOL_SEARCH } from '../../shared/tool-names';
 import { deferredToolNames, initialActiveToolNames } from './tools/deferred-tools';
+import { restoredDeferredTools } from './tools/restored-tools';
 import { folderKey } from '../workspace-folders/folder-key';
 import { withQueuePolicy } from './queue-policy';
 import type { TrustService } from '../../platform/trust-service';
@@ -100,28 +114,6 @@ export type SubagentSessionStore =
   | { kind: 'reopen'; path: string; agentId: string };
 
 /**
- * The deferred tools a restored transcript had loaded: every successful ToolSearch result's `matches`,
- * plus every tool it called. The set is not persisted, and a fresh session's transcript is empty.
- */
-export function activatedToolsFromMessages(messages: readonly unknown[]): Set<string> {
-  const out = new Set<string>();
-  const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
-  for (const message of messages) {
-    if (!isRecord(message)) continue;
-    if (message['role'] === 'toolResult' && message['toolName'] === TOOL_TOOL_SEARCH && message['isError'] !== true) {
-      const details = message['details'];
-      const matches = isRecord(details) ? details['matches'] : undefined;
-      if (Array.isArray(matches)) for (const name of matches) if (typeof name === 'string') out.add(name);
-    } else if (message['role'] === 'assistant' && Array.isArray(message['content'])) {
-      for (const block of message['content']) {
-        if (isRecord(block) && block['type'] === 'toolCall' && typeof block['name'] === 'string') out.add(block['name']);
-      }
-    }
-  }
-  return out;
-}
-
-/**
  * Whether a session will bind the extension instance this reload mints. `'session-bound'` instances
  * retire themselves on `session_shutdown`; `'bare'` ones never receive it, so the folder runtime retires
  * them when the next reload supersedes them. Stated per call site because the reload itself does
@@ -146,14 +138,18 @@ export interface FolderRuntimeOptions {
   userMcp: McpClientManager;
   /** Builds this folder's own MCP manager, wired like the user one; `reservedToolNames` keeps user tool names stable. */
   createFolderMcp: (reservedToolNames: () => ReadonlySet<string>, shellPath: () => string | undefined) => McpClientManager;
-  /** Which renamed-tool notice entries were already shown, workspace-wide. */
+  /** Which renamed-tool notice entries were already shown, by location and replacement. */
   noticeMemory: NoticeMemory;
-  /** The project scope's `damocles.tools.disabled` and the file it lives in, or null when there is none. */
+  /** Which rules the migration already added beside a rule of an owned file. */
+  additionMemory: AdditionMemory;
+  /** The project scope's `damocles.tools.disabled`, in its file or as a setting where the host keeps no file, or null when it holds none. */
   projectDisabledTools: () => ToolNameList | null;
+  /** `damocles.tools.disabled` at the user scope, and at the local scope in a trusted folder. */
+  personalDisabledTools: (trusted: boolean) => PersonalToolLists;
   /** `inspect()` of `damocles.mcp.toolExposure`, read on every use. */
   toolExposureSetting: () => SettingInspection<unknown>;
-  /** Rename a session, preferring whichever panel holds it live (anti-fork). */
-  renameSession: (sessionId: string, cwd: string, newName: string) => Promise<void>;
+  /** `inspect()` of `damocles.mcp.resourceExposure`, read on every use. */
+  resourceExposureSetting: () => SettingInspection<unknown>;
   trust: TrustService;
   fileWatchers: FileWatcherFactory;
 }
@@ -180,7 +176,6 @@ export class FolderRuntime {
   private readonly _pi: PiCodingAgentModule;
   private readonly _agentDir: string;
   private readonly _modelRuntime: ModelRuntime;
-  private readonly _renameSession: FolderRuntimeOptions['renameSession'];
   private _services: AgentSessionServices | null = null;
   /** Live nested subagent sessions, disposed on completion or on folder dispose. */
   private readonly _subagentSessions = new Set<AgentSession>();
@@ -198,12 +193,13 @@ export class FolderRuntime {
   /** Registers MCP tools into every attached extension instance of this folder (mid-session top-up included). */
   private readonly _mcpRegistrar: McpToolRegistrar;
   private readonly _mcpUnsubscribe: () => void;
-  private readonly _noticeMemory: NoticeMemory;
+  private readonly _ruleMemory: MigrationMemory;
   private readonly _projectDisabledTools: () => ToolNameList | null;
+  private readonly _personalDisabledTools: (trusted: boolean) => PersonalToolLists;
   /** Per-live-session posters of renamed-tool notices, keyed by pi sessionId. */
   private readonly _ruleNoticePosters = new Map<string, (notices: McpRenamedToolRuleNotice[]) => void>();
   /** Notices found while no panel was registered to show them. */
-  private _pendingRuleNotices: McpRenamedToolRuleNotice[] = [];
+  private _pendingRuleNotices: FoundRuleNotice[] = [];
   /** Serializes renamed-tool rule migrations; the signature of the last completed run (trust state and
    *  rename map) skips a rerun with the same inputs. */
   private _ruleMigration: Promise<void> = Promise.resolve();
@@ -254,20 +250,25 @@ export class FolderRuntime {
     this._pi = options.pi;
     this._agentDir = options.agentDir;
     this._modelRuntime = options.modelRuntime;
-    this._renameSession = options.renameSession;
     this._trust = options.trust;
     this._fileWatchers = options.fileWatchers;
-    this._noticeMemory = options.noticeMemory;
+    this._ruleMemory = { notices: options.noticeMemory, additions: options.additionMemory };
     this._projectDisabledTools = options.projectDisabledTools;
+    this._personalDisabledTools = options.personalDisabledTools;
     this._folderMcp = options.createFolderMcp(
       () => this._mcpView.reservedToolNames(),
       () => this._services?.settingsManager.getShellPath(),
     );
     this._mcpView = new FolderMcpView(options.userMcp, this._folderMcp, () => ({
       inspection: options.toolExposureSetting(),
+      resourceInspection: options.resourceExposureSetting(),
       trusted: options.trust.isTrusted(options.cwd),
     }));
-    this._mcpRegistrar = new McpToolRegistrar(options.pi, this._mcpView);
+    // A call from a session with no registered panel gets no read hint, so a link never names a tool its caller may lack.
+    this._mcpRegistrar = new McpToolRegistrar(options.pi, this._mcpView, (ctx) => {
+      const sessionId = ctx?.sessionManager?.getSessionId();
+      return async (server) => (sessionId ? await this._panelRegistry.get(sessionId)?.mcpResourceReach?.(server) : undefined) ?? NO_RESOURCE_READ;
+    });
     this._mcpUnsubscribe = this._mcpView.onToolsChanged(() => {
       this._mcpRegistrar.syncRegistration();
       this.refreshActiveTools();
@@ -292,6 +293,11 @@ export class FolderRuntime {
     return this._mcpView;
   }
 
+  /** The MCP panel's own resource requests (D13); never an agent's. */
+  get mcpUserResources(): McpUserResourcePort {
+    return this._mcpView.userResources();
+  }
+
   /** Feed this folder's MCP partition. An unchanged `folder` set is a no-op, so no server reconnects. */
   async reconcileFolder(folder: Record<string, McpServerSpec>, userVisible: readonly string[]): Promise<void> {
     if (this._disposed) return;
@@ -311,7 +317,6 @@ export class FolderRuntime {
       config: this._hooksConfig,
       workspaceRoot: this.cwd,
       userHome: os.homedir(),
-      renameSession: this._renameSession,
     };
     this._refreshAdditionalResourcePaths();
     this._services = await pi.createAgentSessionServices({
@@ -402,27 +407,31 @@ export class FolderRuntime {
   }
 
   /**
-   * Rewrite permission rules naming renamed MCP tools in the files Damocles owns, and queue a one-time
-   * notice for the files it must not rewrite, agent `disallowed_tools` and the project scope's
-   * `damocles.tools.disabled` included. Runs whenever the folder's tools change, so a server that
-   * connects later is handled then, and on a trust grant. Folder files are read or touched only in a
-   * trusted folder.
+   * Rewrite permission rules naming renamed MCP tools in the files Damocles owns, and retired resource tools in
+   * the personal scopes' `damocles.tools.disabled`, and queue a one-time notice for what it must not rewrite:
+   * other files, agent `disallowed_tools`, the project scope's `damocles.tools.disabled`, and a folder server's
+   * retired tools in places other folders share. Runs whenever the folder's tools change, so a server that
+   * connects later is handled then, and on a trust grant. Folder files and the local scope are read or touched
+   * only in a trusted folder. A run whose personal-list rewrite failed is not done, so the next one retries it.
    */
   private queueRenamedToolRuleMigration(): void {
     // Inputs are read in the queued step, after every trust-grant listener (the agent registry's reload) ran.
     this._ruleMigration = this._ruleMigration
       .then(async () => {
         if (this._disposed) return;
-        const renames = legacyToCurrentToolNames(this._mcpView.legacyToolNameInput());
-        if (renames.size === 0) return;
+        const input = this._mcpView.legacyToolNameInput();
+        const renames = toolRenames(legacyToCurrentToolNames(input), retiredResourceToolNames(input));
+        if (renames.rules.size === 0) return;
         const folder = this._trust.isTrusted(this.cwd) ? this.cwd : null;
-        const signature = [`trusted=${folder !== null}`, ...[...renames].map(([legacy, current]) => `${legacy}>${current}`).sort()].join('\n');
+        const entries = (map: ReadonlyMap<string, string>) => [...map].map(([legacy, current]) => `${legacy}>${current}`).sort();
+        const signature = [`trusted=${folder !== null}`, ...entries(renames.rules), 'shared:', ...entries(renames.shared.rules)].join('\n');
         if (signature === this._ruleMigrationSignature) return;
         const lists = this.agentDisallowedToolLists();
         const projectDisabled = folder ? this._projectDisabledTools() : null;
         if (projectDisabled) lists.push(projectDisabled);
-        const notices = await migrateRenamedToolRules(folder, renames, this._noticeMemory, lists);
-        this._ruleMigrationSignature = signature;
+        // A renamed tool's personal entries move into toolExposure elsewhere (`McpManager.migrateDisabledMcpTools`).
+        const { notices, complete } = await migrateRenamedToolRules(folder, renames, this._ruleMemory, lists, this._personalDisabledTools(folder !== null));
+        if (complete) this._ruleMigrationSignature = signature;
         await this.deliverRuleNotices(notices);
       })
       .catch((err: unknown) => log('[FolderRuntime] renamed-tool rule migration failed: %O', err));
@@ -437,15 +446,16 @@ export class FolderRuntime {
   }
 
   /** Post to every registered panel and remember what was shown; with no panel yet, hold them. */
-  private async deliverRuleNotices(notices: McpRenamedToolRuleNotice[]): Promise<void> {
+  private async deliverRuleNotices(notices: FoundRuleNotice[]): Promise<void> {
     if (notices.length === 0 || this._disposed) return;
     if (this._ruleNoticePosters.size === 0) {
       this._pendingRuleNotices = notices;
       return;
     }
     this._pendingRuleNotices = [];
-    for (const post of this._ruleNoticePosters.values()) post(notices);
-    for (const notice of notices) await this._noticeMemory.add(notice.path, notice.rules.map((rule) => rule.old));
+    const shown = notices.map(noticeForDisplay);
+    for (const post of this._ruleNoticePosters.values()) post(shown);
+    for (const notice of notices) await this._ruleMemory.notices.add(notice, notice.rules);
   }
 
   /** Register a live session's renamed-tool notice poster; notices found before any panel existed go to it now. */
@@ -548,12 +558,12 @@ export class FolderRuntime {
    * Recompute the additional resource roots in place, so the next `reload()` rebuilds its base set
    * from the dirs that exist right now, in `assetSourceDirs` order (project ahead of user within a
    * source). pi aliases these arrays rather than copying them
-   * (`resource-loader.ts:386-387` in pi 1.1.0) and re-reads them per reload (`:596`, `:611`), which is what makes
+   * (`resource-loader.ts:390-391` in pi 1.3.0) and re-reads them per reload (`:600`, `:615`), which is what makes
    * an in-place splice reach it. Reassigning the fields, or handing pi a fresh array, would leave the
    * loader on the stale one.
    *
    * This has to happen before the reload rather than after it. `extendResources` merges primary-first
-   * (`resource-loader.ts:476-480`), so a dir that reaches the loader only through that call lands
+   * (`resource-loader.ts:480-484`), so a dir that reaches the loader only through that call lands
    * BEHIND the base entries and loses a name collision it should win. That is reachable two ways: a
    * trust grant admitting the project dirs, and a project asset dir created after creation, which is the
    * case the asset watchers exist for.
@@ -758,7 +768,7 @@ export class FolderRuntime {
         appendSystemPromptOverride: () => [],
         noContextFiles: true,
         // No `agentsFilesOverride` here: pi applies it AFTER the `noContextFiles` check
-        // (resource-loader.ts:642-650 in pi 1.1.0), so an override would repopulate the list `noContextFiles`
+        // (resource-loader.ts:646-654 in pi 1.3.0), so an override would repopulate the list `noContextFiles`
         // just emptied and hand `prompt_mode: replace` agents the context they must not see.
         noSkills: true,
         noPromptTemplates: true,
@@ -774,7 +784,7 @@ export class FolderRuntime {
     // exactly — and unlike a parallel option it cannot be forgotten, which would silently hand the
     // agent every MCP tool active from turn one. `directMcpToolNames` only subtracts from it, so
     // omitting that option defers every MCP tool rather than activating any.
-    const mcpToolNames = opts.tools.filter(isMcpToolName);
+    const mcpToolNames = opts.tools.filter(isNestedMcpName);
     const directMcp = new Set(opts.directMcpToolNames);
     const deferrableMcpToolNames = mcpToolNames.filter((name) => !directMcp.has(name));
 
@@ -831,11 +841,11 @@ export class FolderRuntime {
     // a name in `tools:` with no matching definition is dropped with no error at all.
     //
     // Residual fragility: with an allowlist set, `_refreshToolRegistry` takes the
-    // `if (allowedTools)` branch (agent-session.js:2866, pi 1.1.0) and force-activates every allowed
+    // `if (allowedTools)` branch (agent-session.js:2899, pi 1.3.0) and force-activates every allowed
     // `direct` tool, undoing this baseline. Verified it still cannot fire after this line in a nested session:
     //  - `customTools` are captured at construction (`this._customTools = config.customTools ?? []`,
     //    agent-session.js:182) and merged into the registry INSIDE `_refreshToolRegistry` itself
-    //    (line 2817), which the constructor's `_buildRuntime` runs (line 2931). So the MCP tools are
+    //    (line 2850), which the constructor's `_buildRuntime` runs (line 2964). So the MCP tools are
     //    force-activated during construction and this `setActiveToolsByName` still lands LAST.
     //  - The only `registerTool` in a nested session is ToolSearch, during extension LOAD, where pi's
     //    `runtime.refreshTools` is still a no-op stub (extensions/loader.js:128-129 "registerTool() is
@@ -850,15 +860,17 @@ export class FolderRuntime {
     // active set while deleting the only mechanism that could bring them back — a permanent, silent
     // capability loss for the agent's whole lifetime. Deferral is only ever safe when the loader
     // actually exists. This also covers the empty-deferrable case (the factory skips registration).
+    // Tracked before anything below can throw, so a spawn that fails still has its session disposed with the folder.
+    this._subagentSessions.add(session);
     const hasToolSearch = session.getAllTools().some((tool) => tool.name === TOOL_TOOL_SEARCH);
     if (hasToolSearch) {
-      session.setActiveToolsByName(
-        initialActiveToolNames(opts.tools, deferredToolNames(opts.tools, deferrableMcpToolNames), activatedToolsFromMessages(session.messages)),
-      );
+      const deferred = deferredToolNames(opts.tools, deferrableMcpToolNames);
+      // Nested MCP is frozen at spawn, so a restored name not deferrable now never becomes so.
+      const restored = restoredDeferredTools(session.sessionManager.buildSessionContext().messages, new Set(deferred)).active;
+      session.setActiveToolsByName(initialActiveToolNames(opts.tools, deferred, restored));
     }
 
     session.setAutoCompactionEnabled(false);
-    this._subagentSessions.add(session);
     return session;
   }
 

@@ -29,6 +29,10 @@ Line format: `[perf] <label> <ms>ms k=v ...`, with ms at one decimal. No line is
 
 `approxChars` is the summed string length (UTF-16 code units) of the replay items, not a serialized size. Runs 1 to 7 took `replay.painted` in the frame callback, before layout and paint, logged the field as `approxBytes`, and timed the fresh panel's start inside `ready` as `ready.initializeEarly`.
 
+## Main-process stalls (desktop)
+
+The desktop app keeps V8's sampling profiler running on the main process (`src/desktop/main/stall-monitor.ts`). When its 100 ms heartbeat lands 1 s or more late, it logs a `[stall]` entry to `<userData>/logs/Damocles.log`: the blocked time, how much of it the profiler sampled busy and idle, the four heaviest call stacks with their ms, and a `.cpuprofile` of the stalled stretch in `<userData>/logs/stalls/`, which keeps the newest 20. A stall sampled busy for under 100 ms (a sleep, a pause, or a native loop outside JavaScript) logs a line that says so and keeps no profile. Open a profile in Chrome DevTools' Performance panel.
+
 ## Manual procedure
 
 1. Run `npm run build`, then launch with F5 or install the VSIX. Record the machine, VS Code version, session file count and total MB, and the test conversation's size.

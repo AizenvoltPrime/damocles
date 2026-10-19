@@ -25,10 +25,10 @@ export interface SessionManagerConfig {
     thinkingDisabled: boolean;
     effort: EffortLevel | null;
   };
-  /** A resumed conversation's recorded model value and pi thinking level, which become the panel's. */
-  restoreRecordedSelection: (host: PanelHost, panelId: string, folder: FolderTarget, model: string, thinkingLevel: string | undefined) => void;
+  /** A resumed conversation's recorded pi thinking level for its recorded model, which becomes the panel's. */
+  restoreRecordedSelection: (panelId: string, model: string, thinkingLevel: string | undefined) => void;
   /** The model the panel's session committed, which becomes the panel's. */
-  adoptSessionModel: (host: PanelHost, panelId: string, folder: FolderTarget, model: string) => void;
+  adoptSessionModel: (host: PanelHost, panelId: string, folder: FolderTarget, model: string, contextWindow: number) => void;
   postMessage: (host: PanelHost, message: ExtensionToWebviewMessage) => void;
   setupSessionWatcher: (folderKey: string) => Promise<void>;
   addOrUpdateSession: (sessionId: string, folderKey: string) => Promise<void>;
@@ -119,8 +119,9 @@ export class SessionManager {
       projectScope: folder.projectScope,
       permissionHandler,
       onMessage: (message) => this.postMessage(host, message),
-      onSessionIdChange: (sessionId, stored) => {
-        this.postMessage(host, { type: "sessionStarted", sessionId: sessionId || "", stored });
+      onSessionIdChange: (sessionId, stored, resumed) => {
+        // The router posts a resumed conversation's sessionStarted once it replayed its history, so the webview never shows it early.
+        if (!resumed) this.postMessage(host, { type: "sessionStarted", sessionId: sessionId || "", stored });
         void this.setupSessionWatcher(folder.key);
         if (sessionId) {
           this.addOrUpdateSession(sessionId, folder.key).catch((err) => log("[SessionManager] session list update failed for %s: %O", sessionId, err));
@@ -145,8 +146,8 @@ export class SessionManager {
       // idempotently; an empty union would close servers another panel connected.
       mcpScope: this.getEnabledMcpServers(folder.key),
       resolveThinking: (model) => this.resolveThinkingForPanel(panelId, model, settingsFolderOf(folder)),
-      onRecordedSelection: (model, thinkingLevel) => this.restoreRecordedSelection(host, panelId, folder, model, thinkingLevel),
-      onModelChange: (model) => this.adoptSessionModel(host, panelId, folder, model),
+      onRecordedSelection: (model, thinkingLevel) => this.restoreRecordedSelection(panelId, model, thinkingLevel),
+      onModelChange: (model, contextWindow) => this.adoptSessionModel(host, panelId, folder, model, contextWindow),
       getPreferOpenAIApiKey: this.getPreferOpenAIApiKey,
       secrets: this.platform.secrets,
       platform: this.platform,

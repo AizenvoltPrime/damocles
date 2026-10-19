@@ -1,6 +1,8 @@
 // Shared by the panel preload and main. The names are fixed: main listens on each view's own webContents.ipc, which only
 // that view's messages reach, so the renderer never needs to know which panel it is.
 
+import type { FileIconTheme } from '../main/desktop-configuration';
+
 export type ThemeKind = 'dark' | 'light';
 
 export interface PanelTheme {
@@ -8,6 +10,8 @@ export interface PanelTheme {
   readonly css: string;
   // damocles.desktop.reduceMotion, mirrored as the data-reduced-motion attribute of every renderer's root element
   readonly reducedMotion: boolean;
+  // damocles.desktop.fileIconTheme, mirrored as the data-file-icon-theme attribute of every renderer's root element
+  readonly fileIconTheme: FileIconTheme;
 }
 
 // Answer to the synchronous init request the preload sends once at load.

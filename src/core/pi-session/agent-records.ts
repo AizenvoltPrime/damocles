@@ -13,7 +13,7 @@
 
 import { createReadStream } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import { initPiLoader, type PiCodingAgentModule } from './pi-loader';
@@ -103,6 +103,16 @@ export function teamMembersDir(sessionDir: string, parentSessionId: string, team
 export function teamMemberSessionId(memberId: string, attempt: number): string {
   const id = `${memberId}.a${attempt}`;
   assertSafeId('member session id', id);
+  return id;
+}
+
+// pi names a session file `<timestamp>_<sessionId>.jsonl` and its timestamp holds no `_` (`session-manager.js:713`, `:1241`, `:1396` in pi 1.3.0).
+const SESSION_FILE_NAME = /^[^_]+_(.+)\.jsonl$/;
+
+/** The pi session id of the agent file at `path`, read from its name, so nothing opens the file to learn it. */
+export function agentFileSessionId(path: string): string {
+  const id = SESSION_FILE_NAME.exec(basename(path))?.[1];
+  if (id === undefined || !isSafeAgentPathId(id)) throw new Error(`Agent file ${path} is not named as pi names a session file.`);
   return id;
 }
 

@@ -33,6 +33,7 @@ describe('expandPromptTemplate', () => {
     const inputs = [
       '/review', '/review a.ts', '/review "a b.ts" \'c d\' e', '/review a\nb', '/fix', '/fix one two three', '/fix  "" x',
       '/plain extra', '/unknown x', 'review a', ' /review a', '/', '/review\ta\u00a0b', '/fix 😀 "q😀"',
+      '/fix "" b', "/fix '' b", '/fix a "" "" b', '/review ""', '/fix ""x y',
     ];
     for (const text of inputs) expect(expandPromptTemplate(text, TEMPLATES), text).toBe(pi.expandPromptTemplate(text, TEMPLATES));
   });

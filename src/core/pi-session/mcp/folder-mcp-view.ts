@@ -1,22 +1,45 @@
-import type { McpServerStatusInfo } from '../../../shared/types/mcp';
+import type {
+  ListResourcesResult,
+  ListResourceTemplatesResult,
+  ReadResourceResult,
+  Resource,
+  ResourceTemplate,
+} from '@earendil-works/pi-mcp';
+import type { McpServerStatusInfo, McpToolExposureSetting } from '../../../shared/types/mcp';
 import type { SettingInspection } from '../../../platform/settings-store';
 import type { McpToolDescriptor } from './types';
-import type { McpCallResult, McpClientManager } from './mcp-client-manager';
+import { USER_RESOURCE_REQUEST, type McpCallResult, type McpClientManager } from './mcp-client-manager';
+import { unknownResourceServerError } from './resource-errors';
 import type { LegacyToolNameInput } from './tool-name-migration';
-import type { McpToolCallOptions, McpToolSource } from './tool-source';
-import { layersExposeDirect, resolveToolExposure, toolExposureLayers, type ToolExposureLayer } from './exposure';
+import type { McpResourceServer, McpToolCallOptions, McpToolSource, McpUserResourcePort } from './tool-source';
+import {
+  layersExposeDirect,
+  resolveResourceExposure,
+  resolveToolExposure,
+  toolExposureLayers,
+  type ResolvedToolExposure,
+  type ToolExposureLayer,
+} from './exposure';
 import { log } from '../../logger';
 
-/** This folder's `damocles.mcp.toolExposure` layers and whether the folder is trusted, read on every call. */
-export type ToolExposureContext = () => { inspection: SettingInspection<unknown>; trusted: boolean };
+/**
+ * This folder's `damocles.mcp.toolExposure` and `damocles.mcp.resourceExposure` layers and whether the
+ * folder is trusted, read on every call.
+ */
+export type ToolExposureContext = () => {
+  inspection: SettingInspection<unknown>;
+  resourceInspection: SettingInspection<unknown>;
+  trusted: boolean;
+};
 
 /**
  * One folder's MCP tools: its own folder-scope manager plus the user-scope servers visible in that folder.
  * A user server outside `userVisible`, or shadowed by a same-named folder server, never appears here and
  * cannot be called, reconnected, authenticated or signed out through it.
  *
- * The managers give each tool its config exposure; this view overlays `damocles.mcp.toolExposure`,
- * because project and local values apply only in a trusted folder and the user manager serves every folder.
+ * The managers give each tool and each server's resources their config exposure; this view overlays
+ * `damocles.mcp.toolExposure` and `damocles.mcp.resourceExposure`, because project and local values
+ * apply only in a trusted folder and the user manager serves every folder.
  */
 export class FolderMcpView implements McpToolSource {
   private userVisible = new Set<string>();
@@ -64,6 +87,7 @@ export class FolderMcpView implements McpToolSource {
       folderServers: this.folder.enabledServerNames(),
       userTools: this.user.toolNameEntries().filter((entry) => this.isVisibleUserServer(entry.serverName)),
       folderTools: this.folder.toolNameEntries(),
+      retiredResources: { user: this.user.retiredResourceEntries(), folder: this.folder.retiredResourceEntries() },
     };
   }
 
@@ -101,11 +125,13 @@ export class FolderMcpView implements McpToolSource {
   pendingDirectServers(): string[] {
     const layers = this.exposureLayers();
     const descriptors = this.getAllToolDescriptors();
+    const resourceLayers = this.resourceExposureLayers();
     const pending = (manager: McpClientManager, names: readonly string[]): string[] =>
       names.filter((name) =>
         manager.serverConfigMayExposeDirect(name) ||
         layersExposeDirect(layers, name) ||
-        descriptors.some((d) => d.serverName === name && d.exposure === 'direct'));
+        descriptors.some((d) => d.serverName === name && d.exposure === 'direct') ||
+        manager.mayExposeResourcesDirect(name, this.resourceExposureOf(manager, name, resourceLayers).exposure));
     return [
       ...pending(this.user, this.user.connectingServerNames().filter((name) => this.isVisibleUserServer(name))),
       ...pending(this.folder, this.folder.connectingServerNames()),
@@ -119,14 +145,88 @@ export class FolderMcpView implements McpToolSource {
   getServerStatuses(): McpServerStatusInfo[] {
     const userStatuses = this.user.getServerStatuses().filter((status) => this.isVisibleUserServer(status.name));
     const layers = this.exposureLayers();
+    const resourceLayers = this.resourceExposureLayers();
     return [...userStatuses, ...this.folder.getServerStatuses()].map((status) => {
-      if (!status.tools) return status;
+      const resources = resolveResourceExposure(resourceLayers, status.name, status.configResourceExposure ?? 'deferred');
+      const withResources = { ...status, resourceExposure: resources.exposure, resourceExposureSource: resources.source };
+      if (!status.tools) return withResources;
       const tools = status.tools.map((tool) => {
         const resolved = resolveToolExposure(layers, status.name, tool.name, tool.configExposure ?? 'deferred');
         return { ...tool, exposure: resolved.exposure, exposureSource: resolved.source };
       });
-      return { ...status, tools };
+      return { ...withResources, tools };
     });
+  }
+
+  resourceServers(): McpResourceServer[] {
+    const layers = this.resourceExposureLayers();
+    const visibleUser = this.user.enabledServerNames().filter((name) => this.isVisibleUserServer(name));
+    const servers = [
+      ...this.user.resourceServersAmong(visibleUser, (name) => this.resourceExposureOf(this.user, name, layers).exposure),
+      ...this.folder.resourceServersAmong(this.folder.enabledServerNames(), (name) => this.resourceExposureOf(this.folder, name, layers).exposure),
+    ];
+    return servers.sort((a, b) => (a.serverName < b.serverName ? -1 : a.serverName > b.serverName ? 1 : 0));
+  }
+
+  listResourcesPage(server: string, cursor: string | undefined, opts?: McpToolCallOptions): Promise<ListResourcesResult> {
+    return this.routeResource(server, opts, (owner, exposure, viewOpts) => owner.listResourcesPage(server, cursor, viewOpts, exposure));
+  }
+
+  listResources(server: string, opts?: McpToolCallOptions): Promise<Resource[]> {
+    return this.routeResource(server, opts, (owner, exposure, viewOpts) => owner.listResources(server, viewOpts, exposure));
+  }
+
+  listResourceTemplatesPage(server: string, cursor: string | undefined, opts?: McpToolCallOptions): Promise<ListResourceTemplatesResult> {
+    return this.routeResource(server, opts, (owner, exposure, viewOpts) => owner.listResourceTemplatesPage(server, cursor, viewOpts, exposure));
+  }
+
+  listResourceTemplates(server: string, opts?: McpToolCallOptions): Promise<ResourceTemplate[]> {
+    return this.routeResource(server, opts, (owner, exposure, viewOpts) => owner.listResourceTemplates(server, viewOpts, exposure));
+  }
+
+  readResource(server: string, uri: string, opts?: McpToolCallOptions): Promise<ReadResourceResult> {
+    return this.routeResource(server, opts, (owner, exposure, viewOpts) => owner.readResource(server, uri, viewOpts, exposure));
+  }
+
+  /** The MCP panel's resource requests, routed as the agent's are but with no resource exposure applied (D13). */
+  userResources(): McpUserResourcePort {
+    const route = <T>(server: string, opts: McpToolCallOptions | undefined, send: (owner: McpClientManager, opts: McpToolCallOptions) => Promise<T>): Promise<T> => {
+      const owner = this.resourceOwner(server);
+      return owner ? send(owner, this.reachingFromHere(opts)) : Promise.reject(unknownResourceServerError(server, this.resourceServers()));
+    };
+    return {
+      serverIdOf: (server) => this.resourceOwner(server)?.enabledServerId(server),
+      listResourcesPage: (server, cursor, opts) => route(server, opts, (owner, viewOpts) => owner.listResourcesPage(server, cursor, viewOpts, USER_RESOURCE_REQUEST)),
+      listResourceTemplatesPage: (server, cursor, opts) =>
+        route(server, opts, (owner, viewOpts) => owner.listResourceTemplatesPage(server, cursor, viewOpts, USER_RESOURCE_REQUEST)),
+      readResource: (server, uri, opts) => route(server, opts, (owner, viewOpts) => owner.readResource(server, uri, viewOpts, USER_RESOURCE_REQUEST)),
+      completeResourceArgument: (server, templateUri, argument, value, context, opts) =>
+        route(server, opts, (owner, viewOpts) => owner.completeResourceArgument(server, templateUri, argument, value, context, viewOpts)),
+    };
+  }
+
+  /** A user server not visible here, or shadowed by a folder server of the same name, is unknown. */
+  private routeResource<T>(
+    server: string,
+    opts: McpToolCallOptions | undefined,
+    send: (owner: McpClientManager, exposure: McpToolExposureSetting, opts: McpToolCallOptions) => Promise<T>,
+  ): Promise<T> {
+    const owner = this.resourceOwner(server);
+    if (!owner) return Promise.reject(unknownResourceServerError(server, this.resourceServers()));
+    return send(owner, this.resourceExposureOf(owner, server, this.resourceExposureLayers()).exposure, this.reachingFromHere(opts));
+  }
+
+  /** An owner's resource errors name the servers this view reaches, never its hidden user servers or Off ones. */
+  private reachingFromHere(opts: McpToolCallOptions | undefined): McpToolCallOptions {
+    return { ...opts, reachableResourceServers: () => this.resourceServers() };
+  }
+
+  private resourceOwner(server: string): McpClientManager | undefined {
+    return this.folderHas(server) ? this.folder : this.isVisibleUserServer(server) ? this.user : undefined;
+  }
+
+  private resourceExposureOf(manager: McpClientManager, name: string, layers: readonly ToolExposureLayer[]): ResolvedToolExposure {
+    return resolveResourceExposure(layers, name, manager.configResourceExposureOf(name));
   }
 
   callTool(piName: string, args: Record<string, unknown>, opts?: McpToolCallOptions): Promise<McpCallResult> {
@@ -160,6 +260,12 @@ export class FolderMcpView implements McpToolSource {
     if (!this.exposureContext) return [];
     const { inspection, trusted } = this.exposureContext();
     return toolExposureLayers(inspection, trusted);
+  }
+
+  private resourceExposureLayers(): ToolExposureLayer[] {
+    if (!this.exposureContext) return [];
+    const { resourceInspection, trusted } = this.exposureContext();
+    return toolExposureLayers(resourceInspection, trusted);
   }
 
   private folderHas(name: string): boolean {

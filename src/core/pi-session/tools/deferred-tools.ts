@@ -2,6 +2,7 @@ import { BROWSER_PI_TOOL_NAMES } from './browser-tools';
 import { COMPASS_PI_TOOL_NAMES } from './compass-tools';
 import { WEB_PI_TOOL_NAMES } from '../web-access/web-tool-specs';
 import { IMAGE_PI_TOOL_NAMES } from './image-tool-specs';
+import { MCP_RESOURCE_TOOL_NAMES } from '../../../shared/tool-names';
 
 /**
  * Which tools are deferrable, and what group names address them. A leaf module by design: it composes
@@ -15,20 +16,23 @@ import { IMAGE_PI_TOOL_NAMES } from './image-tool-specs';
  * import is fine", retiring the guard for every group at once.
  */
 
-export type BuiltinDeferredGroup = 'browser' | 'compass' | 'web' | 'image';
+export type BuiltinDeferredGroup = 'browser' | 'compass' | 'web' | 'image' | 'mcp_resources';
+
+export const MCP_RESOURCES_GROUP: BuiltinDeferredGroup = 'mcp_resources';
 
 /**
  * The built-in deferrable groups, in the order the ToolSearch inventory lists them — what the model
  * reads, so it is pinned by test rather than left to import order. The pin encodes exactly one claim:
- * `web` comes after `browser`, and `image` comes last. It is NOT "mirrors `FULL_TOOL_CATALOG`", which
- * runs compass → browser → web → image and so already disagrees. A new group needs a deliberate
- * position and a pin edit.
+ * `web` comes after `browser`, `image` after `web`, and `mcp_resources` comes last. It is NOT "mirrors
+ * `FULL_TOOL_CATALOG`", which runs compass → browser → web → image and so already disagrees. A new group
+ * needs a deliberate position and a pin edit.
  */
 export const BUILTIN_DEFERRED_GROUPS: readonly { group: BuiltinDeferredGroup; names: readonly string[] }[] = [
   { group: 'browser', names: BROWSER_PI_TOOL_NAMES },
   { group: 'compass', names: COMPASS_PI_TOOL_NAMES },
   { group: 'web', names: WEB_PI_TOOL_NAMES },
   { group: 'image', names: IMAGE_PI_TOOL_NAMES },
+  { group: MCP_RESOURCES_GROUP, names: MCP_RESOURCE_TOOL_NAMES },
 ];
 
 export interface ToolSearchResolution {
@@ -41,7 +45,7 @@ export interface ToolSearchResolution {
    * Always-loaded MCP tool: callable as they are, so neither loaded nor unknown.
    */
   alreadyActive: string[];
-  /** Requested MCP server groups with no deferrable tool whose tools are Always loaded, so already active. */
+  /** Requested groups with no deferrable tool whose tools are Always loaded (an MCP server, or `mcp_resources`), so already active. */
   alreadyActiveGroups: string[];
   /** Requested built-in group names that also name an MCP server; the built-in won. */
   shadowedGroups: string[];
@@ -57,13 +61,16 @@ export interface ToolSearchResolution {
 
 /**
  * The deferrable subset of an eligible set: browser + compass + web + image + the given MCP names, intersected
- * with `eligible`. Callers pass only the MCP tools whose exposure is `deferred`.
+ * with `eligible`. Callers pass only the MCP tools whose exposure is `deferred`, and the resource tools
+ * only while no eligible resource server is Always loaded.
  * Intersecting here is what makes eligibility authoritative — a tool the user disabled via
  * `damocles.tools.disabled`, or whose subsystem is off, is absent from `eligible` and therefore never
  * deferrable, so `ToolSearch` can never resurrect it.
  */
 export function deferredToolNames(eligible: Iterable<string>, mcpNames: Iterable<string>): string[] {
-  const deferrable = new Set<string>([...BUILTIN_DEFERRED_GROUPS.flatMap((g) => [...g.names]), ...mcpNames]);
+  // The resource tools take their exposure from the resource servers, so only `mcpNames` can defer them.
+  const builtin = BUILTIN_DEFERRED_GROUPS.filter((g) => g.group !== MCP_RESOURCES_GROUP).flatMap((g) => [...g.names]);
+  const deferrable = new Set<string>([...builtin, ...mcpNames]);
   return [...new Set(eligible)].filter((name) => deferrable.has(name));
 }
 
@@ -117,6 +124,10 @@ export function resolveToolSearchEntries(
     if (builtin) {
       if (mcpGroups.has(entry) && !shadowedGroups.includes(entry)) shadowedGroups.push(entry);
       for (const name of builtin.names) addMatch(name);
+      if (!builtin.names.some((name) => universe.has(name)) && builtin.names.some((name) => active.has(name))) {
+        if (!alreadyActiveGroups.includes(entry)) alreadyActiveGroups.push(entry);
+        continue;
+      }
       noteIfInert(entry, builtin.names);
       continue;
     }

@@ -51,6 +51,41 @@ describe('terminal attachments in history', () => {
     expect(extractTerminalAttachmentCounts([sidecar('u1', 0), sidecar('u2', 1.5), sidecar('u3', '2'), sidecar('', 1), sidecar('u4', 2)])).toEqual(new Map([['u4', 2]]));
   });
 
+  describe("an attachment's own images, the last ones of the prompt", () => {
+    const image = (data: string) => ({ type: 'image', data, mimeType: 'image/png' });
+    const withImages = (id: string, text: string, images: string[]) =>
+      ({ id, type: 'message', message: { role: 'user', content: [{ type: 'text', text }, ...images.map(image)] } }) as unknown as SessionEntry;
+    const imageSidecar = (userEntryId: string, count: number, images: unknown) =>
+      ({ id: `t-${userEntryId}`, type: 'custom', customType: DAMOCLES_TERMINAL_ATTACHMENTS_ENTRY, data: { userEntryId, count, images } }) as unknown as SessionEntry;
+    const imageData = (message: ReturnType<typeof replayedUser>) =>
+      (message.contentBlocks ?? []).flatMap((b) => (b.type === 'image' ? [(b as { source: { data: string } }).source.data] : []));
+
+    it('stay behind their chip on reload, as live, while the typed images still show', () => {
+      const message = replayedUser([withImages('u1', `${block}\nlook`, ['typed', 'resource']), imageSidecar('u1', 1, 1)]);
+      expect(imageData(message)).toEqual(['typed']);
+      expect(message.content).toBe('look');
+    });
+
+    it('leave no image block when the attachments brought every image', () => {
+      expect(replayedUser([withImages('u1', `${block}\nlook`, ['resource']), imageSidecar('u1', 1, 1)]).contentBlocks).toBeUndefined();
+    });
+
+    it('are all shown for a sidecar written before the count existed', () => {
+      expect(imageData(replayedUser([withImages('u1', `${block}\nlook`, ['a', 'b']), sidecar('u1', 1)]))).toEqual(['a', 'b']);
+    });
+
+    it('are all shown when the count is malformed, which leaves the blocks it records stripped', () => {
+      for (const images of [0, -1, 1.5, '1', null]) {
+        const branch = [withImages('u1', `${block}\nlook`, ['typed', 'resource']), imageSidecar('u1', 1, images)];
+        expect(extractTerminalAttachmentCounts(branch), String(images)).toEqual(new Map([['u1', 1]]));
+        const message = replayedUser(branch);
+        expect(imageData(message), String(images)).toEqual(['typed', 'resource']);
+        expect(message.content).toBe('look');
+        expect(message.terminalAttachments).toHaveLength(1);
+      }
+    });
+  });
+
   it('keeps the wrapper out of the session preview and the prompt history', () => {
     const branch = [user('u1', `${block}\nwhat failed?`), sidecar('u1', 1)];
     expect(extractFirstUserMessage(branch)).toBe('what failed?');

@@ -272,7 +272,7 @@ describe('buildContextUsage — independent section degradation', () => {
   });
 
   it('mcp disabled → empty mcpTools even when a manager is present', () => {
-    const manager = { getAllToolDescriptors: () => [{ piName: 'mcp__s__a', serverName: 's', description: 'dddd' }] } as unknown as McpClientManager;
+    const manager = { getAllToolDescriptors: () => [{ piName: 'mcp__s__a', serverName: 's', description: 'dddd' }], resourceServers: () => [] } as unknown as McpClientManager;
     const data = buildContextUsage(fakeSession({ contextUsage: { tokens: 0 } }), undefined, deps({ mcpEnabled: false, mcpClientManager: manager }));
     expect(data.mcpTools).toEqual([]);
   });
@@ -281,7 +281,7 @@ describe('buildContextUsage — independent section degradation', () => {
   // `isLoaded` comes from the live active set instead of a hard-coded `true`. `dddd` (1 token) plus
   // `JSON.stringify(undefined ?? {})` = `{}` (1 token) = 2.
   it('mcp enabled → mcpTools mapped from descriptors, costed with the schema', () => {
-    const manager = { getAllToolDescriptors: () => [{ piName: 'mcp__s__a', serverName: 's', description: 'dddd' }] } as unknown as McpClientManager;
+    const manager = { getAllToolDescriptors: () => [{ piName: 'mcp__s__a', serverName: 's', description: 'dddd' }], resourceServers: () => [] } as unknown as McpClientManager;
     // ADAPTATION: the tool is now also listed in `allTools`, because an ACTIVE tool is by definition a
     // registered one; the previous fixture described a state pi cannot produce.
     const session = fakeSession({ contextUsage: { tokens: 0 }, activeTools: ['mcp__s__a'], allTools: [tool('mcp__s__a', 'dddd')] });
@@ -408,6 +408,31 @@ describe('buildContextUsage — systemTools + deferredBuiltinTools sections', ()
     expect(data.deferredBuiltinTools).toEqual([{ name: BROWSER_A, tokens: 7, isLoaded: true }]);
   });
 
+  it('lists the MCP resource tools where eligible: deferred while no resource server is Always loaded, else as loaded tools', () => {
+    const resourceSession = () =>
+      fakeSession({
+        contextUsage: { tokens: 0 },
+        activeTools: ['Read', 'list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource'],
+        allTools: [
+          tool('Read', 'Read a file', { path: 'string' }),
+          tool('list_mcp_resources', 'List'),
+          tool('list_mcp_resource_templates', 'List'),
+          tool('read_mcp_resource', 'Read'),
+        ],
+      });
+    const managerWith = (exposure: 'deferred' | 'direct') =>
+      ({ getAllToolDescriptors: () => [], resourceServers: () => [{ serverName: 'docs', serverId: 'm/docs', exposure }] }) as unknown as McpClientManager;
+    const eligibleToolNames = ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource'];
+
+    const deferred = buildContextUsage(resourceSession(), undefined, deps({ mcpEnabled: true, mcpClientManager: managerWith('deferred'), eligibleToolNames }));
+    expect(deferred.deferredBuiltinTools?.map((row) => row.name)).toEqual(eligibleToolNames);
+    expect(deferred.systemTools?.map((row) => row.name)).toEqual(['Read']);
+
+    const direct = buildContextUsage(resourceSession(), undefined, deps({ mcpEnabled: true, mcpClientManager: managerWith('direct'), eligibleToolNames }));
+    expect(direct.deferredBuiltinTools).toEqual([]);
+    expect(direct.systemTools?.map((row) => row.name)).toEqual(['Read', ...eligibleToolNames]);
+  });
+
   it('lists only the deferrable built-ins this panel is ELIGIBLE for', () => {
     const data = buildContextUsage(session(), undefined, deps({ eligibleToolNames: [BROWSER_A, COMPASS_A] }));
     expect(data.deferredBuiltinTools).toEqual([
@@ -496,6 +521,7 @@ describe('buildContextUsage — MCP tokens split by loaded state', () => {
       { piName: 'mcp__s__loaded', serverName: 's', description: 'Alpha', inputSchema: { type: 'object', properties: { a: { type: 'string' } } } },
       { piName: 'mcp__s__deferred', serverName: 's', description: 'Beta', inputSchema: { type: 'object', properties: { b: { type: 'number' } } } },
     ],
+    resourceServers: () => [],
   } as unknown as McpClientManager;
   const mcpEligible = ['mcp__s__loaded', 'mcp__s__deferred'];
 
@@ -582,6 +608,7 @@ describe('buildContextUsage — MCP tokens split by loaded state', () => {
         { piName: 'mcp__s__off', serverName: 's', description: 'Beta', exposure: 'off' },
         { piName: 'mcp__s__deferred', serverName: 's', description: 'Gamma', exposure: 'deferred' },
       ],
+      resourceServers: () => [],
     } as unknown as McpClientManager;
     const data = buildContextUsage(
       fakeSession({
@@ -652,6 +679,7 @@ describe('buildContextUsage — the no-double-count invariant (§D)', () => {
             { piName: 'mcp__s__on', serverName: 's', description: 'Loaded thing', inputSchema: { type: 'object', properties: { a: { type: 'string' } } } },
             { piName: 'mcp__s__off', serverName: 's', description: 'Deferred thing', inputSchema: { type: 'object', properties: { b: { type: 'number' } } } },
           ],
+          resourceServers: () => [],
         } as unknown as McpClientManager,
       }),
     );
@@ -703,6 +731,7 @@ describe('buildContextUsage — omission, not fabrication, when the tool read fa
         { piName: 'mcp__s__on', serverName: 's', description: 'Loaded thing', inputSchema: { type: 'object', properties: { a: { type: 'string' } } } },
         { piName: 'mcp__s__off', serverName: 's', description: 'Deferred thing', inputSchema: { type: 'object', properties: { b: { type: 'number' } } } },
       ],
+      resourceServers: () => [],
     } as unknown as McpClientManager,
   };
 

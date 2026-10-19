@@ -39,23 +39,26 @@ describe("a resumed conversation's recorded model and effort become the panel's"
 
     captured!.onRecordedSelection!('claude-sonnet-5-5', 'xhigh');
 
-    expect(restore).toHaveBeenCalledExactlyOnceWith(host, 'panel-1', FOLDER, 'claude-sonnet-5-5', 'xhigh');
+    expect(restore).toHaveBeenCalledExactlyOnceWith('panel-1', 'claude-sonnet-5-5', 'xhigh');
   });
 
-  it('sets the panel model and effort and posts both, leaving the default and other panels alone', () => {
+  it("sets the panel effort for the recorded model, and the session's publish of that model posts both, leaving the default and other panels alone", () => {
     const platform = installFakePlatform({ settings: { user: { 'damocles.model': 'claude-opus-5-5' } } });
     const posted: ExtensionToWebviewMessage[] = [];
     const settings = new SettingsManager({ postMessage: (_host, message) => posted.push(message), platform, folders: () => [] });
     settings.initPanelModel('panel-1');
     settings.initPanelModel('panel-2');
 
-    settings.restoreRecordedSelection({} as PanelHost, 'panel-1', FOLDER, 'claude-sonnet-5-5', 'xhigh');
+    settings.restoreRecordedSelection('panel-1', 'claude-sonnet-5-5', 'xhigh');
+    expect(posted).toEqual([]);
+    expect(settings.resolveThinkingEffort('panel-1', 'claude-sonnet-5-5', platform.settings, undefined)).toBe('xhigh');
+
+    settings.adoptSessionModel({} as PanelHost, 'panel-1', FOLDER, 'claude-sonnet-5-5', 1_000_000);
 
     expect(settings.getActiveModelForPanel('panel-1')).toBe('claude-sonnet-5-5');
     expect(settings.getActiveModelForPanel('panel-2')).toBe('claude-opus-5-5');
-    expect(settings.resolveThinkingEffort('panel-1', 'claude-sonnet-5-5', platform.settings, undefined)).toBe('xhigh');
     expect(posted).toEqual([
-      expect.objectContaining({ type: 'modelUpdate', activeModel: 'claude-sonnet-5-5', defaultModel: 'claude-opus-5-5' }),
+      expect.objectContaining({ type: 'modelUpdate', activeModel: 'claude-sonnet-5-5', defaultModel: 'claude-opus-5-5', contextWindowSize: 1_000_000 }),
       expect.objectContaining({ type: 'panelThinkingUpdate', panelModel: 'claude-sonnet-5-5', panel: expect.objectContaining({ effort: 'xhigh' }) }),
     ]);
   });

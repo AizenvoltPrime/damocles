@@ -196,6 +196,8 @@ function barePrograms(expr: ts.Expression, constants: ReadonlyMap<string, ts.Exp
 
 /** Every spawner call in one source text whose program can be a name that is not an absolute path. */
 function bareNameSpawnsIn(file: string, text: string): string[] {
+  // A file naming neither seed of `fileSpawners` has no spawner, so it is not parsed.
+  if (!/child_process|exec['"`]/.test(text)) return [];
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
   const spawners = fileSpawners(source);
   const constants = new Map<string, ts.Expression>();
@@ -242,6 +244,7 @@ describe('process spawns', () => {
     ['a constant', "import { spawn } from 'child_process'; const SMI = 'nvidia-smi'; spawn(SMI);", 'nvidia-smi'],
     ['either arm of a choice', "import { spawn } from 'child_process'; declare const win: boolean; spawn(win ? 'powershell.exe' : '/bin/bash');", 'powershell.exe'],
     ['a fallback', "import { spawn } from 'child_process'; declare const found: string | undefined; spawn(found ?? 'bash');", 'bash'],
+    ['a checkpoint exec helper', "import { execSafe } from '../checkpoints/exec'; execSafe('git', ['status']);", 'git'],
   ])('sees a bare program through %s', (_case, text, program) => {
     expect(bareNameSpawnsIn('x.ts', text)).toEqual([`x.ts:1: ${program}`]);
   });

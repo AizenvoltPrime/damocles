@@ -1342,9 +1342,9 @@ function replay(session: ReturnType<typeof fakeSession>, events: unknown[]): voi
 }
 
 /**
- * The model call pi makes under an aborted run signal fails its request setup (`model-runtime.js:451-455` in
- * pi-coding-agent 1.1.0), and pi-ai's lazy stream ends it on an error stop (`lazy.js:41-44` in pi-ai 1.1.0), whoever
- * aborted the run. pi persists it after the `message_end` listeners (`agent-session.js:750-764`), and the draft
+ * The model call pi makes under an aborted run signal fails its request setup (`model-runtime.js:456-460` in
+ * pi-coding-agent 1.3.0), and pi-ai's lazy stream ends it on an error stop (`lazy.js:41-44` in pi-ai 1.3.0), whoever
+ * aborted the run. pi persists it after the `message_end` listeners (`agent-session.js:754-768`), and the draft
  * `registerWindDownErrorRecord` returns at its `turn_end` boundary is committed, with its `entry_appended`, before the
  * listeners get that `turn_end` (`agent-session.js:515`, `:636-641`).
  */

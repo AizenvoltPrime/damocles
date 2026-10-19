@@ -206,9 +206,9 @@ export class ChatPanelProvider {
           effort: this.settingsManager.resolveThinkingEffort(panelId, model, settings, folder),
         };
       },
-      restoreRecordedSelection: (host, panelId, folder, model, thinkingLevel) =>
-        this.settingsManager.restoreRecordedSelection(host, panelId, folder, model, thinkingLevel),
-      adoptSessionModel: (host, panelId, folder, model) => this.settingsManager.adoptSessionModel(host, panelId, folder, model),
+      restoreRecordedSelection: (panelId, model, thinkingLevel) => this.settingsManager.restoreRecordedSelection(panelId, model, thinkingLevel),
+      adoptSessionModel: (host, panelId, folder, model, contextWindow) =>
+        this.settingsManager.adoptSessionModel(host, panelId, folder, model, contextWindow),
       postMessage,
       setupSessionWatcher: (folderKey) => this.storageManager.setupSessionWatcher(folderKey),
       addOrUpdateSession: (sessionId, folderKey) => this.storageManager.addOrUpdateSession(sessionId, folderKey),
@@ -520,20 +520,7 @@ export class ChatPanelProvider {
     if (!this.platform.settings.get<boolean>("damocles.voice.tts.enabled", false)) return;
     const trimmed = text.trim();
     if (trimmed.length === 0) return;
-    void (async () => {
-      try {
-        if (!this.voiceService.isReady()) await this.voiceService.start();
-        if (!this.voiceService.isReady()) {
-          log("[ChatPanelProvider] tts dispatch: voice service did not become ready");
-          return;
-        }
-        const reqId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-        log(`[ChatPanelProvider] tts dispatch reply: req=${reqId} chars=${trimmed.length}`);
-        this.voiceService.ttsRequest(reqId, trimmed);
-      } catch (err) {
-        log("[ChatPanelProvider] tts dispatch failed:", err);
-      }
-    })();
+    this.voiceService.speakReply(trimmed).catch((err) => log("[ChatPanelProvider] tts dispatch failed:", err));
   }
 
   async show(): Promise<void> {

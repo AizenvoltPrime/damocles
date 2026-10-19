@@ -18,6 +18,7 @@ import {
   sessionLeasesOf,
   type SessionLeaseHolder,
 } from '../session-lease';
+import { ensurePiSessionDir } from '../session-dir';
 import { claimStoredSession, requestSessionHandoff } from '../../../chat-panel/session-ownership';
 import { createSessionHandlers } from '../../../chat-panel/message-router/handlers/session-handlers';
 import { createFakePlatform, type FakePlatform } from '../../../../__mocks__/fake-platform';
@@ -262,11 +263,20 @@ function panelSession() {
     onSessionReleaseRequested: async () => undefined,
     setPanelToken: () => undefined,
     setResumeSession: (id: string | null) => { target = id; },
+    // Binds the target it still holds, as PiSession does once pi installed it.
+    openResumeTarget: async (id: string) => (target === id ? { kind: 'switched' as const } : { kind: 'cancelled' as const }),
     initializeEarly: async () => undefined,
     onWebviewReady: () => undefined,
     getToolStatus: () => ({}),
     seedCheckpoints: () => undefined,
   };
+}
+
+/** The conversation's file in the panel folder's session dir, which an open looks up before it asks pi; returns its remover. */
+function storedFileOf(sessionId: string): () => void {
+  const file = path.join(ensurePiSessionDir(FOLDER.fsPath), `2026-01-01T00-00-00-000Z_${sessionId}.jsonl`);
+  fs.writeFileSync(file, '');
+  return () => fs.rmSync(file, { force: true });
 }
 
 /** One restored panel and the real `ready` and resume handlers around it. */
@@ -318,6 +328,7 @@ describe('a conversation a live process with no window holds', () => {
     expect(other.answer).toBe('held');
     const platform = createFakePlatform();
     const panel = restoringPanel(platform);
+    const removeFile = storedFileOf(sessionId);
 
     await panel.ready(sessionId, token);
 
@@ -326,6 +337,7 @@ describe('a conversation a live process with no window holds', () => {
     expect(panel.loaded).toEqual([sessionId]);
     expect(platform.notifications.calls).toEqual([]);
     releaseSessionLease(sessionId, panel.session);
+    removeFile();
   }, 15_000);
 
   it('a restore by another panel is refused with the choice to open it here, and asks nothing yet', async () => {
@@ -348,6 +360,7 @@ describe('a conversation a live process with no window holds', () => {
     const platform = createFakePlatform();
     platform.notifications.answerWith((call) => (call.actions.includes(OPEN_HERE) ? OPEN_HERE : undefined));
     const panel = restoringPanel(platform);
+    const removeFile = storedFileOf(sessionId);
 
     await panel.ready(sessionId, randomUUID());
 
@@ -356,6 +369,7 @@ describe('a conversation a live process with no window holds', () => {
     expect(panel.loaded).toEqual([sessionId]);
     expect(fs.existsSync(requestPath(sessionId))).toBe(false);
     releaseSessionLease(sessionId, panel.session);
+    removeFile();
   }, 15_000);
 
   it('the holder records who it is beside the lock, and acts only on a fresh request naming its own lease', async () => {

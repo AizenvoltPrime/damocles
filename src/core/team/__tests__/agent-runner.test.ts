@@ -5,7 +5,9 @@ import type { AgentRunConfig, NoteSink, UndeliveredMessage } from '../types';
 import type { ImageBlock } from '../../../shared/types/content';
 import { wrapSteerMessage } from '../../../shared/steer';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
-import { FakeSession } from './fake-session';
+import { endTurnAtOnce, FakeSession, type FakeSessionOptions } from './fake-session';
+import { DAMOCLES_TEAM_DELIVERED_ENTRY } from '../../pi-session/session-store/constants';
+import { trackRunLifecycle } from '../../pi-session/run-lifecycle';
 import { CANCELLED_TOOL_DETAIL_KEY } from '../../../shared/types/session';
 import { memberHistoryMessages } from '../content-blocks';
 import type { PersistedAgentMessage } from '../../pi-session/agent-records';
@@ -24,16 +26,71 @@ function baseConfig(overrides: Partial<AgentRunConfig>): AgentRunConfig {
     name: 'worker',
     role: 'specialist',
     initial: { kind: 'prompt', text: 'do the task' },
-    createSession: overrides.createSession ?? (async () => { throw new Error('no session'); }),
     forgetSession: vi.fn(),
     abortSignal: new AbortController().signal,
     messageBus,
     onMessage: vi.fn<(m: ExtensionToWebviewMessage) => void>(),
+    onWindDown: vi.fn(),
     teamId: 'team-1',
     bindNoteDelivery: () => () => undefined,
     bindTakeUndelivered: () => () => undefined,
     ...overrides,
+    // Bound as `TeamRunner.createMemberSession` binds a member's session.
+    createSession: async () => {
+      const session = await (overrides.createSession ?? (async () => { throw new Error('no session'); }))();
+      trackRunLifecycle(session);
+      return session;
+    },
   } as AgentRunConfig;
+}
+
+/** A session whose first model call stays open until `opening.end()`; every later call ends its turn at once. */
+function heldOpening(opening: { end: (() => void) | null }): FakeSession {
+  return new FakeSession({
+    onModelCall: (call, s) => {
+      if (call.index === 0) opening.end = () => void s.endTurn();
+      else void s.endTurn();
+    },
+  });
+}
+
+/** Counts the requests pi makes under a live signal; past the first `open`, each ends its turn with `text` at once. */
+function liveCallCounter(): { count: () => number; after: (open: number, text: string) => NonNullable<FakeSessionOptions['onModelCall']> } {
+  let calls = 0;
+  return {
+    count: () => calls,
+    after: (open, text) => (_call, s) => {
+      calls++;
+      if (calls > open) void s.endTurn(text);
+    },
+  };
+}
+
+/** Holds the fake's input handler on the prompt whose text includes `match` until released. */
+function holdInput(fake: FakeSession, match: string): { entered: Promise<void>; release: () => void } {
+  let enter!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => { enter = resolve; });
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  fake.inputHandler = async (text) => {
+    if (!text.includes(match)) return;
+    enter();
+    await released;
+  };
+  return { entered, release };
+}
+
+/** The text of each user message the fake persisted to its branch. */
+function persistedUserTexts(fake: FakeSession): string[] {
+  return fake.branch.flatMap((entry) => {
+    const { type, message } = entry as { type?: string; message?: { role?: string; content?: Array<{ type: string; text?: string }> } };
+    return type === 'message' && message?.role === 'user' ? [(message.content ?? []).map((p) => p.text ?? '').join('')] : [];
+  });
+}
+
+/** The text of each user message the runner showed on the member's card. */
+function userEchoes(config: AgentRunConfig): string[] {
+  return vi.mocked(config.onMessage).mock.calls.flatMap(([m]) => (m.type === 'teamAgentUserMessage' ? [m.content] : []));
 }
 
 /** Captures the note sink the runner publishes, plus whether its teardown has run. */
@@ -52,7 +109,7 @@ function noteSink(): { deliver: NoteSink; unbound: boolean; bind: AgentRunConfig
 
 describe('AgentRunner (pi-native team agent)', () => {
   it('prompts the opening task once and completes when keepAlive is false', async () => {
-    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
     const config = baseConfig({
       createSession: async () => fake as never,
       keepAlive: () => false,
@@ -68,9 +125,7 @@ describe('AgentRunner (pi-native team agent)', () => {
   it('re-prompts on a MessageBus delivery while idle, then ends when keepAlive flips false', async () => {
     let alive = true;
     const messageBus = new MessageBus('team-1');
-    const fake = new FakeSession({
-      onPrompt: (_t, s) => s.emit({ type: 'turn_end' }),
-    });
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
     // `onTurnEnd` fires exactly when the runner enters its idle wait — a deterministic barrier (no timers).
     let idleResolve: (() => void) | null = null;
     const nextIdle = (): Promise<void> => new Promise((r) => { idleResolve = r; });
@@ -100,17 +155,11 @@ describe('AgentRunner (pi-native team agent)', () => {
   });
 
   it('steers (delivers immediately) when a message arrives mid-stream', async () => {
-    // The opening prompt stays in-flight (does not resolve its turn) until we end it, so the bus
-    // delivery lands while `isStreaming` is true → the runner steers it immediately as a prompt.
-    // A holder, not a `let`: control-flow analysis cannot see the assignment made inside `onPrompt`.
+    // The opening call stays open until we end it, so the bus delivery lands while the run is busy →
+    // the runner steers it at once rather than waiting for the run to settle.
+    // A holder, not a `let`: control-flow analysis cannot see the assignment made inside `onModelCall`.
     const opening: { end: (() => void) | null } = { end: null };
-    const fake = new FakeSession({
-      isStreaming: true,
-      // Hold the opening turn open until we end it; the steered prompt injects without ending the turn.
-      onPrompt: (text, s) => {
-        if (text === 'do the task') opening.end = () => s.emit({ type: 'turn_end' });
-      },
-    });
+    const fake = heldOpening(opening);
     const messageBus = new MessageBus('team-1');
     const config = baseConfig({
       messageBus,
@@ -119,8 +168,8 @@ describe('AgentRunner (pi-native team agent)', () => {
     });
 
     const run = new AgentRunner().startAgent(config);
-    // Wait until the opening prompt is in-flight (1st prompt), then deliver while streaming.
-    await fake.whenPrompted(1);
+    // Wait until the opening call is open, then deliver while the run is busy.
+    await fake.whenModelCalled(1);
     // Deliver while streaming → the runner steers via prompt() immediately (does not wait for the turn).
     messageBus.send('peer', 'worker', 'steer me');
     // Wait until the steered prompt is issued (2nd prompt), then end the opening turn so the run settles.
@@ -130,6 +179,7 @@ describe('AgentRunner (pi-native team agent)', () => {
     await run;
 
     expect(fake.prompts).toContain('[Message from peer]: steer me');
+    expect(fake.promptOptions[1]?.streamingBehavior).toBe('steer');
   });
 
   it('accumulates every usage component across turns, cacheRead included', async () => {
@@ -139,7 +189,7 @@ describe('AgentRunner (pi-native team agent)', () => {
     const messageBus = new MessageBus('team-1');
     let turn = 0;
     const fake = new FakeSession({
-      onPrompt: (_t, s) => {
+      onModelCall: (_c, s) => {
         turn += 1;
         if (turn === 1) {
           s.emitAssistantUsage({ input: 100, output: 30, cacheRead: 500, cacheWrite: 10 }, 0.01);
@@ -148,7 +198,7 @@ describe('AgentRunner (pi-native team agent)', () => {
           // Stop after this second turn so the loop ends without a third prompt.
           alive = false;
         }
-        s.emit({ type: 'turn_end' });
+        void s.endTurn();
       },
     });
     const usageUpdates: Array<{ inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; costUsd: number }> = [];
@@ -186,14 +236,14 @@ describe('AgentRunner (pi-native team agent)', () => {
 
   it('counts compaction and cache-warm tokens, so the tokens agree with the cost', async () => {
     const fake = new FakeSession({
-      onPrompt: (_t, s) => {
+      onModelCall: (_c, s) => {
         s.emitAssistantUsage({ input: 100, output: 30, cacheRead: 500, cacheWrite: 10 }, 0.02);
         // pi writes the compaction entry, then emits `compaction_end`; its summary call is billed spend.
         s.tokens.input += 4000;
         s.tokens.output += 600;
         s.cost += 0.03;
         s.emit({ type: 'compaction_end', reason: 'threshold', aborted: false, willRetry: false });
-        s.emit({ type: 'turn_end' });
+        void s.endTurn();
       },
     });
     const usageUpdates: Array<{ inputTokens: number; outputTokens: number; cacheReadTokens: number; costUsd: number }> = [];
@@ -221,7 +271,7 @@ describe('AgentRunner (pi-native team agent)', () => {
     let alive = true;
     let firstPark = true;
     const messageBus = new MessageBus('team-1');
-    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
     let idleResolve: (() => void) | null = null;
     const nextIdle = (): Promise<void> => new Promise((r) => { idleResolve = r; });
     const config = baseConfig({
@@ -255,7 +305,7 @@ describe('AgentRunner (pi-native team agent)', () => {
     const ac = new AbortController();
     let sent = false;
     const messageBus = new MessageBus('team-1');
-    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
     const config = baseConfig({
       abortSignal: ac.signal,
       messageBus,
@@ -281,7 +331,7 @@ describe('AgentRunner (pi-native team agent)', () => {
     // Terminal-contract wiring: when keepAlive is false the runner calls onReconcileBeforeEnd BEFORE
     // breaking. If the hook does not arm a hold, the re-checked keepAlive is still false → break → the
     // agent settles WITHOUT ever entering the idle wait (onTurnEnd must not fire on the break path).
-    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
     let reconciles = 0;
     let turnEnds = 0;
     const config = baseConfig({
@@ -308,7 +358,7 @@ describe('AgentRunner (pi-native team agent)', () => {
     let reconciles = 0;
     let turnEnds = 0;
     const messageBus = new MessageBus('team-1');
-    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
     let idleResolve: (() => void) | null = null;
     const nextIdle = (): Promise<void> => new Promise((r) => { idleResolve = r; });
     const config = baseConfig({
@@ -346,7 +396,7 @@ describe('AgentRunner (pi-native team agent)', () => {
     let alive = false;
     let sent = false;
     const messageBus = new MessageBus('team-1');
-    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
     const config = baseConfig({
       abortSignal: ac.signal,
       messageBus,
@@ -370,28 +420,355 @@ describe('AgentRunner (pi-native team agent)', () => {
   });
 
   it('reclaims a message pi still holds when the turn ends, instead of ending with it undelivered', async () => {
-    // pi runs finishTurn before it drains the queue, so a message steered in that window is
-    // still held when the loop comes back around. The bus subscriber already echoed it to the overlay.
+    // A steer pi accepts after a settling run last checked its queue stays queued once the run settles,
+    // so the runner takes it back and prompts it. It was echoed when it was steered, and only then.
     const messages: ExtensionToWebviewMessage[] = [];
-    const fake = new FakeSession({
-      // Only the opening turn is held for the test; a re-prompt ends on its own so the run can settle.
-      onPrompt: (_t, s) => { if (s.prompts.length > 1) s.emit({ type: 'turn_end' }); },
-    });
+    const messageBus = new MessageBus('team-1');
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
+    fake.atLastQueueCheck = () => {
+      fake.atLastQueueCheck = null;
+      messageBus.send('Lead', 'worker', 'revise section 3');
+    };
     const run = new AgentRunner().startAgent(baseConfig({
+      messageBus,
       createSession: async () => fake as never,
       keepAlive: () => false,
       onMessage: (m: ExtensionToWebviewMessage) => { messages.push(m); },
     }));
 
-    await fake.whenPrompted(1);
-    fake.holdSteeredMessage('[Message from Lead]: revise section 3');
-    fake.emit({ type: 'turn_end' });
     await run;
 
-    expect(fake.prompts).toEqual(['do the task', '[Message from Lead]: revise section 3']);
+    expect(fake.prompts).toEqual(['do the task', '[Message from Lead]: revise section 3', '[Message from Lead]: revise section 3']);
+    // The loop's own prompts join a run another prompt opened as follow-ups; this one opens a run of its own.
+    expect(fake.promptOptions.map((o) => o?.streamingBehavior)).toEqual(['followUp', 'steer', 'followUp']);
     expect(fake.pendingMessageCount).toBe(0);
     const echoed = messages.filter((m) => m.type === 'teamAgentUserMessage').map((m) => m.content);
-    expect(echoed).toEqual(['do the task']);
+    expect(echoed).toEqual(['do the task', '[Message from Lead]: revise section 3']);
+  });
+
+  it('waits out a run pi starts for a steer that reaches it just after its run settled, before it ends', async () => {
+    // One tick after pi's last queue check the run still reads busy, so the runner steers; pi reads the busy flag only
+    // after its own run cleared it, so it starts a run for the message, which outlives the prompt the runner awaits.
+    const messageBus = new MessageBus('team-1');
+    const busyAtForget: boolean[] = [];
+    const fake = new FakeSession({
+      onModelCall: (call, s) => void s.endTurn(call.index === 0 ? 'first answer' : 'answer to the late message'),
+    });
+    fake.atLastQueueCheck = () => {
+      fake.atLastQueueCheck = null;
+      queueMicrotask(() => messageBus.send('Lead', 'worker', 'late'));
+    };
+    const config = baseConfig({
+      messageBus,
+      createSession: async () => fake as never,
+      keepAlive: () => false,
+      forgetSession: vi.fn(() => { busyAtForget.push(fake.isStreaming); }),
+    });
+
+    const result = await new AgentRunner().startAgent(config);
+
+    expect(fake.prompts).toEqual(['do the task', '[Message from Lead]: late']);
+    expect(fake.promptOptions[1]?.streamingBehavior).toBe('steer');
+    expect(busyAtForget).toEqual([false]);
+    expect(result).toMatchObject({ status: 'completed', finalResponse: 'answer to the late message' });
+  });
+
+  it('waits out a steer still in an input handler as its run settles, and the run pi then starts for it', async () => {
+    const messageBus = new MessageBus('team-1');
+    const opening: { end: (() => void) | null } = { end: null };
+    const modelCallsAtForget: number[] = [];
+    let modelCalls = 0;
+    const fake = new FakeSession({
+      onModelCall: (call, s) => {
+        modelCalls++;
+        if (call.index === 0) opening.end = () => void s.endTurn('first answer');
+        else void s.endTurn('answer to the late message');
+      },
+    });
+    let inHandler!: () => void;
+    let release!: () => void;
+    const handlerEntered = new Promise<void>((resolve) => { inHandler = resolve; });
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    fake.inputHandler = async (text) => {
+      if (!text.includes('late')) return;
+      inHandler();
+      await released;
+    };
+    const settled = new Promise<void>((resolve) => fake.subscribe((e) => { if ((e as { type: string }).type === 'agent_settled') resolve(); }));
+    const config = baseConfig({
+      messageBus,
+      createSession: async () => fake as never,
+      keepAlive: () => false,
+      forgetSession: vi.fn(() => { modelCallsAtForget.push(modelCalls); }),
+    });
+
+    const run = new AgentRunner().startAgent(config);
+    await fake.whenModelCalled(1);
+    messageBus.send('Lead', 'worker', 'late');
+    await handlerEntered;
+    opening.end!();
+    await settled;
+    // A macrotask runs only once every microtask the settle queued has run.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    release();
+    const result = await run;
+
+    expect(result).toMatchObject({ status: 'completed', finalResponse: 'answer to the late message' });
+    expect(modelCallsAtForget).toEqual([2]);
+    expect(fake.isStreaming).toBe(false);
+    expect(fake.prompts).toEqual(['do the task', '[Message from Lead]: late']);
+    expect(fake.promptOptions[1]?.streamingBehavior).toBe('steer');
+  });
+
+  it('ends cancelled on a stop while it waits for a steer still in an input handler, without waiting for the handler', async () => {
+    const messageBus = new MessageBus('team-1');
+    const ac = new AbortController();
+    const opening: { end: (() => void) | null } = { end: null };
+    const fake = heldOpening(opening);
+    const settled = new Promise<void>((resolve) => fake.subscribe((e) => { if ((e as { type: string }).type === 'agent_settled') resolve(); }));
+    let inHandler!: () => void;
+    let release!: () => void;
+    const handlerEntered = new Promise<void>((resolve) => { inHandler = resolve; });
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    fake.inputHandler = async (text) => {
+      if (!text.includes('late')) return;
+      inHandler();
+      await released;
+    };
+    const config = baseConfig({ messageBus, abortSignal: ac.signal, createSession: async () => fake as never, keepAlive: () => false });
+
+    const run = new AgentRunner().startAgent(config);
+    await fake.whenModelCalled(1);
+    messageBus.send('Lead', 'worker', 'late');
+    await handlerEntered;
+    opening.end!();
+    await settled;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    ac.abort();
+    const result = await run;
+    release();
+
+    expect(result.status).toBe('cancelled');
+    expect(config.forgetSession).toHaveBeenCalledWith(fake);
+  });
+
+  it('stops before any request the run pi opens for a steer an input handler held across a stop, which stays undelivered', async () => {
+    const messageBus = new MessageBus('team-1');
+    const ac = new AbortController();
+    const live = liveCallCounter();
+    const fake = new FakeSession({ onModelCall: live.after(1, 'answer after the stop') });
+    const held = holdInput(fake, 'late');
+    let take!: () => UndeliveredMessage[];
+    const config = baseConfig({
+      messageBus,
+      abortSignal: ac.signal,
+      createSession: async () => fake as never,
+      keepAlive: () => false,
+      // As `FolderRuntime.forgetSubagentSession` does.
+      forgetSession: vi.fn(() => fake.dispose()),
+      bindTakeUndelivered: (t) => { take = t; return () => undefined; },
+    });
+
+    const run = new AgentRunner().startAgent(config);
+    await fake.whenModelCalled(1);
+    messageBus.send('Lead', 'worker', 'late');
+    await held.entered;
+    // A team stop takes each member's undelivered messages right before its abort.
+    const undelivered = take();
+    ac.abort();
+    const result = await run;
+    held.release();
+    await fake.whenPrompted(2);
+    await fake.waitForIdle();
+
+    expect(result.status).toBe('cancelled');
+    expect(config.forgetSession).toHaveBeenCalledWith(fake);
+    expect(live.count()).toBe(1);
+    expect(undelivered).toEqual([{ text: '[Message from Lead]: late', echoed: true, ids: [expect.any(String)] }]);
+    expect(fake.customEntries.filter((e) => e.customType === DAMOCLES_TEAM_DELIVERED_ENTRY)).toEqual([]);
+  });
+
+  it('stops before any request the run pi opens for a steer an input handler held when the run threw, and reports the steer undelivered', async () => {
+    const messageBus = new MessageBus('team-1');
+    const opening: { end: (() => void) | null } = { end: null };
+    const live = liveCallCounter();
+    const fake = new FakeSession({
+      onModelCall: (call, s) => {
+        if (call.index === 0) opening.end = () => void s.endTurn('first answer');
+        live.after(1, 'answer after the failure')(call, s);
+      },
+    });
+    const prompt = fake.prompt.bind(fake);
+    fake.prompt = async (text, options) => {
+      await prompt(text, options);
+      if (text === 'do the task') throw new Error('the run broke');
+    };
+    const held = holdInput(fake, 'late');
+    const config = baseConfig({
+      messageBus,
+      createSession: async () => fake as never,
+      keepAlive: () => false,
+      forgetSession: vi.fn(() => fake.dispose()),
+    });
+
+    const run = new AgentRunner().startAgent(config);
+    await fake.whenModelCalled(1);
+    messageBus.send('Lead', 'worker', 'late');
+    await held.entered;
+    opening.end!();
+    const result = await run;
+    held.release();
+    await fake.whenPrompted(2);
+    await fake.waitForIdle();
+
+    expect(result).toMatchObject({ status: 'failed', failure: { kind: 'run', message: 'the run broke' } });
+    expect(live.count()).toBe(1);
+    expect(result.undelivered).toEqual([{ text: '[Message from Lead]: late', echoed: true, ids: [expect.any(String)] }]);
+  });
+
+  it('ends cancelled at once on a stop while an input handler holds its opening prompt, which then opens no request and reaches neither the undelivered list nor the member file', async () => {
+    const messageBus = new MessageBus('team-1');
+    const ac = new AbortController();
+    const live = liveCallCounter();
+    const fake = new FakeSession({ onModelCall: live.after(0, 'worked after the stop') });
+    const held = holdInput(fake, 'do the task');
+    let take!: () => UndeliveredMessage[];
+    const config = baseConfig({
+      messageBus,
+      abortSignal: ac.signal,
+      createSession: async () => fake as never,
+      keepAlive: () => false,
+      forgetSession: vi.fn(() => fake.dispose()),
+      bindTakeUndelivered: (t) => { take = t; return () => undefined; },
+    });
+
+    const run = new AgentRunner().startAgent(config);
+    await held.entered;
+    const undelivered = take();
+    ac.abort();
+    messageBus.send('Lead', 'worker', 'after the stop');
+    const result = await run;
+    held.release();
+    await fake.whenPrompted(1);
+    await fake.waitForIdle();
+
+    expect(result).toMatchObject({ status: 'cancelled', finalResponse: null, toolCallCount: 0, costUsd: 0 });
+    expect(config.forgetSession).toHaveBeenCalledWith(fake);
+    expect(undelivered).toEqual([]);
+    expect(live.count()).toBe(0);
+    expect(fake.prompts).toEqual(['do the task']);
+    expect(persistedUserTexts(fake)).toEqual([]);
+    expect(userEchoes(config)).toEqual([]);
+  });
+
+  it('shows the opening task on the card only once pi commits it, as pi committed it', async () => {
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
+    const held = holdInput(fake, 'do the task');
+    const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false });
+
+    const run = new AgentRunner().startAgent(config);
+    await held.entered;
+    expect(userEchoes(config)).toEqual([]);
+    held.release();
+    await run;
+
+    expect(userEchoes(config)).toEqual(persistedUserTexts(fake));
+    expect(userEchoes(config)).toEqual(['do the task']);
+  });
+
+  it('ends cancelled at once on a stop while an input handler holds a woken prompt, which then opens no request and stays undelivered', async () => {
+    const messageBus = new MessageBus('team-1');
+    const ac = new AbortController();
+    const live = liveCallCounter();
+    const fake = new FakeSession({ onModelCall: live.after(0, 'worked after the stop') });
+    const held = holdInput(fake, 'revise section 2');
+    let take!: () => UndeliveredMessage[];
+    const config = baseConfig({
+      messageBus,
+      abortSignal: ac.signal,
+      initial: { kind: 'park' },
+      createSession: async () => fake as never,
+      keepAlive: () => true,
+      forgetSession: vi.fn(() => fake.dispose()),
+      bindTakeUndelivered: (t) => { take = t; return () => undefined; },
+    });
+
+    const run = new AgentRunner().startAgent(config);
+    const sent = messageBus.send('Lead', 'worker', 'revise section 2');
+    await held.entered;
+    const undelivered = take();
+    ac.abort();
+    const result = await run;
+    held.release();
+    await fake.whenPrompted(1);
+    await fake.waitForIdle();
+
+    expect(result).toMatchObject({ status: 'cancelled', finalResponse: null, toolCallCount: 0, costUsd: 0 });
+    expect(config.forgetSession).toHaveBeenCalledWith(fake);
+    expect(undelivered).toEqual([{ text: '[Message from Lead]: revise section 2', echoed: true, ids: [sent.messageId] }]);
+    expect(live.count()).toBe(0);
+    expect(persistedUserTexts(fake)).toEqual([]);
+    expect(fake.customEntries.filter((e) => e.customType === DAMOCLES_TEAM_DELIVERED_ENTRY)).toEqual([]);
+  });
+
+  it('ends cancelled on a stop while an input handler that never returns holds its opening prompt', async () => {
+    const ac = new AbortController();
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    fake.inputHandler = () => {
+      enter();
+      return new Promise<void>(() => undefined);
+    };
+    const config = baseConfig({ abortSignal: ac.signal, createSession: async () => fake as never, keepAlive: () => false });
+
+    const run = new AgentRunner().startAgent(config);
+    await entered;
+    ac.abort();
+    const result = await run;
+
+    expect(result.status).toBe('cancelled');
+    expect(config.forgetSession).toHaveBeenCalledWith(fake);
+    expect(fake.prompts).toEqual([]);
+  });
+
+  it('logs the failure of an opening prompt an input handler releases after the stop, opening no request and leaving no rejection unhandled', async () => {
+    const ac = new AbortController();
+    const live = liveCallCounter();
+    const fake = new FakeSession({ onModelCall: live.after(0, 'worked after the stop') });
+    const prompt = fake.prompt.bind(fake);
+    fake.prompt = async (text, options) => {
+      await prompt(text, options);
+      throw new Error('pi refused the late prompt');
+    };
+    const held = holdInput(fake, 'do the task');
+    const config = baseConfig({ abortSignal: ac.signal, createSession: async () => fake as never, keepAlive: () => false, forgetSession: vi.fn(() => fake.dispose()) });
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+
+    try {
+      const run = new AgentRunner().startAgent(config);
+      await held.entered;
+      ac.abort();
+      const result = await run;
+      held.release();
+      await fake.whenPrompted(1);
+      await fake.waitForIdle();
+      // Node reports an unhandled rejection only once the microtask queue drains.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(result.status).toBe('cancelled');
+      expect(live.count()).toBe(0);
+      expect(unhandled).toEqual([]);
+      expect(logged.mock.calls.filter(([text]) => String(text).startsWith('[AgentRunner]'))).toEqual([
+        ['[AgentRunner] A prompt to "worker" failed after the runner let go of it:', new Error('pi refused the late prompt')],
+      ]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      logged.mockRestore();
+    }
   });
 
   it('returns cancelled when the abort signal fires before start', async () => {
@@ -399,7 +776,7 @@ describe('AgentRunner (pi-native team agent)', () => {
     ac.abort();
     const config = baseConfig({
       abortSignal: ac.signal,
-      createSession: async () => new FakeSession({ onPrompt: () => {} }) as never,
+      createSession: async () => new FakeSession() as never,
     });
 
     const result = await new AgentRunner().startAgent(config);
@@ -418,7 +795,7 @@ describe('AgentRunner user note delivery', () => {
     let alive = true;
     let idleResolve: (() => void) | null = null;
     const nextIdle = (): Promise<void> => new Promise((r) => { idleResolve = r; });
-    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
     const messages: ExtensionToWebviewMessage[] = [];
     const sink = noteSink();
     const config = baseConfig({
@@ -446,12 +823,7 @@ describe('AgentRunner user note delivery', () => {
 
   it('steers a note that arrives mid-stream, still echoing it once', async () => {
     const opening: { end: (() => void) | null } = { end: null };
-    const fake = new FakeSession({
-      isStreaming: true,
-      onPrompt: (text, s) => {
-        if (text === 'do the task') opening.end = () => s.emit({ type: 'turn_end' });
-      },
-    });
+    const fake = heldOpening(opening);
     const messages: ExtensionToWebviewMessage[] = [];
     const sink = noteSink();
     const config = baseConfig({
@@ -462,7 +834,7 @@ describe('AgentRunner user note delivery', () => {
     });
 
     const run = new AgentRunner().startAgent(config);
-    await fake.whenPrompted(1);
+    await fake.whenModelCalled(1);
     expect(sink.deliver('stopped by the user')).toBe(true);
     await fake.whenPrompted(2);
     if (!opening.end) throw new Error('the opening prompt never reached the fake session');
@@ -481,7 +853,7 @@ describe('AgentRunner user note delivery', () => {
     let alive = true;
     let idleResolve: (() => void) | null = null;
     const nextIdle = (): Promise<void> => new Promise((r) => { idleResolve = r; });
-    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
     const sink = noteSink();
     const config = baseConfig({
       createSession: async () => fake as never,
@@ -504,12 +876,7 @@ describe('AgentRunner user note delivery', () => {
 
   it('keeps the guard on the steered path, where a note is injected mid-turn', async () => {
     const opening: { end: (() => void) | null } = { end: null };
-    const fake = new FakeSession({
-      isStreaming: true,
-      onPrompt: (text, s) => {
-        if (text === 'do the task') opening.end = () => s.emit({ type: 'turn_end' });
-      },
-    });
+    const fake = heldOpening(opening);
     const sink = noteSink();
     const config = baseConfig({
       createSession: async () => fake as never,
@@ -518,7 +885,7 @@ describe('AgentRunner user note delivery', () => {
     });
 
     const run = new AgentRunner().startAgent(config);
-    await fake.whenPrompted(1);
+    await fake.whenModelCalled(1);
     expect(sink.deliver('/help me')).toBe(true);
     await fake.whenPrompted(2);
     if (!opening.end) throw new Error('the opening prompt never reached the fake session');
@@ -532,7 +899,7 @@ describe('AgentRunner user note delivery', () => {
   it('tears the sink down when the run ends normally, not only when it is aborted', async () => {
     // The ordinary exit is the wait loop finding nothing left to wait for, which is the route a late
     // note actually takes; the abort exit below is the other one. Both leave through the same `finally`.
-    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
     const sink = noteSink();
     const config = baseConfig({
       createSession: async () => fake as never,
@@ -550,7 +917,7 @@ describe('AgentRunner user note delivery', () => {
     const ac = new AbortController();
     let idleResolve: (() => void) | null = null;
     const nextIdle = (): Promise<void> => new Promise((r) => { idleResolve = r; });
-    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
     const messages: ExtensionToWebviewMessage[] = [];
     const sink = noteSink();
     const config = baseConfig({
@@ -586,14 +953,16 @@ describe('AgentRunner user note delivery', () => {
 
 interface PiToolCallBlock { id: string; name: string; arguments: Record<string, unknown> }
 
-/** Runs one turn whose single assistant message carries the given pi `toolCall` blocks. */
+/** Runs one turn whose single assistant message carries the given pi `toolCall` blocks; the call after it ends the run. */
 async function runWithToolCalls(blocks: PiToolCallBlock[]): Promise<{ messages: ExtensionToWebviewMessage[] }> {
   const messages: ExtensionToWebviewMessage[] = [];
   const fake = new FakeSession({
-    onPrompt: (_t, s) => {
-      s.emit({ type: 'message_end', message: { role: 'assistant', content: blocks.map((b) => ({ type: 'toolCall', ...b })) } });
-      for (const b of blocks) s.emit({ type: 'tool_execution_start', toolCallId: b.id, toolName: b.name, args: b.arguments });
-      s.emit({ type: 'turn_end' });
+    onModelCall: (call, s) => {
+      if (call.index === 0) {
+        s.emit({ type: 'message_end', message: { role: 'assistant', content: blocks.map((b) => ({ type: 'toolCall', ...b })) } });
+        for (const b of blocks) s.emit({ type: 'tool_execution_start', toolCallId: b.id, toolName: b.name, args: b.arguments });
+      }
+      void s.endTurn();
     },
   });
   const config = baseConfig({
@@ -677,21 +1046,23 @@ describe('AgentRunner tool count', () => {
     type: 'tool_execution_end', toolCallId: id, toolName: 'read', result: { content: [{ type: 'text', text }], details: {} }, isError,
   });
 
-  // pi emits `tool_execution_start` (agent-loop.js:379, :415) before `beforeToolCall`, where the gate blocks a call (:493).
+  // pi emits `tool_execution_start` (agent-loop.js:378, :414 in pi-agent-core 1.3.0) before `beforeToolCall`, where the gate blocks a call (:493).
   it('counts each call as pi starts it, a blocked call included', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
     const counts: Array<[string, number]> = [];
     let countedAtSeal = -1;
     const fake = new FakeSession({
-      onPrompt: (_t, s) => {
-        s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
-        s.emit({ type: 'message_end', message: { role: 'assistant', content: [read('tc-ok'), read('tc-blocked')], stopReason: 'toolUse' } });
-        countedAtSeal = counts.length;
-        s.emit(started('tc-ok'));
-        s.emit(ended('tc-ok', 'contents', false));
-        s.emit(started('tc-blocked'));
-        s.emit(ended('tc-blocked', 'Blocked by policy', true));
-        s.emit({ type: 'turn_end' });
+      onModelCall: (call, s) => {
+        if (call.index === 0) {
+          s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
+          s.emit({ type: 'message_end', message: { role: 'assistant', content: [read('tc-ok'), read('tc-blocked')], stopReason: 'toolUse' } });
+          countedAtSeal = counts.length;
+          s.emit(started('tc-ok'));
+          s.emit(ended('tc-ok', 'contents', false));
+          s.emit(started('tc-blocked'));
+          s.emit(ended('tc-blocked', 'Blocked by policy', true));
+        }
+        void s.endTurn();
       },
     });
     const config = baseConfig({
@@ -712,23 +1083,24 @@ describe('AgentRunner tool count', () => {
     ]);
   });
 
-  // pi starts no call after the one an abort lands in (agent-loop.js:402-404, :429-431, :449-451).
+  // pi starts no call after the one an abort lands in (agent-loop.js:402-404, :429-431, :449-451 in pi-agent-core 1.3.0).
   it('counts no call a batch cut short by an abort skipped', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
     const onToolCall = vi.fn();
+    const cancel = new AbortController();
+    // The request after the cut batch is made under the aborted signal, so pi ends it without asking the model.
     const fake = new FakeSession({
-      settleOn: 'agent_settled',
-      onPrompt: (_t, s) => {
+      onModelCall: (_call, s) => {
         s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
         s.emit({ type: 'message_end', message: { role: 'assistant', content: [read('tc-ran'), read('tc-skipped')], stopReason: 'toolUse' } });
         s.emit(started('tc-ran'));
+        cancel.abort();
         s.emit(ended('tc-ran', 'Operation aborted', true));
-        s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
-        s.emit({ type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'aborted', errorMessage: 'Request was aborted' } });
-        s.emit({ type: 'agent_settled', aborted: true });
+        void s.endTurn();
       },
     });
     const config = baseConfig({
+      abortSignal: cancel.signal,
       createSession: async () => fake as never,
       keepAlive: () => false,
       onMessage: (m: ExtensionToWebviewMessage) => { messages.push(m); },
@@ -766,9 +1138,9 @@ function partialResult(text: string, truncated?: boolean): Record<string, unknow
 async function runEmitting(emitEvents: (s: FakeSession) => void): Promise<ExtensionToWebviewMessage[]> {
   const messages: ExtensionToWebviewMessage[] = [];
   const fake = new FakeSession({
-    onPrompt: (_t, s) => {
+    onModelCall: (_c, s) => {
       emitEvents(s);
-      s.emit({ type: 'turn_end' });
+      void s.endTurn();
     },
   });
   const config = baseConfig({
@@ -946,14 +1318,14 @@ describe('AgentRunner tool result text', () => {
 /** Answers the decider chain the way pi's loop reads it: `{ action: 'end' }` is the only stop. */
 type StopHook = (turn: AgentTurnContext) => Promise<boolean>;
 
-/** A session whose turns end only when the test says so, so a run can be held open mid-flight. */
+/** A session whose model calls stay open until the test answers them, so a run can be held open mid-flight. */
 function heldSession(): FakeSession {
-  return new FakeSession({ onPrompt: () => undefined });
+  return new FakeSession();
 }
 
 /**
  * Drives the stop hook while the agent's run is still in flight, the only state pi ever consults it in.
- * The opening prompt is held open for the body, then released so the run settles.
+ * The opening call is held open for the body, then answered so the run settles.
  */
 async function withStopHook(body: (hook: StopHook, fake: FakeSession) => Promise<void>, session?: FakeSession): Promise<void> {
   const fake = session ?? heldSession();
@@ -961,7 +1333,7 @@ async function withStopHook(body: (hook: StopHook, fake: FakeSession) => Promise
     createSession: async () => fake as never,
     keepAlive: () => false,
   }));
-  await fake.whenPrompted(1);
+  await fake.whenModelCalled(1);
   const finishTurn = fake.agent.finishTurn;
   if (!finishTurn) throw new Error('the runner installed no finishTurn decider');
   const hook: StopHook = async (turn) => {
@@ -969,15 +1341,15 @@ async function withStopHook(body: (hook: StopHook, fake: FakeSession) => Promise
     return decision?.action === 'end';
   };
   await body(hook, fake);
-  // pi drains its queue once the turn ends, so leave nothing held that would re-prompt this session.
+  // pi delivers whatever is queued once the turn ends, so leave nothing queued that would extend this run.
   fake.clearQueue();
-  fake.emit({ type: 'turn_end' });
+  void fake.endTurn();
   await run;
 }
 
 /**
  * A completed assistant message carrying one tool call per name, each paired with the successful result
- * pi builds for it (`createToolResultMessage`, `agent-loop.js:656-670` in pi 1.1.0, keys the result to the call id and carries `isError`).
+ * pi builds for it (`createToolResultMessage`, `agent-loop.js:656-670` in pi-agent-core 1.3.0, keys the result to the call id and carries `isError`).
  */
 function turnWith(...names: string[]): AgentTurnContext {
   return {
@@ -996,10 +1368,10 @@ describe('AgentRunner terminal-tool turn stop', () => {
   });
 
   it('does not stop the turn while the session has a queued message', async () => {
-    // pi drains its steering queue only after this check, so stopping here would park the agent with
-    // the message stranded in the queue.
+    // pi polls its steering queue only after this check, so stopping here would make it end the loop and
+    // start another for the message (`agent-session.js:1500-1536` in pi 1.3.0): an extra request.
     await withStopHook(async (hook, fake) => {
-      fake.holdSteeredMessage('[Message from Lead]: one more thing');
+      fake.queueSteer('[Message from Lead]: one more thing');
       expect(await hook(turnWith('team_standby'))).toBe(false);
     });
   });
@@ -1008,7 +1380,7 @@ describe('AgentRunner terminal-tool turn stop', () => {
     // `sendCustomMessage` enqueues straight onto the agent, so `pendingMessageCount` reads 0 while pi
     // still holds the message. Reading the agent's queue is what keeps the guard honest.
     await withStopHook(async (hook, fake) => {
-      fake.holdCustomMessage('[Background results]');
+      fake.queueCustomMessage('[Background results]');
       expect(fake.pendingMessageCount).toBe(0);
       expect(await hook(turnWith('team_standby'))).toBe(false);
     });
@@ -1030,7 +1402,7 @@ describe('AgentRunner terminal-tool turn stop', () => {
 
   it('does not stop the turn on team_report_complete while the session has a queued message', async () => {
     await withStopHook(async (hook, fake) => {
-      fake.holdSteeredMessage('[Message from Lead]: one more thing');
+      fake.queueSteer('[Message from Lead]: one more thing');
       expect(await hook(turnWith('team_report_complete'))).toBe(false);
     });
   });
@@ -1051,7 +1423,7 @@ describe('AgentRunner terminal-tool turn stop', () => {
 
   it('does not stop the turn when the team_standby call did not park the agent', async () => {
     // `enterStandby` throws for a lead and for a specialist whose status is not running
-    // (`team-runner.ts:1270-1279`). The turn the agent gets that error in is the turn it reacts in, so
+    // (`TeamRunner.enterStandby`). The turn the agent gets that error in is the turn it reacts in, so
     // the engine must not take it away. A missing result is the same case: nothing parked.
     await withStopHook(async (hook) => {
       const threw = turnWith('team_standby');
@@ -1091,9 +1463,9 @@ describe('AgentRunner finalResponse', () => {
   /** A session whose turn emits one assistant text block, so `onAssistantText` has something to take. */
   function sessionEmittingText(text: string): FakeSession {
     return new FakeSession({
-      onPrompt: (_t, s) => {
+      onModelCall: (_c, s) => {
         s.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text }] } });
-        s.emit({ type: 'turn_end' });
+        void s.endTurn();
       },
     });
   }
@@ -1111,7 +1483,7 @@ describe('AgentRunner finalResponse', () => {
   });
 
   it('takes the reported summary over the session fallback when no assistant text was seen', async () => {
-    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
     fake.getLastAssistantText = (): string => 'stale text from the session';
 
     const result = await new AgentRunner().startAgent(baseConfig({
@@ -1140,8 +1512,13 @@ describe('AgentRunner finalResponse', () => {
     ['its reported summary', 'the sign-off', 'the sign-off'],
   ] as const)('gives a stopped run %s, never its narration', async (_label, reported, expected) => {
     const ac = new AbortController();
+    const narration = { role: 'assistant', content: [{ type: 'text', text: 'Now the trust integration test.' }] };
+    // The Stop lands while the model streams its narration, so pi ends the call aborted with that text.
     const fake = new FakeSession({
-      onPrompt: (_t, s) => s.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Now the trust integration test.' }] } }),
+      onModelCall: (_c, s) => {
+        s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
+        s.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Now the trust integration test.' }, message: narration });
+      },
     });
     fake.getLastAssistantText = (): string => 'Now the trust integration test.';
 
@@ -1151,7 +1528,7 @@ describe('AgentRunner finalResponse', () => {
       keepAlive: () => false,
       getReportedSummary: () => reported,
     }));
-    await vi.waitFor(() => expect(fake.prompts).toHaveLength(1));
+    await fake.whenModelCalled(1);
     ac.abort();
     const result = await run;
 
@@ -1184,7 +1561,7 @@ function statusesOf(config: AgentRunConfig): string[] {
 
 describe('AgentRunner park mode', () => {
   it('opens the session, prompts nothing, emits no running status, and waits', async () => {
-    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
     const abort = new AbortController();
     const turnEnds: string[] = [];
     let bound: (() => void) | null = null;
@@ -1213,7 +1590,7 @@ describe('AgentRunner park mode', () => {
   });
 
   it('a parked member wakes on a bus message and is prompted with it', async () => {
-    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
     const messageBus = new MessageBus('team-1');
     let alive = true;
     let bound: (() => void) | null = null;
@@ -1237,7 +1614,7 @@ describe('AgentRunner park mode', () => {
   });
 
   it('a parked member whose keepAlive holds reports the wake through onKeepAliveResume', async () => {
-    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
     const messageBus = new MessageBus('team-1');
     const abort = new AbortController();
     const resumed: string[] = [];
@@ -1268,7 +1645,7 @@ describe('AgentRunner park mode', () => {
   });
 
   it('a message sent while the session is still opening is queued and prompted, not lost', async () => {
-    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
     const messageBus = new MessageBus('team-1');
     let open!: () => void;
     const opened = new Promise<void>((r) => { open = r; });
@@ -1295,7 +1672,12 @@ describe('AgentRunner park mode', () => {
     ['a redelivered message', 'redeliver'],
   ] as const)('a parked member woken by %s is resumed before its first prompt', async (_label, source) => {
     const events: string[] = [];
-    const fake = new FakeSession({ onPrompt: (t, s) => { events.push(`prompt:${t}`); s.emit({ type: 'turn_end' }); } });
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
+    const prompt = fake.prompt.bind(fake);
+    fake.prompt = (text, options) => {
+      events.push(`prompt:${text}`);
+      return prompt(text, options);
+    };
     const messageBus = new MessageBus('team-1');
     const abort = new AbortController();
     let open!: () => void;
@@ -1330,7 +1712,7 @@ describe('AgentRunner park mode', () => {
 
 describe('AgentRunner redelivery and undelivered messages', () => {
   it('prompts messages carried over from an earlier run before the member settles', async () => {
-    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
     const config = baseConfig({
       initial: { kind: 'prompt', text: 'continue' },
       redeliver: [{ text: '[Message from Lead]: carried over', echoed: true }],
@@ -1345,14 +1727,12 @@ describe('AgentRunner redelivery and undelivered messages', () => {
   });
 
   it('undelivered() returns runner-local pending messages plus the pi steering and follow-up queues', async () => {
-    const opening: { end: (() => void) | null } = { end: null };
-    const fake = new FakeSession({
-      onPrompt: (text, s) => { if (text === 'do the task') opening.end = () => s.emit({ type: 'turn_end' }); },
-    });
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
     const messageBus = new MessageBus('team-1');
     const taker = undeliveredTaker();
     const abort = new AbortController();
     const config = baseConfig({
+      initial: { kind: 'park' },
       messageBus,
       abortSignal: abort.signal,
       createSession: async () => fake as never,
@@ -1361,11 +1741,12 @@ describe('AgentRunner redelivery and undelivered messages', () => {
     });
 
     const run = new AgentRunner().startAgent(config);
-    await fake.whenPrompted(1);
-    // Not streaming and mid-turn, so the runner holds the message locally until the turn ends.
+    // `steer()` and `followUp()` queue in pi even while it is idle, as a steer that loses the settle race stays queued.
+    fake.queueSteer('held by pi as a steer');
+    fake.queueFollowUp('held by pi as a follow-up');
+    await vi.waitFor(() => expect(taker.peek()).toHaveLength(2));
+    // Parked and idle: the runner holds a message until its wake prompts it, which is a later tick.
     const held = messageBus.send('Lead', 'worker', 'held by the runner');
-    fake.holdSteeredMessage('held by pi as a steer');
-    fake.holdFollowUpMessage('held by pi as a follow-up');
 
     expect(taker.take()).toEqual([
       { text: 'held by pi as a steer', echoed: true },
@@ -1385,11 +1766,11 @@ describe('AgentRunner cost baseline', () => {
     const messageBus = new MessageBus('team-1');
     let turn = 0;
     const fake = new FakeSession({
-      onPrompt: (_t, s) => {
+      onModelCall: (_c, s) => {
         turn += 1;
         s.emitAssistantUsage({ input: 10, output: 5, cacheRead: 200, cacheWrite: 3 }, 0.25);
         if (turn === 2) alive = false;
-        s.emit({ type: 'turn_end' });
+        void s.endTurn();
       },
     });
     // A reopened session reports its whole history's spend, which the earlier run already charged.
@@ -1426,17 +1807,16 @@ describe('AgentRunner image steers', () => {
   const piImage = { type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' };
   const steer = wrapSteerMessage('use this layout');
 
-  /** A streaming member whose opening turn is held; the prompt after it ends its own turn. */
-  function streamingMember(config: Partial<AgentRunConfig> = {}): {
+  /** A busy member whose opening call is held; each later call ends its turn unless `holdLaterCalls`. */
+  function streamingMember(config: Partial<AgentRunConfig> = {}, holdLaterCalls = false): {
     fake: FakeSession; sink: ReturnType<typeof noteSink>; taker: ReturnType<typeof undeliveredTaker>;
     messages: ExtensionToWebviewMessage[]; abort: AbortController; endOpening: () => void; run: Promise<unknown>;
   } {
     const opening: { end: (() => void) | null } = { end: null };
     const fake = new FakeSession({
-      isStreaming: true,
-      onPrompt: (text, s) => {
-        if (text === 'do the task') opening.end = () => s.emit({ type: 'turn_end' });
-        else if (s.promptOptions.at(-1)?.streamingBehavior !== 'steer') s.emit({ type: 'turn_end' });
+      onModelCall: (call, s) => {
+        if (call.index === 0) opening.end = () => void s.endTurn();
+        else if (!holdLaterCalls) void s.endTurn();
       },
     });
     const sink = noteSink();
@@ -1463,7 +1843,7 @@ describe('AgentRunner image steers', () => {
     let alive = true;
     let idleResolve: (() => void) | null = null;
     const idle = new Promise<void>((r) => { idleResolve = r; });
-    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
     const messages: ExtensionToWebviewMessage[] = [];
     const sink = noteSink();
     const run = new AgentRunner().startAgent(baseConfig({
@@ -1481,14 +1861,14 @@ describe('AgentRunner image steers', () => {
     await run;
 
     expect(fake.prompts[1]).toBe(steer);
-    expect(fake.promptOptions[1]).toEqual({ images: [piImage], expandPromptTemplates: false });
+    expect(fake.promptOptions[1]).toEqual({ streamingBehavior: 'followUp', images: [piImage], expandPromptTemplates: false });
     const echoes = messages.filter((m) => m.type === 'teamAgentUserMessage' && m.content === steer);
     expect(echoes).toEqual([expect.objectContaining({ images: [image] })]);
   });
 
   it('steers a mid-stream image steer into pi with its images', async () => {
     const m = streamingMember();
-    await m.fake.whenPrompted(1);
+    await m.fake.whenModelCalled(1);
     expect(m.sink.deliver(steer, [image])).toBe(true);
     await m.fake.whenPrompted(2);
     m.endOpening();
@@ -1500,23 +1880,25 @@ describe('AgentRunner image steers', () => {
 
   it('puts the images back on a steer it reclaims from pi at the turn end', async () => {
     const m = streamingMember();
-    await m.fake.whenPrompted(1);
-    m.fake.holdSteers = true;
-    expect(m.sink.deliver(steer, [image])).toBe(true);
-    await m.fake.whenPrompted(2);
+    // Steered after the settling run's last queue check, so pi settles with it still queued.
+    m.fake.atLastQueueCheck = () => {
+      m.fake.atLastQueueCheck = null;
+      expect(m.sink.deliver(steer, [image])).toBe(true);
+    };
+    await m.fake.whenModelCalled(1);
     m.endOpening();
     await m.run;
 
     expect(m.fake.prompts).toEqual(['do the task', steer, steer]);
-    expect(m.fake.promptOptions[2]).toEqual({ images: [piImage], expandPromptTemplates: false });
+    expect(m.fake.promptOptions[2]).toEqual({ streamingBehavior: 'followUp', images: [piImage], expandPromptTemplates: false });
     // Reclaimed messages were echoed when accepted, so the reclaim echoes nothing again.
     expect(m.messages.filter((x) => x.type === 'teamAgentUserMessage' && x.content === steer)).toHaveLength(1);
   });
 
   it('carries the images of a steer pi still holds in the undelivered snapshot, pairing equal texts in order', async () => {
     const m = streamingMember();
-    await m.fake.whenPrompted(1);
-    m.fake.holdSteers = true;
+    // pi holds both steers until the open call ends.
+    await m.fake.whenModelCalled(1);
     expect(m.sink.deliver(steer)).toBe(true);
     expect(m.sink.deliver(steer, [image])).toBe(true);
     await m.fake.whenPrompted(3);
@@ -1532,12 +1914,15 @@ describe('AgentRunner image steers', () => {
   });
 
   it('forgets the images of a steer pi has delivered', async () => {
-    const m = streamingMember();
-    await m.fake.whenPrompted(1);
+    const m = streamingMember({}, true);
+    await m.fake.whenModelCalled(1);
     expect(m.sink.deliver(steer, [image])).toBe(true);
     await m.fake.whenPrompted(2);
+    // The opening call ends, pi delivers the steer, and the next call stays open.
+    m.endOpening();
+    await m.fake.whenModelCalled(2);
     // A later text-only copy pi holds must not inherit the delivered steer's images.
-    m.fake.holdSteeredMessage(steer);
+    m.fake.queueSteer(steer);
 
     expect(m.taker.take()).toEqual([{ text: steer, echoed: true }]);
     m.abort.abort();
@@ -1545,45 +1930,24 @@ describe('AgentRunner image steers', () => {
   });
 });
 
-/**
- * A model call that fails, in the order pi 1.1.0 reports it. pi-agent-core's loop emits the assistant
- * `message_start` (`agent-loop.js:286`), its deltas (`agent-loop.js:299`), the `message_end` carrying
- * `stopReason: 'error'` (`agent-loop.js:319`), then `turn_end` and `agent_end` (`agent-loop.js:151-152`), and
- * `AgentSession` stamps `willRetry` on that `agent_end` (`agent-session.js:750`, `_willRetryAfterAgentEnd`).
- */
-function emitFailedCall(s: FakeSession, errorMessage: string, opts: { partial?: string; toolCall?: boolean; willRetry: boolean }): void {
-  s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
-  if (opts.partial) s.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: opts.partial } });
-  const content = [
-    ...(opts.partial ? [{ type: 'text', text: opts.partial }] : []),
-    ...(opts.toolCall ? [{ type: 'toolCall', id: 'tc-failed', name: 'read', arguments: { path: '/a.ts' } }] : []),
-  ];
-  const message = { role: 'assistant', content, stopReason: 'error', errorMessage };
-  s.emit({ type: 'message_end', message });
-  s.emit({ type: 'turn_end', message, toolResults: [] });
-  s.emit({ type: 'agent_end', messages: [message], willRetry: opts.willRetry });
-}
-
-/** A call that answers with `text`, from its `message_start` to its `message_end` (`agent-loop.js:286-319`). */
+/** A call that streams `text` and answers with it, from its `message_start` to its `message_end` (`agent-loop.js:286-319`). */
 function emitAnsweredCall(s: FakeSession, text: string): void {
   s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
   s.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: text } });
   s.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text }], stopReason: 'stop' } });
 }
 
-/** The run's end: `agent_settled` (`agent-session.js:691`), after which pi's `prompt()` resolves. */
-function emitSettled(s: FakeSession): void {
-  s.emit({ type: 'agent_settled', aborted: false });
-}
-
-/**
- * pi's auto-retry, between a failed call's `agent_end { willRetry: true }` and the retried call:
- * `_prepareRetry` emits `auto_retry_start` (`agent-session.js:3041`) and omits the failed call from context
- * (`agent-session.js:3048`), then the retried run opens with `agent_start` (`agent-loop.js:68`).
- */
-function emitRetryBackoff(s: FakeSession, attempt: number): void {
-  s.emit({ type: 'auto_retry_start', attempt, maxAttempts: 3, delayMs: 2000, errorMessage: 'overloaded' });
-  s.emit({ type: 'agent_start' });
+/** A call that streams `text` and reads a file, which pi runs before it asks the model again. */
+function emitReadingCall(s: FakeSession, text: string): void {
+  const read = { type: 'toolCall', id: 'tc-read', name: 'read', arguments: { path: '/parse.ts' } };
+  const result = { role: 'toolResult', toolCallId: 'tc-read', toolName: 'read', content: [{ type: 'text', text: 'source' }], isError: false };
+  s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
+  s.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: text } });
+  s.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text }, read], stopReason: 'toolUse' } });
+  s.emit({ type: 'tool_execution_start', toolCallId: 'tc-read', toolName: 'read', args: read.arguments });
+  s.emit({ type: 'tool_execution_end', toolCallId: 'tc-read', toolName: 'read', result, isError: false });
+  s.emit({ type: 'message_start', message: result });
+  s.emit({ type: 'message_end', message: result });
 }
 
 describe('AgentRunner provider failures', () => {
@@ -1595,14 +1959,30 @@ describe('AgentRunner provider failures', () => {
     expect(result).toMatchObject({ status: 'failed', failure: { kind: 'start', message: 'no session' }, finalResponse: 'Failed to start: no session' });
   });
 
+  it('ends an agent whose stop ended the wait for its session cancelled, and one whose open failed as it stopped failed', async () => {
+    const stopped = new AbortController();
+    const waiting = await new AgentRunner().startAgent(baseConfig({
+      abortSignal: stopped.signal,
+      createSession: async () => { stopped.abort(); throw stopped.signal.reason; },
+    }));
+    expect(waiting).toMatchObject({ status: 'cancelled', finalResponse: null });
+
+    const racing = new AbortController();
+    const failing = await new AgentRunner().startAgent(baseConfig({
+      abortSignal: racing.signal,
+      createSession: async () => { racing.abort(); throw new Error('disk full'); },
+    }));
+    expect(failing).toMatchObject({ status: 'failed', failure: { kind: 'start', message: 'disk full' } });
+  });
+
   it('ends the agent failed with the provider message when its last call fails for good, without reconciling it', async () => {
+    // Retries off, so pi's first failure is its last.
     const fake = new FakeSession({
-      settleOn: 'agent_settled',
-      onPrompt: (_t, s) => {
-        emitAnsweredCall(s, 'found the bug in parse()');
-        s.emit({ type: 'turn_end' });
-        emitFailedCall(s, '529 overloaded_error', { partial: 'Now I will', willRetry: false });
-        emitSettled(s);
+      maxRetries: 0,
+      onModelCall: (call, s) => {
+        if (call.index > 0) return s.failCall('529 overloaded_error', { partial: 'Now I will' });
+        emitReadingCall(s, 'found the bug in parse()');
+        void s.endTurn();
       },
     });
     const messageBus = new MessageBus('team-1');
@@ -1621,15 +2001,9 @@ describe('AgentRunner provider failures', () => {
 
   it('shows the failure in the transcript once, at the boundary after the call, never at its message_end', async () => {
     let sentAtAgentEnd = -1;
-    const fake = new FakeSession({
-      settleOn: 'agent_settled',
-      onPrompt: (_t, s) => {
-        emitFailedCall(s, '529 overloaded_error', { partial: 'Now I will', willRetry: false });
-        sentAtAgentEnd = sentOf(config).length;
-        emitSettled(s);
-      },
-    });
+    const fake = new FakeSession({ maxRetries: 0, onModelCall: (_c, s) => s.failCall('529 overloaded_error', { partial: 'Now I will' }) });
     const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false });
+    fake.subscribe((e) => { if ((e as { type: string }).type === 'agent_end') sentAtAgentEnd = sentOf(config).length; });
 
     await new AgentRunner().startAgent(config);
 
@@ -1643,17 +2017,11 @@ describe('AgentRunner provider failures', () => {
   it('completes a run whose failed call pi retried and that then answered, withdrawing the failed attempt', async () => {
     let failedMessageId = '';
     const fake = new FakeSession({
-      settleOn: 'agent_settled',
-      onPrompt: (_t, s) => {
-        emitFailedCall(s, '529 overloaded_error', { partial: 'Let me', toolCall: true, willRetry: true });
+      onModelCall: (call, s) => {
+        if (call.index === 0) return s.failCall('529 overloaded_error', { partial: 'Let me', toolCall: true });
         failedMessageId = sentOf(config).flatMap((m) => (m.type === 'teamAgentAssistant' ? [m.messageId] : [])).at(-1) ?? '';
-        emitRetryBackoff(s, 1);
         emitAnsweredCall(s, 'done');
-        // pi reports the retry's success after the retried call's `message_end` listeners ran (`agent-session.js:777`).
-        s.emit({ type: 'auto_retry_end', success: true, attempt: 1 });
-        s.emit({ type: 'turn_end' });
-        s.emit({ type: 'agent_end', messages: [], willRetry: false });
-        emitSettled(s);
+        void s.endTurn();
       },
     });
     const onToolCall = vi.fn();
@@ -1681,38 +2049,31 @@ describe('AgentRunner provider failures', () => {
   });
 
   it("ends failed when the retries run out, with the last attempt's error", async () => {
+    // One retry allowed, so the second failure is the last attempt. pi retries only an error it classes as transient.
     const fake = new FakeSession({
-      settleOn: 'agent_settled',
-      onPrompt: (_t, s) => {
-        emitFailedCall(s, '529 first', { willRetry: true });
-        emitRetryBackoff(s, 1);
-        emitFailedCall(s, '529 second', { willRetry: false });
-        // pi gives up after the last attempt's agent_end (`agent-session.js:1437`).
-        s.emit({ type: 'auto_retry_end', success: false, attempt: 1, finalError: '529 second' });
-        emitSettled(s);
-      },
+      maxRetries: 1,
+      onModelCall: (call, s) => s.failCall(call.index === 0 ? '529 overloaded (first)' : '529 overloaded (second)'),
     });
     const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false });
 
     const result = await new AgentRunner().startAgent(config);
 
-    expect(result).toMatchObject({ status: 'failed', failure: { kind: 'model', message: '529 second' }, finalResponse: '529 second' });
-    expect(sentOf(config).filter((m) => m.type === 'error')).toEqual([{ type: 'error', message: '529 second', parentToolUseId: 'a1' }]);
+    expect(result).toMatchObject({ status: 'failed', failure: { kind: 'model', message: '529 overloaded (second)' }, finalResponse: '529 overloaded (second)' });
+    expect(sentOf(config).filter((m) => m.type === 'error')).toEqual([{ type: 'error', message: '529 overloaded (second)', parentToolUseId: 'a1' }]);
   });
 
   it('ends a parked agent failed when the call of a later wake fails', async () => {
     let alive = true;
     const messageBus = new MessageBus('team-1');
     const fake = new FakeSession({
-      settleOn: 'agent_settled',
-      onPrompt: (text, s) => {
-        if (text === 'do the task') {
-          emitAnsweredCall(s, 'reported');
-        } else {
+      maxRetries: 0,
+      onModelCall: (call, s) => {
+        if (call.index > 0) {
           alive = false;
-          emitFailedCall(s, '503 upstream unavailable', { willRetry: false });
+          return s.failCall('503 upstream unavailable');
         }
-        emitSettled(s);
+        emitAnsweredCall(s, 'reported');
+        void s.endTurn();
       },
     });
     let parked: (() => void) | null = null;
@@ -1735,12 +2096,11 @@ describe('AgentRunner provider failures', () => {
 
   it('reports a Stop that lands on a failing call as cancelled, never failed', async () => {
     const abort = new AbortController();
+    // The call's failure is reported in the same tick as the Stop, so it answers the call before the abort does.
     const fake = new FakeSession({
-      settleOn: 'agent_settled',
-      onPrompt: (_t, s) => {
+      onModelCall: (_c, s) => {
         abort.abort();
-        emitFailedCall(s, 'socket hang up', { willRetry: false });
-        emitSettled(s);
+        s.failCall('socket hang up');
       },
     });
     const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false, abortSignal: abort.signal });
@@ -1751,6 +2111,27 @@ describe('AgentRunner provider failures', () => {
     expect(result).not.toHaveProperty('error');
   });
 });
+
+/**
+ * The nested extension's wind-down record: at an error stop's `turn_end` boundary under an aborted signal it names the
+ * stop's entry, and pi commits the draft before listeners get that `turn_end` (`agent-session.js:515`, `:636-641`).
+ */
+function recordWindDown(s: FakeSession, message: unknown): void {
+  const persisted = s.branch.find((e) => (e as { message?: unknown }).message === message) as { id: string };
+  const entry = { type: 'custom', id: `st-${persisted.id}`, customType: 'damocles-turn-stopped', data: { toolCallIds: [], entryIds: [persisted.id] } };
+  s.branch.push(entry);
+  s.emit({ type: 'entry_appended', entry });
+}
+
+/** `registerWindDownErrorRecord`: records an error stop whose run's signal is aborted at its boundary. */
+const windDownBoundary = (turn: AgentTurnContext, s: FakeSession, signal: AbortSignal | undefined): void => {
+  if (turn.message.stopReason === 'error' && signal?.aborted) recordWindDown(s, turn.message);
+};
+
+/** Every message the session persisted, in order. */
+function persistedMessages(fake: FakeSession): PersistedAgentMessage[] {
+  return fake.branch.flatMap((e) => ((e as { type: string }).type === 'message' ? [(e as { message: PersistedAgentMessage }).message] : []));
+}
 
 describe('AgentRunner reloaded transcript of a failed call', () => {
   const failed = { role: 'assistant', content: [{ type: 'text', text: 'Now I will' }], stopReason: 'error', errorMessage: '529 overloaded_error' } as unknown as PersistedAgentMessage;
@@ -1765,13 +2146,7 @@ describe('AgentRunner reloaded transcript of a failed call', () => {
   // pi returns from the turn before executing any tool of an errored message (agent-loop.js:143-152).
   it('marks the tool calls of a failed call as not executed, with the same blocks the live card was sent', async () => {
     const withTool = { ...failed, content: [{ type: 'text', text: 'Now I will' }, { type: 'toolCall', id: 'tc-failed', name: 'read', arguments: { path: '/a.ts' } }] } as unknown as PersistedAgentMessage;
-    const fake = new FakeSession({
-      settleOn: 'agent_settled',
-      onPrompt: (_t, s) => {
-        emitFailedCall(s, '529 overloaded_error', { partial: 'Now I will', toolCall: true, willRetry: false });
-        emitSettled(s);
-      },
-    });
+    const fake = new FakeSession({ maxRetries: 0, onModelCall: (_c, s) => s.failCall('529 overloaded_error', { partial: 'Now I will', toolCall: true }) });
     const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false });
     await new AgentRunner().startAgent(config);
     const live = vi.mocked(config.onMessage).mock.calls.flatMap(([m]) => (m.type === 'teamAgentAssistant' ? [m.content] : []));
@@ -1787,17 +2162,16 @@ describe('AgentRunner reloaded transcript of a failed call', () => {
   // pi returns before executing any tool of an aborted message too (agent-loop.js:143).
   it('marks the tool calls of an aborted call as stopped, with the same blocks the live card was sent', async () => {
     const aborted = { role: 'assistant', content: [{ type: 'toolCall', id: 'tc-aborted', name: 'read', arguments: { path: '/a.ts' } }], stopReason: 'aborted', errorMessage: 'Request was aborted' };
+    const cancel = new AbortController();
+    // The Stop lands while the model streams its tool call, so pi ends the call aborted with what it streamed.
     const fake = new FakeSession({
-      settleOn: 'agent_settled',
-      onPrompt: (_t, s) => {
+      onModelCall: (_c, s) => {
         s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
-        s.emit({ type: 'message_end', message: aborted });
-        s.emit({ type: 'turn_end', message: aborted, toolResults: [] });
-        s.emit({ type: 'agent_end', messages: [aborted] });
-        emitSettled(s);
+        s.emit({ type: 'message_update', assistantMessageEvent: { type: 'toolcall_end' }, message: { role: 'assistant', content: aborted.content } });
+        cancel.abort();
       },
     });
-    const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false });
+    const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false, abortSignal: cancel.signal });
     await new AgentRunner().startAgent(config);
     const sent = vi.mocked(config.onMessage).mock.calls.map(([m]) => m);
     const live = sent.flatMap((m) => (m.type === 'teamAgentAssistant' ? [m.content] : []));
@@ -1809,40 +2183,37 @@ describe('AgentRunner reloaded transcript of a failed call', () => {
     expect(sent.some((m) => m.type === 'teamAgentToolCall')).toBe(false);
   });
 
-  // pi finalizes the call it was running and starts none after it (agent-loop.js:402-404, :429-431, :449-451),
-  // drains steers (:186) and makes the next call under the aborted signal, which ends aborted (:141-152);
-  // a request setup the signal rejects first ends it on an error stop instead (pi-ai lazy.js:41-44).
+  // pi finalizes the call it was running and starts none after it (agent-loop.js:402-404, :429-431, :449-451 in
+  // pi-agent-core 1.3.0), drains steers (:186) and makes the next request under the aborted signal (:141), whose
+  // setup rejects it, so it ends on an error stop (`model-runtime.js:515-518`, pi-ai `lazy.js:36-46`) the nested
+  // extension records as the run's wind-down.
   it('re-seals a batch an abort cut short with its skipped calls stopped, the blocks its reload builds', async () => {
     const call = (id: string) => ({ type: 'toolCall', id, name: 'read', arguments: { path: `/${id}.ts` } });
     const batch = { role: 'assistant', content: [{ type: 'text', text: 'Reading' }, call('tc-ran'), call('tc-skipped')], stopReason: 'toolUse' };
     const ranResult = { role: 'toolResult', toolCallId: 'tc-ran', toolName: 'read', content: [{ type: 'text', text: 'Operation aborted' }], isError: true };
-    const steer = { role: 'user', content: [{ type: 'text', text: '[Message from Lead]: stop' }] };
-    const aborted = { role: 'assistant', content: [], stopReason: 'aborted', errorMessage: 'Request was aborted' };
+    const cancel = new AbortController();
     const fake = new FakeSession({
-      settleOn: 'agent_settled',
-      onPrompt: (_t, s) => {
+      onTurnBoundary: windDownBoundary,
+      onModelCall: (_c, s) => {
         s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
         s.emit({ type: 'message_end', message: batch });
         s.emit({ type: 'tool_execution_start', toolCallId: 'tc-ran', toolName: 'read', args: { path: '/tc-ran.ts' } });
+        s.queueSteer('[Message from Lead]: stop');
+        cancel.abort();
         s.emit({ type: 'tool_execution_end', toolCallId: 'tc-ran', toolName: 'read', result: ranResult, isError: true });
         s.emit({ type: 'message_start', message: ranResult });
         s.emit({ type: 'message_end', message: ranResult });
-        s.emit({ type: 'turn_end', message: batch, toolResults: [ranResult] });
-        s.emit({ type: 'message_start', message: steer });
-        s.emit({ type: 'message_end', message: steer });
-        s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
-        s.emit({ type: 'message_end', message: aborted });
-        s.emit({ type: 'turn_end', message: aborted, toolResults: [] });
-        s.emit({ type: 'agent_end', messages: [aborted] });
-        s.emit({ type: 'agent_settled', aborted: true });
+        void s.endTurn();
       },
     });
-    const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false });
+    const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false, abortSignal: cancel.signal });
     await new AgentRunner().startAgent(config);
     const sealed = vi.mocked(config.onMessage).mock.calls.flatMap(([m]) => (m.type === 'teamAgentAssistant' ? [m] : []));
 
-    const persisted = [batch, ranResult, steer, aborted] as unknown as PersistedAgentMessage[];
-    const [reloaded] = memberHistoryMessages(persisted, new Map(persisted.map((m, i) => [m, `e${i}`])));
+    const [, ...persisted] = persistedMessages(fake);
+    expect(persisted.map((m) => m.role)).toEqual(['assistant', 'toolResult', 'user', 'assistant']);
+    const windDown = persisted[3]!;
+    const [reloaded] = memberHistoryMessages(persisted, new Map(persisted.map((m, i) => [m, `e${i}`])), new Set(), new Set([windDown]));
     expect(reloaded!.content).toEqual([
       { type: 'text', text: 'Reading' },
       { type: 'tool_use', id: 'tc-ran', name: 'Read', input: expect.anything() },
@@ -1853,39 +2224,37 @@ describe('AgentRunner reloaded transcript of a failed call', () => {
     expect(JSON.stringify(sealed[1]!.content)).toBe(JSON.stringify(reloaded!.content));
   });
 
-  // The nested extension records a call the abort settled at the gate (agent-loop.js:500-504) and pi emits the
-  // entry inside the extension pass, before listeners get that call's tool_execution_end (agent-session.js:749, :2721-2726).
+  // The nested extension records a call the abort settled at the gate (agent-loop.js:500-504 in pi-agent-core 1.3.0)
+  // and pi emits the entry inside the extension pass, before listeners get that call's tool_execution_end
+  // (agent-session.js:753, :2754-2759 in pi 1.3.0).
   it('re-seals a call the turn-stopped record names as stopped, sends no result for it, and matches its reload', async () => {
     const call = (id: string) => ({ type: 'toolCall', id, name: 'bash', arguments: { command: `run ${id}` } });
     const batch = { role: 'assistant', content: [call('tc-gated'), call('tc-skipped')], stopReason: 'toolUse' };
     const gatedResult = { role: 'toolResult', toolCallId: 'tc-gated', toolName: 'bash', content: [{ type: 'text', text: 'Operation aborted' }], details: {}, isError: true };
     const record = { type: 'custom', id: 's1', parentId: null, timestamp: '', customType: 'damocles-turn-stopped', data: { toolCallIds: ['tc-gated'], entryIds: [] } };
-    const aborted = { role: 'assistant', content: [], stopReason: 'aborted', errorMessage: 'Request was aborted' };
+    const cancel = new AbortController();
     const fake = new FakeSession({
-      settleOn: 'agent_settled',
-      onPrompt: (_t, s) => {
+      onTurnBoundary: windDownBoundary,
+      onModelCall: (_c, s) => {
         s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
         s.emit({ type: 'message_end', message: batch });
+        cancel.abort();
         s.emit({ type: 'tool_execution_start', toolCallId: 'tc-gated', toolName: 'bash', args: { command: 'run tc-gated' } });
         s.emit({ type: 'entry_appended', entry: record });
         s.emit({ type: 'tool_execution_end', toolCallId: 'tc-gated', toolName: 'bash', result: gatedResult, isError: true });
         s.emit({ type: 'message_start', message: gatedResult });
         s.emit({ type: 'message_end', message: gatedResult });
-        s.emit({ type: 'turn_end', message: batch, toolResults: [gatedResult] });
-        s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
-        s.emit({ type: 'message_end', message: aborted });
-        s.emit({ type: 'turn_end', message: aborted, toolResults: [] });
-        s.emit({ type: 'agent_end', messages: [aborted] });
-        s.emit({ type: 'agent_settled', aborted: true });
+        void s.endTurn();
       },
     });
-    const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false });
+    const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false, abortSignal: cancel.signal });
     await new AgentRunner().startAgent(config);
     const sent = vi.mocked(config.onMessage).mock.calls.map(([m]) => m);
     const sealed = sent.flatMap((m) => (m.type === 'teamAgentAssistant' ? [m] : []));
 
-    const persisted = [batch, gatedResult, aborted] as unknown as PersistedAgentMessage[];
-    const reloaded = memberHistoryMessages(persisted, new Map(persisted.map((m, i) => [m, `e${i}`])), new Set(['tc-gated']));
+    const [, ...persisted] = persistedMessages(fake);
+    expect(persisted.map((m) => m.role)).toEqual(['assistant', 'toolResult', 'assistant']);
+    const reloaded = memberHistoryMessages(persisted, new Map(persisted.map((m, i) => [m, `e${i}`])), new Set(['tc-gated']), new Set([persisted[2]!]));
     expect(reloaded.map((m) => m.role)).toEqual(['assistant']);
     expect(reloaded[0]!.content).toEqual([
       { type: 'tool_use', id: 'tc-gated', name: 'Bash', input: expect.anything(), abandoned: 'stopped' },
@@ -1907,26 +2276,17 @@ describe('AgentRunner reloaded transcript of a failed call', () => {
     const ranResult = { role: 'toolResult', toolCallId: 'tc-ran', toolName: 'team_standby', content: [{ type: 'text', text: 'Standing by' }], isError: false, durationMs: 4 };
     let decision: AgentTurnDecision | undefined;
     const fake = new FakeSession({
-      settleOn: 'agent_settled',
-      onPrompt: (_t, s) => {
-        void (async () => {
-          s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
-          s.emit({ type: 'message_end', message: batch });
-          s.emit({ type: 'tool_execution_start', toolCallId: 'tc-ran', toolName: 'team_standby', args: {} });
-          abort.abort();
-          s.emit({ type: 'tool_execution_end', toolCallId: 'tc-ran', toolName: 'team_standby', result: ranResult, isError: false, durationMs: 4 });
-          s.emit({ type: 'message_start', message: ranResult });
-          s.emit({ type: 'message_end', message: ranResult });
-          const turn = { message: batch, toolResults: [ranResult], context: {}, newMessages: [] } as unknown as AgentTurnContext;
-          decision = (await s.agent.finishTurn?.(turn)) as AgentTurnDecision | undefined;
-          s.emit({ type: 'turn_end', message: batch, toolResults: [ranResult] });
-          s.emit({ type: 'agent_end', messages: [batch, ranResult] });
-          s.emit({ type: 'agent_settled', aborted: true });
-        })();
+      onModelCall: (_c, s) => {
+        s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
+        s.emit({ type: 'message_end', message: batch });
+        s.emit({ type: 'tool_execution_start', toolCallId: 'tc-ran', toolName: 'team_standby', args: {} });
+        abort.abort();
+        s.emit({ type: 'tool_execution_end', toolCallId: 'tc-ran', toolName: 'team_standby', result: ranResult, isError: false, durationMs: 4 });
+        s.emit({ type: 'message_start', message: ranResult });
+        s.emit({ type: 'message_end', message: ranResult });
+        void s.endTurn().then((d) => { decision = d; });
       },
     });
-    // Real pi's `prompt()` resolves at the settle that follows an abort, not at the abort.
-    fake.abort = async () => { fake.aborted = true; };
     const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false, abortSignal: abort.signal });
 
     const result = await new AgentRunner().startAgent(config);
@@ -1956,12 +2316,12 @@ describe('AgentRunner reloaded transcript of a failed call', () => {
 });
 
 /**
- * A team cancel while a member runs a tool, in pi 1.1.0's order: the runner's abort listener aborts the session,
- * pi records the killed call with its `durationMs` (`agent-loop.js:583-591`), and the loop's next call, made under the
- * aborted signal (`:141`), ends on an error stop because its auth setup rejects first (`model-runtime.js:451-455`,
- * `lazy.js:41-44` in pi-ai 1.1.0). The nested extension names its entry at its `turn_end` boundary
- * (`registerWindDownErrorRecord`), which pi commits before the listeners get that `turn_end` (`agent-session.js:515`,
- * `:636-641`).
+ * A team cancel while a member runs a tool, in pi 1.3.0's order: the runner's abort listener aborts the session,
+ * pi records the killed call with its `durationMs` (`agent-loop.js:584-592` in pi-agent-core 1.3.0), and the loop's
+ * next request, made under the aborted signal (`:141`), ends on an error stop because its setup rejects first
+ * (`model-runtime.js:515-518`, `lazy.js:36-46` in pi-ai 1.3.0). The nested extension names its entry at its
+ * `turn_end` boundary (`registerWindDownErrorRecord`), which pi commits before the listeners get that `turn_end`
+ * (`agent-session.js:515`, `:636-641`).
  */
 describe('AgentRunner wind-down error of a cancelled run', () => {
   const call = (id: string) => ({ type: 'toolCall', id, name: 'bash', arguments: { command: 'sleep 20' } });
@@ -1969,19 +2329,11 @@ describe('AgentRunner wind-down error of a cancelled run', () => {
   const killed = { role: 'toolResult', toolCallId: 'tc-ran', toolName: 'bash', content: [{ type: 'text', text: 'Command aborted' }], details: { [CANCELLED_TOOL_DETAIL_KEY]: true }, isError: true, durationMs: 700 };
   const windDown = { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'This operation was aborted' };
 
-  /** Append the turn-stopped entry naming `message`'s entry, and emit its `entry_appended`, as pi commits the draft. */
-  const recordWindDown = (s: FakeSession, message: unknown): void => {
-    const persisted = s.branch.find((e) => (e as { message?: unknown }).message === message) as { id: string };
-    const entry = { type: 'custom', id: `st-${persisted.id}`, customType: 'damocles-turn-stopped', data: { toolCallIds: [], entryIds: [persisted.id] } };
-    s.branch.push(entry);
-    s.emit({ type: 'entry_appended', entry });
-  };
-
-  const cancelledRun = (opts: { recorded: boolean }) => {
+  const cancelledRun = (opts: { recorded: boolean }): { config: AgentRunConfig; fake: FakeSession } => {
     const cancel = new AbortController();
     const fake = new FakeSession({
-      settleOn: 'agent_settled',
-      onPrompt: (_t, s) => {
+      ...(opts.recorded ? { onTurnBoundary: windDownBoundary } : {}),
+      onModelCall: (_c, s) => {
         s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
         s.emit({ type: 'message_end', message: batch });
         s.emit({ type: 'tool_execution_start', toolCallId: 'tc-ran', toolName: 'bash', args: { command: 'sleep 20' } });
@@ -1989,20 +2341,21 @@ describe('AgentRunner wind-down error of a cancelled run', () => {
         s.emit({ type: 'tool_execution_end', toolCallId: 'tc-ran', toolName: 'bash', result: killed, isError: true, durationMs: 700 });
         s.emit({ type: 'message_start', message: killed });
         s.emit({ type: 'message_end', message: killed });
-        s.emit({ type: 'turn_end', message: batch, toolResults: [killed] });
-        s.emit({ type: 'message_start', message: windDown });
-        s.emit({ type: 'message_end', message: windDown });
-        if (opts.recorded) recordWindDown(s, windDown);
-        s.emit({ type: 'turn_end', message: windDown, toolResults: [] });
-        s.emit({ type: 'agent_end', messages: [windDown], willRetry: false });
-        s.emit({ type: 'agent_settled', aborted: true });
+        void s.endTurn();
       },
     });
-    return baseConfig({ createSession: async () => fake as never, keepAlive: () => false, abortSignal: cancel.signal });
+    return { fake, config: baseConfig({ createSession: async () => fake as never, keepAlive: () => false, abortSignal: cancel.signal }) };
+  };
+
+  /** What the run persisted after its opening prompt, which must be the batch, its result and pi's wind-down stop. */
+  const afterPrompt = (fake: FakeSession): PersistedAgentMessage[] => {
+    const [, ...persisted] = persistedMessages(fake);
+    expect(persisted).toEqual([batch, killed, windDown]);
+    return persisted;
   };
 
   it('shows no error card for it, stops the calls the abort skipped, and matches its reload', async () => {
-    const config = cancelledRun({ recorded: true });
+    const { config, fake } = cancelledRun({ recorded: true });
 
     const result = await new AgentRunner().startAgent(config);
 
@@ -2010,7 +2363,7 @@ describe('AgentRunner wind-down error of a cancelled run', () => {
     const sent = vi.mocked(config.onMessage).mock.calls.map(([m]) => m);
     expect(sent.some((m) => m.type === 'error')).toBe(false);
     const sealed = sent.flatMap((m) => (m.type === 'teamAgentAssistant' ? [m] : []));
-    const persisted = [batch, killed, windDown] as unknown as PersistedAgentMessage[];
+    const persisted = afterPrompt(fake);
     const entryIds = new Map(persisted.map((m, i) => [m, `e${i}`]));
     const reloaded = memberHistoryMessages(persisted, entryIds, new Set(), new Set([persisted[2]!]));
     expect(reloaded.map((m) => m.role)).toEqual(['assistant', 'toolResult']);
@@ -2025,14 +2378,14 @@ describe('AgentRunner wind-down error of a cancelled run', () => {
 
   // No record: the record pass saw a live signal (the abort landed after it) or a later handler discarded the draft.
   it('shows the card and leaves the skipped call when no record names the error, as its reload does', async () => {
-    const config = cancelledRun({ recorded: false });
+    const { config, fake } = cancelledRun({ recorded: false });
 
     await new AgentRunner().startAgent(config);
 
     const sent = vi.mocked(config.onMessage).mock.calls.map(([m]) => m);
     expect(sent.filter((m) => m.type === 'error')).toEqual([{ type: 'error', message: 'This operation was aborted', parentToolUseId: 'a1' }]);
     const sealed = sent.flatMap((m) => (m.type === 'teamAgentAssistant' ? [m] : []));
-    const persisted = [batch, killed, windDown] as unknown as PersistedAgentMessage[];
+    const persisted = afterPrompt(fake);
     const reloaded = memberHistoryMessages(persisted, new Map(persisted.map((m, i) => [m, `e${i}`])));
     expect(JSON.stringify(sealed.at(-1)!.content)).toBe(JSON.stringify(reloaded[0]!.content));
   });
@@ -2043,13 +2396,7 @@ describe('AgentRunner wind-down error of a cancelled run', () => {
   });
 
   it('still shows a provider failure no record names', async () => {
-    const fake = new FakeSession({
-      settleOn: 'agent_settled',
-      onPrompt: (_t, s) => {
-        emitFailedCall(s, '529 overloaded_error', { willRetry: false });
-        emitSettled(s);
-      },
-    });
+    const fake = new FakeSession({ maxRetries: 0, onTurnBoundary: windDownBoundary, onModelCall: (_c, s) => s.failCall('529 overloaded_error') });
     const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false });
 
     const result = await new AgentRunner().startAgent(config);
@@ -2079,7 +2426,7 @@ describe('AgentRunner delivery records', () => {
   it('records a message delivered as a new prompt once the member is idle, by its message id', async () => {
     let alive = true;
     const messageBus = new MessageBus('team-1');
-    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
     let idle: (() => void) | null = null;
     const nextIdle = (): Promise<void> => new Promise((r) => { idle = r; });
     const config = baseConfig({ messageBus, createSession: async () => fake as never, keepAlive: () => alive, onTurnEnd: () => { idle?.(); idle = null; } });
@@ -2101,15 +2448,12 @@ describe('AgentRunner delivery records', () => {
 
   it('records a message steered into a streaming turn right after pi persists it', async () => {
     const opening: { end: (() => void) | null } = { end: null };
-    const fake = new FakeSession({
-      isStreaming: true,
-      onPrompt: (text, s) => { if (text === 'do the task') opening.end = () => s.emit({ type: 'turn_end' }); },
-    });
+    const fake = heldOpening(opening);
     const messageBus = new MessageBus('team-1');
     const config = baseConfig({ messageBus, createSession: async () => fake as never, keepAlive: () => false });
 
     const run = new AgentRunner().startAgent(config);
-    await fake.whenPrompted(1);
+    await fake.whenModelCalled(1);
     const sent = messageBus.send('peer', 'worker', 'steer me');
     await fake.whenPrompted(2);
     opening.end!();
@@ -2120,41 +2464,32 @@ describe('AgentRunner delivery records', () => {
     expect(records(fake)).toEqual([{ ids: [sent.messageId] }]);
   });
 
-  it('records a message held during a turn and delivered as the follow-up prompt when the turn ends', async () => {
-    const opening: { end: (() => void) | null } = { end: null };
-    const fake = new FakeSession({
-      onPrompt: (text, s) => {
-        if (text === 'do the task') opening.end = () => s.emit({ type: 'turn_end' });
-        else s.emit({ type: 'turn_end' });
-      },
-    });
+  it('records a message pi left queued as its run settled once the runner prompts it, by its message id', async () => {
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
     const messageBus = new MessageBus('team-1');
+    const sent: { messageId: string }[] = [];
+    // Steered after the settling run's last queue check, so pi settles with it undelivered and the runner prompts it.
+    fake.atLastQueueCheck = () => {
+      fake.atLastQueueCheck = null;
+      sent.push(messageBus.send('Lead', 'worker', 'after your turn'));
+    };
     const config = baseConfig({ messageBus, createSession: async () => fake as never, keepAlive: () => false });
 
-    const run = new AgentRunner().startAgent(config);
-    await fake.whenPrompted(1);
-    const sent = messageBus.send('Lead', 'worker', 'after your turn');
-    opening.end!();
-    await run;
+    await new AgentRunner().startAgent(config);
 
-    expect(fake.prompts).toEqual(['do the task', '[Message from Lead]: after your turn']);
-    expect(recordAfter(fake, '[Message from Lead]: after your turn')).toEqual([sent.messageId]);
-    expect(records(fake)).toEqual([{ ids: [sent.messageId] }]);
+    expect(fake.prompts).toEqual(['do the task', '[Message from Lead]: after your turn', '[Message from Lead]: after your turn']);
+    expect(recordAfter(fake, '[Message from Lead]: after your turn')).toEqual([sent[0]!.messageId]);
+    expect(records(fake)).toEqual([{ ids: [sent[0]!.messageId] }]);
   });
 
   it('records an operator steer by the fresh id it was given when queued', async () => {
     const opening: { end: (() => void) | null } = { end: null };
-    const fake = new FakeSession({
-      onPrompt: (text, s) => {
-        if (text === 'do the task') opening.end = () => s.emit({ type: 'turn_end' });
-        else s.emit({ type: 'turn_end' });
-      },
-    });
+    const fake = heldOpening(opening);
     const sink = noteSink();
     const config = baseConfig({ createSession: async () => fake as never, keepAlive: () => false, bindNoteDelivery: sink.bind });
 
     const run = new AgentRunner().startAgent(config);
-    await fake.whenPrompted(1);
+    await fake.whenModelCalled(1);
     const steer = wrapSteerMessage('use the v2 schema');
     expect(sink.deliver(steer)).toBe(true);
     opening.end!();
@@ -2167,7 +2502,7 @@ describe('AgentRunner delivery records', () => {
   });
 
   it('records nothing for a redelivered message from a checkpoint written before ids', async () => {
-    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const fake = new FakeSession({ onModelCall: endTurnAtOnce });
     const config = baseConfig({
       initial: { kind: 'prompt', text: 'continue' },
       redeliver: [{ text: '[Message from Lead]: from a checkpoint written before ids', echoed: true }],
@@ -2183,7 +2518,7 @@ describe('AgentRunner delivery records', () => {
   });
 
   it('peeks a steer pi has started but not yet persisted, and a pi follow-up, and nothing once pi persisted the steer', async () => {
-    const fake = new FakeSession({ isStreaming: true, onPrompt: () => undefined });
+    const fake = new FakeSession();
     const messageBus = new MessageBus('team-1');
     const taker = undeliveredTaker();
     const abort = new AbortController();
@@ -2191,7 +2526,7 @@ describe('AgentRunner delivery records', () => {
       messageBus, abortSignal: abort.signal, createSession: async () => fake as never, keepAlive: () => true, bindTakeUndelivered: taker.bind,
     });
     const run = new AgentRunner().startAgent(config);
-    await fake.whenPrompted(1);
+    await fake.whenModelCalled(1);
     const steered = '[Message from Lead]: in transit';
     // pi has taken it off its queue at message_start and appends it only after message_end.
     const inTransit: UndeliveredMessage[][] = [];
@@ -2202,7 +2537,10 @@ describe('AgentRunner delivery records', () => {
 
     const sent = messageBus.send('Lead', 'worker', 'in transit');
     await fake.whenPrompted(2);
-    fake.holdFollowUpMessage('[Message from Lead]: a pi follow-up');
+    // The open call ends, pi delivers the steer, and its next call stays open.
+    void fake.endTurn();
+    await fake.whenModelCalled(2);
+    fake.queueFollowUp('[Message from Lead]: a pi follow-up');
 
     expect(inTransit).toEqual([[{ text: steered, echoed: true, ids: [sent.messageId] }]]);
     expect(taker.peek()).toEqual([{ text: '[Message from Lead]: a pi follow-up', echoed: true }]);
@@ -2212,12 +2550,7 @@ describe('AgentRunner delivery records', () => {
   });
 
   it('peeks the undelivered messages with their ids without taking them', async () => {
-    const opening: { end: (() => void) | null } = { end: null };
-    const fake = new FakeSession({
-      isStreaming: true,
-      onPrompt: (text, s) => { if (text === 'do the task') opening.end = () => s.emit({ type: 'turn_end' }); },
-    });
-    fake.holdSteers = true;
+    const fake = new FakeSession();
     const messageBus = new MessageBus('team-1');
     const taker = undeliveredTaker();
     const abort = new AbortController();
@@ -2226,10 +2559,12 @@ describe('AgentRunner delivery records', () => {
     });
 
     const run = new AgentRunner().startAgent(config);
-    await fake.whenPrompted(1);
+    await fake.whenModelCalled(1);
     const steered = messageBus.send('Lead', 'worker', 'steered into pi');
     await fake.whenPrompted(2);
-    fake.isStreaming = false;
+    // A Stop settles the run with the steer still queued; a message that lands before the run lets go waits in the runner.
+    abort.abort();
+    await fake.waitForIdle();
     const held = messageBus.send('Lead', 'worker', 'held by the runner');
     const expected = [
       { text: '[Message from Lead]: steered into pi', echoed: true, ids: [steered.messageId] },
@@ -2241,12 +2576,11 @@ describe('AgentRunner delivery records', () => {
     expect(fake.getSteeringMessages()).toEqual(['[Message from Lead]: steered into pi']);
     expect(taker.take()).toEqual(expected);
 
-    abort.abort();
     await run;
   });
 
   it('takes a delivery pi was handed but has neither queued nor committed, as the peek reads it', async () => {
-    const fake = new FakeSession({ onPrompt: () => undefined });
+    const fake = new FakeSession();
     const prompt = fake.prompt.bind(fake);
     let release: (() => void) | null = null;
     // pi still resolving the prompt's model, before it starts or queues the message.
@@ -2292,7 +2626,7 @@ describe('AgentRunner keeps every message a failed run did not deliver', () => {
   });
 
   it('a wake prompt pi refuses before committing it stays undelivered in the failed result, echoed once', async () => {
-    const fake = new FakeSession({ onPrompt: () => undefined });
+    const fake = new FakeSession();
     const prompt = fake.prompt.bind(fake);
     fake.prompt = async (text, options) => {
       if (text.startsWith('[Message from')) throw new Error('No API key for provider');
@@ -2314,13 +2648,7 @@ describe('AgentRunner keeps every message a failed run did not deliver', () => {
   it('a steer pi refuses before queueing it is delivered as a prompt once the turn ends', async () => {
     let refuse = true;
     const opening: { end: (() => void) | null } = { end: null };
-    const fake = new FakeSession({
-      isStreaming: true,
-      onPrompt: (text, s) => {
-        if (text === 'do the task') opening.end = () => { s.isStreaming = false; s.emit({ type: 'turn_end' }); };
-        else s.emit({ type: 'turn_end' });
-      },
-    });
+    const fake = heldOpening(opening);
     const prompt = fake.prompt.bind(fake);
     fake.prompt = async (text, options) => {
       if (options?.streamingBehavior === 'steer' && refuse) {
@@ -2331,15 +2659,19 @@ describe('AgentRunner keeps every message a failed run did not deliver', () => {
     };
     const messageBus = new MessageBus('team-1');
     const config = baseConfig({ messageBus, createSession: async () => fake as never, keepAlive: () => false });
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     const run = new AgentRunner().startAgent(config);
-    await fake.whenPrompted(1);
+    await fake.whenModelCalled(1);
     messageBus.send('Lead', 'worker', 'mid-turn');
     await vi.waitFor(() => expect(refuse).toBe(false));
     for (let i = 0; i < 5; i++) await Promise.resolve();
     opening.end!();
     await run;
+    const steerErrors = logged.mock.calls.filter(([text]) => String(text).startsWith('[AgentRunner] Steering'));
+    logged.mockRestore();
 
+    expect(steerErrors).toEqual([['[AgentRunner] Steering a message to "worker" failed:', new Error('refused')]]);
     expect(fake.prompts).toEqual(['do the task', '[Message from Lead]: mid-turn']);
     const echoes = vi.mocked(config.onMessage).mock.calls.filter(([m]) => m.type === 'teamAgentUserMessage' && m.content === '[Message from Lead]: mid-turn');
     expect(echoes).toHaveLength(1);

@@ -187,12 +187,15 @@ export function createTerminalMarks(xterm: Terminal, deps: TerminalMarksDeps) {
     const marker = xterm.registerMarker(0);
     if (marker) partial.push(marker);
   }));
-  // A clear screen (ED 2 or 3) drops the partial marks in the viewport; xterm still handles the sequence.
+  // A clear screen drops the commands and partial marks in the viewport; xterm still handles the sequence. ConPTY's cls
+  // erases each row with EL and then sends ED 3, never ED 2, so ED 3 counts too (VS Code's commandDetection does the same).
+  // Markers live in the normal buffer, so a clear in the alternate one erases none of their rows.
   subscriptions.push(xterm.parser.registerCsiHandler({ final: 'J' }, (params) => {
     const mode = params[0];
-    if (mode === 2 || mode === 3) {
-      const baseY = xterm.buffer.active.baseY;
-      for (const marker of partial) if (marker.line >= baseY) marker.dispose();
+    const buffer = xterm.buffer.active;
+    if ((mode === 2 || mode === 3) && buffer.type === 'normal') {
+      model.erased(buffer.baseY);
+      for (const marker of partial) if (marker.line >= buffer.baseY) marker.dispose();
       partial = partial.filter((marker) => !marker.isDisposed);
     }
     return false;

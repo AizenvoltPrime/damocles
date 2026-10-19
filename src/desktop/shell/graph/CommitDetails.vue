@@ -5,7 +5,7 @@ import { GitCompare, LoaderCircle } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import { commitTime } from '@/utils/clock';
 import { visibleLines, visibleText } from '@shared/visible-text';
-import { fileIcon } from '../file-icons';
+import FileIcon from '../components/FileIcon.vue';
 import StatusLetter from '../scm/StatusLetter.vue';
 import { MAX_SCM_COMMIT_FILES } from '../../preload/scm-channels';
 import type { DetailRow } from './graph-model';
@@ -38,7 +38,6 @@ const fileParts = computed(() => {
   const slash = path.lastIndexOf('/');
   return { name: visibleText(path.slice(slash + 1)), dir: visibleText(path.slice(0, Math.max(0, slash))) };
 });
-const icon = computed(() => fileIcon(file.value ? file.value.path.slice(file.value.path.lastIndexOf('/') + 1) : ''));
 
 const date = computed(() => (props.row.kind === 'meta' ? commitTime(props.row.commit.authorDate, locale.value) : { full: '', day: '', clock: '', otherYear: false }));
 // A narrowing card sheds the author, then the clock time, then the day, each whole, never cut mid-value; the widths are the
@@ -219,11 +218,9 @@ function onClick(): void {
         :key="index"
       >{{ index > 0 ? ' · ' : '' }}<span :class="part.tone">{{ part.short }}</span></template></span></span>
       <template v-else-if="row.kind === 'file' && file">
-        <component
-          :is="icon.icon"
-          aria-hidden="true"
+        <FileIcon
+          :path="file.path"
           class="size-3 shrink-0"
-          :style="{ color: icon.color }"
         />
         <span
           data-testid="graph-file-name"

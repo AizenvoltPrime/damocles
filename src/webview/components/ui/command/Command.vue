@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ListboxRootEmits, ListboxRootProps } from "reka-ui"
+import type { AcceptableValue, ListboxRootEmits, ListboxRootProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"
 import { ListboxRoot, useFilter, useForwardPropsEmits } from "reka-ui"
@@ -8,13 +8,43 @@ import { cn } from "@/lib/utils"
 import { provideCommandContext } from "."
 import { definedProps } from "@/lib/definedProps"
 
-const props = withDefaults(defineProps<ListboxRootProps & { class?: HTMLAttributes["class"] }>(), {
+const props = withDefaults(defineProps<ListboxRootProps & {
+  class?: HTMLAttributes["class"]
+  /** Keeps the highlighted item when the pointer leaves, as VS Code's quick pick keeps its active item. */
+  keepHighlight?: boolean
+}>(), {
   modelValue: "",
 })
 
 const emits = defineEmits<ListboxRootEmits>()
 
-const delegatedProps = reactiveOmit(props, "class")
+const delegatedProps = reactiveOmit(props, "class", "keepHighlight")
+
+interface ListboxRootInstance {
+  highlightedElement: HTMLElement | null
+  highlightItem: (value: AcceptableValue) => void
+  highlightFirstItem: () => void
+  getItems: () => Array<{ ref: HTMLElement }>
+}
+const listbox = ref<ListboxRootInstance | null>(null)
+let highlighted: HTMLElement | null = null
+
+function onHighlight(payload: { ref: HTMLElement } | undefined) {
+  highlighted = payload?.ref ?? null
+}
+
+// reka drops the highlight on pointerleave; restoring it without changeHighlight keeps the scroll where the user left it.
+function onLeave(event: Event) {
+  if (props.keepHighlight && event.type === "pointerleave" && highlighted?.isConnected && listbox.value)
+    listbox.value.highlightedElement = highlighted
+}
+
+defineExpose({
+  /** Highlights the item with this value and scrolls it into view. */
+  highlightItem: (value: AcceptableValue) => listbox.value?.highlightItem(value),
+  highlightFirstItem: () => listbox.value?.highlightFirstItem(),
+  hasHighlight: () => listbox.value?.highlightedElement?.isConnected === true,
+})
 
 const forwarded = useForwardPropsEmits(delegatedProps, emits)
 
@@ -74,13 +104,17 @@ provideCommandContext({
   allItems,
   allGroups,
   filterState,
+  rows: () => listbox.value?.getItems().map(item => item.ref) ?? [],
 })
 </script>
 
 <template>
   <ListboxRoot
+    ref="listbox"
     v-bind="definedProps(forwarded)"
     :class="cn('flex size-full flex-col overflow-hidden rounded-md bg-popover text-popover-foreground', props.class)"
+    @highlight="onHighlight"
+    @leave="onLeave"
   >
     <slot />
   </ListboxRoot>

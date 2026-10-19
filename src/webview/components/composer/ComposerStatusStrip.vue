@@ -9,7 +9,7 @@ import { MENU_CONTENT, MENU_ITEM } from '@/components/chat-header/menuStyles';
 import TeamIndicator from '@/components/TeamIndicator.vue';
 import CompassIndicator from '@/components/CompassIndicator.vue';
 import BackgroundTasksIndicator from '@/components/BackgroundTasksIndicator.vue';
-import { useSettingsStore } from '@/stores';
+import { useSessionStore, useSettingsStore } from '@/stores';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useContextPercentage } from '@/composables/useContextPercentage';
 import { useCostLabel } from '@/composables/useCostLabel';
@@ -29,6 +29,7 @@ const emit = defineEmits<{
 const { t, locale } = useI18n();
 const { postMessage } = usePlatformBridge();
 const { currentSettings } = storeToRefs(useSettingsStore());
+const sessionStore = useSessionStore();
 const { costLabel, costTitle } = useCostLabel();
 
 const { totalContext, contextPercentage } = useContextPercentage(() => props.stats);
@@ -57,7 +58,7 @@ const menuHeading = computed(() =>
 );
 
 function compactNow(): void {
-  postMessage({ type: 'sendMessage', content: '/compact' });
+  postMessage({ type: 'sendMessage', content: '/compact', sessionId: sessionStore.currentSessionId });
 }
 
 const cacheHitRate = computed(() => agentCacheHitRate(props.stats));

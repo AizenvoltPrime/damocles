@@ -224,6 +224,17 @@ describe('the webview reading sessionStateChanged', () => {
     expect(ctx.stores.sessionStore.isAwaitingUserAction).toBe(false);
   });
 
+  it("holds the main chat's wind-down while core publishes one, and drops it with the state that carries none", () => {
+    const ctx = context();
+    const shown = { phase: 'settle' as const, events: ['agent_settled'], extensions: ['C:\\x\\held.js'] };
+
+    dispatch({ type: 'sessionStateChanged', state: 'idle', sessionId: 's-1', pendingPrompts: [], windDown: shown }, ctx);
+    expect(ctx.stores.sessionStore.windDown).toEqual(shown);
+
+    dispatch(stateChanged('idle'), ctx);
+    expect(ctx.stores.sessionStore.windDown).toBeNull();
+  });
+
   it('does not filter on the session id, which can arrive after the first running', () => {
     const ctx = context();
     ctx.stores.sessionStore.setCurrentSession('s-old');

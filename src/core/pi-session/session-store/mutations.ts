@@ -9,6 +9,7 @@ import { resolvePiSessionFile, forgetSessionMetadata } from './reading';
 import { piSessionDir } from './session-dir';
 import { DAMOCLES_USER_RENAMED_ENTRY, DAMOCLES_TAG_ENTRY } from './constants';
 import { writeUnderSessionLease } from './session-lease';
+import { muteAgentFilesUnder } from '../agent-file-owner';
 
 /**
  * Rename a stored pi session: append a `session_info` name plus the `damocles-user-renamed` marker
@@ -108,6 +109,8 @@ async function deleteAgentData(cwd: string, sessionDir: string, sessionId: strin
     log('[session-store] agent data of session %s left in place: the id is not a safe path segment', sessionId);
     return;
   }
+  // A held stopped run outlives its panel's detach, and an append after a partial removal would recreate its file.
+  muteAgentFilesUnder(agentDataRoot(sessionDir, sessionId));
   for (const dir of [subagentsDir(sessionDir, sessionId), teamsDir(sessionDir, sessionId), legacySubagentTranscriptDir(cwd, sessionId)]) {
     await fs.promises.rm(dir, { recursive: true, force: true }).catch((err) => log('[session-store] delete agent data %s failed: %O', dir, err));
   }

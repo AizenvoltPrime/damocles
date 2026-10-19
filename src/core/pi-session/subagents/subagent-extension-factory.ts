@@ -40,6 +40,11 @@ export interface SubagentGateContext extends GatePermissionContext {
   parentToolUseId: string;
   /** Configured-hooks dispatch deps (US-008). When present, subagent tool/Stop hooks fire; else they don't. */
   hooks?: DispatchDeps;
+  /**
+   * Aborted by a Stop of this agent. The PostToolUse and SubagentStop hooks take it, because pi awaits them in the
+   * stopped run's wind-down and gives an `agent_settled` handler no signal (`agent.js:214-216` in pi-agent-core 1.3.0).
+   */
+  stopSignal: AbortSignal;
   /** This agent's deferrable universe: the names ToolSearch may activate. Empty ⇒ nothing deferred. */
   deferrableToolNames: readonly string[];
   /**
@@ -121,12 +126,12 @@ function buildSubagentPreToolUseGate(
 ): PreToolUseHookGate {
   const common = buildHookCommon(ctx);
   return {
-    run: (event) =>
+    run: (event, signal) =>
       dispatchToolCall(deps, {
         common,
         toolName: mapPiToolName(event.toolName),
         toolInput: normalizeToolInput(event.toolName, event.input as Record<string, unknown>),
-      }),
+      }, signal),
     onDecision: (toolName, decision, reason) =>
       log('[Hooks] subagent PreToolUse %s for %s%s', decision, toolName, reason ? `: ${reason}` : ''),
     notify: logSubagentSystemMessages,
@@ -148,6 +153,7 @@ function registerSubagentHooks(
       return await buildToolResultPatch(deps, buildHookCommon(hookCtx), event, {
         ...(preToolUseContext?.length ? { preToolUseContext } : {}),
         notify: logSubagentSystemMessages,
+        signal: ctx.stopSignal,
       });
     } catch (err) {
       log('[SubagentExtension] tool_result (PostToolUse) hook failed: %O', err);
@@ -174,6 +180,7 @@ function registerSubagentHooks(
         'subagent_end',
         hookCtx.cwd,
         buildAgentEndPayload(buildHookCommon(hookCtx), messages, { subagent: true, parentToolUseId: ctx.parentToolUseId }),
+        ctx.stopSignal,
       );
     } catch (err) {
       log('[SubagentExtension] subagent_end (SubagentStop) hook failed: %O', err);

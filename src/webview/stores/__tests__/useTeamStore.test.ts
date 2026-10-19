@@ -584,7 +584,7 @@ describe('useTeamStore.handleAgentStatusUpdate across attempts', () => {
       status: 'running',
       phase: 'working',
       agents: [{
-        agentId: AGENT, name: 'alpha', role: 'specialist', description: null, model: 'opus',
+        agentId: AGENT, name: 'alpha', role: 'specialist', description: null, task: null, model: 'opus',
         profileId: null, attempt: 0, status: 'running', activeMs: 3000, runningSince: 4000,
         toolCount: 5, lastToolName: 'Bash',
         totalInputTokens: 8, totalOutputTokens: 665, cacheReadTokens: 56_118, cacheCreationTokens: 19_628,
@@ -788,7 +788,7 @@ describe('useTeamStore failed model calls', () => {
     store.restoreTeamFromHistory({
       teamId: 'team-1', toolUseId: 'toolu_team', title: 'Team', status: 'running', phase: 'working',
       agents: [{
-        agentId: AGENT, name: 'worker', role: 'specialist', description: null, model: '', profileId: null, attempt: 0,
+        agentId: AGENT, name: 'worker', role: 'specialist', description: null, task: null, model: '', profileId: null, attempt: 0,
         status: 'running', activeMs: 0, runningSince: 1, toolCount: 0, lastToolName: null, totalInputTokens: 0,
         totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0, dollarBilled: true, effort: null,
         progressSummary: null, result: null, logFilePath: null,
@@ -800,5 +800,61 @@ describe('useTeamStore failed model calls', () => {
     store.handleAgentStatusUpdate('team-1', AGENT, 'failed');
 
     expect(store.agentRetry[AGENT]).toBeUndefined();
+  });
+});
+
+describe("useTeamStore.handleTeamStarted applies the team's wind-downs as core sent them", () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  const SHOWN = { phase: 'settle' as const, events: ['agent_settled'], extensions: ['/agent/extensions/held.js'] };
+
+  function liveTeam(teamId: string, agentIds: string[], windDowns?: Record<string, typeof SHOWN>) {
+    return {
+      teamId,
+      toolUseId: `toolu_${teamId}`,
+      title: 'Team',
+      status: 'running' as const,
+      phase: 'working' as const,
+      agents: agentIds.map((agentId) => ({
+        agentId, name: agentId, role: 'specialist' as const, description: null, task: null, model: 'opus',
+        profileId: null, attempt: 0, status: 'running' as const, activeMs: 0, runningSince: 1000,
+        toolCount: 0, lastToolName: null, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
+        costUsd: 0, dollarBilled: false, effort: null, progressSummary: null, result: null, logFilePath: null,
+      })),
+      messages: [],
+      scratchpad: [],
+      result: null,
+      startTime: 1000,
+      endTime: null,
+      totalToolCount: 0,
+      runs: [],
+      ...(windDowns ? { windDowns } : {}),
+    };
+  }
+
+  it("shows a reloaded card's wind-down from the team core sent", () => {
+    const store = useTeamStore();
+
+    store.handleTeamStarted(liveTeam('team-1', ['a1', 'a2'], { a1: SHOWN }));
+
+    expect(store.agentWindDown).toEqual({ a1: SHOWN });
+  });
+
+  it("clears a wind-down the team core sent no longer holds, and leaves another team's alone", () => {
+    const store = useTeamStore();
+    store.setAgentWindDown('a1', SHOWN);
+    store.setAgentWindDown('b1', SHOWN);
+
+    store.handleTeamStarted(liveTeam('team-1', ['a1', 'a2']));
+
+    expect(store.agentWindDown).toEqual({ b1: SHOWN });
+  });
+
+  it('keeps the wind-downs out of the team it stores', () => {
+    const store = useTeamStore();
+
+    store.handleTeamStarted(liveTeam('team-1', ['a1'], { a1: SHOWN }));
+
+    expect(store.teams['team-1']).not.toHaveProperty('windDowns');
   });
 });

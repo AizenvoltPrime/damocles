@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { McpClientManager, isSupervised } from '../mcp-client-manager';
 import type { McpServerManager, ServerConnection, McpServerManagerOptions } from '../server-manager';
-import type { McpTool, McpResource, McpElicitationHandler, McpServerDefinition, McpServerSpec } from '../types';
+import { createHash } from 'node:crypto';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { normalizeServerConfig, type McpTool, type McpElicitationHandler, type McpServerDefinition, type McpServerSpec } from '../types';
+import { computeServerHash } from '../metadata-cache';
+import { MCP_METADATA_CACHE_DIR } from '../paths';
+import { retiredResourceToolNames } from '../tool-name-migration';
 import type { McpServerConfig } from '../../../../shared/types/mcp';
 import { McpServerConnectError } from '../connect-failure';
 import { authenticateMcpServer, revokeAndRemoveAuth, shutdownOAuth } from '../mcp-auth-flow';
@@ -32,7 +38,8 @@ async function flush(): Promise<void> {
 
 interface FakeServer {
   tools?: McpTool[];
-  resources?: McpResource[];
+  /** The `resources` capability. */
+  hasResources?: boolean;
   fail?: boolean;
   needsAuth?: boolean;
 }
@@ -48,7 +55,7 @@ function buildFake(servers: Record<string, FakeServer>) {
     const status: ServerConnection['status'] = spec.needsAuth ? 'needs-auth' : 'connected';
     const conn = {
       tools: spec.tools ?? [],
-      resources: spec.resources ?? [],
+      hasResources: spec.hasResources === true,
       status,
       serverInfo: { name, version: '9.9.9' },
       inFlight: 0,
@@ -59,10 +66,12 @@ function buildFake(servers: Record<string, FakeServer>) {
   });
   const callTool = vi.fn(async () => ({ content: [{ type: 'text', text: 'ok' }], isError: false }));
   const readResource = vi.fn(async () => ({ contents: [{ uri: 'file://a', text: 'hello' }] }));
+  const listResourcesPage = vi.fn(async () => ({ resources: [{ uri: 'file://a', name: 'A' }], nextCursor: 'next' }));
   const fake = {
     connect,
     callTool,
     readResource,
+    listResourcesPage,
     getConnection: (n: string) => connections.get(n),
     getAllConnections: () => new Map(connections),
     close: vi.fn(async (n: string) => {
@@ -142,16 +151,31 @@ describe('McpClientManager', () => {
     expect(manager.isMcpReadOnly('mcp__evil__openworld')).toBe(false);
   });
 
-  it('exposes resources as read-only get_* tools', async () => {
-    const { factory } = buildFake({
-      docs: { resources: [{ uri: 'file://readme', name: 'Read Me' }] },
-    });
+  it('makes no tool of a resource and reports a server with resources through the port', async () => {
+    const { factory } = buildFake({ docs: { hasResources: true }, git: { tools: [{ name: 'status' }] } });
     manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
-    manager.initialize(specs({ docs: { command: 'docs-mcp' } }));
+    manager.initialize(specs({ docs: { command: 'docs-mcp' }, git: { command: 'git-mcp' } }));
     await manager.whenReady();
 
-    expect(manager.allToolNames()).toContain('mcp__docs__get_read_me');
-    expect(manager.isMcpReadOnly('mcp__docs__get_read_me')).toBe(true);
+    expect(manager.allToolNames()).toEqual(['mcp__git__status']);
+    expect(manager.resourceServers()).toEqual([{ serverName: 'docs', serverId: expect.stringMatching(/\/docs$/), exposure: 'deferred' }]);
+    expect(manager.getServerStatus('docs')).toMatchObject({ hasResources: true, resourceExposure: 'deferred', resourceExposureSource: 'config' });
+    expect(manager.getServerStatus('git')).toMatchObject({ hasResources: false });
+  });
+
+  it('takes a server\u2019s default resource exposure from exposeResources and exposure', async () => {
+    const { factory } = buildFake({ off: { hasResources: true }, hidden: { hasResources: true }, live: { hasResources: true } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    manager.initialize(specs({
+      off: { command: 'x', exposeResources: false },
+      hidden: { command: 'x', exposure: 'hidden' },
+      live: { command: 'x', exposure: 'direct' },
+    }));
+    await manager.whenReady();
+
+    expect(manager.resourceServers().map((s) => [s.serverName, s.exposure])).toEqual([['live', 'direct']]);
+    expect(manager.getServerStatus('off')?.resourceExposure).toBe('off');
+    expect(manager.getServerStatus('hidden')?.resourceExposure).toBe('off');
   });
 
   it('routes a tool call to the server and forwards the abort signal + timeout', async () => {
@@ -169,16 +193,30 @@ describe('McpClientManager', () => {
     });
   });
 
-  it('reads a resource via resources/read and converts contents to text', async () => {
-    const { factory, fake } = buildFake({ docs: { resources: [{ uri: 'file://a', name: 'A' }] } });
+  it('reads and lists resources through the port with the server timeout and the caller signal', async () => {
+    const { factory, fake } = buildFake({ docs: { hasResources: true } });
     manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
-    manager.initialize(specs({ docs: { command: 'docs-mcp' } }));
+    manager.initialize(specs({ docs: { command: 'docs-mcp', timeout: 7 } }));
+    await manager.whenReady();
+    const controller = new AbortController();
+
+    await expect(manager.readResource('docs', 'file://a', { signal: controller.signal })).resolves.toEqual({ contents: [{ uri: 'file://a', text: 'hello' }] });
+    expect(fake.readResource).toHaveBeenCalledWith('docs', 'file://a', { timeoutMs: 7000, signal: controller.signal });
+    await expect(manager.listResourcesPage('docs', 'c1')).resolves.toMatchObject({ nextCursor: 'next' });
+    expect(fake.listResourcesPage).toHaveBeenCalledWith('docs', 'c1', { timeoutMs: 7000 });
+  });
+
+  it('refuses a resource request for an unknown server, an Off server, a server without resources and a changed server id', async () => {
+    const { factory, fake } = buildFake({ docs: { hasResources: true }, git: { tools: [{ name: 'status' }] }, quiet: { hasResources: true } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    manager.initialize(specs({ docs: { command: 'x' }, git: { command: 'x' }, quiet: { command: 'x', exposeResources: false } }));
     await manager.whenReady();
 
-    const result = await manager.callTool('mcp__docs__get_a', {}, {});
-    expect(fake.readResource).toHaveBeenCalledWith('docs', 'file://a', expect.anything());
-    expect(result.content[0]?.type).toBe('text');
-    expect(result.content[0]?.text).toContain('hello');
+    await expect(manager.readResource('nope', 'x://a')).rejects.toThrow('MCP server "nope" is not available here. Servers with resources: docs.');
+    await expect(manager.readResource('quiet', 'x://a')).rejects.toThrow(/resources of MCP server "quiet" are turned off/);
+    await expect(manager.readResource('git', 'x://a')).rejects.toThrow('MCP server "git" offers no resources. Servers with resources: docs.');
+    await expect(manager.readResource('docs', 'x://a', { expectedServerId: 'other/docs' })).rejects.toThrow('MCP server "docs" is no longer available');
+    expect(fake.readResource).not.toHaveBeenCalled();
   });
 
   it('re-registers tools on a list_changed notification', async () => {
@@ -330,7 +368,7 @@ describe('McpClientManager', () => {
     manager.initialize(specs({ lazy: { command: 'lazy-mcp', lifecycle: 'lazy' } }));
     await manager.whenReady();
     // Lazy never eager-connects, so force a live connection first (as a tool call would).
-    fakes.connections.set('lazy', { status: 'connected', tools: [], resources: [] } as unknown as ServerConnection);
+    fakes.connections.set('lazy', { status: 'connected', tools: [], hasResources: false } as unknown as ServerConnection);
 
     fakes.fireConnectionLost('lazy');
     await flush();
@@ -558,7 +596,6 @@ describe('McpClientManager tool names (pi createMcpToolName)', () => {
     expect(manager.getToolDescriptor('mcp__context7__resolve_library_id')).toMatchObject({
       serverName: 'context7',
       rawToolName: 'resolve-library-id',
-      kind: 'tool',
     });
     await manager.callTool('mcp__context7__resolve_library_id', {}, {});
     expect(fake.callTool).toHaveBeenCalledWith('context7', 'resolve-library-id', {}, expect.anything());
@@ -569,13 +606,6 @@ describe('McpClientManager tool names (pi createMcpToolName)', () => {
     manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
     await manager.reconcile(specs({ docs: { command: 'x' } }));
     expect(manager.allToolNames().sort()).toEqual(['mcp__docs__a_b_4f33a9a2', 'mcp__docs__a_b_63617bb9']);
-  });
-
-  it('names resource tools with the same rule and the server name as written', async () => {
-    const { factory } = buildFake({ 'my-docs': { resources: [{ uri: 'file://readme', name: 'Read Me' }] } });
-    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
-    await manager.reconcile(specs({ 'my-docs': { command: 'x' } }));
-    expect(manager.getToolDescriptor('mcp__my_docs__get_read_me')).toMatchObject({ serverName: 'my-docs', kind: 'resource' });
   });
 
   it('suffixes a name another manager already holds', async () => {
@@ -643,7 +673,7 @@ describe('McpClientManager status rows', () => {
   it('falls back to the first non-blank line of the server instructions', async () => {
     const fakes = buildFake({ docs: { tools: [{ name: 'q' }] } });
     fakes.fake.connect.mockImplementationOnce(async (name: string) => {
-      const conn = { tools: [{ name: 'q' }], resources: [], status: 'connected', instructions: '\n  Search the handbook.\nMore.', inFlight: 0, lastUsedAt: 0 } as unknown as ServerConnection;
+      const conn = { tools: [{ name: 'q' }], hasResources: false, status: 'connected', instructions: '\n  Search the handbook.\nMore.', inFlight: 0, lastUsedAt: 0 } as unknown as ServerConnection;
       fakes.connections.set(name, conn);
       return conn;
     });
@@ -674,7 +704,7 @@ describe('McpClientManager status rows', () => {
   it('shows a step-up challenge as needs-auth with insufficientScope', async () => {
     const fakes = buildFake({});
     fakes.fake.connect.mockImplementationOnce(async (name: string) => {
-      const conn = { tools: [], resources: [], status: 'needs-auth', errorInfo: { code: 'insufficientScope' }, inFlight: 0, lastUsedAt: 0 } as unknown as ServerConnection;
+      const conn = { tools: [], hasResources: false, status: 'needs-auth', errorInfo: { code: 'insufficientScope' }, inFlight: 0, lastUsedAt: 0 } as unknown as ServerConnection;
       fakes.connections.set(name, conn);
       return conn;
     });
@@ -692,7 +722,7 @@ describe('McpClientManager status rows', () => {
     await flush();
     expect(manager.getServerStatus('remote')).toMatchObject({ status: 'failed', error: 'fetch failed' });
     fakes.fake.connect.mockImplementationOnce(async (name: string) => {
-      const conn = { tools: [], resources: [], status: 'needs-auth', errorInfo: { code: 'insufficientScope' }, inFlight: 0, lastUsedAt: 0 } as unknown as ServerConnection;
+      const conn = { tools: [], hasResources: false, status: 'needs-auth', errorInfo: { code: 'insufficientScope' }, inFlight: 0, lastUsedAt: 0 } as unknown as ServerConnection;
       fakes.connections.set(name, conn);
       return conn;
     });
@@ -781,5 +811,94 @@ describe('isSupervised (lifecycle supervision predicate)', () => {
     expect(isSupervised(def({ lifecycle: 'lazy' }))).toBe(false);
     expect(isSupervised(def({ idleTimeout: 5 }))).toBe(false);
     expect(isSupervised(def({ lifecycle: 'eager', idleTimeout: 5 }))).toBe(false);
+  });
+});
+
+describe('McpClientManager.retiredResourceEntries: what older builds named their get_* tools from', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const cacheFile = (server: string) => join(MCP_METADATA_CACHE_DIR, `${createHash('sha256').update(server).digest('hex').slice(0, 32)}.json`);
+  /** An entry as an older build wrote it for `config`, `ageMs` ago. */
+  function writeOlderCache(server: string, config: McpServerConfig, entry: { tools: string[]; resources: { uri: string; name: string }[]; ageMs?: number }): void {
+    mkdirSync(MCP_METADATA_CACHE_DIR, { recursive: true });
+    const raw = {
+      version: 1,
+      configHash: computeServerHash(normalizeServerConfig(config)),
+      tools: entry.tools.map((name) => ({ name })),
+      resources: entry.resources,
+      cachedAt: Date.now() - (entry.ageMs ?? 0),
+    };
+    writeFileSync(cacheFile(server), JSON.stringify(raw), 'utf-8');
+  }
+  const readCache = (server: string) => JSON.parse(readFileSync(cacheFile(server), 'utf-8')) as { retiredResources?: unknown; resources: unknown };
+  const SERVERS = ['srv', 'live', 'hidden', 'quiet'];
+  afterEach(() => {
+    for (const server of SERVERS) rmSync(cacheFile(server), { force: true });
+  });
+
+  it('takes a server\u2019s tools from the cache entry its resources come from, at any age, so a real tool is never retired', async () => {
+    const config: McpServerConfig = { command: 'srv-mcp', lifecycle: 'lazy' };
+    writeOlderCache('srv', config, { tools: ['get_config'], resources: [{ uri: 'srv://config', name: 'config' }, { uri: 'srv://readme', name: 'readme' }], ageMs: 30 * DAY });
+    const { factory } = buildFake({});
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    manager.initialize(specs({ srv: config }));
+    await manager.whenReady();
+
+    const entries = manager.retiredResourceEntries();
+    expect(entries).toEqual([{ serverName: 'srv', rawToolNames: ['get_config'], resources: [{ uri: 'srv://config', name: 'config' }, { uri: 'srv://readme', name: 'readme' }] }]);
+    const retired = retiredResourceToolNames({
+      userServers: ['srv'],
+      visibleUserServers: ['srv'],
+      folderServers: [],
+      userTools: manager.toolNameEntries(),
+      folderTools: [],
+      retiredResources: { user: entries, folder: [] },
+    });
+    expect([...retired.keys()]).toEqual(['mcp__srv__get_readme']);
+  });
+
+  it('leaves out a server that is not connected and whose cache another config wrote, since its tools are unknown', async () => {
+    writeOlderCache('srv', { command: 'before-edit' }, { tools: ['get_config'], resources: [{ uri: 'srv://config', name: 'config' }] });
+    const { factory } = buildFake({});
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    manager.initialize(specs({ srv: { command: 'srv-mcp', lifecycle: 'lazy' } }));
+    await manager.whenReady();
+
+    expect(manager.retiredResourceEntries()).toEqual([]);
+  });
+
+  it('keeps a connected server\u2019s retired list through a config edit, with its live tools', async () => {
+    writeOlderCache('live', { command: 'before-edit' }, { tools: [], resources: [{ uri: 'live://a', name: 'a' }] });
+    const { factory } = buildFake({ live: { tools: [{ name: 'run' }] } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    manager.initialize(specs({ live: { command: 'live-mcp' } }));
+    await manager.whenReady();
+
+    expect(manager.retiredResourceEntries()).toEqual([{ serverName: 'live', rawToolNames: ['run'], resources: [{ uri: 'live://a', name: 'a' }] }]);
+    expect(readCache('live').retiredResources).toEqual([{ uri: 'live://a', name: 'a' }]);
+  });
+
+  it('gives a server with exposeResources: false its tools and no retired resources, as older builds made it no get_* tool', async () => {
+    const config: McpServerConfig = { command: 'quiet-mcp', lifecycle: 'lazy', exposeResources: false };
+    writeOlderCache('quiet', config, { tools: ['run'], resources: [{ uri: 'quiet://a', name: 'a' }] });
+    const { factory } = buildFake({});
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    manager.initialize(specs({ quiet: config }));
+    await manager.whenReady();
+
+    expect(manager.retiredResourceEntries()).toEqual([{ serverName: 'quiet', rawToolNames: ['run'], resources: [] }]);
+  });
+
+  // A connect and a tools list_changed write the cache on the main thread; the entry they carry from is read once.
+  it('reads a server\u2019s cache entry once per server set, not on each connect or list change', async () => {
+    writeOlderCache('live', { command: 'live-mcp' }, { tools: [], resources: [{ uri: 'live://a', name: 'a' }] });
+    const fakes = buildFake({ live: { tools: [{ name: 'run' }] } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: fakes.factory });
+    manager.initialize(specs({ live: { command: 'live-mcp' } }));
+    await manager.whenReady();
+    writeOlderCache('live', { command: 'live-mcp' }, { tools: [], resources: [{ uri: 'live://elsewhere', name: 'elsewhere' }] });
+
+    fakes.fireListChanged('live');
+
+    expect(readCache('live').resources).toEqual([{ uri: 'live://a', name: 'a' }]);
   });
 });

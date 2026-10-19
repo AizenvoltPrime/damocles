@@ -22,7 +22,7 @@ import { COMPASS_PI_TOOL_NAMES, COMPASS_TOOL_CATALOG } from '../tools/compass-to
 // this file's universe is built from the identical source the shipped group composes.
 import { WEB_PI_TOOL_NAMES, WEB_TOOL_CATALOG } from '../web-access/web-tool-specs';
 import { IMAGE_PI_TOOL_NAMES, IMAGE_TOOL_CATALOG } from '../tools/image-tool-specs';
-import { TOOL_TOOL_SEARCH } from '../../../shared/tool-names';
+import { MCP_RESOURCE_TOOL_NAMES, TOOL_TOOL_SEARCH } from '../../../shared/tool-names';
 
 /** The n-th entry of a name list, failing loudly rather than widening to `undefined`. */
 function nth(names: readonly string[], i: number): string {
@@ -280,10 +280,48 @@ describe('deferredToolNames / initialActiveToolNames — the deferral algebra', 
     expect(byGroup.compass).toEqual(COMPASS_PI_TOOL_NAMES);
     expect(byGroup.web).toEqual(WEB_PI_TOOL_NAMES);
     expect(byGroup.image).toEqual(IMAGE_PI_TOOL_NAMES);
+    expect(byGroup.mcp_resources).toEqual(MCP_RESOURCE_TOOL_NAMES);
     // Pinned because it is the order the model reads. The claim is narrow: `web` comes after `browser`,
-    // and `image` comes last. NOT "mirrors `FULL_TOOL_CATALOG`" — that runs compass → browser → web →
-    // image and already disagrees. A new group needs a deliberate position and a deliberate edit here.
-    expect(BUILTIN_DEFERRED_GROUPS.map((g) => g.group)).toEqual(['browser', 'compass', 'web', 'image']);
+    // `image` after `web`, and `mcp_resources` comes last. NOT "mirrors `FULL_TOOL_CATALOG`" — that runs
+    // compass → browser → web → image and already disagrees. A new group needs a deliberate position and
+    // a deliberate edit here.
+    expect(BUILTIN_DEFERRED_GROUPS.map((g) => g.group)).toEqual(['browser', 'compass', 'web', 'image', 'mcp_resources']);
+  });
+
+  it('defers the resource tools only when the caller passes them, since an Always-loaded resource server makes them direct', () => {
+    const eligible = ['read', ...MCP_RESOURCE_TOOL_NAMES];
+    expect(deferredToolNames(eligible, [])).toEqual([]);
+    expect(deferredToolNames(eligible, MCP_RESOURCE_TOOL_NAMES)).toEqual([...MCP_RESOURCE_TOOL_NAMES]);
+    expect(deferredToolNames(['read'], MCP_RESOURCE_TOOL_NAMES)).toEqual([]);
+  });
+
+  it('resolves `mcp_resources` to exactly the three resource tools, and answers it as already active when they are Always loaded', () => {
+    const universe = [...ALL_DEFERRABLE, ...MCP_RESOURCE_TOOL_NAMES];
+    const loadable = resolveToolSearchEntries(['mcp_resources'], universe, mcpGroups());
+    expect([...loadable.matches].sort()).toEqual([...MCP_RESOURCE_TOOL_NAMES].sort());
+    expect(loadable.inertGroups).toEqual([]);
+
+    const direct = resolveToolSearchEntries(['mcp_resources'], ALL_DEFERRABLE, mcpGroups(), new Set(MCP_RESOURCE_TOOL_NAMES));
+    expect(direct.matches).toEqual([]);
+    expect(direct.alreadyActiveGroups).toEqual(['mcp_resources']);
+    expect(direct.inertGroups).toEqual([]);
+
+    const absent = resolveToolSearchEntries(['mcp_resources'], ALL_DEFERRABLE, mcpGroups());
+    expect(absent.inertGroups).toEqual(['mcp_resources']);
+  });
+
+  it('resolves `mcp_resources` to the BUILT-IN when an MCP server shares the name, and labels the shadowing', () => {
+    const shadowing = new Map<string, readonly string[]>([...mcpGroups(), ['mcp_resources', ['mcp__mcp_resources__dump']]]);
+    const universe = [...ALL_DEFERRABLE, ...MCP_RESOURCE_TOOL_NAMES, 'mcp__mcp_resources__dump'];
+    const { matches, shadowedGroups, unknown } = resolveToolSearchEntries(['mcp_resources'], universe, shadowing);
+
+    expect(shadowedGroups).toEqual(['mcp_resources']);
+    expect([...matches].sort()).toEqual([...MCP_RESOURCE_TOOL_NAMES].sort());
+    expect(matches).not.toContain('mcp__mcp_resources__dump');
+    expect(unknown).toEqual([]);
+
+    const byName = resolveToolSearchEntries(['mcp__mcp_resources__dump'], universe, shadowing);
+    expect(byName.matches).toEqual(['mcp__mcp_resources__dump']);
   });
 
   it('resolves the `image` group to GenerateImage alone, and reports it INERT when the tool is not eligible', () => {
@@ -389,8 +427,8 @@ describe('deferred-tools.ts import discipline', () => {
     // only because it shares a suffix with this directory's sibling leaves and a directory with the
     // specs leaf. Neither buys it anything, so it must fail exactly as the barrel does.
     expect('../web-access/web-tools').not.toMatch(LEAF_NAME_MODULE);
-    // …while the four specifiers the module legitimately uses all pass.
-    for (const spec of ['./browser-tools', './compass-tools', '../web-access/web-tool-specs', './image-tool-specs']) {
+    // …while the specifiers the module legitimately uses all pass.
+    for (const spec of ['./browser-tools', './compass-tools', '../web-access/web-tool-specs', './image-tool-specs', '../../../shared/tool-names']) {
       expect(spec, spec).toMatch(LEAF_NAME_MODULE);
     }
   });
@@ -730,7 +768,7 @@ describe('ToolSearch tool definition — shape', () => {
     // becoming "derived into unreadable prose".
     const blurb = (tool.parameters as unknown as { properties: { tools: { description: string } } }).properties.tools.description;
     for (const g of BUILTIN_DEFERRED_GROUPS) expect(blurb, g.group).toContain(g.group);
-    expect(blurb).toBe('Group names (browser, compass, web, image, an MCP server name listed in the description) and/or exact tool names to load.');
+    expect(blurb).toBe('Group names (browser, compass, web, image, mcp_resources, an MCP server name listed in the description) and/or exact tool names to load.');
   });
 
   /**

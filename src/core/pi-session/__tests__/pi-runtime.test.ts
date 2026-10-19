@@ -4,11 +4,15 @@ import { createFakePlatform, installFakePlatform } from '../../../__mocks__/fake
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { ModelsError } from '@earendil-works/pi-ai';
 import { PiRuntime, type LiveSessionMutator } from '../pi-runtime';
+import { piModelNetworkEnabled, savedCatalogCheckedAt } from '../pi-model-catalog';
 import { FolderRuntime } from '../folder-runtime';
+import { serializeSettingWrite } from '../../settings-write-chain';
 import { McpClientManager } from '../mcp/mcp-client-manager';
+import type { PersonalToolLists } from '../mcp/tool-name-migration';
 import { initPiLoader, loadPiAi, nodeSupportsPi, PI_MIN_NODE_MAJOR, type PiCodingAgentModule } from '../pi-loader';
 import type { SecretResolver } from '../custom-providers';
 import { LEGACY_SUBSCRIPTION_REPOS, SUBSCRIPTION_SOURCE, classifySubscriptionSource } from '../subscription';
@@ -196,8 +200,8 @@ describe('PiRuntime.runStructuredCompletion usage ledger', () => {
 });
 
 /**
- * Every sub-call names its thinking level, clamped by pi: with no level, pi runs a Claude 5.x model at
- * adaptive `high`. Models come from the catalog files pi-ai ships, so the clamp sees real level maps.
+ * Every sub-call names its thinking level, clamped by pi: with no level, pi runs a Claude model that cannot
+ * disable thinking at adaptive `high`. Models come from the catalog files pi-ai ships, so the clamp sees real level maps.
  */
 describe('PiRuntime.runStructuredCompletion thinking level', () => {
   const PURPOSES = Object.keys(SUBCALL_THINKING) as StructuredSubCallPurpose[];
@@ -243,11 +247,14 @@ describe('PiRuntime.runStructuredCompletion thinking level', () => {
     await PiRuntime.disposeInstance();
   });
 
-  it('sends reasoning low for every purpose on Haiku 5.5', async () => {
+  it('sends no reasoning for the four off purposes on Haiku 5.5 and low for the others', async () => {
     expect(HAIKU).toBeDefined();
     const seen = await optionsPerPurpose(HAIKU);
     expect(seen.size).toBe(PURPOSES.length);
-    for (const purpose of PURPOSES) expect(seen.get(purpose)?.reasoning, purpose).toBe('low');
+    for (const purpose of PURPOSES) {
+      if (SUBCALL_THINKING[purpose] === 'off') expect(seen.get(purpose), purpose).not.toHaveProperty('reasoning');
+      else expect(seen.get(purpose)?.reasoning, purpose).toBe('low');
+    }
   });
 
   it('sends no reasoning for the four off purposes on GPT-6 Luna and low for the other three', async () => {
@@ -308,7 +315,7 @@ describe('PiRuntime.runStructuredCompletion thinking level', () => {
     const subCalls = logLines.filter((line) => line.includes('[PiRuntime] sub-call'));
     expect(subCalls).toHaveLength(2);
     expect(subCalls[0]).toMatch(/sub-call memory-extract on anthropic\/claude-haiku-5-5 at low ended with error in 0ms/);
-    expect(subCalls[1]).toMatch(/sub-call memory-merge on anthropic\/claude-haiku-5-5 at low ended with toolUse in 12000ms/);
+    expect(subCalls[1]).toMatch(/sub-call memory-merge on anthropic\/claude-haiku-5-5 at off ended with toolUse in 12000ms/);
     vi.restoreAllMocks();
   });
 
@@ -408,7 +415,9 @@ describe('subscription plugin migration', () => {
         h.providers.delete(name);
       },
       getRegisteredProviderConfig: (name: string) => h.providers.get(name),
-      refresh: async () => {
+      refresh: async (options: unknown) => {
+        // A plugin swap must never reach the network.
+        expect(options).toEqual({ allowNetwork: false });
         calls.push('refresh');
         return { aborted: false, errors: new Map() };
       },
@@ -482,9 +491,11 @@ describe('subscription plugin migration', () => {
           userMcp: new McpClientManager({ clientVersion: 'test' }),
           createFolderMcp: (reservedToolNames) => new McpClientManager({ clientVersion: 'test', reservedToolNames }),
           noticeMemory: { has: () => false, add: async () => {} },
+          additionMemory: { has: () => false, add: async () => {} },
           projectDisabledTools: () => null,
+          personalDisabledTools: () => ({ rewrite: async () => undefined, lists: () => [] }),
           toolExposureSetting: () => ({}),
-          renameSession: async () => undefined,
+          resourceExposureSetting: () => ({}),
           trust: testPlatform.trust,
           fileWatchers: testPlatform.fileWatchers,
         });
@@ -1178,6 +1189,340 @@ describe('PiRuntime.syncCustomProviders', () => {
     expect(output).not.toContain(SENTINEL);
     expect(output).not.toContain('api_key');
   });
+
+  describe('the OpenRouter catalog for the applied key', () => {
+    const OPENROUTER_SECRET = 'damocles.explore.apiKey.openrouter';
+    type RefreshOptions = { allowNetwork?: boolean; providers?: string[]; signal?: AbortSignal };
+    type RefreshResult = { aborted: boolean; errors: Map<string, Error> };
+
+    /**
+     * pi 1.3.0's OpenRouter catalog refresh as its caller can observe it. A refresh that includes the provider supersedes
+     * its running one (pi-ai models.js:122-137, 184-185), which then ends with no error and with `aborted` read off the
+     * caller's signal alone (models.js:206-215, 229). Without `allowNetwork` the runtime's `PI_OFFLINE` switch applies
+     * (pi-coding-agent core/model-runtime.js:97, 600; models.js:199). A networked refresh still current when its fetch
+     * ends saves `{ models, checkedAt }` (remote-catalog-provider.js:178-186) under the provider id (models-store.js:92-101)
+     * before it resolves (models.js:138-158). `registerProvider` and `unregisterProvider` each start an offline refresh of
+     * every provider (model-runtime.js:679, 686); a runtime key change refreshes only its own provider (model-runtime.js:411),
+     * and a runtime key is what `getProviderAuthStatus` reports first (model-runtime.js:441-443).
+     */
+    class PiOpenRouterModel {
+      /** Network requests in flight, released by the test; a superseded one is already settled. */
+      readonly fetches: Array<() => void> = [];
+      private running: AbortController | null = null;
+      readonly storePath: string;
+      readonly modelNetworkEnabled: boolean;
+      private readonly respondAtOnce: boolean;
+
+      constructor(storePath: string, modelNetworkEnabled = true, respondAtOnce = false) {
+        this.storePath = storePath;
+        this.modelNetworkEnabled = modelNetworkEnabled;
+        this.respondAtOnce = respondAtOnce;
+      }
+
+      readonly refresh = vi.fn(async (options: RefreshOptions): Promise<RefreshResult> => {
+        const caller = options.signal ?? new AbortController().signal;
+        if (caller.aborted) return { aborted: true, errors: new Map() };
+        if (options.providers && !options.providers.includes('openrouter')) return { aborted: false, errors: new Map() };
+        this.running?.abort();
+        const controller = new AbortController();
+        this.running = controller;
+        const signal = AbortSignal.any([caller, controller.signal]);
+        try {
+          if (options.allowNetwork ?? this.modelNetworkEnabled) {
+            await new Promise<void>((resolve, reject) => {
+              if (this.respondAtOnce) resolve();
+              else this.fetches.push(resolve);
+              signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+            });
+            if (!signal.aborted) this.save({ models: [], checkedAt: Date.now() });
+          }
+        } catch {
+          // pi records no error for a provider refresh that was aborted.
+        } finally {
+          if (this.running === controller) this.running = null;
+        }
+        return { aborted: caller.aborted, errors: new Map() };
+      });
+      readonly registerProvider = vi.fn(() => void this.refresh({ allowNetwork: false }));
+      readonly unregisterProvider = vi.fn(() => void this.refresh({ allowNetwork: false }));
+      private readonly runtimeKeys = new Set<string>();
+      readonly setRuntimeApiKey = vi.fn(async (provider: string) => {
+        this.runtimeKeys.add(provider);
+        await this.refresh({ allowNetwork: false, providers: [provider] });
+      });
+      readonly removeRuntimeApiKey = vi.fn(async (provider: string) => {
+        this.runtimeKeys.delete(provider);
+        await this.refresh({ allowNetwork: false, providers: [provider] });
+      });
+      readonly getProviderAuthStatus = (provider: string) => (this.runtimeKeys.has(provider) ? { configured: true, source: 'runtime' } : { configured: false });
+
+      /** Damocles' own refreshes: pi's internal ones always pass `allowNetwork: false`. */
+      catalogRefreshes(): RefreshOptions[] {
+        return this.refresh.mock.calls.map(([options]) => options).filter((options) => options.allowNetwork !== false);
+      }
+
+      savedCheckedAt(): unknown {
+        if (!fs.existsSync(this.storePath)) return undefined;
+        return (JSON.parse(fs.readFileSync(this.storePath, 'utf8')) as Record<string, { checkedAt?: unknown }>).openrouter?.checkedAt;
+      }
+
+      private save(entry: { models: unknown[]; checkedAt: number }): void {
+        const saved = fs.existsSync(this.storePath) ? (JSON.parse(fs.readFileSync(this.storePath, 'utf8')) as Record<string, unknown>) : {};
+        fs.writeFileSync(this.storePath, JSON.stringify({ ...saved, openrouter: entry }, null, 2));
+      }
+    }
+
+    let agentDir: string;
+    beforeEach(() => {
+      agentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-openrouter-catalog-'));
+    });
+    afterEach(() => {
+      fs.rmSync(agentDir, { recursive: true, force: true });
+    });
+
+    function withPi(options: { online?: boolean; respondAtOnce?: boolean; clock?: AbortSignal } = {}) {
+      const runtime = PiRuntime.get(agentDir);
+      const pi = new PiOpenRouterModel(path.join(agentDir, 'models-store.json'), options.online ?? true, options.respondAtOnce ?? false);
+      attach(
+        runtime,
+        fakeModelRuntime({
+          refresh: pi.refresh,
+          registerProvider: pi.registerProvider,
+          unregisterProvider: pi.unregisterProvider,
+          setRuntimeApiKey: pi.setRuntimeApiKey,
+          removeRuntimeApiKey: pi.removeRuntimeApiKey,
+          getProviderAuthStatus: pi.getProviderAuthStatus,
+          modelNetworkEnabled: pi.modelNetworkEnabled,
+        }),
+      );
+      stubTimeout(options.clock ?? new AbortController().signal);
+      return { runtime, pi };
+    }
+
+    function withRefresh(refresh: (options: RefreshOptions) => Promise<unknown>) {
+      const runtime = PiRuntime.get(agentDir);
+      const spy = vi.fn(refresh);
+      attach(runtime, fakeModelRuntime({ refresh: spy, modelNetworkEnabled: true }));
+      stubTimeout(new AbortController().signal);
+      return { runtime, refresh: spy };
+    }
+
+    function holdProviderSync(runtime: PiRuntime): { release: () => void; held: Promise<void> } {
+      let release!: () => void;
+      const held = (runtime as unknown as { _withProviderSync<T>(op: () => Promise<T>): Promise<T> })._withProviderSync(
+        () => new Promise<void>((resolve) => (release = resolve)),
+      );
+      return { release: () => release(), held };
+    }
+
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+    const logged = () => logLines.join('\n');
+
+    it("refreshes OpenRouter alone under pi's own offline switch when a key is first applied, without holding up the sync", async () => {
+      const { runtime, pi } = withPi();
+
+      const result = await runtime.syncCustomProviders(secrets({ [OPENROUTER_SECRET]: 'or-1' }));
+
+      expect(result.wired).toContain('openrouter');
+      await vi.waitFor(() => expect(pi.fetches).toHaveLength(1));
+      expect(pi.catalogRefreshes()).toEqual([{ providers: ['openrouter'], signal: expect.any(AbortSignal) }]);
+      expect(pi.catalogRefreshes()[0]).not.toHaveProperty('allowNetwork');
+    });
+
+    it('makes no catalog request while pi is offline, and says so', async () => {
+      const { runtime, pi } = withPi({ online: false });
+
+      await runtime.syncCustomProviders(secrets({ [OPENROUTER_SECRET]: 'or-1' }));
+      await settle();
+
+      expect(pi.catalogRefreshes()).toEqual([]);
+      expect(logged()).toContain('OpenRouter catalog not refreshed: pi is offline (PI_OFFLINE)');
+    });
+
+    it('holds nothing queued on the provider sync, which folder creation waits on, while it runs', async () => {
+      const { runtime, pi } = withPi();
+      await runtime.syncCustomProviders(secrets({ [OPENROUTER_SECRET]: 'or-1' }));
+      await vi.waitFor(() => expect(pi.fetches).toHaveLength(1));
+
+      const queued = (runtime as unknown as { _withProviderSync<T>(op: () => Promise<T>): Promise<T> })._withProviderSync(async () => 'ran');
+
+      await expect(queued).resolves.toBe('ran');
+      expect(pi.catalogRefreshes()[0]!.signal!.aborted).toBe(false);
+    });
+
+    it('makes no networked call for the same key again or another provider, once a catalog is saved', async () => {
+      const { runtime, pi } = withPi({ respondAtOnce: true });
+      await runtime.syncCustomProviders(secrets({ [OPENROUTER_SECRET]: 'or-1' }));
+      await vi.waitFor(() => expect(pi.savedCheckedAt()).toEqual(expect.any(Number)));
+
+      await runtime.syncCustomProviders(secrets({ [OPENROUTER_SECRET]: 'or-1' }));
+      await runtime.syncCustomProviders(secrets({ [OPENROUTER_SECRET]: 'or-1', [STEPFUN_SECRET]: 'sf' }));
+      await settle();
+
+      expect(pi.catalogRefreshes()).toHaveLength(1);
+      expect(logged()).not.toContain('superseded');
+    });
+
+    it('retries a refresh another registration superseded once the provider sync is idle, and stops when a catalog is saved', async () => {
+      const { runtime, pi } = withPi();
+      await runtime.syncCustomProviders(secrets({ [OPENROUTER_SECRET]: 'or-1' }));
+      await vi.waitFor(() => expect(pi.fetches).toHaveLength(1));
+      const folderCreation = holdProviderSync(runtime);
+
+      pi.registerProvider();
+      await vi.waitFor(() => expect(logged()).toContain('OpenRouter catalog refresh was superseded by another refresh of the provider; retrying'));
+      await settle();
+      expect(pi.catalogRefreshes()).toHaveLength(1);
+
+      folderCreation.release();
+      await vi.waitFor(() => expect(pi.fetches).toHaveLength(2));
+      pi.fetches[1]!();
+      await vi.waitFor(() => expect(pi.savedCheckedAt()).toEqual(expect.any(Number)));
+      await settle();
+
+      expect(pi.catalogRefreshes()).toHaveLength(2);
+      expect(logged()).not.toContain('superseded again');
+    });
+
+    it('logs a refresh superseded on its retry too, and leaves the list until the next key', async () => {
+      const { runtime, pi } = withPi();
+      await runtime.syncCustomProviders(secrets({ [OPENROUTER_SECRET]: 'or-1' }));
+      await vi.waitFor(() => expect(pi.fetches).toHaveLength(1));
+
+      pi.registerProvider();
+      await vi.waitFor(() => expect(pi.fetches).toHaveLength(2));
+      pi.unregisterProvider();
+
+      await vi.waitFor(() => expect(logged()).toContain('OpenRouter catalog refresh was superseded again; the saved or shipped list stays until the next applied key'));
+      await settle();
+      expect(pi.catalogRefreshes()).toHaveLength(2);
+      expect(pi.savedCheckedAt()).toBeUndefined();
+    });
+
+    it('aborts the running refresh when the key is removed, without a retry', async () => {
+      const { runtime, pi } = withPi();
+      await runtime.syncCustomProviders(secrets({ [OPENROUTER_SECRET]: 'or-1' }));
+      await vi.waitFor(() => expect(pi.fetches).toHaveLength(1));
+      const first = pi.catalogRefreshes()[0]!.signal!;
+
+      await runtime.syncCustomProviders(secrets({}));
+      await settle();
+
+      expect(first.aborted).toBe(true);
+      expect(pi.catalogRefreshes()).toHaveLength(1);
+      expect(logged()).not.toContain('superseded');
+    });
+
+    it('bounds the wait for the provider sync with the same clock as the refresh, and says when it gave up', async () => {
+      const clock = new AbortController();
+      const { runtime, pi } = withPi({ clock: clock.signal });
+      const folderCreation = holdProviderSync(runtime);
+      await runtime.syncCustomProviders(secrets({ [OPENROUTER_SECRET]: 'or-1' }));
+
+      clock.abort();
+
+      await vi.waitFor(() => expect(logged()).toContain('OpenRouter catalog refresh gave up after 30000ms waiting for provider registrations'));
+      folderCreation.release();
+      await folderCreation.held;
+      await settle();
+      expect(pi.catalogRefreshes()).toEqual([]);
+    });
+
+    it('says when the clock ran out during the refresh', async () => {
+      const clock = new AbortController();
+      const { runtime, pi } = withPi({ clock: clock.signal });
+      await runtime.syncCustomProviders(secrets({ [OPENROUTER_SECRET]: 'or-1' }));
+      await vi.waitFor(() => expect(pi.fetches).toHaveLength(1));
+
+      clock.abort();
+
+      await vi.waitFor(() => expect(logged()).toContain('OpenRouter catalog refresh timed out after 30000ms'));
+      expect(pi.catalogRefreshes()).toHaveLength(1);
+    });
+
+    it('logs a failed refresh by error name only when its message has no status, and does not throw', async () => {
+      const { runtime, refresh } = withRefresh(async () => {
+        throw new SyntaxError(`Unexpected token in "${SENTINEL}" is not valid JSON`);
+      });
+
+      await runtime.syncCustomProviders(secrets({ [OPENROUTER_SECRET]: 'or-1' }));
+      await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(logged()).toMatch(/OpenRouter catalog refresh failed: SyntaxError$/m));
+
+      expect(logged()).not.toContain(SENTINEL);
+    });
+
+    it("logs a provider error the refresh reports by name and pi's HTTP status", async () => {
+      const { runtime } = withRefresh(async () => ({ aborted: false, errors: new Map([['openrouter', new Error('OpenRouter model list request failed: 500')]]) }));
+
+      await runtime.syncCustomProviders(secrets({ [OPENROUTER_SECRET]: 'or-1' }));
+
+      await vi.waitFor(() => expect(logged()).toContain('OpenRouter catalog refresh failed: Error (HTTP 500)'));
+    });
+
+    it('aborts the running refresh when another key is applied, and on dispose', async () => {
+      const { runtime, pi } = withPi();
+      await runtime.syncCustomProviders(secrets({ [OPENROUTER_SECRET]: 'or-1' }));
+      await vi.waitFor(() => expect(pi.fetches).toHaveLength(1));
+      const first = pi.catalogRefreshes()[0]!.signal!;
+
+      await runtime.syncCustomProviders(secrets({ [OPENROUTER_SECRET]: 'or-2' }));
+      expect(first.aborted).toBe(true);
+      await vi.waitFor(() => expect(pi.fetches).toHaveLength(2));
+      const second = pi.catalogRefreshes()[1]!.signal!;
+      expect(second.aborted).toBe(false);
+
+      await runtime.dispose();
+      expect(second.aborted).toBe(true);
+      expect(logged()).not.toContain('superseded');
+    });
+  });
+
+  describe("pi's catalog state as Damocles reads it, against the installed pi", () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it.each([
+      ['unset', undefined, true],
+      ['set', '1', false],
+      ['set to an empty string', '', false],
+    ])("reads pi's model network switch with PI_OFFLINE %s", async (_label, value, enabled) => {
+      if (value === undefined) delete process.env.PI_OFFLINE;
+      else vi.stubEnv('PI_OFFLINE', value);
+      const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-pi-offline-'));
+      try {
+        const pi = await initPiLoader();
+        const modelRuntime = await pi!.ModelRuntime.create({
+          authPath: path.join(agentDir, 'auth.json'),
+          modelsPath: path.join(agentDir, 'models.json'),
+          refreshOnCreate: false,
+        });
+        expect(piModelNetworkEnabled(modelRuntime)).toBe(enabled);
+      } finally {
+        fs.rmSync(agentDir, { recursive: true, force: true });
+      }
+    });
+
+    it("reads the checkedAt pi's own models store saved for a provider", async () => {
+      const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-models-store-'));
+      const storePath = path.join(agentDir, 'models-store.json');
+      try {
+        const piStore = (await import(
+          /* @vite-ignore */ pathToFileURL(path.resolve('node_modules/@earendil-works/pi-coding-agent/dist/core/models-store.js')).href
+        )) as { FileModelsStore: new (path: string) => { write(provider: string, entry: unknown): Promise<void> } };
+        expect(await savedCatalogCheckedAt(storePath, 'openrouter')).toBeUndefined();
+
+        await new piStore.FileModelsStore(storePath).write('stepfun', { models: [], checkedAt: 1 });
+        expect(await savedCatalogCheckedAt(storePath, 'openrouter')).toBeUndefined();
+
+        await new piStore.FileModelsStore(storePath).write('openrouter', { models: [], checkedAt: 1_760_000_000_000 });
+        expect(await savedCatalogCheckedAt(storePath, 'openrouter')).toBe(1_760_000_000_000);
+      } finally {
+        fs.rmSync(agentDir, { recursive: true, force: true });
+      }
+    });
+  });
 });
 
 describe('PiRuntime sub-call model', () => {
@@ -1225,5 +1570,81 @@ describe('PiRuntime sub-call model', () => {
 
     installFakePlatform({ settings: { user: { 'damocles.background.model': 'step-5-preview', 'damocles.background.effort': 'high' } } });
     expect(runtimeWith(new Set(['stepfun'])).describeSubCallModel()).toMatchObject({ id: 'step-5-preview', effort: 'high' });
+  });
+});
+
+describe("PiRuntime: the retired-tool migration's damocles.tools.disabled lists", () => {
+  const KEY = 'damocles.tools.disabled';
+  type Internals = {
+    rewriteDisabledToolLists(scopes: readonly ('user' | 'local')[], rename: (name: string) => string): Promise<void>;
+    personalDisabledToolLists(scopes: readonly ('user' | 'local')[]): PersonalToolLists;
+    projectDisabledToolList(): unknown;
+  };
+  const rename = (name: string) => (name === 'mcp__s__get_a' ? 'mcp__s__read_mcp_resource(s://a)' : name);
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+  });
+
+  it('rewrites each scope in place, keeping every other entry where it was, duplicates included, and writes a scope it leaves unchanged not at all', async () => {
+    const platform = installFakePlatform({ settings: { user: { [KEY]: ['x', 'mcp__s__get_a', 7, 'x'] }, local: { [KEY]: ['y', 'y'] } } });
+    const update = vi.spyOn(platform.settings, 'update');
+    const runtime = PiRuntime.get() as unknown as Internals;
+
+    await runtime.rewriteDisabledToolLists(['user', 'local'], rename);
+
+    expect(platform.settings.inspect(KEY).userValue).toEqual(['x', 'mcp__s__read_mcp_resource(s://a)', 7, 'x']);
+    expect(platform.settings.inspect(KEY).localValue).toEqual(['y', 'y']);
+    expect(update).toHaveBeenCalledExactlyOnceWith(KEY, ['x', 'mcp__s__read_mcp_resource(s://a)', 7, 'x'], 'user');
+  });
+
+  it("names the personal lists by their scope's file, or the user scope by the setting where the host keeps no file", () => {
+    installFakePlatform({ settings: { user: { [KEY]: ['a', 3] }, local: { [KEY]: ['b'] }, scopeFiles: { local: '/repo/.damocles/settings.local.json' } } });
+    const lists = (PiRuntime.get() as unknown as Internals).personalDisabledToolLists(['user', 'local']).lists();
+    expect(lists).toEqual([{ setting: KEY, scope: 'user', names: ['a'] }, { path: '/repo/.damocles/settings.local.json', names: ['b'] }]);
+  });
+
+  it('logs each damocles.tools.disabled entry that can turn nothing off, by file and index', () => {
+    installFakePlatform({
+      settings: {
+        user: { [KEY]: ['mcp__s__read_mcp_resource', 'mcp__s__read_mcp_resource(s://a)', 'mcp__*__read_mcp_resource(*)', 'mcp__s__get_a(x)', 'Bash'] },
+        scopeFiles: { user: '/home/me/.damocles/settings.json' },
+      },
+    });
+    logLines.length = 0;
+
+    (PiRuntime.get() as unknown as { logInertDisabledToolEntries(): void }).logInertDisabledToolEntries();
+
+    const inert = logLines.filter((line) => line.includes(`${KEY}[`));
+    expect(inert.map((line) => /\[(\d+)\]/.exec(line)![1])).toEqual(['0', '2', '3']);
+    expect(inert.every((line) => line.includes('/home/me/.damocles/settings.json'))).toBe(true);
+  });
+
+  it('runs on the settings write chain, so a Tools-panel toggle racing it is not lost', async () => {
+    const platform = installFakePlatform({ settings: { user: { [KEY]: ['mcp__s__get_a'] } } });
+    // A store's write lands after an await, which is when a read-modify-write off the chain loses the other one.
+    const write = platform.settings.update.bind(platform.settings);
+    vi.spyOn(platform.settings, 'update').mockImplementation(async (...args) => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return write(...args);
+    });
+    const runtime = PiRuntime.get() as unknown as Internals;
+    const toggle = serializeSettingWrite(async () => {
+      const current = platform.settings.inspect<string[]>(KEY).userValue ?? [];
+      await platform.settings.update(KEY, [...current, 'mcp__git__push'], 'user');
+    });
+
+    await Promise.all([runtime.rewriteDisabledToolLists(['user'], rename), toggle]);
+
+    expect(platform.settings.inspect(KEY).userValue).toEqual(['mcp__s__read_mcp_resource(s://a)', 'mcp__git__push']);
+  });
+
+  it("names the project scope's list by its file, or by the setting where the host keeps no file", () => {
+    installFakePlatform({ settings: { project: { [KEY]: ['mcp__s__get_a'] }, scopeFiles: { project: '/repo/.damocles/settings.json' } } });
+    expect((PiRuntime.get() as unknown as Internals).projectDisabledToolList()).toEqual({ path: '/repo/.damocles/settings.json', names: ['mcp__s__get_a'] });
+  });
+
+  it('names the setting on a host whose project scope has no file, as VS Code workspace settings have none', async () => {
+    installFakePlatform({ settings: { project: { [KEY]: ['mcp__s__get_a', 3] } } });
+    expect((PiRuntime.get() as unknown as Internals).projectDisabledToolList()).toEqual({ setting: KEY, names: ['mcp__s__get_a'] });
   });
 });

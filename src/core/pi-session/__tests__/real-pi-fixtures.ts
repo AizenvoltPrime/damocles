@@ -18,6 +18,7 @@ import type { PermissionHandler } from '../../permission-handler';
 import type { SessionOptions } from '../../session-types';
 import { PiSession } from '../pi-session';
 import { withQueuePolicy } from '../queue-policy';
+import { trackRunLifecycle } from '../run-lifecycle';
 import { withPerCallCancel } from '../tools/cancellable-shell';
 import { ShellCancelStore } from '../tools/shell-cancel-registry';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
@@ -76,7 +77,7 @@ export function panelSession(emitted: ExtensionToWebviewMessage[]): PiSession {
     cwd: '/cwd',
     projectScope: true,
     platform: createFakePlatform(),
-    permissionHandler: { getPermissionMode: () => 'default', setPendingPromptsListener: () => {}, setPromptOwnerResolver: () => {}, pendingPrompts: () => [] } as unknown as PermissionHandler,
+    permissionHandler: { getPermissionMode: () => 'default', setPendingPromptsListener: () => {}, setPromptOwnerResolver: () => {}, pendingPrompts: () => [], repostPendingPrompts: () => {} } as unknown as PermissionHandler,
     onMessage: (message: ExtensionToWebviewMessage) => emitted.push(message),
     resolveThinking: () => ({ thinkingDisabled: true, effort: null }),
   } as unknown as SessionOptions;
@@ -85,7 +86,15 @@ export function panelSession(emitted: ExtensionToWebviewMessage[]): PiSession {
 
 /** Makes `session` the panel's live session without running `start()`. */
 export function bindPanel(panel: PiSession, session: AgentSession): void {
-  (panel as unknown as { runtime: unknown }).runtime = { session };
+  // `bindSession` binds the session's run lifecycle with its event subscriptions, and lets go of it with them; this binding has no adapter.
+  const internals = panel as unknown as { runtime: unknown; runLifecycle: unknown; unsubscribe: (() => void) | null };
+  const run = trackRunLifecycle(session);
+  internals.runtime = { session };
+  internals.runLifecycle = run;
+  internals.unsubscribe = () => {
+    if (internals.runLifecycle === run) internals.runLifecycle = null;
+    run.dispose();
+  };
 }
 
 /** The panel's own note delivery bound to `session`, and a store whose Stop click reaches it. */

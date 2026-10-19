@@ -12,7 +12,7 @@ import type { Agent, AgentTurnContext, AgentTurnDecision, FinishTurn } from '@ea
 const H = vi.hoisted(() => {
   const CACHE_WARMING_MODES = ['off', 'streaming', 'idle'];
   const seq: string[] = [];
-  const captured: { services: unknown[]; customTools: Array<{ name: string; execute: (...a: never[]) => Promise<unknown> }> } = { services: [], customTools: [] };
+  const captured: { services: unknown[]; customTools: Array<{ name: string; execute: (...a: never[]) => Promise<unknown> }>; shutdowns: unknown[] } = { services: [], customTools: [], shutdowns: [] };
   // The bash delegate's body, swappable per test so a case can hold a command open across a Stop click.
   let bashExecute: (...a: never[]) => Promise<unknown> = async () => ({ content: [], details: undefined });
   let sessionCounter = 0;
@@ -47,8 +47,10 @@ const H = vi.hoisted(() => {
       ]),
       getEntry: vi.fn((_id: string) => undefined as unknown),
       getEntries: vi.fn(() => [] as unknown[]),
+      buildSessionContext: vi.fn(() => ({ messages: [] as unknown[] })),
       getHeader: vi.fn(() => null),
       getSessionFile: vi.fn(() => undefined as string | undefined),
+      getCwd: vi.fn(() => '/cwd'),
       appendCustomEntry: vi.fn((_customType: string, _data?: unknown) => 'custom-1'),
     }) as {
       getSessionName: (() => string | undefined);
@@ -63,6 +65,7 @@ const H = vi.hoisted(() => {
     // The live subscriptions (the adapter's and the image cache's), so a test can drive the real pi events a
     // call emits before it settles — the only way to exercise a path where the adapter and the caller both see one failure.
     const listeners = new Set<(event: unknown) => void>();
+    const agentListeners = new Set<(event: { type: string }) => void>();
     const session = {
       listeners,
       sessionId: id,
@@ -71,7 +74,16 @@ const H = vi.hoisted(() => {
       // new Agent, which is what the re-installation test pins.
       // `peekQueuedMessages` is pi's own steering/follow-up queue, which the plan-mode hold reads, so it
       // has to answer on every fake session rather than only in the tests that queue something.
-      agent: { peekQueuedMessages: () => [] } as { finishTurn?: FinishTurn; peekQueuedMessages: () => unknown[] },
+      // `subscribe`/`abort` are pi-agent-core's: listeners see every run event, and `abort` stops the run in flight.
+      // `state.isStreaming` is the agent loop's, which this fake never runs.
+      agent: { peekQueuedMessages: () => [], listeners: agentListeners, subscribe: (listener: (event: { type: string }) => void) => { agentListeners.add(listener); return () => { agentListeners.delete(listener); }; }, abort: vi.fn(), state: { isStreaming: false } } as {
+        state: { isStreaming: boolean };
+        finishTurn?: FinishTurn;
+        peekQueuedMessages: () => unknown[];
+        listeners: Set<(event: { type: string }) => void>;
+        subscribe: (listener: (event: { type: string }) => void) => () => void;
+        abort: ReturnType<typeof vi.fn>;
+      },
       isStreaming: false,
       isCompacting: false,
       get isIdle() { return !this.isStreaming; },
@@ -101,6 +113,7 @@ const H = vi.hoisted(() => {
       // pi's registered extension commands, which `prompt()` runs without committing a user entry.
       extensionRunner: { getCommand: vi.fn((_name: string): unknown => undefined), hasHandlers: vi.fn(() => false) },
       abort: vi.fn(async () => undefined),
+      dispose: vi.fn(),
       setModel: vi.fn(async () => undefined),
       getSessionStats: vi.fn(() => ({ sessionId: id, cost: 0, tokens: { input: 120, output: 40, cacheRead: 30, cacheWrite: 10, total: 200 } })),
       getLastAssistantText: vi.fn(() => 'hi'),
@@ -134,8 +147,8 @@ const H = vi.hoisted(() => {
 
   function makeServices() {
     // pi's settings manager has a field asymmetry this fake reproduces on purpose: `applyOverrides`
-    // writes the effective `settings` object (dist/core/settings-manager.js:390 in pi 1.1.0) while
-    // `setCacheWarmingMode`/`getCacheWarmingMode` write and read `globalSettings` (:703-711). A mode
+    // writes the effective `settings` object (dist/core/settings-manager.js:390 in pi 1.3.0) while
+    // `setCacheWarmingMode`/`getCacheWarmingMode` write and read `globalSettings` (:714-722). A mode
     // routed through `applyOverrides` is therefore invisible to the getter pi's CacheWarmer calls.
     const globalSettings: { cacheWarming?: string } = {};
     let effectiveSettings: Record<string, unknown> = {};
@@ -205,13 +218,19 @@ const H = vi.hoisted(() => {
       let before: (() => void) | undefined;
       let rebind: ((s: unknown) => Promise<void>) | undefined;
       let disposed = false;
+      // pi emits `session_shutdown` to the session it replaces or holds, then disposes it after the invalidate hook (agent-session-runtime.js:102-113, :296-303 in pi-coding-agent 1.3.0).
+      const invalidate = (): void => {
+        captured.shutdowns.push(current);
+        before?.();
+        (current as { dispose: () => void }).dispose();
+      };
       return {
         get session() { return current; },
         get services() { return services; },
         setBeforeSessionInvalidate: (cb?: () => void) => { before = cb; },
         setRebindSession: (cb?: (s: unknown) => Promise<void>) => { rebind = cb; },
         newSession: async () => {
-          before?.();
+          invalidate();
           current = (await factory({ ...opts })).session;
           await rebind?.(current);
           return { cancelled: false };
@@ -219,12 +238,15 @@ const H = vi.hoisted(() => {
         // The stored file's session: a test names its id and branch through `setSessionSetup`.
         switchSession: async (_sessionPath: string) => {
           await (current as { abort: () => Promise<void> }).abort();
-          before?.();
+          invalidate();
           current = (await factory({ ...opts })).session;
           await rebind?.(current);
           return { cancelled: false };
         },
-        dispose: async () => { disposed = true; },
+        dispose: async () => {
+          invalidate();
+          disposed = true;
+        },
         get disposed() { return disposed; },
       };
     }),
@@ -281,6 +303,7 @@ function withExposure(source: McpToolSource): McpToolSource {
     offToolNames: 'offToolNames' in source ? () => source.offToolNames() : named('off'),
     deferrableToolNames: 'deferrableToolNames' in source ? () => source.deferrableToolNames() : named('deferred'),
     pendingDirectServers: 'pendingDirectServers' in source ? () => source.pendingDirectServers() : () => [],
+    resourceServers: 'resourceServers' in source ? () => source.resourceServers() : () => [],
   });
 }
 
@@ -301,12 +324,16 @@ function cwdFolder(): FolderRuntime | undefined {
 
 vi.mock('../session-title', () => ({ generateSessionTitle: () => TITLE.impl() }));
 
-vi.mock('../pi-loader', () => ({
-  initPiLoader: vi.fn(async () => H.fakePi),
-  getPiCodingAgent: vi.fn(() => H.fakePi),
-  PI_MIN_NODE_MAJOR: 22,
-  nodeSupportsPi: () => true,
-}));
+vi.mock('../pi-loader', async () => {
+  const piAi = await import('@earendil-works/pi-ai');
+  return {
+    initPiLoader: vi.fn(async () => H.fakePi),
+    getPiCodingAgent: vi.fn(() => H.fakePi),
+    loadedPiAi: () => piAi,
+    PI_MIN_NODE_MAJOR: 22,
+    nodeSupportsPi: () => true,
+  };
+});
 
 
 // The real factory returns undefined off win32, which would make every assertion below vacuous, so the
@@ -375,7 +402,7 @@ import { RepoManager, getGitDir, getRepoDir } from '../checkpoints';
 import { PiRuntime } from '../pi-runtime';
 import { FolderRuntime } from '../folder-runtime';
 import { reconstructMessages } from '../session-store/history-loader';
-import { formatTerminalAttachmentBlock } from '../../terminal-attachment';
+import { formatMcpResourceAttachmentBlock, formatTerminalAttachmentBlock } from '../../terminal-attachment';
 import { getPiCodingAgent } from '../pi-loader';
 import { resolveAgentToolset } from '../subagents/agent-toolset';
 import { DEFAULT_AGENTS } from '../subagents/default-agents';
@@ -394,10 +421,11 @@ import { CUSTOM_TOOL_NAMES, OVERRIDE_TOOL_NAMES, buildCustomTools } from '../too
 import { FULL_TOOL_CATALOG } from '../tools/tool-catalog';
 import { PLAN_MODE_NUDGE_TEXT, PLAN_MODE_NUDGE_ESCALATED_TEXT } from '../plan-mode-hold';
 import { teamPlanModeStatement } from '../../team/prompts';
-import { TOOL_ENTER_PLAN_MODE, TOOL_BROWSER_REQUEST_INPUT, TOOL_TOOL_SEARCH, TOOL_EDIT, TOOL_GENERATE_IMAGE } from '../../../shared/tool-names';
+import { TOOL_ENTER_PLAN_MODE, TOOL_BROWSER_REQUEST_INPUT, TOOL_TOOL_SEARCH, TOOL_EDIT, TOOL_GENERATE_IMAGE, MCP_RESOURCE_TOOL_NAMES } from '../../../shared/tool-names';
 import type { MemoryService } from '../../memory';
 import type { CompassService } from '../../compass';
-import type { McpToolSource } from '../mcp/tool-source';
+import type { McpResourceServer, McpToolSource } from '../mcp/tool-source';
+import { isNestedMcpName } from '../mcp/naming';
 import type { McpToolDescriptor } from '../mcp/types';
 import type { NestedMcpToolset } from '../tools/mcp-tools';
 import { FolderMcpView } from '../mcp/folder-mcp-view';
@@ -415,6 +443,7 @@ import type { AgentRecord } from '../subagents/types';
 import { emptyAgentUsage } from '../../../shared/usage-accounting';
 import { buildAgentStartResult, type ProjectionReader } from '../agent-start';
 import type { PanelGateContext } from '../permission-gate';
+import type { DispatchDeps } from '../hooks';
 import { worktreeIsolationBlock, WORKTREE_ISOLATION_REASON } from '../worktree-isolation';
 import { WORKTREE_ENTRY } from '../../worktrees/hand-off';
 import { installWorktreeProjectLookup } from '../../worktrees/personal-config';
@@ -428,8 +457,16 @@ import * as fsSync from 'fs';
 // paid once during collection instead of inside a test's 5s timeout budget.
 import * as realPi from '@earendil-works/pi-coding-agent';
 import { installFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
+import { installLogSink } from '../../logger';
 import { SESSION_LEASE_DIR, acquireSessionLease, releaseSessionLease, sessionLeaseBlocker, sessionLeasePath, sessionLeasesOf } from '../session-store/session-lease';
 import elBundle from '../../../../l10n/bundle.l10n.el.json';
+import { resumeStoredSession } from '../../chat-panel/message-router/handlers/resume-session';
+import { createSessionHandlers } from '../../chat-panel/message-router/handlers/session-handlers';
+import type { HandlerContext, HandlerDependencies } from '../../chat-panel/message-router/types';
+import type { HostInstance } from '../../chat-panel/types';
+import { TerminalAttachmentManager } from '../../chat-panel/terminal-attachment-manager';
+import { createHarness, folderEntry, makeFakeHost } from '../../chat-panel/__tests__/panel-manager-harness';
+import { folderKey } from '../../workspace-folders/folder-key';
 
 /** The platform every session here reads through, also served by the host accessor; fresh per test. */
 let testPlatform: FakePlatform;
@@ -507,17 +544,17 @@ describe('PiSession lifecycle (US-P1-4)', () => {
   it('session replacement re-subscribes once and re-disables compaction, old unsub first', async () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
-    // Each bind subscribes twice: the stream adapter and the unpersisted tool image cache.
-    expect(H.seq).toEqual(['subscribe', 'subscribe', 'compaction-off']);
+    // Each bind subscribes three times: the stream adapter, the unpersisted tool image cache and the wind-down notice.
+    expect(H.seq).toEqual(['subscribe', 'subscribe', 'subscribe', 'compaction-off']);
 
     session.reset(); // -> runtime.newSession() exercises the replacement seam
     await new Promise((r) => setTimeout(r, 0));
 
-    expect(H.seq.filter((s) => s === 'subscribe')).toHaveLength(4);
+    expect(H.seq.filter((s) => s === 'subscribe')).toHaveLength(6);
     expect(H.seq.filter((s) => s === 'compaction-off')).toHaveLength(2);
     const oldUnsubs = H.seq.flatMap((s, i) => (s === 'unsub' ? [i] : []));
-    const newSubscribes = H.seq.flatMap((s, i) => (s === 'subscribe' ? [i] : [])).slice(2);
-    expect(oldUnsubs).toHaveLength(2);
+    const newSubscribes = H.seq.flatMap((s, i) => (s === 'subscribe' ? [i] : [])).slice(3);
+    expect(oldUnsubs).toHaveLength(3);
     expect(Math.max(...oldUnsubs)).toBeLessThan(Math.min(...newSubscribes));
   });
 
@@ -1093,6 +1130,8 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     await session.initializeEarly();
     const live = H.getLastSession()!;
     (live as { isStreaming: boolean }).isStreaming = true;
+    // pi queues the steer into the running run.
+    live.prompt.mockImplementation((async (_text: string, opts?: { preflightResult?: (d: string) => void }) => opts?.preflightResult?.('queued')) as never);
     session.queueInput('pending', 'q1');
     messages.length = 0;
     (live.clearQueue as ReturnType<typeof vi.fn>).mockClear();
@@ -1187,13 +1226,30 @@ describe('PiSession lifecycle (US-P1-4)', () => {
       (live.clearQueue as ReturnType<typeof vi.fn>).mockImplementation(() => ({ steering: [], followUp: followUps.splice(0) }));
       let release!: () => void;
       const held = new Promise<void>((resolve) => { release = resolve; });
+      // Runs that reached the model. pi 1.3.0 marks only a busy run on abort() (agent-session.js:1943-1945) and turns the
+      // mark into an agent abort at `agent_start` (:713-714), but only while connected: dispose() disconnects it (:1008).
       const runs: string[] = [];
+      let abortRequested = false;
+      let piDisposed = false;
+      const runtime = (session as unknown as { runtime: { dispose: () => Promise<void> } }).runtime;
+      const disposeRuntime = runtime.dispose.bind(runtime);
+      runtime.dispose = async () => {
+        piDisposed = true;
+        await disposeRuntime();
+      };
+      const streaming = live as unknown as { isStreaming: boolean };
       (live.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async (text: string, opts: { preflightResult: (d: string) => void }) => {
         await held;
         if (disposition === 'queued') followUps.push(text);
+        if (disposition === 'started') streaming.isStreaming = true;
         opts.preflightResult(disposition);
-        if (disposition === 'started') runs.push(text);
+        if (disposition !== 'started') return;
+        let agentAborted = abortRequested && !piDisposed;
+        live.agent.abort.mockImplementation(() => { agentAborted = true; });
+        for (const listener of [...live.agent.listeners]) listener({ type: 'agent_start' });
+        if (!agentAborted) runs.push(text);
       });
+      live.abort.mockImplementation(async () => { if (streaming.isStreaming) abortRequested = true; });
       if (duringAbort) {
         (live.abort as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
           release();
@@ -1266,22 +1322,25 @@ describe('PiSession lifecycle (US-P1-4)', () => {
       expect(returned(messages)).toEqual([]);
     });
 
-    it('nor one a Stop already handed back', async () => {
+    it('nor one a Stop left to pi, which opened its run and stopped it', async () => {
       const messages: ExtensionToWebviewMessage[] = [];
       const session = new PiSession(makeOptions(messages));
       await session.initializeEarly();
       const live = H.getLastSession()!;
-      (live.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async (_text: string, opts: { preflightResult: (d: string) => void }) => {
+      const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn>;
+      getBranch.mockReturnValue([]);
+      (live.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async (_text: string, opts: unknown) => {
         session.cancel();
-        opts.preflightResult('started');
+        piRuns(opts, getBranch, [{ type: 'message', id: 'u-new', message: { role: 'user', content: [{ type: 'text', text: 'what is this?' }] } }]);
+        await Promise.resolve();
       });
       const withdrawn = vi.fn();
-      expect(await session.sendMessage(TYPED, undefined, 'c1', { content: 'what is this?', contentBlocks: TYPED }, withdrawn)).toBe('unsent');
+      expect(await session.sendMessage(TYPED, undefined, 'c1', { content: 'what is this?', contentBlocks: TYPED }, withdrawn)).toBe('sent');
 
       await session.dispose();
 
       expect(withdrawn).not.toHaveBeenCalled();
-      expect(returned(messages)).toHaveLength(1);
+      expect(returned(messages)).toEqual([]);
     });
   });
 
@@ -1438,7 +1497,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     expect(data).not.toBeNull();
     // One row per prompt piece, named by the section key, preamble first. Memory is off and no plan
     // file exists in this panel, so only the always-on pieces are present.
-    expect(data!.systemPromptSections!.map((s) => s.name)).toEqual(['preamble', 'damocles_tone']);
+    expect(data!.systemPromptSections!.map((s) => s.name)).toEqual(['preamble', 'damocles_explore', 'damocles_environment', 'damocles_model', 'damocles_tone']);
     expect(data!.systemPromptSections!.every((s) => s.tokens > 0)).toBe(true);
     await session.dispose();
   });
@@ -1453,7 +1512,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     await session.requestContextUsage();
     const msg = messages.find((m) => m.type === 'contextUsage');
     const data = (msg as { data: import('../../../shared/types/session').ContextUsageData | null }).data;
-    expect(data!.systemPromptSections!.map((s) => s.name)).toEqual(['preamble', 'damocles_memory', 'damocles_tone']);
+    expect(data!.systemPromptSections!.map((s) => s.name)).toEqual(['preamble', 'damocles_explore', 'damocles_memory', 'damocles_environment', 'damocles_model', 'damocles_tone']);
     await session.dispose();
   });
 
@@ -1619,53 +1678,100 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     await session.dispose();
   });
 
-  it('records no attachment count for a prompt stopped before its run, which goes back unsent', async () => {
+  it("records how many of the prompt's last images are its attachments' own, beside the block count", async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const append = live.sessionManager.appendCustomEntry as ReturnType<typeof vi.fn>;
+    const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn>;
+    getBranch.mockReturnValue([]);
+    const image = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'iVBORw0KGgo=' } };
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (text: string, opts: { images?: unknown[] }) => {
+      piRuns(opts, getBranch, [{ type: 'message', id: 'u-new', message: { role: 'user', content: [{ type: 'text', text }, ...(opts.images ?? [])] } }]);
+      await Promise.resolve();
+    });
+
+    await session.sendMessage([{ type: 'text', text: 'blocks then what failed?' }, image], undefined, 'c1', { ...ATTACHED, attachmentImageCount: 1 });
+
+    expect(attachmentSidecars(append)).toEqual([{ userEntryId: 'u-new', count: 2, images: 1 }]);
+    await session.dispose();
+  });
+
+  it('records no attachment count for a prompt stopped before pi had it, which goes back to the composer', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
     const session = new PiSession(makeOptions(messages));
     await session.initializeEarly();
     const live = H.getLastSession()!;
     const append = live.sessionManager.appendCustomEntry as ReturnType<typeof vi.fn>;
     (live.sessionManager.getBranch as ReturnType<typeof vi.fn>).mockReturnValue([]);
-    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, opts: unknown) => {
+    session.requestInterruptionCheck();
+    vi.mocked(reconcileInterruptions).mockImplementationOnce(async () => {
       session.cancel();
-      (opts as { preflightResult: (disposition: string) => void }).preflightResult('started');
+      return { announced: [], retry: false };
     });
 
     const outcome = await session.sendMessage('blocks then what failed?', undefined, 'c1', ATTACHED);
 
     expect(attachmentSidecars(append)).toEqual([]);
-    expect(outcome).toBe('unsent');
+    expect(outcome).toBe('withdrawn');
+    expect(live.prompt).not.toHaveBeenCalled();
     expect(messages).toContainEqual({ type: 'interruptRecovery', correlationId: 'c1', promptContent: 'what failed?' });
     await session.dispose();
   });
 
-  it.each([
-    ['after its echo', true],
-    ['before its echo', false],
-  ])('returns a prompt stopped before its run %s with its typed text and images', async (_when, echoed) => {
+  it('returns a prompt stopped before pi had it, before its echo, with its typed text and images', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
     const session = new PiSession(makeOptions(messages));
     await session.initializeEarly();
     const live = H.getLastSession()!;
     const image = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'iVBORw0KGgo=' } };
     const typed = [{ type: 'text' as const, text: 'what is this?' }, image];
-    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, opts: unknown) => {
+    session.requestInterruptionCheck();
+    vi.mocked(reconcileInterruptions).mockImplementationOnce(async () => {
       session.cancel();
-      (opts as { preflightResult: (disposition: string) => void }).preflightResult('started');
+      return { announced: [], retry: false };
     });
-    if (!echoed) {
-      session.requestInterruptionCheck();
-      vi.mocked(reconcileInterruptions).mockImplementationOnce(async () => {
-        session.cancel();
-        return { announced: [], retry: false };
-      });
-    }
 
     const outcome = await session.sendMessage(typed, undefined, 'c1', { content: 'what is this?', contentBlocks: typed });
 
-    expect(outcome).toBe('unsent');
-    expect(messages.some((m) => m.type === 'userMessage')).toBe(echoed);
+    expect(outcome).toBe('withdrawn');
+    expect(live.prompt).not.toHaveBeenCalled();
+    expect(messages.some((m) => m.type === 'userMessage')).toBe(false);
     expect(messages).toContainEqual({ type: 'interruptRecovery', correlationId: 'c1', promptContent: 'what is this?', contentBlocks: typed });
+    await session.dispose();
+  });
+
+  it('a Stop while pi holds the prompt aborts the run pi opens with it, which commits it as sent and makes no request', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const append = live.sessionManager.appendCustomEntry as ReturnType<typeof vi.fn>;
+    const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn>;
+    getBranch.mockReturnValue([]);
+    const streaming = live as unknown as { isStreaming: boolean };
+    let abortRequested = false;
+    // pi 1.3.0: abort() marks a busy run (agent-session.js:1943-1945), which `agent_start` then aborts before any request (:713-714).
+    live.abort.mockImplementation(async () => { if (streaming.isStreaming) abortRequested = true; });
+    let requests = 0;
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, opts: unknown) => {
+      // pi's input handlers hold the prompt, with no run yet, when the Stop lands.
+      session.cancel();
+      streaming.isStreaming = true;
+      piRuns(opts, getBranch, [{ type: 'message', id: 'u-new', message: { role: 'user', content: [{ type: 'text', text: 'blocks then what failed?' }] } }]);
+      if (!abortRequested) requests += 1;
+      await Promise.resolve();
+      streaming.isStreaming = false;
+    });
+
+    const outcome = await session.sendMessage('blocks then what failed?', undefined, 'c1', ATTACHED);
+
+    expect(requests).toBe(0);
+    expect(outcome).toBe('sent');
+    expect(attachmentSidecars(append)).toEqual([{ userEntryId: 'u-new', count: 2 }]);
+    expect(messages.some((m) => m.type === 'userMessage')).toBe(true);
+    expect(messages.some((m) => m.type === 'interruptRecovery')).toBe(false);
+    expect(session.processing).toBe(false);
     await session.dispose();
   });
 
@@ -1700,27 +1806,34 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     await session.initializeEarly();
     const live = H.getLastSession()!;
     (live.sessionManager.getBranch as ReturnType<typeof vi.fn>).mockReturnValue([]);
-    const gate = (cwdFolder() as unknown as { _panelRegistry: Map<string, PanelGateContext> })._panelRegistry.get(live.sessionId as string)!;
-    const seen: Array<string | undefined> = [];
-    // pi runs no hook on the re-steered batch, which it gets as `source: 'extension'`.
-    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (text: string, opts?: { source?: string }) => {
-      if (opts?.source !== 'extension') seen.push(gate.typedPromptOf?.(text));
+    vi.mocked(live.sessionManager['getCwd'] as () => string).mockReturnValue(os.tmpdir());
+    const dir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'dam-typed-hook-'));
+    const judgedLog = path.join(dir, 'judged.jsonl');
+    const script = `let s = ''; process.stdin.on('data', (d) => { s += d; }).on('end', () => require('fs').appendFileSync(${JSON.stringify(judgedLog)}, JSON.stringify(JSON.parse(s).prompt) + '\\n'));`;
+    const entries: Record<string, unknown[]> = { input: [{ command: [process.execPath, '-e', script] }] };
+    vi.spyOn(cwdFolder()!, 'getHooksDispatchDeps').mockReturnValue({
+      config: { getEntries: (key: string) => entries[key] ?? [], hasEntries: (key: string) => (entries[key] ?? []).length > 0 } as never,
+      workspaceRoot: os.tmpdir(),
+      userHome: os.homedir(),
     });
+    const judged = (): string[] => (fsSync.existsSync(judgedLog) ? fsSync.readFileSync(judgedLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string) : []);
 
-    await session.sendMessage('/review src', undefined, 'c1', { content: '/review src' });
-    await session.sendMessage('blocks\nreview prompt body src', undefined, 'c2', { content: '/review src', terminalAttachments: [attachmentInfo('t1')] });
+    try {
+      await session.sendMessage('/review src', undefined, 'c1', { content: '/review src' });
+      await session.sendMessage('blocks\nreview prompt body src', undefined, 'c2', { content: '/review src', terminalAttachments: [attachmentInfo('t1')] });
 
-    Object.assign(live, { isStreaming: true });
-    const runner = live.extensionRunner as unknown as { hasHandlers: ReturnType<typeof vi.fn>; emitInput?: (text: string) => Promise<unknown> };
-    runner.hasHandlers.mockReturnValue(true);
-    runner.emitInput = async (text) => { seen.push(gate.typedPromptOf?.(text)); return { action: 'continue' }; };
-    session.queueInput('Execute skill simplify', 'q1', '/simplify');
-    await vi.waitFor(() => expect(seen).toHaveLength(3));
+      Object.assign(live, { isStreaming: true });
+      session.queueInput('Execute skill simplify', 'q1', '/simplify');
+      await vi.waitFor(() => expect(judged()).toHaveLength(3), { timeout: 10_000 });
 
-    expect(seen).toEqual(['/review src', '/review src', '/simplify']);
-    expect(gate.typedPromptOf?.('/review src')).toBeUndefined();
-    await session.dispose();
-  });
+      // pi got the text Damocles built, and no hook judged the re-steered batch again.
+      await vi.waitFor(() => expect((live.prompt as ReturnType<typeof vi.fn>).mock.calls.map(([text]) => text)).toEqual(['/review src', 'blocks\nreview prompt body src', 'Execute skill simplify']), { timeout: 10_000 });
+      expect(judged()).toEqual(['/review src', '/review src', '/simplify']);
+    } finally {
+      await session.dispose();
+      fsSync.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
 
   it('reports a prompt unsent when it is refused, and sent when pi queued it into the running run', async () => {
     const session = new PiSession(makeOptions([]));
@@ -1865,8 +1978,9 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     await session.dispose();
   });
 
-  it('files a turn under the prompt index it started with after an overlapping send pi queued has cleared the in-flight index', async () => {
-    const opts = makeOptions([]);
+  it('refuses a second send while the first is on its way to pi, and files the first turn under its own prompt index', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const opts = makeOptions(messages);
     const memory = memorySpy();
     opts.memoryService = memory as never;
     const session = new PiSession(opts);
@@ -1883,25 +1997,24 @@ describe('PiSession lifecycle (US-P1-4)', () => {
       .mockImplementationOnce(async (_text: string, promptOpts: unknown) => {
         piRuns(promptOpts, getBranch, [{ type: 'message', id: 'u2', message: { role: 'user', content: 'hi' } }]);
         await new Promise<void>((resolve) => { endRun = resolve; });
-        // The queued prompt runs inside this run, so it is the branch's newest prompt when this one settles.
+        // A prompt steered into this run is the branch's newest when this one settles.
         getBranch.mockReturnValue([
           ...getBranch(),
           { type: 'message', id: 'a2', message: { role: 'assistant', content: [{ type: 'text', text: 'first' }] } },
           { type: 'message', id: 'u3', message: { role: 'user', content: 'also this' } },
           { type: 'message', id: 'a3', message: { role: 'assistant', content: [{ type: 'text', text: 'second' }] } },
         ]);
-      })
-      .mockImplementationOnce(async (_text: string, promptOpts: { preflightResult: (d: string) => void }) => {
-        promptOpts.preflightResult('queued');
       });
 
-    // Both pass the processing check before either sets it, so the second joins the first one's run.
+    // The second arrives before the first reached pi, so pi could not yet tell it to queue.
     const first = session.sendMessage('hi', undefined, 'c1', { content: 'hi' });
-    const second = session.sendMessage('also this', undefined, 'c2', { content: 'also this' });
-    await second;
+    expect(await session.sendMessage('also this', undefined, 'c2', { content: 'also this' })).toBe('unsent');
+    expect(messages).toContainEqual({ type: 'error', message: 'A request is already in progress' });
+    await vi.waitFor(() => expect(live.prompt).toHaveBeenCalledOnce());
     endRun();
     await first;
 
+    expect(live.prompt).toHaveBeenCalledOnce();
     expect(memory.enqueueTurnCandidate).toHaveBeenCalledTimes(1);
     expect(memory.enqueueTurnCandidate).toHaveBeenCalledWith(expect.objectContaining({ sessionId: live.sessionId, promptIndex: 1 }));
     await session.dispose();
@@ -2008,7 +2121,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
       const panel: PanelGateContext = { ...gate, memoryService: memory as never, postMessage: (m) => emitted.push(m) };
       const branch = (live.sessionManager.getBranch as () => SessionEntry[])();
       await buildAgentStartResult(
-        { type: 'before_agent_start', prompt: 'steered', systemPrompt: '', systemPromptOptions: { selectedTools: [], hiddenTools: [], toolSnippets: {}, toolGuidelines: {}, promptGuidelines: [], appendSystemPrompt: '', sections: {}, cwd: '/cwd', contextFiles: [], skills: [] } },
+        { type: 'before_agent_start', messageType: 'user', prompt: 'steered', systemPrompt: '', systemPromptOptions: { selectedTools: [], hiddenTools: [], toolSnippets: {}, toolGuidelines: {}, promptGuidelines: [], appendSystemPrompt: '', sections: {}, cwd: '/cwd', contextFiles: [], skills: [] } },
         panel,
         live.sessionId as string,
         { getBranch: () => branch, buildSessionProjection: () => ({ messages: [] }) } as unknown as ProjectionReader,
@@ -2043,6 +2156,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     const busy = messages.find((m) => m.type === 'contextUsage' && m.reason === 'busy');
     expect(busy).toBeDefined();
 
+    await vi.waitFor(() => expect(live.prompt).toHaveBeenCalled());
     resolvePrompt();
     await turn;
     await session.dispose();
@@ -3941,6 +4055,7 @@ describe('plan-mode active set — exclusion model', () => {
     mcpEnabled: true,
     mcpToolNames: ['mcp__git__status', 'mcp__git__commit'],
     mcpDeferrableToolNames: ['mcp__git__status', 'mcp__git__commit'],
+    mcpResourceExposure: null,
     disabled: new Set<string>(),
   };
 
@@ -4332,8 +4447,8 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
 
   it('reset() drops back to the deferred baseline (a fresh conversation re-earns its tools)', async () => {
     // The activated set is conversation state, not user configuration: a context clear must not carry a
-    // previous conversation's loaded tools into the fresh session's first request. `bindSession` clears
-    // it on a session-ID change, which is what `reset()` produces.
+    // previous conversation's loaded tools into the fresh session's first request. `bindSession` reseeds
+    // it from the new session's (empty) recorded loadout on a session-ID change, which `reset()` produces.
     const cfg = subsystemsOn();
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
@@ -4357,13 +4472,282 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
     await session.dispose();
   });
 
+  describe("how read_mcp_resource reaches the panel's agent, for a resource link's read hint", () => {
+    const docs = (exposure: 'deferred' | 'direct') => ({
+      allToolNames: () => [],
+      getServerStatuses: () => [],
+      getAllToolDescriptors: () => [],
+      resourceServers: () => [{ serverName: 'docs', serverId: 'folder/docs', exposure }],
+    }) as unknown as McpToolSource;
+    const reachOf = (session: PiSession, server = 'docs') =>
+      (session as unknown as { mcpResourceReach: (s: string) => Promise<{ readTool: string | null; unreadable: (uri: string) => boolean }> }).mcpResourceReach(server);
+    const withRules = (session: PiSession, resourceDenied: (server: string, uri: string) => boolean) => {
+      const mcpResourceRuleFilter = vi.fn(async () => ({ serverCovered: () => false, resourceDenied, resourceDenyRule: () => undefined, contentCovered: resourceDenied }));
+      Object.assign((session as unknown as { options: SessionOptions }).options.permissionHandler, { mcpResourceRuleFilter });
+      return mcpResourceRuleFilter;
+    };
+    const withDisabled = (disabled: string[]) => {
+      const cfg = vi.spyOn(testPlatform.settings, 'get');
+      cfg.mockImplementation(settingsReader((key: string) => (key === 'damocles.tools.disabled' ? disabled : undefined)));
+      return cfg;
+    };
+
+    it('is deferred while ToolSearch can load it, direct once loaded, and direct from the start when Always loaded', async () => {
+      const cfg = withDisabled([]);
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      stubPanelMcp(docs('deferred'));
+      const live = H.getLastSession()!;
+      withRules(session, () => false);
+
+      expect((await reachOf(session)).readTool).toBe('deferred');
+      (live.getActiveToolNames as ReturnType<typeof vi.fn>).mockReturnValue(['read', 'read_mcp_resource']);
+      expect((await reachOf(session)).readTool).toBe('direct');
+      (live.getActiveToolNames as ReturnType<typeof vi.fn>).mockReturnValue(['read']);
+      stubPanelMcp(docs('direct'));
+      session.refreshActiveTools();
+      expect(lastActive(live)).toContain('read_mcp_resource');
+      cfg.mockRestore();
+      await session.dispose();
+    });
+
+    it('is none when the user turned read_mcp_resource off, when MCP is off, or for a server without resources', async () => {
+      const cfg = withDisabled(['read_mcp_resource']);
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      stubPanelMcp(docs('deferred'));
+      const rules = withRules(session, () => false);
+      expect((await reachOf(session)).readTool).toBeNull();
+      expect((await reachOf(session, 'git')).readTool).toBeNull();
+      cfg.mockImplementation(settingsReader((key: string) => (key === 'damocles.mcp.enabled' ? false : undefined)));
+      expect((await reachOf(session)).readTool).toBeNull();
+      expect(rules).not.toHaveBeenCalled();
+      cfg.mockRestore();
+      await session.dispose();
+    });
+
+    it("cannot read exactly the URIs damocles.tools.disabled's URI-scoped entries name and the URIs a deny rule covers", async () => {
+      const cfg = withDisabled(['mcp__docs__read_mcp_resource(docs://secret/*)']);
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      stubPanelMcp(docs('deferred'));
+      const rules = withRules(session, (server, uri) => server === 'docs' && uri === 'docs://denied');
+      const reach = await reachOf(session);
+      expect(reach.readTool).toBe('deferred');
+      expect(reach.unreadable('docs://secret/key')).toBe(true);
+      expect(reach.unreadable('docs://denied')).toBe(true);
+      expect(reach.unreadable('docs://public')).toBe(false);
+      expect(rules).toHaveBeenCalledWith('read_mcp_resource');
+      cfg.mockRestore();
+      await session.dispose();
+    });
+  });
+
+  describe('a reopened conversation restores the tools its recorded loadout had loaded', () => {
+    const BROWSER_TOOL = BROWSER_PI_TOOL_NAMES[0]!;
+    const MCP_TOOL = 'mcp__ctx7__query_docs';
+    // pi records the loadout as system messages the agent loop appends before each request.
+    const loadout = (added: string[], removed: string[] = []) => ({
+      role: 'system',
+      content: '',
+      ...(added.length ? { toolsAdded: added.map((name) => ({ name, description: '', parameters: {} })) } : {}),
+      ...(removed.length ? { toolsRemoved: removed.map((name) => ({ name })) } : {}),
+      timestamp: 0,
+    });
+    const transcriptOf = (messages: unknown[]) => (s: { agent: { finishTurn?: unknown } }) => {
+      (s as unknown as { sessionManager: { buildSessionContext: () => unknown } }).sessionManager.buildSessionContext = () => ({ messages });
+    };
+    const browserSetting = (enabled: () => boolean) => {
+      const cfg = vi.spyOn(testPlatform.settings, 'get');
+      cfg.mockImplementation(settingsReader((key: string) => (key === 'damocles.browser.enabled' ? enabled() : undefined)));
+      return cfg;
+    };
+    afterEach(() => H.setSessionSetup(null));
+
+    it('activates a still-eligible tool ToolSearch had loaded', async () => {
+      const cfg = browserSetting(() => true);
+      H.setSessionSetup(transcriptOf([loadout(['read', TOOL_TOOL_SEARCH]), { role: 'user', content: 'go' }, loadout([BROWSER_TOOL])]));
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+
+      expect(lastActive(H.getLastSession()!)).toContain(BROWSER_TOOL);
+      expect(lastActive(H.getLastSession()!)).not.toContain(BROWSER_PI_TOOL_NAMES[1]);
+      cfg.mockRestore();
+      await session.dispose();
+    });
+
+    it('leaves off a tool the conversation later removed', async () => {
+      const cfg = browserSetting(() => true);
+      H.setSessionSetup(transcriptOf([loadout([BROWSER_TOOL]), loadout([], [BROWSER_TOOL])]));
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+
+      expect(lastActive(H.getLastSession()!)).not.toContain(BROWSER_TOOL);
+      cfg.mockRestore();
+      await session.dispose();
+    });
+
+    it('activates a restored tool that becomes eligible before the first prompt, and not after it', async () => {
+      let browserOn = false;
+      const cfg = browserSetting(() => browserOn);
+      H.setSessionSetup(transcriptOf([loadout([BROWSER_TOOL])]));
+      const before = new PiSession(makeOptions([]));
+      await before.initializeEarly();
+      expect(lastActive(H.getLastSession()!)).not.toContain(BROWSER_TOOL);
+
+      browserOn = true;
+      before.refreshActiveTools();
+      expect(lastActive(H.getLastSession()!)).toContain(BROWSER_TOOL);
+      await before.dispose();
+
+      browserOn = false;
+      const after = new PiSession(makeOptions([]));
+      await after.initializeEarly();
+      // pi drops the restored names that did not register once it opens the run (agent-session.js:1410-1416).
+      H.getLastSession()!.prompt.mockImplementationOnce((async (_text: string, opts?: { preflightResult?: (d: string) => void }) => opts?.preflightResult?.('started')) as never);
+      await after.sendMessage('go', undefined, 'c1', { content: 'go' });
+      browserOn = true;
+      after.refreshActiveTools();
+      expect(lastActive(H.getLastSession()!)).not.toContain(BROWSER_TOOL);
+      cfg.mockRestore();
+      await after.dispose();
+    });
+
+    it('activates a restored MCP tool whose server connects after the chat opened', async () => {
+      const cfg = browserSetting(() => false);
+      H.setSessionSetup(transcriptOf([loadout([MCP_TOOL])]));
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      expect(lastActive(H.getLastSession()!)).not.toContain(MCP_TOOL);
+
+      stubPanelMcp({ allToolNames: () => [MCP_TOOL], getServerStatuses: () => [] } as unknown as McpToolSource);
+      session.refreshActiveTools();
+
+      expect(lastActive(H.getLastSession()!)).toContain(MCP_TOOL);
+      cfg.mockRestore();
+      await session.dispose();
+    });
+
+    it("keeps a restored MCP tool whose server connects during the first prompt's Always-loaded wait", async () => {
+      const cfg = browserSetting(() => false);
+      H.setSessionSetup(transcriptOf([loadout([MCP_TOOL])]));
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      const live = H.getLastSession()!;
+      let connected = false;
+      const listeners = new Set<() => void>();
+      // The folder's own tools-changed listener re-applies the active set before the wait sees the connect.
+      listeners.add(() => session.refreshActiveTools());
+      stubPanelMcp({
+        allToolNames: () => (connected ? [MCP_TOOL] : []),
+        getServerStatuses: () => [],
+        pendingDirectServers: () => (connected ? [] : ['ctx7']),
+        onToolsChanged: (listener: () => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      } as unknown as McpToolSource);
+      live.prompt.mockImplementationOnce((async (_text: string, opts?: { preflightResult?: (d: string) => void }) => opts?.preflightResult?.('started')) as never);
+
+      const sending = session.sendMessage('go', undefined, 'c1', { content: 'go' });
+      await vi.waitFor(() => expect(listeners.size).toBe(2));
+      connected = true;
+      for (const listener of [...listeners]) listener();
+      await sending;
+      session.refreshActiveTools();
+
+      expect(live.prompt).toHaveBeenCalledOnce();
+      expect(lastActive(live)).toContain(MCP_TOOL);
+      cfg.mockRestore();
+      await session.dispose();
+    });
+
+    it('seeds only names that can become deferrable as pending, so a reopened chat with none rebuilds the tool status once per apply', async () => {
+      const cfg = browserSetting(() => true);
+      H.setSessionSetup(transcriptOf([loadout(['read', 'bash', TOOL_TOOL_SEARCH, BROWSER_TOOL])]));
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      const internals = session as unknown as { toolStatusDeps: () => unknown; applyActiveToolsForMode: (mode: string) => void; pendingRestoredTools: Set<string> };
+      const deps = vi.spyOn(internals, 'toolStatusDeps');
+
+      internals.applyActiveToolsForMode('default');
+
+      expect(internals.pendingRestoredTools).toEqual(new Set());
+      expect(deps).toHaveBeenCalledOnce();
+      expect(lastActive(H.getLastSession()!)).toContain(BROWSER_TOOL);
+      cfg.mockRestore();
+      await session.dispose();
+    });
+
+    it('a restore that throws fails the start, which leaves neither the session nor its gate, and the next send reports it', async () => {
+      H.setSessionSetup((s) => {
+        (s as unknown as { sessionManager: { buildSessionContext: () => unknown } }).sessionManager.buildSessionContext = () => {
+          throw new Error('malformed transcript');
+        };
+      });
+      const messages: ExtensionToWebviewMessage[] = [];
+      const session = new PiSession(makeOptions(messages));
+      await session.initializeEarly();
+      const failed = H.getLastSession()!;
+      const registry = (cwdFolder() as unknown as { _panelRegistry: Map<string, PanelGateContext> })._panelRegistry;
+
+      expect(registry.get(failed.sessionId)).toBeUndefined();
+      expect(failed.dispose).toHaveBeenCalledOnce();
+      expect((session as unknown as { runtime: unknown }).runtime).toBeNull();
+      // The failure is not swallowed: the next send reports that pi failed to start.
+      await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+      expect(messages).toContainEqual({ type: 'error', message: 'pi failed to start: malformed transcript' });
+      await session.dispose();
+    });
+
+    it("restores the target's tools on a resume switch", async () => {
+      const cfg = browserSetting(() => true);
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      expect(lastActive(H.getLastSession()!)).not.toContain(BROWSER_TOOL);
+      const runtime = (session as unknown as { runtime: { newSession: () => Promise<unknown> } }).runtime;
+      vi.spyOn(session as unknown as { switchToResumeTarget: (target: { sessionId: string }) => Promise<{ kind: 'switched' }> }, 'switchToResumeTarget').mockImplementation(async (target) => {
+        H.setSessionSetup((s) => {
+          (s as unknown as { sessionId: string }).sessionId = target.sessionId;
+          transcriptOf([loadout([BROWSER_TOOL])])(s);
+        });
+        await runtime.newSession();
+        return { kind: 'switched' };
+      });
+
+      session.setResumeSession('sess-resumed');
+      await session.whenReplaced();
+
+      expect(lastActive(H.getLastSession()!)).toContain(BROWSER_TOOL);
+      cfg.mockRestore();
+      await session.dispose();
+    });
+
+    it('keeps live loads on a rebind onto the same session', async () => {
+      const cfg = browserSetting(() => true);
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      const first = H.getLastSession()!;
+      session.activateDeferredTools([BROWSER_TOOL]);
+      const runtime = (session as unknown as { runtime: { newSession: () => Promise<unknown> } }).runtime;
+      H.setSessionSetup((s) => { (s as unknown as { sessionId: string }).sessionId = first.sessionId; });
+
+      await runtime.newSession();
+
+      expect(H.getLastSession()).not.toBe(first);
+      expect(lastActive(H.getLastSession()!)).toContain(BROWSER_TOOL);
+      cfg.mockRestore();
+      await session.dispose();
+    });
+  });
+
   it('per-tool exposure through the real folder view: Off is ineligible, Always loaded is active and off the menu, On waits', async () => {
     const cfg = subsystemsOn();
     const tools = { context7: [{ name: 'resolve-library-id' }, { name: 'query-docs' }, { name: 'get-library-docs' }] };
     const user = managerWithFake(tools);
     const folder = managerWithFake(tools);
     const setting = { userValue: { context7: { 'resolve-library-id': 'off', 'get-library-docs': 'direct' } } };
-    const view = new FolderMcpView(user.manager, folder.manager, () => ({ inspection: setting, trusted: true }));
+    const view = new FolderMcpView(user.manager, folder.manager, () => ({ inspection: setting, resourceInspection: {}, trusted: true }));
     try {
       await user.manager.reconcile({ context7: specOf({ command: 'context7' }) });
       view.setUserVisible(['context7']);
@@ -4625,8 +5009,8 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
   });
 
   const MCP_DESCRIPTORS = [
-    { piName: 'mcp__git__status', serverName: 'git', kind: 'tool' as const, rawToolName: 'status', description: 'Show the working tree status', inputSchema: { type: 'object', properties: {} }, readOnly: true },
-    { piName: 'mcp__git__commit', serverName: 'git', kind: 'tool' as const, rawToolName: 'commit', description: 'Create a commit', inputSchema: { type: 'object', properties: {} }, readOnly: false },
+    { piName: 'mcp__git__status', serverName: 'git', rawToolName: 'status', description: 'Show the working tree status', inputSchema: { type: 'object', properties: {} }, readOnly: true },
+    { piName: 'mcp__git__commit', serverName: 'git', rawToolName: 'commit', description: 'Create a commit', inputSchema: { type: 'object', properties: {} }, readOnly: false },
   ];
 
   const teamExecCtx = { sessionManager: { getSessionId: () => 'team-agent-1' } };
@@ -4668,6 +5052,7 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
     descriptors = MCP_DESCRIPTORS,
     flags = { browser: false, team: true },
     messages: ExtensionToWebviewMessage[] = [],
+    resourceServers: McpResourceServer[] = [],
   ) {
     const cfg = vi.spyOn(testPlatform.settings, 'get');
     cfg.mockImplementation(settingsReader((key: string) => {
@@ -4688,6 +5073,7 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
       getAllToolDescriptors: () => [...live],
       getToolDescriptor: (piName: string) => live.find((d) => d.piName === piName),
       callTool: mcpCallTool,
+      resourceServers: () => [...resourceServers],
     } as unknown as McpToolSource);
 
     return { session, cfg, setDescriptors: (next: typeof descriptors) => { live = [...next]; } };
@@ -4799,6 +5185,33 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
 
     cfg.mockRestore();
     await session.dispose();
+  });
+
+  it('both composition sites: the MCP resource tools reach `tools:` and `customTools` together, filed by the frozen servers', async () => {
+    const resources: string[] = [...MCP_RESOURCE_TOOL_NAMES].sort();
+    for (const exposure of ['deferred', 'direct'] as const) {
+      const { session, cfg } = await teamSessionWithMcp(MCP_DESCRIPTORS, { browser: false, team: true }, [], [{ serverName: 'docs', serverId: 'm/docs', exposure }]);
+      const teamEngine = session.buildTeamEngine();
+      const subagentEngine = (session as unknown as {
+        buildSubagentEngine: (pi: unknown) => {
+          buildAgentToolset: (i: { agentId: string; agentName: string; mcpDisallowed: ReadonlySet<string> }) => { customTools: { name: string }[]; mcp: NestedMcpToolset };
+        };
+      }).buildSubagentEngine(getPiCodingAgent() as never);
+
+      const team = teamEngine.buildAgentToolset(teamCtx('agent-1'));
+      const sub = subagentEngine.buildAgentToolset({ agentId: 'a1', agentName: 'general-purpose', mcpDisallowed: new Set() });
+      expect(team.toolNames.filter(isNestedMcpName), 'the base names never carry nested MCP names').toEqual([]);
+      for (const { customTools, mcp } of [team, sub]) {
+        const defined = customTools.map((t) => t.name).filter(isNestedMcpName).sort();
+        expect(defined, exposure).toEqual([...mcp.names].sort());
+        expect(mcp.names.filter((n) => resources.includes(n)).sort(), exposure).toEqual(resources);
+        const filed = exposure === 'direct' ? mcp.direct : mcp.deferrable;
+        expect(filed.filter((n) => resources.includes(n)).sort(), exposure).toEqual(resources);
+      }
+
+      cfg.mockRestore();
+      await session.dispose();
+    }
   });
 
   it('both composition sites: a server whose every tool is Always loaded is answered as active, not unknown', async () => {
@@ -5382,11 +5795,35 @@ describe('PiSession auto-title — the title lands on the conversation it was ge
     await session.dispose();
   });
 
+  it('titles the first exchange when an earlier first message committed nothing to title', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn<() => unknown[]>>;
+    getBranch.mockReturnValue([]);
+    live.extensionRunner.getCommand.mockImplementation((name: string) => (name === 'todos' ? { invocationName: 'todos' } : undefined));
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
+      if (text !== '/todos') getBranch.mockReturnValue([{ type: 'message', id: 'u1', message: { role: 'user', content: text } }]);
+    });
+    const titled = vi.fn(async () => 'Fix The Parser');
+    TITLE.impl = titled;
+
+    await session.sendMessage('/todos', undefined, 'c1', { content: '/todos' });
+    await settle();
+    expect(titled).not.toHaveBeenCalled();
+    await session.sendMessage('fix the parser', undefined, 'c2', { content: 'fix the parser' });
+    await settle();
+
+    expect(titled).toHaveBeenCalledTimes(1);
+    expect(live.setSessionName).toHaveBeenCalledWith('Fix The Parser');
+    await session.dispose();
+  });
+
   it('titles the cleared conversation\'s file when a reset replaced the session during the completion', async () => {
     const { session, file, id, onSessionPersisted } = await panelOnRealFile();
     const gate = deferredTitle();
 
-    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    await session.sendMessage('go', id, 'c1', { content: 'go' });
     const first = H.getLastSession()!;
     session.reset();
     await session.whenReplaced();
@@ -5405,10 +5842,10 @@ describe('PiSession auto-title — the title lands on the conversation it was ge
   });
 
   it('leaves a user rename made during the completion in place', async () => {
-    const { session, file } = await panelOnRealFile();
+    const { session, file, id } = await panelOnRealFile();
     const gate = deferredTitle();
 
-    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    await session.sendMessage('go', id, 'c1', { content: 'go' });
     await session.renameActiveSession('My Name');
     gate.resolve('Fix The Parser');
     await settle();
@@ -5420,7 +5857,7 @@ describe('PiSession auto-title — the title lands on the conversation it was ge
   it('recreates no file for a conversation deleted during the completion', async () => {
     const { session, file, id } = await panelOnRealFile();
     const gate = deferredTitle();
-    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    await session.sendMessage('go', id, 'c1', { content: 'go' });
 
     // The catalog's delete: the writer lease spans the detach and the rm, and the title lands in between.
     const deleting = { onSessionLeaseLost: () => undefined };
@@ -5495,7 +5932,7 @@ describe('PiSession auto-title — the title lands on the conversation it was ge
     const { session, file, id, onSessionPersisted } = await panelOnRealFile();
     const gate = deferredTitle();
 
-    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    await session.sendMessage('go', id, 'c1', { content: 'go' });
     const live = H.getLastSession()!;
 
     await session.dispose();
@@ -5517,7 +5954,7 @@ describe('PiSession auto-title — the title lands on the conversation it was ge
     };
     const { session, file, id, onSessionPersisted } = await panelOnRealFile({ teamService: teamService as unknown as NonNullable<SessionOptions['teamService']> });
     const gate = deferredTitle();
-    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    await session.sendMessage('go', id, 'c1', { content: 'go' });
 
     const disposing = session.dispose();
     await vi.waitFor(() => expect(teamService.dispose).toHaveBeenCalled());
@@ -5533,7 +5970,7 @@ describe('PiSession auto-title — the title lands on the conversation it was ge
   it('titles the conversation of a panel whose title lands while its runtime tears down, and only once the teardown let go of the file', async () => {
     const { session, file, id, onSessionPersisted } = await panelOnRealFile();
     const gate = deferredTitle();
-    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    await session.sendMessage('go', id, 'c1', { content: 'go' });
     const runtime = (session as unknown as { runtime: { dispose: () => Promise<void> } }).runtime;
     const teardown = runtime.dispose.bind(runtime);
     let tornDown!: () => void;
@@ -5561,10 +5998,10 @@ describe('PiSession auto-title — the title lands on the conversation it was ge
   });
 
   it('writes nothing once the runtime retired at shutdown', async () => {
-    const { session, file } = await panelOnRealFile();
+    const { session, file, id } = await panelOnRealFile();
     const gate = deferredTitle();
 
-    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    await session.sendMessage('go', id, 'c1', { content: 'go' });
     await session.dispose();
     await PiRuntime.disposeInstance();
     gate.resolve('Fix The Parser');
@@ -5633,7 +6070,7 @@ describe('PiSession — the on-disk invariant, against a REAL pi SessionManager'
     const live = H.getLastSession()!;
     expect(live.sessionManager.getSessionFile()).toBe(file);
 
-    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    await session.sendMessage('go', live.sessionId, 'c1', { content: 'go' });
 
     // The delete path, in order: every holder detaches, THEN the file goes.
     await session.detachFromDeletedSession();
@@ -5876,7 +6313,7 @@ describe('PiSession — the on-disk invariant, against a REAL pi SessionManager'
         opts.preflightResult('queued');
       });
 
-      expect(await session.sendMessage(`${blocks}\nwhat failed?`, undefined, 'c1', { content: 'what failed?', terminalAttachments: TWO_ATTACHED })).toBe('sent');
+      expect(await session.sendMessage(`${blocks}\nwhat failed?`, session.currentSessionId ?? undefined, 'c1', { content: 'what failed?', terminalAttachments: TWO_ATTACHED })).toBe('sent');
       piCommits(live, followUps.shift()!);
       await Promise.resolve();
 
@@ -5884,6 +6321,77 @@ describe('PiSession — the on-disk invariant, against a REAL pi SessionManager'
       expect(replayed.content).toBe('what failed?');
       expect(replayed.terminalAttachments).toHaveLength(2);
       await session.dispose();
+    });
+
+    it('a prompt sent with an MCP resource block reloads as the typed text and the resource chip', async () => {
+      const { file } = await seededManager();
+      const { session, pi, live } = await panelOn(file);
+      const resource = { kind: 'mcpResource' as const, server: 'docs', uri: 'docs://guide', name: 'Guide', mimeType: 'text/markdown' };
+      const block = formatMcpResourceAttachmentBlock(resource, { text: '# Guide\nRead me.' });
+      (pi.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(async (text: string, opts: { preflightResult: (d: string) => void }) => {
+        opts.preflightResult('started');
+        piCommits(live, text);
+        await Promise.resolve();
+      });
+      await session.sendMessage(`${block}\nsummarize it`, session.currentSessionId ?? undefined, 'c1', { content: 'summarize it', terminalAttachments: [{ id: 'r1', ...resource }] });
+
+      const replayed = lastReplayedUser(file);
+      expect(replayed.content).toBe('summarize it');
+      expect(replayed.terminalAttachments).toEqual([{ id: expect.any(String), ...resource }]);
+      await session.dispose();
+    });
+
+    describe("an attached image resource and the images pi stores", () => {
+      const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+      const image = (data: string) => ({ type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data } });
+      const logo = { kind: 'mcpResource' as const, server: 'docs', uri: 'docs://logo', name: 'logo', mimeType: 'image/png' };
+      const typed = [{ type: 'text' as const, text: 'compare them' }, image(PNG)];
+      const block = formatMcpResourceAttachmentBlock(logo, { images: { first: 2, count: 1 } });
+
+      /**
+       * pi 1.3.0's `_startRun` (agent-session.js:1472-1478): the prompt's images through pi's own `_normalizePromptImages`
+       * (:1574-1591), which drops an image `processImage` refuses and appends its hint to the text, then the stored message.
+       */
+      function piStartsRun(live: realPi.SessionManager) {
+        return async (text: string, opts: { images?: unknown[]; preflightResult: (d: string) => void }) => {
+          opts.preflightResult('started');
+          const normalize = (realPi.AgentSession.prototype as unknown as { _normalizePromptImages: (images: unknown) => Promise<{ images: unknown[]; hints: string[] }> })._normalizePromptImages;
+          const normalized = await normalize.call({ settingsManager: { getImageAutoResize: () => true }, _limitsModel: () => undefined }, opts.images);
+          const stored = normalized.hints.length > 0 ? `${text}\n\n${normalized.hints.join('\n')}` : text;
+          const message = { role: 'user', content: [{ type: 'text', text: stored }, ...normalized.images], timestamp: 0 };
+          H.fireEvent({ type: 'message_end', message });
+          live.appendMessage(message as never);
+          await Promise.resolve();
+        };
+      }
+
+      const attachmentSidecarIn = (file: string) =>
+        realPi.SessionManager.open(file, dir).getEntries().flatMap((e) => (e.type === 'custom' && e.customType === 'damocles-terminal-attachments' ? [e.data] : []));
+      const replayedImages = (file: string) => (lastReplayedUser(file).contentBlocks ?? []).flatMap((b) => (b.type === 'image' ? [(b as ReturnType<typeof image>).source.data] : []));
+
+      async function sendWithResourceImage(resourceData: string) {
+        const { file } = await seededManager();
+        const { session, pi, live } = await panelOn(file);
+        (pi.prompt as ReturnType<typeof vi.fn>).mockImplementationOnce(piStartsRun(live));
+        await session.sendMessage([{ type: 'text', text: block }, ...typed, image(resourceData)], session.currentSessionId ?? undefined, 'c1', {
+          content: 'compare them', contentBlocks: typed, terminalAttachments: [{ id: 'r1', ...logo }], attachmentImageCount: 1,
+        });
+        await session.dispose();
+        return file;
+      }
+
+      it('records the image pi stored as the attachment\'s own, so a reload shows only the typed one beside the chip', async () => {
+        const file = await sendWithResourceImage(PNG);
+        expect(attachmentSidecarIn(file)).toEqual([{ userEntryId: expect.any(String), count: 1, images: 1 }]);
+        expect(replayedImages(file)).toEqual([PNG]);
+        expect(lastReplayedUser(file).terminalAttachments).toEqual([{ id: expect.any(String), ...logo }]);
+      });
+
+      it('records no attachment image when pi dropped one, so a reload never hides the image the user typed', async () => {
+        const file = await sendWithResourceImage(Buffer.from('not an image').toString('base64'));
+        expect(attachmentSidecarIn(file)).toEqual([{ userEntryId: expect.any(String), count: 1 }]);
+        expect(replayedImages(file)).toEqual([PNG]);
+      });
     });
 
     it('a queued prompt a Stop withdrew leaves nothing behind, even for a later entry with its text', async () => {
@@ -5896,7 +6404,7 @@ describe('PiSession — the on-disk invariant, against a REAL pi SessionManager'
         followUps.push(text);
         opts.preflightResult('queued');
       });
-      await session.sendMessage(sent, undefined, 'c1', { content: 'what failed?', terminalAttachments: TWO_ATTACHED });
+      await session.sendMessage(sent, session.currentSessionId ?? undefined, 'c1', { content: 'what failed?', terminalAttachments: TWO_ATTACHED });
       await session.interrupt();
       followUps.length = 0;
       Object.assign(pi, { isStreaming: false });
@@ -5907,7 +6415,7 @@ describe('PiSession — the on-disk invariant, against a REAL pi SessionManager'
         piCommits(live, text);
         await Promise.resolve();
       });
-      await session.sendMessage(sent, undefined, 'c2', { content: sent });
+      await session.sendMessage(sent, session.currentSessionId ?? undefined, 'c2', { content: sent });
 
       const replayed = lastReplayedUser(file);
       expect(replayed.content).toBe(sent);
@@ -5944,7 +6452,7 @@ describe('PiSession — the on-disk invariant, against a REAL pi SessionManager'
       (pi.abort as ReturnType<typeof vi.fn>).mockImplementation(() => wound);
       const withdrawn = vi.fn();
 
-      expect(await session.sendMessage(SENT, undefined, 'c1', BROADCAST, withdrawn)).toBe('sent');
+      expect(await session.sendMessage(SENT, session.currentSessionId ?? undefined, 'c1', BROADCAST, withdrawn)).toBe('sent');
       expect(messages).toContainEqual(expect.objectContaining({ type: 'userMessage', correlationId: 'c1', contentBlocks: TYPED, terminalAttachments: TWO_ATTACHED }));
       expect(withdrawn).not.toHaveBeenCalled();
       const stopped = session.interrupt();
@@ -5968,7 +6476,7 @@ describe('PiSession — the on-disk invariant, against a REAL pi SessionManager'
       const { session, pi } = await panelOn(file, messages);
       queuesFollowUps(pi);
       const withdrawn = vi.fn();
-      await session.sendMessage(SENT, undefined, 'c1', BROADCAST, withdrawn);
+      await session.sendMessage(SENT, session.currentSessionId ?? undefined, 'c1', BROADCAST, withdrawn);
 
       session.clear();
 
@@ -5994,7 +6502,7 @@ describe('PiSession — the on-disk invariant, against a REAL pi SessionManager'
       });
       const withdrawn = vi.fn();
 
-      await session.sendMessage(SENT, undefined, 'c1', BROADCAST, withdrawn);
+      await session.sendMessage(SENT, session.currentSessionId ?? undefined, 'c1', BROADCAST, withdrawn);
 
       // Still winding down: nothing but this prompt would take it out of pi's queue before the stopped run settles.
       expect(followUps).toEqual([]);
@@ -6018,7 +6526,7 @@ describe('PiSession — the on-disk invariant, against a REAL pi SessionManager'
         throw new Error('This operation was aborted');
       });
 
-      await session.sendMessage(sent, undefined, 'c1', { content: '/review src', ...(attachments ? { terminalAttachments: attachments } : {}) });
+      await session.sendMessage(sent, session.currentSessionId ?? undefined, 'c1', { content: '/review src', ...(attachments ? { terminalAttachments: attachments } : {}) });
 
       const replayed = lastReplayedUser(file);
       expect(replayed.content).toBe('/review src');
@@ -6065,16 +6573,16 @@ describe('PiSession session-replacement contract (what a destructive delete is s
     await detaching;
     await starting;
 
-    // Two binds, each subscribing the adapter and the image cache: the one start() made, and the
+    // Two binds, each subscribing the adapter, the image cache and the wind-down notice: the one start() made, and the
     // replacement that detach forced. Without the wait there is only start()'s, and the panel is left live on the deleted file.
-    expect(H.seq.filter((s) => s === 'subscribe')).toHaveLength(4);
+    expect(H.seq.filter((s) => s === 'subscribe')).toHaveLength(6);
   });
 
   it('a resume that lands while start() builds the runtime switches to it once the runtime exists', async () => {
     const gate = parkNextStart();
     const session = new PiSession(makeOptions([]));
-    const switchTo = vi.spyOn(session as unknown as { switchToResumeTarget: (target: unknown, stopped: unknown) => Promise<void> }, 'switchToResumeTarget')
-      .mockResolvedValue(undefined);
+    const switchTo = vi.spyOn(session as unknown as { switchToResumeTarget: (target: unknown, stopped: unknown) => Promise<{ kind: 'switched' }> }, 'switchToResumeTarget')
+      .mockResolvedValue({ kind: 'switched' });
     const starting = session.initializeEarly();
     await tick();
 
@@ -6083,7 +6591,7 @@ describe('PiSession session-replacement contract (what a destructive delete is s
     await starting;
     await session.whenReplaced();
 
-    expect(switchTo).toHaveBeenCalledWith({ sessionId: 'sess-late', cancelled: false }, null);
+    expect(switchTo).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'sess-late', cancelled: false }), null);
     await session.dispose();
   });
 
@@ -6287,9 +6795,10 @@ describe('PiSession session leases follow what the panel holds', () => {
     const first = H.getLastSession()!.sessionId;
     const runtime = (session as unknown as { runtime: { newSession: () => Promise<unknown> } }).runtime;
     // The switch as pi runs it: a replacement session with the stored file's id, rebound to the panel.
-    vi.spyOn(session as unknown as { switchToResumeTarget: (id: string) => Promise<void> }, 'switchToResumeTarget').mockImplementation(async (id) => {
-      H.setSessionSetup((s) => { (s as unknown as { sessionId: string }).sessionId = id; });
+    vi.spyOn(session as unknown as { switchToResumeTarget: (target: { sessionId: string }) => Promise<{ kind: 'switched' }> }, 'switchToResumeTarget').mockImplementation(async (target) => {
+      H.setSessionSetup((s) => { (s as unknown as { sessionId: string }).sessionId = target.sessionId; });
       await runtime.newSession();
+      return { kind: 'switched' };
     });
 
     session.setResumeSession('sess-resumed');
@@ -6328,6 +6837,8 @@ describe('PiSession session leases follow what the panel holds', () => {
       return manager;
     });
     H.setSessionSetup((s) => { (s as unknown as { sessionId: string }).sessionId = 'sess-lost'; });
+    vi.mocked(resolvePiSessionFile).mockResolvedValueOnce('/fake/agent/sessions/cwd/2026-01-01T00-00-00-000Z_sess-lost.jsonl');
+    (H.fakePi.SessionManager as Record<string, unknown>)['open'] = () => ({ kind: 'opened', getBranch: () => [] });
     const base = H.fakePi.createAgentSessionRuntime.getMockImplementation()!;
     let release!: () => void;
     const parked = new Promise<void>((resolve) => { release = resolve; });
@@ -6350,6 +6861,7 @@ describe('PiSession session leases follow what the panel holds', () => {
     managers[0]!._persist();
     expect(managers[0]!.persisted).toBe(0);
     await session.dispose();
+    delete (H.fakePi.SessionManager as Record<string, unknown>)['open'];
   });
 
   it('a lease lost while the panel is being disposed mutes the manager and starts no detach', async () => {
@@ -7471,10 +7983,11 @@ describe('PiSession undelivered background results', () => {
     const gate = new Promise<void>((resolve) => { release = resolve; });
     vi.mocked(collectUndeliveredFromFiles).mockImplementation(async () => { await gate; return { results: [], incomplete: false }; });
 
-    const both = Promise.all([
-      session.sendMessage('one', undefined, 'c1', { content: 'one' }),
-      session.sendMessage('two', undefined, 'c2', { content: 'two' }),
-    ]);
+    // A Stop frees the session for the second while the first still reads.
+    const first = session.sendMessage('one', undefined, 'c1', { content: 'one' });
+    await vi.waitFor(() => expect(collectUndeliveredFromFiles).toHaveBeenCalledTimes(1));
+    session.cancel();
+    const both = Promise.all([first, session.sendMessage('two', undefined, 'c2', { content: 'two' })]);
     await vi.waitFor(() => expect(collectUndeliveredFromFiles).toHaveBeenCalledTimes(2));
     release();
     await both;
@@ -7893,6 +8406,8 @@ describe('PiSession graceful budget stop (US-008)', () => {
     await session.initializeEarly();
     const live = H.getLastSession()!;
     live.isStreaming = true;
+    // pi queues the steer into the running run.
+    live.prompt.mockImplementation((async (_text: string, opts?: { preflightResult?: (d: string) => void }) => opts?.preflightResult?.('queued')) as never);
     expect(session.queueInput('mid-turn thought', 'q1')).toBe('queued');
     (live.clearQueue as ReturnType<typeof vi.fn>).mockClear();
     messages.length = 0;
@@ -8375,7 +8890,7 @@ describe('the shell session job is scoped to the panel', () => {
     session.reset();
     await new Promise((r) => setTimeout(r, 0));
     // Non-vacuous: a reset that never replaced the pi session would leave every assertion below trivially true.
-    expect(H.seq.filter((e) => e === 'subscribe')).toHaveLength(2);
+    expect(H.seq.filter((e) => e === 'subscribe')).toHaveLength(3);
 
     // A job rebuilt per conversation would mint a second handle and close the first, killing anything the
     // user had deliberately backgrounded before the reset.
@@ -8727,6 +9242,32 @@ describe('the chat model is what pi adopted, published after every switch attemp
     expect(session.currentModel).toBe('claude-sonnet-5-5');
     expect(reported).toEqual(['claude-sonnet-5-5']);
     expect(accountModel(messages)).toBe('claude-sonnet-5-5');
+    await session.dispose();
+  });
+
+  it("reports the context window of the model pi adopted with every publish", async () => {
+    const windows: number[] = [];
+    const { session } = await started([], { onModelChange: (_model, contextWindow) => windows.push(contextWindow) });
+    expect(windows.at(-1)).toBe(1_000_000);
+
+    await session.setModel('claude-haiku-5-5');
+
+    expect(windows.at(-1)).toBe(HAIKU.contextWindow);
+    await session.dispose();
+  });
+
+  it.each([0, -1, Number.NaN])("reports the catalog window when pi reports %s for the adopted model's window", async (contextWindow) => {
+    const lookup = H.getServices().modelRuntime.getModel;
+    H.getServices().modelRuntime.getModel = (provider: string, id: string) =>
+      (provider === HAIKU.provider && id === HAIKU.id ? { ...HAIKU, contextWindow } : lookup(provider, id)) as never;
+    const windows: number[] = [];
+    const { session } = await started([], { onModelChange: (_model, window) => windows.push(window) });
+
+    await session.setModel('claude-haiku-5-5');
+
+    expect(session.currentModel).toBe('claude-haiku-5-5');
+    expect(windows.at(-1)).toBe(session.getModelInfo()?.contextWindow);
+    expect(windows.at(-1)).toBeGreaterThan(0);
     await session.dispose();
   });
 
@@ -9264,7 +9805,7 @@ describe('PiSession: the first prompt waits for servers with Always-loaded tools
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
 
     let done = false;
-    const waiting = session.waitForAlwaysLoadedMcp('s1').then(() => { done = true; });
+    const waiting = session.waitForAlwaysLoadedMcp('s1', new AbortController().signal).then(() => { done = true; });
     await vi.advanceTimersByTimeAsync(3_000);
     expect(done).toBe(false);
     expect(waitNotices(messages)).toEqual([{ type: 'notification', notificationType: 'info', message: 'Waiting for MCP server ctx' }]);
@@ -9283,7 +9824,7 @@ describe('PiSession: the first prompt waits for servers with Always-loaded tools
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
 
     let done = false;
-    const waiting = session.waitForAlwaysLoadedMcp('s1').then(() => { done = true; });
+    const waiting = session.waitForAlwaysLoadedMcp('s1', new AbortController().signal).then(() => { done = true; });
     await vi.advanceTimersByTimeAsync(9_999);
     expect(done).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
@@ -9294,18 +9835,15 @@ describe('PiSession: the first prompt waits for servers with Always-loaded tools
   });
 
   it('a stop ends the wait at once', async () => {
-    const session = await startedSession([]);
-    const { source } = connectingSource();
-    stubPanelMcp(source);
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = await startedSession(messages);
+    stubPanelMcp(connectingSource().source);
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
 
-    let done = false;
-    const waiting = session.waitForAlwaysLoadedMcp('s1').then(() => { done = true; });
-    await vi.advanceTimersByTimeAsync(1_000);
+    const parked = await sendParkedInWait(session, messages);
     session.cancel();
     await vi.advanceTimersByTimeAsync(0);
-    await waiting;
-    expect(done).toBe(true);
+    expect(parked.settled()).toBe(true);
     await session.dispose();
   });
 
@@ -9316,12 +9854,12 @@ describe('PiSession: the first prompt waits for servers with Always-loaded tools
     stubPanelMcp(source);
     connect();
 
-    await session.waitForAlwaysLoadedMcp('s1');
+    await session.waitForAlwaysLoadedMcp('s1', new AbortController().signal);
     expect(waitNotices(messages)).toEqual([]);
 
     const again = connectingSource();
     stubPanelMcp(again.source);
-    await session.waitForAlwaysLoadedMcp('s1');
+    await session.waitForAlwaysLoadedMcp('s1', new AbortController().signal);
     expect(again.source.pendingDirectServers).not.toHaveBeenCalled();
     expect(waitNotices(messages)).toEqual([]);
     await session.dispose();
@@ -9334,7 +9872,7 @@ describe('PiSession: the first prompt waits for servers with Always-loaded tools
     stubPanelMcp(source);
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
 
-    const waiting = session.waitForAlwaysLoadedMcp('s1');
+    const waiting = session.waitForAlwaysLoadedMcp('s1', new AbortController().signal);
     await vi.advanceTimersByTimeAsync(10_000);
     await waiting;
 
@@ -9350,18 +9888,28 @@ describe('PiSession: the first prompt waits for servers with Always-loaded tools
   type FakeSession = NonNullable<ReturnType<typeof H.getLastSession>>;
 
   /**
-   * pi 1.1.0's `prompt()` for a run it opens: the `before_agent_start` handlers run (the Damocles one
-   * holds on the panel's wait), then `preflightResult('started')` is called synchronously and a throw
-   * from it rejects `prompt()`, then `_runAgentPrompt` resets the abort flag and the agent loop calls
-   * the provider with no abort check before the first request. `abort()` before the run is a no-op,
-   * which is the default fake's.
+   * pi 1.3.0's `prompt()` for a run it opens (`agent-session.js`), which the panel calls once its wait is over:
+   * `_startRun` marks the session busy (:1393), then calls `preflightResult('started')` outside both of its `try`
+   * blocks (:1410). An `abort()` while busy marks the abort (:1943-1945) and waits for idle (:1952), which resolves at
+   * once on an idle session (:1954-1958); a run that starts after it is aborted at `agent_start` (:713-714), before any request.
    */
-  function piPromptAfterWait(session: PiSession, live: FakeSession): { requests: number } {
+  function piPromptAfterWait(live: FakeSession): { requests: number } {
     const provider = { requests: 0 };
+    let abortRequested = false;
+    let settle = (): void => undefined;
+    const idle = new Promise<void>((resolve) => { settle = resolve; });
+    const streaming = live as unknown as { isStreaming: boolean };
+    live.abort.mockImplementation(async () => {
+      if (!streaming.isStreaming) return;
+      abortRequested = true;
+      await idle;
+    });
     live.prompt.mockImplementation((async (_text: string, opts?: { preflightResult?: (disposition: string) => void }) => {
-      await session.waitForAlwaysLoadedMcp(live.sessionId);
+      streaming.isStreaming = true;
       opts?.preflightResult?.('started');
-      provider.requests += 1;
+      if (!abortRequested) provider.requests += 1;
+      streaming.isStreaming = false;
+      settle();
     }) as never);
     return provider;
   }
@@ -9384,7 +9932,7 @@ describe('PiSession: the first prompt waits for servers with Always-loaded tools
     const live = H.getLastSession()!;
     stubPanelMcp(connectingSource().source);
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    const provider = piPromptAfterWait(session, live);
+    const provider = piPromptAfterWait(live);
 
     const parked = await sendParkedInWait(session, messages);
     session.cancel();
@@ -9395,6 +9943,8 @@ describe('PiSession: the first prompt waits for servers with Always-loaded tools
     expect(messages).toContainEqual({ type: 'interruptRecovery', correlationId: 'c1', promptContent: 'go' });
     expect(errors(messages)).toEqual([]);
     expect(session.processing).toBe(false);
+    // The user's next message must be able to run.
+    expect(live.isIdle).toBe(true);
     await session.dispose();
   });
 
@@ -9404,7 +9954,7 @@ describe('PiSession: the first prompt waits for servers with Always-loaded tools
     const first = H.getLastSession()!;
     stubPanelMcp(connectingSource().source);
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    const provider = piPromptAfterWait(session, first);
+    const provider = piPromptAfterWait(first);
 
     const parked = await sendParkedInWait(session, messages);
     session.reset();
@@ -9426,7 +9976,7 @@ describe('PiSession: the first prompt waits for servers with Always-loaded tools
     stubPanelMcp(connectingSource().source);
     vi.mocked(resolvePiSessionFile).mockImplementationOnce(async (_cwd, id) => `/fake/agent/sessions/cwd/2026-01-01T00-00-00-000Z_${id}.jsonl`);
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    const provider = piPromptAfterWait(session, first);
+    const provider = piPromptAfterWait(first);
 
     const parked = await sendParkedInWait(session, messages);
     session.setResumeSession('sess-target');
@@ -9447,7 +9997,7 @@ describe('PiSession: the first prompt waits for servers with Always-loaded tools
     const { source, connect } = connectingSource();
     stubPanelMcp(source);
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    const provider = piPromptAfterWait(session, live);
+    const provider = piPromptAfterWait(live);
 
     const parked = await sendParkedInWait(session, messages);
     connect();
@@ -9457,6 +10007,410 @@ describe('PiSession: the first prompt waits for servers with Always-loaded tools
     expect(messages.some((m) => m.type === 'interruptRecovery')).toBe(false);
     await session.dispose();
   });
+
+  it('a disposal during the wait sends no provider request, returns the message and settles', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = await startedSession(messages);
+    const live = H.getLastSession()!;
+    stubPanelMcp(connectingSource().source);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const provider = piPromptAfterWait(live);
+
+    const parked = await sendParkedInWait(session, messages);
+    const disposed = session.dispose();
+    await vi.advanceTimersByTimeAsync(0);
+    await disposed;
+
+    expect(parked.settled()).toBe(true);
+    expect(provider.requests).toBe(0);
+    expect(live.prompt).not.toHaveBeenCalled();
+    expect(messages).toContainEqual({ type: 'interruptRecovery', correlationId: 'c1', promptContent: 'go' });
+  });
+
+  it('a failing wait still sends the prompt', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = await startedSession(messages);
+    const live = H.getLastSession()!;
+    const { source } = connectingSource();
+    vi.mocked(source.pendingDirectServers).mockImplementation(() => { throw new Error('inspect failed'); });
+    stubPanelMcp(source);
+    const provider = piPromptAfterWait(live);
+
+    expect(await session.sendMessage('go', undefined, 'c1', { content: 'go' })).not.toBe('withdrawn');
+
+    expect(provider.requests).toBe(1);
+    expect(errors(messages)).toEqual([]);
+    await session.dispose();
+  });
+
+  it('an extension command first opens no run, so it does not wait, and the first prompt after it still does', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = await startedSession(messages);
+    const live = H.getLastSession()!;
+    stubPanelMcp(connectingSource().source);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    live.extensionRunner.getCommand.mockImplementation((name: string) => (name === 'todos' ? { name } : undefined));
+    // pi runs an extension command inside prompt() and reports it handled (agent-session.js:1611-1617).
+    live.prompt.mockImplementationOnce((async (_text: string, opts?: { preflightResult?: (d: string) => void }) => opts?.preflightResult?.('handled')) as never);
+
+    expect(await session.sendMessage('/todos', undefined, 'c0', { content: '/todos' })).toBe('unsent');
+    expect(waitNotices(messages)).toEqual([]);
+    expect(session.processing).toBe(false);
+
+    const provider = piPromptAfterWait(live);
+    const parked = await sendParkedInWait(session, messages);
+    session.cancel();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(parked.settled()).toBe(true);
+    expect(provider.requests).toBe(0);
+    await session.dispose();
+  });
+
+  it('refuses a second send during the wait, so only the first prompt reaches pi', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = await startedSession(messages);
+    const live = H.getLastSession()!;
+    const { source, connect } = connectingSource();
+    stubPanelMcp(source);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const provider = piPromptAfterWait(live);
+
+    const parked = await sendParkedInWait(session, messages);
+    expect(await session.sendMessage('again', undefined, 'c2', { content: 'again' })).toBe('unsent');
+    expect(errors(messages)).toEqual([{ type: 'error', message: 'A request is already in progress' }]);
+    connect();
+    await parked.sending;
+
+    expect(live.prompt).toHaveBeenCalledOnce();
+    expect(provider.requests).toBe(1);
+    await session.dispose();
+  });
+
+  it('holds a message queued during the wait and steers it into the run the prompt opens', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = await startedSession(messages);
+    const live = H.getLastSession()!;
+    const { source, connect } = connectingSource();
+    stubPanelMcp(source);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const streaming = live as unknown as { isStreaming: boolean };
+    let endRun!: () => void;
+    const steered: Array<{ text: string; behavior?: string }> = [];
+    // pi 1.3.0: the prompt opens a run, busy from `_startRun` (agent-session.js:1393); a prompt while busy queues (:1636-1648).
+    live.prompt.mockImplementation((async (text: string, opts?: { streamingBehavior?: string; preflightResult?: (d: string) => void }) => {
+      if (streaming.isStreaming) {
+        steered.push({ text, ...(opts?.streamingBehavior ? { behavior: opts.streamingBehavior } : {}) });
+        opts?.preflightResult?.('queued');
+        return;
+      }
+      streaming.isStreaming = true;
+      opts?.preflightResult?.('started');
+      await new Promise<void>((resolve) => { endRun = resolve; });
+      streaming.isStreaming = false;
+    }) as never);
+
+    const parked = await sendParkedInWait(session, messages);
+    expect(session.queueInput('and the logs', 'q1')).toBe('queued');
+    expect(live.prompt).not.toHaveBeenCalled();
+    connect();
+    await vi.waitFor(() => expect(steered).toEqual([{ text: 'and the logs', behavior: 'steer' }]));
+    endRun();
+    await parked.sending;
+
+    expect(messages.some((m) => m.type === 'queueCancelled' || m.type === 'notification' && m.notificationType === 'error')).toBe(false);
+    await session.dispose();
+  });
+
+  it('queues a review submitted during the wait for the run the prompt opens', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = await startedSession(messages);
+    stubPanelMcp(connectingSource().source);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const review = (session as unknown as { chatReview: { compose: (drafts: unknown) => Promise<unknown> } }).chatReview;
+    vi.spyOn(review, 'compose').mockResolvedValue({ ok: true, message: 'why this?' });
+
+    await sendParkedInWait(session, messages);
+    expect(await session.submitReview([] as never)).toBe('queued');
+
+    expect(errors(messages)).toEqual([]);
+    expect(messages).toContainEqual({ type: 'messageQueued', message: expect.objectContaining({ content: 'why this?' }) });
+    await session.dispose();
+  });
+
+  it('a stop during the wait returns a message queued meanwhile with the prompt, and the next send runs', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = await startedSession(messages);
+    const live = H.getLastSession()!;
+    stubPanelMcp(connectingSource().source);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const provider = piPromptAfterWait(live);
+
+    const parked = await sendParkedInWait(session, messages);
+    expect(session.queueInput('and the logs', 'q1')).toBe('queued');
+    session.cancel();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(parked.settled()).toBe(true);
+    expect(messages).toContainEqual({ type: 'interruptRecovery', correlationId: 'c1', promptContent: 'go' });
+    expect(messages).toContainEqual({ type: 'queueCancelled', messageId: 'q1', returnToInput: true });
+    expect(live.prompt).not.toHaveBeenCalled();
+
+    // The session waited once already, so the next send goes straight to pi.
+    expect(await session.sendMessage('next', undefined, 'c2', { content: 'next' })).not.toBe('withdrawn');
+    expect(provider.requests).toBe(1);
+    await session.dispose();
+  });
+
+  describe("a send claimed before its content is read (the composer's attachment read)", () => {
+    const stops: Array<[string, (session: PiSession) => Promise<void> | void]> = [
+      ['a Stop', (session) => session.cancel()],
+      ['a New chat', async (session) => {
+        session.reset();
+        await session.whenReplaced();
+      }],
+      ['a resume switch', async (session) => {
+        vi.mocked(resolvePiSessionFile).mockImplementationOnce(async (_cwd, id) => `/fake/agent/sessions/cwd/2026-01-01T00-00-00-000Z_${id}.jsonl`);
+        session.setResumeSession('sess-target');
+        await session.whenReplaced();
+      }],
+    ];
+
+    it.each(stops)('is stopped by %s, which returns the message at once, and the next send runs', async (_name, stop) => {
+      const messages: ExtensionToWebviewMessage[] = [];
+      const session = await startedSession(messages);
+      const returned = vi.fn();
+      const ticket = session.beginSend('c1', { content: 'read these' }, returned)!;
+
+      await stop(session);
+
+      expect(ticket.signal.aborted).toBe(true);
+      expect(returned).toHaveBeenCalledOnce();
+      expect(messages).toContainEqual({ type: 'interruptRecovery', correlationId: 'c1', promptContent: 'read these' });
+      // The handler ends its send once it sees the abort, and the ticket no longer holds the session either way.
+      expect(await session.sendMessage('read these', undefined, 'c1', { content: 'read these' }, undefined, ticket)).toBe('withdrawn');
+      ticket.end();
+      const live = H.getLastSession()!;
+      expect(await session.sendMessage('next', undefined, 'c2', { content: 'next' })).not.toBe('withdrawn');
+      expect(live.prompt).toHaveBeenCalledOnce();
+      expect(returned).toHaveBeenCalledOnce();
+      await session.dispose();
+    });
+
+    it('is stopped by a disposal, which returns the message before the panel goes', async () => {
+      const messages: ExtensionToWebviewMessage[] = [];
+      const session = await startedSession(messages);
+      const returned = vi.fn();
+      const ticket = session.beginSend('c1', { content: 'read these' }, returned)!;
+
+      const disposed = session.dispose();
+
+      expect(ticket.signal.aborted).toBe(true);
+      expect(returned).toHaveBeenCalledOnce();
+      expect(messages).toContainEqual({ type: 'interruptRecovery', correlationId: 'c1', promptContent: 'read these' });
+      await disposed;
+    });
+
+    it('holds the session against a second send until it ends', async () => {
+      const messages: ExtensionToWebviewMessage[] = [];
+      const session = await startedSession(messages);
+      const ticket = session.beginSend('c1', { content: 'read these' }, vi.fn())!;
+
+      expect(session.beginSend('c2', { content: 'other' }, vi.fn())).toBeNull();
+      expect(await session.sendMessage('other', undefined, 'c3', { content: 'other' })).toBe('unsent');
+      expect(errors(messages)).toEqual([
+        { type: 'error', message: 'A request is already in progress' },
+        { type: 'error', message: 'A request is already in progress' },
+      ]);
+      ticket.end();
+      expect(session.processing).toBe(false);
+      expect(await session.sendMessage('other', undefined, 'c3', { content: 'other' })).not.toBe('withdrawn');
+      expect(H.getLastSession()!.prompt).toHaveBeenCalledOnce();
+      await session.dispose();
+    });
+  });
+});
+
+describe('PiSession: the UserPromptSubmit hook runs before pi', () => {
+  const dirs: string[] = [];
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+  });
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+    for (const dir of dirs.splice(0)) fsSync.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * A UserPromptSubmit hook: a prompt containing `hold` writes the hook's pid and holds it 30 s before it writes `done`
+   * and names the session; `brief` holds it 1.5 s; `title` names the session at once.
+   */
+  function promptHook(): { deps: DispatchDeps; pid: () => number | undefined; finished: () => boolean } {
+    const dir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'dam-hold-hook-'));
+    dirs.push(dir);
+    const pidFile = path.join(dir, 'pid');
+    const doneFile = path.join(dir, 'done');
+    const script = [
+      "const fs = require('fs');",
+      "let s = '';",
+      "process.stdin.on('data', (d) => { s += d; }).on('end', () => {",
+      '  const p = JSON.parse(s).prompt;',
+      "  const title = () => process.stdout.write(JSON.stringify({ session_title: 'Renamed' }));",
+      `  if (p.includes('hold')) { fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => { fs.writeFileSync(${JSON.stringify(doneFile)}, 'done'); title(); }, 30000); return; }`,
+      `  if (p.includes('brief')) { fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => undefined, 1500); return; }`,
+      "  if (p.includes('title')) title();",
+      '});',
+    ].join('\n');
+    const entries: Record<string, unknown[]> = { input: [{ command: [process.execPath, '-e', script] }] };
+    return {
+      deps: {
+        config: { getEntries: (key: string) => entries[key] ?? [], hasEntries: (key: string) => (entries[key] ?? []).length > 0 } as never,
+        workspaceRoot: os.tmpdir(),
+        userHome: os.homedir(),
+      },
+      pid: () => (fsSync.existsSync(pidFile) ? Number(fsSync.readFileSync(pidFile, 'utf8')) : undefined),
+      finished: () => fsSync.existsSync(doneFile),
+    };
+  }
+
+  function alive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function hookedSession(messages: ExtensionToWebviewMessage[], hook: ReturnType<typeof promptHook>) {
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    vi.spyOn(cwdFolder()!, 'getHooksDispatchDeps').mockReturnValue(hook.deps);
+    const live = H.getLastSession()!;
+    vi.mocked(live.sessionManager['getCwd'] as () => string).mockReturnValue(os.tmpdir());
+    return { session, live };
+  }
+
+  const IMAGE = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'iVBORw0KGgo=' } };
+  const HELD = [{ type: 'text' as const, text: 'hold this' }, IMAGE];
+  const errors = (messages: ExtensionToWebviewMessage[]) => messages.filter((m) => m.type === 'error');
+
+  /** Send `HELD`, whose hook holds it, and wait until the hook process runs; its chips coming back are recorded in `messages`. */
+  async function sendHeld(session: PiSession, messages: ExtensionToWebviewMessage[], hook: ReturnType<typeof promptHook>) {
+    const chips = vi.fn(() => { messages.push({ type: 'chipsReturned' } as never); });
+    const sending = session.sendMessage(HELD, undefined, 'c1', { content: 'hold this', contentBlocks: HELD }, chips);
+    await vi.waitFor(() => expect(hook.pid()).toBeDefined(), { timeout: 10_000 });
+    return { sending, chips };
+  }
+
+  function expectReturnedInOrder(messages: ExtensionToWebviewMessage[], chips: ReturnType<typeof vi.fn>): void {
+    const recovery = messages.findIndex((m) => m.type === 'interruptRecovery');
+    expect(messages[recovery]).toEqual({ type: 'interruptRecovery', correlationId: 'c1', promptContent: 'hold this', contentBlocks: HELD });
+    expect(chips).toHaveBeenCalledOnce();
+    expect(messages.findIndex((m) => (m as { type: string }).type === 'chipsReturned')).toBeGreaterThan(recovery);
+  }
+
+  const stops: Array<[string, (session: PiSession) => Promise<void> | void]> = [
+    ['a Stop', (session) => session.cancel()],
+    ['a New chat', async (session) => {
+      session.reset();
+      await session.whenReplaced();
+    }],
+    ['a resume switch', async (session) => {
+      vi.mocked(resolvePiSessionFile).mockImplementationOnce(async (_cwd, id) => `/fake/agent/sessions/cwd/2026-01-01T00-00-00-000Z_${id}.jsonl`);
+      session.setResumeSession('sess-target');
+      await session.whenReplaced();
+    }],
+  ];
+
+  it.each(stops)('%s during the hook kills it, returns the message and then its chips, writes nothing, and the next send runs', async (_name, stop) => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const hook = promptHook();
+    const { session, live } = await hookedSession(messages, hook);
+    // pi records a thinking level change as a session entry.
+    const thinkingLevels = live.setThinkingLevel.mock.calls.length;
+
+    const { sending, chips } = await sendHeld(session, messages, hook);
+    await stop(session);
+
+    expect(await sending).toBe('withdrawn');
+    expectReturnedInOrder(messages, chips);
+    await vi.waitFor(() => expect(alive(hook.pid()!)).toBe(false), { timeout: 10_000 });
+    expect(hook.finished()).toBe(false);
+    expect(live.prompt).not.toHaveBeenCalled();
+    expect(live.setThinkingLevel).toHaveBeenCalledTimes(thinkingLevels);
+    expect(live.setSessionName).not.toHaveBeenCalled();
+    expect(live.sessionManager['appendCustomEntry']).not.toHaveBeenCalled();
+    expect(errors(messages)).toEqual([]);
+    expect(session.processing).toBe(false);
+
+    const next = H.getLastSession()!;
+    vi.mocked(next.sessionManager['getCwd'] as () => string).mockReturnValue(os.tmpdir());
+    expect(await session.sendMessage('next', undefined, 'c2', { content: 'next' })).not.toBe('withdrawn');
+    expect(next.prompt).toHaveBeenCalledOnce();
+    expect((next.prompt as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toBe('next');
+    await session.dispose();
+  }, 20_000);
+
+  it('a disposal during the hook kills it and returns the message and then its chips before the panel goes', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const hook = promptHook();
+    const { session, live } = await hookedSession(messages, hook);
+
+    const { sending, chips } = await sendHeld(session, messages, hook);
+    await session.dispose();
+
+    expect(await sending).toBe('withdrawn');
+    expectReturnedInOrder(messages, chips);
+    await vi.waitFor(() => expect(alive(hook.pid()!)).toBe(false), { timeout: 10_000 });
+    expect(live.prompt).not.toHaveBeenCalled();
+    expect(live.setSessionName).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it('refuses a second send during the hook, so only the first prompt reaches pi, once', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const hook = promptHook();
+    const { session, live } = await hookedSession(messages, hook);
+
+    const sending = session.sendMessage('brief one', undefined, 'c1', { content: 'brief one' });
+    await vi.waitFor(() => expect(hook.pid()).toBeDefined(), { timeout: 10_000 });
+    expect(await session.sendMessage('again', undefined, 'c2', { content: 'again' })).toBe('unsent');
+    expect(errors(messages)).toEqual([{ type: 'error', message: 'A request is already in progress' }]);
+    expect(live.prompt).not.toHaveBeenCalled();
+
+    expect(await sending).not.toBe('withdrawn');
+    expect(live.prompt).toHaveBeenCalledOnce();
+    expect((live.prompt as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toBe('brief one');
+    await session.dispose();
+  }, 20_000);
+
+  it('holds a message queued during the hook and returns it with the prompt when a Stop lands', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const hook = promptHook();
+    const { session, live } = await hookedSession(messages, hook);
+
+    const { sending } = await sendHeld(session, messages, hook);
+    expect(session.queueInput('and the logs', 'q1')).toBe('queued');
+    session.cancel();
+
+    expect(await sending).toBe('withdrawn');
+    expect(messages).toContainEqual({ type: 'queueCancelled', messageId: 'q1', returnToInput: true });
+    expect(live.prompt).not.toHaveBeenCalled();
+    await session.dispose();
+  }, 20_000);
+
+  it("renames the session with the hook's session_title when its prompt goes to pi", async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const hook = promptHook();
+    const { session, live } = await hookedSession(messages, hook);
+
+    expect(await session.sendMessage('title please', undefined, 'c1', { content: 'title please' })).not.toBe('withdrawn');
+
+    await vi.waitFor(() => expect(live.setSessionName).toHaveBeenCalledWith('Renamed'));
+    expect(live.prompt).toHaveBeenCalledOnce();
+    await session.dispose();
+  }, 20_000);
 });
 
 describe('PiSession: damocles.mcp.toolExposure and the panel ToolSearch', () => {
@@ -9481,6 +10435,30 @@ describe('PiSession: damocles.mcp.toolExposure and the panel ToolSearch', () => 
 
     expect(live.setActiveToolsByName).toHaveBeenCalledTimes(1);
     expect(status).toHaveBeenCalledTimes(1);
+    await session.dispose();
+  });
+
+  it('a damocles.mcp.resourceExposure change re-applies the active set: the resource tools go from deferred to active with no reload', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    let servers: McpResourceServer[] = [{ serverName: 'docs', serverId: 'm/docs', exposure: 'deferred' }];
+    stubPanelMcp({
+      allToolNames: () => [],
+      getAllToolDescriptors: () => [],
+      getServerStatuses: () => [],
+      resourceServers: () => [...servers],
+    } as unknown as McpToolSource);
+    const live = H.getLastSession()!;
+    const resources: string[] = [...MCP_RESOURCE_TOOL_NAMES];
+    expect(session.deferrableToolsSnapshot().names).toEqual(expect.arrayContaining(resources));
+    live.setActiveToolsByName.mockClear();
+
+    servers = [{ serverName: 'docs', serverId: 'm/docs', exposure: 'direct' }];
+    fireSettingChange('damocles.mcp.resourceExposure');
+
+    expect(live.setActiveToolsByName).toHaveBeenCalledTimes(1);
+    expect(live.setActiveToolsByName.mock.calls[0]![0]).toEqual(expect.arrayContaining(resources));
+    expect(session.deferrableToolsSnapshot().names.filter((name) => resources.includes(name))).toEqual([]);
     await session.dispose();
   });
 
@@ -9671,13 +10649,15 @@ describe('a resumed conversation continues on the model and thinking level its f
     const session = new PiSession(makeOptions([], { onRecordedSelection: restored }));
     session.setResumeSession('stored');
     await session.initializeEarly();
-    const created = H.fakePi.createAgentSessionFromServices.mock.calls.at(-1)![0] as unknown as { model?: { id: string } };
-    return { session, restored, createdOn: created.model?.id, modelValue: (session as unknown as { modelValue: string }).modelValue };
+    const created = H.fakePi.createAgentSessionFromServices.mock.calls.at(-1)![0] as unknown as { model?: { id: string }; thinkingLevel?: string };
+    return { session, restored, createdOn: created.model?.id, createdAt: created.thinkingLevel, modelValue: (session as unknown as { modelValue: string }).modelValue };
   }
 
   it('hands pi the recorded model and reports it with the recorded level, so the panel shows and resolves them', async () => {
-    const { session, restored, createdOn, modelValue } = await restore(recorded('anthropic', 'claude-sonnet-5-5', 'xhigh'));
+    const { session, restored, createdOn, createdAt, modelValue } = await restore(recorded('anthropic', 'claude-sonnet-5-5', 'xhigh'));
     expect(createdOn).toBe('claude-sonnet-5-5');
+    // The panel's level is restored only after pi installed the session, so the build reads the recorded level itself.
+    expect(createdAt).toBe('xhigh');
     expect(modelValue).toBe('claude-sonnet-5-5');
     expect(restored).toHaveBeenCalledExactlyOnceWith('claude-sonnet-5-5', 'xhigh');
     await session.dispose();
@@ -9713,6 +10693,24 @@ describe('a resumed conversation continues on the model and thinking level its f
     await session.dispose();
   });
 
+  it("publishes the recorded model with the window pi resolved for it when a started panel switches to the conversation", async () => {
+    const SOL = { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', api: 'anthropic-messages', provider: 'openai', contextWindow: 500_000 };
+    const lookup = H.getServices().modelRuntime.getModel;
+    H.getServices().modelRuntime.getModel = (provider: string, id: string) => (provider === SOL.provider && id === SOL.id ? SOL : lookup(provider, id)) as never;
+    vi.spyOn(PiRuntime.get('/fake/agent'), 'getOpenAIAuthStatus').mockReturnValue({ apiKey: false, chatgpt: true, codex: false });
+    const published: Array<[string, number]> = [];
+    const session = new PiSession(makeOptions([], { onModelChange: (model, contextWindow) => published.push([model, contextWindow]) }));
+    await session.initializeEarly();
+    const manager = H.fakePi.SessionManager.create.mock.results.at(-1)!.value as { getBranch: () => unknown[] };
+    manager.getBranch = () => recorded('openai', 'gpt-6.1-sol', 'high');
+
+    session.setResumeSession('stored');
+    await session.whenReplaced();
+
+    expect(published.at(-1)).toEqual(['gpt-6.1-sol', 500_000]);
+    await session.dispose();
+  });
+
   it('starts a new conversation on the panel model', async () => {
     const restored = vi.fn();
     const session = new PiSession(makeOptions([], { onRecordedSelection: restored }));
@@ -9738,6 +10736,561 @@ describe('a resumed conversation continues on the model and thinking level its f
     expect(modelValue).toBe(successor);
     expect(restored).toHaveBeenCalledExactlyOnceWith(successor, 'low');
     await session.dispose();
+  });
+});
+
+describe("a resume switch pi does not install leaves the chat's model, window and effort as they were", () => {
+  // Its own window, so a record that moved to it shows in the window too.
+  const SONNET = { id: 'claude-sonnet-5-5', name: 'Sonnet', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 400_000 };
+  const STORED = [
+    { type: 'model_change', id: 'm1', provider: 'anthropic', modelId: SONNET.id },
+    { type: 'thinking_level_change', id: 't1', thinkingLevel: 'xhigh' },
+    { type: 'message', id: 'u1', message: { role: 'user', content: 'hello' } },
+  ];
+  type Internals = { desiredModel?: { id: string }; contextWindowForCurrentModel: () => number; ensureStarted: () => Promise<void>; runtime: { switchSession: (p: string) => Promise<{ cancelled: boolean }> } | null };
+
+  beforeEach(() => {
+    H.resetServices();
+    const opus = H.getServices().modelRuntime.getModel;
+    H.getServices().modelRuntime.getModel = (provider: string, id: string) => (provider === 'anthropic' && id === SONNET.id ? SONNET : opus(provider, id)) as never;
+    vi.mocked(resolvePiSessionFile).mockImplementation(async (_cwd, id) => `/fake/agent/sessions/cwd/2026-01-01T00-00-00-000Z_${id}.jsonl`);
+  });
+  afterEach(async () => {
+    vi.mocked(resolvePiSessionFile).mockReset();
+    await PiRuntime.disposeInstance();
+  });
+
+  /** A started panel on Opus whose resume target recorded Sonnet at xhigh; the fake runtime hands every later build the started manager. */
+  async function panelOnOpus() {
+    const restored = vi.fn();
+    const published: Array<[string, number]> = [];
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages, { onRecordedSelection: restored, onModelChange: (model, contextWindow) => published.push([model, contextWindow]) }));
+    await session.initializeEarly();
+    const manager = H.fakePi.SessionManager.create.mock.results.at(-1)!.value as { getBranch: () => unknown[] };
+    // Only the switch opens the stored file; pi's newSession builds on a fresh manager (agent-session-runtime.js:155 in pi-coding-agent 1.3.0).
+    let opened = false;
+    manager.getBranch = () => (opened ? [] : ((opened = true), STORED));
+    const accountModels = () => messages.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'accountInfo' }> => m.type === 'accountInfo').map((m) => m.data.model);
+    return { session, restored, published, accountModels };
+  }
+
+  function expectOpusRecord(session: PiSession, restored: ReturnType<typeof vi.fn>, published: Array<[string, number]>, accountModels?: () => unknown[]): void {
+    const internals = session as unknown as Internals;
+    expect(session.currentModel).toBe('claude-opus-5-5');
+    expect(internals.desiredModel?.id).toBe('claude-opus-5-5');
+    expect(internals.contextWindowForCurrentModel()).toBe(1_000_000);
+    expect(restored).not.toHaveBeenCalled();
+    expect(published.filter(([model, contextWindow]) => model !== 'claude-opus-5-5' || contextWindow !== 1_000_000)).toEqual([]);
+    expect(published.at(-1)).toEqual(['claude-opus-5-5', 1_000_000]);
+    if (accountModels) expect(new Set(accountModels())).toEqual(new Set(['claude-opus-5-5']));
+  }
+
+  /** The model the next session pi builds is given. */
+  async function nextBuildModel(session: PiSession): Promise<string | undefined> {
+    await (session as unknown as Internals).ensureStarted();
+    return (H.fakePi.createAgentSessionFromServices.mock.calls.at(-1)![0] as unknown as { model?: { id: string } }).model?.id;
+  }
+
+  /** Holds the factory at its first await, which every session build passes before it reads the opened file. */
+  function holdNextBuild(): { building: Promise<void>; release: () => void } {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let reached!: () => void;
+    const building = new Promise<void>((resolve) => { reached = resolve; });
+    const folder = cwdFolder()!;
+    const prepare = folder.prepareSessionExtensions.bind(folder);
+    vi.spyOn(folder, 'prepareSessionExtensions').mockImplementationOnce(async () => { reached(); await held; await prepare(); });
+    return { building, release };
+  }
+
+  it('a switch pi refuses', async () => {
+    const { session, restored, published } = await panelOnOpus();
+    // pi returns a session_before_switch cancel before teardown and createRuntime (agent-session-runtime.js:128-132 in pi-coding-agent 1.3.0).
+    (session as unknown as Internals).runtime!.switchSession = async () => ({ cancelled: true });
+    session.setResumeSession('stored');
+    await session.whenReplaced();
+    expectOpusRecord(session, restored, published);
+    await session.dispose();
+  });
+
+  it('a switch whose session build throws', async () => {
+    const { session, restored, published, accountModels } = await panelOnOpus();
+    // A createRuntime that rejects never reaches apply, so pi is left holding the session its teardown disposed (agent-session-runtime.js:136-137 in pi-coding-agent 1.3.0).
+    H.fakePi.createAgentSessionFromServices.mockRejectedValueOnce(new Error('an extension failed to load'));
+    session.setResumeSession('stored');
+    await session.whenReplaced();
+    expect((session as unknown as Internals).runtime).toBeNull();
+    expectOpusRecord(session, restored, published, accountModels);
+    expect(await nextBuildModel(session)).toBe('claude-opus-5-5');
+    await session.dispose();
+  });
+
+  it('a switch whose rebind throws after pi installed its session', async () => {
+    const { session, restored, published, accountModels } = await panelOnOpus();
+    // pi installs the session before it awaits the rebind and lets the rebind's throw reject the switch (agent-session-runtime.js:114-127, :137-145 in pi-coding-agent 1.3.0).
+    vi.spyOn(cwdFolder()!, 'registerPanel').mockImplementationOnce(() => { throw new Error('the gate registry refused the session'); });
+    session.setResumeSession('stored');
+    await session.whenReplaced();
+    expect((session as unknown as Internals).runtime).toBeNull();
+    expect(testPlatform.notifications.calls.filter((call) => call.level === 'error').map((call) => call.message)).toEqual(['This conversation could not be opened: the gate registry refused the session']);
+    expectOpusRecord(session, restored, published, accountModels);
+    expect(await nextBuildModel(session)).toBe('claude-opus-5-5');
+    await session.dispose();
+  });
+
+  it('a switch a reset cancels while pi builds its session', async () => {
+    const { session, restored, published } = await panelOnOpus();
+    const { building, release } = holdNextBuild();
+    session.setResumeSession('stored');
+    await building;
+    session.reset();
+    release();
+    await session.whenReplaced();
+    expectOpusRecord(session, restored, published);
+    const rebuilt = H.fakePi.createAgentSessionFromServices.mock.calls.at(-1)![0] as unknown as { model?: { id: string } };
+    expect(rebuilt.model?.id).toBe('claude-opus-5-5');
+    await session.dispose();
+  });
+
+  it('a switch the panel is disposed during', async () => {
+    const { session, restored, published } = await panelOnOpus();
+    const { building, release } = holdNextBuild();
+    session.setResumeSession('stored');
+    await building;
+    const disposing = session.dispose();
+    release();
+    await disposing;
+    await session.whenReplaced();
+    expectOpusRecord(session, restored, published);
+  });
+});
+
+describe("a resumed conversation a start installed publishes its model, window and effort even when binding it then throws", () => {
+  const SONNET = { id: 'claude-sonnet-5-5', name: 'Sonnet', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 400_000 };
+  const STORED = [
+    { type: 'model_change', id: 'm1', provider: 'anthropic', modelId: SONNET.id },
+    { type: 'thinking_level_change', id: 't1', thinkingLevel: 'xhigh' },
+    { type: 'message', id: 'u1', message: { role: 'user', content: 'hello' } },
+  ];
+  const BIND_FAILURE = 'the gate registry refused the session';
+  let logged: string[] = [];
+
+  beforeEach(() => {
+    H.resetServices();
+    const opus = H.getServices().modelRuntime.getModel;
+    H.getServices().modelRuntime.getModel = (provider: string, id: string) => (provider === 'anthropic' && id === SONNET.id ? SONNET : opus(provider, id)) as never;
+    vi.mocked(resolvePiSessionFile).mockImplementation(async (_cwd, id) => `/fake/agent/sessions/cwd/2026-01-01T00-00-00-000Z_${id}.jsonl`);
+    logged = [];
+    installLogSink({ appendLine: (line) => void logged.push(line), show: () => undefined, dispose: () => undefined });
+  });
+  afterEach(async () => {
+    installLogSink({ appendLine: () => undefined, show: () => undefined, dispose: () => undefined });
+    delete (H.fakePi.SessionManager as Record<string, unknown>)['open'];
+    vi.mocked(resolvePiSessionFile).mockReset();
+    await PiRuntime.disposeInstance();
+  });
+
+  function panel() {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const restored = vi.fn();
+    const published: Array<[string, number]> = [];
+    const session = new PiSession(makeOptions(messages, { onRecordedSelection: restored, onModelChange: (model, contextWindow) => published.push([model, contextWindow]) }));
+    const accountModel = () => messages.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'accountInfo' }> => m.type === 'accountInfo').at(-1)?.data.model;
+    return { session, restored, published, accountModel };
+  }
+
+  /** `holding`: the conversation the panel holds afterwards, which the next start opens. */
+  function expectSonnetPublished(chat: ReturnType<typeof panel>, holding: string | null): void {
+    const { session, restored, published, accountModel } = chat;
+    // The failed bind released the runtime and pi's session; the model, window and effort stay the ones of the record the next start opens.
+    expect((session as unknown as { runtime: unknown }).runtime).toBeNull();
+    expect(H.getLastSession()!.dispose).toHaveBeenCalledOnce();
+    expect(session.currentSessionId).toBe(holding);
+    expect(session.currentModel).toBe('claude-sonnet-5-5');
+    expect(restored).toHaveBeenCalledExactlyOnceWith('claude-sonnet-5-5', 'xhigh');
+    expect(published.at(-1)).toEqual(['claude-sonnet-5-5', 400_000]);
+    expect(accountModel()).toBe('claude-sonnet-5-5');
+  }
+
+  it('a start whose bind throws', async () => {
+    (H.fakePi.SessionManager as Record<string, unknown>)['open'] = () => ({ kind: 'opened', getBranch: () => STORED });
+    const registerPanel = vi.spyOn(FolderRuntime.prototype, 'registerPanel').mockImplementationOnce(() => { throw new Error(BIND_FAILURE); });
+    const chat = panel();
+
+    chat.session.setResumeSession('stored');
+    await chat.session.initializeEarly();
+    registerPanel.mockRestore();
+
+    expectSonnetPublished(chat, 'stored');
+    expect(logged.some((line) => line.includes('start failed') && line.includes(BIND_FAILURE))).toBe(true);
+    await chat.session.dispose();
+  });
+});
+
+describe('a start or rebind that fails once pi installed its session leaves no runtime behind', () => {
+  const FAILURE = 'binding the session failed';
+  type FakeSession = NonNullable<ReturnType<typeof H.getLastSession>>;
+  type FakeRuntime = { session: FakeSession; disposed: boolean };
+  type Internals = { runtime: FakeRuntime | null; ensureStarted(): Promise<void> };
+  const NONE = { panel: false, toolRefresher: false, ruleNoticePoster: false, mutator: false };
+  const ALL = { panel: true, toolRefresher: true, ruleNoticePoster: true, mutator: true };
+  let dir: string;
+
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+    dir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'damocles-failed-start-'));
+  });
+  afterEach(async () => {
+    H.setSessionSetup(null);
+    H.setSessionManagerFactory(null);
+    delete (H.fakePi.SessionManager as Record<string, unknown>)['open'];
+    vi.mocked(resolvePiSessionFile).mockReset();
+    await PiRuntime.disposeInstance();
+    fsSync.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Which session-keyed registries hold an entry for `sessionId`. */
+  function registered(sessionId: string): typeof NONE {
+    const folder = cwdFolder() as unknown as Record<'_panelRegistry' | '_activeToolRefreshers' | '_ruleNoticePosters', Map<string, unknown>>;
+    const mutators = (PiRuntime.get('/fake/agent') as unknown as { _sessionMutators: Map<string, unknown> })._sessionMutators;
+    return {
+      panel: folder._panelRegistry.has(sessionId),
+      toolRefresher: folder._activeToolRefreshers.has(sessionId),
+      ruleNoticePoster: folder._ruleNoticePosters.has(sessionId),
+      mutator: mutators.has(sessionId),
+    };
+  }
+
+  /** The runtimes pi built since `from` calls, in order. */
+  function runtimesSince(from: number): Promise<FakeRuntime[]> {
+    return Promise.all(H.fakePi.createAgentSessionRuntime.mock.results.slice(from).map((result) => result.value as Promise<FakeRuntime>));
+  }
+
+  function onFirstSession(arrange: (session: FakeSession) => void): void {
+    let first = true;
+    H.setSessionSetup((session) => {
+      if (!first) return;
+      first = false;
+      arrange(session as unknown as FakeSession);
+    });
+  }
+
+  function throwOnce<A extends unknown[]>(): (...args: A) => void {
+    let thrown = false;
+    return () => {
+      if (thrown) return;
+      thrown = true;
+      throw new Error(FAILURE);
+    };
+  }
+
+  const failingSteps: Array<[string, () => Partial<SessionOptions>]> = [
+    ['a runtime registry refuses it while it binds', () => {
+      vi.spyOn(PiRuntime.get('/fake/agent'), 'registerSessionMutator').mockImplementationOnce(() => { throw new Error(FAILURE); });
+      return {};
+    }],
+    ['its recorded tool loadout cannot be read, the last step of the bind', () => {
+      onFirstSession((session) => {
+        (session.sessionManager as unknown as { buildSessionContext: () => unknown }).buildSessionContext = () => { throw new Error(FAILURE); };
+      });
+      return {};
+    }],
+    ["its active tool set is applied", () => {
+      onFirstSession((session) => { session.setActiveToolsByName.mockImplementation(() => { throw new Error(FAILURE); }); });
+      return {};
+    }],
+    ['its session id is announced', () => ({ onSessionIdChange: throwOnce() })],
+    ['its model is published', () => ({ onModelChange: throwOnce() })],
+  ];
+
+  it.each(failingSteps)('a new conversation whose start throws once %s releases its runtime, session, registrations and lease, and the next start builds one runtime', async (_step, arrange) => {
+    const from = H.fakePi.createAgentSessionRuntime.mock.calls.length;
+    const session = new PiSession(makeOptions([], arrange()));
+    const internals = session as unknown as Internals;
+
+    await session.initializeEarly();
+
+    const [failed] = await runtimesSince(from);
+    expect(failed!.disposed).toBe(true);
+    expect(failed!.session.dispose).toHaveBeenCalledOnce();
+    expect(failed!.session.listeners.size).toBe(0);
+    expect(registered(failed!.session.sessionId)).toEqual(NONE);
+    expect(sessionLeasesOf(session)).toEqual([]);
+    expect(internals.runtime).toBeNull();
+
+    await internals.ensureStarted();
+
+    const runtimes = await runtimesSince(from);
+    expect(runtimes).toHaveLength(2);
+    const live = runtimes[1]!;
+    expect(internals.runtime).toBe(live);
+    expect(live.disposed).toBe(false);
+    expect(live.session.listeners.size).toBeGreaterThan(0);
+    expect(registered(live.session.sessionId)).toEqual(ALL);
+    expect(sessionLeasesOf(session)).toEqual([live.session.sessionId]);
+    await session.dispose();
+  });
+
+  it("a dispose that begins while a failed start releases its runtime joins that release and disposes the runtime once", async () => {
+    const create = H.fakePi.createAgentSessionRuntime;
+    const createRuntime = create.getMockImplementation()!;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let releasing!: () => void;
+    const reached = new Promise<void>((resolve) => { releasing = resolve; });
+    const disposeCalls = vi.fn();
+    create.mockImplementationOnce(async (factory, opts) => {
+      const made = await createRuntime(factory, opts) as unknown as { dispose: () => Promise<void> };
+      const dispose = made.dispose;
+      made.dispose = async () => {
+        disposeCalls();
+        releasing();
+        await held;
+        await dispose();
+      };
+      return made as never;
+    });
+    const session = new PiSession(makeOptions([], { onSessionIdChange: throwOnce() }));
+
+    const starting = session.initializeEarly();
+    await reached;
+    const disposing = session.dispose();
+    // A macrotask, so the dispose reaches its runtime release while the start's is still held.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    release();
+    await Promise.all([starting, disposing]);
+
+    expect(disposeCalls).toHaveBeenCalledOnce();
+    expect((session as unknown as Internals).runtime).toBeNull();
+    expect(sessionLeasesOf(session)).toEqual([]);
+  });
+
+  it('a resumed conversation whose bind throws keeps only its claim, and the next start reopens the file on one runtime', async () => {
+    const seeded = realPi.SessionManager.create('/cwd', dir);
+    seeded.appendMessage({ role: 'user', content: 'hello', timestamp: 1 } as never);
+    const file = seeded.getSessionFile()!;
+    const target = seeded.getSessionId();
+    // pi builds the AgentSession on the manager it is given (sdk.js:77 and :303-305 in pi-coding-agent 1.3.0), one per open of the file.
+    const opened: unknown[] = [];
+    (H.fakePi.SessionManager as Record<string, unknown>)['open'] = () => {
+      const manager = realPi.SessionManager.open(file, dir);
+      opened.push(manager);
+      return manager;
+    };
+    H.setSessionManagerFactory(() => opened.at(-1));
+    H.setSessionSetup((session) => { (session as unknown as { sessionId: string }).sessionId = target; });
+    vi.mocked(resolvePiSessionFile).mockResolvedValue(file);
+    const registerPanel = vi.spyOn(FolderRuntime.prototype, 'registerPanel').mockImplementationOnce(() => { throw new Error(FAILURE); });
+    const from = H.fakePi.createAgentSessionRuntime.mock.calls.length;
+    const session = new PiSession(makeOptions([]));
+    const internals = session as unknown as Internals;
+
+    session.setResumeSession(target);
+    await session.initializeEarly();
+    registerPanel.mockRestore();
+
+    const [failed] = await runtimesSince(from);
+    expect(failed!.disposed).toBe(true);
+    expect(failed!.session.dispose).toHaveBeenCalledOnce();
+    expect(registered(target)).toEqual(NONE);
+    expect(internals.runtime).toBeNull();
+    expect(session.currentSessionId).toBe(target);
+    expect(sessionLeasesOf(session)).toEqual([target]);
+
+    await internals.ensureStarted();
+
+    const runtimes = await runtimesSince(from);
+    expect(runtimes).toHaveLength(2);
+    expect(internals.runtime).toBe(runtimes[1]);
+    expect(runtimes.map((runtime) => runtime.disposed)).toEqual([true, false]);
+    expect(opened).toHaveLength(2);
+    expect(runtimes[1]!.session.sessionManager).toBe(opened[1]);
+    expect(registered(target)).toEqual(ALL);
+    expect(sessionLeasesOf(session)).toEqual([target]);
+    await session.dispose();
+  });
+
+  it("a forked chat whose bind throws keeps its branch, and the next start reopens the branch", async () => {
+    const open = vi.fn(() => ({ kind: 'opened', getBranch: () => [] }));
+    (H.fakePi.SessionManager as Record<string, unknown>)['open'] = open;
+    vi.mocked(resolvePiSessionFile).mockResolvedValue('/fake/agent/sessions/cwd/2026-01-01T00-00-00-000Z_sess-branch.jsonl');
+    H.setSessionSetup((session) => { (session as unknown as { sessionId: string }).sessionId = 'sess-branch'; });
+    const registerPanel = vi.spyOn(FolderRuntime.prototype, 'registerPanel').mockImplementationOnce(() => { throw new Error(FAILURE); });
+    const session = new PiSession(makeOptions([], { forkContext: { piBranchedSessionId: 'sess-branch', consumed: false } as NonNullable<SessionOptions['forkContext']> }));
+    const internals = session as unknown as Internals;
+
+    await session.initializeEarly();
+    registerPanel.mockRestore();
+
+    expect(internals.runtime).toBeNull();
+    expect(session.currentSessionId).toBe('sess-branch');
+    expect(sessionLeasesOf(session)).toEqual(['sess-branch']);
+
+    const created = H.fakePi.SessionManager.create.mock.calls.length;
+    await internals.ensureStarted();
+
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(H.fakePi.SessionManager.create.mock.calls.length).toBe(created);
+    expect(registered('sess-branch')).toEqual(ALL);
+    await session.dispose();
+  });
+
+  it('a resume switch whose rebind throws releases the runtime and both sessions and lets go of the target, and the next start builds one runtime', async () => {
+    const from = H.fakePi.createAgentSessionRuntime.mock.calls.length;
+    const session = new PiSession(makeOptions([]));
+    const internals = session as unknown as Internals;
+    await session.initializeEarly();
+    const left = H.getLastSession()!;
+    const runtime = internals.runtime!;
+    (H.fakePi.SessionManager as Record<string, unknown>)['open'] = () => ({ kind: 'opened', getBranch: () => [] });
+    vi.mocked(resolvePiSessionFile).mockResolvedValue('/fake/agent/sessions/cwd/2026-01-01T00-00-00-000Z_stored.jsonl');
+    H.setSessionSetup((s) => { (s as unknown as { sessionId: string }).sessionId = 'stored'; });
+    // pi installs the session before it awaits the rebind and lets the rebind's throw reject the switch (agent-session-runtime.js:114-127, :137-145 in pi-coding-agent 1.3.0).
+    vi.spyOn(cwdFolder()!, 'registerPanel').mockImplementationOnce(() => { throw new Error(FAILURE); });
+
+    session.setResumeSession('stored');
+    await session.whenReplaced();
+
+    const switchedIn = H.getLastSession()!;
+    expect(switchedIn).not.toBe(left);
+    expect(left.dispose).toHaveBeenCalledOnce();
+    expect(switchedIn.dispose).toHaveBeenCalledOnce();
+    expect(switchedIn.listeners.size).toBe(0);
+    expect(runtime.disposed).toBe(true);
+    expect(internals.runtime).toBeNull();
+    expect(registered(left.sessionId)).toEqual(NONE);
+    expect(registered('stored')).toEqual(NONE);
+    // The panel goes back to what it held before the switch, a conversation with nothing stored.
+    expect(session.holdsSession('stored')).toBe(false);
+    expect(sessionLeasesOf(session)).toEqual([]);
+
+    H.setSessionSetup(null);
+    await internals.ensureStarted();
+
+    const runtimes = await runtimesSince(from);
+    expect(runtimes).toHaveLength(2);
+    expect(internals.runtime).toBe(runtimes[1]);
+    const fresh = runtimes[1]!.session.sessionId;
+    expect(fresh).not.toBe('stored');
+    expect(registered(fresh)).toEqual(ALL);
+    expect(sessionLeasesOf(session)).toEqual([fresh]);
+    await session.dispose();
+  });
+
+  it('a reset whose rebind throws releases the runtime without rebinding its session, and the next start begins a new conversation', async () => {
+    const from = H.fakePi.createAgentSessionRuntime.mock.calls.length;
+    const session = new PiSession(makeOptions([]));
+    const internals = session as unknown as Internals;
+    await session.initializeEarly();
+    const runtime = internals.runtime!;
+    vi.spyOn(cwdFolder()!, 'registerPanel').mockImplementationOnce(() => { throw new Error(FAILURE); });
+
+    session.reset();
+    await expect(session.whenReplaced()).rejects.toThrow(FAILURE);
+
+    const replacement = H.getLastSession()!;
+    expect(replacement.dispose).toHaveBeenCalledOnce();
+    expect(replacement.listeners.size).toBe(0);
+    expect(runtime.disposed).toBe(true);
+    expect(internals.runtime).toBeNull();
+    expect(registered(replacement.sessionId)).toEqual(NONE);
+    expect(sessionLeasesOf(session)).toEqual([]);
+
+    const created = H.fakePi.SessionManager.create.mock.calls.length;
+    await internals.ensureStarted();
+
+    expect(await runtimesSince(from)).toHaveLength(2);
+    expect(H.fakePi.SessionManager.create.mock.calls.length).toBe(created + 1);
+    expect(registered(H.getLastSession()!.sessionId)).toEqual(ALL);
+    await session.dispose();
+  });
+
+  it('a reset queued behind one whose rebind throws builds nothing on the released runtime', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    vi.spyOn(cwdFolder()!, 'registerPanel').mockImplementationOnce(() => { throw new Error(FAILURE); });
+    const built = H.fakePi.createAgentSessionFromServices.mock.calls.length;
+
+    session.reset();
+    session.reset();
+    await session.whenReplaced();
+
+    expect(H.fakePi.createAgentSessionFromServices.mock.calls.length).toBe(built + 1);
+    expect((session as unknown as Internals).runtime).toBeNull();
+    expect((cwdFolder() as unknown as { _panelRegistry: Map<string, unknown> })._panelRegistry.size).toBe(0);
+    await session.dispose();
+  });
+});
+
+describe('a chat disposed while its resumed conversation starts takes on none of its recorded model and effort', () => {
+  const SONNET = { id: 'claude-sonnet-5-5', name: 'Sonnet', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 400_000 };
+  let dir: string;
+
+  beforeEach(() => {
+    H.resetServices();
+    const opus = H.getServices().modelRuntime.getModel;
+    H.getServices().modelRuntime.getModel = (provider: string, id: string) => (provider === 'anthropic' && id === SONNET.id ? SONNET : opus(provider, id)) as never;
+    dir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'damocles-resume-dispose-'));
+  });
+  afterEach(async () => {
+    H.setSessionManagerFactory(null);
+    delete (H.fakePi.SessionManager as Record<string, unknown>)['open'];
+    vi.mocked(resolvePiSessionFile).mockReset();
+    await PiRuntime.disposeInstance();
+    fsSync.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('writes and publishes nothing of it once pi built the session, and nothing reaches the file afterwards', async () => {
+    const seeded = realPi.SessionManager.create('/cwd', dir);
+    seeded.appendModelChange('anthropic', SONNET.id);
+    seeded.appendThinkingLevelChange('xhigh');
+    seeded.appendMessage({ role: 'user', content: 'hello' } as never);
+    const file = seeded.getSessionFile()!;
+    const stored = fsSync.readFileSync(file, 'utf8');
+    const opened = realPi.SessionManager.open(file, dir);
+    (H.fakePi.SessionManager as Record<string, unknown>)['open'] = () => opened;
+    // pi builds the AgentSession on the manager it is given (sdk.js:77 and :303-305 in pi-coding-agent 1.3.0), so the panel's writes reach this file.
+    H.setSessionManagerFactory(() => opened);
+    vi.mocked(resolvePiSessionFile).mockResolvedValue(file);
+
+    const create = H.fakePi.createAgentSessionRuntime;
+    const createRuntime = create.getMockImplementation()!;
+    let built!: () => void;
+    const building = new Promise<void>((resolve) => { built = resolve; });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let runtime: { disposed: boolean } | undefined;
+    create.mockImplementationOnce(async (factory, opts) => {
+      const made = await createRuntime(factory, opts);
+      runtime = made as unknown as { disposed: boolean };
+      built();
+      await held;
+      return made;
+    });
+    const messages: ExtensionToWebviewMessage[] = [];
+    const restored = vi.fn();
+    const published: Array<[string, number]> = [];
+    const session = new PiSession(makeOptions(messages, { onRecordedSelection: restored, onModelChange: (model, contextWindow) => published.push([model, contextWindow]) }));
+
+    session.setResumeSession(opened.getSessionId());
+    const starting = session.initializeEarly();
+    await building;
+    await session.dispose();
+    release();
+    await starting;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const builtOn = H.fakePi.createAgentSessionFromServices.mock.calls.at(-1)![0] as unknown as { model?: { id: string }; thinkingLevel?: string };
+    expect([builtOn.model?.id, builtOn.thinkingLevel]).toEqual([SONNET.id, 'xhigh']);
+    expect(runtime?.disposed).toBe(true);
+    expect(restored).not.toHaveBeenCalled();
+    expect(session.currentModel).toBe('claude-opus-5-5');
+    expect(published).toEqual([]);
+    expect(messages.filter((m) => m.type === 'accountInfo')).toEqual([]);
+    expect(fsSync.readFileSync(file, 'utf8')).toBe(stored);
   });
 });
 
@@ -9813,17 +11366,25 @@ describe("PiSession's working-folder note after a hand-off (rule 11)", () => {
     await before.dispose();
 
     const messages: ExtensionToWebviewMessage[] = [];
-    const after = new PiSession(makeOptions(messages));
-    after.setResumeSession(stopped.sessionId);
-    after.noteWorkingFolder('/project');
-    await after.initializeEarly();
-    const resumed = H.getLastSession()!;
-    expect(resumed).not.toBe(stopped);
-    await after.sendMessage('Edit c.ts', undefined, 'c2', { content: 'Edit c.ts' });
-    expect(resumed.prompt).toHaveBeenCalledTimes(1);
-    expect(resumed.abort).not.toHaveBeenCalled();
-    expect(messages.some((message) => message.type === 'sessionCancelled')).toBe(false);
-    await after.dispose();
+    // The stopped conversation's file, which the hand-off resumes in the project folder.
+    vi.mocked(resolvePiSessionFile).mockResolvedValue(`/fake/agent/sessions/cwd/2026-01-01T00-00-00-000Z_${stopped.sessionId}.jsonl`);
+    (H.fakePi.SessionManager as Record<string, unknown>)['open'] = () => ({ kind: 'opened', getBranch: () => [] });
+    try {
+      const after = new PiSession(makeOptions(messages));
+      after.setResumeSession(stopped.sessionId);
+      after.noteWorkingFolder('/project');
+      await after.initializeEarly();
+      const resumed = H.getLastSession()!;
+      expect(resumed).not.toBe(stopped);
+      await after.sendMessage('Edit c.ts', undefined, 'c2', { content: 'Edit c.ts' });
+      expect(resumed.prompt).toHaveBeenCalledTimes(1);
+      expect(resumed.abort).not.toHaveBeenCalled();
+      expect(messages.some((message) => message.type === 'sessionCancelled')).toBe(false);
+      await after.dispose();
+    } finally {
+      vi.mocked(resolvePiSessionFile).mockReset();
+      delete (H.fakePi.SessionManager as Record<string, unknown>)['open'];
+    }
   });
 
   it('delivers a note pi refused at start before the next prompt', async () => {
@@ -10060,5 +11621,788 @@ describe("memory injection keys a worktree chat's prompts to its project (identi
     } finally {
       lookup.dispose();
     }
+  });
+});
+
+describe('a resume shows its conversation only once pi bound it, and a send reaches only the conversation it names', () => {
+  let dir: string;
+  let messages: ExtensionToWebviewMessage[];
+  let posted: Array<{ message: ExtensionToWebviewMessage; bound: string | undefined }>;
+  // The conversation's posts, its replay, the session lists and each session start, in the order they happened.
+  let order: string[];
+  // Folder switches the resume handler started, which dispose a panel's conversation when they move it.
+  let switches: number;
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+    dir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'damocles-resume-'));
+    messages = [];
+    posted = [];
+    order = [];
+    switches = 0;
+    (H.fakePi.SessionManager as Record<string, unknown>)['open'] = () => ({ kind: 'opened', getBranch: () => [] });
+  });
+  afterEach(async () => {
+    H.setSessionManagerFactory(null);
+    H.setSessionSetup(null);
+    vi.mocked(resolvePiSessionFile).mockReset();
+    delete (H.fakePi.SessionManager as Record<string, unknown>)['open'];
+    await PiRuntime.disposeInstance();
+    fsSync.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A conversation pi stored: pi writes the file once it holds a user or assistant message (session-manager.js:794-810 in pi-coding-agent 1.3.0). */
+  function stored(text: string): { id: string; file: string } {
+    const sm = realPi.SessionManager.create('/cwd', dir);
+    sm.appendMessage({ role: 'user', content: [{ type: 'text', text }], timestamp: 0 } as never);
+    return { id: sm.getSessionId(), file: sm.getSessionFile()! };
+  }
+
+  /** The user prompts `file` holds on disk, oldest first. */
+  function promptsIn(file: string): string[] {
+    type Line = { type: string; message?: { role: string; content: Array<{ text: string }> } };
+    return fsSync.readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Line)
+      .flatMap((entry) => (entry.type === 'message' && entry.message?.role === 'user' ? [entry.message.content[0]!.text] : []));
+  }
+
+  /** The panel's sessions open these files in order, as its start and pi's switchSession do, each committing its prompts to its own file. */
+  function opensInOrder(...files: string[]): void {
+    const queue = [...files];
+    H.setSessionManagerFactory(() => realPi.SessionManager.open(queue.shift()!, dir));
+    promptsPersist();
+  }
+
+  /**
+   * Each session pi builds is on the file the panel last asked pi to open (start's or a switch's `SessionManager.open`), else
+   * on a new conversation, which goes into `created`.
+   */
+  function opensWhatPiIsAsked(): realPi.SessionManager[] {
+    const created: realPi.SessionManager[] = [];
+    let asked: string | null = null;
+    (H.fakePi.SessionManager as Record<string, unknown>)['open'] = (file: string) => {
+      asked = file;
+      return { kind: 'opened', getBranch: () => [] };
+    };
+    H.setSessionManagerFactory(() => {
+      const file = asked;
+      asked = null;
+      if (file !== null) return realPi.SessionManager.open(file, dir);
+      const fresh = realPi.SessionManager.create('/cwd', dir);
+      created.push(fresh);
+      return fresh;
+    });
+    promptsPersist();
+    return created;
+  }
+
+  /** Each session pi builds takes its manager's id and commits its prompts to its file. */
+  function promptsPersist(): void {
+    H.setSessionSetup((s) => {
+      const fake = s as unknown as { sessionId: string; sessionManager: realPi.SessionManager; prompt: ReturnType<typeof vi.fn>; dispose: ReturnType<typeof vi.fn> };
+      fake.sessionId = fake.sessionManager.getSessionId();
+      let disposed = false;
+      fake.dispose.mockImplementation(() => { disposed = true; });
+      // pi emits the prompt's message_end, then appends it to the session's file (agent-session.js:752-768 in pi-coding-agent 1.3.0).
+      fake.prompt.mockImplementation(async (text: string, opts?: { preflightResult?: (disposition: string) => void }) => {
+        opts?.preflightResult?.('started');
+        // A disposed session is cut off from its agent and listeners, so its run reports and persists nothing (agent-session.js:1008-1009 in pi-coding-agent 1.3.0).
+        if (disposed) return;
+        const message = { role: 'user', content: [{ type: 'text', text }], timestamp: Date.now() };
+        H.fireEvent({ type: 'message_end', message });
+        fake.sessionManager.appendMessage(message as never);
+      });
+    });
+  }
+
+  /**
+   * Where each conversation's file is; any other id has none. The resume handler's own lookup, the first for an id, sees
+   * `atPrecheck` where given (a file removed between it and the open); `gate` holds every later lookup until it resolves.
+   */
+  function filesAt(found: Record<string, string>, opts: { gate?: Promise<void>; atPrecheck?: Record<string, string> } = {}): void {
+    const looked = new Set<string>();
+    vi.mocked(resolvePiSessionFile).mockImplementation(async (_cwd, id) => {
+      if (!looked.has(id)) {
+        looked.add(id);
+        return (opts.atPrecheck ?? found)[id] ?? null;
+      }
+      await opts.gate;
+      return found[id] ?? null;
+    });
+  }
+
+  /** pi's switchSession opens the target before it tears the bound session down, so a file it cannot read rejects with the old session still bound (agent-session-runtime.js:128-136 in pi-coding-agent 1.3.0). */
+  function switchesAsPi(session: PiSession): void {
+    type Switching = { switchSession: (p: string, o?: { cwdOverride?: string }) => Promise<{ cancelled: boolean }> };
+    const runtime = (session as unknown as { runtime: Switching }).runtime;
+    const fakeSwitch = runtime.switchSession.bind(runtime);
+    runtime.switchSession = async (p, o) => {
+      realPi.SessionManager.open(p, undefined, o?.cwdOverride);
+      return fakeSwitch(p, o);
+    };
+  }
+
+  const bound = (session: PiSession): string | undefined => (session as unknown as { runtime: { session: { sessionId: string } } | null }).runtime?.session.sessionId;
+
+  /** The resume handler's dependencies for panel `p1` on this folder, recording what the webview is sent and what pi had bound when it was. */
+  function resumeDeps(session: PiSession): HandlerDependencies {
+    const folder = { key: '/cwd', fsPath: '/cwd', name: 'cwd', label: 'cwd', projectScope: true };
+    const host = { id: 'p1', reveal: vi.fn() };
+    const instance = { host, session, folder } as unknown as HostInstance;
+    return {
+      platform: testPlatform,
+      getPanels: () => new Map([['p1', instance]]),
+      postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => {
+        if (ORDERED_POSTS.has(message.type)) order.push(message.type);
+        posted.push({ message, bound: bound(session) });
+      },
+      storageManager: { folderOf: async () => folder },
+      worktrees: () => ({ resumeFolder: async (_panelId: string, _sessionId: string, listed: unknown) => ({ folder: listed, settle: () => undefined }), placeOf: () => undefined }),
+      switchPanelFolder: async (_panelId: string, _key: string, _reason: string, afterSwitch?: (target: HostInstance) => Promise<void>) => {
+        switches++;
+        await afterSwitch?.(instance);
+        return instance;
+      },
+      historyManager: {
+        loadSessionHistory: async () => {
+          order.push('replay');
+          posted.push({ message: { type: 'userReplay', content: 'replayed' }, bound: bound(session) });
+          return [];
+        },
+      },
+    } as unknown as HandlerDependencies;
+  }
+
+  const ORDERED_POSTS = new Set(['resumeAccepted', 'sessionStarted', 'storedSessions', 'promptHistory']);
+
+  /** The `ready` handler's dependencies and context for panel `p1`, restoring on this folder. */
+  function readyDeps(session: PiSession): { deps: HandlerDependencies; ctx: HandlerContext } {
+    const resume = resumeDeps(session);
+    const instance = resume.getPanels().get('p1')!;
+    const deps = {
+      ...resume,
+      postWorkspaceFolderState: () => undefined,
+      folderRegistry: { resolve: () => instance.folder, targets: () => [instance.folder] },
+      storageManager: {
+        folderOf: async () => instance.folder,
+        getStoredSessions: async () => ({ sessions: [], hasMore: false, nextOffset: 0 }),
+        getPromptHistory: async () => ({ history: [], hasMore: false }),
+      },
+      settingsManager: {
+        sendCurrentSettings: async () => undefined,
+        sendMcpConfig: () => undefined,
+        sendModelForPanel: () => undefined,
+        sendThinkingForPanel: () => undefined,
+        sendAvailableModels: async () => undefined,
+        sendImageGenerationSettings: () => undefined,
+      },
+      getLanguagePreference: () => 'en',
+      webviewPrompts: { repost: () => undefined },
+    } as unknown as HandlerDependencies;
+    const ctx = { session, host: instance.host, folder: instance.folder, panelId: 'p1', permissionHandler: {}, terminalAttachments: new TerminalAttachmentManager(() => {}) } as unknown as HandlerContext;
+    return { deps, ctx };
+  }
+
+  /** A session whose webview can reload: its `ready` re-posts the open prompts. */
+  function reloadableSession(): PiSession {
+    const options = makeOptions(messages);
+    return new PiSession({ ...options, permissionHandler: { ...options.permissionHandler, repostPendingPrompts: () => undefined } as unknown as SessionOptions['permissionHandler'] });
+  }
+
+  /** Marks in `order` where `session`'s start begins, which builds pi's process-global runtime, the folder runtime and project MCP. */
+  function recordsStart(session: PiSession): PiSession {
+    const starting = session as unknown as { start: () => Promise<void> };
+    const start = starting.start.bind(session);
+    starting.start = () => {
+      order.push('start');
+      return start();
+    };
+    return session;
+  }
+
+  /** The stored session files the lookup finds: those still on disk, as `resolvePiSessionFile` stats and lists them (session-store/reading.ts). */
+  function filesOnDisk(...conversations: Array<{ id: string; file: string }>): void {
+    vi.mocked(resolvePiSessionFile).mockImplementation(async (_cwd, id) => conversations.find((c) => c.id === id && fsSync.existsSync(c.file))?.file ?? null);
+  }
+
+  const shownOf = (id: string) => posted.filter(({ message }) => (message.type === 'resumeAccepted' || message.type === 'sessionStarted') && message.sessionId === id);
+  const errors = () => testPlatform.notifications.calls.filter((call) => call.level === 'error');
+  const returned = (text: string) => messages.filter((m) => m.type === 'promptReturned' && m.reason === 'conversationChanged' && m.content.length === 1 && m.content[0]!.type === 'text' && m.content[0]!.text === text);
+  const replayOf = (id: string) => [['resumeAccepted', id], ['userReplay', id], ['sessionStarted', id]];
+
+  it.each([
+    // The handler finds no file and moves nothing, so a folder switch never disposes the conversation on screen.
+    ['before the resume asks for it', false, 0],
+    // The open inside the switch is the race guard.
+    ['between the handler finding it and pi opening it', true, 1],
+  ] as const)('a resume whose file was removed %s shows none of it, says why, frees its lease, and a send that names it reaches no conversation', async (_when, foundFirst, switched) => {
+    const a = stored('in A');
+    const b = stored('in B');
+    fsSync.rmSync(b.file);
+    opensInOrder(a.file);
+    filesAt({ [a.id]: a.file }, foundFirst ? { atPrecheck: { [b.id]: b.file } } : {});
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const before = fsSync.readFileSync(a.file, 'utf8');
+
+    await resumeStoredSession(resumeDeps(session), 'p1', b.id);
+    // What a webview told of B would send.
+    await session.sendMessage('for B', b.id, 'c1', { content: 'for B' });
+
+    expect(switches).toBe(switched);
+    expect(bound(session)).toBe(a.id);
+    expect(shownOf(b.id)).toEqual([]);
+    expect(errors().map((call) => call.message)).toEqual(['This conversation could not be opened: its file was not found']);
+    expect(fsSync.readFileSync(a.file, 'utf8')).toBe(before);
+    expect(returned('for B')).toHaveLength(1);
+    expect(session.holdsSession(b.id)).toBe(false);
+    expect(sessionLeasesOf(session)).toEqual([a.id]);
+    expect(sessionLeaseBlocker(b.id)).toBeUndefined();
+    await session.dispose();
+  });
+
+  it("the same when pi's switchSession rejects a file it cannot read, with the old conversation still bound", async () => {
+    const a = stored('in A');
+    const b = stored('in B');
+    fsSync.writeFileSync(b.file, 'not a pi session\n');
+    opensInOrder(a.file);
+    filesAt({ [a.id]: a.file, [b.id]: b.file });
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    switchesAsPi(session);
+    const before = fsSync.readFileSync(a.file, 'utf8');
+
+    await resumeStoredSession(resumeDeps(session), 'p1', b.id);
+    await session.sendMessage('for B', b.id, 'c1', { content: 'for B' });
+
+    expect(bound(session)).toBe(a.id);
+    expect(shownOf(b.id)).toEqual([]);
+    expect(errors().map((call) => call.message)).toEqual([expect.stringContaining('not a valid pi session')]);
+    expect(fsSync.readFileSync(a.file, 'utf8')).toBe(before);
+    expect(returned('for B')).toHaveLength(1);
+    expect(session.holdsSession(b.id)).toBe(false);
+    expect(sessionLeasesOf(session)).toEqual([a.id]);
+    expect(sessionLeaseBlocker(b.id)).toBeUndefined();
+    await session.dispose();
+  });
+
+  it('a resume whose switch lands shows the conversation once pi bound it, and the next send that names it reaches it', async () => {
+    const a = stored('in A');
+    const b = stored('in B');
+    opensInOrder(a.file, b.file);
+    filesAt({ [a.id]: a.file, [b.id]: b.file });
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const before = fsSync.readFileSync(a.file, 'utf8');
+
+    await resumeStoredSession(resumeDeps(session), 'p1', b.id);
+    await session.sendMessage('for B', b.id, 'c1', { content: 'for B' });
+
+    expect(posted.map(({ message, bound: at }) => [message.type, at])).toEqual(replayOf(b.id));
+    expect(errors()).toEqual([]);
+    expect(promptsIn(b.file)).toEqual(['in B', 'for B']);
+    expect(fsSync.readFileSync(a.file, 'utf8')).toBe(before);
+    expect(sessionLeasesOf(session)).toEqual([b.id]);
+    await session.dispose();
+  });
+
+  it('a send that names a conversation other than the bound one is refused, as is one that names none while a stored conversation is bound', async () => {
+    const a = stored('in A');
+    opensInOrder(a.file);
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const before = fsSync.readFileSync(a.file, 'utf8');
+
+    expect(await session.sendMessage('for X', '01a10000-0000-7000-8000-000000000000', 'c1', { content: 'for X' })).toBe('unsent');
+    expect(await session.sendMessage('for none', undefined, 'c2', { content: 'for none' })).toBe('unsent');
+
+    expect(fsSync.readFileSync(a.file, 'utf8')).toBe(before);
+    expect(returned('for X')).toHaveLength(1);
+    expect(returned('for none')).toHaveLength(1);
+    await session.sendMessage('for A', a.id, 'c3', { content: 'for A' });
+    expect(promptsIn(a.file)).toEqual(['in A', 'for A']);
+    await session.dispose();
+  });
+
+  describe('a send made while the switch is pending', () => {
+    async function pendingSend(target: { removed: boolean }, names: 'A' | 'B') {
+      const a = stored('in A');
+      const b = stored('in B');
+      if (target.removed) fsSync.rmSync(b.file);
+      opensInOrder(a.file, b.file);
+      let release!: () => void;
+      // A removed file was still there when the handler looked, so the switch is what finds it gone.
+      filesAt(target.removed ? { [a.id]: a.file } : { [a.id]: a.file, [b.id]: b.file }, {
+        gate: new Promise<void>((resolve) => { release = resolve; }),
+        atPrecheck: { [a.id]: a.file, [b.id]: b.file },
+      });
+      const session = new PiSession(makeOptions(messages));
+      await session.initializeEarly();
+      const before = fsSync.readFileSync(a.file, 'utf8');
+
+      const resuming = resumeStoredSession(resumeDeps(session), 'p1', b.id);
+      await vi.waitFor(() => expect(session.holdsSession(b.id)).toBe(true));
+      const sending = session.sendMessage('pending', names === 'A' ? a.id : b.id, 'c1', { content: 'pending' });
+      release();
+      await resuming;
+      await sending;
+      return { a, b, session, before };
+    }
+
+    it('reaches the resumed conversation when the switch lands and the send names it', async () => {
+      const { a, b, session, before } = await pendingSend({ removed: false }, 'B');
+      expect(posted.map(({ message, bound: at }) => [message.type, at])).toEqual(replayOf(b.id));
+      expect(promptsIn(b.file)).toEqual(['in B', 'pending']);
+      expect(fsSync.readFileSync(a.file, 'utf8')).toBe(before);
+      await session.dispose();
+    });
+
+    it('goes back to the composer when the switch lands and the send names the conversation it left', async () => {
+      const { a, b, session, before } = await pendingSend({ removed: false }, 'A');
+      expect(returned('pending')).toHaveLength(1);
+      expect(promptsIn(b.file)).toEqual(['in B']);
+      expect(fsSync.readFileSync(a.file, 'utf8')).toBe(before);
+      await session.dispose();
+    });
+
+    it('goes back to the composer when the switch fails and the send names the conversation it was for', async () => {
+      const { a, b, session, before } = await pendingSend({ removed: true }, 'B');
+      expect(shownOf(b.id)).toEqual([]);
+      expect(errors()).toHaveLength(1);
+      expect(returned('pending')).toHaveLength(1);
+      expect(fsSync.readFileSync(a.file, 'utf8')).toBe(before);
+      expect(bound(session)).toBe(a.id);
+      await session.dispose();
+    });
+  });
+
+  describe('a panel that has not started holds no other conversation, so it shows a resumed one before its start builds pi', () => {
+    it('a resume replays it, then starts the session without waiting for a send, and a send naming it reaches it', async () => {
+      const b = stored('in B');
+      opensInOrder(b.file);
+      filesOnDisk(b);
+      const session = recordsStart(new PiSession(makeOptions(messages)));
+
+      await resumeStoredSession(resumeDeps(session), 'p1', b.id);
+      await vi.waitFor(() => expect(bound(session)).toBe(b.id));
+      await session.sendMessage('for B', b.id, 'c1', { content: 'for B' });
+
+      expect(order).toEqual(['resumeAccepted', 'replay', 'sessionStarted', 'start']);
+      expect(errors()).toEqual([]);
+      expect(promptsIn(b.file)).toEqual(['in B', 'for B']);
+      await session.dispose();
+    });
+
+    it('a restore replays it, then posts the lists, then starts the session', async () => {
+      const b = stored('in B');
+      opensInOrder(b.file);
+      filesOnDisk(b);
+      const session = recordsStart(reloadableSession());
+      const { deps, ctx } = readyDeps(session);
+
+      await createSessionHandlers(deps).ready!({ type: 'ready', savedSessionId: b.id } as never, ctx);
+      await vi.waitFor(() => expect(bound(session)).toBe(b.id));
+      await session.sendMessage('for B', b.id, 'c1', { content: 'for B' });
+
+      expect(order).toEqual(['replay', 'sessionStarted', 'storedSessions', 'promptHistory', 'start']);
+      expect(errors()).toEqual([]);
+      expect(promptsIn(b.file)).toEqual(['in B', 'for B']);
+      await session.dispose();
+    });
+
+    it("a hand-off replays it in the panel's new session, which starts once the history is posted, its place given first", async () => {
+      const b = stored('in B');
+      opensInOrder(b.file);
+      filesOnDisk(b);
+      const project = path.join(dir, 'project');
+      const worktree = path.join(dir, 'worktree');
+      const panels = createHarness([folderEntry(project), folderEntry(worktree)], {
+        createSession: (folder) => recordsStart(new PiSession(makeOptions(messages, { cwd: folder.fsPath }))),
+        loadHistory: async () => { order.push('replay'); return []; },
+      });
+      const host = makeFakeHost();
+      const post = host.postMessage;
+      host.postMessage = (message) => {
+        if (ORDERED_POSTS.has((message as ExtensionToWebviewMessage).type)) order.push((message as ExtensionToWebviewMessage).type);
+        return post(message);
+      };
+      const panelId = await panels.manager.initializeHost(host, { initialFolderKey: folderKey(project) });
+      type ResumeInto = (instance: HostInstance, sessionId: string, beforeOpen?: (session: unknown) => void) => Promise<boolean>;
+      const resumeInto = (panels.manager as unknown as { resumeInto: ResumeInto }).resumeInto.bind(panels.manager);
+      let resumed = false;
+
+      await panels.manager.switchPanelFolder(panelId, folderKey(worktree), 'chatMove', async (target) => {
+        resumed = await resumeInto(target, b.id, () => order.push('place'));
+      });
+      const session = panels.instance(panelId).session as PiSession;
+      await session.sendMessage('for B', b.id, 'c1', { content: 'for B' });
+
+      expect(resumed).toBe(true);
+      expect(order).toEqual(['place', 'resumeAccepted', 'replay', 'sessionStarted', 'start']);
+      expect(bound(session)).toBe(b.id);
+      expect(errors()).toEqual([]);
+      expect(promptsIn(b.file)).toEqual(['in B', 'for B']);
+      await session.dispose();
+      panels.dispose();
+    });
+
+    describe('and a start that cannot open it', () => {
+      const removedAfterReplay = { name: 'its file was removed after the history was read', reason: 'its file was not found' };
+      const piThrows = { name: 'pi throws while it builds the session', reason: 'pi could not build the session' };
+
+      it.each([
+        ['resume', removedAfterReplay.name, removedAfterReplay],
+        ['resume', piThrows.name, piThrows],
+        ['restore', removedAfterReplay.name, removedAfterReplay],
+        ['restore', piThrows.name, piThrows],
+      ] as const)('a %s where %s keeps it on screen as the conversation the panel opens, says why once, and writes no file', async (path_, _name, failure) => {
+        const b = stored('in B');
+        const before = fsSync.readFileSync(b.file, 'utf8');
+        opensInOrder(b.file);
+        filesOnDisk(b);
+        if (failure === piThrows) {
+          // pi's createAgentSessionRuntime awaits the factory, so a throw building the session rejects it (agent-session-runtime.js:311-314 in pi-coding-agent 1.3.0).
+          H.fakePi.createAgentSessionFromServices.mockRejectedValueOnce(new Error(failure.reason));
+        }
+        const session = recordsStart(reloadableSession());
+        const { deps, ctx } = readyDeps(session);
+        const history = deps.historyManager as unknown as { loadSessionHistory: () => Promise<string[] | null> };
+        const replay = history.loadSessionHistory;
+        history.loadSessionHistory = async () => {
+          const ids = await replay();
+          if (failure === removedAfterReplay) fsSync.rmSync(b.file);
+          return ids;
+        };
+
+        if (path_ === 'resume') await resumeStoredSession(deps, 'p1', b.id);
+        else await createSessionHandlers(deps).ready!({ type: 'ready', savedSessionId: b.id } as never, ctx);
+        await vi.waitFor(() => expect(errors()).toHaveLength(1));
+
+        expect(order.filter((step) => step !== 'storedSessions' && step !== 'promptHistory'))
+          .toEqual([...(path_ === 'resume' ? ['resumeAccepted'] : []), 'replay', 'sessionStarted', 'start']);
+        expect(errors().map((call) => call.message)).toEqual([`This conversation could not be opened: ${failure.reason}`]);
+        expect(bound(session)).toBeUndefined();
+        expect(session.holdsSession(b.id)).toBe(true);
+        expect(session.storedSessionId).toBe(b.id);
+        expect(sessionLeasesOf(session)).toEqual([b.id]);
+        expect(fsSync.readdirSync(dir)).toEqual(failure === removedAfterReplay ? [] : [path.basename(b.file)]);
+        if (failure === piThrows) expect(fsSync.readFileSync(b.file, 'utf8')).toBe(before);
+
+        // A send for it goes through the start again: one whose file is gone is refused there, and one pi failed to build once opens it.
+        const outcome = await session.sendMessage('for B', b.id, 'c1', { content: 'for B' });
+        expect(errors()).toHaveLength(1);
+        if (failure === removedAfterReplay) {
+          expect(outcome).toBe('unsent');
+          expect(messages).toContainEqual({ type: 'error', message: 'pi failed to start: its file was not found' });
+          expect(fsSync.readdirSync(dir)).toEqual([]);
+        } else {
+          expect(bound(session)).toBe(b.id);
+          expect(promptsIn(b.file)).toEqual(['in B', 'for B']);
+        }
+        await session.dispose();
+      });
+    });
+  });
+
+  it('a resume whose rebind throws after pi installed it goes back to the conversation the panel created and shows, and a send naming that one lands in its file', async () => {
+    const created = opensWhatPiIsAsked();
+    const b = stored('in B');
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    // A new chat's first send names no conversation; its prompt writes the file.
+    await session.sendMessage('in A', undefined, 'c1', { content: 'in A' });
+    const a = created[0]!;
+    expect(session.storedSessionId).toBe(a.getSessionId());
+    filesAt({ [a.getSessionId()]: a.getSessionFile()!, [b.id]: b.file });
+    // pi installs the session before it awaits the rebind and lets the rebind's throw reject the switch (agent-session-runtime.js:114-127, :137-145 in pi-coding-agent 1.3.0).
+    vi.spyOn(cwdFolder()!, 'registerPanel').mockImplementationOnce(() => { throw new Error('the gate registry refused the session'); });
+
+    await resumeStoredSession(resumeDeps(session), 'p1', b.id);
+
+    expect(bound(session)).toBeUndefined();
+    expect(shownOf(b.id)).toEqual([]);
+    expect(errors().map((call) => call.message)).toEqual(['This conversation could not be opened: the gate registry refused the session']);
+    expect(session.holdsSession(b.id)).toBe(false);
+    expect(sessionLeasesOf(session)).toEqual([a.getSessionId()]);
+    await session.sendMessage('back in A', a.getSessionId(), 'c2', { content: 'back in A' });
+    expect(bound(session)).toBe(a.getSessionId());
+    expect(promptsIn(a.getSessionFile()!)).toEqual(['in A', 'back in A']);
+    expect(promptsIn(b.file)).toEqual(['in B']);
+    await session.dispose();
+  });
+
+  describe('a replacement whose session build throws after pi tore the bound conversation down', () => {
+    const BUILD_FAILURE = 'an extension failed to load';
+    const panelRegistry = (): Map<string, unknown> => (cwdFolder() as unknown as { _panelRegistry: Map<string, unknown> })._panelRegistry;
+
+    /** Chat on stored conversation A whose next session build throws (once `gate` lets it) after pi tore A down (agent-session-runtime.js:136-137, :160-161 in pi-coding-agent 1.3.0). */
+    async function chatOnA(gate?: { building: () => void; held: Promise<void> }) {
+      H.captured.shutdowns.length = 0;
+      const created = opensWhatPiIsAsked();
+      const session = new PiSession(makeOptions(messages));
+      await session.initializeEarly();
+      await session.sendMessage('in A', undefined, 'c1', { content: 'in A' });
+      const a = created[0]!;
+      const leases: string[][] = [];
+      const internals = session as unknown as { syncSessionLeases: () => void };
+      const sync = internals.syncSessionLeases.bind(session);
+      internals.syncSessionLeases = () => {
+        sync();
+        leases.push(sessionLeasesOf(session));
+      };
+      H.fakePi.createAgentSessionFromServices.mockImplementationOnce(async () => {
+        gate?.building();
+        await gate?.held;
+        throw new Error(BUILD_FAILURE);
+      });
+      return { session, created, a: { id: a.getSessionId(), file: a.getSessionFile()! }, leases };
+    }
+
+    /** Holds the failing build until `release`; `building` resolves once pi is inside it. */
+    function heldBuild() {
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      let entered!: () => void;
+      const building = new Promise<void>((resolve) => { entered = resolve; });
+      return { gate: { building: entered, held }, building, release };
+    }
+
+    // pi's teardown already shut the torn-down session down; a second `session_shutdown` reaches every extension with a false `quit` reason.
+    afterEach(() => {
+      expect(H.captured.shutdowns.length).toBeGreaterThan(0);
+      expect(new Set(H.captured.shutdowns).size).toBe(H.captured.shutdowns.length);
+    });
+
+    it('a resume goes back to the conversation on screen, says why at once, keeps its lease throughout, and a send naming it reopens it in its file', async () => {
+      const b = stored('in B');
+      const { session, a, leases } = await chatOnA();
+      filesAt({ [a.id]: a.file, [b.id]: b.file });
+
+      await resumeStoredSession(resumeDeps(session), 'p1', b.id);
+
+      expect(errors().map((call) => call.message)).toEqual([`This conversation could not be opened: ${BUILD_FAILURE}`]);
+      expect(shownOf(b.id)).toEqual([]);
+      expect(bound(session)).toBeUndefined();
+      expect(panelRegistry().has(a.id)).toBe(false);
+      expect(session.holdsSession(b.id)).toBe(false);
+      expect(leases.every((held) => held.includes(a.id))).toBe(true);
+      expect(sessionLeasesOf(session)).toEqual([a.id]);
+      expect(sessionLeaseBlocker(b.id)).toBeUndefined();
+
+      expect(await session.sendMessage('back in A', a.id, 'c2', { content: 'back in A' })).toBe('sent');
+      expect(bound(session)).toBe(a.id);
+      expect(panelRegistry().has(a.id)).toBe(true);
+      expect(promptsIn(a.file)).toEqual(['in A', 'back in A']);
+      expect(promptsIn(b.file)).toEqual(['in B']);
+      expect(sessionLeasesOf(session)).toEqual([a.id]);
+      await session.dispose();
+    });
+
+    it('a New chat says so at once, lets go of the conversation it left, and the next send starts a new conversation in its own file', async () => {
+      const { session, created, a } = await chatOnA();
+      const reported: Array<string | null> = [];
+      session.setActivityListener(() => void reported.push(session.storedSessionId));
+      expect(reported).toEqual([a.id]);
+
+      session.reset();
+      await expect(session.whenReplaced()).rejects.toThrow(BUILD_FAILURE);
+
+      expect(errors().map((call) => call.message)).toEqual([`Damocles could not open a new conversation: ${BUILD_FAILURE}`]);
+      expect(reported.at(-1)).toBeNull();
+      expect(bound(session)).toBeUndefined();
+      expect(panelRegistry().has(a.id)).toBe(false);
+      expect(session.holdsSession(a.id)).toBe(false);
+      expect(sessionLeasesOf(session)).toEqual([]);
+
+      expect(await session.sendMessage('fresh', undefined, 'c2', { content: 'fresh' })).toBe('sent');
+      const fresh = created[1]!;
+      expect(bound(session)).toBe(fresh.getSessionId());
+      expect(promptsIn(fresh.getSessionFile()!)).toEqual(['fresh']);
+      expect(promptsIn(a.file)).toEqual(['in A']);
+      expect(sessionLeasesOf(session)).toEqual([fresh.getSessionId()]);
+      await session.dispose();
+    });
+
+    it('a send made while the resume switch is pending reaches the conversation the chat goes back to', async () => {
+      const b = stored('in B');
+      const { gate, building, release } = heldBuild();
+      const { session, a } = await chatOnA(gate);
+      filesAt({ [a.id]: a.file, [b.id]: b.file });
+
+      const resuming = resumeStoredSession(resumeDeps(session), 'p1', b.id);
+      await building;
+      const sending = session.sendMessage('pending', a.id, 'c2', { content: 'pending' });
+      release();
+      await resuming;
+
+      expect(await sending).toBe('sent');
+      expect(errors()).toHaveLength(1);
+      expect(bound(session)).toBe(a.id);
+      expect(promptsIn(a.file)).toEqual(['in A', 'pending']);
+      expect(promptsIn(b.file)).toEqual(['in B']);
+      await session.dispose();
+    });
+
+    it('a send made while the New chat is pending starts a new conversation once it failed', async () => {
+      const { gate, building, release } = heldBuild();
+      const { session, created, a } = await chatOnA(gate);
+
+      session.reset();
+      const replaced = session.whenReplaced();
+      await building;
+      const sending = session.sendMessage('fresh', undefined, 'c2', { content: 'fresh' });
+      release();
+      await expect(replaced).rejects.toThrow(BUILD_FAILURE);
+
+      expect(await sending).toBe('sent');
+      const fresh = created[1]!;
+      expect(bound(session)).toBe(fresh.getSessionId());
+      expect(promptsIn(fresh.getSessionFile()!)).toEqual(['fresh']);
+      expect(promptsIn(a.file)).toEqual(['in A']);
+      await session.dispose();
+    });
+  });
+
+  it.each([
+    ['while it looks the file up', false],
+    ['while pi builds the runtime on it', true],
+  ] as const)('a new chat while a panel that has not started opens a resumed conversation %s leaves that conversation unbound and starts the new one', async (_when, inRuntime) => {
+    opensWhatPiIsAsked();
+    const b = stored('in B');
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    filesAt({ [b.id]: b.file }, inRuntime ? {} : { gate: held });
+    let entered!: () => void;
+    // The start is inside the step the New chat lands in: its own lookup (the handler's comes first), or pi's runtime build.
+    const inside = new Promise<void>((resolve) => { entered = resolve; });
+    if (inRuntime) {
+      const base = H.fakePi.createAgentSessionRuntime.getMockImplementation()!;
+      H.fakePi.createAgentSessionRuntime.mockImplementationOnce(async (...args) => {
+        entered();
+        await held;
+        return base(...args);
+      });
+    } else {
+      void vi.waitFor(() => expect(vi.mocked(resolvePiSessionFile).mock.calls.filter(([, id]) => id === b.id)).toHaveLength(2)).then(entered);
+    }
+    const session = new PiSession(makeOptions(messages));
+    const opened = vi.spyOn(session, 'openResumeTarget');
+    const started = vi.spyOn(session, 'initializeEarly');
+
+    const resuming = resumeStoredSession(resumeDeps(session), 'p1', b.id);
+    await inside;
+    session.reset();
+    release();
+    await resuming;
+    await started.mock.results[0]!.value;
+
+    // Shown before the start, which the New chat (clearing the webview itself) overtook.
+    expect(await opened.mock.results[0]!.value).toEqual({ kind: 'deferred' });
+    expect(shownOf(b.id).map(({ message }) => message.type)).toEqual(['resumeAccepted', 'sessionStarted']);
+    expect(errors()).toEqual([]);
+    expect(bound(session)).toBeDefined();
+    expect(bound(session)).not.toBe(b.id);
+    expect(session.holdsSession(b.id)).toBe(false);
+    expect(sessionLeasesOf(session)).not.toContain(b.id);
+    expect(sessionLeaseBlocker(b.id)).toBeUndefined();
+    await session.sendMessage('first', undefined, 'c1', { content: 'first' });
+    expect(promptsIn(b.file)).toEqual(['in B']);
+    expect(H.getLastSession()!.prompt).toHaveBeenCalledWith('first', expect.anything());
+    await session.dispose();
+  });
+
+  it('a new chat while pi builds the runtime on a resumed conversation binds nothing when an extension cancels the replacement', async () => {
+    opensWhatPiIsAsked();
+    const b = stored('in B');
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    filesAt({ [b.id]: b.file });
+    const base = H.fakePi.createAgentSessionRuntime.getMockImplementation()!;
+    let entered!: () => void;
+    const inside = new Promise<void>((resolve) => { entered = resolve; });
+    H.fakePi.createAgentSessionRuntime.mockImplementationOnce(async (...args) => {
+      entered();
+      await held;
+      const runtime = await base(...args);
+      // pi returns a session_before_switch cancel as is, with nothing replaced (agent-session-runtime.js:147-151 in pi-coding-agent 1.3.0).
+      runtime.newSession = async () => ({ cancelled: true });
+      return runtime;
+    });
+    const announced: string[] = [];
+    const session = new PiSession(makeOptions(messages, { onSessionIdChange: (id) => void announced.push(id ?? '') }));
+    const opened = vi.spyOn(session, 'openResumeTarget');
+    const started = vi.spyOn(session, 'initializeEarly');
+
+    const resuming = resumeStoredSession(resumeDeps(session), 'p1', b.id);
+    await inside;
+    session.reset();
+    release();
+    await resuming;
+    await started.mock.results[0]!.value;
+
+    expect(await opened.mock.results[0]!.value).toEqual({ kind: 'deferred' });
+    expect(shownOf(b.id).map(({ message }) => message.type)).toEqual(['resumeAccepted', 'sessionStarted']);
+    expect(errors()).toEqual([]);
+    expect(announced).not.toContain(b.id);
+    expect(bound(session)).toBeUndefined();
+    expect(session.holdsSession(b.id)).toBe(false);
+    expect(sessionLeasesOf(session)).not.toContain(b.id);
+    await session.sendMessage('first', undefined, 'c1', { content: 'first' });
+    expect(bound(session)).toBeDefined();
+    expect(bound(session)).not.toBe(b.id);
+    expect(promptsIn(b.file)).toEqual(['in B']);
+    await session.dispose();
+  });
+
+  describe('a pending switch the panel lets go of', () => {
+    it.each([
+      ['New chat', (session: PiSession): Promise<void> | undefined => { session.reset(); return undefined; }],
+      ['a dispose', (session: PiSession): Promise<void> | undefined => session.dispose()],
+      ['a lost lease', (session: PiSession, id: string): Promise<void> | undefined => { session.onSessionLeaseLost(id); return undefined; }],
+    ] as const)('settles cancelled after %s: nothing is shown for it and its lease is free', async (_what, letGo) => {
+      // A new chat's session is a new conversation, not the next file, so the panel's sessions are what pi is asked to open.
+      opensWhatPiIsAsked();
+      const b = stored('in B');
+      let release!: () => void;
+      filesAt({ [b.id]: b.file }, { gate: new Promise<void>((resolve) => { release = resolve; }) });
+      const session = new PiSession(makeOptions(messages));
+      await session.initializeEarly();
+      await session.sendMessage('in A', undefined, 'c1', { content: 'in A' });
+      const opened = vi.spyOn(session, 'openResumeTarget');
+
+      const resuming = resumeStoredSession(resumeDeps(session), 'p1', b.id);
+      await vi.waitFor(() => expect(session.holdsSession(b.id)).toBe(true));
+      const disposing = letGo(session, b.id);
+      release();
+      await resuming;
+      await disposing;
+      await vi.waitFor(() => expect(sessionLeasesOf(session)).not.toContain(b.id));
+      await session.whenReplaced();
+
+      expect(await opened.mock.results[0]!.value).toEqual({ kind: 'cancelled' });
+      expect(shownOf(b.id)).toEqual([]);
+      expect(errors()).toEqual([]);
+      expect(sessionLeasesOf(session)).not.toContain(b.id);
+      expect(sessionLeaseBlocker(b.id)).toBeUndefined();
+      expect(promptsIn(b.file)).toEqual(['in B']);
+      if (!disposing) await session.dispose();
+    });
+  });
+
+  it('a queued message is refused when it names a conversation other than the running one, or none while a stored one runs', async () => {
+    const a = stored('in A');
+    opensInOrder(a.file);
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    live.isStreaming = true;
+
+    expect(session.queueInput('for X', 'q1', 'for X', '01a10000-0000-7000-8000-000000000000')).toBe('otherConversation');
+    expect(session.queueInput('for none', 'q2', 'for none')).toBe('otherConversation');
+    expect(live.prompt).not.toHaveBeenCalled();
+    expect(session.queueInput('for A', 'q3', 'for A', a.id)).toBe('queued');
+    await vi.waitFor(() => expect(live.prompt).toHaveBeenCalledWith('for A', expect.anything()));
+    live.isStreaming = false;
+    await session.dispose();
   });
 });

@@ -35,6 +35,7 @@ import {
   EDITOR_RENDER_WHITESPACE_SETTING,
   EDITOR_TAB_SIZE_SETTING,
   EDITOR_WORD_WRAP_SETTING,
+  FILE_ICON_THEME_SETTING,
   FILES_EXCLUDE_SETTING,
   GIT_ALLOW_FORCE_PUSH_SETTING,
   GIT_ALLOW_NO_VERIFY_COMMIT_SETTING,
@@ -213,6 +214,7 @@ const DESKTOP = computed((): HostSettings => ({
     component: AppearanceSection,
     rows: [
       { id: 'damocles.desktop.theme', section: 'appearance', label: 'settingsHost.rows.theme.label', description: 'settingsHost.rows.theme.description', keys: ['damocles.desktop.theme'] },
+      { id: FILE_ICON_THEME_SETTING, section: 'appearance', label: 'settingsHost.rows.fileIconTheme.label', description: 'settingsHost.rows.fileIconTheme.description', keys: [FILE_ICON_THEME_SETTING] },
       { id: 'damocles.desktop.reduceMotion', section: 'appearance', label: 'settingsHost.rows.reduceMotion.label', description: 'settingsHost.rows.reduceMotion.description', keys: ['damocles.desktop.reduceMotion'] },
       { id: 'damocles.desktop.restoreLayout', section: 'appearance', label: 'settingsHost.rows.restoreLayout.label', description: 'settingsHost.rows.restoreLayout.description', keys: ['damocles.desktop.restoreLayout'] },
       { id: SIDEBAR_ALWAYS_SHOW_HEADER_ACTIONS_SETTING, section: 'appearance', label: 'settingsHost.rows.alwaysShowHeaderActions.label', description: 'settingsHost.rows.alwaysShowHeaderActions.description', keys: [SIDEBAR_ALWAYS_SHOW_HEADER_ACTIONS_SETTING] },

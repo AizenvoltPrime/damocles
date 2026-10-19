@@ -13,6 +13,10 @@ import type { LifetimeUsage } from './usage';
 import type { ImageBlock } from '../../../shared/types/content';
 import type { UserSteerNote } from '../../../shared/steer';
 import type { AgentUsageTotals } from '../../../shared/usage-accounting';
+import type { WindDownNotice } from '../wind-down-notice';
+import type { AgentWindDown } from '../../../shared/types/wind-down';
+import type { AgentFileOwner } from '../agent-file-owner';
+import type { RunLifecycle } from '../run-lifecycle';
 
 export type { ThinkingLevel };
 
@@ -111,6 +115,10 @@ export interface AgentRecord {
   discarded?: boolean | undefined;
   /** Steering messages queued before the session was ready. */
   pendingSteers?: PendingSteer[] | undefined;
+  /** Set once the run handed its task to pi, so a run pi settles from then on is the task's own. */
+  prompted?: boolean | undefined;
+  /** The run lifecycle bound to `session`, disposed when the session is let go of. */
+  run?: RunLifecycle | undefined;
   /** Steering messages issued by the USER via `/steer` (not the model's SteerSubagent tool). Surfaced to
    *  the parent when it consumes this subagent's result, so it knows the user redirected the subagent. */
   userSteers?: UserSteerNote[] | undefined;
@@ -124,6 +132,12 @@ export interface AgentRecord {
   statusRecorded?: boolean | undefined;
   /** Unsubscribe for the stream-bridge's session subscription (torn down on completion). */
   bridgeUnsub?: (() => void) | undefined;
+  /** Tells the card what a stopped run's wind-down waits for; ended when the run settles. */
+  windDown?: WindDownNotice | undefined;
+  /** The wind-down the card shows now, its own run's or the one a resume relays while it waits for the file; what a reloaded card is sent. */
+  shownWindDown?: AgentWindDown | undefined;
+  /** This run's hold on the agent's session file, released once the run settled and its session was disposed. */
+  fileOwner?: AgentFileOwner | undefined;
   /** Whether this agent was spawned with run_in_background (drives the keep-alive hold + bg-task UI). */
   background?: boolean | undefined;
   /**

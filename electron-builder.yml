@@ -51,9 +51,6 @@ files:
   - THIRD-PARTY-NOTICES.md
   # Bundled into dist/desktop/main.js and required by no shipped package.
   - '!node_modules/smol-toml{,/**}'
-  # Only chord's unreachable ./bundler export uses esbuild, the VSIX excludes it on the same review (scripts/sync-vscodeignore.mjs EXCLUDED_NESTED_DEPS),
-  # and electron-builder hoists it to the top-level node_modules.
-  - '!**/node_modules/{esbuild,@esbuild}{,/**}'
   # node-pty ships only this target's prebuild, without its debug symbols and native sources, the conpty copy its postinstall writes to
   # build/, or any .node a source build leaves in build/, which node-pty loads ahead of the prebuild. scripts/verify-desktop-package.mjs checks the result.
   - '!node_modules/node-pty/prebuilds/!(${platform}-${arch}){,/**}'

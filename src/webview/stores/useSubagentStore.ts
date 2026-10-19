@@ -7,6 +7,8 @@ import type { EffortBadgeLevel } from '@shared/effort-badge';
 import type { HistoryAgentMessage, HistoryToolCall, ContentBlock, ImageBlock, ToolUseBlock, TextBlock, ThinkingBlock } from '@shared/types/content';
 import { replacesToolStatus, resolveCancelledStatus, TERMINAL_TOOL_STATUSES } from './tool-cancelled-status';
 import { extractDenialFeedback, refusedStatus } from '@/composables/message-handler/utils';
+import { windDownText } from '@/utils/windDownText';
+import type { AgentWindDown } from '@shared/types/wind-down';
 
 export interface StreamingSubagentMessage {
   sdkMessageId: string;
@@ -29,11 +31,12 @@ export function subagentHeading(
   return { title: subagent.description, resumed: subagent.resume !== undefined };
 }
 
-/** A running card's status line: the retry pi waits out before re-sending a failed call, else the progress summary. */
+/** A running card's status line: a stopped run's wind-down, the retry pi waits out before re-sending a failed call, else the progress summary. */
 export function subagentStatusLine(
   subagent: SubagentState,
   t: (key: string, params: Record<string, unknown>) => string,
 ): string | undefined {
+  if (subagent.windDown) return windDownText(subagent.windDown, t);
   if (subagent.retry) return t('status.retrying', { attempt: subagent.retry.attempt, max: subagent.retry.maxAttempts });
   return subagent.progressSummary || undefined;
 }
@@ -277,7 +280,7 @@ export const useSubagentStore = defineStore('subagent', () => {
     const subagent = subagents.value[toolId];
     if (!subagent) return;
     // The stale end time is dropped, not set to undefined, so a later spread cannot resurrect it.
-    const { endTime: _clearedEndTime, retry: _clearedRetry, ...withoutEndTime } = subagent;
+    const { endTime: _clearedEndTime, retry: _clearedRetry, windDown: _clearedWindDown, ...withoutEndTime } = subagent;
     subagents.value = {
       ...subagents.value,
       [toolId]: {
@@ -292,7 +295,7 @@ export const useSubagentStore = defineStore('subagent', () => {
   function endSubagent(agentToolId: string, status: EndedSubagentStatus): void {
     const subagent = subagents.value[agentToolId];
     if (subagent && subagent.status === 'running') {
-      const { retry: _clearedRetry, ...withoutRetry } = subagent;
+      const { retry: _clearedRetry, windDown: _clearedWindDown, ...withoutRetry } = subagent;
       subagents.value = {
         ...subagents.value,
         [agentToolId]: {
@@ -322,7 +325,7 @@ export const useSubagentStore = defineStore('subagent', () => {
 
     for (const [id, subagent] of entries) {
       if (subagent.status === 'running') {
-        const { retry: _clearedRetry, ...withoutRetry } = subagent;
+        const { retry: _clearedRetry, windDown: _clearedWindDown, ...withoutRetry } = subagent;
         updated[id] = { ...withoutRetry, status: 'cancelled', endTime: now };
         hasChanges = true;
       } else {
@@ -399,6 +402,15 @@ export const useSubagentStore = defineStore('subagent', () => {
     const messages = subagent.messages.filter((m) => m.sdkMessageId !== sdkMessageId);
     if (messages.length === subagent.messages.length) return;
     subagents.value = { ...subagents.value, [toolUseId]: { ...subagent, messages } };
+  }
+
+  /** What a running card's stopped run still waits for, as core published it; null ends it. */
+  function setSubagentWindDown(toolUseId: string, windDown: AgentWindDown | null): void {
+    const subagent = subagents.value[toolUseId];
+    if (!subagent) return;
+    const { windDown: _clearedWindDown, ...withoutWindDown } = subagent;
+    const next = windDown && subagent.status === 'running' ? { ...withoutWindDown, windDown } : withoutWindDown;
+    subagents.value = { ...subagents.value, [toolUseId]: next };
   }
 
   /** The retry wait of a running card; null ends it. */
@@ -878,6 +890,7 @@ export const useSubagentStore = defineStore('subagent', () => {
     addSubagentError,
     retractSubagentMessage,
     setSubagentRetry,
+    setSubagentWindDown,
     updateSubagentStreaming,
     getSubagentStreaming,
     addToolCallToSubagent,

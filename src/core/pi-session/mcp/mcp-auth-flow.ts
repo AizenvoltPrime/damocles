@@ -198,16 +198,6 @@ function withDiscovery(provider: McpOAuthProvider, discovery: OAuthDiscoveryStat
   return withOverrides(provider, { discoveryState: () => discovery });
 }
 
-/**
- * RFC 9207 for a sign-in whose discovery found no authorization server metadata, which pi-mcp does not check.
- * With no metadata there is no issuer string to compare exactly: the URL is `authorization_servers[0]` or the server
- * origin as parsed by `URL`, which appends a slash, so one trailing slash is ignored, as pi-mcp's issuer validation does.
- */
-function assertIssuerWithoutMetadata(oauth: McpOAuthModule, authorizationServerUrl: string, iss: string): void {
-  const trim = (value: string): string => (value.endsWith('/') ? value.slice(0, -1) : value);
-  if (trim(iss) !== trim(authorizationServerUrl)) throw new oauth.OAuthIssuerMismatchError(authorizationServerUrl, iss);
-}
-
 /** The authorization_code sign-in: refresh when that suffices, else the browser flow on the loopback callback. */
 async function signInWithBrowser(oauth: McpOAuthModule, id: McpAuthIdentity, config: McpOAuthConfig): Promise<void> {
   const key = flowKey(id);
@@ -272,9 +262,8 @@ async function signInWithBrowser(oauth: McpOAuthModule, id: McpAuthIdentity, con
     if ((await oauth.authorizeMcp(provider, { ...flow, skipRefresh: stepUp })) === 'AUTHORIZED') return;
     // Discovered state is pinned because the callback wait can outlive the stored copy; pi-mcp re-reads a configured metadata document instead.
     let exchangeProvider: OAuthClientProvider = provider;
-    let pinned: OAuthDiscoveryState | undefined;
     if (config.authServerMetadataUrl === undefined) {
-      pinned = await provider.discoveryState();
+      const pinned = await provider.discoveryState();
       if (!pinned) throw new Error('OAuth discovery state was lost before the browser redirect');
       exchangeProvider = withDiscovery(provider, pinned);
     }
@@ -297,8 +286,7 @@ async function signInWithBrowser(oauth: McpOAuthModule, id: McpAuthIdentity, con
     if ((await getOAuthState(id)) !== oauthState) {
       throw new Error('OAuth flow superseded by a concurrent authentication for the same server');
     }
-    if (iss !== undefined && pinned && !pinned.authorizationServerMetadata) assertIssuerWithoutMetadata(oauth, pinned.authorizationServerUrl, iss);
-    // pi-mcp checks `iss` against the exchange's authorization server metadata (RFC 9207) before it sends the code.
+    // pi-mcp checks `iss` (RFC 9207) before it sends the code, and refuses any `iss` when discovery found no metadata.
     await oauth.authorizeMcp(exchangeProvider, { ...flow, authorizationCode: code, ...(iss !== undefined ? { iss } : {}) });
   } finally {
     if (activeSignIns.get(key) === oauthState) activeSignIns.delete(key);

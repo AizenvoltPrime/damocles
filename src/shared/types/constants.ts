@@ -80,7 +80,6 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     supportsAdaptiveThinking: true,
     supportsEffort: true,
     supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
-    thinkingAlwaysOn: true,
   },
   {
     value: "gpt-6-astra",

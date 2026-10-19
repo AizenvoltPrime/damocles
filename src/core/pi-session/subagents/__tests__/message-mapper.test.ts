@@ -201,7 +201,7 @@ describe('piMessagesToHistoryAgentMessages: a Stop\'s wind-down error', () => {
   const call = (id: string) => ({ type: 'toolCall', id, name: 'bash', arguments: { command: 'sleep 20' } });
   const batch = { role: 'assistant', content: [call('ran'), call('skipped')], stopReason: 'toolUse' };
   const killed = { role: 'toolResult', toolCallId: 'ran', content: [{ type: 'text', text: 'Command aborted' }], details: { damoclesCancelled: true }, isError: true, durationMs: 700 };
-  // pi-ai's lazy stream ends a request setup the aborted signal rejected on an error stop (lazy.js:41-44 in pi-ai 1.1.0).
+  // pi-ai's lazy stream ends a request setup the aborted signal rejected on an error stop (lazy.js:41-44 in pi-ai 1.3.0).
   const windDown = { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'This operation was aborted' };
 
   it('maps no error for a wind-down error and stops the calls the abort skipped, as for an aborted stop', () => {

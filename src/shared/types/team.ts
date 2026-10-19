@@ -2,6 +2,7 @@ import type { ImageBlock } from './content';
 import type { ToolAbandonReason } from './session';
 import type { AgentUsageTotals } from '../usage-accounting';
 import type { EffortBadgeLevel } from '../effort-badge';
+import type { AgentWindDown } from './wind-down';
 
 export type TeamPhase = 'initializing' | 'spawning' | 'working' | 'synthesizing' | 'complete';
 export type TeamAgentStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'awaiting-review' | 'standby' | 'monitoring';
@@ -12,6 +13,8 @@ export interface TeamAgent {
   role: 'lead' | 'specialist';
   /** The lead-written 3-5 word label the card shows. Null before a spawn and for a log written before labels. */
   description: string | null;
+  /** A work field of the current attempt: the task its `agent-spawned` entry records, whether or not pi committed it. Null before a spawn and for a log written before it was recorded. */
+  task: string | null;
   model: string;
   profileId: string | null;
   /** Which launch of this agent the work fields below describe. A redispatch reuses the agentId, so an
@@ -111,4 +114,6 @@ export interface TeamState {
   totalToolCount: number;
   /** Oldest first; the last is the current run. */
   runs: TeamRunSummary[];
+  /** By agent id, each member's wind-down the running team shows now; a team read from its log has none. */
+  windDowns?: Record<string, AgentWindDown>;
 }

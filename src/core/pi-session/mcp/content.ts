@@ -9,20 +9,61 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { TextContent } from '@earendil-works/pi-ai';
 import type { McpContent, ContentBlock } from './types';
+import type { McpResourceToolName } from '../../../shared/tool-names';
+import type { BuiltinDeferredGroup } from '../tools/deferred-tools';
+import { classifyInlineImage } from '../../../shared/inline-image';
+import { oneLine } from '../untrusted-text';
+import { quotedServerName } from './resource-errors';
 
-export function transformMcpContent(content: McpContent[]): ContentBlock[] {
+const READ_MCP_RESOURCE_TOOL: McpResourceToolName = 'read_mcp_resource';
+const MCP_RESOURCES_GROUP: BuiltinDeferredGroup = 'mcp_resources';
+
+/** How `read_mcp_resource` reaches the calling agent for one server's resources. */
+export interface ResourceReadReach {
+  /** Active now, loadable through ToolSearch, or null when this agent cannot read the server's resources. */
+  readTool: 'direct' | 'deferred' | null;
+  /** The URIs this agent cannot read: its tool lists turn them off (`disabledResourceMatcher`) or a deny rule covers them. */
+  unreadable: (uri: string) => boolean;
+}
+
+/** No way to read: a link names no tool. */
+export const NO_RESOURCE_READ: ResourceReadReach = { readTool: null, unreadable: () => true };
+
+/** How a result's resource links point the agent at `read_mcp_resource`. */
+export interface ResourceLinkContext extends ResourceReadReach {
+  /** The server whose result this is. */
+  server: string;
+}
+
+/** Ported from pi-coding-agent/src/core/tools/truncate.ts `formatSize`. */
+export function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+/** Ported from pi-coding-agent/src/extensions/mcp/tools.ts: a resource link as one line naming the read tool. */
+function resourceLinkText(c: McpContent, links: ResourceLinkContext | undefined): string {
+  const uri = c.uri ?? '(no URI)';
+  const details = [c.mimeType, typeof c.size === 'number' ? formatSize(c.size) : undefined].filter(Boolean);
+  const description = c.description ? `: ${c.description}` : '';
+  let read = '';
+  if (links && links.readTool !== null && typeof c.uri === 'string' && !links.unreadable(c.uri)) {
+    read = `. Read it with ${READ_MCP_RESOURCE_TOOL} (server ${quotedServerName(links.server)})`;
+    if (links.readTool === 'deferred') read += `, after loading it with ToolSearch({tools:["${MCP_RESOURCES_GROUP}"]})`;
+  }
+  return `[Resource ${uri} "${c.title ?? c.name ?? uri}"${details.length > 0 ? ` (${details.join(', ')})` : ''}${description}${read}]`;
+}
+
+export function transformMcpContent(content: McpContent[], links?: ResourceLinkContext): ContentBlock[] {
   return content.map((c): ContentBlock => {
     if (c.type === 'text') {
       return { type: 'text', text: c.text ?? '' };
     }
     if (c.type === 'image') {
-      const mimeType = c.mimeType ?? 'image/png';
-      // Trust only well-formed image data; anything else degrades to a placeholder so a malformed or
-      // non-image MIME never flows into pi's image inference path (L10).
-      if (!c.data || !/^image\/[a-z0-9.+-]+$/i.test(mimeType)) {
-        return { type: 'text', text: `[Image content omitted: ${mimeType || 'unknown type'}]` };
-      }
-      return { type: 'image', data: c.data, mimeType };
+      const image = classifyInlineImage(c.data ?? '', c.mimeType);
+      if (!image.ok) return { type: 'text', text: `[Image content omitted: ${oneLine(c.mimeType ?? '', 100) ?? 'unknown type'}]` };
+      return { type: 'image', data: image.data, mimeType: image.mediaType };
     }
     if (c.type === 'resource') {
       const resource = c.resource;
@@ -38,9 +79,7 @@ export function transformMcpContent(content: McpContent[]): ContentBlock[] {
       return { type: 'text', text: `[Resource: ${uri}] (no content)` };
     }
     if (c.type === 'resource_link') {
-      const name = c.name ?? c.uri ?? 'unknown';
-      const uri = c.uri ?? '(no URI)';
-      return { type: 'text', text: `[Resource Link: ${name}]\nURI: ${uri}` };
+      return { type: 'text', text: resourceLinkText(c, links) };
     }
     if (c.type === 'audio') {
       return { type: 'text', text: `[Audio content: ${c.mimeType ?? 'audio/*'}]` };
@@ -50,7 +89,7 @@ export function transformMcpContent(content: McpContent[]): ContentBlock[] {
 }
 
 /** Decoded byte length of a base64 string (without allocating the buffer). */
-function base64ByteLength(b64: string): number {
+export function base64ByteLength(b64: string): number {
   const len = b64.length;
   if (len === 0) return 0;
   const padding = b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0;
@@ -103,15 +142,27 @@ export function truncateMiddle(content: string, maxBytes: number): MiddleTruncat
 /** Saves the full text of a truncated result and returns the file path. */
 export type McpOutputSaver = (text: string) => Promise<string>;
 
-/** The files `saveMcpOutputToTempFile` wrote in this process; an agent may read one until the runtime shuts down. */
+/** The files this module wrote in this process; an agent may read one until the runtime shuts down. */
 const savedOutputFiles = new Set<string>();
 
-/** Results can carry private data, so the file gets an unguessable name and only the user may read it. */
-export async function saveMcpOutputToTempFile(text: string): Promise<string> {
-  const filePath = join(tmpdir(), `damocles-mcp-${randomBytes(8).toString('hex')}.txt`);
-  await writeFile(filePath, text, { mode: 0o600, flag: 'wx' });
+/**
+ * Results can carry private data, so the file gets an unguessable name and only the user may read it.
+ * The name never comes from server output, and `wx` never follows a link someone placed at the path.
+ */
+async function saveOutputFile(extension: '.txt' | '.bin', data: string | Uint8Array): Promise<string> {
+  const filePath = join(tmpdir(), `damocles-mcp-${randomBytes(8).toString('hex')}${extension}`);
+  await writeFile(filePath, data, { mode: 0o600, flag: 'wx' });
   savedOutputFiles.add(filePath);
   return filePath;
+}
+
+export function saveMcpOutputToTempFile(text: string): Promise<string> {
+  return saveOutputFile('.txt', text);
+}
+
+/** A resource's binary content, for the agent to open by path. */
+export function saveMcpBinaryToTempFile(data: Uint8Array): Promise<string> {
+  return saveOutputFile('.bin', data);
 }
 
 /** Delete every full-output file this process saved; run when the runtime shuts down and no session can read them. */

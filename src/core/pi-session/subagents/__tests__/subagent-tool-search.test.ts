@@ -15,9 +15,11 @@ import { buildNestedMcpToolset, type NestedMcpToolset } from '../../tools/mcp-to
 import { assignServerToolNames, createMcpToolName } from '../../mcp/naming';
 import type { McpToolDescriptor } from '../../mcp/types';
 import type { McpClientManager } from '../../mcp/mcp-client-manager';
+import type { McpResourceRuleFilter } from '../../../permission-handler/mcp-resource-rule';
 import type { PiCodingAgentModule } from '../../pi-loader';
 import { ShellCancelStore } from '../../tools/shell-cancel-registry';
 
+const NO_RESOURCE_RULES = async (): Promise<McpResourceRuleFilter> => ({ serverCovered: () => false, resourceDenied: () => false, resourceDenyRule: () => undefined, contentCovered: () => false });
 
 /**
  * Slice 3 §3.3 — the nested session's ToolSearch registration and activation port.
@@ -52,6 +54,7 @@ function ctxWith(deferrableToolNames: readonly string[]): SubagentGateContext {
     isPlanMode: () => false,
     shellCancel: new ShellCancelStore().forContext(() => undefined),
     parentToolUseId: 'agent-7',
+    stopSignal: new AbortController().signal,
     deferrableToolNames,
   };
 }
@@ -344,7 +347,6 @@ function mcpDescriptor(over: Partial<McpToolDescriptor> & Pick<McpToolDescriptor
   return {
     serverName: 'git',
     serverId: `test/${over.serverName ?? 'git'}`,
-    kind: 'tool',
     rawToolName: over.piName.split('__').slice(2).join('__'),
     description: '',
     inputSchema: { type: 'object', properties: {} },
@@ -366,8 +368,9 @@ function snapshot(descriptors: McpToolDescriptor[]): { mcp: NestedMcpToolset; ca
     getAllToolDescriptors: () => [...descriptors],
     getToolDescriptor: (piName: string) => descriptors.find((d) => d.piName === piName),
     callTool,
+    resourceServers: () => [],
   } as unknown as McpClientManager;
-  const mcp = buildNestedMcpToolset(piStub, manager, { eligible: new Set(descriptors.map((d) => d.piName)) });
+  const mcp = buildNestedMcpToolset(piStub, manager, { resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: new Set(descriptors.map((d) => d.piName)) });
   return { mcp, callTool };
 }
 
@@ -388,6 +391,7 @@ function registerWithMcp(opts: { mcp: NestedMcpToolset; builtinDeferrable?: read
     isPlanMode: () => false,
     shellCancel: new ShellCancelStore().forContext(() => undefined),
     parentToolUseId: 'agent-7',
+    stopSignal: new AbortController().signal,
     deferrableToolNames: deferrable,
     mcpDescriptions: opts.mcp.descriptions,
     isMcpReadOnly: opts.mcp.isReadOnly,
@@ -417,9 +421,9 @@ describe('nested ToolSearch — MCP discovery (criterion 3)', () => {
     const secrets = mcpDescriptor({ piName: 'mcp__secrets__read_env', serverName: 'secrets', description: 'Read env' });
     const denied = buildNestedMcpToolset(
       piStub,
-      { getAllToolDescriptors: () => [...GIT_DESCRIPTORS, secrets] } as unknown as McpClientManager,
+      { getAllToolDescriptors: () => [...GIT_DESCRIPTORS, secrets], resourceServers: () => [] } as unknown as McpClientManager,
       {
-        eligible: new Set([...GIT_DESCRIPTORS.map((d) => d.piName), secrets.piName]),
+        resourceRuleFilter: NO_RESOURCE_RULES, disabledEntries: [], eligible: new Set([...GIT_DESCRIPTORS.map((d) => d.piName), secrets.piName]),
         disallowed: new Set(['mcp__git__commit', 'mcp__secrets__read_env']),
       },
     );

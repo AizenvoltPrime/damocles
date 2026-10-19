@@ -16,6 +16,13 @@ export function describeAuthError(err: unknown): string {
   return `${err.name}: ${err.message}${cause instanceof Error ? ` (cause: ${cause.name}: ${cause.message})` : ''}`;
 }
 
+/** An error's name and the HTTP status of pi's `... request failed[ for <provider>]: <status>` form, never the message, which can quote a response body. */
+export function describeCatalogError(err: unknown): string {
+  if (!(err instanceof Error)) return 'unknown error';
+  const status = /\bfailed[^:]*: (\d{3})$/.exec(err.message)?.[1];
+  return status ? `${err.name} (HTTP ${status})` : err.name;
+}
+
 /**
  * pi's error for a credential change that it committed but could not follow with a model snapshot sync.
  * Matched by `name`, never `instanceof`: importing the class value would turn a type-only `pi-coding-agent`

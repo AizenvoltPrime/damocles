@@ -3,6 +3,7 @@ import { defineStore } from 'pinia';
 import type { StoredSession, FileEntry, CompactMarker, CacheMissNotice, CompactionAbortedNotice, CompactionTrigger, ThinkingDroppedNotice, SessionStats } from '@shared/types/session';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
 import type { PendingPromptOwner } from '@shared/types/permissions';
+import type { AgentWindDown } from '@shared/types/wind-down';
 import { TOOL_READ, TOOL_EDIT, TOOL_WRITE, TOOL_GENERATE_IMAGE } from '@shared/tool-names';
 import { DEFAULT_CONTEXT_WINDOW } from '@shared/types/constants';
 import { emptyAgentUsage } from '@shared/usage-accounting';
@@ -46,6 +47,8 @@ export const useSessionStore = defineStore('session', () => {
   const lastAssistantMessage = ref<string | null>(null);
   const sessionState = ref<SessionState>('idle');
   const pendingPrompts = ref<readonly PendingPromptOwner[]>([]);
+  /** What the main chat's stopped run still waits for, as the published session state carries it. */
+  const windDown = ref<AgentWindDown | null>(null);
 
   const selectedSession = computed(() => {
     if (!selectedSessionId.value) return null;
@@ -239,9 +242,10 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   // The extension derives both from its own pending-prompt maps, so the webview stores them as sent and never infers them.
-  function setSessionState(state: SessionState, prompts: readonly PendingPromptOwner[]) {
+  function setSessionState(state: SessionState, prompts: readonly PendingPromptOwner[], shownWindDown: AgentWindDown | null = null) {
     sessionState.value = state;
     pendingPrompts.value = prompts;
+    windDown.value = shownWindDown;
   }
 
   function clearSessionData() {
@@ -293,6 +297,7 @@ export const useSessionStore = defineStore('session', () => {
     lastAssistantMessage,
     sessionState,
     pendingPrompts,
+    windDown,
     teamAgentsAwaitingUser,
     selectedSession,
     selectedSessionDisplayName,

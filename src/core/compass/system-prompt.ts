@@ -1,5 +1,5 @@
-export const COMPASS_SYSTEM_PROMPT = `<compass>
-Compass is a workspace knowledge graph of every function, class, type, and file and how they connect (calls, imports, inheritance, references).
+/** Body of the main prompt's `compass` section; pi adds the `<compass>` wrapper. */
+export const COMPASS_SYSTEM_PROMPT = `Compass is a workspace knowledge graph of every function, class, type, and file and how they connect (calls, imports, inheritance, references).
 
 Use Compass when finding where something is defined, who calls/imports it, assessing change impact, or understanding architecture. Use Glob/Grep/Read directly when you already know the path/glob, need a known config file, or need a literal text search.
 
@@ -9,8 +9,7 @@ Workflow: CompassSearch/CompassQuery to build a read list (1-3 calls), then Read
 
 Search ONE entity name per call — CompassSearch "AuthManager", not "AuthManager validateToken".
 
-Empty results: CompassSearch returns nothing → the symbol likely doesn't exist by that name (it indexes symbols, not text); try a related name. CompassQuery "none" → read the first line for what the target resolved to; if it's the right entity but you expected results, verify with one Grep, since relationship coverage isn't guaranteed.
-</compass>`;
+Empty results: CompassSearch returns nothing → the symbol likely doesn't exist by that name (it indexes symbols, not text); try a related name. CompassQuery "none" → read the first line for what the target resolved to; if it's the right entity but you expected results, verify with one Grep, since relationship coverage isn't guaranteed.`;
 
 export const COMPASS_AGENT_PROMPT = `<compass>
 You have Compass MCP tools for this workspace's knowledge graph. A single \`CompassSearch\` replaces multiple Glob/Grep rounds, saving significant context tokens.

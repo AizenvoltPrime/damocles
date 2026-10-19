@@ -75,6 +75,7 @@ function makeHarness(opts: {
     session: {
       currentPromptIndex: 0,
       sendMessage: sessionSend,
+      beginSend: () => ({ signal: new AbortController().signal, end: () => undefined }),
       queueInput,
       compact: vi.fn(async () => undefined),
     },

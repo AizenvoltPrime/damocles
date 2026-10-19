@@ -3,6 +3,8 @@ import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { piSessionDirOf } from '../pi-session/session-store';
 import { teamMemberSessionId, teamMembersDir, type AgentSegmentData, type TeamMemberLaunchData } from '../pi-session/agent-records';
 import { DAMOCLES_AGENT_LAUNCH_ENTRY, DAMOCLES_AGENT_SEGMENT_ENTRY } from '../pi-session/session-store/constants';
+import { takeAgentFile, waitForAgentFile, type AgentFileOwner, type AgentFileStore } from '../pi-session/agent-file-owner';
+import { runLifecycleOf, trackRunLifecycle } from '../pi-session/run-lifecycle';
 import { MessageBus } from './message-bus';
 import { Scratchpad, VERIFICATION_SECTION, type ScratchpadReadStats } from './scratchpad';
 import { AgentRunner, busMessageDelivery } from './agent-runner';
@@ -63,6 +65,7 @@ import type {
   ScratchpadEntry as WebviewScratchpadEntry,
 } from '../../shared/types/team';
 import type { SteerTargetInfo } from '../../shared/types/subagents';
+import type { AgentWindDown } from '../../shared/types/wind-down';
 import type { ImageBlock } from '../../shared/types/content';
 import { buildResumePrompt, wrapSteerMessage } from '../../shared/steer';
 
@@ -311,6 +314,10 @@ export class TeamRunner {
   private readonly operatorSteers: OperatorSteer[] = [];
   // Each live run's undelivered-message taker and peeker, keyed by agentId; same ownership rule as noteSinks.
   private undeliveredHooks = new Map<string, { take: () => UndeliveredMessage[]; peek: () => UndeliveredMessage[] }>();
+  // Each open member session's hold on its file, which outlives this run's end while a stopped run is still held.
+  private memberFileOwners = new Map<AgentSession, AgentFileOwner>();
+  // By agent id, the wind-down each card shows now; in memory only, so a reloaded card is sent it with the team.
+  private readonly windDowns = new Map<string, AgentWindDown>();
   // Resumes of a member's current attempt, keyed by name. A redispatch starts a new attempt at zero.
   private resumeCounts = new Map<string, number>();
   // The role slot each specialist was dispatched under, which a restart without a session file resolves again.
@@ -429,6 +436,7 @@ export class TeamRunner {
         attempt: 0,
         specialization: spec.specialization ?? '',
         description: spec.role === 'lead' ? `Lead: ${this.config.title}` : null,
+        task: null,
         status: 'pending',
         model: spec.role === 'lead' ? leadModelValue : '',
         profileId: null,
@@ -475,6 +483,7 @@ export class TeamRunner {
     const leadAgent = this.agents.get(leadSpec.name)!;
 
     leadAgent.status = 'running';
+    leadAgent.task = LEAD_OPENING_TASK;
     const leadSpawnedAt = new Date();
     leadAgent.activeMs = 0;
     leadAgent.runningSince = leadSpawnedAt.getTime();
@@ -487,6 +496,7 @@ export class TeamRunner {
       role: 'lead',
       specialization: `Lead: ${this.config.title}`,
       description: leadAgent.description,
+      task: leadAgent.task,
       model: leadAgent.model,
       dollarBilled: leadAgent.dollarBilled,
       attempt: leadAgent.attempt,
@@ -499,6 +509,7 @@ export class TeamRunner {
       agentId: leadAgent.agentId,
       status: 'running',
       description: leadAgent.description,
+      task: leadAgent.task,
       attempt: leadAgent.attempt,
       ...(leadAgent.model ? { model: leadAgent.model } : {}),
       stopwatch: stopwatchOf(leadAgent),
@@ -525,7 +536,7 @@ export class TeamRunner {
     const leadPrompt = buildLeadSystemPrompt(this.config.title, this.config.brief, specialists, AGENT_PROFILE_CATALOG || undefined, this.config.permissionMode);
 
     const leadScopeId = this.browserScopeId(leadAgent);
-    const leadCtx = this.buildLeadContext(leadAgent.agentId, leadScopeId, leadName);
+    const leadCtx = this.buildLeadContext(leadAgent.agentId, leadScopeId, leadName, this.teamAbort.signal);
     const leadAttempt = leadAgent.attempt;
     const leadPromise = this.agentRunner.startAgent({
       agentId: leadAgent.agentId,
@@ -533,7 +544,7 @@ export class TeamRunner {
       role: 'lead',
       initial: launch.kind === 'fresh' ? { kind: 'prompt', text: launch.prompt } : launch.initial,
       redeliver: launch.redeliver,
-      createSession: () => this.createMemberSession(leadAgent, leadAttempt, LEAD_OPENING_TASK, launch, (store, resolution) => {
+      createSession: () => this.createMemberSession(leadAgent, leadAttempt, LEAD_OPENING_TASK, launch, this.teamAbort.signal, (store, resolution) => {
         // ONE toolset call per spawn. Names, customTools and the MCP snapshot used to be three
         // separate live reads inside this one object literal, so an `mcp__*` name could reach `tools:`
         // with no matching definition — pi registers a name only from a definition and
@@ -555,13 +566,14 @@ export class TeamRunner {
           store,
         });
       }),
-      forgetSession: (session) => this.config.engine.forgetSession(session),
+      forgetSession: (session) => this.forgetMemberSession(session),
       abortSignal: this.teamAbort.signal,
       messageBus: this.messageBus,
       bindNoteDelivery: (deliver) => this.bindNoteDelivery(leadAgent.agentId, deliver),
       bindTakeUndelivered: (take, peek) => this.bindTakeUndelivered(leadAgent.agentId, take, peek),
       onStateBoundary: () => this.scheduleCheckpoint(),
       onMessage: this.onMessage,
+      onWindDown: (windDown) => this.publishWindDown(leadAgent.agentId, windDown),
       teamId: this.config.teamId,
       onTurnEnd: () => {
         leadAgent.status = 'monitoring';
@@ -922,6 +934,7 @@ export class TeamRunner {
 
     agent.specialization = task;
     agent.description = description;
+    agent.task = task;
     agent.status = 'running';
     const spawnedAt = new Date();
     agent.activeMs = 0;
@@ -940,6 +953,7 @@ export class TeamRunner {
       role: 'specialist',
       specialization: task,
       description,
+      task,
       model: agent.model,
       dollarBilled: agent.dollarBilled,
       profileId: agent.profileId,
@@ -955,6 +969,7 @@ export class TeamRunner {
       agentId: agent.agentId,
       status: 'running',
       description,
+      task,
       dollarBilled: agent.dollarBilled,
       attempt: agent.attempt,
       ...(agent.model ? { model: agent.model } : {}),
@@ -995,7 +1010,6 @@ export class TeamRunner {
     // `agent.attempt`, so re-reading it at settle time would dispose the NEW attempt's scope.
     const browserScopeId = this.browserScopeId(agent);
     const attempt = agent.attempt;
-    const specialistCtx = this.buildSpecialistContext(agent.agentId, browserScopeId, name);
 
     const specialistAbort = new AbortController();
     this.specialistAborts.set(name, specialistAbort);
@@ -1006,6 +1020,7 @@ export class TeamRunner {
     } else {
       this.teamAbort.signal.addEventListener('abort', () => specialistAbort.abort(), { once: true });
     }
+    const specialistCtx = this.buildSpecialistContext(agent.agentId, browserScopeId, name, specialistAbort.signal);
 
     const promise = this.agentRunner.startAgent({
       agentId: agent.agentId,
@@ -1013,7 +1028,7 @@ export class TeamRunner {
       role: 'specialist',
       initial: launch.kind === 'fresh' ? { kind: 'prompt', text: launch.prompt } : launch.initial,
       redeliver: launch.redeliver,
-      createSession: () => this.createMemberSession(agent, attempt, task, launch, (store, resolution) => {
+      createSession: () => this.createMemberSession(agent, attempt, task, launch, specialistAbort.signal, (store, resolution) => {
         // ONE toolset call per spawn, inside this per-spawn arrow — see the lead spawn site above for
         // why both properties (single read, live-at-spawn) are load-bearing.
         const { toolNames, customTools, mcp, readOnly } = this.config.engine.buildAgentToolset(specialistCtx);
@@ -1031,13 +1046,14 @@ export class TeamRunner {
           store,
         });
       }),
-      forgetSession: (session) => this.config.engine.forgetSession(session),
+      forgetSession: (session) => this.forgetMemberSession(session),
       abortSignal: specialistAbort.signal,
       messageBus: this.messageBus,
       bindNoteDelivery: (deliver) => this.bindNoteDelivery(agent.agentId, deliver),
       bindTakeUndelivered: (take, peek) => this.bindTakeUndelivered(agent.agentId, take, peek),
       onStateBoundary: () => this.scheduleCheckpoint(),
       onMessage: this.onMessage,
+      onWindDown: (windDown) => this.publishWindDown(agent.agentId, windDown),
       teamId: this.config.teamId,
       getReportedSummary: () => this.reportedSummaries.get(name) ?? null,
       keepAlive: () => {
@@ -1322,6 +1338,7 @@ export class TeamRunner {
       role: 'specialist',
       specialization: task,
       description,
+      task,
       model: agent.model,
       dollarBilled: agent.dollarBilled,
       profileId: agent.profileId,
@@ -1341,6 +1358,7 @@ export class TeamRunner {
       agentId: agent.agentId,
       status: 'running',
       description,
+      task,
       dollarBilled: agent.dollarBilled,
       attempt: agent.attempt,
       ...(agent.model ? { model: agent.model } : {}),
@@ -2276,6 +2294,7 @@ export class TeamRunner {
         attempt: member.attempt,
         specialization: spawn?.specialization ?? '',
         description: spawn?.description ?? null,
+        task: spawn?.task ?? null,
         status: member.status,
         model: spawn?.model ?? '',
         profileId: spawn?.profileId ?? null,
@@ -2430,6 +2449,22 @@ export class TeamRunner {
     return out;
   }
 
+  /** The session file each member `resume` launches opens: its attempt's file, or the new one of a restart. */
+  resumedMemberFiles(): Array<{ name: string; store: AgentFileStore }> {
+    return [...this.resumePlans].map(([name, plan]) => {
+      const agent = this.agents.get(name)!;
+      return { name, store: plan.mode === 'restart' ? this.freshMemberStore(agent, agent.attempt) : { kind: 'reopen', path: plan.path, agentId: agent.agentId } };
+    });
+  }
+
+  private freshMemberStore(agent: TeamAgent, attempt: number): AgentFileStore {
+    return {
+      kind: 'file',
+      dir: teamMembersDir(piSessionDirOf(this.config.cwd, this.config.persistenceSessionId), this.config.persistenceSessionId, this.config.teamId),
+      id: teamMemberSessionId(agent.agentId, attempt),
+    };
+  }
+
   /**
    * The lead and running specialists relaunch from their session file, awaiting-review and standby
    * specialists reopen parked, and a member with no file restarts from its task. Null leaves a finished
@@ -2543,6 +2578,13 @@ export class TeamRunner {
     });
   }
 
+  /** The one writer of a card's wind-down, its own run's or the one a resumed member relays while it waits for its file. */
+  private publishWindDown(agentId: string, windDown: AgentWindDown | null): void {
+    if (windDown) this.windDowns.set(agentId, windDown);
+    else this.windDowns.delete(agentId);
+    this.onMessage({ type: 'statusUpdate', status: 'windingDown', windDown, parentToolUseId: agentId });
+  }
+
   private findAgentByName(name: string): TeamAgent | undefined {
     return this.agents.get(name);
   }
@@ -2557,16 +2599,25 @@ export class TeamRunner {
     attempt: number,
     task: string,
     member: MemberLaunch,
+    stop: AbortSignal,
     create: (store: TeamSessionOptions['store'], resolution: ResolvedTeamModel | null) => Promise<AgentSession>,
   ): Promise<AgentSession> {
+    const store: AgentFileStore = member.kind === 'fresh' ? this.freshMemberStore(agent, attempt) : { kind: 'reopen', path: member.path, agentId: agent.agentId };
+    const owner = takeAgentFile(store) ?? await waitForAgentFile(store, {
+      signal: stop,
+      onWindDown: (windDown) => this.publishWindDown(agent.agentId, windDown),
+    });
     let session: AgentSession;
+    try {
+      session = await create(store, member.kind === 'fresh' ? member.resolution : null);
+    } catch (err) {
+      owner.release();
+      throw err;
+    }
+    owner.watch(trackRunLifecycle(session), stop);
+    this.memberFileOwners.set(session, owner);
     let entry: [customType: string, data: unknown];
     if (member.kind === 'fresh') {
-      session = await create({
-        kind: 'file',
-        dir: teamMembersDir(piSessionDirOf(this.config.cwd, this.config.persistenceSessionId), this.config.persistenceSessionId, this.config.teamId),
-        id: teamMemberSessionId(agent.agentId, attempt),
-      }, member.resolution);
       const launch: TeamMemberLaunchData = {
         agentId: agent.agentId,
         kind: 'team-member',
@@ -2579,14 +2630,13 @@ export class TeamRunner {
       // pi buffers it until it commits the member's task prompt, so it still lands ahead of every message.
       entry = [DAMOCLES_AGENT_LAUNCH_ENTRY, launch];
     } else {
-      session = await create({ kind: 'reopen', path: member.path, agentId: agent.agentId }, null);
       entry = [DAMOCLES_AGENT_SEGMENT_ENTRY, member.segment];
     }
     try {
       session.sessionManager.appendCustomEntry(...entry);
     } catch (err) {
       // The runner never receives this session, so only here can it be released.
-      this.config.engine.forgetSession(session);
+      this.forgetMemberSession(session);
       throw err;
     }
     const logFilePath = session.sessionManager.getSessionFile() ?? null;
@@ -2614,6 +2664,15 @@ export class TeamRunner {
       });
     }
     return session;
+  }
+
+  /** The runner calls it once the member's run settled, so the session writes no more and its file can take its next owner. */
+  private forgetMemberSession(session: AgentSession): void {
+    this.config.engine.forgetSession(session);
+    const owner = this.memberFileOwners.get(session);
+    this.memberFileOwners.delete(session);
+    owner?.release();
+    runLifecycleOf(session).dispose();
   }
 
   /** Whether a message to `name` can be delivered now. A dead agent unsubscribes from the bus on exit,
@@ -2677,13 +2736,14 @@ export class TeamRunner {
   }
 
   /** The lead's MCP context — full coordination surface (spawn/approve/synthesize/cancel/revise). */
-  private buildLeadContext(agentId: string, browserScopeId: string, agentName: string): AgentMcpContext {
+  private buildLeadContext(agentId: string, browserScopeId: string, agentName: string, stopSignal: AbortSignal): AgentMcpContext {
     return {
       agentId,
       browserScopeId,
       agentName,
       teamId: this.config.teamId,
       role: 'lead',
+      stopSignal,
       messageBus: this.messageBus,
       scratchpad: this.scratchpad,
       deliverUserNote: (text) => this.noteSinks.get(agentId)?.(text) ?? false,
@@ -2729,13 +2789,14 @@ export class TeamRunner {
   }
 
   /** A specialist's MCP context — lead-only coordination tools throw; standby/report-complete allowed. */
-  private buildSpecialistContext(agentId: string, browserScopeId: string, agentName: string): AgentMcpContext {
+  private buildSpecialistContext(agentId: string, browserScopeId: string, agentName: string, stopSignal: AbortSignal): AgentMcpContext {
     return {
       agentId,
       browserScopeId,
       agentName,
       teamId: this.config.teamId,
       role: 'specialist',
+      stopSignal,
       kind: this.specialistKinds.get(agentName) ?? 'implementor',
       messageBus: this.messageBus,
       scratchpad: this.scratchpad,
@@ -2864,6 +2925,7 @@ export class TeamRunner {
       name: a.name,
       role: a.role,
       description: a.description,
+      task: a.task,
       model: a.model,
       profileId: a.profileId,
       attempt: a.attempt,
@@ -2898,6 +2960,8 @@ export class TeamRunner {
       endTime: null,
       totalToolCount: 0,
       runs: [...this.pastRuns, this.endedRun ?? this.runSummary()],
+      // A runner past `team-completed` no longer speaks for the cards, whose settled status cleared them.
+      ...(this.endedRun === null && this.windDowns.size > 0 ? { windDowns: Object.fromEntries(this.windDowns) } : {}),
     };
   }
 

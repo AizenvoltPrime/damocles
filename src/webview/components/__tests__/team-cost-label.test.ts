@@ -35,6 +35,7 @@ function agent(over: Partial<TeamAgent> = {}): TeamAgent {
     name: 'worker',
     role: 'specialist',
     description: 'do the task',
+    task: null,
     model: 'sonnet',
     profileId: null,
     attempt: 0,

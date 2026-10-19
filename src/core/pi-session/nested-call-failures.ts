@@ -8,7 +8,7 @@ export function failedCallError(errorMessage: unknown): string {
 /**
  * An error stop that ended while its run's signal was aborted: the abort's wind-down, which every transcript treats as
  * an aborted stop, with no error card. `runSignal` is the extension context's signal at the stop's `turn_end`, the
- * run's own (`agent.js:214-216` in pi-agent-core 1.1.0). Only `registerWindDownErrorRecord` reads it; transcripts read
+ * run's own (`agent.js:214-216` in pi-agent-core 1.3.0). Only `registerWindDownErrorRecord` reads it; transcripts read
  * the record it writes, so live and reload decide from one observation.
  */
 export function isWindDownError(stopReason: unknown, runSignal: AbortSignal | undefined): boolean {

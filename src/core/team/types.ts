@@ -6,6 +6,7 @@ import type { Scratchpad } from './scratchpad';
 import type { CheckpointWriter } from './checkpoint-writer';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { TeamRunSummary } from '../../shared/types/team';
+import type { AgentWindDown } from '../../shared/types/wind-down';
 import type { ImageBlock } from '../../shared/types/content';
 import type { UserSteerNote } from '../../shared/steer';
 import type { AgentUsageTotals } from '../../shared/usage-accounting';
@@ -144,6 +145,8 @@ export interface TeamAgent {
   specialization: string;
   /** The card's label: the lead's 3-5 word description at spawn. Null until a spawn, and for a log written before labels. */
   description: string | null;
+  /** A work field: the task the attempt's `agent-spawned` entry records (`spawnedTask`). Null until a spawn. */
+  task: string | null;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'awaiting-review' | 'standby' | 'monitoring';
   model: string;
   profileId: string | null;
@@ -272,6 +275,8 @@ export interface AgentRunConfig {
   /** Fired at each member `tool_execution_end`, `turn_end` and `agent_end`, where team state can have changed. */
   onStateBoundary?: () => void;
   onMessage: (msg: ExtensionToWebviewMessage) => void;
+  /** What the stopped run's wind-down waits for once it outlasts `WIND_DOWN_NOTICE_MS`, null as it ends; the team runner holds and publishes it. */
+  onWindDown: (windDown: AgentWindDown | null) => void;
   teamId: string;
   /**
    * Whether the agent should stay idle-waiting for more peer messages after a turn ends (no SDK keep-
@@ -474,6 +479,8 @@ export interface TeamLogSpawn {
   role: AgentRole;
   specialization: string;
   description: string | null;
+  /** `spawnedTask` of the entry. */
+  task: string | null;
   model: string;
   dollarBilled: boolean;
   profileId: string | null;
@@ -534,6 +541,8 @@ export interface AgentMcpContext {
   /** The owning team, carried into this agent's MCP elicitation attribution alongside agentId/agentName. */
   teamId: string;
   role: 'lead' | 'specialist';
+  /** Aborted by a Stop of this launch, the team's for the lead; the hook processes its session runs take it. */
+  stopSignal: AbortSignal;
   /** A specialist's spawn kind; a `reviewer` gets the read-only toolset and shell. Unset for the lead. */
   kind?: SpecialistKind;
   messageBus: MessageBus;

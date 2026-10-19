@@ -165,6 +165,9 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         const resumeSaved = async (instance: Pick<HostInstance, "host" | "session" | "folder">): Promise<boolean> => {
           if (!savedSessionId || leaseRefusal) return false;
           if (claimStoredSession(deps.platform.notifications, deps.getPanels(), { panelId: ctx.panelId, session: instance.session }, savedSessionId)) return false;
+          // A panel pi holds another conversation in shows this one only once pi switched to it, and opens fresh when it cannot.
+          const outcome = await timed("ready.open", () => instance.session.openResumeTarget(savedSessionId));
+          if (outcome.kind !== "switched" && outcome.kind !== "deferred") return false;
           // The stored file's place reaches the webview before the replay, so its first render is the right composer; a session
           // already running there (a reloaded webview) sends its live state instead.
           if (resumeBinding?.state !== undefined) {

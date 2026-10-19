@@ -61,7 +61,7 @@ describe("VoiceService wake phrase", () => {
 
   it("starts wake mode with the normalized phrase", async () => {
     const { service } = setup({ "damocles.voice.mode": "wake-word", "damocles.voice.wakeWord": "  OK_house Robot " });
-    await service.start();
+    await service.ensureStarted({ install: true });
     expect(managers).toHaveLength(1);
     expect(managers[0]!.cfg.wakePhrase).toBe("ok house robot");
     expect(managers[0]!.started).toBe(true);
@@ -69,7 +69,7 @@ describe("VoiceService wake phrase", () => {
 
   it("refuses wake mode with an invalid phrase before installing the runtime", async () => {
     const { service, statuses } = setup({ "damocles.voice.mode": "wake-word", "damocles.voice.wakeWord": "hey-jarvis" });
-    await service.start();
+    await service.ensureStarted({ install: true });
     expect(installs.count).toBe(0);
     expect(managers).toHaveLength(0);
     expect(statuses).toEqual([
@@ -87,7 +87,7 @@ describe("VoiceService wake phrase", () => {
       "damocles.voice.tts.enabled": true,
       "damocles.voice.wakeWord": "hey-jarvis",
     });
-    await service.start();
+    await service.ensureStarted({ install: true });
     expect(statuses).toEqual([]);
     expect(managers).toHaveLength(1);
     expect(managers[0]!.cfg.wakePhrase).toBeNull();
@@ -97,7 +97,7 @@ describe("VoiceService wake phrase", () => {
   it("restarts the sidecar with the new phrase when the phrase changes in wake mode", async () => {
     const { platform, service } = setup({ "damocles.voice.mode": "wake-word", "damocles.voice.wakeWord": "hey jarvis" });
     service.registerWithExtension([]);
-    await service.start();
+    await service.ensureStarted({ install: true });
     await platform.settings.update("damocles.voice.wakeWord", "computer", "user");
     await vi.waitFor(() => expect(managers).toHaveLength(2));
     expect(managers[0]!.stopped).toBe(true);
@@ -108,7 +108,7 @@ describe("VoiceService wake phrase", () => {
   it("keeps the sidecar running when the phrase changes outside wake mode", async () => {
     const { platform, service } = setup({ "damocles.voice.mode": "push-to-talk", "damocles.voice.tts.enabled": true });
     service.registerWithExtension([]);
-    await service.start();
+    await service.ensureStarted({ install: true });
     await platform.settings.update("damocles.voice.wakeWord", "computer", "user");
     // A restart would settle within this macrotask, since the fakes resolve on microtasks.
     await new Promise((resolve) => setTimeout(resolve, 0));

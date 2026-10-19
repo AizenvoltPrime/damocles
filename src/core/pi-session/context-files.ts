@@ -9,10 +9,10 @@ import { folderKey } from '../workspace-folders/folder-key';
  * per-directory candidate order and the linked-worktree shadow suppression stay pi's, so project
  * discovery is unchanged. An untrusted workspace contributes no context file at all.
  *
- * Tracks pi `@earendil-works/pi-coding-agent@^1.1.0`. Citations are line numbers in the shipped
+ * Tracks pi `@earendil-works/pi-coding-agent@1.3.0`. Citations are line numbers in the shipped
  * `dist/core/resource-loader.js`, not the `.ts` lines its source maps carry: `:116` candidate
- * names, `:136-164` the linked-worktree shadow suppression, `:165-192` `loadProjectContextFiles` (global
- * entry first, then ancestors root-first via `unshift`), `:460-469` where `agentsFilesOverride` is
+ * names, `:136-164` the linked-worktree shadow suppression, `:165-196` `loadProjectContextFiles` (global
+ * entry first, then ancestors root-first via `unshift`), `:465-473` where `agentsFilesOverride` is
  * applied, after the `noContextFiles` check. Recheck these on a pi upgrade.
  */
 

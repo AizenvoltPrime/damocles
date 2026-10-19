@@ -36,7 +36,7 @@ const H = vi.hoisted(() => {
     setAutoCompactionEnabled: Mock<(enabled: boolean) => void>;
     dispose: Mock<() => void>;
     sessionId: string;
-    messages: unknown[];
+    sessionManager: { buildSessionContext: () => { messages: unknown[] } };
   }> = [];
 
   /**
@@ -56,8 +56,8 @@ const H = vi.hoisted(() => {
       setAutoCompactionEnabled: vi.fn<(enabled: boolean) => void>(() => { calls.push('setAutoCompactionEnabled'); }),
       dispose: vi.fn<() => void>(),
       sessionId: `nested-${sessions.length}`,
-      // What a reopened session restored; the baseline re-activates what its ToolSearch calls loaded.
-      messages: restored.splice(0),
+      // What a reopened session's transcript holds; the baseline replays its recorded loadout.
+      sessionManager: { buildSessionContext: (messages => () => ({ messages }))(restored.splice(0)) },
     };
     sessions.push(session);
     return session;
@@ -105,12 +105,16 @@ const H = vi.hoisted(() => {
   return { created, sessions, fakePi, restored };
 });
 
-vi.mock('../pi-loader', () => ({
-  initPiLoader: vi.fn(async () => H.fakePi),
-  getPiCodingAgent: vi.fn(() => H.fakePi),
-  PI_MIN_NODE_MAJOR: 22,
-  nodeSupportsPi: () => true,
-}));
+vi.mock('../pi-loader', async () => {
+  const piAi = await import('@earendil-works/pi-ai');
+  return {
+    initPiLoader: vi.fn(async () => H.fakePi),
+    getPiCodingAgent: vi.fn(() => H.fakePi),
+    loadedPiAi: () => piAi,
+    PI_MIN_NODE_MAJOR: 22,
+    nodeSupportsPi: () => true,
+  };
+});
 
 // Only the fs-touching seed is stubbed; `cacheWarmingSetting` stays real so the mode a test configures
 // travels the production path.
@@ -322,18 +326,20 @@ describe('createSubagentSession — the deferred baseline (Slice 3 §3.2)', () =
     expect(deferredToolNames(tools, []).some((n) => TEAM_AGENT_PI_TOOL_NAMES.includes(n))).toBe(false);
   });
 
-  it('a restored transcript re-activates what its ToolSearch calls loaded and the tools it called', async () => {
-    const [loaded, called, untouched] = BROWSER_PI_TOOL_NAMES;
+  it("a reopened transcript re-activates the deferred tools its recorded loadout still declares, and no removed one", async () => {
+    const [kept, removed, unloaded] = BROWSER_PI_TOOL_NAMES;
     const tools = ['read', TOOL_TOOL_SEARCH, ...BROWSER_PI_TOOL_NAMES];
+    const declared = (name: string) => ({ name, description: '', parameters: {} });
     H.restored.push(
-      { role: 'toolResult', toolName: TOOL_TOOL_SEARCH, toolCallId: 't1', isError: false, content: [], details: { matches: [loaded], totalDeferredTools: 3 } },
-      { role: 'toolResult', toolName: TOOL_TOOL_SEARCH, toolCallId: 't2', isError: true, content: [], details: { matches: [untouched], totalDeferredTools: 3 } },
-      { role: 'assistant', content: [{ type: 'toolCall', id: 't3', name: called, arguments: {} }] },
+      { role: 'system', content: '', toolsAdded: [declared('read'), declared(TOOL_TOOL_SEARCH)], timestamp: 0 },
+      { role: 'toolResult', toolName: TOOL_TOOL_SEARCH, toolCallId: 't1', isError: false, content: [], details: { matches: [kept, removed, unloaded], totalDeferredTools: 3 } },
+      { role: 'system', content: '', toolsAdded: [declared(kept!), declared(removed!)], timestamp: 1 },
+      { role: 'system', content: '', toolsRemoved: [{ name: removed }], timestamp: 2 },
     );
 
     const { baseline } = await createNested(tools);
 
-    expect(baseline).toEqual(['read', TOOL_TOOL_SEARCH, loaded, called]);
+    expect(baseline).toEqual(['read', TOOL_TOOL_SEARCH, kept]);
   });
 });
 
@@ -376,7 +382,7 @@ describe('the baseline survives to the first request (real pi AgentSession)', ()
       cwd: process.cwd(),
       resourceLoader,
       modelRuntime: { getAvailableSnapshot: () => [] } as never,
-      // Mirrors what `createAgentSessionFromServices` derives from `opts.tools` (sdk.js:153-160 in pi 1.1.0):
+      // Mirrors what `createAgentSessionFromServices` derives from `opts.tools` (sdk.js:153-160 in pi 1.3.0):
       // `tools:` becomes BOTH the allowlist and the construction-time active set.
       allowedToolNames: tools,
       initialActiveToolNames: tools,
@@ -685,7 +691,7 @@ describe('createSubagentSession — the deferred baseline covers MCP (Slice 1, c
  * registers a tool into a LIVE nested session, re-apply this baseline after it." Delivering MCP as
  * `customTools` is adjacent to exactly that. The EXPECTED finding is that it does not apply, because
  * `customTools` are read inside `_refreshToolRegistry` during CONSTRUCTION
- * (`dist/core/agent-session.js:2817` in pi 1.1.0), not through a post-bind `registerTool`.
+ * (`dist/core/agent-session.js:2850` in pi 1.3.0), not through a post-bind `registerTool`.
  *
  * This is asserted on a REAL `AgentSession` because the claim is about pi's construction order, and a
  * fake session is precisely the thing that cannot testify to it. If this suite goes red, the finding is
@@ -726,7 +732,7 @@ describe('G2 — MCP customTools do not defeat the baseline (real pi AgentSessio
       cwd: process.cwd(),
       resourceLoader,
       modelRuntime: { getAvailableSnapshot: () => [] } as never,
-      // Exactly what `createAgentSessionFromServices` derives from `opts.tools` (sdk.js:153-160 in pi 1.1.0).
+      // Exactly what `createAgentSessionFromServices` derives from `opts.tools` (sdk.js:153-160 in pi 1.3.0).
       allowedToolNames: tools,
       initialActiveToolNames: tools,
       customTools,

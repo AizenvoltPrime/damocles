@@ -4,14 +4,23 @@ import type {
   BuildSystemPromptOptions,
   ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
-import { buildSystemPrompt, TONE_REMINDER_SECTION } from './system-prompt';
+import {
+  buildEnvironmentSection,
+  buildModelSection,
+  EXPLORE_FALLBACK_SECTION,
+  SYSTEM_PROMPT_PREAMBLE,
+  THINKING_OFF_SECTION,
+  TONE_REMINDER_SECTION,
+  WEB_VERIFICATION_SECTION,
+} from './system-prompt';
+import { COMPASS_SYSTEM_PROMPT } from '../compass/system-prompt';
 import { MEMORY_SYSTEM_PROMPT } from '../memory/system-prompt';
 import { log } from '../logger';
 import { getPiCodingAgent } from './pi-loader';
 import { findSessionPlanFiles } from '../paths';
 import { buildPlanModeGuidance, PLAN_MODE_SECTION } from './plan-mode-guidance';
 import { mainPlanModeStatement, planModeNoticeAtPromptStart } from './plan-mode-change';
-import { mechanismLabels } from './delivery-mechanisms';
+import { mechanismLabels, SESSION_TEAM_RULE } from './delivery-mechanisms';
 import { isWebSearchEnabled } from './web-access';
 import { CONTEXT_INJECTION_CUSTOM_TYPE, readLiveInjections } from './live-injections';
 import { isCancelNoteDispatch, nextPromptIndex } from './session-store/prompt-index';
@@ -116,12 +125,12 @@ export interface DamoclesSystemPromptInputs {
   memoryEnabled: boolean;
   planMode: boolean;
   /** Whether the multi-agent Team feature is enabled. It selects whether the team rung appears in the
-   *  delivery-mechanism ladder, both in the plan-mode implementation directive and in the execution-time
-   *  directive a bound plan file carries; the other two rungs are emitted either way. */
+   *  delivery-mechanism ladder: the `damocles_team` section, the plan-mode implementation directive and
+   *  the execution-time directive a bound plan file carries; the other two rungs are emitted either way. */
   teamEnabled: boolean;
   /** Whether the native web tools are enabled (`damocles.pi.webSearch.enabled`, off by default). While
-   *  off they are not in the session's eligible set at all, so both the version-verification bullet in
-   *  the main prompt and the plan-mode research clause are suppressed rather than pointing the model at
+   *  off they are not in the session's eligible set at all, so both the `damocles_web_verification`
+   *  section and the plan-mode research clause are suppressed rather than pointing the model at
    *  a `ToolSearch` group that answers "Not available in this session". Required, not optional: an
    *  omitted flag would silently render the `/context` preview web-off while the live turn renders it
    *  web-on, and this interface exists precisely to keep those two paths from drifting. */
@@ -140,6 +149,7 @@ export interface DamoclesSystemPromptInputs {
 /** The Damocles-owned pieces of the system prompt. `preamble` becomes pi's `customPrompt`, which pi
  *  emits untagged and which suppresses its identity, tool-prose, rules and docs blocks. */
 export interface DamoclesPromptSections {
+  /** Always `SYSTEM_PROMPT_PREAMBLE`, the same text for every input. */
   preamble: string;
   /** Insertion-ordered. A key whose content would be empty is absent, never present with an empty value. */
   sections: Record<string, string>;
@@ -147,14 +157,19 @@ export interface DamoclesPromptSections {
 
 /**
  * Assemble the Damocles system prompt (US-007), the single source of truth for both the turn path and
- * the `/context` preview/estimate: `buildSystemPrompt` (model-aware, per session) as the preamble, then
- * one named section per independently toggleable piece, so flipping one input repatches one section.
+ * the `/context` preview/estimate: the constant preamble, then one named section per runtime input, so
+ * changing one input repatches only its own section. pi re-sends every changed section in full as a
+ * mid-conversation system message, so no input may reach the preamble.
  * `project_context` and `skills` reuse pi's own section names, which makes the Damocles entry overwrite
  * pi's natively built one instead of the prompt carrying that content twice.
  */
 export function assembleDamoclesSystemPrompt(i: DamoclesSystemPromptInputs): DamoclesPromptSections {
-  const preamble = buildSystemPrompt({ ...i.env, webSearchEnabled: i.webSearchEnabled, teamEnabled: i.teamEnabled });
   const sections: Record<string, string> = {};
+  // pi renders this key as `<compass>`, which `buildAgentPrompt` looks for in an inherited parent prompt.
+  if (i.env.compassEnabled) sections['compass'] = COMPASS_SYSTEM_PROMPT;
+  else sections['damocles_explore'] = EXPLORE_FALLBACK_SECTION;
+  if (i.webSearchEnabled) sections['damocles_web_verification'] = WEB_VERIFICATION_SECTION;
+  if (i.teamEnabled) sections['damocles_team'] = SESSION_TEAM_RULE;
   if (i.memoryEnabled) sections['damocles_memory'] = MEMORY_SYSTEM_PROMPT;
   if (i.planMode) {
     // Plan mode names the write-target path (the model may not have written the file yet).
@@ -167,17 +182,21 @@ export function assembleDamoclesSystemPrompt(i: DamoclesSystemPromptInputs): Dam
   if (projectContext) sections['project_context'] = projectContext;
   const skills = renderSkills(i.skills, i.skillFileReadTool);
   if (skills) sections['skills'] = skills;
+  // Kept at the end so the model reads cwd and platform closest to its first tool call.
+  sections['damocles_environment'] = buildEnvironmentSection(i.env);
+  sections['damocles_model'] = buildModelSection(i.env.model);
+  if (i.env.thinkingDisabled) sections['damocles_output_form'] = THINKING_OFF_SECTION;
   // Inserted last so it stays the final section of the assembled prompt.
   sections['damocles_tone'] = TONE_REMINDER_SECTION;
-  return { preamble, sections };
+  return { preamble: SYSTEM_PROMPT_PREAMBLE, sections };
 }
 
 /** Flatten the section map the way pi renders the same pieces (preamble untagged, every other section
  *  wrapped in a tag of its own name, joined by a blank line). Two pieces of the live prompt are pi's
  *  own and absent here: the `cwd` section pi always emits, and the `addendum` section it emits for a
  *  loader append-prompt, so the `/context` estimate under-counts by both. Order differs too: pi holds
- *  `project_context` and `skills` in their native slots ahead of `cwd` and appends the `damocles_*`
- *  keys after it, while this renders the map in insertion order. */
+ *  `project_context` and `skills` in their native slots ahead of `cwd` and appends the other keys after
+ *  it, while this renders the map in insertion order. */
 export function renderSections(p: DamoclesPromptSections): string {
   const parts = [p.preamble, ...Object.entries(p.sections).map(([name, content]) => `<${name}>\n${content}\n</${name}>`)];
   return parts.filter((part) => part.length > 0).join('\n\n');
@@ -285,6 +304,11 @@ export function buildPlanModeNoticeResult(
   return message ? { message } : undefined;
 }
 
+/** The submitted prompt that starts the run, or undefined for a run an extension's custom message starts. */
+export function userPromptOf(event: BeforeAgentStartEvent): string | undefined {
+  return event.messageType === 'user' ? event.prompt : undefined;
+}
+
 /**
  * The `before_agent_start` prompt handler for the pi path. Writes the Damocles
  * prompt into `event.systemPromptOptions` (replacing pi's boilerplate, preserving project context) and
@@ -312,6 +336,9 @@ export async function buildAgentStartResult(
   Object.assign(options.sections, prompt.sections);
 
   const result: BeforeAgentStartEventResult = {};
+  const userPrompt = userPromptOf(event);
+  // Memory and Compass context is keyed to a submitted prompt's index; a custom-message run has none.
+  if (userPrompt === undefined) return result;
   const memoryEnabled = !!panel.memoryService?.isEnabled;
   const compass = buildCompassContext(panel);
   if (!memoryEnabled && !compass) return result;
@@ -319,11 +346,11 @@ export async function buildAgentStartResult(
   const live = readLiveInjections(sessionManager.buildSessionProjection().messages);
   // pi commits this prompt's user entry only after the handler returns, and adds no prompt before it.
   const branch = sessionManager.getBranch();
-  const cancelNote = isCancelNoteDispatch(branch, event.prompt);
+  const cancelNote = isCancelNoteDispatch(branch, userPrompt);
   const promptIndex = cancelNote ? nextPromptIndex(branch) - 1 : nextPromptIndex(branch);
   // A note gets no memory build of its own, as when it is steered into a running run; building one here
   // would overwrite the Injected Context record of the prompt it annotates.
-  const memory = cancelNote ? null : await buildMemoryContext(panel, sessionId, event.prompt, live, promptIndex);
+  const memory = cancelNote ? null : await buildMemoryContext(panel, sessionId, userPrompt, live, promptIndex);
   // A delete during the build detaches every holder first; a write now would recreate the deleted
   // session's injection database.
   if (!isLive()) return result;

@@ -70,6 +70,7 @@ vi.mock('electron', async () => {
     readonly setVisibleOnAllWorkspaces = vi.fn();
     readonly setIgnoreMouseEvents = vi.fn();
     readonly setShape = vi.fn();
+    readonly moveTop = vi.fn();
     readonly showInactive = vi.fn(() => {
       this.visible = true;
     });
@@ -117,6 +118,7 @@ type FakeWindow = EventEmitter & {
   setVisibleOnAllWorkspaces: ReturnType<typeof vi.fn>;
   setIgnoreMouseEvents: ReturnType<typeof vi.fn>;
   setShape: ReturnType<typeof vi.fn>;
+  moveTop: ReturnType<typeof vi.fn>;
   showInactive: ReturnType<typeof vi.fn>;
   hide: ReturnType<typeof vi.fn>;
   webContents: EventEmitter & {
@@ -312,6 +314,25 @@ describe('desktop popup window (D52)', () => {
     win().webContents.ipc.emit(OVERLAY_CHANNELS.toastArea, own(), { width: 0, height: 0, parts: [] });
     expect(win().hide).toHaveBeenCalledTimes(1);
     expect(win().visible).toBe(false);
+  });
+
+  // A full-screen player activated after the window was first shown sits above it among always-on-top windows.
+  it('restacks above other always-on-top windows each time it appears and on each new toast while it shows', () => {
+    host.sink();
+    win().webContents.emit('did-finish-load');
+    host.show(TOAST);
+    expect(win().moveTop).not.toHaveBeenCalled();
+    win().webContents.ipc.emit(OVERLAY_CHANNELS.toastArea, own(), AREA);
+    expect(win().moveTop).toHaveBeenCalledTimes(1);
+    expect(win().showInactive.mock.invocationCallOrder[0]!).toBeLessThan(win().moveTop.mock.invocationCallOrder[0]!);
+    win().webContents.ipc.emit(OVERLAY_CHANNELS.toastArea, own(), { ...AREA, height: 300 });
+    expect(win().moveTop).toHaveBeenCalledTimes(1);
+    host.show({ ...TOAST, id: 't2' });
+    expect(win().moveTop).toHaveBeenCalledTimes(2);
+    win().webContents.ipc.emit(OVERLAY_CHANNELS.toastArea, own(), { width: 0, height: 0, parts: [] });
+    win().webContents.ipc.emit(OVERLAY_CHANNELS.toastArea, own(), AREA);
+    expect(win().moveTop).toHaveBeenCalledTimes(3);
+    expect(win().focus).not.toHaveBeenCalled();
   });
 
   it('sizes the window by the primary display\'s scale', () => {

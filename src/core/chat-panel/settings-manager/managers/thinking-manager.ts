@@ -8,8 +8,8 @@ import {
   defaultEffortForModel,
   thinkingDisableAppliesToModel,
 } from "../utils";
-import { DEFAULT_MODELS, effortByModelEntry } from "../../../../shared/types/constants";
-import { effortToPiThinking } from "../../../pi-session/pi-models";
+import { effortByModelEntry } from "../../../../shared/types/constants";
+import { recordedReasoning } from "../../../pi-session/pi-models";
 
 /**
  * ThinkingManager owns per-panel reasoning controls (disabled toggle, effort
@@ -113,8 +113,8 @@ export class ThinkingManager {
    * `model`: the first effort the model lists that maps to it, and thinking off or on where the model offers the switch.
    */
   restoreRecordedLevel(panelId: string, model: string, level: string): void {
-    if (thinkingDisableAppliesToModel(model)) this.perPanelDisabled.set(panelId, level === "off");
-    const effort = DEFAULT_MODELS.find((info) => info.value === model)?.supportedEffortLevels?.find((candidate) => effortToPiThinking(candidate) === level);
+    const { thinkingDisabled, effort } = recordedReasoning(model, level);
+    if (thinkingDisabled !== undefined) this.perPanelDisabled.set(panelId, thinkingDisabled);
     if (effort) this.setPanelEffort(panelId, model, effort);
   }
 

@@ -39,7 +39,8 @@ async function enableVoiceStream(): Promise<string[]> {
     off: vi.fn(),
     attachClient: () => () => {},
     isReady: () => false,
-    start: vi.fn(async () => {}),
+    ensureStarted: vi.fn(async () => {}),
+    failureMessage: () => null,
     getPaths: () => ({ rootDir: "/fake/voice", modelsDir: "/fake/voice/models", pythonExe: "/fake/python", venvDir: "/fake/venv" }),
   };
   const deps = {
@@ -50,7 +51,7 @@ async function enableVoiceStream(): Promise<string[]> {
   } as unknown as HandlerDependencies;
   const { handlers } = createVoiceStreamHandlers(deps);
   await handlers.voiceStreamEnable!({ type: "voiceStreamEnable" }, { host: {} as PanelHost } as never);
-  expect(voiceService.start).toHaveBeenCalled();
+  expect(voiceService.ensureStarted).toHaveBeenCalledWith({ install: true });
   return posted;
 }
 

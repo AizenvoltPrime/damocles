@@ -898,7 +898,7 @@ describe('Models & accounts model and effort rows', () => {
 describe('always-thinking models', () => {
   const thinking = { thinkingDisabled: false, effort: null };
 
-  it.each(['step-5-preview', 'claude-haiku-5-5'])('This chat disables the thinking switch for %s and says why', async (model) => {
+  it.each(['step-5-preview', 'claude-sonnet-5-5'])('This chat disables the thinking switch for %s and says why', async (model) => {
     const store = useSettingsStore();
     store.setModelState(model, model);
     store.setPanelThinking(thinking, model);
@@ -908,7 +908,7 @@ describe('always-thinking models', () => {
     expect(row('disable-thinking')!.querySelector('.sm-row-desc')!.textContent).toContain(t('settings.thinkingAlwaysOn'));
   });
 
-  it.each(['step-5-preview', 'claude-haiku-5-5'])('Defaults disables the thinking switch for %s and says why', async (model) => {
+  it.each(['step-5-preview', 'claude-sonnet-5-5'])('Defaults disables the thinking switch for %s and says why', async (model) => {
     const store = useSettingsStore();
     store.setModelState('', model);
     store.setDefaultThinking(thinking, model);
@@ -918,10 +918,10 @@ describe('always-thinking models', () => {
     expect(row('damocles.thinkingDisabled')!.querySelector('.sm-row-desc')!.textContent).toContain(t('settings.thinkingAlwaysOn'));
   });
 
-  it('leaves the switch on for a model that can stop thinking', async () => {
+  it.each(['deepseek-v4-pro', 'claude-haiku-5-5'])('leaves the switch on for %s, which can stop thinking', async (model) => {
     const store = useSettingsStore();
-    store.setModelState('deepseek-v4-pro', 'deepseek-v4-pro');
-    store.setPanelThinking(thinking, 'deepseek-v4-pro');
+    store.setModelState(model, model);
+    store.setPanelThinking(thinking, model);
     await open(NO_HOST_SETTINGS, 'chat');
     expect(row('disable-thinking')!.querySelector<HTMLButtonElement>('[role="switch"]')!.disabled).toBe(false);
     expect(row('disable-thinking')!.textContent).not.toContain(t('settings.thinkingAlwaysOn'));

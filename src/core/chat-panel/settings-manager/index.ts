@@ -11,7 +11,7 @@ import type { PostMessageFn, SettingsManagerConfig } from "./types";
 import { TOOL_GROUP_SETTINGS, type SwitchableToolGroup } from "../../../shared/types/tools";
 import type { ExtensionToWebviewMessage } from "../../../shared/types/messages";
 import { updateConfigAtEffectiveScope, type SettingWrite } from "./utils";
-import { MCP_TOOL_EXPOSURE_SETTING } from "../../../shared/types/mcp";
+import { MCP_RESOURCE_EXPOSURE_SETTING, MCP_TOOL_EXPOSURE_SETTING } from "../../../shared/types/mcp";
 import { McpManager } from "./managers/mcp-manager";
 import { log } from "../../logger";
 import {
@@ -28,6 +28,7 @@ import { ExploreManager } from "./managers/explore-manager";
 import type { VoiceProvider, VoiceConfig, VoiceMode, GpuPreference, TtsVoiceId } from "../../../shared/types/voice";
 import type { TeamRole } from "../../pi-session/team-model-resolution";
 import { PiRuntime } from "../../pi-session/pi-runtime";
+import { serializeSettingWrite } from "../../settings-write-chain";
 import { IMAGE_ENABLED_SETTING, IMAGE_MODEL_SETTING, IMAGE_PROVIDER, isOfferedImageModel } from "../../pi-session/tools/image-tool-specs";
 
 export type { SettingsManagerConfig };
@@ -42,7 +43,6 @@ export class SettingsManager {
   private readonly thinkingManager: ThinkingManager;
   private readonly voiceManager: VoiceManager;
   private readonly exploreManager: ExploreManager;
-  private settingWrites: Promise<unknown> = Promise.resolve();
 
   constructor(config: SettingsManagerConfig) {
     this.postMessage = config.postMessage;
@@ -118,15 +118,15 @@ export class SettingsManager {
   }
 
   /**
-   * A rename also moves the two stores keyed by server name, which the config file knows nothing
-   * about. Without this, renaming a server the user had switched OFF brings it back on — for stdio,
-   * spawning a process they deliberately stopped — and every tool they turned off individually silently
-   * comes back, because `damocles.mcp.toolExposure` is keyed by server name.
+   * A rename also moves the three stores keyed by server name, which the config file knows nothing
+   * about: the server's enabled state, `damocles.mcp.toolExposure` and `damocles.mcp.resourceExposure`.
+   * Without this, renaming a server the user had switched OFF brings it back on — for stdio, spawning a
+   * process they deliberately stopped — and every tool or resource exposure they set silently resets.
    *
-   * Both run after the write, so a rejected write moves nothing, and before the caller reloads the
-   * config, so the reload sees the updated state. The per-tool setting moves at every scope it is set
-   * at, project included, where the panel itself writes it, so an Off chosen there stays Off. The
-   * rename has landed by then, so a failure in either step is logged and the save still succeeds.
+   * All run after the write, so a rejected write moves nothing, and before the caller reloads the
+   * config, so the reload sees the updated state. Both exposure settings move at every scope they are
+   * set at, project included, where the panel itself writes them, so an Off chosen there stays Off. The
+   * rename has landed by then, so a failure in any step is logged and the save still succeeds.
    */
   async updateMcpServer(folderKey: string, serverName: string, newServerName: string | undefined, config: McpServerConfig): Promise<void> {
     await updateDamoclesMcpServer(serverName, newServerName, config, this.mcpManager.getShadowingServerNames(folderKey));
@@ -139,15 +139,17 @@ export class SettingsManager {
     }
 
     await this.serializeSettingWrite(async () => {
-      const inspection = this.platform.settings.inspect<unknown>(MCP_TOOL_EXPOSURE_SETTING);
-      const scopes = [["user", inspection.userValue], ["project", inspection.projectValue], ["local", inspection.localValue]] as const;
-      for (const [scope, value] of scopes) {
-        if (!value || typeof value !== "object" || Array.isArray(value) || !Object.hasOwn(value, serverName)) continue;
-        const { [serverName]: tools, ...rest } = value as Record<string, unknown>;
-        try {
-          await this.platform.settings.update(MCP_TOOL_EXPOSURE_SETTING, { ...rest, [newServerName]: tools }, scope);
-        } catch (err) {
-          log("[SettingsManager] the %s-scope tool exposure of MCP server %s did not follow its rename: %s", scope, serverName, err instanceof Error ? err.message : String(err));
+      for (const setting of [MCP_TOOL_EXPOSURE_SETTING, MCP_RESOURCE_EXPOSURE_SETTING]) {
+        const inspection = this.platform.settings.inspect<unknown>(setting);
+        const scopes = [["user", inspection.userValue], ["project", inspection.projectValue], ["local", inspection.localValue]] as const;
+        for (const [scope, value] of scopes) {
+          if (!value || typeof value !== "object" || Array.isArray(value) || !Object.hasOwn(value, serverName)) continue;
+          const { [serverName]: entry, ...rest } = value as Record<string, unknown>;
+          try {
+            await this.platform.settings.update(setting, { ...rest, [newServerName]: entry }, scope);
+          } catch (err) {
+            log("[SettingsManager] the %s-scope %s of MCP server %s did not follow its rename: %s", scope, setting, serverName, err instanceof Error ? err.message : String(err));
+          }
         }
       }
     });
@@ -208,15 +210,9 @@ export class SettingsManager {
     return this.browserManager.isEnabled();
   }
 
-  /**
-   * Runs a setter that reads a list or object setting and writes it back after the setters queued before it, so each
-   * reads what the previous one wrote: the stores change what they read only once a write has landed.
-   */
+  /** Runs a setter that reads a list or object setting and writes it back on the process-wide settings write chain. */
   serializeSettingWrite<T>(write: () => Promise<T>): Promise<T> {
-    const run = this.settingWrites.then(write);
-    // The chain only orders writes; each caller handles its own failure.
-    this.settingWrites = run.catch(() => undefined);
-    return run;
+    return serializeSettingWrite(write);
   }
 
   /** Add/remove a tool's active-set name in `damocles.tools.disabled` (per-tool Tools-panel toggle). */
@@ -364,15 +360,18 @@ export class SettingsManager {
     this.thinkingManager.setPanelEffort(panelId, model, effort);
   }
 
-  /** A resumed conversation continues on the model and pi thinking level its session file recorded, which become the panel's. */
-  restoreRecordedSelection(host: PanelHost, panelId: string, folder: FolderTarget, model: string, thinkingLevel: string | undefined): void {
+  /**
+   * A resumed conversation continues on the model and pi thinking level its session file recorded. The level becomes the
+   * panel's for that model here; the model reaches the panel only through `adoptSessionModel`, once pi adopted it.
+   */
+  restoreRecordedSelection(panelId: string, model: string, thinkingLevel: string | undefined): void {
     if (thinkingLevel !== undefined) this.thinkingManager.restoreRecordedLevel(panelId, model, thinkingLevel);
-    this.adoptSessionModel(host, panelId, folder, model);
   }
 
   /** The panel's model is the one its session committed; nothing else writes it once the session exists. */
-  adoptSessionModel(host: PanelHost, panelId: string, folder: FolderTarget, model: string): void {
+  adoptSessionModel(host: PanelHost, panelId: string, folder: FolderTarget, model: string, contextWindow: number): void {
     this.modelManager.setActiveModelForPanel(panelId, model);
+    this.modelManager.setContextWindowForPanel(panelId, contextWindow);
     this.sendModelForPanel(host, panelId);
     this.sendThinkingForPanel(host, panelId, folder);
   }

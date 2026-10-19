@@ -63,6 +63,8 @@ export class HistoryManager {
     if (this.inflight.get(host) === ctrl) this.inflight.delete(host);
     // The replay contract carries no account state, and a restored panel may never run a turn.
     session.publishAccountInfo();
+    // A newer replay posts its own, and a replay that read no file rebuilt no card.
+    if (rewindableIds !== null && !ctrl.signal.aborted) session.replayLiveAgents(sessionId);
     return rewindableIds;
   }
 

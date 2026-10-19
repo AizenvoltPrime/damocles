@@ -16,6 +16,7 @@ import type { PermissionUpdate, PromptApprover, PromptOwner } from '../../shared
 import { log } from '../logger';
 import type { PermissionResult, CanUseToolContext, SettledApproval, McpToolIdentity } from './types';
 import { buildUnaskedDenyResult } from './utils';
+import type { McpResourceRuleFilter } from './mcp-resource-rule';
 import { IMAGE_MODEL_SETTING } from '../pi-session/tools/image-tool-specs';
 import type { FormValues } from '../../shared/types/forms';
 import type { RaisedPrompt } from '../pi-session/session-state';
@@ -232,6 +233,11 @@ export class PermissionHandler {
   /** Whether a `Read` deny or ask rule covers a file, for Grep and Glob to leave it out of their results. */
   async readRuleFilter(): Promise<(filePath: string) => boolean> {
     return this.evaluatorManager.readRuleFilter(this.state.workspacePath);
+  }
+
+  /** What the settings rules hide from an MCP resource list call of `toolName` (`McpResourceRuleFilter`). */
+  async mcpResourceRuleFilter(toolName: string): Promise<McpResourceRuleFilter> {
+    return this.evaluatorManager.mcpResourceRuleFilter(toolName, this.state.workspacePath);
   }
 
   /** Whether an Edit or Write of `filePath` targets a plan file, resolved against the session cwd. */

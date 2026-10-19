@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n';
 import { visibleText } from '@shared/visible-text';
 import { LETTER_TONE } from '@shared/scm/status-letter';
 import type { ScmLetter } from '../../../preload/scm-channels';
-import { fileIcon } from '../../file-icons';
+import FileIcon from '../../components/FileIcon.vue';
 import StatusLetter from '../../scm/StatusLetter.vue';
 
 /**
@@ -24,7 +24,7 @@ const rows = computed(() => props.files.map((file) => {
   const shown = visibleText(file.path);
   const slash = shown.lastIndexOf('/');
   const tone = file.letter === undefined ? undefined : LETTER_TONE[file.letter];
-  return { key: file.path, shownPath: shown, name: shown.slice(slash + 1), folder: slash < 0 ? '' : shown.slice(0, slash), look: fileIcon(file.path), mark: file.mark, letter: file.letter, tone };
+  return { key: file.path, shownPath: shown, name: shown.slice(slash + 1), folder: slash < 0 ? '' : shown.slice(0, slash), path: file.path, mark: file.mark, letter: file.letter, tone };
 }));
 </script>
 
@@ -42,11 +42,9 @@ const rows = computed(() => props.files.map((file) => {
       :title="row.shownPath"
       data-testid="worktree-dialog-file"
     >
-      <component
-        :is="row.look.icon"
-        aria-hidden="true"
+      <FileIcon
+        :path="row.path"
         class="size-3.25 shrink-0"
-        :style="{ color: row.look.color }"
       />
       <!-- The folder gives way four times as fast as the name, so a long name cuts only after its folder has. -->
       <span

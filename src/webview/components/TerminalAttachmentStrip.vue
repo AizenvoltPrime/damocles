@@ -4,13 +4,20 @@ import { useI18n } from "vue-i18n";
 import type { ChatAttachmentInfo } from "@shared/types/chat-attachment";
 import { chatAttachmentLabel } from "@/utils/chat-attachment-label";
 import CommitAttachmentChip from "./CommitAttachmentChip.vue";
+import McpResourceAttachmentChip from "./McpResourceAttachmentChip.vue";
 import TerminalAttachmentChip from "./TerminalAttachmentChip.vue";
 
-// The composer's pending attachments, terminal output and commits; each chip pops in when the host adds it and shrinks out
-// when it leaves.
+// The composer's pending attachments, terminal output, commits and MCP resources; each chip pops in when the host adds it
+// and shrinks out when it leaves.
 const props = defineProps<{ attachments: readonly ChatAttachmentInfo[] }>();
 const emit = defineEmits<{ remove: [id: string]; focusComposer: [] }>();
 const { t } = useI18n();
+
+const ADDED_KEYS: Record<ChatAttachmentInfo["kind"], string> = {
+  terminal: "terminalAttachment.added",
+  commit: "commitAttachment.added",
+  mcpResource: "mcp.resourceChip.added",
+};
 
 const list = ref<HTMLElement | null>(null);
 // What screen readers hear when an attachment arrives; the chip itself is announced only when reached.
@@ -31,7 +38,7 @@ function onRemove(id: string): void {
 watch(() => props.attachments, (next, before) => {
   const known = new Set(before?.map((attachment) => attachment.id));
   const added = next.filter((attachment) => !known.has(attachment.id));
-  if (added.length > 0) announcement.value = added.map((attachment) => t(attachment.kind === "commit" ? "commitAttachment.added" : "terminalAttachment.added", { label: chatAttachmentLabel(attachment, t) })).join(" ");
+  if (added.length > 0) announcement.value = added.map((attachment) => t(ADDED_KEYS[attachment.kind], { label: chatAttachmentLabel(attachment, t) })).join(" ");
   const pending = refocus;
   if (!pending || next.some((attachment) => attachment.id === pending.id)) return;
   refocus = null;
@@ -72,6 +79,12 @@ function pinLeaving(element: Element): void {
       >
         <CommitAttachmentChip
           v-if="attachment.kind === 'commit'"
+          :attachment="attachment"
+          removable
+          @remove="onRemove"
+        />
+        <McpResourceAttachmentChip
+          v-else-if="attachment.kind === 'mcpResource'"
           :attachment="attachment"
           removable
           @remove="onRemove"

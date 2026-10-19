@@ -6,7 +6,7 @@ export function createBtwHandlers(
   return {
     sendBtw: async (msg, ctx) => {
       if (msg.type !== "sendBtw") return;
-      await ctx.session.sendBtw(msg.btwId, msg.question);
+      await ctx.session.sendBtw(msg.btwId, msg.question, typeof msg.sessionId === "string" ? msg.sessionId : undefined);
     },
 
     cancelBtw: (msg, ctx) => {

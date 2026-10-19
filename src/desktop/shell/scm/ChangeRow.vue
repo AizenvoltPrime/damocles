@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { ChevronRight, FileSymlink, Folder, FolderOpen, Minus, Plus, Undo2 } from 'lucide-vue-next';
+import { ChevronRight, FileSymlink, Minus, Plus, Undo2 } from 'lucide-vue-next';
 import type { Component } from 'vue';
 import { Button } from '@/components/ui/button';
-import { fileIcon } from '../file-icons';
+import FileIcon from '../components/FileIcon.vue';
 import { rowActions, type RowInlineAction } from './scm-menus';
 import type { ScmRow } from './scm-list';
 import StatusLetter from './StatusLetter.vue';
@@ -45,7 +45,6 @@ const indent = computed(() => {
 });
 const change = computed(() => (props.row.kind === 'change' ? props.row.change : undefined));
 const name = computed(() => visibleText(props.row.name));
-const icon = computed(() => (props.row.kind === 'folder' ? { icon: props.row.expanded ? FolderOpen : Folder, color: 'var(--d-muted)' } : fileIcon(props.row.name)));
 const actions = computed(() => rowActions(props.row.group));
 const title = computed(() => {
   const current = change.value;
@@ -88,11 +87,11 @@ const title = computed(() => {
       class="size-2.75 shrink-0 text-(--d-faint) transition-transform duration-150 ease-out"
       :class="row.expanded ? 'rotate-90' : ''"
     />
-    <component
-      :is="icon.icon"
-      aria-hidden="true"
+    <FileIcon
+      :path="row.kind === 'folder' ? row.path : change?.path ?? row.name"
+      :directory="row.kind === 'folder'"
+      :open="row.kind === 'folder' && row.expanded"
       class="size-3.25 shrink-0"
-      :style="{ color: icon.color }"
     />
     <span
       class="min-w-0 shrink truncate text-12.5"

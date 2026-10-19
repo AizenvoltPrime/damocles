@@ -13,8 +13,8 @@ import type { OverlayMenuItem } from '../../preload/overlay-channels';
 import type { ScmDecoration, ScmLetter, ScmResource, ScmTone } from '../../preload/scm-channels';
 import { parseRootKey } from '../../preload/folder-root';
 import { fileNameProblem } from '../../preload/file-names';
-import { ancestorsOf, autoRevealExcluded, flattenTree, nameOf, parentOf, type Listing, type TreeEdit, type TreeRow } from '../files-tree';
-import { fileIcon } from '../file-icons';
+import { ancestorsOf, autoRevealExcluded, childPath, flattenTree, nameOf, parentOf, type Listing, type TreeEdit, type TreeRow } from '../files-tree';
+import FileIcon from './FileIcon.vue';
 import { tidyMenu } from '../../preload/overlay-channels';
 import { EDITOR_STORE } from '../editor/editor-store';
 import { SCM_STORE } from '../scm/scm-store';
@@ -58,6 +58,13 @@ const helpId = useId();
 
 const rows = computed(() => flattenTree(listings.value, expanded.value, edit.value));
 const rowKey = (row: TreeRow): string => (row.kind === 'entry' ? `entry:${row.path}` : `input:${row.edit.mode}`);
+// The name being typed placed in its folder, so parent-qualified icons match; a folder being renamed stays open while expanded.
+const inputIcon = (row: Extract<TreeRow, { kind: 'input' }>): { path: string; open: boolean } => {
+  const name = editName.value || row.name;
+  return row.edit.mode === 'rename'
+    ? { path: childPath(parentOf(row.edit.path), name), open: expanded.value.has(row.edit.path) }
+    : { path: childPath(row.edit.parentDir, name), open: false };
+};
 const { list: visibleRows, containerProps, wrapperProps, scrollTo } = useVirtualList(rows, { itemHeight: () => remPx(ROW_REM), overscan: 10 });
 
 const focusedIndex = computed(() => {
@@ -661,11 +668,11 @@ defineExpose({ reveal, startCreate, collapseAll });
             :style="{ height: `${remPx(ROW_REM)}px`, paddingLeft: `${INDENT_START_REM + row.depth * INDENT_REM}rem` }"
           >
             <span class="w-3.5 shrink-0" />
-            <component
-              :is="fileIcon(editName || row.name, row.directory).icon"
-              aria-hidden="true"
+            <FileIcon
+              :path="inputIcon(row).path"
+              :directory="row.directory"
+              :open="inputIcon(row).open"
               class="size-3.5 shrink-0"
-              :style="{ color: fileIcon(editName || row.name, row.directory).color }"
             />
             <div class="relative min-w-0 flex-1">
               <Input
@@ -723,11 +730,11 @@ defineExpose({ reveal, startCreate, collapseAll });
                 :class="row.expanded ? 'rotate-90' : ''"
               />
             </span>
-            <component
-              :is="fileIcon(row.name, row.directory, row.expanded).icon"
-              aria-hidden="true"
+            <FileIcon
+              :path="row.path"
+              :directory="row.directory"
+              :open="row.expanded"
               class="size-3.5 shrink-0"
-              :style="{ color: fileIcon(row.name, row.directory, row.expanded).color }"
             />
             <span
               data-testid="files-name"

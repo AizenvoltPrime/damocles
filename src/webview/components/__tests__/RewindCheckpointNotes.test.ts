@@ -73,14 +73,14 @@ describe('RewindConfirmModal checkpoint notes', () => {
     await mountModal({ skipped });
     const section = q('[data-testid="rewind-not-restored"]');
     expect(section?.textContent).toContain('Not restored by this checkpoint');
-    expect(section?.textContent).toContain('6 files, 1.0 GB');
+    expect(section?.textContent).toContain('6 files, 1 GB');
     expect(post).not.toHaveBeenCalled();
 
     await expandNotRestored();
     expect(qa('[data-testid="rewind-not-restored-reason"]').map(rowText)).toEqual([
-      'over the size limit 1 file, 1.0 GB',
-      'media, archive or build output 2 files, 5.0 MB',
-      'Git LFS file 3 files, 30.0 MB',
+      'over the size limit 1 file, 1 GB',
+      'media, archive or build output 2 files, 5 MB',
+      'Git LFS file 3 files, 30 MB',
     ]);
     expect(qa('[data-testid="rewind-not-restored-pattern"]').map(rowText)).toEqual([
       '*.mp4: 1 file media, archive or build output',
@@ -94,12 +94,12 @@ describe('RewindConfirmModal checkpoint notes', () => {
     await flush();
     expect(q('[data-testid="rewind-not-restored-loading"]')).toBeNull();
     expect(qa('[data-testid="rewind-not-restored-file"]').map(rowText)).toEqual([
-      'renders/raw.rgba 1.0 GB over the size limit',
-      'out/final.mp4 5.0 MB media, archive or build output',
+      'renders/raw.rgba 1 GB over the size limit',
+      'out/final.mp4 5 MB media, archive or build output',
       '.venv/ media, archive or build output',
-      'models/a.onnx 10.0 MB Git LFS file',
-      'models/b.onnx 10.0 MB Git LFS file',
-      'models/c.onnx 10.0 MB Git LFS file',
+      'models/a.onnx 10 MB Git LFS file',
+      'models/b.onnx 10 MB Git LFS file',
+      'models/c.onnx 10 MB Git LFS file',
     ]);
     expect(section?.textContent).toContain('A rewind leaves these files exactly as they are.');
 

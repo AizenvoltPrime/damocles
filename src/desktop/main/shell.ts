@@ -951,7 +951,7 @@ export function shellHtml(theme: PanelTheme): string {
   const nonce = randomBytes(16).toString('base64');
   const assets = `${APP_ORIGIN}/desktop-shell/assets`;
   return `<!DOCTYPE html>
-<html lang="en"${theme.reducedMotion ? ' data-reduced-motion' : ''}>
+<html lang="en"${theme.reducedMotion ? ' data-reduced-motion' : ''} data-file-icon-theme="${theme.fileIconTheme}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">

@@ -7,19 +7,22 @@ import type { MemoryService } from '../memory';
 import type { CompassService } from '../compass';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import { FEEDBACK_MARKER, POLICY_BLOCK_MARKER } from '../../shared/types/constants';
-import { IGNORED_TOOLS, SUBAGENT_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_BASH, TOOL_POWERSHELL, TOOL_AGENT, LIVE_OUTPUT_TOOLS } from '../../shared/tool-names';
+import { IGNORED_TOOLS, SUBAGENT_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_BASH, TOOL_POWERSHELL, TOOL_AGENT, LIVE_OUTPUT_TOOLS, isMcpResourceToolName } from '../../shared/tool-names';
 import { isPlanFilePath } from '../paths';
 import { mapPiToolName, normalizeToolInput, denormalizeToolInput, toolCategory } from './tool-normalization';
 import { classifyReadOnlyShellCommand } from './readonly-shell';
 import { worktreeIsolationBlock, type WorktreeIsolation } from './worktree-isolation';
 import { GATEABLE_MODULE_NAMES } from './tools/tool-catalog';
 import type { DeferrableSnapshot } from './tools/tool-search-tool';
+import type { ResourceReadReach } from './mcp/content';
 import type { ShellCancelRegistry } from './tools/shell-cancel-registry';
 import { describeStoppedBeforeRun } from './tools/cancellable-shell';
-import type { ToolCallHookResult } from './hooks/dispatch';
+import type { ToolCallHookOutcome } from './hooks/dispatch';
 
 /** A non-aborting signal for gate calls when pi hands us no AbortSignal (`ctx.signal` is optional). */
 const NEVER_ABORT: AbortSignal = new AbortController().signal;
+
+const ABORTED_BEFORE_RUN = 'The session was aborted before this tool call could run';
 
 /**
  * Build the `CanUseToolContext` the managers expect. `toolCallId` is pi's native, always-present id.
@@ -35,7 +38,7 @@ export function buildCanUseToolContext(
   return { signal: signal ?? NEVER_ABORT, toolUseID: toolCallId, parentToolUseId, ...(mcpTool ? { mcpTool } : {}) };
 }
 
-/** Environment facts for `buildSystemPrompt` on the pi path (US-007), resolved per session. */
+/** The runtime inputs of the system prompt's sections on the pi path (US-007), resolved per session. */
 export interface SystemPromptEnv {
   cwd: string;
   model: string;
@@ -64,7 +67,7 @@ export interface PanelGateContext {
   compassService?: CompassService;
   /** The resolved session model id (per-session, model-aware system prompt). */
   getSessionModel: () => string;
-  /** Environment facts for `buildSystemPrompt`. */
+  /** Runtime inputs for `assembleDamoclesSystemPrompt`. */
   getSystemPromptEnv: () => SystemPromptEnv;
   /** The workspace memory's project scope files this panel's prompts under: the project of a worktree chat (`identityFolder`). */
   memoryWorkspace: () => string;
@@ -76,8 +79,6 @@ export interface PanelGateContext {
   isTeamEnabled?: () => boolean;
   /** Emit a webview message from a shared-extension hook (injection chips, etc.). */
   postMessage: (message: ExtensionToWebviewMessage) => void;
-  /** What the user typed for the prompt pi's input handlers get as `text`, when this panel sent it. */
-  typedPromptOf?: (text: string) => string | undefined;
   /** True once the hard budget limit stopped the turn; a cache-warming refresh bills against that cap. */
   budgetStopRequested: () => boolean;
   /** Called from the `agent_before_settle` boundary: coordinates the background keep-alive (wait for
@@ -101,13 +102,14 @@ export interface PanelGateContext {
   mcpToolIdentity?: (piToolName: string) => McpToolIdentity | undefined;
   /** This panel's deferrable universe for `ToolSearch`; absent for subagents (no deferral). */
   deferrableTools?: () => DeferrableSnapshot;
+  /**
+   * How `read_mcp_resource` reaches this panel's agent now, for a resource link in a result from `server`.
+   * The folder's MCP tools serve every panel in it and ask this per call; absent for nested agents, whose
+   * frozen toolset answers itself.
+   */
+  mcpResourceReach?: (server: string) => Promise<ResourceReadReach>;
   /** Load deferred tools into this panel's active set — synchronous, called inside `ToolSearch.execute`. */
   activateDeferredTools?: (names: string[]) => void;
-  /**
-   * Called from `before_agent_start` with the dispatching session's id. Holds the session's first prompt,
-   * bounded, while a server with Always-loaded MCP tools is still connecting; every later call returns at once.
-   */
-  waitForAlwaysLoadedMcp?: (sessionId: string) => Promise<void>;
   /**
    * The panel's turn checkpoint. A nested agent passes its parent panel's, so its file changes never
    * land before the parent turn's baseline. Absent means no checkpoints to wait for.
@@ -216,12 +218,13 @@ function isInsideFolder(target: string, folder: string): boolean {
 
 /**
  * PreToolUse hooks plugged into the single gate handler (Section 3.3). `run` executes the configured
- * `tool_call` hooks for this event (null when none match); `onDecision` raises the transparency notice
- * when a hook force-allows or blocks. Built per tool-call by the extension wiring, which owns the panel's
- * webview emitter. Absent when no `tool_call` hook is configured, so the gate path stays zero-cost (FR-14).
+ * `tool_call` hooks for this event (null when none match; an abort of `signal` kills them and reports the
+ * chain aborted); `onDecision` raises the transparency notice when a hook force-allows or blocks. Built
+ * per tool-call by the extension wiring, which owns the panel's webview emitter. Absent when no
+ * `tool_call` hook is configured, so the gate path stays zero-cost (FR-14).
  */
 export interface PreToolUseHookGate {
-  run: (event: ToolCallEvent) => Promise<ToolCallHookResult | null>;
+  run: (event: ToolCallEvent, signal: AbortSignal | undefined) => Promise<ToolCallHookOutcome>;
   /** `terminate` is the hook's opt-in to ending the whole turn, not just this call — the notice must say
    *  so, because pi's terminate path settles the turn normally and leaves no other signal. */
   onDecision: (toolName: string, decision: 'allow' | 'deny', reason: string | undefined, terminate: boolean) => void;
@@ -289,7 +292,6 @@ async function decideToolCall(
   // Read-only-annotated MCP tools auto-allow like reads; non-read MCP tools hit full approval (US-014.4).
   const isMcp = damoclesName.startsWith('mcp__');
   const mcpReadOnly = isMcp && (panel.isMcpReadOnly?.(damoclesName) ?? false);
-  const mcpTool = isMcp ? panel.mcpToolIdentity?.(damoclesName) : undefined;
 
   // PreToolUse hooks run INSIDE the single gate handler, before the gate decides (Section 3.3). `allow`
   // skips the gate entirely (force-allow); `deny`/exit-2 blocks; `updatedInput` mutates `event.input` in
@@ -299,7 +301,7 @@ async function decideToolCall(
   // A PreToolUse hook's `additionalContext` (when the tool will proceed) is delivered on the matching
   // tool result — pi's `tool_call` return can't inject context. Stamped on any "tool proceeds" path.
   let pendingContext: string | undefined;
-  // Ends the approval prompt and the checkpoint wait on a Stop as well as on a run abort.
+  // Ends the PreToolUse hooks, the approval prompt and the checkpoint wait on a Stop as well as on a run abort.
   const callSignal = stopSignal ? AbortSignal.any([signal ?? NEVER_ABORT, stopSignal]) : signal;
   // The user acted, so this is a user rejection: no policy wording, no `terminate` (the turn goes on),
   // and never the note, which already reached the agent as a user message.
@@ -308,11 +310,15 @@ async function decideToolCall(
     const cancellation = panel.shellCancel.takeCancellation(event.toolCallId) ?? {};
     return { block: true, reason: formatDenyReason(describeStoppedBeforeRun(cancellation)) };
   };
+  // A wait `callSignal` ended blocks as an aborted approval prompt does: the user's Stop, else an unasked deny.
+  const abortedWhileWaiting = (): ToolCallEventResult =>
+    stoppedByUser() ?? { block: true, reason: formatPolicyBlockReason(ABORTED_BEFORE_RUN) };
   // Every allow path funnels here, after approval, so the approval prompt's time counts toward the baseline.
   const proceed = async (): Promise<ToolCallEventResult | undefined> => {
     const checkpoint = panel.checkpointBaseline;
     if (checkpoint && waitsForCheckpointBaseline(event.toolName, event.input as Record<string, unknown>, panel.isMcpReadOnly, checkpoint.folder)) {
       await checkpoint.wait(callSignal ?? NEVER_ABORT, mapPiToolName(event.toolName));
+      if (callSignal?.aborted) return abortedWhileWaiting();
     }
     const stopped = stoppedByUser();
     if (stopped) return stopped;
@@ -329,8 +335,9 @@ async function decideToolCall(
   };
 
   if (preToolUse) {
-    const result = await preToolUse.run(event);
+    const result = await preToolUse.run(event, callSignal);
     if (result?.systemMessages.length) preToolUse.notify(result.systemMessages);
+    if (result && 'aborted' in result) return abortedWhileWaiting();
     const stopped = stoppedByUser();
     if (stopped) return stopped;
     if (result) {
@@ -368,6 +375,8 @@ async function decideToolCall(
   if (isolated) return isolated;
 
   const input = normalizeToolInput(event.toolName, event.input as Record<string, unknown>);
+  // Read after the hooks, since a hook's `updatedInput` can change which server a resource call names.
+  const mcpTool = isMcp ? panel.mcpToolIdentity?.(damoclesName) : mcpResourceIdentity(damoclesName, input);
 
   // The full approval flow: the prompt for gating tools and unknown tools, and for any call an ask rule names.
   const askUser = async (call: GatedCall): Promise<ToolCallEventResult | undefined> => {
@@ -402,6 +411,12 @@ async function decideToolCall(
   const verdict = gateVerdict(call, panel);
   if (verdict.kind === 'block') return { block: true, reason: formatPolicyBlockReason(verdict.reason) };
   return verdict.kind === 'run' ? proceed() : askUser(call);
+}
+
+/** The server an MCP resource tool call names, so `mcp__<server>` rules cover it as one of that server's tools. */
+function mcpResourceIdentity(toolName: string, input: Record<string, unknown>): McpToolIdentity | undefined {
+  const server = input['server'];
+  return isMcpResourceToolName(toolName) && typeof server === 'string' && server !== '' ? { server, tool: toolName } : undefined;
 }
 
 /** A call the gate decides, as it reached the gate once its PreToolUse hooks ran. */

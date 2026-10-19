@@ -54,19 +54,13 @@ afterAll(() => fs.rmSync(DAMOCLES_HOME_DIR, { recursive: true, force: true }));
 const SESSION = 'parent-session';
 const LEAD_ONLY = { title: 'resumable team', brief: 'the brief', agents: [{ name: 'Lead', role: 'lead' as const }] };
 
+/** How the lead's model answers each call; `text` is what pi delivered since the previous call, empty after tools. */
 type Behaviour = (text: string, session: FakeSession) => void;
-const endTurn: Behaviour = (_t, s) => s.emit({ type: 'turn_end' });
+const endTurn: Behaviour = (_t, s) => { void s.endTurn(); };
 const holdTurn: Behaviour = () => undefined;
 
-/** A model call pi gave up retrying, in the order pi reports it (see `emitFailedCall` in agent-runner.test.ts). */
-function emitFailedCall(s: FakeSession, errorMessage: string): void {
-  const message = { role: 'assistant', content: [], stopReason: 'error', errorMessage };
-  s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
-  s.emit({ type: 'message_end', message });
-  s.emit({ type: 'turn_end', message, toolResults: [] });
-  s.emit({ type: 'agent_end', messages: [message], willRetry: false });
-}
-const failCall = (errorMessage: string): Behaviour => (_t, s) => emitFailedCall(s, errorMessage);
+/** Every call fails, so pi gives up once its retries run out. */
+const failCall = (errorMessage: string): Behaviour => (_t, s) => s.failCall(errorMessage);
 
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 
@@ -107,7 +101,7 @@ function panel(cwd = path.join(DAMOCLES_HOME_DIR, crypto.randomUUID().slice(0, 8
       p.excluded.push(opts.excludeTools);
       p.order.push('session');
       p.hook?.('session');
-      const session = new FakeSession({ onPrompt: (t, s) => p.behave.lead(t, s) });
+      const session = new FakeSession({ onModelCall: (call, s) => p.behave.lead(call.texts.join('\n\n'), s) });
       if (store['kind'] === 'file') {
         const real = SessionManager.create(cwd, String(store['dir']), { id: String(store['id']) });
         session.sessionManager.appendCustomEntry = (customType: string, data: unknown) => {
@@ -151,14 +145,14 @@ function panel(cwd = path.join(DAMOCLES_HOME_DIR, crypto.randomUUID().slice(0, 8
   return p;
 }
 
-/** Start a lead-only team whose lead stays mid-turn, and resolve once it is working. */
+/** Start a lead-only team whose lead stays mid-turn, and resolve once its model call is open. */
 async function runningTeam(p: Panel, toolCallId = 'tc-create'): Promise<{ teamId: string; result: Promise<string> }> {
   p.behave.lead = holdTurn;
   p.service.setPendingToolUseId(toolCallId);
   const before = p.sessions.length;
   const result = p.service.createTeam(LEAD_ONLY);
   await vi.waitFor(() => expect(p.sessions.length).toBe(before + 1));
-  await p.sessions.at(-1)!.whenPrompted(1);
+  await p.sessions.at(-1)!.whenModelCalled(1);
   return { teamId: p.invocations.at(-1)!.id, result };
 }
 
@@ -500,9 +494,12 @@ describe('a team whose lead failed', () => {
     const p = panel();
     const steer = wrapSteerMessage('keep the parser');
     p.behave.lead = (_t, s) => {
-      // Mid-turn and not streaming, so the runner holds the steer until a turn end that never comes.
-      expect(p.service.steerMember(p.service.listSteerTargets()[0]!.id, 'keep the parser')?.status).toBe('steered');
-      emitFailedCall(s, '529 overloaded_error');
+      // pi accepts the steer after the failing run's last queue check, so the run settles failed with it undelivered.
+      s.atLastQueueCheck ??= () => {
+        s.atLastQueueCheck = null;
+        expect(p.service.steerMember(p.service.listSteerTargets()[0]!.id, 'keep the parser')?.status).toBe('steered');
+      };
+      s.failCall('529 overloaded_error');
     };
     p.service.setPendingToolUseId('tc-create');
 
@@ -523,8 +520,11 @@ describe('a team whose lead failed', () => {
     const p = panel();
     const steer = wrapSteerMessage('keep the parser');
     p.behave.lead = (_t, s) => {
-      expect(p.service.steerMember(p.service.listSteerTargets()[0]!.id, 'keep the parser')?.status).toBe('steered');
-      emitFailedCall(s, '529 overloaded_error');
+      s.atLastQueueCheck ??= () => {
+        s.atLastQueueCheck = null;
+        expect(p.service.steerMember(p.service.listSteerTargets()[0]!.id, 'keep the parser')?.status).toBe('steered');
+      };
+      s.failCall('529 overloaded_error');
     };
     p.service.setPendingToolUseId('tc-create');
     await p.service.createTeam(LEAD_ONLY);
@@ -547,9 +547,9 @@ describe('a team whose lead failed', () => {
     const { teamId, result } = await runningTeam(p);
     const lead = p.sessions.at(-1)!;
     const abort = lead.abort.bind(lead);
-    // The aborted request ends on an error, as a cut provider connection does.
+    // The aborted request ends on an error, as a cut provider connection does, which answers the open call first.
     lead.abort = async () => {
-      emitFailedCall(lead, 'This operation was aborted');
+      lead.failCall('This operation was aborted');
       await abort();
     };
 
@@ -584,7 +584,7 @@ describe('a team whose lead failed', () => {
     const cursors = vi.spyOn(Scratchpad.prototype, 'serializeCursors');
     p.behave.lead = (_t, s) => {
       cursors.mockImplementation(() => { throw new Error('cursor state is corrupt'); });
-      emitFailedCall(s, '529 overloaded_error');
+      s.failCall('529 overloaded_error');
     };
     p.service.setPendingToolUseId('tc-create');
     try {
@@ -827,12 +827,26 @@ describe('the runs of a team', () => {
   /** What one `work` turn spends: `tokens` of input, a tenfold cache read, and `cost`. */
   const spent = (tokens: number, cost: number) => ({ totalInputTokens: tokens, totalOutputTokens: 1, cacheReadTokens: tokens * 10, cacheCreationTokens: 2, costUsd: cost });
 
-  /** One lead turn that calls `tools` tools and spends `spent(tokens, cost)`, then ends or holds the turn. */
-  const work = (tools: number, tokens: number, cost: number, end: boolean): Behaviour => (_t, s) => {
+  /**
+   * One lead turn whose response calls `tools` tools and spends `spent(tokens, cost)`; pi runs them and, when `end`,
+   * the model's next response ends the turn. Otherwise the turn holds while the tools run.
+   */
+  const work = (tools: number, tokens: number, cost: number, end: boolean): Behaviour => (text, s) => {
+    if (!text) {
+      if (end) void s.endTurn();
+      return;
+    }
     const content = Array.from({ length: tools }, (_, i) => ({ type: 'toolCall', id: `tool-${i}`, name: 'read', arguments: {} }));
-    s.emit({ type: 'message_end', message: { role: 'assistant', content, usage: { input: tokens, output: 1, cacheRead: tokens * 10, cacheWrite: 2, cost: { total: cost } } } });
+    s.emit({ type: 'message_end', message: { role: 'assistant', content, stopReason: 'toolUse', usage: { input: tokens, output: 1, cacheRead: tokens * 10, cacheWrite: 2, cost: { total: cost } } } });
     for (const call of content) s.emit({ type: 'tool_execution_start', toolCallId: call.id, toolName: call.name, args: {} });
-    if (end) s.emit({ type: 'turn_end' });
+    if (!end) return;
+    for (const call of content) {
+      const result = { role: 'toolResult', toolCallId: call.id, toolName: call.name, content: [], isError: false };
+      s.emit({ type: 'tool_execution_end', toolCallId: call.id, toolName: call.name, result, isError: false });
+      s.emit({ type: 'message_start', message: result });
+      s.emit({ type: 'message_end', message: result });
+    }
+    void s.endTurn();
   };
 
   /** Wrapped, since an async function returning the run's promise would wait for the run to end. */
@@ -840,7 +854,7 @@ describe('the runs of a team', () => {
     const before = p.sessions.length;
     const result = start();
     await vi.waitFor(() => expect(p.sessions).toHaveLength(before + 1));
-    await p.sessions.at(-1)!.whenPrompted(1);
+    await p.sessions.at(-1)!.whenModelCalled(1);
     return { result };
   }
 

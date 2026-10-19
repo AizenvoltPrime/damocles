@@ -140,6 +140,8 @@ echo 'Review PR #$1 with priority $2 and assign to $3' > .claude/commands/review
 # $1 becomes "456", $2 becomes "high", $3 becomes "alice"
 ```
 
+Quote an argument that contains spaces (`"high priority"` or `'high priority'`). An empty quoted argument (`""` or `''`) keeps its place as an empty value, so `/review-pr 456 "" alice` sets `$2` to empty and `$3` to `alice`.
+
 Use positional arguments when you need to:
 
 - Access arguments individually in different parts of your command

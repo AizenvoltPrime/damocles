@@ -29,7 +29,7 @@ import { SettingsManager } from "..";
 import { installFakePlatform } from "../../../../__mocks__/fake-platform";
 import type { Memento } from "../../../../platform/key-value-state";
 import { MCP_DISABLED_SERVERS_KEY, MCP_DISABLED_SPLIT_MIGRATED_KEY } from "../managers/mcp-manager";
-import { MCP_TOOL_EXPOSURE_SETTING } from "../../../../shared/types/mcp";
+import { MCP_RESOURCE_EXPOSURE_SETTING, MCP_TOOL_EXPOSURE_SETTING } from "../../../../shared/types/mcp";
 import { folderTarget } from "../managers/__tests__/mcp-folder-fixtures";
 
 afterAll(() => fs.rmSync(tmpRoot, { recursive: true, force: true }));
@@ -103,6 +103,23 @@ describe("damocles.tools.disabled → damocles.mcp.toolExposure", () => {
 
     expect(platform.settings.inspect(MCP_TOOL_EXPOSURE_SETTING).userValue).toEqual({ docs: { "a-b": "off" }, later: { "c-d": "off" } });
     expect(platform.settings.inspect("damocles.tools.disabled").userValue).toEqual([]);
+    settings.dispose();
+  });
+
+  it("runs on the settings write chain, so a Tools-panel toggle landing during the move is kept", async () => {
+    writeUserServers({ docs: { command: "docs" } });
+    const { platform, settings } = settingsManager({ settings: { user: { "damocles.tools.disabled": ["mcp__docs__a-b"] } } });
+    // A store's write lands after an await, which is when a read-modify-write off the chain loses the other one.
+    const write = platform.settings.update.bind(platform.settings);
+    vi.spyOn(platform.settings, "update").mockImplementation(async (...args) => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return write(...args);
+    });
+
+    await Promise.all([settings.setToolDisabled("Read", true), settings.loadMcpConfig()]);
+
+    expect(platform.settings.inspect(MCP_TOOL_EXPOSURE_SETTING).userValue).toEqual({ docs: { "a-b": "off" } });
+    expect(platform.settings.inspect("damocles.tools.disabled").userValue).toEqual(["Read"]);
     settings.dispose();
   });
 
@@ -194,6 +211,27 @@ describe("SettingsManager.updateMcpServer rename", () => {
       userValue: { other: { run: "off" }, handbook: { search: "off" } },
       localValue: { handbook: { fetch: "off" } },
       projectValue: { handbook: { list: "off" } },
+    });
+    settings.dispose();
+  });
+
+  it("moves the server's resourceExposure entry to its new name at user, project and local scope", async () => {
+    writeUserServers({ "my.docs": { command: "docs" } });
+    const { platform, settings, target } = settingsManager({
+      settings: {
+        user: { [MCP_RESOURCE_EXPOSURE_SETTING]: { "my.docs": "off", other: "direct" } },
+        project: { [MCP_RESOURCE_EXPOSURE_SETTING]: { "my.docs": "deferred" } },
+        local: { [MCP_RESOURCE_EXPOSURE_SETTING]: { "my.docs": "direct" } },
+      },
+    });
+    await settings.loadMcpConfig();
+
+    await settings.updateMcpServer(target.key, "my.docs", "handbook", { command: "docs" });
+
+    expect(platform.settings.inspect(MCP_RESOURCE_EXPOSURE_SETTING)).toEqual({
+      userValue: { other: "direct", handbook: "off" },
+      projectValue: { handbook: "deferred" },
+      localValue: { handbook: "direct" },
     });
     settings.dispose();
   });

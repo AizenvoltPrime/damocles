@@ -22,7 +22,7 @@ import type { PromptDisposition } from './prompt-entry';
  * `expandPromptTemplates: false` is the whole leading-slash guard. With it, `prompt()` skips the
  * extension-command dispatch and the skill/template expansion, so a note beginning with `/` is
  * delivered as literal text and can never be executed or throw. `source: 'extension'` matches
- * `sendUserMessage`, so no UserPromptSubmit hook runs on a note. The session is read through a thunk
+ * `sendUserMessage`. No UserPromptSubmit hook runs on a note: only a prompt the user sends or queues is judged. The session is read through a thunk
  * because the tools are built before the session that runs them exists; the thunk resolves to the one
  * session those tools were built for, never to whatever session replaced it.
  *

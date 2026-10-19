@@ -185,6 +185,8 @@ export interface EditorPaneDeps {
   readonly revealLine: (tabId: string, line: number, range?: SearchRange) => void;
   // shows the editor pane in the grid when it is hidden, without moving focus
   readonly showPane: () => void;
+  // hides the editor pane when it is shown; called when the published tab list empties, file and page tabs alike
+  readonly hidePane: () => void;
   // Open to the Side: the editor pane shows, and a maximized chat or terminal gives way to it
   readonly showPaneBeside: () => void;
   // every root a tab may name a file in, keyed by root key (folder-root.ts): the open projects and their chat worktrees
@@ -324,6 +326,8 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   private readonly subscriptions: Disposable[];
   private stateScheduled = false;
   private persistScheduled = false;
+  // the last state sent to the shell listed a tab; compared per publish, so a close an open replaces in the same tick keeps the pane
+  private publishedTabs = false;
   // a quit or window close the user agreed to; later asks pass through
   private released = false;
   private disposed = false;
@@ -1538,7 +1542,10 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     setImmediate(() => {
       this.stateScheduled = false;
       if (this.disposed) return;
-      this.deps.sendState(this.state());
+      const state = this.state();
+      this.deps.sendState(state);
+      if (this.publishedTabs && state.tabs.length === 0) this.deps.hidePane();
+      this.publishedTabs = state.tabs.length > 0;
       if (!this.persistScheduled) return;
       this.persistScheduled = false;
       this.persist();

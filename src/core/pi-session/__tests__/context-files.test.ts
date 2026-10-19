@@ -12,7 +12,7 @@ import {
 
 /**
  * Copied by hand from pi `packages/coding-agent/src/core/resource-loader.ts:184-185`
- * (`loadContextFileFromDir`) at the pinned `@earendil-works/pi-coding-agent@^1.1.0`. It is a literal, not an import,
+ * (`loadContextFileFromDir`) at the pinned `@earendil-works/pi-coding-agent@1.3.0`. It is a literal, not an import,
  * so a pi upgrade that changes the candidate order fails here instead of silently diverging.
  */
 const PI_CONTEXT_FILE_CANDIDATES = [
@@ -24,52 +24,33 @@ const PI_CONTEXT_FILE_CANDIDATES = [
 ];
 
 /**
- * The repo's only automated pin on the pi version. Three artifacts must agree: the range
- * `context-files.ts` says it tracks, the range this file's candidate-list comment says it copied from,
- * and the version actually installed. Editing any one alone goes red, which is the point: the prose
- * ranges are the claim, and an unchecked claim is what let the 0.84.2 pin outlive its bump.
+ * The repo's only automated pin on the pi version. Four artifacts must agree: the version
+ * `context-files.ts` says it tracks, the version this file's candidate-list comment says it copied from,
+ * the exact pin in package.json and the version actually installed. Editing any one alone goes red,
+ * which is the point: the prose versions are the claim, and an unchecked claim is what let the 0.84.2
+ * pin outlive its bump.
  */
 describe('pi version pin', () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const readRange = (file: string): string => {
+  const root = path.join(here, '..', '..', '..', '..');
+  const readCited = (file: string): string => {
     const source = fs.readFileSync(file, 'utf8');
     const match = /@earendil-works\/pi-coding-agent@([^`]+)`/.exec(source);
-    if (!match?.[1]) throw new Error(`no pi-coding-agent version range found in ${file}`);
+    if (!match?.[1]) throw new Error(`no pi-coding-agent version found in ${file}`);
     return match[1];
   };
 
-  /**
-   * Handles the caret form both comments use, and rejects anything else rather than guessing. Damocles
-   * declares no semver dependency, and inventing a general range parser to avoid one would be worse
-   * than refusing the forms this pin does not need.
-   */
-  const satisfiesCaret = (version: string, range: string): boolean => {
-    const parsed = /^\^(\d+)\.(\d+)\.(\d+)$/.exec(range);
-    if (!parsed) throw new Error(`unsupported range "${range}": this pin understands only ^X.Y.Z`);
-    const [major, minor, patch] = parsed.slice(1).map(Number) as [number, number, number];
-    const actual = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
-    if (!actual) throw new Error(`unparseable installed version "${version}"`);
-    const [vMajor, vMinor, vPatch] = actual.slice(1).map(Number) as [number, number, number];
-    // npm widens a caret only up to the leftmost non-zero component, so a 0.x range admits later
-    // patches of that same minor and nothing beyond it.
-    const upper: [number, number, number] = major === 0 ? [0, minor + 1, 0] : [major + 1, 0, 0];
-    const rank = ([a, b, c]: [number, number, number]): number => a * 1e12 + b * 1e6 + c;
-    const actualRank = rank([vMajor, vMinor, vPatch]);
-    return actualRank >= rank([major, minor, patch]) && actualRank < rank(upper);
-  };
+  it('the installed pi-coding-agent is the exact version package.json pins and both comments name', () => {
+    const sourceVersion = readCited(path.join(here, '..', 'context-files.ts'));
+    expect(readCited(fileURLToPath(import.meta.url))).toBe(sourceVersion);
 
-  it('the installed pi-coding-agent satisfies the range both comments name', () => {
-    const sourceRange = readRange(path.join(here, '..', 'context-files.ts'));
-    const testRange = readRange(fileURLToPath(import.meta.url));
-    expect(testRange).toBe(sourceRange);
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')) as { dependencies: Record<string, string> };
+    expect(pkg.dependencies['@earendil-works/pi-coding-agent']).toBe(sourceVersion);
 
     // Read the manifest as a file: pi's `exports` map does not expose `./package.json`.
-    const manifest = path.join(here, '..', '..', '..', '..', 'node_modules', '@earendil-works', 'pi-coding-agent', 'package.json');
+    const manifest = path.join(root, 'node_modules', '@earendil-works', 'pi-coding-agent', 'package.json');
     const installed = JSON.parse(fs.readFileSync(manifest, 'utf8')) as { version: string };
-    expect(
-      satisfiesCaret(installed.version, sourceRange),
-      `installed pi-coding-agent ${installed.version} does not satisfy ${sourceRange}`,
-    ).toBe(true);
+    expect(installed.version).toBe(sourceVersion);
   });
 });
 

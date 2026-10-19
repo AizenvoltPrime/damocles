@@ -8,6 +8,7 @@ import { DEFAULT_FALLBACK_MODEL as DEFAULT_MODEL, migrateLegacyModelValue } from
 export class ModelManager {
   private defaultModel: string = "";
   private readonly perPanelModel: Map<string, string> = new Map();
+  private readonly perPanelContextWindow: Map<string, number> = new Map();
   private readonly postMessage: PostMessageFn;
   private readonly configListener: Disposable;
   private readonly platform: Platform;
@@ -40,6 +41,7 @@ export class ModelManager {
 
   cleanupPanelModel(panelId: string): void {
     this.perPanelModel.delete(panelId);
+    this.perPanelContextWindow.delete(panelId);
   }
 
   getActiveModelForPanel(panelId: string): string {
@@ -48,6 +50,11 @@ export class ModelManager {
 
   getDefaultModel(): string {
     return this.defaultModel || DEFAULT_MODEL;
+  }
+
+  /** The adopted model's window; the static table applies only until the session adopts a model. */
+  setContextWindowForPanel(panelId: string, contextWindow: number): void {
+    this.perPanelContextWindow.set(panelId, contextWindow);
   }
 
   setActiveModelForPanel(panelId: string, model: string): boolean {
@@ -69,7 +76,7 @@ export class ModelManager {
       type: "modelUpdate",
       activeModel,
       defaultModel: this.defaultModel || DEFAULT_MODEL,
-      contextWindowSize: getContextWindowForModel(activeModel),
+      contextWindowSize: this.perPanelContextWindow.get(panelId) ?? getContextWindowForModel(activeModel),
     });
   }
 }

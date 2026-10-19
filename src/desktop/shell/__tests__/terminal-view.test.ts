@@ -27,7 +27,7 @@ interface FakeXterm {
   linkProviders: ILinkProvider[];
   keyHandler: ((event: KeyboardEvent) => boolean) | undefined;
   lines: string[];
-  buffer: { active: { cursorX: number } };
+  buffer: { active: { cursorX: number; type: 'normal' | 'alternate' } };
   typed(data: string): void;
   csi(params: number[]): void;
 }
@@ -49,6 +49,7 @@ vi.mock('@xterm/xterm', () => {
     lines: string[] = [];
     buffer = {
       active: {
+        type: 'normal' as 'normal' | 'alternate',
         viewportY: 0,
         baseY: 0,
         cursorX: 10,
@@ -345,6 +346,29 @@ describe('partial command marks', () => {
     expect(marker.isDisposed).toBe(false);
     xterm!.csi([2]);
     expect(marker.isDisposed).toBe(true);
+  });
+});
+
+describe('a clear screen', () => {
+  // ConPTY's cls erases the rows with EL and then sends ED 3; ED 2 erases them on other platforms.
+  it('drops the command marks on the rows it erased', async () => {
+    for (const mode of [2, 3]) {
+      wrapper?.unmount();
+      xterms.length = 0;
+      const { xterm, sinks } = await mountView();
+      shellEvents(sinks[0]!, { kind: 'promptStart' }, { kind: 'commandStart' }, { kind: 'commandExecuted', commandId: 1, commandLine: 'cls', time: 1 });
+      const marked = xterm!.decorated[0]!;
+      xterm!.csi([mode]);
+      expect(marked.isDisposed, `ED ${mode}`).toBe(true);
+    }
+  });
+
+  it('keeps the command marks when a program clears the alternate buffer, whose rows hold none of them', async () => {
+    const { xterm, sinks } = await mountView();
+    shellEvents(sinks[0]!, { kind: 'commandExecuted', commandId: 1, commandLine: 'vim', time: 1 });
+    xterm!.buffer.active.type = 'alternate';
+    xterm!.csi([2]);
+    expect(xterm!.decorated[0]!.isDisposed).toBe(false);
   });
 });
 

@@ -13,7 +13,8 @@ export type ServerRequestHandler = (params: Record<string, unknown>, request: Js
 export interface InMemoryMcpServerOptions {
   tools?: Array<Record<string, unknown>>;
   resources?: Array<Record<string, unknown>>;
-  /** Items per `tools/list` and `resources/list` page; unset sends one page. */
+  resourceTemplates?: Array<Record<string, unknown>>;
+  /** Items per `tools/list`, `resources/list` and `resources/templates/list` page; unset sends one page. */
   pageSize?: number;
   instructions?: string;
   serverInfo?: { name: string; version: string };
@@ -31,6 +32,7 @@ export interface InMemoryMcpServer {
   received: JsonRpcMessage[];
   tools: Array<Record<string, unknown>>;
   resources: Array<Record<string, unknown>>;
+  resourceTemplates: Array<Record<string, unknown>>;
   /** Params of the client's `initialize` request, once it arrived. */
   initializeParams(): Record<string, unknown> | undefined;
   setHandler(method: string, handler: ServerRequestHandler): void;
@@ -62,6 +64,7 @@ export async function createInMemoryMcpServer(options: InMemoryMcpServerOptions 
     received,
     tools: options.tools ?? [],
     resources: options.resources ?? [],
+    resourceTemplates: options.resourceTemplates ?? [],
     initializeParams: () => {
       const init = received.find((m): m is JsonRpcRequest => 'method' in m && m.method === 'initialize' && 'id' in m);
       return init?.params as Record<string, unknown> | undefined;
@@ -96,6 +99,10 @@ export async function createInMemoryMcpServer(options: InMemoryMcpServerOptions 
   handlers.set('resources/list', (params) => {
     const { items, nextCursor } = page(server.resources, params['cursor'], options.pageSize);
     return { resources: items, ...(nextCursor ? { nextCursor } : {}) };
+  });
+  handlers.set('resources/templates/list', (params) => {
+    const { items, nextCursor } = page(server.resourceTemplates, params['cursor'], options.pageSize);
+    return { resourceTemplates: items, ...(nextCursor ? { nextCursor } : {}) };
   });
   handlers.set('tools/call', (params) => ({
     content: [{ type: 'text', text: `called ${String(params['name'])}` }],

@@ -42,6 +42,7 @@ function agent(over: Partial<TeamAgent> = {}): TeamAgent {
     name: 'worker',
     role: 'specialist',
     description: 'do the task',
+    task: null,
     model: 'sonnet',
     profileId: null,
     attempt: 0,
@@ -64,14 +65,14 @@ function agent(over: Partial<TeamAgent> = {}): TeamAgent {
   };
 }
 
-function team(): TeamState {
+function team(member: Partial<TeamAgent> = {}): TeamState {
   return {
     teamId: TEAM_ID,
     toolUseId: 'toolu_1',
     title: 'Team',
     status: 'running',
     phase: 'working',
-    agents: [agent()],
+    agents: [agent(member)],
     messages: [],
     scratchpad: [],
     result: null,
@@ -91,9 +92,9 @@ function openWith(messages: AgentChatMessage[]) {
   return mountOverlay();
 }
 
-function mountOverlay(options: { attachTo?: HTMLElement } = {}) {
+function mountOverlay(options: { attachTo?: HTMLElement } = {}, member: Partial<TeamAgent> = {}) {
   const store = useTeamStore();
-  store.restoreTeamFromHistory(team());
+  store.restoreTeamFromHistory(team(member));
   store.openOverlay(TEAM_ID);
   store.openAgentOverlay(AGENT_ID);
 
@@ -188,7 +189,7 @@ describe('a member history loaded from its session file', () => {
       { id: '0:a4', role: 'assistant', content: [{ type: 'text', text: 'On it.' }] },
     ]);
 
-    const wrapper = mountOverlay();
+    const wrapper = mountOverlay({}, { task: 'fix the parser' });
 
     expect(wrapper.get('[data-testid="agent-prompt"]').text()).toContain('fix the parser');
     expect(rendered(wrapper)).toEqual([
@@ -198,6 +199,27 @@ describe('a member history loaded from its session file', () => {
     ]);
     expect(wrapper.get('[data-testid="agent-peer-message"]').text()).toContain('Message from lead');
     expect(wrapper.text()).toContain('Steered');
+  });
+
+  it('shows the task of a member whose task never reached its file as the prompt, from the team, with no message for it', () => {
+    useTeamStore().handleAgentDataLoaded(AGENT_ID, []);
+
+    const wrapper = mountOverlay({}, { task: 'fix the parser', status: 'cancelled' });
+
+    expect(wrapper.get('[data-testid="agent-prompt"]').text()).toContain('fix the parser');
+    expect(rendered(wrapper)).toEqual([]);
+  });
+
+  it('keeps a first message that is not the task in the transcript, under the task', () => {
+    useTeamStore().handleAgentDataLoaded(AGENT_ID, [
+      { id: '0:a1', role: 'user', content: [{ type: 'text', text: 'an earlier attempt task' }] },
+      { id: '0:a2', role: 'assistant', content: [{ type: 'text', text: 'On it.' }] },
+    ]);
+
+    const wrapper = mountOverlay({}, { task: 'fix the parser' });
+
+    expect(wrapper.get('[data-testid="agent-prompt"]').text()).toContain('fix the parser');
+    expect(rendered(wrapper)).toEqual([['assistant', 'an earlier attempt task'], ['assistant', 'On it.']]);
   });
 });
 

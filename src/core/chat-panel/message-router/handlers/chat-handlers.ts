@@ -1,6 +1,7 @@
 import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "../types";
 import type { UserContentBlock } from "../../../../shared/types/content";
 import type { ContentInput } from "../../../session-types";
+import type { SendOutcome } from "../../../chat-session";
 import type { MemoryScope } from "../../../../shared/types/memory";
 import { SLASH_INVOCATION_RE } from "../../../../shared/asset-names";
 import { createQueuedMessage } from "../../queue-manager";
@@ -9,8 +10,9 @@ import { extractTextFromContent, hasImageContent } from "../../../../shared/util
 import { t } from "../../../l10n";
 import { settingsFolderOf } from "../../../workspace-folders/folder-registry";
 import { identityFolder } from "../../../worktrees/personal-config";
-import { formatAttachmentBlock } from "../../../terminal-attachment";
-import { MAX_PENDING_TERMINAL_ATTACHMENTS } from "../../terminal-attachment-manager";
+import { MAX_PENDING_TERMINAL_ATTACHMENTS, type TakenAttachment } from "../../terminal-attachment-manager";
+import { attachmentContent } from "../../mcp-resource-attachments";
+import { READ_MCP_RESOURCE } from "../../../permission-handler/mcp-resource-rule";
 
 /** Build the echo of a locally-handled slash command that bypasses sendMessage. It commits no user
  *  entry, so it is injected: it names no prompt and carries the latest prompt's index, as a cancel note does. */
@@ -28,6 +30,11 @@ function stampUserMessage(
     isInjected: true,
     isCommandEcho: true,
   };
+}
+
+/** The conversation a webview send names; anything but a string names none. */
+function sendTarget(sessionId: unknown): string | undefined {
+  return typeof sessionId === "string" ? sessionId : undefined;
 }
 
 type InterceptResult =
@@ -58,6 +65,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
   const tryInterceptLocal = async (
     originalTextContent: string,
     ctx: HandlerContext,
+    target: string | undefined,
   ): Promise<InterceptResult> => {
     const trimmed = originalTextContent.trim();
 
@@ -125,7 +133,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       // A refused compaction says why itself, and leaves no echo of the command it refused.
       await ctx.session.compact(instructions.length > 0 ? instructions : undefined, () => {
         postMessage(ctx.host, stampUserMessage(ctx, originalTextContent, { correlationId }));
-      });
+      }, target);
       return { kind: "handled" };
     }
 
@@ -182,7 +190,8 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
 
       if (markUserTypedDuringTurn !== undefined) markUserTypedDuringTurn();
 
-      const intercept = await tryInterceptLocal(originalTextContent, ctx);
+      const target = sendTarget(msg.sessionId);
+      const intercept = await tryInterceptLocal(originalTextContent, ctx, target);
       if (intercept.kind === "handled") {
         // Handled locally with no turn, so the optimistically-armed spinner has no lifecycle event to clear it.
         // A turn already running owns the spinner: the composer's Compact now sends here mid-turn.
@@ -229,31 +238,73 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
             notificationType: "info",
           });
         }
-        await ctx.session.sendMessage(baseContent, msg.agentId, correlationId, broadcast);
+        await ctx.session.sendMessage(baseContent, target, correlationId, broadcast);
         return;
       }
 
       const typedContent = slash?.kind === "expanded" ? withText(baseContent, slash.text) : baseContent;
       const withIdeContext = withIde ? ctx.ideContextManager.buildContentBlocks(typedContent) : typedContent;
-      // Each attachment block starts its own line of the prompt (`extractText` joins blocks with "\n"), ahead of the IDE block and the typed text.
-      const attached = attaching ? ctx.terminalAttachments.take(ids) : [];
-      const finalContent: ContentInput = attached.length === 0 ? withIdeContext : [
-        ...attached.map(({ attachment }) => ({ type: "text" as const, text: formatAttachmentBlock(attachment) })),
-        ...(typeof withIdeContext === "string" ? [{ type: "text" as const, text: withIdeContext }] : withIdeContext),
-      ];
-
-      const restoreAttached = (): void => ctx.terminalAttachments.restore(attached);
+      let attached: readonly TakenAttachment[] = [];
+      let restored = false;
+      // Once: a Stop returns the chips through the session, and every exit below that did not send them returns them too.
+      const restoreAttached = (): void => {
+        if (restored || attached.length === 0) return;
+        restored = true;
+        const dropped = ctx.terminalAttachments.restore(attached);
+        if (dropped === 0) return;
+        postMessage(ctx.host, {
+          type: "notification",
+          message: dropped === 1
+            ? t("An attachment added while your message was being sent did not fit beside the ones it gave back, so it was removed.")
+            : t("{0} attachments added while your message was being sent did not fit beside the ones it gave back, so they were removed.", dropped),
+          notificationType: "warning",
+        });
+      };
+      // Claimed before the chips leave the composer, so a Stop, New chat or disposal during the read returns them.
+      const ticket = ctx.session.beginSend(correlationId, broadcast, restoreAttached);
+      if (!ticket) {
+        if (preApprovedSkillName) ctx.permissionHandler.revokeSkillPreApproval(preApprovedSkillName);
+        return;
+      }
+      attached = attaching ? ctx.terminalAttachments.take(ids) : [];
+      let outcome: SendOutcome = "unsent";
       try {
-        const outcome = await ctx.session.sendMessage(finalContent, msg.agentId, correlationId, {
+        // D12: an attached MCP resource is read now, and any refusal returns the whole message to the composer unsent.
+        const built = await attachmentContent(attached, contentBlocks?.filter((block) => block.type === "image").length ?? 0, async () => ({
+          port: ctx.session.mcpUserResources(),
+          filter: await ctx.permissionHandler.mcpResourceRuleFilter(READ_MCP_RESOURCE),
+        }), ticket.signal);
+        // The Stop, New chat or disposal already returned the message.
+        if (ticket.signal.aborted || "stopped" in built) return;
+        if (!built.ok) {
+          // A turn already running owns the spinner.
+          if (!ctx.session.turnRunning) postMessage(ctx.host, { type: "processing", isProcessing: false });
+          postMessage(ctx.host, {
+            type: "promptReturned",
+            content: typeof msgContent === "string" ? [{ type: "text", text: msgContent }] : msgContent,
+            reason: "mcpResourceUnavailable",
+            detail: built.reason,
+          });
+          return;
+        }
+        // Each attachment block starts its own line of the prompt (`extractText` joins blocks with "\n"), ahead of the IDE block and the typed text.
+        const finalContent: ContentInput = attached.length === 0 ? withIdeContext : [
+          ...built.blocks.map((text) => ({ type: "text" as const, text })),
+          ...(typeof withIdeContext === "string" ? [{ type: "text" as const, text: withIdeContext }] : withIdeContext),
+          ...built.images,
+        ];
+        outcome = await ctx.session.sendMessage(finalContent, target, correlationId, {
           ...broadcast,
           ...(attached.length > 0 ? { terminalAttachments: attached.map(({ info }) => info) } : {}),
-        }, restoreAttached);
-        if (outcome === "unsent") restoreAttached();
-      } catch (err) {
-        if (preApprovedSkillName) {
-          ctx.permissionHandler.revokeSkillPreApproval(preApprovedSkillName);
+          ...(built.images.length > 0 ? { attachmentImageCount: built.images.length } : {}),
+        }, restoreAttached, ticket);
+      } finally {
+        ticket.end();
+        // The chips leave the composer only with a prompt pi took; a later drop of it returns them through the session.
+        if (outcome !== "sent") {
+          restoreAttached();
+          if (preApprovedSkillName) ctx.permissionHandler.revokeSkillPreApproval(preApprovedSkillName);
         }
-        throw err;
       }
     },
 
@@ -282,16 +333,24 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
 
       if (markUserTypedDuringTurn !== undefined) markUserTypedDuringTurn();
 
-      const intercept = await tryInterceptLocal(textContent, ctx);
+      const target = sendTarget(msg.sessionId);
+      const intercept = await tryInterceptLocal(textContent, ctx, target);
       if (intercept.kind === "handled") return;
 
       const { transformedContent, preApprovedSkillName } = intercept;
       const contentToQueue: ContentInput = transformedContent ?? msgContent;
 
       const queuedMessage = createQueuedMessage(contentToQueue);
-      const disposition = ctx.session.queueInput(contentToQueue, queuedMessage.id, textContent);
+      const disposition = ctx.session.queueInput(contentToQueue, queuedMessage.id, textContent, target);
 
-      if (disposition === "queued") {
+      if (disposition === "otherConversation") {
+        if (preApprovedSkillName) ctx.permissionHandler.revokeSkillPreApproval(preApprovedSkillName);
+        postMessage(ctx.host, {
+          type: "promptReturned",
+          content: typeof msgContent === "string" ? [{ type: "text", text: msgContent }] : msgContent,
+          reason: "conversationChanged",
+        });
+      } else if (disposition === "queued") {
         postMessage(ctx.host, { type: "messageQueued", message: queuedMessage });
         if (textContent.trim()) {
           storageManager.broadcastPromptHistoryEntry(textContent.trim());

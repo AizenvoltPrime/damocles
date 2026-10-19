@@ -42,6 +42,7 @@ afterAll(() => fs.rmSync(DAMOCLES_HOME_DIR, { recursive: true, force: true }));
 
 const SESSION = 'sess';
 
+/** How a member's model answers each call; `text` is what pi delivered since the previous call, empty after tools. */
 type Behaviour = (text: string, session: FakeSession, h: Harness) => void;
 
 interface Opened {
@@ -67,7 +68,10 @@ interface Harness {
   bus: () => MessageBus;
 }
 
-const endTurn: Behaviour = (_t, s) => s.emit({ type: 'turn_end' });
+/** The path pi gives session `id`'s file in `dir`: `<timestamp>_<id>.jsonl`. */
+const piNamedFile = (dir: string, id: string): string => path.join(dir, `2026-01-01T00-00-00-000Z_${id}.jsonl`);
+
+const endTurn: Behaviour = (_t, s) => void s.endTurn();
 const holdTurn: Behaviour = () => undefined;
 
 /**
@@ -88,8 +92,6 @@ function makeTeam(opts: {
    * persists, and has each member reply once to its first prompt, since pi writes no file before a reply.
    */
   realFiles?: boolean;
-  /** Resolves each member's prompt at `agent_settled`, as real pi does, instead of at `turn_end`. */
-  settleOn?: 'turn_end' | 'agent_settled';
 }): Harness {
   const opened: Opened[] = [];
   const forgotten: FakeSession[] = [];
@@ -118,13 +120,12 @@ function makeTeam(opts: {
         if (gate) await gate;
         const behaviour = opts.behave[name] ?? endTurn;
         const session = new FakeSession({
-          ...(opts.settleOn ? { settleOn: opts.settleOn } : {}),
-          onPrompt: (text, s) => {
-            if (opts.realFiles && s.prompts.length === 1) s.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: `${name} is on it` }], stopReason: 'stop' } });
-            behaviour(text, s, h);
+          onModelCall: (call, s) => {
+            if (opts.realFiles && call.index === 0) s.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: `${name} is on it` }], stopReason: 'stop' } });
+            behaviour(call.texts.join('\n\n'), s, h);
           },
         });
-        session.sessionFile = store['kind'] === 'reopen' ? String(store['path']) : path.join(String(store['dir']), `${String(store['id'])}.jsonl`);
+        session.sessionFile = store['kind'] === 'reopen' ? String(store['path']) : piNamedFile(String(store['dir']), String(store['id']));
         if (opts.realFiles && store['kind'] !== 'reopen') {
           const real = SessionManager.create(opts.cwd, String(store['dir']), { id: String(store['id']) });
           session.mirror = { appendMessage: (m) => real.appendMessage(m as never), appendCustomEntry: (t, d) => real.appendCustomEntry(t, d) };
@@ -211,22 +212,22 @@ async function interruptedTeam(cwd: string, teamId: string, realFiles = false): 
           hh.runner.startSpecialist('B', 'Test label', 'task for B, described in full', undefined, 'reviewer', []);
           hh.runner.startSpecialist('C', 'Test label', 'task for C, described in full');
         }
-        s.emit({ type: 'turn_end' });
+        void s.endTurn();
       },
       A: (_t, s, hh) => {
         hh.scratchpad().set('a-notes', 'A findings', 'A');
         hh.runner.reportComplete('A', 'A signed off');
-        s.emit({ type: 'turn_end' });
+        void s.endTurn();
       },
       B: holdTurn,
       C: (_t, s, hh) => {
         hh.runner.enterStandby('C');
-        s.emit({ type: 'turn_end' });
+        void s.endTurn();
       },
       D: holdTurn,
       E: (_t, s, hh) => {
         hh.runner.reportComplete('E', 'E signed off');
-        s.emit({ type: 'turn_end' });
+        void s.endTurn();
       },
       F: holdTurn,
       G: (_t, s) => s.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'G found half the answer' }] } }),
@@ -254,10 +255,11 @@ async function interruptedTeam(cwd: string, teamId: string, realFiles = false): 
 
   // The lead reads A's section before the cancel; the restored cursor must still say so.
   h.scratchpad().markRead('Lead', 'a-notes');
-  // B is mid-turn and not streaming, so the runner holds this one locally.
+  // B is mid-call, so the runner steers this one into pi, where it waits with the rest for the call to end.
   h.bus().send('Lead', 'B', 'for B before cancel');
-  h.session('B').holdSteeredMessage('steer held for B');
-  h.session('C').holdFollowUpMessage('[Message from Lead]: follow-up held for C');
+  h.session('B').queueSteer('steer held for B');
+  // `followUp()` queues in pi even while C is parked and idle.
+  h.session('C').queueFollowUp('[Message from Lead]: follow-up held for C');
   expect(h.runner.steerMember(h.agent('B').agentId, 'focus on the parser')).toBe('steered');
   const lead = h.session('Lead');
   await vi.waitFor(() => expect(h.agent('Lead').status).toBe('monitoring'));
@@ -382,32 +384,33 @@ describe('the live checkpoint follows a member the runner parks or wakes between
   const memberIn = (c: TeamCheckpoint, name: string) => c.members.find((m) => m.name === name)!;
 
   /**
-   * Prompts settle at `agent_settled`, as in pi, so the snapshot the turn's last boundary takes lands before
-   * the runner parks A. B keeps working, so A is never stranded. A parks once and holds every later prompt.
+   * A's run flushes the checkpoint in an `agent_before_settle` handler, so the snapshot its last turn's boundary takes
+   * lands before the run settles and the runner parks A. B keeps working, so A is never stranded. A parks once and
+   * holds every later prompt.
    */
   async function parkedTeam(label: string): Promise<{ h: Harness; run: Promise<{ status: string; text: string }> }> {
-    let settleA!: () => void;
+    const flushedBeforeSettle: boolean[] = [];
     const h = makeTeam({
-      cwd: newCwd(label), teamId: crypto.randomUUID(), specialists: ['A', 'B'], settleOn: 'agent_settled',
+      cwd: newCwd(label), teamId: crypto.randomUUID(), specialists: ['A', 'B'],
       behave: {
         Lead: (_t, s, hh) => { if (s.prompts.length === 1) hh.runner.startSpecialist('B', 'Test label', 'task for B, described in full'); },
         B: holdTurn,
         A: (_t, s, hh) => {
           if (s.prompts.length > 1) return;
           hh.runner.enterStandby('A');
-          s.emit({ type: 'turn_end' });
-          s.emit({ type: 'agent_end', messages: [], willRetry: false });
-          settleA = () => s.emit({ type: 'agent_settled' });
+          s.beforeSettle = async () => {
+            s.beforeSettle = null;
+            flushedBeforeSettle.push(await hh.runner.flushCheckpoint());
+          };
+          void s.endTurn();
         },
       },
     });
     const run = h.runner.run();
     await (await opened(h, 'B')).whenPrompted(1);
     h.runner.startSpecialist('A', 'Test label', 'task for A, described in full');
-    await (await opened(h, 'A')).whenPrompted(1);
-    expect(await h.runner.flushCheckpoint()).toBe(true);
-    settleA();
     await status(h, 'A', 'standby');
+    expect(flushedBeforeSettle).toEqual([true]);
     return { h, run };
   }
 
@@ -473,9 +476,9 @@ describe('a run killed with no team-completed resumes from its live checkpoint',
         p.atFirstOpen ??= newestCheckpoint(cwd, CRASH, teamId);
         const agentId = store['kind'] === 'reopen' ? String(store['agentId']) : String(store['id']).replace(/\.a\d+$/, '');
         const name = nameOf.get(agentId)!;
-        const behaviour = behave[name] ?? ((_t: string, s: FakeSession) => s.emit({ type: 'turn_end' }));
-        const session = new FakeSession({ onPrompt: (text, s) => behaviour(text, s, p.runner()) });
-        session.sessionFile = store['kind'] === 'reopen' ? String(store['path']) : path.join(String(store['dir']), `${String(store['id'])}.jsonl`);
+        const behaviour = behave[name] ?? ((_t: string, s: FakeSession) => void s.endTurn());
+        const session = new FakeSession({ onModelCall: (call, s) => behaviour(call.texts.join('\n\n'), s, p.runner()) });
+        session.sessionFile = store['kind'] === 'reopen' ? String(store['path']) : piNamedFile(String(store['dir']), String(store['id']));
         p.opened.push({ name, store, session });
         return session as never;
       },
@@ -525,11 +528,12 @@ describe('a run killed with no team-completed resumes from its live checkpoint',
     fs.cpSync(teamCheckpointsDir(sessionDir, SESSION, teamId), teamCheckpointsDir(sessionDir, CRASH, teamId), { recursive: true });
 
     // Everything below reaches the log and the member files but not the copied snapshot, as the writes a crash cuts off.
-    const tailForB = h.bus().send('Lead', 'B', 'logged after the snapshot');
+    // B's call ends, so pi delivers everything queued at the snapshot and holds B's next call; the tail waits behind it.
+    const forB = h.bus().getAllMessages().find((m) => m.content === 'for B before cancel')!;
     const b = h.session('B');
-    b.emit({ type: 'turn_end' });
-    await b.whenPrompted(2);
-    expect(b.prompts[1]).toBe(steer);
+    void b.endTurn();
+    await b.whenModelCalled(2);
+    const tailForB = h.bus().send('Lead', 'B', 'logged after the snapshot');
     const tailForLead = h.bus().send('B', 'Lead', 'tail message for Lead');
     // D has no run yet, so nothing subscribed to this; its restored run must not receive it either.
     const beforeD = h.bus().send('Lead', 'D', 'sent before D was spawned');
@@ -537,7 +541,7 @@ describe('a run killed with no team-completed resumes from its live checkpoint',
     h.runner.redispatchSpecialist('G', 'Test label', 'task for G again, described in full');
     await (await opened(h, 'D')).whenPrompted(1);
     await vi.waitFor(() => {
-      expect(deliveredIds(b)).toEqual(steerIds);
+      expect(deliveredIds(b)).toEqual([forB.messageId, ...steerIds!]);
       expect(deliveredIds(h.session('Lead'))).toContain(tailForLead.messageId);
       expect(h.opened.filter((o) => o.name === 'G')).toHaveLength(2);
     });
@@ -552,7 +556,7 @@ describe('a run killed with no team-completed resumes from its live checkpoint',
     const nameOf = new Map(['Lead', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'].map((n) => [h.agent(n).agentId, n]));
     const reportOnce = (name: string): CrashBehaviour => (_t, s, runner) => {
       if (s.prompts.length === 1) runner.reportComplete(name, `${name} resumed and done`);
-      s.emit({ type: 'turn_end' });
+      void s.endTurn();
     };
     const crashed = crashPanel(cwd, teamId, nameOf, {
       Lead: () => undefined, B: reportOnce('B'), C: reportOnce('C'), D: () => undefined, F: () => undefined, G: () => undefined,
@@ -579,12 +583,14 @@ describe('a run killed with no team-completed resumes from its live checkpoint',
     expect(restored.live).toBe(true);
     const restoredOf = (name: string) => restored.members.find((m) => m.name === name)!;
     const bTexts = restoredOf('B').undelivered.map((u) => u.text);
+    // pi delivered the snapshot's queue, and B's file records the two deliveries that carried ids; a message pi
+    // queued with no ids cannot be proven delivered, so it stays, as does the tail pi still held.
     expect(bTexts).toEqual(expect.arrayContaining([
-      '[Message from Lead]: for B before cancel',
       'steer held for B',
       `[Message from Lead]: ${tailForB.content}`,
     ]));
     expect(bTexts).not.toContain(steer);
+    expect(bTexts).not.toContain('[Message from Lead]: for B before cancel');
     expect(restoredOf('Lead').undelivered.map((u) => u.text)).not.toContain(`[Message from B]: ${tailForLead.content}`);
     expect(restoredOf('C').undelivered.map((u) => u.text)).toEqual(['[Message from Lead]: follow-up held for C']);
     expect(restoredOf('D')).toMatchObject({ status: 'running', attempt: 0, toolCallCount: 0 });
@@ -607,12 +613,12 @@ describe('a run killed with no team-completed resumes from its live checkpoint',
     expect(agents.get('D')).toMatchObject({ status: 'running', attempt: 0, toolCallCount: 0, result: null });
     expect(agents.get('A')!.status).toBe('awaiting-review');
 
-    // B gets each message pi had not delivered, and never the steer its file records as delivered.
+    // B gets each message pi had not delivered, and never one its file records as delivered.
     await vi.waitFor(() => {
       const text = resumedB.prompts.join('\n');
-      for (const expected of ['[Message from Lead]: for B before cancel', 'steer held for B', `[Message from Lead]: ${tailForB.content}`]) expect(text).toContain(expected);
+      for (const expected of ['steer held for B', `[Message from Lead]: ${tailForB.content}`]) expect(text).toContain(expected);
     });
-    expect(resumedB.prompts.filter((p) => p.includes('focus on the parser'))).toEqual([]);
+    expect(resumedB.prompts.filter((p) => p.includes('focus on the parser') || p.includes('for B before cancel'))).toEqual([]);
 
     crashed.service.stopTeam(teamId);
     await done;
@@ -742,7 +748,7 @@ describe('TeamRunner steer to a member whose session is still opening', () => {
       behave: {
         Lead: (_t, s, hh) => {
           if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'Test label', 'task for A, described in full');
-          s.emit({ type: 'turn_end' });
+          void s.endTurn();
         },
       },
     });
@@ -803,24 +809,34 @@ describe('TeamRunner restore rebuilds the scratchpad and bus from the event log'
   });
 });
 
-/** A's opening turn is mid-tool when cancelled: still streaming, with every steer left in pi's queue. */
+/**
+ * A's opening turn is mid-tool when cancelled: still streaming, with every steer left in pi's queue. An abort that
+ * lands in a tool lets pi deliver its queue on the way out (`agent-loop.js:186` in pi-agent-core 1.3.0).
+ */
 function midToolTeam(label: string): Harness {
   return makeTeam({
     cwd: newCwd(label), teamId: crypto.randomUUID(), specialists: ['A'],
     behave: {
       Lead: (_t, s, hh) => {
         if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'Test label', 'task for A, described in full');
-        s.emit({ type: 'turn_end' });
+        void s.endTurn();
       },
       A: (_t, s) => {
-        if (s.prompts.length === 1) {
-          s.startStreaming();
-          s.holdSteers = true;
-          s.drainOnAbort = true;
-        }
+        if (s.prompts.length > 1) return;
+        const shell = { type: 'toolCall', id: 'tc-shell', name: 'bash', arguments: { command: 'npm test' } };
+        s.emit({ type: 'message_end', message: { role: 'assistant', content: [shell], stopReason: 'toolUse' } });
+        s.emit({ type: 'tool_execution_start', toolCallId: 'tc-shell', toolName: 'bash', args: shell.arguments });
       },
     },
   });
+}
+
+/** The user messages a session committed after its opening task. */
+function deliveredAfterTask(s: FakeSession): string[] {
+  return s.branch.flatMap((e) => {
+    const entry = e as { type: string; message?: { role: string; content: Array<{ text?: string }> } };
+    return entry.type === 'message' && entry.message?.role === 'user' ? [entry.message.content[0]?.text ?? ''] : [];
+  }).slice(1);
 }
 
 describe('TeamRunner image steer still queued in pi at the cancel', () => {
@@ -829,7 +845,7 @@ describe('TeamRunner image steer still queued in pi at the cancel', () => {
     const h = midToolTeam('image-steer');
     const run = h.runner.run();
     const a = await opened(h, 'A');
-    await a.whenPrompted(1);
+    await a.whenModelCalled(1);
 
     const steer = wrapSteerMessage('use this layout');
     expect(h.runner.steerMember(h.agent('A').agentId, 'use this layout', [image])).toBe('steered');
@@ -839,7 +855,7 @@ describe('TeamRunner image steer still queued in pi at the cancel', () => {
     h.runner.cancel('user');
     await run;
     // The checkpoint took the steer, so the aborted run had nothing left to deliver.
-    expect(a.drainedOnAbort).toEqual([]);
+    expect(deliveredAfterTask(a)).toEqual([]);
 
     const persistence = persistenceOf(h);
     const log = await persistence.readEventLog(h.teamId);
@@ -867,7 +883,7 @@ describe('TeamRunner peer message still queued in pi at the cancel', () => {
     const h = midToolTeam('peer-steer');
     const run = h.runner.run();
     const a = await opened(h, 'A');
-    await a.whenPrompted(1);
+    await a.whenModelCalled(1);
 
     const peer = '[Message from Lead]: check the parser';
     const sent = h.bus().send('Lead', 'A', 'check the parser');
@@ -876,7 +892,7 @@ describe('TeamRunner peer message still queued in pi at the cancel', () => {
     const files = new Map(['Lead', 'A'].map((n) => [h.agent(n).agentId, h.session(n).sessionFile!]));
     h.runner.cancel('user');
     await run;
-    expect(a.drainedOnAbort).toEqual([]);
+    expect(deliveredAfterTask(a)).toEqual([]);
 
     const persistence = persistenceOf(h);
     const checkpoint = (await checkpointOf(persistence, h.teamId))!;
@@ -895,21 +911,37 @@ describe('TeamRunner peer message still queued in pi at the cancel', () => {
   });
 
   it('hands pi queued messages to the resumed member before the ones the runner still held', async () => {
-    const h = midToolTeam('queue-order');
+    const files = new Map<string, string>();
+    const h = makeTeam({
+      cwd: newCwd('queue-order'), teamId: crypto.randomUUID(), specialists: ['A'],
+      behave: {
+        Lead: (_t, s, hh) => {
+          if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'Test label', 'task for A, described in full');
+          void s.endTurn();
+        },
+        A: (_t, s, hh) => {
+          // Both reach pi after its last queue check, so its run settles with them still queued.
+          s.atLastQueueCheck = () => {
+            s.atLastQueueCheck = null;
+            hh.bus().send('Lead', 'A', 'first, steered into pi');
+            s.queueFollowUp('[Message from Lead]: second, a pi follow-up');
+          };
+          // pi has settled but the runner has not seen its prompt return, so it holds the next message itself.
+          const off = s.subscribe((e) => {
+            if ((e as { type: string }).type !== 'agent_settled') return;
+            off();
+            hh.bus().send('Lead', 'A', 'third, held by the runner');
+            for (const n of ['Lead', 'A']) files.set(hh.agent(n).agentId, hh.session(n).sessionFile!);
+            hh.runner.cancel('user');
+          });
+          void s.endTurn();
+        },
+      },
+    });
     const run = h.runner.run();
-    const a = await opened(h, 'A');
-    await a.whenPrompted(1);
-
-    h.bus().send('Lead', 'A', 'first, steered into pi');
-    await a.whenPrompted(2);
-    a.holdFollowUpMessage('[Message from Lead]: second, a pi follow-up');
-    // pi has stopped streaming but its run has not returned, so the runner holds the next message itself.
-    a.isStreaming = false;
-    h.bus().send('Lead', 'A', 'third, held by the runner');
-    const files = new Map(['Lead', 'A'].map((n) => [h.agent(n).agentId, h.session(n).sessionFile!]));
-    h.runner.cancel('user');
     await run;
-    expect(a.drainedOnAbort).toEqual([]);
+    const a = h.session('A');
+    expect(deliveredAfterTask(a)).toEqual([]);
 
     const persistence = persistenceOf(h);
     const checkpoint = (await checkpointOf(persistence, h.teamId))!;
@@ -944,7 +976,7 @@ describe('TeamRunner.resume relaunches, parks, restarts or leaves each member by
     const reportOnce: Behaviour = (_t, s, hh) => {
       const name = hh.opened.find((o) => o.session === s)!.name;
       if (s.prompts.length === 1) hh.runner.reportComplete(name, `${name} resumed and done`);
-      s.emit({ type: 'turn_end' });
+      void s.endTurn();
     };
     const after = makeTeam({
       cwd: h.cwd, teamId: h.teamId,
@@ -1070,9 +1102,8 @@ describe('TeamRunner.resume relaunches, parks, restarts or leaves each member by
   });
 
   it('steers undelivered messages into a relaunched member whose resume turn keeps working, each on its own, steers first', async () => {
-    // Its resume turn never ends, so a message delivered only at a turn end would never arrive.
-    const keepsWorking: Behaviour = (_t, s) => { if (s.prompts.length === 1) s.startStreaming(); };
-    const { after, done } = await resumed('plan-redeliver-mid-turn', { B: keepsWorking });
+    // Its resume call never ends, so a message the runner held for a settled run would never arrive.
+    const { after, done } = await resumed('plan-redeliver-mid-turn', { B: holdTurn });
     const b = await opened(after, 'B');
     await vi.waitFor(() => expect(b.prompts).toHaveLength(4));
 
@@ -1121,12 +1152,12 @@ describe('TeamRunner.resume and the review round', () => {
         Lead: (text, s, hh) => {
           if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'Test label', 'task for A, described in full');
           // The lead keeps working on the round it was handed, so no stall nudge repeats it.
-          if (!text.includes(RRR)) s.emit({ type: 'turn_end' });
+          if (!text.includes(RRR)) void s.endTurn();
         },
         A: (_t, s, hh) => {
           hh.scratchpad().set('a-notes', 'A findings', 'A');
           hh.runner.reportComplete('A', 'A signed off');
-          s.emit({ type: 'turn_end' });
+          void s.endTurn();
         },
       },
     });
@@ -1166,7 +1197,7 @@ describe('TeamRunner.resume and the review round', () => {
   it('a lead whose stall budget ran out before the cancel is not force-completed on its first resumed turn', async () => {
     const { cwd, teamId, persistence, checkpoint, files } = await roundOpenAtCancel('stalls');
     // Holding the nudged turn keeps later stalls from racing the assertions to a forced end.
-    const leadEndsFirstTurn: Behaviour = (_t, s) => { if (s.prompts.length === 1) s.emit({ type: 'turn_end' }); };
+    const leadEndsFirstTurn: Behaviour = (_t, s) => { if (s.prompts.length === 1) void s.endTurn(); };
     const after = makeTeam({ cwd, teamId, specialists: ['A'], behave: { Lead: leadEndsFirstTurn } });
     after.runner.restore(await persistence.readEventLog(teamId), { ...checkpoint, review: { ...checkpoint.review, leadReviewStalls: 2 } }, files);
     const done = after.runner.resume('tc-resume');
@@ -1192,7 +1223,7 @@ describe('TeamRunner.resume cost', () => {
       behave: { Lead: (_t, s) => { s.emitAssistantUsage({ input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, 2); } },
     });
     const run = h.runner.run();
-    await (await opened(h, 'Lead')).whenPrompted(1);
+    await (await opened(h, 'Lead')).whenModelCalled(1);
     h.runner.cancel('user');
     await run;
     expect(h.costs.reduce((a, b) => a + b, 0)).toBe(2);
@@ -1202,7 +1233,7 @@ describe('TeamRunner.resume cost', () => {
     const after = makeTeam({
       cwd, teamId, specialists: [],
       opening: { Lead: { cost: 2, tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } },
-      behave: { Lead: (_t, s) => { s.emitAssistantUsage({ input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, 0.5); s.emit({ type: 'turn_end' }); } },
+      behave: { Lead: (_t, s) => { s.emitAssistantUsage({ input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, 0.5); void s.endTurn(); } },
     });
     after.runner.restore(await persistence.readEventLog(teamId), checkpoint, new Map([[h.agent('Lead').agentId, h.session('Lead').sessionFile!]]));
     const result = await after.runner.resume('tc-resume');
@@ -1216,10 +1247,17 @@ describe('TeamRunner.resume cost', () => {
 });
 
 describe('TeamRunner.resume tool count', () => {
+  /** A response calling `n` tools, which pi runs; the turn holds until the model answers again. */
   const callTools = (n: number): Behaviour => (_t, s) => {
     const content = Array.from({ length: n }, (_, i) => ({ type: 'toolCall', id: `tc-${s.prompts.length}-${i}`, name: 'read', arguments: {} }));
-    s.emit({ type: 'message_end', message: { role: 'assistant', content } });
+    s.emit({ type: 'message_end', message: { role: 'assistant', content, stopReason: 'toolUse' } });
     for (const call of content) s.emit({ type: 'tool_execution_start', toolCallId: call.id, toolName: call.name, args: {} });
+    for (const call of content) {
+      const result = { role: 'toolResult', toolCallId: call.id, toolName: call.name, content: [], isError: false };
+      s.emit({ type: 'tool_execution_end', toolCallId: call.id, toolName: call.name, result, isError: false });
+      s.emit({ type: 'message_start', message: result });
+      s.emit({ type: 'message_end', message: result });
+    }
   };
 
   it("adds the resumed run's tool calls to the attempt's earlier ones, live, in the log and after a reload", async () => {
@@ -1237,7 +1275,8 @@ describe('TeamRunner.resume tool count', () => {
 
     const after = makeTeam({
       cwd, teamId, specialists: [],
-      behave: { Lead: (t, s, hh) => { callTools(2)(t, s, hh); s.emit({ type: 'turn_end' }); } },
+      // The model answers the call after its tools without calling more, which ends the turn.
+      behave: { Lead: (t, s, hh) => { if (t) callTools(2)(t, s, hh); void s.endTurn(); } },
     });
     after.runner.restore(await persistence.readEventLog(teamId), checkpoint, new Map([[h.agent('Lead').agentId, h.session('Lead').sessionFile!]]));
     const result = await after.runner.resume('tc-resume');
@@ -1255,12 +1294,16 @@ describe('TeamRunner.resume tool count', () => {
   it('counts the usage and tool calls of the request in flight at the cancel, live and after a reload alike', async () => {
     const cwd = newCwd('mid-request');
     const teamId = crypto.randomUUID();
-    const h = makeTeam({
-      cwd, teamId, specialists: [],
-      behave: { Lead: (_t, s) => { s.emitAssistantUsage({ input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, 1); } },
-    });
+    // A message steered into the lead's first request makes pi ask the model again, and that request is in flight at the cancel.
+    const h = makeTeam({ cwd, teamId, specialists: [], behave: { Lead: holdTurn } });
     const run = h.runner.run();
     const lead = await opened(h, 'Lead');
+    await lead.whenModelCalled(1);
+    h.bus().send('system', 'Lead', 'status check');
+    await lead.whenPrompted(2);
+    lead.emitAssistantUsage({ input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, 1);
+    void lead.endTurn();
+    await lead.whenModelCalled(2);
     await vi.waitFor(() => expect(h.agent('Lead').totalInputTokens).toBe(10));
     // The in-flight request reports its usage and tool calls only as the abort ends it, after the checkpoint,
     // and the abort cuts its batch after the first call.
@@ -1269,8 +1312,6 @@ describe('TeamRunner.resume tool count', () => {
       const calls = ['late', 'late-skipped'].map((id) => ({ type: 'toolCall', id, name: 'read', arguments: {} }));
       lead.emit({ type: 'message_end', message: { role: 'assistant', content: calls, stopReason: 'toolUse', usage: { input: 7, output: 4, cacheRead: 0, cacheWrite: 0, cost: { total: 2 } } } });
       lead.emit({ type: 'tool_execution_start', toolCallId: 'late', toolName: 'read', args: {} });
-      lead.emit({ type: 'tool_execution_end', toolCallId: 'late', toolName: 'read', result: { content: [{ type: 'text', text: 'Operation aborted' }], details: {} }, isError: true });
-      lead.emit({ type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'aborted', errorMessage: 'Request was aborted' } });
       await abort();
     };
     h.runner.cancel('user');
@@ -1280,7 +1321,7 @@ describe('TeamRunner.resume tool count', () => {
     const after = makeTeam({
       cwd, teamId, specialists: [],
       opening: { Lead: { cost: lead.cost, tokens: { ...lead.tokens } } },
-      behave: { Lead: (_t, s) => { s.emitAssistantUsage({ input: 2, output: 1, cacheRead: 0, cacheWrite: 0 }, 0.5); s.emit({ type: 'turn_end' }); } },
+      behave: { Lead: (_t, s) => { s.emitAssistantUsage({ input: 2, output: 1, cacheRead: 0, cacheWrite: 0 }, 0.5); void s.endTurn(); } },
     });
     after.runner.restore(await persistence.readEventLog(teamId), (await checkpointOf(persistence, teamId))!, new Map([[h.agent('Lead').agentId, lead.sessionFile!]]));
     expect((await after.runner.resume('tc-resume')).status).toBe('completed');
@@ -1344,7 +1385,7 @@ describe('TeamRunner.resume active time', () => {
       cwd, teamId, specialists: ['A'],
       behave: {
         Lead: (_t, s, hh) => { if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'Test label', 'task for A, described in full'); },
-        A: (_t, s, hh) => { hh.runner.reportComplete('A', 'A signed off'); s.emit({ type: 'turn_end' }); },
+        A: (_t, s, hh) => { hh.runner.reportComplete('A', 'A signed off'); void s.endTurn(); },
       },
     });
     const run = h.runner.run();
@@ -1409,17 +1450,17 @@ describe('TeamRunner.resume keeps review coverage', () => {
             hh.runner.dismissReview('appsec', 'backend', REASON);
             return;
           }
-          s.emit({ type: 'turn_end' });
+          void s.endTurn();
         },
         backend: (_t, s, hh) => {
           hh.scratchpad().set('backend-api', 'the api', 'backend');
           hh.runner.reportComplete('backend', 'backend delivered and verified');
-          s.emit({ type: 'turn_end' });
+          void s.endTurn();
         },
         appsec: (_t, s, hh) => {
           hh.scratchpad().markRead('appsec', 'backend-api');
           hh.runner.reportComplete('appsec', 'reviewed backend in full', [{ implementor: 'backend', verdict: 'changes_requested' }]);
-          s.emit({ type: 'turn_end' });
+          void s.endTurn();
         },
       },
     });
@@ -1462,11 +1503,11 @@ describe('TeamRunner.resume keeps review coverage', () => {
       behave: {
         Lead: (text, s, hh) => {
           if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'Test label', 'task for A, described in full');
-          if (!text.includes(RRR)) s.emit({ type: 'turn_end' });
+          if (!text.includes(RRR)) void s.endTurn();
         },
         A: (_t, s, hh) => {
           hh.runner.reportComplete('A', 'A signed off');
-          s.emit({ type: 'turn_end' });
+          void s.endTurn();
         },
       },
     });
@@ -1509,11 +1550,11 @@ describe('TeamRunner.resume keeps review coverage', () => {
         behave: {
           Lead: (text, s, hh) => {
             if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'Test label', 'task for A, described in full');
-            if (!text.includes(RRR)) s.emit({ type: 'turn_end' });
+            if (!text.includes(RRR)) void s.endTurn();
           },
           A: (_t, s, hh) => {
             hh.runner.reportComplete('A', 'A signed off');
-            s.emit({ type: 'turn_end' });
+            void s.endTurn();
           },
         },
       });
@@ -1579,12 +1620,12 @@ describe('TeamRunner.resume keeps review coverage', () => {
       behave: {
         Lead: (text, s, hh) => {
           if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'Test label', 'task for A, described in full');
-          if (!text.includes(RRR)) s.emit({ type: 'turn_end' });
+          if (!text.includes(RRR)) void s.endTurn();
         },
         A: (_t, s, hh) => {
           hh.scratchpad().set('A-api', 'the api', 'A');
           hh.runner.reportComplete('A', 'A signed off');
-          s.emit({ type: 'turn_end' });
+          void s.endTurn();
         },
       },
     });

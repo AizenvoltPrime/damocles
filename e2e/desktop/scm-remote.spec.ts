@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Locator, Page } from '@playwright/test';
-import { mainLog } from './support/app';
+import { logFiles, mainLog } from './support/app';
 import { expect, test } from './support/fixtures';
 import { git, initRepo, type GitHome } from './support/git';
 import { startGitHttpServer, type GitHttpServer } from './support/git-http-server';
@@ -53,8 +53,7 @@ async function commitLocal(h: GitHome, dir: string, file: string, text: string, 
 
 /** Every log file the app wrote under userData, once it has quit. */
 function allLogs(home: HermeticHome): string {
-  const dir = path.join(home.userData, 'logs');
-  return fs.readdirSync(dir, { recursive: true, encoding: 'utf8' }).map((file) => path.join(dir, file)).filter((file) => fs.statSync(file).isFile()).map((file) => fs.readFileSync(file, 'utf8')).join('\n');
+  return logFiles(home).map((file) => fs.readFileSync(file, 'utf8')).join('\n');
 }
 
 let server: GitHttpServer | undefined;

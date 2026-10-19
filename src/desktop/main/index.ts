@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { app, BrowserWindow, clipboard, dialog, Menu, powerMonitor, screen, session, shell as electronShell, webContents, WebContentsView, type WebContents } from 'electron';
 import { installLogSink, log, showLog } from '../../core/logger';
+import { StallMonitor } from './stall-monitor';
 import { getRipgrepSearchOptions, resolveRgPath } from '../../core/chat-panel/ripgrep';
 import { locateSettingsFile, saveSettingsFileText } from '../../core/chat-panel/settings-file-editor';
 import type { MentionTarget } from '../../core/chat-panel/mention-resolver';
@@ -556,8 +557,20 @@ class DesktopApp {
     this.usageWarnings = new UsageWarningStore(this.userDataDir, (line) => log(line));
   }
 
+  private startStallMonitor(bootLog: (line: string) => void): StallMonitor | undefined {
+    try {
+      const monitor = new StallMonitor({ dir: path.join(this.logsDir, 'stalls'), log: bootLog });
+      this.disposables.push(monitor);
+      return monitor;
+    } catch (err) {
+      bootLog(`[stall] the main process stall monitor could not start: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+  }
+
   async start(): Promise<void> {
     const bootLog = (line: string): void => log(line);
+    const stalls = this.startStallMonitor(bootLog);
     // Chromium fixes its UI locale at launch, so the switch goes in before the app is ready.
     this.languageSetting = readLanguageSetting(path.join(DAMOCLES_HOME_DIR, 'settings.json'), bootLog);
     if (this.languageSetting !== 'system') app.commandLine.appendSwitch('lang', this.languageSetting);
@@ -587,6 +600,16 @@ class DesktopApp {
 
     await mergeLoginShellEnv(bootLog);
     await app.whenReady();
+    if (stalls) {
+      const suspend = (): void => stalls.suspend();
+      const resume = (): void => stalls.resume();
+      powerMonitor.on('suspend', suspend);
+      powerMonitor.on('resume', resume);
+      this.disposables.push({ dispose: () => {
+        powerMonitor.removeListener('suspend', suspend);
+        powerMonitor.removeListener('resume', resume);
+      } });
+    }
     const problem = runtimeProblem();
     if (problem !== undefined) {
       dialog.showErrorBox('Damocles cannot start', problem);
@@ -2360,6 +2383,9 @@ class DesktopApp {
       revealLine: (tabId, line, range) => this.shell?.revealEditorLine(tabId, line, range),
       showPane: () => {
         if (!this.windowLayout.sidebar().grid.visible.editor) this.toggleGridPane('editor');
+      },
+      hidePane: () => {
+        if (this.windowLayout.sidebar().grid.visible.editor) this.toggleGridPane('editor');
       },
       showPaneBeside: () => {
         const grid = this.windowLayout.sidebar().grid;

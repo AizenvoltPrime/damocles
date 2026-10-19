@@ -8,6 +8,7 @@ import { useSettingsStore } from '@/stores/useSettingsStore';
 import { useCompassStore } from '@/stores/useCompassStore';
 import { useBackgroundTaskStore } from '@/stores/useBackgroundTaskStore';
 import { useTeamStore } from '@/stores/useTeamStore';
+import { useSessionStore } from '@/stores/useSessionStore';
 import { i18n } from '@/i18n';
 
 /**
@@ -161,12 +162,13 @@ describe('the context menu', () => {
     expect(posted).toEqual([]);
   });
 
-  it('compacts through the /compact command', async () => {
+  it('compacts through the /compact command, naming the conversation it shows', async () => {
+    useSessionStore().setCurrentSession('sess-shown');
     const menu = await openContextMenu(mountStrip(stats()));
 
     menu.querySelector<HTMLElement>('[data-action="compact"]')!.click();
     await flush();
 
-    expect(posted).toEqual([{ type: 'sendMessage', content: '/compact' }]);
+    expect(posted).toEqual([{ type: 'sendMessage', content: '/compact', sessionId: 'sess-shown' }]);
   });
 });

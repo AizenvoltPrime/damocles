@@ -14,6 +14,7 @@ import WorktreePendingChip from "./components/composer/WorktreePendingChip.vue";
 import WorktreeDeletedCard from "./components/composer/WorktreeDeletedCard.vue";
 import { LoaderCircle, Users } from "lucide-vue-next";
 import { branchLeaf } from "@/utils/branch-leaf";
+import { windDownText } from "@/utils/windDownText";
 import ChatHeader from "./components/chat-header/ChatHeader.vue";
 import SessionHistoryDropdown from "./components/chat-header/SessionHistoryDropdown.vue";
 import type { HeaderAction } from "./components/chat-header/headerActions";
@@ -44,6 +45,7 @@ const VoiceModelUpgradeModal = defineAsyncComponent(() => import("./components/V
 const SubagentOverlay = defineAsyncComponent(() => import("./components/SubagentOverlay.vue"));
 const DiffOverlay = defineAsyncComponent(() => import("./components/DiffOverlay.vue"));
 const McpToolOverlay = defineAsyncComponent(() => import("./components/McpToolOverlay.vue"));
+const McpResourcePicker = defineAsyncComponent(() => import("./components/McpResourcePicker.vue"));
 const ToolOverlay = defineAsyncComponent(() => import("./components/ToolOverlay.vue"));
 const RewindBrowser = defineAsyncComponent(() => import("./components/RewindBrowser.vue"));
 const CompactionRewindConfirm = defineAsyncComponent(() => import("./components/CompactionRewindConfirm.vue"));
@@ -125,6 +127,7 @@ import type { ToolGroup } from "@shared/types/tools";
 import type { McpServerConfig, McpToolExposureScope, McpToolExposureSetting } from "@shared/types/mcp";
 import type { WebviewToExtensionMessage, WorktreeAction } from "@shared/types/messages";
 import { visibleText } from "@shared/visible-text";
+import { isMcpToolName } from "@shared/tool-names";
 
 const { postMessage, getState, setState } = usePlatformBridge();
 const { t } = useI18n();
@@ -151,6 +154,8 @@ const {
   authFailureMessage,
   retryStatus,
 } = storeToRefs(uiStore);
+// The server whose resource picker is open over the MCP panel.
+const mcpResourceServer = ref<string | null>(null);
 
 const settingsStore = useSettingsStore();
 const editorStore = useEditorStore();
@@ -185,6 +190,7 @@ const {
   thinkingDroppedNotices,
   sessionStats,
   isAwaitingUserAction,
+  windDown,
 } = storeToRefs(sessionStore);
 
 
@@ -377,6 +383,7 @@ useDoubleKeyStroke("Escape", () => {
     !showRewindBrowser.value &&
     !showSettingsModal.value &&
     !showMcpPanel.value &&
+    mcpResourceServer.value === null &&
     !showToolsPanel.value &&
     !showMemoryPanel.value
   ) {
@@ -437,7 +444,7 @@ function tryInterceptLocalCommand(content: string | UserContentBlock[]): boolean
 function handleSendMessage(content: string | UserContentBlock[], includeIdeContext: boolean, terminalAttachmentIds: string[]) {
   if (tryInterceptLocalCommand(content)) return;
 
-  postMessage({ type: "sendMessage", content, includeIdeContext, ...(terminalAttachmentIds.length > 0 ? { terminalAttachmentIds } : {}) });
+  postMessage({ type: "sendMessage", content, sessionId: sessionStore.currentSessionId, includeIdeContext, ...(terminalAttachmentIds.length > 0 ? { terminalAttachmentIds } : {}) });
   followTranscript();
   uiStore.setProcessing(true);
 }
@@ -487,7 +494,7 @@ const sharedWorktree = computed(() => {
 
 function handleQueueMessage(content: string | UserContentBlock[]) {
   if (tryInterceptLocalCommand(content)) return;
-  postMessage({ type: "queueMessage", content });
+  postMessage({ type: "queueMessage", content, sessionId: sessionStore.currentSessionId });
   followTranscript();
 }
 
@@ -637,6 +644,30 @@ function handleSetMcpEnabled(enabled: boolean) {
 function handleSetMcpToolExposure(serverName: string, toolName: string, exposure: McpToolExposureSetting, scope: McpToolExposureScope) {
   postMessage({ type: "mcpSetToolExposure", serverName, toolName, exposure, scope });
 }
+
+function handleSetMcpResourceExposure(serverName: string, exposure: McpToolExposureSetting, scope: McpToolExposureScope) {
+  postMessage({ type: "mcpSetResourceExposure", serverName, exposure, scope });
+}
+
+// As VS Code's picker hands its pick to the chat, an attach closes the picker and the panel; the chip lands in the composer.
+// The overlays hand focus back to their openers as they unmount, so the composer takes it after that flush.
+function handleMcpResourceAttached() {
+  mcpResourceServer.value = null;
+  uiStore.closeMcpPanel();
+  void nextTick(() => chatInputRef.value?.focus());
+}
+
+// The picker's rows and requests belong to the servers of the folder it opened in; another folder or server set retires it.
+watch(
+  [
+    () => settingsStore.panelWorkspaceFolderKey,
+    () => uiStore.worktree?.place,
+    () => mcpServers.value.map((server) => server.name).sort().join("\n"),
+  ],
+  () => {
+    mcpResourceServer.value = null;
+  },
+);
 
 function handleReconnectMcpServer(serverName: string) {
   postMessage({ type: "reconnectMcpServer", serverName });
@@ -966,6 +997,8 @@ const HEADER_ACTIONS: Record<HeaderAction, () => void> = {
 
 const isEmptyConversation = computed(() => messageListRef.value?.isEmpty === true);
 
+const windDownLine = computed(() => (windDown.value ? windDownText(windDown.value, t) : undefined));
+
 const statusOverride = computed(() => {
   if (contextWarning.value?.autoCompactTriggered) return t('context.autoCompacting');
   if (retryStatus.value) return t('status.retrying', { attempt: retryStatus.value.attempt, max: retryStatus.value.maxAttempts });
@@ -1089,6 +1122,7 @@ function handleSuggestion(prompt: string) {
             key="mcp-renamed"
             :notices="mcpRenamedToolRules"
             @open-file="(path: string) => handleOpenMcpConfigFile(path, null)"
+            @open-setting="(key: string) => postMessage({ type: 'openSettings', query: key })"
             @dismiss="settingsStore.dismissMcpRenamedToolRules()"
           />
         </TransitionGroup>
@@ -1162,6 +1196,7 @@ function handleSuggestion(prompt: string) {
           :awaiting-user-action="isAwaitingUserAction"
           :current-tool-name="currentRunningTool ?? undefined"
           :status-override="statusOverride"
+          :wind-down="windDownLine"
           :active-hooks="uiStore.activeHooks"
         />
 
@@ -1298,6 +1333,7 @@ function handleSuggestion(prompt: string) {
         @toggle="handleToggleMcpServer"
         @toggle-enabled="handleSetMcpEnabled"
         @set-tool-exposure="handleSetMcpToolExposure"
+        @set-resource-exposure="handleSetMcpResourceExposure"
         @reconnect="handleReconnectMcpServer"
         @authenticate="handleAuthenticateMcpServer"
         @reauthenticate="handleReauthenticateMcpServer"
@@ -1308,6 +1344,19 @@ function handleSuggestion(prompt: string) {
         @update-server="handleUpdateMcpServer"
         @delete-server="handleDeleteMcpServer"
         @open-file="handleOpenMcpConfigFile"
+        @browse-resources="mcpResourceServer = $event"
+      />
+    </Transition>
+
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <McpResourcePicker
+        v-if="mcpResourceServer !== null"
+        :server-name="mcpResourceServer"
+        @close="mcpResourceServer = null"
+        @attached="handleMcpResourceAttached"
       />
     </Transition>
 
@@ -1424,7 +1473,7 @@ function handleSuggestion(prompt: string) {
       appear
     >
       <McpToolOverlay
-        v-if="expandedTool && expandedTool.name.startsWith('mcp__')"
+        v-if="expandedTool && isMcpToolName(expandedTool.name)"
         :tool="expandedTool"
         :owner="expandedToolOwner"
         @close="uiStore.collapseTool"

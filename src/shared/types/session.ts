@@ -252,7 +252,7 @@ export interface ChatMessage {
   refusalExplanation?: string | null;
   refusalCategory?: 'cyber' | 'bio' | null;
   contentBlocks?: ContentBlock[];
-  /** A user message's attachments (terminal output and commits), shown as chips with their bounded preview. */
+  /** A user message's attachments (terminal output, commits, MCP resources), shown as chips. */
   terminalAttachments?: ChatAttachmentInfo[];
   toolCalls?: ToolCall[];
   timestamp: number;

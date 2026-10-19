@@ -82,8 +82,11 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
   };
 
   return {
-    openSettings: () => {
-      void platform.editor.openHostSettings("damocles");
+    openSettings: (msg) => {
+      if (msg.type !== "openSettings") return;
+      // The webview is untrusted: the query only filters the settings editor, and only to a Damocles key.
+      const query = typeof msg.query === "string" && /^damocles\.[A-Za-z0-9.]+$/.test(msg.query) ? msg.query : "damocles";
+      void platform.editor.openHostSettings(query);
     },
 
     openAppSettings: (msg, ctx) => {

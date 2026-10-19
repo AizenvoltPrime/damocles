@@ -11,12 +11,20 @@ export interface SourceFile {
   readonly rel: string;
 }
 
+export interface SourceTree {
+  readonly dir: string;
+  readonly minFiles: number;
+}
+
 // A tree that is missing or below its minimum means the walker points at the wrong root.
-const BACKEND_TREES: readonly { readonly dir: string; readonly minFiles: number }[] = [
+const BACKEND_TREES: readonly SourceTree[] = [
   { dir: 'src/core', minFiles: 100 },
   { dir: 'src/vscode', minFiles: 5 },
   { dir: 'src/desktop', minFiles: 5 },
 ];
+
+/** The backend trees plus the host-neutral code esbuild bundles into the same CJS outputs. */
+export const BUNDLED_TREES: readonly SourceTree[] = [...BACKEND_TREES, { dir: 'src/shared', minFiles: 30 }, { dir: 'src/platform', minFiles: 10 }];
 
 function walk(dir: string, out: string[]): void {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -27,10 +35,10 @@ function walk(dir: string, out: string[]): void {
   }
 }
 
-/** Every `.ts` file outside `__tests__` directories under each backend tree; throws when a tree is missing or too small. */
-export function backendSourceFiles(repoRoot: string = REPO_ROOT): SourceFile[] {
+/** Every `.ts` file outside `__tests__` directories under each tree (default: the backend trees); throws when a tree is missing or too small. */
+export function backendSourceFiles(repoRoot: string = REPO_ROOT, trees: readonly SourceTree[] = BACKEND_TREES): SourceFile[] {
   const files: SourceFile[] = [];
-  for (const tree of BACKEND_TREES) {
+  for (const tree of trees) {
     const dir = join(repoRoot, tree.dir);
     if (!existsSync(dir)) throw new Error(`source tree ${tree.dir} not found under ${repoRoot}`);
     const found: string[] = [];

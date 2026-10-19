@@ -37,3 +37,20 @@ describe('McpToolOverlay response', () => {
     expect(codes).toContain(JSON.stringify(rows, null, 2));
   });
 });
+
+describe('McpToolOverlay for an MCP resource tool', () => {
+  it('names the server from the call\u2019s input and shows the read\u2019s images through ToolResultImages', async () => {
+    const tool: ToolCall = { id: 't-2', name: 'read_mcp_resource', input: { server: 'docs', uri: 'docs://logo' }, status: 'completed', result: '', imageCount: 1 };
+    const wrapper = mount(McpToolOverlay, {
+      props: { tool },
+      global: { plugins: [i18n], stubs: { MarkdownRenderer: true, CodeBlock: true, ToolResultImages: true } },
+      attachTo: document.body,
+    });
+    mounted.push(wrapper);
+    await nextTick();
+
+    expect(wrapper.text()).toContain('docs');
+    expect(wrapper.text()).toContain('read_mcp_resource');
+    expect(wrapper.findComponent({ name: 'ToolResultImages' }).exists()).toBe(true);
+  });
+});

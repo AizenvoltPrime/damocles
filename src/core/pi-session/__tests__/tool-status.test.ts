@@ -7,7 +7,7 @@ import { TEAM_MAIN_PI_TOOL_NAMES } from '../tools/team-tools';
 import { MEMORY_PI_TOOL_NAMES } from '../tools/memory-tools';
 import { BROWSER_PI_TOOL_NAMES } from '../tools/browser-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../tools/compass-tools';
-import { TOOL_TOOL_SEARCH, TOOL_GENERATE_IMAGE } from '../../../shared/tool-names';
+import { TOOL_TOOL_SEARCH, TOOL_GENERATE_IMAGE, MCP_RESOURCE_TOOL_NAMES } from '../../../shared/tool-names';
 import { fullActiveToolNames, activeToolNamesWithDeferral, buildToolStatus, type ToolStatusDeps } from '../tool-status';
 import { deferredToolNames } from '../tools/deferred-tools';
 
@@ -46,6 +46,7 @@ function deps(overrides: Partial<ToolStatusDeps>): ToolStatusDeps {
     mcpEnabled: false,
     mcpToolNames: [],
     mcpDeferrableToolNames: [],
+    mcpResourceExposure: null,
     disabled: new Set<string>(),
     ...overrides,
   };
@@ -308,5 +309,30 @@ describe('activeToolNamesWithDeferral — per-tool MCP exposure', () => {
     const d = deps({ mcpEnabled: true, mcpToolNames: [RESOLVE, DOCS], mcpDeferrableToolNames: [DOCS], disabled: new Set([RESOLVE]) });
     expect(fullActiveToolNames(d)).not.toContain(RESOLVE);
     expect(activeToolNamesWithDeferral(d, new Set([RESOLVE]))).not.toContain(RESOLVE);
+  });
+});
+
+describe('the MCP resource tools in the active set', () => {
+  const RESOURCES = [...MCP_RESOURCE_TOOL_NAMES];
+
+  it('are eligible only while MCP is on and a visible server offers resources with exposure on', () => {
+    expect(fullActiveToolNames(deps({ mcpEnabled: true, mcpResourceExposure: null }))).not.toContain('read_mcp_resource');
+    expect(fullActiveToolNames(deps({ mcpEnabled: false, mcpResourceExposure: 'direct' }))).not.toContain('read_mcp_resource');
+    expect(fullActiveToolNames(deps({ mcpEnabled: true, mcpResourceExposure: 'deferred' }))).toEqual(expect.arrayContaining(RESOURCES));
+  });
+
+  it('wait for ToolSearch while every resource server is deferred, and are active from the first turn when one is Always loaded', () => {
+    const deferred = deps({ mcpEnabled: true, mcpResourceExposure: 'deferred' });
+    for (const name of RESOURCES) expect(activeToolNamesWithDeferral(deferred, new Set()), name).not.toContain(name);
+    expect(activeToolNamesWithDeferral(deferred, new Set(RESOURCES))).toEqual(expect.arrayContaining(RESOURCES));
+
+    const direct = deps({ mcpEnabled: true, mcpResourceExposure: 'direct' });
+    expect(activeToolNamesWithDeferral(direct, new Set())).toEqual(expect.arrayContaining(RESOURCES));
+  });
+
+  it('a name in damocles.tools.disabled stays out', () => {
+    const d = deps({ mcpEnabled: true, mcpResourceExposure: 'direct', disabled: new Set(['read_mcp_resource']) });
+    expect(fullActiveToolNames(d)).not.toContain('read_mcp_resource');
+    expect(fullActiveToolNames(d)).toContain('list_mcp_resources');
   });
 });

@@ -214,6 +214,7 @@ function stop(): void {
     <div
       v-if="subagent.status === 'running' && statusLine"
       class="-mt-0.5 mr-3 mb-2 ml-12.5 truncate text-xs text-(--d-accent) italic"
+      :title="statusLine"
       data-testid="subagent-status-line"
     >
       {{ statusLine }}

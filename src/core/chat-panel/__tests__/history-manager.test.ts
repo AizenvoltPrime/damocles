@@ -43,6 +43,8 @@ function harness(): {
       type: 'accountInfo',
       data: { model: 'gpt-6.1-sol', dollarBilled: true },
     }),
+    // Stands in for PiSession.replayLiveAgents, which posts a running subagent's card state after the replay rebuilt it.
+    replayLiveAgents: (sessionId: string) => posted.push({ type: 'taskStarted', taskId: `live-of-${sessionId}`, toolUseId: 'tc-1', description: 'dig' }),
   } as unknown as ChatSession;
   const manager = new HistoryManager({
     postMessage: (_h, m) => posted.push(m),
@@ -77,6 +79,16 @@ describe('HistoryManager.loadSessionHistory', () => {
     const types = posted.map((m) => m.type);
     expect(types.indexOf('accountInfo')).toBeGreaterThan(types.indexOf('sessionCleared'));
     expect(types.indexOf('accountInfo')).toBeGreaterThan(types.indexOf('done'));
+  });
+
+  it("replays the conversation's live subagents after the transcript rebuilt their cards", async () => {
+    const { manager, host, session, posted } = harness();
+
+    await manager.loadSessionHistory('/ws', 's1', host, session);
+
+    const types = posted.map((m) => m.type);
+    expect(posted.filter((m) => m.type === 'taskStarted')).toEqual([{ type: 'taskStarted', taskId: 'live-of-s1', toolUseId: 'tc-1', description: 'dig' }]);
+    expect(types.indexOf('taskStarted')).toBeGreaterThan(types.indexOf('done'));
   });
 });
 

@@ -127,29 +127,44 @@ describe('McpServerManager on pi-mcp: discovery', () => {
   const tools = Array.from({ length: 5 }, (_, i) => tool(`t${i}`));
   const resources = Array.from({ length: 3 }, (_, i) => ({ uri: `mem://r${i}`, name: `r${i}` }));
 
-  it('follows nextCursor through every page of tools and resources', async () => {
+  it('connects with tools/list alone, following nextCursor, and records the resources capability', async () => {
     const { server, connection } = await connected({ tools, resources, pageSize: 2 });
     expect(connection.tools.map((t) => t.name)).toEqual(['t0', 't1', 't2', 't3', 't4']);
-    expect(connection.resources.map((r) => r.uri)).toEqual(['mem://r0', 'mem://r1', 'mem://r2']);
+    expect(connection.hasResources).toBe(true);
     expect(server.requestsFor('tools/list')).toHaveLength(3);
-    expect(server.requestsFor('resources/list')).toHaveLength(2);
+    expect(server.requestsFor('resources/list')).toHaveLength(0);
   });
 
   it('does not ask a server for a list it has no capability for', async () => {
     const { server, connection } = await connected({ tools, capabilities: { tools: {} } });
     expect(connection.tools).toHaveLength(5);
-    expect(connection.resources).toEqual([]);
+    expect(connection.hasResources).toBe(false);
     expect(server.requestsFor('resources/list')).toHaveLength(0);
   });
 
-  it('still connects when resources/list fails, offering no resources', async () => {
+  it('connects while a resources/list would fail, since connecting never lists resources', async () => {
     const server = await createInMemoryMcpServer({ tools });
     server.setHandler('resources/list', () => {
       throw new Error('resources broke');
     });
     const connection = await managerFor(server).connect('mem', spec());
     expect(connection.status).toBe('connected');
-    expect(connection.resources).toEqual([]);
+    expect(connection.hasResources).toBe(true);
+  });
+
+  it('lists one page of resources or templates by cursor, or every page', async () => {
+    const templates = [{ uriTemplate: 'mem://t/{id}', name: 't' }, { uriTemplate: 'mem://u/{id}', name: 'u' }, { uriTemplate: 'mem://v/{id}', name: 'v' }];
+    const { server, pool } = await connected({ resources, resourceTemplates: templates, pageSize: 2 });
+
+    const first = await pool.listResourcesPage('mem', undefined);
+    expect(first.resources.map((r) => r.uri)).toEqual(['mem://r0', 'mem://r1']);
+    expect(first.nextCursor).toBe('2');
+    expect((await pool.listResourcesPage('mem', first.nextCursor)).resources.map((r) => r.uri)).toEqual(['mem://r2']);
+    expect((await pool.listResources('mem')).map((r) => r.uri)).toEqual(['mem://r0', 'mem://r1', 'mem://r2']);
+
+    expect((await pool.listResourceTemplatesPage('mem', undefined)).nextCursor).toBe('2');
+    expect((await pool.listResourceTemplates('mem')).map((t) => t.name)).toEqual(['t', 'u', 'v']);
+    expect(server.requestsFor('resources/list').map((r) => (r.params as Record<string, unknown> | undefined)?.['cursor'])).toEqual([undefined, '2', undefined, '2']);
   });
 
   it('refetches tools on list_changed and reports it once the new list is in', async () => {
@@ -185,12 +200,14 @@ describe('McpServerManager on pi-mcp: discovery', () => {
     expect(calls).toBe(2);
   });
 
-  it('refetches resources on resources/list_changed', async () => {
+  it('ignores resources/list_changed: resources are listed only when a tool asks', async () => {
     const onListChanged = vi.fn();
-    const { server, connection } = await connected({ resources: [] }, { onListChanged });
+    const { server } = await connected({ resources: [] }, { onListChanged });
     server.resources.push({ uri: 'mem://new', name: 'new' });
     await server.notify('notifications/resources/list_changed');
-    await vi.waitFor(() => expect(connection.resources.map((r) => r.uri)).toEqual(['mem://new']));
+    await server.notify('notifications/tools/list_changed');
+    await vi.waitFor(() => expect(onListChanged).toHaveBeenCalledTimes(1));
+    expect(server.requestsFor('resources/list')).toHaveLength(0);
   });
 });
 
@@ -240,6 +257,26 @@ describe('McpServerManager on pi-mcp: calls', () => {
     const { server, pool } = await connected();
     server.setHandler('resources/read', (params) => ({ contents: [{ uri: params['uri'], text: 'body' }] }));
     await expect(pool.readResource('mem', 'mem://a')).resolves.toEqual({ contents: [{ uri: 'mem://a', text: 'body' }] });
+  });
+
+  it('completes a template argument through completion/complete only when the server declares completions', async () => {
+    const answer = () => ({ completion: { values: ['alpha', 7, 'beta', ...Array.from({ length: 120 }, (_, i) => `v${i}`)] } });
+    const capable = await connected({ capabilities: { resources: {}, completions: {} } });
+    capable.server.setHandler('completion/complete', answer);
+    const values = await capable.pool.completeResourceArgument('mem', { uri: 'mem://items/{id}', argument: 'id', value: 'a', context: { kind: 'x' } });
+    expect(values.slice(0, 2)).toEqual(['alpha', 'beta']);
+    expect(values).toHaveLength(100);
+    expect(capable.server.requestsFor('completion/complete')[0]!.params).toMatchObject({
+      ref: { type: 'ref/resource', uri: 'mem://items/{id}' },
+      argument: { name: 'id', value: 'a' },
+      context: { arguments: { kind: 'x' } },
+    });
+    await capable.pool.closeAll();
+
+    const plain = await connected({ capabilities: { resources: {} } });
+    plain.server.setHandler('completion/complete', answer);
+    await expect(plain.pool.completeResourceArgument('mem', { uri: 'mem://items/{id}', argument: 'id', value: 'a', context: {} })).resolves.toEqual([]);
+    expect(plain.server.requestsFor('completion/complete')).toHaveLength(0);
   });
 
   it('counts a ping answer as alive', async () => {
@@ -549,20 +586,6 @@ describe('McpServerManager on pi-mcp: values and errors', () => {
     expect(failureForLog(error)).toBe('OAuth error invalid_request');
   });
 
-  it('logs a failed resources/list by status, never its response body', async () => {
-    const lines: string[] = [];
-    installLogSink({ appendLine: (line) => lines.push(line), show: () => {}, dispose: () => {} });
-    const server = await createInMemoryMcpServer({ resources: [{ uri: 'mem://a', name: 'a' }] });
-    const failing = failingTransport(server.clientTransport, () => httpError(500, 'stack: password=BODY-SECRET'));
-    failing.failNextRequest('resources/list');
-    const pool = managerFor(server, { transportFactory: () => failing.transport });
-
-    await pool.connect('mem', spec());
-
-    expect(lines.some((line) => line.includes('resources/list failed for mem: McpHttpError: HTTP status 500'))).toBe(true);
-    expect(lines.join('\n')).not.toContain('BODY-SECRET');
-  });
-
   it('reports a plain failure as McpServerConnectError when the server has no auth provider', async () => {
     const server = await createInMemoryMcpServer();
     const unauthorized = failingTransport(server.clientTransport, () => new bundle.oauth.McpOAuthAuthorizationRequiredError());
@@ -734,9 +757,9 @@ function failingTransport(inner: McpTransport, error: () => Error) {
     onMessage: (listener) => inner.onMessage(listener),
     onError: (listener) => inner.onError(listener),
     onClose: (listener) => inner.onClose(listener),
-    send: async (message) => {
+    send: async (message, options) => {
       if ('method' in message && failing.delete(message.method)) throw error();
-      return inner.send(message);
+      return inner.send(message, options);
     },
   };
   return { transport, failNextRequest: (method: string) => failing.add(method) };

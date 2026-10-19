@@ -9,6 +9,8 @@ import { chatInput } from './support/ui';
 import { activeTab, bufferText, codeEditor, DOCUMENT_END, editorShows, editorTab, filesRow, filesTree, openInEditor, quickOpen, quickPick, saveWithKeyboard } from './support/editor';
 import { FILE_DRAG_MIME } from '../../src/shared/file-drag';
 import { clickSectionAction } from './support/shell-ui';
+import { writeUserSettings } from './support/hermetic';
+import { colouredPixelsPerFrame } from './support/frames';
 
 test('the Files tree lists the project lazily, hides files.exclude matches, and opens a file in the editor on click', async ({ foreground: _foreground, home, launch }) => {
   fs.mkdirSync(path.join(home.project, '.git'), { recursive: true });
@@ -22,6 +24,18 @@ test('the Files tree lists the project lazily, hides files.exclude matches, and 
 
   await expect(filesRow(shell, 'src')).toBeVisible();
   await expect(filesRow(shell, 'README.md')).toBeVisible();
+  // Material file icons load from the app protocol under the shell's CSP.
+  for (const [row, icon] of [['src', 'folder-src'], ['README.md', 'readme']] as const) {
+    const img = filesRow(shell, row).locator('img');
+    await expect(img).toHaveAttribute('src', `app://damocles/desktop-shell/file-icons/${icon}.svg`);
+    await expect.poll(() => img.evaluate((element: HTMLImageElement) => element.complete && element.naturalWidth > 0)).toBe(true);
+  }
+  // Switching the file icon theme redraws the open tree without a reload.
+  writeUserSettings(home, { 'damocles.desktop.fileIconTheme': 'minimal' });
+  await expect(filesRow(shell, 'README.md').locator('img')).toHaveCount(0);
+  await expect(filesRow(shell, 'README.md').locator('svg.lucide-book-open')).toBeVisible();
+  writeUserSettings(home, { 'damocles.desktop.fileIconTheme': 'material' });
+  await expect(filesRow(shell, 'README.md').locator('img')).toHaveCount(1);
   await expect(filesRow(shell, '.git')).toHaveCount(0);
   await expect(filesRow(shell, 'src/deep')).toHaveCount(0);
   await filesRow(shell, 'src').click();
@@ -42,6 +56,28 @@ test('the Files tree lists the project lazily, hides files.exclude matches, and 
 
   await clickSectionAction(shell, 'files-collapse-all');
   await expect(filesRow(shell, 'src')).toHaveAttribute('aria-expanded', 'false');
+});
+
+test('expanding a folder swaps its Material icon without a frame that shows no icon', async ({ home, launch }) => {
+  fs.mkdirSync(path.join(home.project, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(home.project, 'src', 'a.ts'), '\n');
+  const { app } = await launch();
+  await openProjectChat(app, home.project);
+  const shell = await shellPage(app);
+  // folder-src and folder-src-open are drawn in saturated colours, which colouredPixelsPerFrame counts.
+  const icon = filesRow(shell, 'src').locator('img');
+  await expect(icon).toHaveAttribute('src', /\/folder-src\.svg$/);
+  await expect.poll(() => icon.evaluate((element: HTMLImageElement) => element.complete && element.naturalWidth > 0)).toBe(true);
+  const closed = await icon.elementHandle();
+  const counts = await colouredPixelsPerFrame(app, shell, (await icon.boundingBox())!, () => filesRow(shell, 'src').click(), async () => {
+    await expect(icon).toHaveAttribute('src', /\/folder-src-open\.svg$/);
+    await expect.poll(() => icon.evaluate((element: HTMLImageElement) => element.complete && element.naturalWidth > 0)).toBe(true);
+  });
+  // The same element changed its src: a replaced one would paint nothing until its image loaded.
+  expect(await closed!.evaluate((element) => element.isConnected && element.getAttribute('src')?.endsWith('/folder-src-open.svg'))).toBe(true);
+  // Screencast may drop a frame, so the element check above is the exact guard; the frames show what the user saw.
+  expect(counts.length).toBeGreaterThan(1);
+  expect(counts.filter((count) => count === 0)).toEqual([]);
 });
 
 test('New file, New folder and Rename use inline inputs, Delete moves to the trash after asking, and the copy actions write the clipboard', async ({ clipboard, home, launch }) => {

@@ -78,6 +78,7 @@ beforeEach(() => {
     focusTab: () => undefined,
     revealLine: (tabId, line, range) => reveals.push(`${tabId}:${line}:${range ? range.startColumn : '-'}`),
     showPane: () => undefined,
+    hidePane: () => undefined,
     showPaneBeside: () => reveals.push('beside'),
     projects: () => [project, other],
     copy: async () => undefined,

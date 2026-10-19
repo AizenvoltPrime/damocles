@@ -482,6 +482,35 @@ describe('ExtensionUiDialog — host prompts (desktop input box and quick pick)'
     expect(posted).toEqual([{ type: 'extensionUiResponse', requestId: 'a', value: 'gamma' }]);
   });
 
+  it('leaves Home and End to the filter text and moves to the first and last item on Ctrl+Home and Ctrl+End', async () => {
+    const store = useExtensionUiStore();
+    store.setRequest(req('a', { options: ['alpha', 'beta', 'gamma'] }));
+    const wrapper = mountDialog();
+    await wrapper.vm.$nextTick();
+    await new Promise((r) => setTimeout(r, 0));
+    const filter = wrapper.get('input');
+    const highlighted = () => wrapper.find('[role="option"][data-highlighted]').text();
+    const press = (key: string, init: KeyboardEventInit = {}) => {
+      const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init });
+      filter.element.dispatchEvent(event);
+      return event;
+    };
+
+    await filter.trigger('keydown', { key: 'ArrowDown' });
+    expect(highlighted()).toBe('beta');
+    expect(press('End').defaultPrevented).toBe(false);
+    expect(press('Home').defaultPrevented).toBe(false);
+    await wrapper.vm.$nextTick();
+    expect(highlighted()).toBe('beta');
+
+    expect(press('End', { ctrlKey: true }).defaultPrevented).toBe(true);
+    await wrapper.vm.$nextTick();
+    expect(highlighted()).toBe('gamma');
+    press('Home', { ctrlKey: true });
+    await filter.trigger('keydown', { key: 'Enter' });
+    expect(posted).toEqual([{ type: 'extensionUiResponse', requestId: 'a', value: 'alpha' }]);
+  });
+
   it('renders its own chrome in Greek', async () => {
     i18n.global.locale.value = 'el';
     const store = useExtensionUiStore();

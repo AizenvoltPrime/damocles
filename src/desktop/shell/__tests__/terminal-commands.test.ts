@@ -114,6 +114,25 @@ describe('command model', () => {
     expect(markers).toHaveLength(before);
   });
 
+  // A clear screen blanks the viewport rows in place; markers on them would keep drawing marks on empty rows.
+  it('drops the commands and the pending prompt on rows a clear screen erased, and keeps those above them', () => {
+    const { cursor, markers, model } = harness();
+    cursor.line = 2;
+    model.handle(executed(1, 'ls'));
+    cursor.line = 30;
+    const cls = model.handle(executed(2, 'cls'))!.command;
+    model.erased(20);
+    expect(cls.commandMarker.isDisposed).toBe(true);
+    expect(model.commands().map((command) => command.id)).toEqual([1]);
+    expect(model.handle(finished(2, 0))).toBeNull();
+    model.handle({ kind: 'promptStart' });
+    const prompt = markers.at(-1)!;
+    model.erased(20);
+    expect(prompt.isDisposed).toBe(true);
+    cursor.line = 31;
+    expect(model.handle(executed(3, 'dir'))!.command.promptMarker).toBeNull();
+  });
+
   it('disposes each marker it replaces or drops, so xterm stops tracking its line', () => {
     const { cursor, markers, model } = harness();
     model.handle({ kind: 'promptStart' });

@@ -35,7 +35,7 @@ const FACT: MemoryEntry = {
 } as unknown as MemoryEntry;
 
 async function send(h: ReturnType<typeof makeHarness>, content: string) {
-  await h.handlers.sendMessage!({ type: "sendMessage", content }, h.ctx);
+  await h.handlers.sendMessage!({ type: "sendMessage", content, sessionId: null }, h.ctx);
 }
 
 describe("chat /remember + /note null-save feedback (M1)", () => {
@@ -120,7 +120,7 @@ describe("chat /compact echo", () => {
     const h = makeHarness({});
     const compact = vi.fn(async () => { h.sent.push({ type: "notification", message: "Finish or stop the current turn before compacting.", notificationType: "warning" }); });
     Object.assign(h.ctx.session, { compact });
-    await h.handlers[type]!({ type, content: "/compact" }, h.ctx);
+    await h.handlers[type]!({ type, content: "/compact", sessionId: null }, h.ctx);
     expect(compact).toHaveBeenCalledTimes(1);
     expect(h.sent.some((m) => m.type === "userMessage")).toBe(false);
     expect(h.sent.filter((m) => m.type === "notification")).toHaveLength(1);

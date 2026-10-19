@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { TeamRunner } from '../team-runner';
 import { MessageBus } from '../message-bus';
 import { Scratchpad } from '../scratchpad';
@@ -7,6 +8,7 @@ import type { ReviewCoverage } from '../review-coverage';
 import { type NestedMcpToolset } from '../../pi-session/tools/mcp-tools';
 import { teamAgentToolset, TEAM_BASE_TOOL_NAMES, TEAM_MCP_NAMES } from './team-mcp-fixture';
 import { stubCheckpointWriter } from './checkpoint-writer-stub';
+import { takeAgentFile } from '../../pi-session/agent-file-owner';
 import type { Stopwatch } from '../../../shared/team-stopwatch';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 
@@ -22,6 +24,7 @@ function makeAgent(partial: Partial<TeamAgent> & { name: string; role: TeamAgent
     attempt: 0,
     specialization: '',
     description: null,
+    task: null,
     status: 'running',
     model: 'test',
     profileId: null,
@@ -514,16 +517,34 @@ interface CapturedRun {
   release: () => void;
 }
 
-/** The agent runner stub: each run binds its note sink as a real run does, and drops it when the run ends. */
+/**
+ * The agent runner stub: each run binds its note sink as a real run does, and drops it when the run ends. Like the real runner it
+ * forgets every session it opened before it settles, or at once when it opens one after settling, so the member file is free again.
+ */
 function capturingAgentRunner(runs: Map<string, CapturedRun>): { startAgent: (cfg: AgentRunConfig) => Promise<unknown> } {
   return {
     startAgent: (cfg) => new Promise((resolve, reject) => {
       const release = cfg.bindNoteDelivery(() => true);
+      const opened: AgentSession[] = [];
+      let settled = false;
+      const end = (): void => {
+        settled = true;
+        release();
+        for (const session of opened.splice(0)) cfg.forgetSession(session);
+      };
       runs.set(cfg.name, {
-        config: cfg,
+        config: {
+          ...cfg,
+          createSession: async () => {
+            const session = await cfg.createSession();
+            if (settled) cfg.forgetSession(session);
+            else opened.push(session);
+            return session;
+          },
+        },
         release,
-        resolve: (result) => { release(); resolve(result); },
-        reject: (error) => { release(); reject(error); },
+        resolve: (result) => { end(); resolve(result); },
+        reject: (error) => { end(); reject(error); },
       });
     }),
   };
@@ -531,7 +552,7 @@ function capturingAgentRunner(runs: Map<string, CapturedRun>): { startAgent: (cf
 
 /** The part of a pi session the runner touches before handing it to the agent runner. */
 function stubMemberSession(): never {
-  return { sessionManager: { appendCustomEntry: () => 'entry', getSessionFile: () => undefined } } as never;
+  return { sessionManager: { appendCustomEntry: () => 'entry', getSessionFile: () => undefined }, subscribe: () => () => undefined } as never;
 }
 
 function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<string, CapturedRun>; sentToLead: string[]; messageBus: MessageBus; disposedScopes: Array<[string, boolean]>; cancelledDialogs: string[]; boundScopes: string[]; mcpContexts: AgentMcpContext[]; factoryMcpSnapshots: NestedMcpToolset[]; factoryReadOnly: boolean[]; toolsetSnapshots: NestedMcpToolset[]; sessionOpts: Array<Record<string, unknown>>; webview: ExtensionToWebviewMessage[] } {
@@ -855,6 +876,27 @@ describe('TeamRunner — per-agent browser scope disposal (success-only auto-clo
     expect(mcpContexts.at(-1)).toMatchObject({ agentId: agent.agentId, agentName: 'A', teamId: 'team-1' });
 
     runs.get('A')!.resolve(result('completed'));
+    await settle();
+  });
+
+  it("hands each launch's session the signal its Stop aborts, so the hooks its session runs end with the Stop", async () => {
+    const { runner, runs, mcpContexts } = makeWiringRunner(['A']);
+    const agents = (runner as unknown as { agents: Map<string, TeamAgent> }).agents;
+    runner.startSpecialist('A', 'Test label', 'task for A that is descriptive enough');
+    await settle();
+    await runs.get('A')!.config.createSession();
+    const lead = Object.assign(agents.get('Lead')!, { status: 'running', activeMs: 0, runningSince: Date.now() });
+    (runner as unknown as { launchLead: (agent: TeamAgent, launch: unknown) => void })
+      .launchLead(lead, { kind: 'fresh', resolution: { modelLabel: 'lead-model' }, prompt: 'begin', redeliver: [] });
+    await runs.get('Lead')!.config.createSession();
+    const [specialist, leadContext] = mcpContexts;
+
+    expect(specialist!.stopSignal).toBe(runs.get('A')!.config.abortSignal);
+    expect(leadContext!.stopSignal).toBe(runs.get('Lead')!.config.abortSignal);
+    runner.cancelSpecialist('A');
+    expect([specialist!.stopSignal.aborted, leadContext!.stopSignal.aborted]).toEqual([true, false]);
+
+    runs.get('A')!.resolve(result('cancelled'));
     await settle();
   });
 
@@ -1254,8 +1296,9 @@ function makeModelWiringRunner(
     startAgent: (cfg: AgentRunConfig) => {
       // Invoke the real createSession closure TeamRunner built so its resolved opts are captured.
       currentName = cfg.name;
-      void cfg.createSession();
-      return capturing.startAgent(cfg);
+      const started = capturing.startAgent(cfg);
+      void runs.get(cfg.name)!.config.createSession();
+      return started;
     },
   };
 
@@ -2421,16 +2464,22 @@ describe('TeamRunner member session opening', () => {
     const forgotten: unknown[] = [];
     const config = { teamId: 'team-1', cwd: '/cwd', persistenceSessionId: 'sess', agents: [], engine: { forgetSession: (s: unknown) => forgotten.push(s) } };
     const runner = new TeamRunner(config as unknown as TeamConfig, () => undefined);
-    const session = { sessionManager: { appendCustomEntry: () => { throw new Error('disk full'); }, getSessionFile: () => undefined } };
+    const session = { sessionManager: { appendCustomEntry: () => { throw new Error('disk full'); }, getSessionFile: () => undefined }, subscribe: () => () => undefined };
     const launch = kind === 'fresh'
       ? { kind, resolution: { modelLabel: 'spec-model' }, prompt: 'task', redeliver: [] }
-      : { kind, path: '/cwd/member.jsonl', segment: { toolCallId: 'tc-resume' }, initial: { kind: 'park' }, redeliver: [] };
+      : { kind, path: '/cwd/2026-01-01T00-00-00-000Z_id-Disk.a0.jsonl', segment: { toolCallId: 'tc-resume' }, initial: { kind: 'park' }, redeliver: [] };
     const createMemberSession = (runner as unknown as {
-      createMemberSession: (agent: TeamAgent, attempt: number, task: string, member: unknown, create: () => Promise<unknown>) => Promise<unknown>;
+      createMemberSession: (agent: TeamAgent, attempt: number, task: string, member: unknown, stop: AbortSignal, create: () => Promise<unknown>) => Promise<unknown>;
     }).createMemberSession.bind(runner);
 
-    await expect(createMemberSession(makeAgent({ name: 'A', role: 'specialist' }), 0, 'task', launch, async () => session)).rejects.toThrow('disk full');
+    // A name no other case gives a member, since the ownership of a member file is process-wide.
+    const agent = makeAgent({ name: 'Disk', role: 'specialist' });
+    await expect(createMemberSession(agent, 0, 'task', launch, new AbortController().signal, async () => session)).rejects.toThrow('disk full');
     expect(forgotten).toEqual([session]);
+    // The released file can take its next owner at once.
+    const next = takeAgentFile({ kind: 'file', dir: '/cwd', id: 'id-Disk.a0' });
+    expect(next).not.toBeNull();
+    next!.release();
   });
 });
 

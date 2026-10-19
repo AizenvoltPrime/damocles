@@ -7,6 +7,9 @@ import { useEditorStore } from '@/stores/useEditorStore';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { i18n } from '@/i18n';
 import { VSCODE_HOST_CAPABILITIES, type ExtensionToWebviewMessage } from '@shared/types/messages';
+// App loads these on demand; imported here, its import() of each settles in microtasks, which flushPromises drains.
+import '@/components/editor/EditorOverlayHost.vue';
+import '@/components/RewindBrowser.vue';
 
 // Monaco needs a real layout engine and workers; the proposal diff only needs to mount.
 vi.mock('@/components/editor/useMonaco', () => ({
@@ -45,31 +48,36 @@ describe('the rewind confirmation over a proposal diff', () => {
     const side = { name: 'a.ts', path: '/w/a.ts', body: { kind: 'text' as const, content: 'a', languageId: 'typescript' } };
     editorStore.showDiff({ type: 'editorShowDiff', viewId: 'v1', title: 'a.ts', purpose: 'proposal', approvalId: 'tool-1', original: side, modified: side });
     editorStore.openProposal('tool-1');
-    await vi.waitFor(() => expect(query('[data-testid="editor-overlay"]')).not.toBeNull());
+    await flushPromises();
+    expect(query('[data-testid="editor-overlay"]')).not.toBeNull();
     const diff = query('[data-testid="editor-overlay"]')!;
 
     // Rewind from the desktop command palette, then pick the turn.
     fromHost({ type: 'runChatCommand', command: 'rewind' });
-    await vi.waitFor(() => expect(query('[data-testid="rewind-browser"]')).not.toBeNull());
+    await flushPromises();
+    expect(query('[data-testid="rewind-browser"]')).not.toBeNull();
     fromHost({ type: 'rewindHistory', prompts: [{ messageId: 'm1', content: 'first prompt', timestamp: 1, filesAffected: 1, files: [{ path: '/w/a.ts', displayName: 'a.ts' }] }], restorePoints: [], canFork: true });
-    await vi.waitFor(() => expect(query('[data-testid="rewind-browser"] [role="option"]')).not.toBeNull());
+    await flushPromises();
+    expect(query('[data-testid="rewind-browser"] [role="option"]')).not.toBeNull();
     query('[data-testid="rewind-browser"] [role="option"]')!.click();
 
-    await vi.waitFor(() => expect(query('[role="alertdialog"]')).not.toBeNull());
+    await flushPromises();
+    expect(query('[role="alertdialog"]')).not.toBeNull();
     const modal = query('[role="alertdialog"]')!;
     expect(zIndex(modal)).toBeGreaterThan(zIndex(diff));
-    await vi.waitFor(() => expect(modal.contains(document.activeElement)).toBe(true));
+    expect(modal.contains(document.activeElement)).toBe(true);
 
     press('Escape');
-    await vi.waitFor(() => expect(query('[role="alertdialog"]')).toBeNull());
+    await flushPromises();
+    expect(query('[role="alertdialog"]')).toBeNull();
     expect(editorStore.view?.viewId).toBe('v1');
     expect(diff.isConnected).toBe(true);
 
     // Cancelling the confirmation goes back to the turn picker, which closes in turn onto the diff.
-    await vi.waitFor(() => expect(query('[data-testid="rewind-browser"]')).not.toBeNull());
-    await flushPromises();
+    expect(query('[data-testid="rewind-browser"]')).not.toBeNull();
     press('Escape');
-    await vi.waitFor(() => expect(query('[data-testid="rewind-browser"]')).toBeNull());
+    await flushPromises();
+    expect(query('[data-testid="rewind-browser"]')).toBeNull();
     expect(editorStore.view?.viewId).toBe('v1');
     expect(diff.contains(document.activeElement)).toBe(true);
   });

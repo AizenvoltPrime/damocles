@@ -168,6 +168,61 @@ function setOwn(target: Record<string, unknown>, key: string, value: unknown): v
   Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
 }
 
+/** The config side of a server's resources: `exposeResources` and `exposure` as `mcp.json` holds them. */
+export interface McpConfigResourceExposure {
+  exposure?: McpToolExposure;
+  exposeResources?: boolean;
+}
+
+/** A server's resource exposure from its config: off for `exposeResources: false` or a hidden server, else its `exposure`. */
+export function configResourceExposure(config: McpConfigResourceExposure): McpToolExposureSetting {
+  if (config.exposeResources === false) return 'off';
+  return exposureFromConfigValue(config.exposure);
+}
+
+/** A layer's `damocles.mcp.resourceExposure` entry for one server, when it holds a valid one. */
+export function layerResourceExposure(value: unknown, serverName: string): McpToolExposureSetting | undefined {
+  if (!isRecord(value) || !Object.hasOwn(value, serverName)) return undefined;
+  const entry = value[serverName];
+  return isToolExposureSetting(entry) ? entry : undefined;
+}
+
+/** The highest layer holding an entry for the server wins; with none, the config's value stands. */
+export function resolveResourceExposure(
+  layers: readonly ToolExposureLayer[],
+  serverName: string,
+  configExposure: McpToolExposureSetting,
+): ResolvedToolExposure {
+  for (let i = layers.length - 1; i >= 0; i--) {
+    const entry = layerResourceExposure(layers[i]!.value, serverName);
+    if (entry !== undefined) return { exposure: entry, source: layers[i]!.scope };
+  }
+  return { exposure: configExposure, source: 'config' };
+}
+
+/**
+ * The `damocles.mcp.resourceExposure` map to write at one scope so the server's resource exposure there
+ * is `exposure`; the same rules as `toolExposureMapForScope`.
+ */
+export function resourceExposureMapForScope(
+  current: unknown,
+  below: readonly ToolExposureLayer[],
+  serverName: string,
+  exposure: McpToolExposureSetting,
+  configExposure: McpToolExposureSetting,
+): Record<string, unknown> | undefined {
+  const next: Record<string, unknown> = isRecord(current) ? { ...current } : {};
+  if (resolveResourceExposure(below, serverName, configExposure).exposure === exposure) delete next[serverName];
+  else setOwn(next, serverName, exposure);
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
+/** How the resource tools reach the model: Always loaded when any of the servers is, else deferred; null with no server. */
+export function resourceToolsExposure(servers: readonly { exposure: McpToolExposureSetting }[]): 'direct' | 'deferred' | null {
+  if (servers.length === 0) return null;
+  return servers.some((server) => server.exposure === 'direct') ? 'direct' : 'deferred';
+}
+
 /** Whether any layer sets one of the server's tools to `direct`. */
 export function layersExposeDirect(layers: readonly ToolExposureLayer[], serverName: string): boolean {
   return layers.some(({ value }) => {

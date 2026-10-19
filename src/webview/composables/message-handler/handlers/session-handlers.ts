@@ -79,7 +79,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
 
     // The panel owns one session and `running` can arrive before `sessionStarted`, so no session id filter here.
     sessionStateChanged: (msg, ctx) => {
-      ctx.stores.sessionStore.setSessionState(msg.state, msg.pendingPrompts);
+      ctx.stores.sessionStore.setSessionState(msg.state, msg.pendingPrompts, msg.windDown ?? null);
     },
 
     storedSessions: (msg, ctx) => {

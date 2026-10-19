@@ -8,6 +8,7 @@ import ChatInput from '@/components/ChatInput.vue';
 import { i18n } from '@/i18n';
 import { useUIStore } from '@/stores/useUIStore';
 import { useContextUsageStore } from '@/stores/useContextUsageStore';
+import { useSessionStore } from '@/stores/useSessionStore';
 
 // happy-dom has no font loading API; VirtualizedMessageList awaits `document.fonts.ready` on mount.
 if (!('fonts' in document)) {
@@ -57,5 +58,27 @@ describe.each(['send', 'queue'] as const)('App local slash commands on the %s pa
 
   it('/clear with trailing text is an ordinary message', async () => {
     expect(await submit(event, '/clear the cache')).toEqual([event === 'send' ? 'sendMessage' : 'queueMessage']);
+  });
+});
+
+// Core refuses a send written for another conversation than the one pi would prompt, so each names the one on screen.
+describe('every send names the conversation the webview shows', () => {
+  it.each([
+    ['send', 'hello', 'sendMessage'],
+    ['queue', 'hello', 'queueMessage'],
+    ['send', '/btw what is this?', 'sendBtw'],
+  ] as const)('a %s of %j posts %s with it', async (event, content, type) => {
+    app = mount(App, { global: { plugins: [i18n] } });
+    useSessionStore().setCurrentSession('sess-shown');
+    posted = [];
+    if (event === 'send') app.findComponent(ChatInput).vm.$emit('send', content, false, []);
+    else app.findComponent(ChatInput).vm.$emit('queue', content);
+    await nextTick();
+    expect(posted).toEqual([expect.objectContaining({ type, sessionId: 'sess-shown' })]);
+  });
+
+  it('names none while the webview shows no conversation', async () => {
+    expect(await submit('send', 'hello')).toEqual(['sendMessage']);
+    expect(posted).toEqual([expect.objectContaining({ sessionId: null })]);
   });
 });

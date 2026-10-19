@@ -1,11 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import {
   configMayExposeDirect,
+  configResourceExposure,
   configToolExposure,
   exposureFromConfigValue,
   layersExposeDirect,
+  layerResourceExposure,
   matchesToolPattern,
+  resolveResourceExposure,
   resolveToolExposure,
+  resourceExposureMapForScope,
+  resourceToolsExposure,
   toolExposureLayers,
   toolExposureMapForScope,
 } from '../exposure';
@@ -174,5 +179,86 @@ describe('toolExposureMapForScope — what one scope write leaves behind', () =>
     const layers = toolExposureLayers({ userValue: JSON.parse(JSON.stringify(tool)) }, true);
     expect(resolveToolExposure(layers, 'ctx', '__proto__', 'deferred')).toEqual({ exposure: 'direct', source: 'user' });
     expect(resolveToolExposure(layers, '__proto__', 'b', 'deferred')).toEqual({ exposure: 'direct', source: 'user' });
+  });
+});
+
+describe('configResourceExposure — a server\u2019s resource default from its config', () => {
+  it('is off for exposeResources false, whatever the exposure', () => {
+    expect(configResourceExposure({ exposeResources: false })).toBe('off');
+    expect(configResourceExposure({ exposeResources: false, exposure: 'direct' })).toBe('off');
+  });
+
+  it('follows the server exposure otherwise: hidden off, direct direct, every other value deferred', () => {
+    expect(configResourceExposure({ exposure: 'hidden' })).toBe('off');
+    expect(configResourceExposure({ exposure: 'direct' })).toBe('direct');
+    expect(configResourceExposure({ exposeResources: true, exposure: 'direct' })).toBe('direct');
+    for (const exposure of ['codemode', 'codemode-deferred', 'deferred'] as const) expect(configResourceExposure({ exposure }), exposure).toBe('deferred');
+    expect(configResourceExposure({})).toBe('deferred');
+  });
+});
+
+describe('the damocles.mcp.resourceExposure overlay, per server from inspect()', () => {
+  const inspection = {
+    userValue: { docs: 'off', wiki: 'direct', secret: 'deferred' },
+    projectValue: { docs: 'deferred' },
+    localValue: { docs: 'direct', secret: 'off' },
+  };
+
+  it('local beats project beats user beats config, per server, and names the winning scope', () => {
+    const layers = toolExposureLayers(inspection, true);
+    expect(resolveResourceExposure(layers, 'docs', 'off')).toEqual({ exposure: 'direct', source: 'local' });
+    expect(resolveResourceExposure(layers, 'wiki', 'deferred')).toEqual({ exposure: 'direct', source: 'user' });
+    expect(resolveResourceExposure(layers, 'other', 'off')).toEqual({ exposure: 'off', source: 'config' });
+  });
+
+  it('an explicit setting turns on a server whose config default is off', () => {
+    const layers = toolExposureLayers({ userValue: { hidden: 'deferred' } }, true);
+    expect(resolveResourceExposure(layers, 'hidden', configResourceExposure({ exposure: 'hidden' }))).toEqual({ exposure: 'deferred', source: 'user' });
+  });
+
+  it('ignores project and local values in an untrusted folder', () => {
+    const layers = toolExposureLayers(inspection, false);
+    expect(resolveResourceExposure(layers, 'docs', 'deferred')).toEqual({ exposure: 'off', source: 'user' });
+    expect(resolveResourceExposure(layers, 'secret', 'deferred')).toEqual({ exposure: 'deferred', source: 'user' });
+  });
+
+  it('skips malformed layers and values, and never reads an inherited property', () => {
+    const layers = toolExposureLayers({ userValue: ['off'], projectValue: { docs: 'always' }, localValue: { docs: { nested: 'off' } } }, true);
+    expect(resolveResourceExposure(layers, 'docs', 'deferred')).toEqual({ exposure: 'deferred', source: 'config' });
+    expect(layerResourceExposure({}, 'toString')).toBeUndefined();
+  });
+});
+
+describe('resourceExposureMapForScope — what one scope write leaves behind', () => {
+  const below = toolExposureLayers({ userValue: { docs: 'off' } }, true).slice(0, 1);
+
+  it('sets the entry and keeps every other server as found', () => {
+    const current = { wiki: 'direct' };
+    expect(resourceExposureMapForScope(current, below, 'docs', 'direct', 'deferred')).toEqual({ wiki: 'direct', docs: 'direct' });
+    expect(current).toEqual({ wiki: 'direct' });
+  });
+
+  it('removes the entry when the scopes below already give the chosen value', () => {
+    expect(resourceExposureMapForScope({ docs: 'direct', wiki: 'off' }, below, 'docs', 'off', 'deferred')).toEqual({ wiki: 'off' });
+  });
+
+  it('removes the entry when the config alone already gives it, and answers undefined when the scope is left empty', () => {
+    expect(resourceExposureMapForScope({ docs: 'off' }, [], 'docs', 'deferred', 'deferred')).toBeUndefined();
+    expect(resourceExposureMapForScope(undefined, [], 'docs', 'off', 'off')).toBeUndefined();
+  });
+
+  it('starts from an empty map when the scope holds something that is not one, and keeps a __proto__ server as an own key', () => {
+    expect(resourceExposureMapForScope(['junk'], [], 'docs', 'off', 'deferred')).toEqual({ docs: 'off' });
+    const map = resourceExposureMapForScope(undefined, [], '__proto__', 'direct', 'deferred')!;
+    expect(JSON.stringify(map)).toBe('{"__proto__":"direct"}');
+    expect(resolveResourceExposure(toolExposureLayers({ userValue: JSON.parse(JSON.stringify(map)) }, true), '__proto__', 'deferred')).toEqual({ exposure: 'direct', source: 'user' });
+  });
+});
+
+describe('resourceToolsExposure — how the three resource tools reach the model', () => {
+  it('is null with no resource server, direct when any is Always loaded, else deferred', () => {
+    expect(resourceToolsExposure([])).toBeNull();
+    expect(resourceToolsExposure([{ exposure: 'deferred' }, { exposure: 'deferred' }])).toBe('deferred');
+    expect(resourceToolsExposure([{ exposure: 'deferred' }, { exposure: 'direct' }])).toBe('direct');
   });
 });

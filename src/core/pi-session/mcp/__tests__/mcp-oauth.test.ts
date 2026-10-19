@@ -444,25 +444,38 @@ describe('mcp oauth', () => {
 
       const result = await authenticateMcpServer(oauth, 'iss-no-metadata', { url: server.mcpUrl, auth: 'oauth' });
 
-      expect(result).toEqual({ ok: false, error: new oauth.OAuthIssuerMismatchError(`${server.origin}/`, 'https://evil.example.com').message });
+      expect(result).toEqual({ ok: false, error: new oauth.OAuthIssuerMismatchError(undefined, 'https://evil.example.com').message });
       expect(server.authorizeRequests[0]?.pathname).toBe('/authorize');
       expect(server.tokenRequests).toHaveLength(0);
       expect(await getAuthStatus('iss-no-metadata', server.mcpUrl)).toBe('not_authenticated');
     });
 
-    it('accepts an iss naming the authorization server, with or without its trailing slash, when no metadata was found', async () => {
-      const server = await fakeServer({ discoverable: false, callbackIss: (origin) => origin });
+    it.each([
+      ['without', (origin: string) => origin],
+      ['with', (origin: string) => `${origin}/`],
+    ])('rejects any iss when no metadata was found, even one naming the authorization server (%s a trailing slash)', async (slash, callbackIss) => {
+      const server = await fakeServer({ discoverable: false, callbackIss });
       browserFor(server);
       const { authenticateMcpServer, getAuthStatus } = await import('../mcp-auth-flow');
       const oauth = await oauthModule();
+      const id = `iss-origin-${slash}`;
 
-      await expect(authenticateMcpServer(oauth, 'iss-origin', { url: server.mcpUrl, auth: 'oauth' })).resolves.toEqual({ ok: true });
-      expect(await getAuthStatus('iss-origin', server.mcpUrl)).toBe('authenticated');
+      const result = await authenticateMcpServer(oauth, id, { url: server.mcpUrl, auth: 'oauth' });
 
-      const slashed = await fakeServer({ discoverable: false, callbackIss: (origin) => `${origin}/` });
-      browserFor(slashed);
-      await expect(authenticateMcpServer(oauth, 'iss-origin-slash', { url: slashed.mcpUrl, auth: 'oauth' })).resolves.toEqual({ ok: true });
-      expect(await getAuthStatus('iss-origin-slash', slashed.mcpUrl)).toBe('authenticated');
+      expect(result).toEqual({ ok: false, error: new oauth.OAuthIssuerMismatchError(undefined, callbackIss(server.origin)).message });
+      expect(server.tokenRequests).toHaveLength(0);
+      expect(await getAuthStatus(id, server.mcpUrl)).toBe('not_authenticated');
+    });
+
+    it('signs in without iss when no metadata was found', async () => {
+      const server = await fakeServer({ discoverable: false, callbackIss: () => null });
+      browserFor(server);
+      const { authenticateMcpServer, getAuthStatus } = await import('../mcp-auth-flow');
+
+      await expect(authenticateMcpServer(await oauthModule(), 'no-iss-no-metadata', { url: server.mcpUrl, auth: 'oauth' })).resolves.toEqual({ ok: true });
+
+      expect(server.tokenRequests.map((r) => r.params.get('grant_type'))).toEqual(['authorization_code']);
+      expect(await getAuthStatus('no-iss-no-metadata', server.mcpUrl)).toBe('authenticated');
     });
 
     it('rejects a code whose iss names another issuer, and stores no tokens', async () => {

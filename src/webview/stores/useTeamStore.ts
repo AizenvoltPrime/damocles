@@ -8,6 +8,7 @@ import { ownEntry } from '@/utils/ownEntry';
 import { addAgentUsage, emptyAgentUsage, subtractAgentUsage, type AgentUsageTotals } from '@shared/usage-accounting';
 import type { EffortBadgeLevel } from '@shared/effort-badge';
 import type { Stopwatch } from '@shared/team-stopwatch';
+import type { AgentWindDown } from '@shared/types/wind-down';
 
 export interface AgentStreamingState {
   thinking: string;
@@ -92,6 +93,8 @@ export const useTeamStore = defineStore('team', () => {
   const agentStreaming = ref<Record<string, AgentStreamingState>>({});
   // Agents whose failed model call pi waits to re-send, by agentId.
   const agentRetry = ref<Record<string, { attempt: number; maxAttempts: number }>>({});
+  // Stopped agents whose run outlasted core's notice delay winding down, by agentId. Never persisted.
+  const agentWindDown = ref<Record<string, AgentWindDown>>({});
   const agentHistoryLoaded = ref<ReadonlySet<string>>(new Set());
   const selectedAgentId = ref<string | null>(null);
   const isAgentOverlayOpen = ref(false);
@@ -141,6 +144,7 @@ export const useTeamStore = defineStore('team', () => {
       name: a.name,
       role: a.role as 'lead' | 'specialist',
       description: null,
+      task: null,
       model: '',
       profileId: null,
       attempt: 0,
@@ -209,7 +213,10 @@ export const useTeamStore = defineStore('team', () => {
     return agentCancelRequested.value.get(agent.agentId) === agent.status;
   }
 
-  function handleTeamStarted(team: TeamState): void {
+  function handleTeamStarted(sent: TeamState): void {
+    const { windDowns, ...team } = sent;
+    // Core sends the wind-down every card of the team shows now, so a reloaded card shows it and a stale one goes.
+    for (const agent of team.agents) setAgentWindDown(agent.agentId, windDowns?.[agent.agentId] ?? null);
     const pendingKey = Object.keys(teams.value).find(
       k => k.startsWith('pending-') && teams.value[k]?.toolUseId === team.toolUseId
     );
@@ -230,7 +237,7 @@ export const useTeamStore = defineStore('team', () => {
   // A specialist's billing flag is only known once its role model resolves at spawn, which is after the
   // team list was sent, so an absent field here keeps the agent's current value rather than resetting it.
   // Agent times come only from the extension's stopwatch, never from this clock.
-  function handleAgentStatusUpdate(teamId: string, agentId: string, status: TeamAgentStatus, progressSummary?: string, logFilePath?: string | null, model?: string, dollarBilled?: boolean, attempt?: number, effort?: EffortBadgeLevel | null, stopwatch?: Stopwatch, result?: string | null, description?: string | null): void {
+  function handleAgentStatusUpdate(teamId: string, agentId: string, status: TeamAgentStatus, progressSummary?: string, logFilePath?: string | null, model?: string, dollarBilled?: boolean, attempt?: number, effort?: EffortBadgeLevel | null, stopwatch?: Stopwatch, result?: string | null, description?: string | null, task?: string | null): void {
     const team = teams.value[teamId];
     if (!team) return;
     // Dropped, not left stale, because a resumed or redispatched member can return to the status it was stopped in.
@@ -246,7 +253,7 @@ export const useTeamStore = defineStore('team', () => {
       // usage totals keep every attempt's spend. This reset outranks the deltas above it, and the update's own stopwatch outranks the reset.
       // The new attempt's effort arrives once its session exists, in a later update.
       const relaunched = attempt !== undefined && attempt > a.attempt
-        ? { attempt, toolCount: 0, lastToolName: null, activeMs: 0, runningSince: null, result: null, progressSummary: null, effort: effort ?? null }
+        ? { attempt, toolCount: 0, lastToolName: null, activeMs: 0, runningSince: null, result: null, progressSummary: null, effort: effort ?? null, task: task ?? null }
         : {};
       return {
         ...a,
@@ -258,6 +265,7 @@ export const useTeamStore = defineStore('team', () => {
         ...(effort !== undefined ? { effort } : {}),
         ...(result !== undefined ? { result } : {}),
         ...(description !== undefined ? { description } : {}),
+        ...(task !== undefined ? { task } : {}),
         ...relaunched,
         ...(stopwatch ? { activeMs: stopwatch.activeMs, runningSince: stopwatch.runningSince } : {}),
       };
@@ -265,6 +273,8 @@ export const useTeamStore = defineStore('team', () => {
     const totalToolCount = agents.reduce((sum, a) => sum + a.toolCount, 0);
     teams.value = { ...teams.value, [teamId]: { ...team, agents, totalToolCount } };
     if (status !== 'running') setAgentRetry(agentId, null);
+    // A runner that wrote `team-completed` sends no clear, so a settled status ends the wind-down too.
+    if (status === 'completed' || status === 'failed' || status === 'cancelled') setAgentWindDown(agentId, null);
   }
 
   function handleAgentUsageUpdate(teamId: string, agentId: string, usage: AgentUsageTotals): void {
@@ -442,6 +452,17 @@ export const useTeamStore = defineStore('team', () => {
     if (!(agentId in agentRetry.value)) return;
     const { [agentId]: _, ...rest } = agentRetry.value;
     agentRetry.value = rest;
+  }
+
+  /** What a stopped agent's run still waits for, as core published it; null ends it. */
+  function setAgentWindDown(agentId: string, windDown: AgentWindDown | null): void {
+    if (windDown) {
+      agentWindDown.value = { ...agentWindDown.value, [agentId]: windDown };
+      return;
+    }
+    if (!(agentId in agentWindDown.value)) return;
+    const { [agentId]: _, ...rest } = agentWindDown.value;
+    agentWindDown.value = rest;
   }
 
   function handleAgentUserMessage(agentId: string, content: string, timestamp: number, images?: ImageBlock[]): void {
@@ -637,6 +658,7 @@ export const useTeamStore = defineStore('team', () => {
     agentMessages.value = {};
     agentStreaming.value = {};
     agentRetry.value = {};
+    agentWindDown.value = {};
     agentHistoryLoaded.value = new Set();
     selectedAgentId.value = null;
     isAgentOverlayOpen.value = false;
@@ -659,6 +681,7 @@ export const useTeamStore = defineStore('team', () => {
     agentMessages,
     agentStreaming,
     agentRetry,
+    agentWindDown,
     selectedAgentId,
     isAgentOverlayOpen,
     selectedAgent,
@@ -692,6 +715,7 @@ export const useTeamStore = defineStore('team', () => {
     handleAgentError,
     retractAgentMessage,
     setAgentRetry,
+    setAgentWindDown,
     handleAgentToolResult,
     handleAgentToolProgress,
     markAgentToolCancelRequested,

@@ -84,7 +84,7 @@ function figures(agent: WebviewTeamAgent): AgentFigures {
 
 function makeAgent(name: string, role: TeamAgent['role']): TeamAgent {
   return {
-    agentId: `id-${name}`, teamId: TEAM_ID, name, role, attempt: 0, specialization: '', description: null,
+    agentId: `id-${name}`, teamId: TEAM_ID, name, role, attempt: 0, specialization: '', description: null, task: null,
     status: 'pending', model: 'test', profileId: null, activeMs: 0, runningSince: null,
     toolCallCount: 0, carriedToolCallCount: 0, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0,
     cacheCreationTokens: 0, costUsd: 0,
@@ -101,6 +101,8 @@ function makeAgent(name: string, role: TeamAgent['role']): TeamAgent {
  * `run()` is not called (it needs a live engine and blocks), so the collaborators it builds are injected
  * and the team-created entry is written the way run() writes it.
  */
+const harnessRunners: TeamRunner[] = [];
+
 async function makeHarness(cwd: string) {
   const persistence = new TeamPersistence(cwd, SESSION_ID);
   const handlers = createTeamHandlers() as Record<string, (m: ExtensionToWebviewMessage, ctx: unknown) => void>;
@@ -135,6 +137,7 @@ async function makeHarness(cwd: string) {
   } as unknown as TeamConfig;
 
   const runner = new TeamRunner(config, (m) => handlers[m.type]?.(m, {} as never));
+  harnessRunners.push(runner);
   const target = runner as unknown as Record<string, unknown>;
   target['persistence'] = persistence;
   target['checkpointWriter'] = stubCheckpointWriter();
@@ -160,19 +163,25 @@ async function makeHarness(cwd: string) {
     }
   };
 
-  /** A session that parks in its turn, so the test decides when the turn ends. */
+  /** A session whose model calls stay open, so the test decides when each one answers. */
   const queueSession = (): FakeSession => {
-    const session = new FakeSession({ onPrompt: () => undefined });
+    const session = new FakeSession();
     pendingSessions.push(session);
     return session;
   };
 
-  /** One attempt's work: the tool calls it made, then the usage its messages reported. */
+  /** One attempt's work: a response carrying its tool calls and its usage, then pi running each call. */
   const work = (session: FakeSession, attempt: { tools: string[]; usage: { input: number; output: number; cacheRead: number; cacheWrite: number }; cost: number }): void => {
     const calls = attempt.tools.map((name, i) => ({ type: 'toolCall', id: `tc-${name}-${i}`, name, arguments: {} }));
-    session.emit({ type: 'message_end', message: { role: 'assistant', content: calls } });
+    const usage = { ...attempt.usage, cost: { total: attempt.cost } };
+    session.emit({ type: 'message_end', message: { role: 'assistant', content: calls, stopReason: 'toolUse', usage } });
     for (const call of calls) session.emit({ type: 'tool_execution_start', toolCallId: call.id, toolName: call.name, args: {} });
-    session.emitAssistantUsage(attempt.usage, attempt.cost);
+    for (const call of calls) {
+      const result = { role: 'toolResult', toolCallId: call.id, toolName: call.name, content: [], isError: false };
+      session.emit({ type: 'tool_execution_end', toolCallId: call.id, toolName: call.name, result, isError: false });
+      session.emit({ type: 'message_start', message: result });
+      session.emit({ type: 'message_end', message: result });
+    }
   };
 
   const specialistContext = (name: string): AgentMcpContext => (runner as unknown as {
@@ -210,26 +219,28 @@ async function runCancelledThenRedispatched(cwd: string) {
 
   const first = h.queueSession();
   h.runner.startSpecialist('alpha', 'Test label', TASK);
-  await first.whenPrompted(1);
+  await first.whenModelCalled(1);
   h.work(first, ATTEMPT_1);
   await h.settle();
 
   vi.setSystemTime(new Date('2026-09-01T10:40:38.479Z'));
+  // The abort lands after the response, so pi ends its turn and the run settles cancelled.
   h.runner.cancelSpecialist('alpha');
-  // pi ends the in-flight turn when it aborts a session, which is what releases the runner's prompt.
-  first.emit({ type: 'turn_end' });
   await h.settle();
 
   const second = h.queueSession();
   vi.setSystemTime(new Date('2026-09-01T10:40:46.872Z'));
   h.runner.redispatchSpecialist('alpha', 'Test label', TASK);
-  await second.whenPrompted(1);
+  await second.whenModelCalled(1);
   h.work(second, ATTEMPT_2);
   await h.settle();
 
   vi.setSystemTime(new Date('2026-09-01T10:41:15.527Z'));
   h.specialistContext('alpha').reportComplete('alpha', 'ALPHA-DONE: reported the read outcome after redispatch.');
-  second.emit({ type: 'turn_end' });
+  // pi asks the model again after the tool calls, and that response ends the turn.
+  void second.endTurn();
+  await second.whenModelCalled(2);
+  void second.endTurn();
   await h.settle();
   h.runner.synthesizeResult('the team result');
   await h.settle();
@@ -254,7 +265,15 @@ beforeEach(() => {
   vi.setSystemTime(new Date('2026-09-01T10:40:23.547Z'));
 });
 
-afterEach(() => vi.useRealTimers());
+afterEach(async () => {
+  vi.useRealTimers();
+  // Every case names its members alike, and a member run that outlived its case would still own its session file.
+  for (const runner of harnessRunners.splice(0)) {
+    const runs = runner as unknown as { teamAbort: AbortController; leadPromise: Promise<unknown> | null; specialistPromises: Map<string, Promise<unknown>> };
+    runs.teamAbort.abort();
+    await Promise.allSettled([...(runs.leadPromise ? [runs.leadPromise] : []), ...runs.specialistPromises.values()]);
+  }
+});
 
 describe('a cancelled and re-dispatched specialist', () => {
   it('reads the same on the live card and on the card a reopened team restores', async () => {
@@ -321,15 +340,12 @@ describe('a batch an abort cut short', () => {
 
     const session = h.queueSession();
     h.runner.startSpecialist('alpha', 'Test label', TASK);
-    await session.whenPrompted(1);
+    await session.whenModelCalled(1);
     session.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
     session.emit({ type: 'message_end', message: { role: 'assistant', content: [read('tc-ran'), read('tc-skipped')], stopReason: 'toolUse' } });
     session.emit({ type: 'tool_execution_start', toolCallId: 'tc-ran', toolName: 'read', args: { path: '/tc-ran.ts' } });
+    // The cancel aborts the run while `tc-ran` executes; pi starts no call after it and settles the run.
     h.runner.cancelSpecialist('alpha');
-    session.emit({ type: 'tool_execution_end', toolCallId: 'tc-ran', toolName: 'read', result: { content: [{ type: 'text', text: 'Operation aborted' }], details: {} }, isError: true });
-    session.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
-    session.emit({ type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'aborted', errorMessage: 'Request was aborted' } });
-    session.emit({ type: 'turn_end' });
     await h.settle();
     await h.persistence.flush();
 
@@ -345,6 +361,62 @@ describe('a batch an abort cut short', () => {
       reloadedCard: reloaded?.agents.find((a) => a.name === 'alpha')?.toolCount,
       reloadedRun: reloaded?.runs.at(-1)?.toolCount,
     }).toEqual({ card: 1, team: 1, liveRun: 1, runnerRun: 1, reloadedCard: 1, reloadedRun: 1 });
+  });
+});
+
+describe('a specialist stopped while an input handler holds its task', () => {
+  /** What the member overlay renders from: the agent's task and its transcript, once the member file loaded. */
+  const view = (team: TeamState | undefined, transcript: ReturnType<typeof useTeamStore>['agentMessages'][string] | undefined) => ({
+    task: team?.agents.find((a) => a.name === 'alpha')?.task,
+    transcript: (transcript ?? []).map((m) => [m.role, m.content]),
+  });
+
+  it('shows its task from the team and no delivered task line, on the live card and on a reopened team', async () => {
+    const h = await makeHarness(join(DAMOCLES_HOME_DIR, 'held-task'));
+    const session = h.queueSession();
+    let entered!: () => void;
+    const held = new Promise<void>((resolve) => { entered = resolve; });
+    session.inputHandler = () => {
+      entered();
+      return new Promise<void>(() => undefined);
+    };
+
+    h.runner.startSpecialist('alpha', 'Test label', TASK);
+    await held;
+    h.runner.cancelSpecialist('alpha');
+    await h.settle();
+    await h.persistence.flush();
+    const loadHistory = () => h.persistence.loadAgentConversation(TEAM_ID, 'id-alpha');
+
+    // The overlay asks for the member file when it opens.
+    useTeamStore().handleAgentDataLoaded('id-alpha', await loadHistory());
+    const live = view(h.liveTeam(), useTeamStore().agentMessages['id-alpha']);
+
+    setActivePinia(createPinia());
+    const reopened = useTeamStore();
+    reopened.restoreTeamFromHistory((await h.persistence.loadTeamState(TEAM_ID))!);
+    reopened.handleAgentDataLoaded('id-alpha', await loadHistory());
+    const reloaded = view(reopened.teams[TEAM_ID], reopened.agentMessages['id-alpha']);
+
+    expect(live).toEqual(reloaded);
+    expect(live).toEqual({ task: TASK, transcript: [] });
+  });
+
+  it('shows the task of the attempt a redispatch started, on the live card and on a reopened team', async () => {
+    const h = await makeHarness(join(DAMOCLES_HOME_DIR, 'redispatched-task'));
+    const first = h.queueSession();
+    h.runner.startSpecialist('alpha', 'Test label', TASK);
+    await first.whenPrompted(1);
+    h.runner.cancelSpecialist('alpha');
+    await h.settle();
+
+    const second = h.queueSession();
+    h.runner.redispatchSpecialist('alpha', 'Test label', 'finish what the first attempt left');
+    await second.whenPrompted(1);
+    await h.settle();
+    await h.persistence.flush();
+
+    expect([h.liveAgent('alpha').task, (await h.loadedAgent('alpha')).task]).toEqual(['finish what the first attempt left', 'finish what the first attempt left']);
   });
 });
 
@@ -366,7 +438,6 @@ describe('a team agent effort', () => {
     expect((await h.loadedAgent('alpha')).effort).toBe('high');
 
     h.runner.cancelSpecialist('alpha');
-    first.emit({ type: 'turn_end' });
     await h.settle();
 
     const second = runningAt(h.queueSession(), 'medium');

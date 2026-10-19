@@ -32,6 +32,7 @@ import { useAppendedIds } from '@/composables/useAppendedIds';
 import { imageBlockToDataUrl } from '@/utils/imageUtils';
 import { cacheHitPercent } from '@/utils/cacheHitPercent';
 import { formatClock } from '@/utils/clock';
+import { windDownText } from '@/utils/windDownText';
 import { agentStatusChip, formatElapsed, formatTokenCount, getAgentColor } from '@/composables/useTeamFormatting';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
 import { useStopTeam, useStopTeamAgent } from '@/composables/useStopTeam';
@@ -42,7 +43,7 @@ const { costLabel, costTitle } = useCostLabel();
 const modelIdentity = useModelIdentity();
 const teamStore = useTeamStore();
 const sessionStore = useSessionStore();
-const { selectedTeam, selectedAgent, currentAgentMessages, currentAgentStreaming, isAgentOverlayOpen, agentRetry } = storeToRefs(teamStore);
+const { selectedTeam, selectedAgent, currentAgentMessages, currentAgentStreaming, isAgentOverlayOpen, agentRetry, agentWindDown } = storeToRefs(teamStore);
 
 const ALIVE: ReadonlySet<TeamAgentStatus> = new Set(['running', 'pending', 'awaiting-review', 'standby', 'monitoring']);
 const WAITING: ReadonlySet<TeamAgentStatus> = new Set(['pending', 'awaiting-review', 'standby', 'monitoring']);
@@ -76,8 +77,10 @@ const { elapsedMs } = useElapsedTimer(
   () => selectedAgent.value ?? null,
 );
 
-// The retry pi waits out before re-sending a failed call outranks the progress summary.
+// A stopped run's wind-down, then the retry pi waits out before re-sending a failed call, outrank the progress summary.
 const workingLine = computed(() => {
+  const windDown = selectedAgent.value ? agentWindDown.value[selectedAgent.value.agentId] : undefined;
+  if (windDown) return windDownText(windDown, t);
   const retry = selectedAgent.value ? agentRetry.value[selectedAgent.value.agentId] : undefined;
   if (retry) return t('status.retrying', { attempt: retry.attempt, max: retry.maxAttempts });
   return selectedAgent.value?.progressSummary || t('overlays.agent.working');
@@ -101,21 +104,19 @@ const teamRunning = computed(() => selectedTeam.value?.status === 'running');
 const canSteer = computed(() => Boolean(selectedAgent.value && ALIVE.has(selectedAgent.value.status) && teamRunning.value));
 const steer = useOverlaySteer(() => selectedAgent.value?.agentId);
 
-// A loaded history opens with the member's dispatch; live-only messages may start anywhere, so nothing is promoted then.
-const prompt = computed(() => {
-  const agent = selectedAgent.value;
-  const first = currentAgentMessages.value[0];
-  if (!agent || !first || first.role !== 'user' || !teamStore.isAgentHistoryLoaded(agent.agentId)) return null;
-  if (isSteer(first.content) || PEER_MESSAGE.test(first.content)) return null;
-  return first;
-});
+// The task is the team's record of the attempt, so it shows whether or not pi committed it to the member's file.
+const prompt = computed(() => selectedAgent.value?.task ?? null);
 
 const promptFrom = computed(() => {
   if (selectedAgent.value?.role === 'lead') return t('overlays.agent.fromMainAgent');
   return selectedTeam.value?.agents.find((agent) => agent.role === 'lead')?.name ?? t('overlays.agent.fromLead');
 });
 
-const transcript = computed(() => (prompt.value ? currentAgentMessages.value.slice(1) : currentAgentMessages.value));
+// A committed task opens the member's file, and the prompt above already shows it.
+const transcript = computed(() => {
+  const [first, ...rest] = currentAgentMessages.value;
+  return first?.role === 'user' && first.content === prompt.value ? rest : currentAgentMessages.value;
+});
 // Streamed text seals into a new message, so only steers, peer messages and tool cards play an entrance.
 const arrived = useAppendedIds(() => transcript.value.map((message) => message.id));
 
@@ -261,7 +262,7 @@ watch(() => selectedAgent.value?.status, (newStatus, oldStatus) => {
     <div class="flex flex-col gap-3 px-4.5 pt-3.5 pb-4.5">
       <AgentPromptDisclosure
         v-if="prompt"
-        :prompt="prompt.content"
+        :prompt="prompt"
         :from="promptFrom"
       />
 
@@ -388,7 +389,10 @@ watch(() => selectedAgent.value?.status, (newStatus, oldStatus) => {
             class="size-3.5 d-spinning flex-none text-(--d-accent)"
             aria-hidden="true"
           />
-          <span class="d-glint min-w-0 truncate italic text-(--d-muted)">{{ workingLine }}<span
+          <span
+            class="d-glint min-w-0 truncate italic text-(--d-muted)"
+            :title="workingLine"
+          >{{ workingLine }}<span
             class="d-glint-window text-(--d-text)"
             aria-hidden="true"
           ><span>{{ workingLine }}</span></span></span>

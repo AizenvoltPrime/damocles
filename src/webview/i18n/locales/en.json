@@ -442,7 +442,13 @@
     "hook": "Hook: {event}",
     "hooksCount": "{count} hooks",
     "requiresAction": "Waiting for your answer",
-    "retrying": "Provider error, retrying ({attempt}/{max})..."
+    "retrying": "Provider error, retrying ({attempt}/{max})...",
+    "windDown": {
+      "run": "Stopping: waiting for the run's tool calls and event handlers to end.",
+      "handlers": "Stopping: waiting for pi's {events} handlers to return. pi gives them no abort signal.",
+      "loaded": "pi extensions loaded: {extensions}.",
+      "withHandler": "pi extensions with such a handler: {extensions}."
+    }
   },
   "subagent": {
     "duration": "{seconds}s",
@@ -490,6 +496,10 @@
     },
     "toolExposureSourceTitle": "Set by: {source}",
     "toolExposureSaveTo": "Save to",
+    "resources": "Resources",
+    "resourceExposureLabel": "{name} resources exposure",
+    "resourceExposureTooltip": "Off: the resource tools cannot reach this server. On: the agent loads list_mcp_resources, list_mcp_resource_templates and read_mcp_resource with ToolSearch when it needs them. Always loaded: those tools are declared from the first turn, which costs context on every turn.",
+    "resourcesDescription": "Data this server offers by URI, read through list_mcp_resources, list_mcp_resource_templates and read_mcp_resource.",
     "fromWorkspace": "From workspace",
     "fromDamoclesLocal": "From project .damocles",
     "fromClaudeLocal": "From Claude Code (local)",
@@ -508,10 +518,12 @@
       "insufficientScope": "The server needs more permission. Authenticate again to grant it."
     },
     "renamedRules": {
-      "title": "Rules name MCP tools that were renamed",
-      "description": "These rules still use old tool names, so they no longer match. Damocles does not edit these files; update each rule to its new name.",
+      "title": "Rules name MCP tools that were renamed or retired",
+      "description": "These rules and tool lists still use old tool names, so they no longer match. A get_ resource tool is now read_mcp_resource, which names the resource in parentheses. Damocles does not edit these; update each entry to what it becomes.",
       "openFile": "Open",
       "openFileAria": "Open {file}",
+      "openSetting": "Open settings",
+      "openSettingAria": "Open settings at {setting}",
       "becomes": "becomes"
     },
     "addServer": "Add server",
@@ -628,7 +640,48 @@
     "configErrorUnreadable": "The file could not be read. Check its permissions. The servers it defines are not shown.",
     "addServerBlocked": "Fix the config file above first. Every change is written to it.",
     "localMcpUnignoredTitle": "Git can commit your MCP credentials",
-    "localMcpUnignored": "Git does not ignore {line}, your personal MCP config, so a commit can publish the credentials it holds. Add that line to .gitignore."
+    "localMcpUnignored": "Git does not ignore {line}, your personal MCP config, so a commit can publish the credentials it holds. Add that line to .gitignore.",
+    "browseResources": "Browse resources",
+    "resourcePicker": {
+      "title": "Resources of {serverName}",
+      "subtitle": "Attach a resource to this chat. It is read when you send your message.",
+      "filter": "Filter loaded resources",
+      "resources": "Resources",
+      "templates": "Templates",
+      "loading": "Loading...",
+      "list": "Resources and templates of {serverName}",
+      "loadMore": "Load more",
+      "retry": "Retry",
+      "noResources": "This server lists no resources.",
+      "noTemplates": "This server lists no templates.",
+      "noMatches": "No loaded resource matches the filter.",
+      "emptyDirectory": "This directory is empty.",
+      "attach": "Attach",
+      "open": "Open",
+      "backToDirectory": "Back to {name}",
+      "backToResources": "Back to Resources",
+      "backToTemplates": "Back to Templates",
+      "fill": "Fill in",
+      "filledName": "{name} ({values})",
+      "details": "{type} · {size}",
+      "binary": "{type} is binary content, which cannot be sent to the model.",
+      "denied": "A deny rule covers this resource: {rule}",
+      "templateHint": "Fill in the template's values. An optional value may stay empty.",
+      "optional": "optional",
+      "suggestions": "Suggestions for {name}",
+      "resolved": "Resource URI",
+      "attaching": "Attaching..."
+    },
+    "resourceChip": {
+      "label": "{name} · {serverName}",
+      "details": "{serverName} · {type}",
+      "title": "MCP resource {name} from {serverName}: {uri}",
+      "preview": "Details of {label}",
+      "readAtSend": "Read from the server when you send your message.",
+      "remove": "Remove {label}",
+      "removeTitle": "Remove",
+      "added": "MCP resource attached: {label}"
+    }
   },
   "tools": {
     "title": "Tools",
@@ -910,12 +963,19 @@
     },
     "promptSection": {
       "preamble": "Preamble",
+      "compass": "Compass",
+      "damocles_explore": "Explore fallback",
+      "damocles_web_verification": "Web verification",
+      "damocles_team": "Teams",
       "damocles_memory": "Memory",
       "damocles_plan_mode": "Plan mode",
       "damocles_plan_file": "Plan file",
       "damocles_plan_execution": "Plan execution",
       "project_context": "Project context",
       "skills": "Skills",
+      "damocles_environment": "Environment",
+      "damocles_model": "Model",
+      "damocles_output_form": "Output form",
       "damocles_tone": "Tone"
     }
   },
@@ -1490,7 +1550,9 @@
     "promptReturned": {
       "heldPromptWaiting": "Your first message is still waiting for the worktree, so this one is back in the input.",
       "worktreeFinishing": "A finish action is running on this chat's worktree, so your message is back in the input.",
-      "heldPromptKept": "Your message wasn't sent. It is back in the input."
+      "heldPromptKept": "Your message wasn't sent. It is back in the input.",
+      "mcpResourceUnavailable": "An attached MCP resource could not be sent, so your message and its attachments are back in the input.",
+      "conversationChanged": "This chat no longer shows the conversation your message was written for, so it is back in the input."
     }
   },
   "backgroundTask": {
@@ -2648,6 +2710,11 @@
       "available": "{n} of {total} available",
       "showTools": "Show tools",
       "hideTools": "Hide tools",
+      "showResources": "Show resources",
+      "hideResources": "Hide resources",
+      "showToolsAndResources": "Show tools and resources",
+      "hideToolsAndResources": "Hide tools and resources",
+      "resourcesNoTools": "Resources, no tools",
       "form": {
         "fixFields": "Fix the highlighted fields to save.",
         "writtenTo": "Written to ~/.damocles/mcp.json with 0600 permissions."

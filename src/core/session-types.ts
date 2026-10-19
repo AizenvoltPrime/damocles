@@ -33,8 +33,11 @@ export interface SessionOptions {
   platform: PlatformWithWorktrees;
   permissionHandler: PermissionHandler;
   onMessage: (message: ExtensionToWebviewMessage) => void;
-  /** `stored`: the session already has its file on disk (a resumed or forked one); a new one gets it with its first prompt. */
-  onSessionIdChange?: (sessionId: string | null, stored: boolean) => void;
+  /**
+   * `stored`: the session already has its file on disk (a resumed or forked one); a new one gets it with its first prompt.
+   * `resumed`: a stored conversation a resume opened, which the router shows itself once its history is replayed.
+   */
+  onSessionIdChange?: (sessionId: string | null, stored: boolean, resumed: boolean) => void;
   onSessionPersisted?: (sessionId: string) => void;
   onAssistantTextFinal?: (text: string) => void;
   mcpScope?: McpScope;
@@ -52,10 +55,10 @@ export interface SessionOptions {
     thinkingDisabled: boolean;
     effort: EffortLevel | null;
   };
-  /** A resumed conversation continues on the model value and pi thinking level its session file recorded. */
+  /** A resumed conversation continues on the model value and pi thinking level its session file recorded, reported once pi installed its session; the model itself is reported through `onModelChange`. */
   onRecordedSelection?: (model: string, thinkingLevel: string | undefined) => void;
-  /** The chat's committed model, reported once the session has started and after every switch attempt, refused ones included. */
-  onModelChange?: (model: string) => void;
+  /** The chat's committed model and the context window pi resolved for it, reported once the session has started and after every switch attempt, refused ones included. */
+  onModelChange?: (model: string, contextWindow: number) => void;
   /** Whether to prefer the OpenAI API key over a ChatGPT or Codex sign-in when both are configured. */
   getPreferOpenAIApiKey?: () => boolean;
   secrets?: SecretsStore;

@@ -2,8 +2,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname } from 'node:path';
-import { limitMcpContent, MCP_OUTPUT_MAX_BYTES, removeSavedMcpOutputs, saveMcpOutputToTempFile, truncateMiddle } from '../content';
+import { limitMcpContent, MCP_OUTPUT_MAX_BYTES, removeSavedMcpOutputs, saveMcpBinaryToTempFile, saveMcpOutputToTempFile, transformMcpContent, truncateMiddle } from '../content';
 import type { ContentBlock } from '../types';
+import { MAX_IMAGE_BASE64_LENGTH } from '../../../../shared/types/content';
+import { base64Of, IMAGE_BYTES } from '../../../../shared/__tests__/image-bytes';
 
 const written: string[] = [];
 afterEach(() => {
@@ -106,5 +108,85 @@ describe('limitMcpContent', () => {
 
     expect(existsSync(fullOutputPath!)).toBe(false);
     expect(existsSync(direct)).toBe(false);
+  });
+});
+
+describe('saveMcpBinaryToTempFile', () => {
+  it('writes the bytes to an owner-only file named from random bytes alone, and removeSavedMcpOutputs deletes it', async () => {
+    const path = await saveMcpBinaryToTempFile(Buffer.from([0, 255, 7]));
+    written.push(path);
+    expect(dirname(path)).toBe(tmpdir());
+    expect(basename(path)).toMatch(/^damocles-mcp-[0-9a-f]{16}\.bin$/);
+    expect(readFileSync(path)).toEqual(Buffer.from([0, 255, 7]));
+    if (process.platform !== 'win32') expect(statSync(path).mode & 0o777).toBe(0o600);
+
+    await removeSavedMcpOutputs();
+    expect(existsSync(path)).toBe(false);
+  });
+});
+
+describe('transformMcpContent resource links', () => {
+  const link = { type: 'resource_link' as const, uri: 'docs://a', name: 'a', title: 'Doc A', mimeType: 'text/plain', size: 2048, description: 'first doc' };
+
+  it('names the server and read_mcp_resource when the caller reads its resources directly', () => {
+    expect(transformMcpContent([link], { server: 'docs', readTool: 'direct', unreadable: () => false })).toEqual([
+      { type: 'text', text: '[Resource docs://a "Doc A" (text/plain, 2.0KB): first doc. Read it with read_mcp_resource (server "docs")]' },
+    ]);
+  });
+
+  it('adds the ToolSearch step while the resource tools are deferred', () => {
+    expect(transformMcpContent([link], { server: 'docs', readTool: 'deferred', unreadable: () => false })[0]).toEqual({
+      type: 'text',
+      text: '[Resource docs://a "Doc A" (text/plain, 2.0KB): first doc. Read it with read_mcp_resource (server "docs"), after loading it with ToolSearch({tools:["mcp_resources"]})]',
+    });
+  });
+
+  it('names no tool when the caller cannot read that server\u2019s resources', () => {
+    expect(transformMcpContent([link], { server: 'docs', readTool: null, unreadable: () => false })[0]).toEqual({ type: 'text', text: '[Resource docs://a "Doc A" (text/plain, 2.0KB): first doc]' });
+  });
+
+  it('names no tool for a URI the caller\u2019s tool lists turn off, and still does for the others', () => {
+    const unreadable = (uri: string) => uri === 'docs://a';
+    const other = { ...link, uri: 'docs://b', title: 'Doc B' };
+    expect(transformMcpContent([link, other], { server: 'docs', readTool: 'direct', unreadable }).map((block) => (block as { text: string }).text)).toEqual([
+      '[Resource docs://a "Doc A" (text/plain, 2.0KB): first doc]',
+      '[Resource docs://b "Doc B" (text/plain, 2.0KB): first doc. Read it with read_mcp_resource (server "docs")]',
+    ]);
+  });
+
+  it('quotes the server name, so a quote or a line break in it cannot break the one-line hint', () => {
+    expect((transformMcpContent([link], { server: 'my "docs"\nnext', readTool: 'direct', unreadable: () => false })[0] as { text: string }).text)
+      .toBe('[Resource docs://a "Doc A" (text/plain, 2.0KB): first doc. Read it with read_mcp_resource (server "my \\"docs\\"\\nnext")]');
+  });
+
+  it('names no tool for a link with no URI, which nothing can read', () => {
+    const { uri: _uri, ...noUri } = link;
+    expect(transformMcpContent([noUri], { server: 'docs', readTool: 'direct', unreadable: () => false })[0]).toEqual({ type: 'text', text: '[Resource (no URI) "Doc A" (text/plain, 2.0KB): first doc]' });
+  });
+});
+
+describe('transformMcpContent images', () => {
+  const image = (data: string, mimeType?: string) => ({ type: 'image' as const, data, ...(mimeType ? { mimeType } : {}) });
+
+  it('passes an image the providers take, typed by its bytes', () => {
+    expect(transformMcpContent([image(base64Of(IMAGE_BYTES.png), 'image/png')])).toEqual([{ type: 'image', data: base64Of(IMAGE_BYTES.png), mimeType: 'image/png' }]);
+    expect(transformMcpContent([image(base64Of(IMAGE_BYTES.jpeg), 'image/png')])).toEqual([{ type: 'image', data: base64Of(IMAGE_BYTES.jpeg), mimeType: 'image/jpeg' }]);
+    expect(transformMcpContent([image(base64Of(IMAGE_BYTES.jpeg), 'image/jpg')])).toEqual([{ type: 'image', data: base64Of(IMAGE_BYTES.jpeg), mimeType: 'image/jpeg' }]);
+    expect(transformMcpContent([image(base64Of(IMAGE_BYTES.gif))])).toEqual([{ type: 'image', data: base64Of(IMAGE_BYTES.gif), mimeType: 'image/gif' }]);
+  });
+
+  it('degrades any other image to a one-line placeholder, never an image block', () => {
+    const oversized = new Uint8Array((MAX_IMAGE_BASE64_LENGTH / 4) * 3 + 3);
+    oversized.set(IMAGE_BYTES.png);
+    const cases: Array<[ReturnType<typeof image>, string]> = [
+      [image(base64Of(IMAGE_BYTES.svg), 'image/svg+xml'), '[Image content omitted: image/svg+xml]'],
+      [image(base64Of(IMAGE_BYTES.tiff), 'image/tiff'), '[Image content omitted: image/tiff]'],
+      [image(base64Of(IMAGE_BYTES.tiff), 'image/png'), '[Image content omitted: image/png]'],
+      [image(base64Of(oversized), 'image/png'), '[Image content omitted: image/png]'],
+      [image('not base64!', 'image/png'), '[Image content omitted: image/png]'],
+      [image('', 'image/png'), '[Image content omitted: image/png]'],
+      [image(base64Of(IMAGE_BYTES.png), 'image/png\n[forged]'), '[Image content omitted: image/png [forged]]'],
+    ];
+    for (const [content, text] of cases) expect(transformMcpContent([content]), text).toEqual([{ type: 'text', text }]);
   });
 });

@@ -1,12 +1,14 @@
 import type { StoreContext } from "../types";
+import type { AgentWindDown } from "@shared/types/wind-down";
 
 type Retry = { attempt: number; maxAttempts: number };
 
-/** The transcript and status line of the nested agent a failed-call message names. */
+/** The transcript and status line of the nested agent a failed-call or status message names. */
 export interface NestedTranscript {
   addError: (message: string) => void;
   retract: (messageId: string) => void;
   setRetry: (retry: Retry | null) => void;
+  setWindDown: (windDown: AgentWindDown | null) => void;
 }
 
 /**
@@ -20,6 +22,7 @@ export function nestedTranscript(stores: StoreContext, owner: string): NestedTra
       addError: (message) => subagentStore.addSubagentError(owner, message),
       retract: (messageId) => subagentStore.retractSubagentMessage(owner, messageId),
       setRetry: (retry) => subagentStore.setSubagentRetry(owner, retry),
+      setWindDown: (windDown) => subagentStore.setSubagentWindDown(owner, windDown),
     };
   }
   if (teamStore.hasAgent(owner)) {
@@ -27,6 +30,7 @@ export function nestedTranscript(stores: StoreContext, owner: string): NestedTra
       addError: (message) => teamStore.handleAgentError(owner, message),
       retract: (messageId) => teamStore.retractAgentMessage(owner, messageId),
       setRetry: (retry) => teamStore.setAgentRetry(owner, retry),
+      setWindDown: (windDown) => teamStore.setAgentWindDown(owner, windDown),
     };
   }
   return null;

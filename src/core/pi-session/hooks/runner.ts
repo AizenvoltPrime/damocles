@@ -28,6 +28,7 @@ interface SpawnOutcome {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  cancelled: boolean;
 }
 
 function describeCommand(command: string | string[]): string {
@@ -84,8 +85,13 @@ function spawnHook(
   payload: Record<string, unknown>,
   ctx: RunHookContext,
   timeoutMs: number,
+  signal: AbortSignal | undefined,
 ): Promise<SpawnOutcome> {
   return new Promise<SpawnOutcome>((resolve, reject) => {
+    if (signal?.aborted) {
+      resolve({ exitCode: 0, stdout: '', stderr: '', timedOut: false, cancelled: true });
+      return;
+    }
     // Serialize BEFORE spawning: `payload` carries pi-controlled values (`event.details`), so a circular
     // ref or BigInt would throw here — fail-soft without leaving an orphaned child + pending timer.
     let serializedPayload: string;
@@ -110,6 +116,15 @@ function spawnHook(
       timedOut = true;
       killProcessTree(child);
     }, timeoutMs);
+    // Settles at once rather than at `close`, so a cancelled caller never waits for the tree to die.
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      killProcessTree(child);
+      resolve({ exitCode: 0, stdout, stderr, timedOut: false, cancelled: true });
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
 
     // Decode as UTF-8 via the stream's internal StringDecoder so a multi-byte character split across two
     // chunks isn't corrupted into U+FFFD (which would make otherwise-valid JSON stdout unparseable).
@@ -129,6 +144,7 @@ function spawnHook(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
       reject(err);
     });
 
@@ -136,7 +152,8 @@ function spawnHook(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ exitCode: code ?? 0, stdout, stderr, timedOut });
+      signal?.removeEventListener('abort', onAbort);
+      resolve({ exitCode: code ?? 0, stdout, stderr, timedOut, cancelled: false });
     });
 
     try {
@@ -222,11 +239,13 @@ export function parseHookOutput(exitCode: number, stdout: string, _stderr: strin
  * Run one configured hook: substitute its command, spawn (shell-string or argv), write the native payload
  * to stdin, enforce the timeout, and parse the result. Never throws — spawn errors and timeouts resolve to
  * a fail-soft decision flagged `failed` (PreToolUse write/shell upgrades that to fail-closed; Section 3.3).
+ * An abort of `signal` kills the hook's process tree and resolves to an empty decision at once.
  */
 export async function runHook(
   entry: HookEntry,
   payload: Record<string, unknown>,
   ctx: RunHookContext,
+  signal?: AbortSignal,
 ): Promise<HookDecision> {
   const command = substituteCommand(entry.command, ctx.substitution);
   // Log the PRE-substitution command: substitution expands `${env:NAME}`/`$NAME` (which include
@@ -234,7 +253,11 @@ export async function runHook(
   const logged = describeCommand(entry.command);
   const timeoutMs = Math.min(entry.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS, MAX_HOOK_TIMEOUT_MS);
   try {
-    const outcome = await spawnHook(command, payload, ctx, timeoutMs);
+    const outcome = await spawnHook(command, payload, ctx, timeoutMs, signal);
+    if (outcome.cancelled) {
+      log('[Hooks] %s: cancelled: %s', ctx.eventKey, logged);
+      return emptyDecision();
+    }
     if (outcome.timedOut) {
       log('[Hooks] %s: timed out after %dms: %s', ctx.eventKey, timeoutMs, logged);
       return { ...emptyDecision(), failed: true };

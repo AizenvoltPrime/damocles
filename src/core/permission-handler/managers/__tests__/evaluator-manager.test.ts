@@ -408,6 +408,193 @@ describe('EvaluatorManager.evaluate — MCP tools', () => {
   });
 });
 
+describe('EvaluatorManager.evaluate — MCP resource tools', () => {
+  const READ = 'read_mcp_resource';
+  const LIST = 'list_mcp_resources';
+  const read = (server: string, uri: string) => [READ, { server, uri }, null, { server, tool: READ }] as const;
+  const list = (server: string) => [LIST, { server }, null, { server, tool: LIST }] as const;
+
+  it('auto-allows a resource call no rule names, in every mode', async () => {
+    for (const permissionMode of ['default', 'acceptEdits', 'plan'] as const) {
+      expect(await buildEvaluator({ permissionMode }).evaluate(...read('secret', 'secret://a'))).toBe('allow');
+    }
+  });
+
+  for (const rule of ['mcp__secret', 'mcp__secret__*', 'mcp__*', `mcp__secret__${READ}`]) {
+    it(`a deny rule ${rule} blocks a read naming the server, and leaves another server alone`, async () => {
+      writeSettings(fakeHome, '.damocles', 'settings.json', { deny: [rule] });
+      expect(await buildEvaluator().evaluate(...read('secret', 'secret://a'))).toBe('deny');
+      if (rule !== 'mcp__*') expect(await buildEvaluator().evaluate(...read('public', 'public://a'))).toBe('allow');
+    });
+  }
+
+  it('an ask rule on the server prompts for its resource calls in every mode', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', { ask: ['mcp__secret'] });
+    for (const permissionMode of ['default', 'acceptEdits', 'plan'] as const) {
+      expect(await buildEvaluator({ permissionMode }).evaluate(...read('secret', 'secret://a')), permissionMode).toBe('ask');
+      expect(await buildEvaluator({ permissionMode }).evaluate(...list('secret')), permissionMode).toBe('ask');
+    }
+    expect(await buildEvaluator({ dangerouslySkipPermissions: true }).evaluate(...read('secret', 'secret://a'))).toBe('allow');
+  });
+
+  it('a call naming no server has no identity, so no server rule matches it', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', { deny: ['mcp__secret'] });
+    expect(await buildEvaluator().evaluate(LIST, {}, null)).toBe('allow');
+  });
+
+  it('a URI-scoped deny blocks only that URI on that server', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', { deny: [`mcp__secret__${READ}(secret://passwords)`] });
+    expect(await buildEvaluator().evaluate(...read('secret', 'secret://passwords'))).toBe('deny');
+    expect(await buildEvaluator().evaluate(...read('secret', 'secret://passwords/2'))).toBe('allow');
+    expect(await buildEvaluator().evaluate(...read('secret', 'secret://logs/a'))).toBe('allow');
+    expect(await buildEvaluator().evaluate(...read('public', 'secret://passwords'))).toBe('allow');
+  });
+
+  it('a URI-scoped ask prompts only for matching URIs, in every mode', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', { ask: [`mcp__secret__${READ}(secret://logs/*)`] });
+    for (const permissionMode of ['default', 'acceptEdits', 'plan'] as const) {
+      expect(await buildEvaluator({ permissionMode }).evaluate(...read('secret', 'secret://logs/today')), permissionMode).toBe('ask');
+      expect(await buildEvaluator({ permissionMode }).evaluate(...read('secret', 'secret://passwords')), permissionMode).toBe('allow');
+    }
+  });
+
+  it('a URI-scoped rule matches only read_mcp_resource, never another resource tool or an MCP tool', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', { deny: [`mcp__secret__${READ}(*)`, `mcp__secret__${LIST}(*)`, 'mcp__secret__list_mcp_resource_templates(*)'] });
+    expect(await buildEvaluator().evaluate(...list('secret'))).toBe('allow');
+    expect(await buildEvaluator().evaluate('list_mcp_resource_templates', { server: 'secret' }, null, { server: 'secret', tool: 'list_mcp_resource_templates' })).toBe('allow');
+    expect(await buildEvaluator().evaluate(`mcp__secret__${READ}`, { uri: 'x' }, null, { server: 'secret', tool: READ })).toBe('allow');
+    expect(await buildEvaluator().evaluate(...read('secret', 'secret://a'))).toBe('deny');
+  });
+
+  it('other parenthesized mcp__ rules stay skipped for a resource call', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', { deny: ['mcp__secret(secret://a)', 'mcp__secret__*(secret://a)', 'mcp__*(secret://a)', `mcp__secret__${READ}()`] });
+    expect(await buildEvaluator().evaluate(...read('secret', 'secret://a'))).toBe('allow');
+    expect(await buildEvaluator().evaluate(...read('secret', ''))).toBe('allow');
+  });
+
+  it('a URI-scoped rule needs a string uri', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', { deny: [`mcp__secret__${READ}(*)`] });
+    expect(await buildEvaluator().evaluate(READ, { server: 'secret', uri: 7 }, null, { server: 'secret', tool: READ })).toBe('allow');
+  });
+
+  it('matches URIs holding parentheses and a literal * through the wildcard', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', { deny: [`mcp__secret__${READ}(file:///a (copy)/*)`, `mcp__secret__${READ}(x://)()`] });
+    expect(await buildEvaluator().evaluate(...read('secret', 'file:///a (copy)/b)'))).toBe('deny');
+    expect(await buildEvaluator().evaluate(...read('secret', 'file:///a (copy)/*'))).toBe('deny');
+    expect(await buildEvaluator().evaluate(...read('secret', 'x://)('))).toBe('deny');
+    expect(await buildEvaluator().evaluate(...read('secret', 'file:///a (copy'))).toBe('allow');
+  });
+
+  it('names the server as written, as Claude Code spells it, or by its pi name, hashed when long', async () => {
+    const longServer = 's'.repeat(60);
+    writeSettings(fakeHome, '.damocles', 'settings.json', {
+      deny: [`mcp__my.srv__${READ}(a://1)`, `mcp__my_srv__${READ}(a://2)`, `mcp__my-srv__${READ}(a://3)`, `${createMcpToolName(longServer, READ)}(a://4)`],
+    });
+    expect(await buildEvaluator().evaluate(...read('my.srv', 'a://1'))).toBe('deny');
+    expect(await buildEvaluator().evaluate(...read('my.srv', 'a://2'))).toBe('deny');
+    expect(await buildEvaluator().evaluate(...read('my-srv', 'a://3'))).toBe('deny');
+    expect(await buildEvaluator().evaluate(...read('my-srv', 'a://1'))).toBe('allow');
+    expect(await buildEvaluator().evaluate(...read(longServer, 'a://4'))).toBe('deny');
+    expect(await buildEvaluator().evaluate(...read(`${longServer}t`, 'a://4'))).toBe('allow');
+  });
+
+  it('a server name holding __ is compared whole, never split', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', { deny: [`mcp__a__b__${READ}(x://1)`] });
+    expect(await buildEvaluator().evaluate(...read('a__b', 'x://1'))).toBe('deny');
+    expect(await buildEvaluator().evaluate(...read('a', 'x://1'))).toBe('allow');
+  });
+
+  it('YOLO allows a call a URI-scoped deny names', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', { deny: [`mcp__secret__${READ}(secret://passwords)`] });
+    expect(await buildEvaluator({ dangerouslySkipPermissions: true }).evaluate(...read('secret', 'secret://passwords'))).toBe('allow');
+  });
+});
+
+describe('EvaluatorManager.mcpResourceRuleFilter', () => {
+  it('covers a server a deny or ask rule names for the list tool, and no other', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', { deny: ['mcp__secret__*'], ask: ['mcp__audit'] });
+    const filter = await buildEvaluator().mcpResourceRuleFilter('list_mcp_resources', null);
+    expect(filter.serverCovered('secret')).toBe(true);
+    expect(filter.serverCovered('audit')).toBe(true);
+    expect(filter.serverCovered('public')).toBe(false);
+  });
+
+  it('a rule naming one resource tool covers only that tool', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', { deny: ['mcp__secret__read_mcp_resource', 'mcp__docs__list_mcp_resource_templates'] });
+    const evaluator = buildEvaluator();
+    expect((await evaluator.mcpResourceRuleFilter('list_mcp_resources', null)).serverCovered('secret')).toBe(false);
+    expect((await evaluator.mcpResourceRuleFilter('list_mcp_resource_templates', null)).serverCovered('docs')).toBe(true);
+    expect((await evaluator.mcpResourceRuleFilter('list_mcp_resources', null)).serverCovered('docs')).toBe(false);
+  });
+
+  it('a URI-scoped deny denies matching resources only, and a URI-scoped ask hides nothing', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', { deny: ['mcp__secret__read_mcp_resource(secret://passwords)'], ask: ['mcp__secret__read_mcp_resource(secret://logs/*)'] });
+    const filter = await buildEvaluator().mcpResourceRuleFilter('list_mcp_resources', null);
+    expect(filter.serverCovered('secret')).toBe(false);
+    expect(filter.resourceDenied('secret', 'secret://passwords')).toBe(true);
+    expect(filter.resourceDenied('secret', 'secret://logs/today')).toBe(false);
+    expect(filter.resourceDenied('secret', 'secret://other')).toBe(false);
+    expect(filter.resourceDenied('public', 'secret://passwords')).toBe(false);
+  });
+
+  it('a bare deny on reads from a server denies each of its resources', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', { deny: ['mcp__secret__read_mcp_resource'] });
+    const filter = await buildEvaluator().mcpResourceRuleFilter('list_mcp_resources', null);
+    expect(filter.resourceDenied('secret', 'secret://anything')).toBe(true);
+    expect(filter.resourceDenied('public', 'public://anything')).toBe(false);
+  });
+
+  it('covers and denies nothing under YOLO', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', { deny: ['mcp__secret', 'mcp__secret__read_mcp_resource(secret://passwords)'] });
+    const filter = await buildEvaluator({ dangerouslySkipPermissions: true }).mcpResourceRuleFilter('list_mcp_resources', null);
+    expect(filter.serverCovered('secret')).toBe(false);
+    expect(filter.resourceDenied('secret', 'secret://passwords')).toBe(false);
+    expect(filter.resourceDenyRule('secret', 'secret://passwords')).toBeUndefined();
+  });
+
+  it('names the deny rule that covers a resource, server-wide or URI-scoped, and no ask rule', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', {
+      deny: ['mcp__vault', 'mcp__secret__read_mcp_resource(secret://passwords)'],
+      ask: ['mcp__secret__read_mcp_resource(secret://logs/*)'],
+    });
+    const filter = await buildEvaluator().mcpResourceRuleFilter('read_mcp_resource', null);
+    expect(filter.resourceDenyRule('secret', 'secret://passwords')).toBe('mcp__secret__read_mcp_resource(secret://passwords)');
+    expect(filter.resourceDenyRule('vault', 'vault://any')).toBe('mcp__vault');
+    expect(filter.resourceDenyRule('secret', 'secret://logs/today')).toBeUndefined();
+    expect(filter.resourceDenyRule('public', 'public://x')).toBeUndefined();
+  });
+
+  it('leaves a read content out when a deny covers it, or an ask the read itself was not asked under', async () => {
+    writeSettings(fakeHome, '.damocles', 'settings.json', {
+      deny: ['mcp__vault__read_mcp_resource(vault://logs/secret)'],
+      ask: ['mcp__vault__read_mcp_resource(vault://logs/*)', 'mcp__audit'],
+    });
+    const filter = await buildEvaluator().mcpResourceRuleFilter('read_mcp_resource', null);
+    expect(filter.contentCovered('vault', 'vault://logs/today', 'vault://logs')).toBe(true);
+    expect(filter.contentCovered('vault', 'vault://logs/secret', 'vault://logs')).toBe(true);
+    expect(filter.contentCovered('vault', 'vault://other', 'vault://logs')).toBe(false);
+    // The read of vault://logs/today asked under the rule that covers it, as a server-wide ask asks for every read.
+    expect(filter.contentCovered('vault', 'vault://logs/today', 'vault://logs/today')).toBe(false);
+    expect(filter.contentCovered('audit', 'audit://dir/child', 'audit://dir')).toBe(false);
+    expect(filter.contentCovered('vault', 'vault://logs/secret', 'vault://logs/secret')).toBe(true);
+    const yolo = await buildEvaluator({ dangerouslySkipPermissions: true }).mcpResourceRuleFilter('read_mcp_resource', null);
+    expect(yolo.contentCovered('vault', 'vault://logs/secret', 'vault://logs')).toBe(false);
+  });
+
+  it('reads a repository rule only in a trusted folder', async () => {
+    platform.trust.setTrusted(false);
+    writeSettings(fakeWorkspace, '.damocles', 'settings.json', { deny: ['mcp__secret', 'mcp__docs__read_mcp_resource(docs://x)'] });
+    const evaluator = buildEvaluator();
+    const untrusted = await evaluator.mcpResourceRuleFilter('list_mcp_resources', fakeWorkspace);
+    expect(untrusted.serverCovered('secret')).toBe(false);
+    expect(untrusted.resourceDenied('docs', 'docs://x')).toBe(false);
+    platform.trust.grantTrust([fakeWorkspace]);
+    const trusted = await evaluator.mcpResourceRuleFilter('list_mcp_resources', fakeWorkspace);
+    expect(trusted.serverCovered('secret')).toBe(true);
+    expect(trusted.resourceDenied('docs', 'docs://x')).toBe(true);
+  });
+});
+
 describe('EvaluatorManager.evaluate — an ask rule prompts where the mode would auto-approve', () => {
   const read = { file_path: 'notes/a.txt' };
 

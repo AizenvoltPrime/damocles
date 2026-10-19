@@ -820,7 +820,6 @@ function nestedDescriptor(piName: string, readOnly: boolean): McpToolDescriptor 
     piName,
     serverName: piName.split('__')[1] ?? 'git',
     serverId: `test/${piName.split('__')[1] ?? 'git'}`,
-    kind: 'tool',
     rawToolName: piName.split('__').slice(2).join('__'),
     description: `desc of ${piName}`,
     inputSchema: { type: 'object', properties: {} },
@@ -850,9 +849,12 @@ function nestedGate(opts: {
   const manager = {
     getAllToolDescriptors: () => descriptors,
     getToolDescriptor: (n: string) => descriptors.find((d) => d.piName === n),
+    resourceServers: () => [],
   } as unknown as McpClientManager;
   const mcp = buildNestedMcpToolset(nestedPiStub, manager, {
     eligible: new Set(descriptors.map((d) => d.piName)),
+    disabledEntries: [],
+    resourceRuleFilter: async () => ({ serverCovered: () => false, resourceDenied: () => false, resourceDenyRule: () => undefined, contentCovered: () => false }),
   });
   const ctx: GatePermissionContext = {
     permissionHandler: { canUseTool, decide, matchRule: async () => null, isPlanFile: isPlanFilePath } as unknown as GatePermissionContext['permissionHandler'],
@@ -1470,4 +1472,118 @@ describe('runPermissionGate — a prompted call goes back to running once the ga
     expect(result?.reason).not.toContain(POLICY_BLOCK_MARKER);
     expect(result).not.toHaveProperty('terminate');
   });
+});
+
+describe('runPermissionGate — an MCP resource call is checked as one of its server\'s tools', () => {
+  it('passes the server the input names as the call\'s MCP identity, and none without a server', async () => {
+    const { panel, matchRule } = makePanel({});
+    await runPermissionGate(ev('read_mcp_resource', 'r1', { server: 'secret', uri: 'secret://a' }), panel, undefined);
+    await runPermissionGate(ev('list_mcp_resources', 'r2', { server: 'secret' }), panel, undefined);
+    await runPermissionGate(ev('list_mcp_resource_templates', 'r3', { server: 'secret' }), panel, undefined);
+    await runPermissionGate(ev('list_mcp_resources', 'r4', {}), panel, undefined);
+    await runPermissionGate(ev('list_mcp_resources', 'r5', { server: '' }), panel, undefined);
+    await runPermissionGate(ev('read_mcp_resource', 'r6', { server: ['secret'], uri: 'secret://a' }), panel, undefined);
+    expect(matchRule.mock.calls.map((call) => call[2])).toEqual([
+      { server: 'secret', tool: 'read_mcp_resource' },
+      { server: 'secret', tool: 'list_mcp_resources' },
+      { server: 'secret', tool: 'list_mcp_resource_templates' },
+      undefined,
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it('takes the server from the input a PreToolUse hook rewrote', async () => {
+    const { panel, matchRule } = makePanel({});
+    const gate = preToolUseGate(hookResult({ decision: 'ask', mutated: true, finalInput: { server: 'secret', uri: 'secret://a' } }));
+    await runPermissionGate(ev('read_mcp_resource', 'r1', { server: 'public', uri: 'secret://a' }), panel, undefined, null, gate);
+    expect(matchRule).toHaveBeenCalledWith('read_mcp_resource', { server: 'secret', uri: 'secret://a' }, { server: 'secret', tool: 'read_mcp_resource' });
+  });
+
+  it('passes the identity to the approval prompt an ask rule raises', async () => {
+    const { panel, canUseTool } = makePanel({ rule: async () => 'ask', decide: () => 'ask' });
+    await runPermissionGate(ev('read_mcp_resource', 'r1', { server: 'secret', uri: 'secret://a' }), panel, undefined);
+    expect(canUseTool.mock.calls[0]![2].mcpTool).toEqual({ server: 'secret', tool: 'read_mcp_resource' });
+  });
+});
+
+describe('MCP resource calls through the real PermissionHandler, in every mode and for nested agents', () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'dam-gate-resources-'));
+  afterAll(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(workspace, '.damocles'), { recursive: true });
+  fs.writeFileSync(path.join(workspace, '.damocles', 'settings.local.json'), JSON.stringify({ permissions: {
+    deny: ['mcp__secret__*', 'mcp__vault__read_mcp_resource(vault://passwords)'],
+    ask: ['mcp__audit', 'mcp__vault__read_mcp_resource(vault://logs/*)'],
+  } }));
+
+  type Caller = 'panel' | 'subagent' | 'read-only subagent' | 'team agent';
+  /** The gate context `caller` gets, over a real handler whose webview records each prompt and approves it. */
+  function gateFor(caller: Caller, mode: 'default' | 'acceptEdits' | 'plan', yolo = false) {
+    const handler = new PermissionHandler(createFakePlatform());
+    handler.setWorkspacePath(workspace);
+    handler.setCwd(workspace);
+    handler.setPermissionMode(mode);
+    handler.setDangerouslySkipPermissions(yolo);
+    const prompts: string[] = [];
+    handler.setPostMessage((msg) => {
+      if (msg.type !== 'requestPermission') return;
+      prompts.push(`${msg.toolName} ${JSON.stringify(msg.toolInput)}`);
+      void handler.resolveApproval(msg.toolUseId, true);
+    });
+    const { panel } = makePanel({ plan: mode === 'plan' });
+    panel.permissionHandler = handler;
+    if (caller === 'panel') return { ctx: panel as GatePermissionContext, parent: null, prompts };
+    const ctx: GatePermissionContext = {
+      permissionHandler: handler,
+      isPlanMode: () => mode === 'plan',
+      shellCancel: new ShellCancelStore().forContext(() => undefined),
+      ...(caller === 'read-only subagent' ? { readOnlyShell: true } : {}),
+      ...(caller === 'team agent' ? {} : { postMessage: () => undefined }),
+    };
+    return { ctx, parent: 'agent-1', prompts };
+  }
+
+  function expectPolicyBlock(result: Awaited<ReturnType<typeof runPermissionGate>>): void {
+    expect(result?.block).toBe(true);
+    expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
+    expect(result).not.toHaveProperty('terminate');
+  }
+
+  for (const caller of ['panel', 'subagent', 'read-only subagent', 'team agent'] as const) {
+    for (const mode of ['default', 'acceptEdits', 'plan'] as const) {
+      it(`${caller} in ${mode} mode: a server deny blocks, a server ask prompts, a URI deny or ask covers only its URIs`, async () => {
+        const { ctx, parent, prompts } = gateFor(caller, mode);
+        const call = (id: string, toolName: string, input: Record<string, unknown>) => runPermissionGate(ev(toolName, id, input), ctx, undefined, parent);
+
+        expectPolicyBlock(await call('c1', 'read_mcp_resource', { server: 'secret', uri: 'secret://a' }));
+        expectPolicyBlock(await call('c2', 'list_mcp_resources', { server: 'secret' }));
+        expectPolicyBlock(await call('c3', 'list_mcp_resource_templates', { server: 'secret' }));
+        expectPolicyBlock(await call('c4', 'read_mcp_resource', { server: 'vault', uri: 'vault://passwords' }));
+        expect(prompts).toEqual([]);
+
+        expect(await call('c5', 'read_mcp_resource', { server: 'vault', uri: 'vault://passwords/old' })).toBeUndefined();
+        expect(await call('c6', 'list_mcp_resources', { server: 'vault' })).toBeUndefined();
+        expect(await call('c7', 'read_mcp_resource', { server: 'public', uri: 'vault://passwords' })).toBeUndefined();
+        expect(await call('c8', 'list_mcp_resources', {})).toBeUndefined();
+        expect(prompts).toEqual([]);
+
+        expect(await call('c9', 'read_mcp_resource', { server: 'audit', uri: 'audit://x' })).toBeUndefined();
+        expect(await call('c10', 'list_mcp_resources', { server: 'audit' })).toBeUndefined();
+        expect(await call('c11', 'read_mcp_resource', { server: 'vault', uri: 'vault://logs/today' })).toBeUndefined();
+        expect(prompts).toEqual([
+          'read_mcp_resource {"server":"audit","uri":"audit://x"}',
+          'list_mcp_resources {"server":"audit"}',
+          'read_mcp_resource {"server":"vault","uri":"vault://logs/today"}',
+        ]);
+      });
+    }
+
+    it(`${caller} under YOLO: every resource call runs without a prompt`, async () => {
+      const { ctx, parent, prompts } = gateFor(caller, 'default', true);
+      for (const [id, input] of [['y1', { server: 'secret', uri: 'secret://a' }], ['y2', { server: 'vault', uri: 'vault://passwords' }], ['y3', { server: 'audit', uri: 'audit://x' }]] as const) {
+        expect(await runPermissionGate(ev('read_mcp_resource', id, input), ctx, undefined, parent)).toBeUndefined();
+      }
+      expect(prompts).toEqual([]);
+    });
+  }
 });

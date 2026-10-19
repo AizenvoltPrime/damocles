@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { PROVIDER_SECRET_KEYS } from '../../src/core/pi-session/explore-providers';
+import { logFiles } from './support/app';
 import { activeChat, expect, test } from './support/fixtures';
 import { askHostPassword, chatInput, hostPromptAnswer, postFromWebview } from './support/ui';
 import { openSettingsModal, settingsModal, settingsRow, waitForSettingsState } from './support/settings';
@@ -41,10 +42,9 @@ test('host input box renders in the chat webview, accepts a masked value, and an
 
   // A sink writes a line on a later turn of main's event loop, so the logs are read once the app has quit.
   await desktop.close();
-  const logs = path.join(home.userData, 'logs');
-  for (const file of fs.readdirSync(logs)) {
-    expect(fs.readFileSync(path.join(logs, file), 'utf8')).not.toContain(SECRET);
-  }
+  const logs = logFiles(home);
+  expect(logs.map((file) => path.basename(file))).toContain('Damocles.log');
+  for (const file of logs) expect(fs.readFileSync(file, 'utf8'), file).not.toContain(SECRET);
 });
 
 test('with the settings modal open, a host prompt renders in it, takes a masked key that is stored as a secret, and the key reaches no log', async ({ home, launch }) => {
@@ -74,10 +74,9 @@ test('with the settings modal open, a host prompt renders in it, takes a masked 
 
   // A sink writes a line on a later turn of main's event loop, so the logs are read once the app has quit.
   await desktop.close();
-  const logs = path.join(home.userData, 'logs');
-  for (const file of fs.readdirSync(logs)) {
-    expect(fs.readFileSync(path.join(logs, file), 'utf8'), file).not.toContain(SECRET);
-  }
+  const logs = logFiles(home);
+  expect(logs.map((file) => path.basename(file))).toContain('Damocles.log');
+  for (const file of logs) expect(fs.readFileSync(file, 'utf8'), file).not.toContain(SECRET);
   expect(desktop.output()).not.toContain(SECRET);
 });
 

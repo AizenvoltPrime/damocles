@@ -114,7 +114,7 @@ describe('PanelManager routes nothing a webview sent after its ready until the r
     const opening = h.manager.initializeHost(host);
     await tick();
     host.send({ type: 'ready', panelToken: PANEL_TOKEN, savedSessionId: 'saved' });
-    host.send({ type: 'sendMessage', content: 'typed during the restore' });
+    host.send({ type: 'sendMessage', content: 'typed during the restore', sessionId: null });
 
     h.holdCreation.gate = null;
     created();
@@ -135,7 +135,7 @@ describe('PanelManager routes nothing a webview sent after its ready until the r
     h.holdReady.gate = new Promise<void>((resolve) => { readied = resolve; });
 
     host.send({ type: 'ready', panelToken: PANEL_TOKEN });
-    host.send({ type: 'sendMessage', content: 'first' });
+    host.send({ type: 'sendMessage', content: 'first', sessionId: null });
     host.send({ type: 'cancelSession' });
     await tick();
     expect(routedTypes()).toEqual(['ready']);

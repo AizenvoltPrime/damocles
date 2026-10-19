@@ -8,9 +8,9 @@ import { initPiLoader, type PiCodingAgentModule } from '../pi-loader';
 import { backendSourceFiles } from '../../../__mocks__/source-tree';
 
 /**
- * Every pi session Damocles builds delivers all steers pending at a boundary together, whatever the
- * Damocles agent settings file or a trusted project's `.pi/settings.json` says, and keeps doing so
- * after pi re-reads its settings.
+ * Every pi session Damocles builds delivers all steers pending at a boundary together, and all follow-ups
+ * pending when a run would stop together, whatever the Damocles agent settings file or a trusted project's
+ * `.pi/settings.json` says, and keeps doing so after pi re-reads its settings.
  */
 describe('the steering queue policy', () => {
   const made: string[] = [];
@@ -23,13 +23,13 @@ describe('the steering queue policy', () => {
     return dir;
   };
 
-  /** A workspace and agent dir that both ask pi for one steer per boundary. */
+  /** A workspace and agent dir that both ask pi for one steer per boundary and one follow-up per stop. */
   const oneAtATimeEverywhere = (): { workspace: string; agentDir: string } => {
     const workspace = tempDir('damocles-queue-ws-');
     const agentDir = tempDir('damocles-queue-agent-');
     fs.mkdirSync(path.join(workspace, '.pi'), { recursive: true });
-    fs.writeFileSync(path.join(workspace, '.pi', 'settings.json'), JSON.stringify({ steeringMode: 'one-at-a-time' }));
-    fs.writeFileSync(path.join(agentDir, 'settings.json'), JSON.stringify({ steeringMode: 'one-at-a-time' }));
+    fs.writeFileSync(path.join(workspace, '.pi', 'settings.json'), JSON.stringify({ steeringMode: 'one-at-a-time', followUpMode: 'one-at-a-time' }));
+    fs.writeFileSync(path.join(agentDir, 'settings.json'), JSON.stringify({ steeringMode: 'one-at-a-time', followUpMode: 'one-at-a-time' }));
     return { workspace, agentDir };
   };
 
@@ -50,6 +50,7 @@ describe('the steering queue policy', () => {
     const folder = await PiRuntime.get(agentDir).folder(workspace);
     // The project layer was read, so the policy is what outranks it.
     expect(folder.services.settingsManager.getProjectSettings().steeringMode).toBe('one-at-a-time');
+    expect(folder.services.settingsManager.getProjectSettings().followUpMode).toBe('one-at-a-time');
 
     const { session } = await pi.createAgentSessionFromServices({
       services: folder.services,
@@ -57,10 +58,13 @@ describe('the steering queue policy', () => {
     });
     sessions.push(session);
     expect(session.steeringMode).toBe('all');
+    expect(session.followUpMode).toBe('all');
 
     session.agent.steeringMode = 'one-at-a-time';
+    session.agent.followUpMode = 'one-at-a-time';
     await session.reload();
     expect(session.steeringMode).toBe('all');
+    expect(session.followUpMode).toBe('all');
   }, 60_000);
 
   it('holds for a nested session, which subagents, team agents and /btw all run on', async () => {
@@ -77,6 +81,7 @@ describe('the steering queue policy', () => {
     });
     sessions.push(nested);
     expect(nested.steeringMode).toBe('all');
+    expect(nested.followUpMode).toBe('all');
   }, 60_000);
 
   it('is applied to every pi settings manager the extension creates', () => {

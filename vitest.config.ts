@@ -14,6 +14,16 @@ const sharedTest = {
   globalSetup: ['src/__mocks__/test-home.global-setup.ts'],
   // hermetic-home redirects the home through process.env, which a worker thread cannot do.
   pool: 'forks' as const,
+  // A test's markup must not reach the network (src/webview/__tests__/test-dom-network.test.ts).
+  environmentOptions: {
+    happyDOM: {
+      settings: {
+        disableIframePageLoading: true,
+        disableJavaScriptFileLoading: true,
+        disableCSSFileLoading: true,
+      },
+    },
+  },
 };
 
 // hermetic-home must run first, before any setup that could import paths.ts.

@@ -206,7 +206,7 @@ describe('SubagentStreamBridge streaming', () => {
     ]);
   });
 
-  // pi appends the nested record and emits its entry_appended inside the extension pass (agent-session.js:749, :2721-2726),
+  // pi appends the nested record and emits its entry_appended inside the extension pass (agent-session.js:753, :2754-2759),
   // before listeners get the tool_execution_end of a call the abort settled at the gate (agent-loop.js:500-504).
   it('shows a call the turn-stopped record names as not executed, live and in the sealing snapshot', () => {
     const sent: ExtensionToWebviewMessage[] = [];
@@ -439,9 +439,9 @@ describe('SubagentStreamBridge model and effort', () => {
 });
 
 /**
- * A failed model call in pi 1.1.0's order: `message_start` (`agent-loop.js:286`), a delta (`agent-loop.js:299`),
+ * A failed model call in pi 1.3.0's order: `message_start` (`agent-loop.js:286`), a delta (`agent-loop.js:299`),
  * `message_end` with `stopReason: 'error'` (`agent-loop.js:319`), `turn_end` and `agent_end`
- * (`agent-loop.js:151-152`), the last stamped with `willRetry` by `AgentSession` (`agent-session.js:750`).
+ * (`agent-loop.js:151-152`), the last stamped with `willRetry` by `AgentSession` (`agent-session.js:754`).
  */
 function emitFailedCall(session: FakeSession, errorMessage: string, opts: { partial?: string; willRetry: boolean }): void {
   session.emit({ type: 'message_start', message: { role: 'assistant' } });
@@ -470,11 +470,11 @@ describe('SubagentStreamBridge provider failures', () => {
 
     emitFailedCall(session, '529 overloaded_error', { partial: 'Let me', willRetry: true });
     const failedId = ofType(sent, 'assistant').at(-1)!.data.message.id;
-    // `_prepareRetry` (`agent-session.js:3041`), then the retried run (`agent-loop.js:68`).
+    // `_prepareRetry` (`agent-session.js:3061`), then the retried run (`agent-loop.js:68`).
     session.emit({ type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: '529 overloaded_error' });
     session.emit({ type: 'agent_start' });
     emitAnsweredCall(session, 'done');
-    // A successful retry is reported after the retried call's `message_end` (`agent-session.js:777`).
+    // A successful retry is reported after the retried call's `message_end` (`agent-session.js:781-786`).
     session.emit({ type: 'auto_retry_end', success: true, attempt: 1 });
     session.emit({ type: 'turn_end' });
     session.emit({ type: 'agent_end', messages: [], willRetry: false });
@@ -527,7 +527,7 @@ describe('SubagentStreamBridge provider failures', () => {
     session.emit({ type: 'auto_retry_start', attempt: 1, maxAttempts: 1, delayMs: 2000, errorMessage: '529 first' });
     session.emit({ type: 'agent_start' });
     emitFailedCall(session, '529 second', { partial: 'b', willRetry: false });
-    // pi gives up after the last attempt's agent_end (`agent-session.js:1437`).
+    // pi gives up after the last attempt's agent_end (`agent-session.js:1521-1527`).
     session.emit({ type: 'auto_retry_end', success: false, attempt: 1, finalError: '529 second' });
     session.emit({ type: 'agent_settled', aborted: false });
 
@@ -542,7 +542,7 @@ describe('SubagentStreamBridge provider failures', () => {
     bridge.attach(session as never);
 
     emitFailedCall(session, 'prompt is too long', { partial: 'x', willRetry: false });
-    // `_checkCompaction` omits the call, then runs the overflow compaction (`agent-session.js:2406-2407`).
+    // `_checkCompaction` omits the call, then runs the overflow compaction (`agent-session.js:2438-2440`).
     session.emit({ type: 'compaction_start', reason: 'overflow' });
     session.emit({ type: 'compaction_end', reason: 'overflow', aborted: false, willRetry: false, errorMessage: 'Context overflow recovery failed: boom' });
     session.emit({ type: 'agent_settled', aborted: false });
@@ -558,7 +558,7 @@ describe('SubagentStreamBridge provider failures', () => {
     bridge.attach(session as never);
 
     emitFailedCall(session, 'prompt is too long', { willRetry: false });
-    // A second overflow after one recovery: a compaction_end with no start (`agent-session.js:2388`).
+    // A second overflow after one recovery: a compaction_end with no start (`agent-session.js:2416-2427`).
     session.emit({ type: 'compaction_end', reason: 'overflow', aborted: false, willRetry: false, errorMessage: 'Context overflow recovery failed after one compact-and-retry attempt.' });
 
     expect(ofType(sent, 'error')).toEqual([{ type: 'error', message: 'prompt is too long', parentToolUseId: 'toolu_parent' }]);
@@ -666,9 +666,9 @@ describe('SubagentStreamBridge provider failures', () => {
 });
 
 /**
- * An abort while a subagent runs a tool, in pi 1.1.0's order: the abort kills the call, which pi records with its
+ * An abort while a subagent runs a tool, in pi 1.3.0's order: the abort kills the call, which pi records with its
  * `durationMs` (`agent-loop.js:583-591`), and the loop makes its next call under the aborted signal (`:141`). That
- * call's request setup resolves auth with the signal (`model-runtime.js:451-455`), which rejects at once
+ * call's request setup resolves auth with the signal (`model-runtime.js:456-460`), which rejects at once
  * (`raceWithAbortSignal`), and pi-ai's lazy stream ends it on an error stop whatever the signal says (`lazy.js:41-44`):
  * "This operation was aborted". `registerWindDownErrorRecord` names it at its `turn_end` boundary, which pi runs after
  * the `message_end` listeners and commits before the listeners' `turn_end` (`agent-session.js:515`, `:636-641`).

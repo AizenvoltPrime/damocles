@@ -3,6 +3,7 @@
 
 export const THEME_SETTING = 'damocles.desktop.theme';
 export const REDUCE_MOTION_SETTING = 'damocles.desktop.reduceMotion';
+export const FILE_ICON_THEME_SETTING = 'damocles.desktop.fileIconTheme';
 export const LANGUAGE_SETTING = 'damocles.desktop.language';
 export const RESTORE_LAYOUT_SETTING = 'damocles.desktop.restoreLayout';
 export const NOTIFICATIONS_SETTING = 'damocles.desktop.notifications.enabled';
@@ -162,6 +163,13 @@ export const DEFAULT_SEARCH_EXCLUDE: Readonly<Record<string, boolean>> = {
 export const THEME_PREFERENCES = ['system', 'dark', 'light'] as const;
 export type ThemePreference = (typeof THEME_PREFERENCES)[number];
 
+export const FILE_ICON_THEMES = ['material', 'minimal'] as const;
+export type FileIconTheme = (typeof FILE_ICON_THEMES)[number];
+
+export function parseFileIconTheme(value: unknown): FileIconTheme {
+  return (FILE_ICON_THEMES as readonly unknown[]).includes(value) ? (value as FileIconTheme) : 'material';
+}
+
 export const DESKTOP_LANGUAGES = ['system', 'en', 'el'] as const;
 export type DesktopLanguageSetting = (typeof DESKTOP_LANGUAGES)[number];
 
@@ -211,6 +219,17 @@ export const DESKTOP_CONFIGURATION: Readonly<Record<string, DesktopSettingProper
     default: false,
     scope: 'application',
     description: 'Stop non-essential animation in the desktop app. The operating system\'s reduced-motion preference applies as well.',
+  },
+  [FILE_ICON_THEME_SETTING]: {
+    type: 'string',
+    enum: FILE_ICON_THEMES,
+    enumDescriptions: [
+      'Material Icon Theme: a distinct colored icon for each file type and well-known folder, with light theme variants.',
+      'A few monochrome icons in the color theme\'s colors.',
+    ],
+    default: 'material',
+    scope: 'application',
+    description: 'File and folder icons throughout the desktop app.',
   },
   [LANGUAGE_SETTING]: {
     type: 'string',

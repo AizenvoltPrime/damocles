@@ -5,6 +5,8 @@ import { attachmentInfo } from "../terminal-attachment";
 // Pending attachments one composer holds; adding one more drops the oldest.
 export const MAX_PENDING_TERMINAL_ATTACHMENTS = 8;
 // Characters of text (terminal output and commits) one composer's pending attachments hold in total; an add past it is refused.
+// The text of attached MCP resources, read at send, counts against it then.
+// It counts text before neutralization and without block framing or attributes, so a sent prompt carries somewhat more.
 export const MAX_PENDING_TERMINAL_ATTACHMENT_CHARS = 128_000;
 
 interface PendingAttachment {
@@ -18,9 +20,12 @@ export interface TakenAttachment {
   readonly info: ChatAttachmentInfo;
 }
 
-const pendingChars = (entries: readonly PendingAttachment[]): number => entries.reduce((total, entry) => total + entry.attachment.text.length, 0);
+/** The text an attachment holds while pending; an MCP resource holds none until it is read at send. */
+export const heldChars = (attachment: ChatAttachmentInput): number => (attachment.kind === "mcpResource" ? 0 : attachment.text.length);
 
-/** A panel's pending attachments, terminal output and commits: the host adds them, the composer removes them or sends them with a message. */
+const pendingChars = (entries: readonly PendingAttachment[]): number => entries.reduce((total, entry) => total + heldChars(entry.attachment), 0);
+
+/** A panel's pending attachments, terminal output, commits and MCP resources: the host or the MCP panel adds them, the composer removes them or sends them with a message. */
 export class TerminalAttachmentManager {
   private pending: PendingAttachment[] = [];
   // added: the change is an attachment the user just added, whose composer then takes focus
@@ -57,13 +62,21 @@ export class TerminalAttachmentManager {
     return taken.map(({ attachment, info }) => ({ attachment, info }));
   }
 
-  /** Puts back attachments a send took but never delivered, ahead of any added since; past either bound the oldest go first. */
-  restore(taken: readonly TakenAttachment[]): void {
-    if (taken.length === 0) return;
-    let next = [...taken.map(({ attachment, info }) => ({ id: info.id, attachment, info })), ...this.pending].slice(-MAX_PENDING_TERMINAL_ATTACHMENTS);
-    while (pendingChars(next) > MAX_PENDING_TERMINAL_ATTACHMENT_CHARS) next = next.slice(1);
-    this.pending = next;
+  /**
+   * Puts back attachments a send took but never delivered, in their order and ahead of any added since. They fit both
+   * bounds when taken, so past either bound the ones added since go, newest first. Returns how many went.
+   */
+  restore(taken: readonly TakenAttachment[]): number {
+    if (taken.length === 0) return 0;
+    const restored = taken.map(({ attachment, info }) => ({ id: info.id, attachment, info }));
+    let added = this.pending;
+    const fits = (): boolean =>
+      restored.length + added.length <= MAX_PENDING_TERMINAL_ATTACHMENTS && pendingChars([...restored, ...added]) <= MAX_PENDING_TERMINAL_ATTACHMENT_CHARS;
+    while (added.length > 0 && !fits()) added = added.slice(0, -1);
+    const dropped = this.pending.length - added.length;
+    this.pending = [...restored, ...added];
     this.publish();
+    return dropped;
   }
 
   displayInfo(): ChatAttachmentInfo[] {

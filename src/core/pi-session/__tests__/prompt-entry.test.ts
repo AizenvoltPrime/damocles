@@ -57,7 +57,18 @@ describe('watchPromptEntry', () => {
     fake.commit('u-note', user('skip it'));
     fake.isStreaming = false;
 
-    expect(watch.entry()).toEqual({ id: 'u-prompt', text: 'Run Start-Sleep -Seconds 60; echo done in PowerShell.' });
+    expect(watch.entry()).toEqual({ id: 'u-prompt', text: 'Run Start-Sleep -Seconds 60; echo done in PowerShell.', images: 0 });
+    watch.dispose();
+  });
+
+  it('counts the images pi stored with the entry, which may be fewer than the prompt was given', () => {
+    const fake = fakeSession();
+    const watch = watchPromptEntry(fake.asSession());
+
+    watch.preflightResult('started');
+    fake.commit('u-prompt', { role: 'user', content: [{ type: 'text', text: 'look\n\n[Image omitted: could not be decoded]' }, { type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' }] });
+
+    expect(watch.entry()).toEqual({ id: 'u-prompt', text: 'look\n\n[Image omitted: could not be decoded]', images: 1 });
     watch.dispose();
   });
 
@@ -115,7 +126,7 @@ describe('watchPromptEntry onCommitted', () => {
     // pi appends synchronously after notifying listeners, so nothing is reported inside the notification.
     expect(committed).toEqual([]);
     await Promise.resolve();
-    expect(committed).toEqual([{ id: 'u-prompt', text: 'build it' }]);
+    expect(committed).toEqual([{ id: 'u-prompt', text: 'build it', images: 0 }]);
     fake.commit('u-note', user('skip it'));
     await Promise.resolve();
     expect(committed).toHaveLength(1);
@@ -141,9 +152,9 @@ describe('queuedPromptEntries', () => {
   const ignored = { onCommitted: () => {}, onWithdrawn: () => {} };
 
   /** A prompt pi queued: pi pushes its text, then reports `queued`. */
-  function queue(fake: FakeSession, entries: ReturnType<typeof queuedPromptEntries>, text: string, images: ImageContent[], handlers: QueuedPromptHandlers = ignored): void {
+  function queue(fake: FakeSession, entries: ReturnType<typeof queuedPromptEntries>, text: string, images: ImageContent[], handlers: QueuedPromptHandlers = ignored, hookContext?: string): void {
     fake.followUps.push(text);
-    entries.add(fake.asSession(), images, handlers);
+    entries.add(fake.asSession(), images, hookContext, handlers);
   }
 
   it('hands back each follow-up pi dropped with the images it was queued with, two of one text in the order pi queued them', () => {
@@ -163,6 +174,18 @@ describe('queuedPromptEntries', () => {
       { text: 'from an extension', images: [] },
     ]);
     expect(requeued.map((queued) => queued.withdrawn())).toEqual([false, false, false, false]);
+  });
+
+  it('hands back each follow-up with the hook context it was queued with, and none for one it has no record of', () => {
+    const fake = fakeSession();
+    const entries = queuedPromptEntries();
+    queue(fake, entries, 'look at this', [], ignored, 'CTX-FIRST');
+    queue(fake, entries, 'look at this', [], ignored, 'CTX-SECOND');
+    queue(fake, entries, 'plain', []);
+
+    const requeued = entries.requeue(fake.asSession(), ['look at this', 'look at this', 'plain', 'from an extension']);
+
+    expect(requeued.map((queued) => queued.hookContext)).toEqual(['CTX-FIRST', 'CTX-SECOND', undefined, undefined]);
   });
 
   it('withdraws every pending prompt oldest first, and pi delivering one afterwards claims nothing', async () => {
@@ -210,7 +233,7 @@ describe('queuedPromptEntries', () => {
     const withdrawn: string[] = [];
     queue(fake, entries, 'look at this', [PNG], { onCommitted: () => {}, onWithdrawn: () => withdrawn.push('kept') });
     fake.followUps.push('look at this');
-    const later = entries.add(fake.asSession(), [JPEG], { onCommitted: () => {}, onWithdrawn: () => withdrawn.push('withdrawn') });
+    const later = entries.add(fake.asSession(), [JPEG], undefined, { onCommitted: () => {}, onWithdrawn: () => withdrawn.push('withdrawn') });
 
     entries.withdrawOne(later!);
     entries.withdrawOne(later!);

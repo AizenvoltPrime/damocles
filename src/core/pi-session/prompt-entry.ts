@@ -9,6 +9,8 @@ export type PromptDisposition = Parameters<NonNullable<PromptOptions['preflightR
 export interface PromptEntry {
   id: string;
   text: string;
+  /** The images pi stored with it, which its image normalization may have made fewer than the prompt was given. */
+  images: number;
 }
 
 export interface PromptEntryWatch {
@@ -50,7 +52,10 @@ export function watchPromptEntry(session: AgentSession, onCommitted?: (entry: Pr
 function committedEntry(session: AgentSession, message: unknown): PromptEntry | null {
   const sm = session.sessionManager;
   const found = sm.getBranch(sm.getLeafId() ?? undefined).find((e) => e.type === 'message' && e.message === message);
-  return found ? { id: found.id, text: piMessageText((message as { content?: unknown }).content) } : null;
+  if (!found) return null;
+  const content = (message as { content?: unknown }).content;
+  const images = Array.isArray(content) ? content.filter((block) => (block as { type?: unknown } | null)?.type === 'image').length : 0;
+  return { id: found.id, text: piMessageText(content), images };
 }
 
 /** Call from a `message_end` listener: pi appends the message right after notifying listeners, so a microtask later its entry exists. */
@@ -71,8 +76,18 @@ export interface QueuedPromptHandlers {
 export interface RequeuedFollowUp {
   text: string;
   images: readonly ImageContent[];
+  /** The UserPromptSubmit context the prompt was queued with, which goes back behind it. */
+  hookContext?: string;
   /** True once the prompt it puts back was withdrawn, so pi must not deliver it. */
   withdrawn: () => boolean;
+  /** True when a Stop's withdraw left it to pi's verdict on this re-queue. */
+  stopped: () => boolean;
+  /** pi gave its verdict on this re-queue, so a later withdraw takes the prompt back as usual. */
+  dispatched: () => void;
+  /** Stops tracking the prompt without returning it, and gives its `onCommitted` for the entry a stopped run commits. */
+  release: () => (entry: PromptEntry) => void;
+  /** Stops tracking the prompt and returns it to the composer, unless it already went back. */
+  giveBack: () => void;
 }
 
 /** One prompt `add` recorded, as pi queued it. */
@@ -81,14 +96,17 @@ export interface QueuedPrompt {
 }
 
 export interface QueuedPromptEntries {
-  /** Call from `preflightResult('queued')` with the images `prompt()` was given. */
-  add: (session: AgentSession, images: readonly ImageContent[], handlers: QueuedPromptHandlers) => QueuedPrompt | undefined;
+  /** Call from `preflightResult('queued')` with the images `prompt()` was given and the hook context queued behind it. */
+  add: (session: AgentSession, images: readonly ImageContent[], hookContext: string | undefined, handlers: QueuedPromptHandlers) => QueuedPrompt | undefined;
   /** Call for each user message pi delivers on `session`, from its `message_end`; true when it was a queued prompt, whose `onCommitted` then runs. */
   claim: (session: AgentSession, deliveredText: string, message: unknown) => boolean;
   /** The follow-ups `clearQueue()` returned on `session`, each with the images of the prompt it matches; a text no prompt matches goes back as text. */
   requeue: (session: AgentSession, followUp: readonly string[]) => RequeuedFollowUp[];
-  /** Call when pi's queue is dropped rather than delivered: each prompt pending on `session`, or on any session, is withdrawn oldest first. */
-  withdraw: (session?: AgentSession) => void;
+  /**
+   * Call when pi's queue is dropped rather than delivered: each prompt pending on `session`, or on any session, is
+   * withdrawn oldest first. With `keepRequeuing`, one whose re-queue pi holds is left to pi's verdict instead.
+   */
+  withdraw: (session?: AgentSession, keepRequeuing?: boolean) => void;
   /** Withdraws `queued` alone, once, however many prompts share its text. */
   withdrawOne: (queued: QueuedPrompt) => void;
 }
@@ -103,14 +121,23 @@ export function queuedPromptEntries(): QueuedPromptEntries {
     session: AgentSession;
     text: string;
     images: readonly ImageContent[];
+    hookContext: string | undefined;
+    /** A re-queue `prompt()` holds it, with no verdict yet. */
+    requeuing: boolean;
+    stopped: boolean;
   }
   let pending: Pending[] = [];
+  const untrack = (queued: Pending): boolean => {
+    const tracked = pending.includes(queued);
+    pending = pending.filter((candidate) => candidate !== queued);
+    return tracked;
+  };
   return {
-    add: (session, images, handlers) => {
+    add: (session, images, hookContext, handlers) => {
       // pi pushes the prompt's expanded text onto its follow-up list right before it reports `queued`.
       const text = session.getFollowUpMessages().at(-1);
       if (text === undefined) return undefined;
-      const queued: Pending = { session, text, images, ...handlers };
+      const queued: Pending = { session, text, images, hookContext, ...handlers, requeuing: false, stopped: false };
       pending.push(queued);
       return queued;
     },
@@ -127,13 +154,33 @@ export function queuedPromptEntries(): QueuedPromptEntries {
       return followUp.map((text) => {
         const index = unmatched.findIndex((queued) => queued.text === text);
         const queued = index === -1 ? undefined : unmatched.splice(index, 1)[0];
-        return queued
-          ? { text, images: queued.images, withdrawn: () => !pending.includes(queued) }
-          : { text, images: [], withdrawn: () => false };
+        if (!queued) {
+          return { text, images: [], withdrawn: () => false, stopped: () => false, dispatched: () => {}, release: () => () => {}, giveBack: () => {} };
+        }
+        queued.requeuing = true;
+        queued.stopped = false;
+        return {
+          text,
+          images: queued.images,
+          ...(queued.hookContext !== undefined ? { hookContext: queued.hookContext } : {}),
+          withdrawn: () => !pending.includes(queued),
+          stopped: () => queued.stopped && pending.includes(queued),
+          dispatched: () => { queued.requeuing = false; },
+          release: () => {
+            untrack(queued);
+            return queued.onCommitted;
+          },
+          giveBack: () => {
+            if (untrack(queued)) queued.onWithdrawn();
+          },
+        };
       });
     },
-    withdraw: (session) => {
-      const withdrawn = pending.filter((queued) => session === undefined || queued.session === session);
+    withdraw: (session, keepRequeuing = false) => {
+      const matched = pending.filter((queued) => session === undefined || queued.session === session);
+      const kept = keepRequeuing ? matched.filter((queued) => queued.requeuing) : [];
+      for (const queued of kept) queued.stopped = true;
+      const withdrawn = matched.filter((queued) => !kept.includes(queued));
       pending = pending.filter((queued) => !withdrawn.includes(queued));
       for (const queued of withdrawn) queued.onWithdrawn();
     },

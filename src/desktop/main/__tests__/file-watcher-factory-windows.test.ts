@@ -63,6 +63,9 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 import * as fs from 'node:fs';
+// Only for a tree moved in from outside the watched root, where just another process (antivirus, the indexer) can hold a
+// file open; a rename inside the root stays plain, so a handle the watcher leaves open still fails the test.
+import { renameWithRetry } from '../../../core/config/json-config-write';
 import type { FileWatcher } from '../../../platform/file-watcher';
 import { createInProcessTreeHost, REOPEN_FIRST_MS, SHALLOW_COALESCE_MS } from '../../watch-worker/fs-watch-tree';
 import { DesktopFileWatcherFactory } from '../platform/file-watcher-factory';
@@ -189,7 +192,7 @@ describe.runIf(process.platform === 'win32')('DesktopFileWatcherFactory on Windo
       fs.mkdirSync(path.join(staging, 'pack', 'sub'), { recursive: true });
       fs.writeFileSync(path.join(staging, 'pack', 'a.txt'), 'x');
       fs.writeFileSync(path.join(staging, 'pack', 'sub', 'b.txt'), 'x');
-      fs.renameSync(path.join(staging, 'pack'), path.join(dir, 'pack'));
+      await renameWithRetry(path.join(staging, 'pack'), path.join(dir, 'pack'));
       await vi.waitFor(() => expect(events).toContain('create pack/sub/b.txt'), WAIT);
       await quiet();
       expect([...events].sort()).toEqual(['create pack', 'create pack/a.txt', 'create pack/sub', 'create pack/sub/b.txt']);
@@ -249,7 +252,7 @@ describe.runIf(process.platform === 'win32')('DesktopFileWatcherFactory on Windo
       fs.mkdirSync(path.join(staging, 'pkg'));
       fs.writeFileSync(path.join(staging, 'pkg', 'index.js'), 'x');
       fs.mkdirSync(path.join(dir, 'node_modules'));
-      fs.renameSync(path.join(staging, 'pkg'), path.join(dir, 'node_modules', 'pkg'));
+      await renameWithRetry(path.join(staging, 'pkg'), path.join(dir, 'node_modules', 'pkg'));
     } finally {
       fs.rmSync(staging, { recursive: true, force: true });
     }
@@ -283,7 +286,7 @@ describe.runIf(process.platform === 'win32')('DesktopFileWatcherFactory on Windo
     fs.mkdirSync(path.join(staging, 'again'));
     fs.writeFileSync(path.join(staging, 'b.txt'), 'x');
     fs.writeFileSync(path.join(staging, 'again', 'c.txt'), 'x');
-    fs.renameSync(staging, root);
+    await renameWithRetry(staging, root);
     await vi.waitFor(() => expect(events).toContain('create again/c.txt'), WAIT);
     await quiet();
     expect([...events].sort()).toEqual(['create again', 'create again/c.txt', 'create b.txt']);

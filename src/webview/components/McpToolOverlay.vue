@@ -2,6 +2,7 @@
 import { ref, computed, useId } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ToolCall, ToolResultOwner } from '@shared/types/session';
+import { isMcpResourceToolName } from '@shared/tool-names';
 import { ChevronRight, CircleCheck, CircleX, CornerDownRight, LoaderCircle, Plug } from 'lucide-vue-next';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import CodeBlock from './CodeBlock.vue';
@@ -27,6 +28,10 @@ const ids = useId();
 
 const parsedToolName = computed(() => {
   const name = props.tool.name;
+  if (isMcpResourceToolName(name)) {
+    const server = props.tool.input?.['server'];
+    return { serverName: typeof server === 'string' ? server : '', toolName: name };
+  }
   if (!name.startsWith('mcp__')) {
     return { serverName: '', toolName: name };
   }

@@ -4,6 +4,7 @@ import { existsSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { log } from '../logger';
+import { serializeSettingWrite } from '../settings-write-chain';
 import { timed } from '../perf';
 import { initPiLoader, getPiCodingAgent, loadPiAi, loadedPiAi, type PiCodingAgentModule } from './pi-loader';
 import { cacheWarmingSetting, ensurePiAgentDir, PI_AGENT_DIR } from './agent-dir';
@@ -14,7 +15,8 @@ import { writeUnderSessionLease } from './session-store/session-lease';
 import { McpClientManager } from './mcp/mcp-client-manager';
 import { createMcpAuthProviderFactory, shutdownOAuth } from './mcp/mcp-auth-flow';
 import { removeSavedMcpOutputs } from './mcp/content';
-import type { NoticeMemory } from './mcp/tool-name-migration';
+import type { AdditionMemory, NoticeMemory, PersonalToolLists, RenamedRuleNoticeEntry, ToolNameList } from './mcp/tool-name-migration';
+import { inertToolListEntry } from '../permission-handler/mcp-resource-rule';
 import { piSupportedModels } from './pi-models';
 import { piModelDollarBilled } from './account-billing';
 import { CUSTOM_PROVIDER_DEFS, syncCustomProviders, type SecretResolver } from './custom-providers';
@@ -27,7 +29,8 @@ import {
   type StructuredSubCallPurpose,
   type SubCallModel,
 } from './subcall-model';
-import { describeAuthError, isCredentialSyncError } from './describe-error';
+import { describeAuthError, describeCatalogError, isCredentialSyncError } from './describe-error';
+import { piModelNetworkEnabled, savedCatalogCheckedAt } from './pi-model-catalog';
 import { isAbortError } from './web-access/util';
 import { CREDENTIAL_REFUSED, isPiCredentialError, runStructuredCompletion, UNREACHABLE, type CredentialRefused, type PiCompleteFn, type StructuredCompletionRequest, type StructuredCompletionResult } from './structured-completion';
 import { appendSubCallUsage, type SubCallPurpose } from '../usage-stats/subcall-ledger';
@@ -69,7 +72,7 @@ import { syncOpenAIRuntimeKey } from './openai-runtime-key';
 import { migrateOpenAIApiKey } from './openai-key-migration';
 import { OPENAI_KEY_MOVED_MARKER_PATH } from '../paths';
 import { FolderRuntime, type ExtensionLoadError } from './folder-runtime';
-import { MCP_TOOL_EXPOSURE_SETTING } from '../../shared/types/mcp';
+import { MCP_RESOURCE_EXPOSURE_SETTING, MCP_TOOL_EXPOSURE_SETTING, renamedRuleNoticeKey, type McpRenamedToolRuleLocation } from '../../shared/types/mcp';
 import { folderKey } from '../workspace-folders/folder-key';
 import { withQueuePolicy } from './queue-policy';
 import { platform } from '../platform-host';
@@ -87,6 +90,12 @@ import { UsageMonitor, type UsageThresholdCrossing } from './usage-thresholds';
  * setting: it is not a value anyone can reason about correctly.
  */
 const CUSTOM_PROVIDER_SYNC_TIMEOUT_MS = 3000;
+const TOOLS_DISABLED_SETTING = 'damocles.tools.disabled';
+/**
+ * Bounds one attempt at the OpenRouter catalog: its wait for `_providerSync` to go idle, which a plugin install can
+ * hold indefinitely, plus pi's pi.dev download and OpenRouter's `/models/user`.
+ */
+const OPENROUTER_CATALOG_REFRESH_TIMEOUT_MS = 30_000;
 
 /** pi rewrites auth.json as a truncate then a write, which a watcher reports as more than one event. */
 const AUTH_REPUBLISH_DEBOUNCE_MS = 150;
@@ -148,33 +157,71 @@ function newMcpManager(options: {
   });
 }
 
-/** Workspace and global state key: renamed-tool notice entries already shown, `Record<file, rule[]>`. */
+/**
+ * Workspace and global state key: renamed-tool notice entries already shown, `Record<location, entry[]>`, each
+ * entry `JSON.stringify([rule, replacement])`, or the bare rule as earlier builds remembered it.
+ */
 const MCP_RENAMED_RULE_NOTICES_KEY = 'damocles.mcp.renamedToolRuleNotices';
+/** Workspace and global state key: rules the migration added beside a rule, `Record<file, addition[]>`. */
+const MCP_APPLIED_RULE_ADDITIONS_KEY = 'damocles.mcp.appliedRuleAdditions';
+
+type StateMemento = Platform['state']['workspace'];
+
+function readLocations(memento: StateMemento, stateKey: string): Record<string, string[]> {
+  const raw = memento.get<unknown>(stateKey, {});
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, string[]>) : {};
+}
+
+function isInFolder(folder: string, file: string): boolean {
+  const relative = path.relative(folderKey(folder), folderKey(file));
+  return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
 
 /**
- * Entries for files inside the folder are remembered per workspace; entries for every other file (home
- * config, user agents) globally, since that file and its notice are the same in every workspace.
+ * An entry is remembered per workspace when its location is the workspace's own (a file inside the folder, the
+ * workspace's setting) or its replacement holds only in this folder; any other globally, since it reads the same
+ * in every workspace. A bare-rule entry counts as shown in the state it was written to, and is replaced by the
+ * content it stands for the next time the migration finds that rule.
  */
 export function renamedRuleNoticeMemory(state: Platform['state'], folder: string): NoticeMemory {
-  const stateFor = (file: string) => {
-    const relative = path.relative(folderKey(folder), folderKey(file));
-    const inFolder = relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
-    return inFolder ? state.workspace : state.global;
+  const stateFor = (location: McpRenamedToolRuleLocation, entry: RenamedRuleNoticeEntry): StateMemento => {
+    const workspaceOwned = 'path' in location ? isInFolder(folder, location.path) : location.scope !== 'user';
+    return workspaceOwned || entry.perFolder ? state.workspace : state.global;
   };
-  const read = (memento: Platform['state']['workspace']): Record<string, string[]> => {
-    const raw = memento.get<unknown>(MCP_RENAMED_RULE_NOTICES_KEY, {});
-    return raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, string[]>) : {};
-  };
+  const content = (entry: RenamedRuleNoticeEntry): string => JSON.stringify([entry.old, entry.new]);
   return {
-    has: (file, rule) => {
-      const rules = read(stateFor(file))[file];
-      return Array.isArray(rules) && rules.includes(rule);
+    has: (location, entry) => {
+      const known = readLocations(stateFor(location, entry), MCP_RENAMED_RULE_NOTICES_KEY)[renamedRuleNoticeKey(location)];
+      return Array.isArray(known) && (known.includes(content(entry)) || known.includes(entry.old));
     },
-    add: async (file, rules) => {
+    add: async (location, entries) => {
+      const key = renamedRuleNoticeKey(location);
+      for (const memento of new Set(entries.map((entry) => stateFor(location, entry)))) {
+        const mine = entries.filter((entry) => stateFor(location, entry) === memento);
+        const all = readLocations(memento, MCP_RENAMED_RULE_NOTICES_KEY);
+        const known = Array.isArray(all[key]) ? all[key] : [];
+        const bare = new Set(mine.map((entry) => entry.old));
+        const next = [...new Set([...known.filter((entry) => !bare.has(entry)), ...mine.map(content)])];
+        if (next.length === known.length && next.every((entry, index) => entry === known[index])) continue;
+        await memento.update(MCP_RENAMED_RULE_NOTICES_KEY, { ...all, [key]: next });
+      }
+    },
+  };
+}
+
+/** Rules added beside a rule of an owned file: per workspace for a file inside the folder, globally for a home file. */
+export function appliedRuleAdditionMemory(state: Platform['state'], folder: string): AdditionMemory {
+  const stateFor = (file: string): StateMemento => (isInFolder(folder, file) ? state.workspace : state.global);
+  return {
+    has: (file, addition) => {
+      const known = readLocations(stateFor(file), MCP_APPLIED_RULE_ADDITIONS_KEY)[file];
+      return Array.isArray(known) && known.includes(addition);
+    },
+    add: async (file, additions) => {
       const memento = stateFor(file);
-      const all = read(memento);
+      const all = readLocations(memento, MCP_APPLIED_RULE_ADDITIONS_KEY);
       const known = Array.isArray(all[file]) ? all[file] : [];
-      await memento.update(MCP_RENAMED_RULE_NOTICES_KEY, { ...all, [file]: [...new Set([...known, ...rules])] });
+      await memento.update(MCP_APPLIED_RULE_ADDITIONS_KEY, { ...all, [file]: [...new Set([...known, ...additions])] });
     },
   };
 }
@@ -283,6 +330,10 @@ export class PiRuntime {
   private _imageSettingsListener: Disposable | null = null;
   /** `damocles.mcp.toolExposure` decides which MCP tools are eligible, active and on the ToolSearch menu. */
   private _toolExposureListener: Disposable | null = null;
+  /** `damocles.mcp.resourceExposure` decides which servers the resource tools reach and whether they are Always loaded. */
+  private _resourceExposureListener: Disposable | null = null;
+  /** Logs the `damocles.tools.disabled` entries that can turn nothing off, at init and on each change. */
+  private _disabledToolsListener: Disposable | null = null;
   /** `damocles.memory.judge` and `.judgeEffort` pick the memory judge, which the judge status names. */
   private _memoryJudgeSettingsListener: Disposable | null = null;
   /** Set once a custom-provider sync has applied the stored keys, which `hasConfiguredAuth` reads. */
@@ -292,6 +343,8 @@ export class PiRuntime {
   /** Cancels an in-flight custom-provider credential sync on dispose, so a closing window does not
    *  leave a credential operation running against the shared `auth.json` lock. */
   private readonly _syncAbort = new AbortController();
+  /** The running OpenRouter catalog refresh, aborted when the key changes or is removed. */
+  private _openRouterCatalogAbort: AbortController | null = null;
   private readonly _classifierBreakers = createClassifierBreakers();
   private _disposed = false;
   /** The subscription usage refresh, its threshold crossings and the full window a rate limit names, shared by every session. */
@@ -593,14 +646,11 @@ export class PiRuntime {
       createFolderMcp: (reservedToolNames, shellPath) =>
         newMcpManager({ clientVersion: this._platform.appInfo.version, shellPath, reservedToolNames }),
       noticeMemory: renamedRuleNoticeMemory(this._platform.state, cwd),
-      projectDisabledTools: () => {
-        const names = this._platform.settings.inspect<unknown>('damocles.tools.disabled').projectValue;
-        const file = this._platform.settings.scopeFile('project');
-        if (!Array.isArray(names) || file === undefined) return null;
-        return { path: file, names: names.filter((name): name is string => typeof name === 'string') };
-      },
+      additionMemory: appliedRuleAdditionMemory(this._platform.state, cwd),
+      projectDisabledTools: () => this.projectDisabledToolList(),
+      personalDisabledTools: (trusted) => this.personalDisabledToolLists(trusted ? ['user', 'local'] : ['user']),
       toolExposureSetting: () => this._platform.settings.inspect<unknown>(MCP_TOOL_EXPOSURE_SETTING),
-      renameSession: (sessionId, sessionCwd, newName) => this.renameSession(sessionId, sessionCwd, newName),
+      resourceExposureSetting: () => this._platform.settings.inspect<unknown>(MCP_RESOURCE_EXPOSURE_SETTING),
       trust: this._platform.trust,
       fileWatchers: this._platform.fileWatchers,
     });
@@ -721,6 +771,7 @@ export class PiRuntime {
     this._modelRuntime = await pi.ModelRuntime.create({
       authPath: path.join(this._agentDir, 'auth.json'),
       modelsPath: path.join(this._agentDir, 'models.json'),
+      modelsStorePath: this._modelsStorePath(),
     });
     for (const resolve of this._modelRuntimeWaiters) resolve(this._modelRuntime);
     this._modelRuntimeWaiters.clear();
@@ -777,11 +828,80 @@ export class PiRuntime {
     this._toolExposureListener = this._platform.settings.onDidChange(MCP_TOOL_EXPOSURE_SETTING, () => {
       for (const folder of this.folders()) folder.refreshActiveTools();
     });
+    this._resourceExposureListener = this._platform.settings.onDidChange(MCP_RESOURCE_EXPOSURE_SETTING, () => {
+      for (const folder of this.folders()) folder.refreshActiveTools();
+    });
+    this.logInertDisabledToolEntries();
+    this._disabledToolsListener = this._platform.settings.onDidChange(TOOLS_DISABLED_SETTING, () => this.logInertDisabledToolEntries());
     // A section listener, because `damocles.memory.judgeEffort` is not under `damocles.memory.judge`.
     this._memoryJudgeSettingsListener = this._platform.settings.onDidChange('damocles.memory', (change) => {
       if (change.affects(MEMORY_JUDGE_SETTING) || change.affects(MEMORY_JUDGE_EFFORT_SETTING)) notifyMemoryJudgeListeners();
     });
     log('[PiRuntime] initialized (agentDir=%s)', this._agentDir);
+  }
+
+  /** Logs each `damocles.tools.disabled` entry that turns nothing off, by scope, file and index, as dead permission rules are. */
+  private logInertDisabledToolEntries(): void {
+    const inspection = this._platform.settings.inspect<unknown>(TOOLS_DISABLED_SETTING);
+    for (const scope of ['user', 'project', 'local'] as const) {
+      const list = scope === 'user' ? inspection.userValue : scope === 'project' ? inspection.projectValue : inspection.localValue;
+      if (!Array.isArray(list)) continue;
+      const where = this._platform.settings.scopeFile(scope) ?? `${scope} settings`;
+      list.forEach((entry: unknown, index) => {
+        const inert = typeof entry === 'string' ? inertToolListEntry(entry) : null;
+        if (inert !== null) log('[PiRuntime] %s %s[%d] %s; it turns nothing off', where, TOOLS_DISABLED_SETTING, index, inert);
+      });
+    }
+  }
+
+  /** The project scope's `damocles.tools.disabled`, in its file or, where the host keeps no file, as the setting; null when it holds none. */
+  private projectDisabledToolList(): ToolNameList | null {
+    const names = this._platform.settings.inspect<unknown>(TOOLS_DISABLED_SETTING).projectValue;
+    if (!Array.isArray(names)) return null;
+    const entries = names.filter((name): name is string => typeof name === 'string');
+    const file = this._platform.settings.scopeFile('project');
+    return file === undefined ? { setting: TOOLS_DISABLED_SETTING, names: entries } : { path: file, names: entries };
+  }
+
+  /**
+   * The personal scopes' `damocles.tools.disabled`. Both are window-level, read and written with no folder, so
+   * every folder of the window shares them: the user scope everywhere, the local one on desktop (the default
+   * project's local file; VS Code reports no local value for a window-level key).
+   */
+  private personalDisabledToolLists(scopes: readonly ('user' | 'local')[]): PersonalToolLists {
+    return {
+      rewrite: (rename) => this.rewriteDisabledToolLists(scopes, rename),
+      lists: () => {
+        const inspection = this._platform.settings.inspect<unknown>(TOOLS_DISABLED_SETTING);
+        return scopes.flatMap((scope): ToolNameList[] => {
+          const value = scope === 'user' ? inspection.userValue : inspection.localValue;
+          if (!Array.isArray(value)) return [];
+          const names = value.filter((name): name is string => typeof name === 'string');
+          const file = this._platform.settings.scopeFile(scope);
+          if (file !== undefined) return [{ path: file, names }];
+          return scope === 'user' ? [{ setting: TOOLS_DISABLED_SETTING, scope: 'user', names }] : [];
+        });
+      },
+    };
+  }
+
+  /**
+   * Rewrites `damocles.tools.disabled` at each of `scopes` entry by entry, in place, from what it holds when the
+   * write runs, on the process-wide settings write chain the settings panel's setters share. A list `rename`
+   * leaves unchanged is not written.
+   */
+  private async rewriteDisabledToolLists(scopes: readonly ('user' | 'local')[], rename: (name: string) => string): Promise<void> {
+    for (const scope of scopes) {
+      await serializeSettingWrite(async () => {
+        const inspection = this._platform.settings.inspect<unknown>(TOOLS_DISABLED_SETTING);
+        const list = scope === 'user' ? inspection.userValue : inspection.localValue;
+        if (!Array.isArray(list)) return;
+        const renamed = list.map((item: unknown) => (typeof item === 'string' ? rename(item) : item));
+        if (renamed.every((item, index) => item === list[index])) return;
+        await this._platform.settings.update(TOOLS_DISABLED_SETTING, renamed, scope);
+        log('[PiRuntime] rewrote retired MCP resource tools in %s at %s scope', TOOLS_DISABLED_SETTING, scope);
+      });
+    }
   }
 
   /**
@@ -814,8 +934,12 @@ export class PiRuntime {
         modelRuntime: this._modelRuntime,
         getSecret,
         signal: AbortSignal.any([this._syncAbort.signal, AbortSignal.timeout(CUSTOM_PROVIDER_SYNC_TIMEOUT_MS)]),
+        beforeCredentialChange: (provider) => {
+          if (provider === 'openrouter') this._openRouterCatalogAbort?.abort();
+        },
       });
       for (const provider of changed) this._classifierBreakers.reset(provider);
+      if (changed.includes('openrouter') && wired.includes('openrouter')) this._refreshOpenRouterCatalog();
       if (wired.length > 0) log('[PiRuntime] custom providers wired: %s', wired.join(', '));
       const timedOut = aborted && !this._syncAbort.signal.aborted;
       if (timedOut) {
@@ -834,6 +958,87 @@ export class PiRuntime {
       this._customProvidersSynced = true;
       notifyMemoryJudgeListeners();
     }
+  }
+
+  /**
+   * A refresh of the OpenRouter catalog for the key just applied, never awaited: pi narrows it to the chat models,
+   * limits and prices the key may use and saves the result for offline refreshes. pi's own `PI_OFFLINE` switch
+   * decides whether it reaches the network.
+   */
+  private _refreshOpenRouterCatalog(): void {
+    const abort = new AbortController();
+    this._openRouterCatalogAbort = abort;
+    void this._runOpenRouterCatalogRefresh(AbortSignal.any([abort.signal, this._syncAbort.signal]))
+      .catch((err: unknown) => log('[PiRuntime] OpenRouter catalog refresh failed: %s', describeCatalogError(err)))
+      .finally(() => {
+        if (this._openRouterCatalogAbort === abort) this._openRouterCatalogAbort = null;
+      });
+  }
+
+  /**
+   * pi aborts a provider's running refresh whenever any refresh of it starts, as every provider registration does,
+   * and reports nothing (pi-ai models.js `beginProviderRefresh`). So each attempt starts once `_providerSync` is idle,
+   * without holding it, and an attempt that ended without error or abort but saved no catalog was superseded.
+   */
+  private async _runOpenRouterCatalogRefresh(cancel: AbortSignal): Promise<void> {
+    if (this._modelRuntime && !piModelNetworkEnabled(this._modelRuntime)) {
+      log('[PiRuntime] OpenRouter catalog not refreshed: pi is offline (PI_OFFLINE)');
+      return;
+    }
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const clock = AbortSignal.timeout(OPENROUTER_CATALOG_REFRESH_TIMEOUT_MS);
+      const signal = AbortSignal.any([cancel, clock]);
+      await this._whenProviderSyncIdle(signal);
+      const modelRuntime = this._modelRuntime;
+      if (clock.aborted) {
+        log('[PiRuntime] OpenRouter catalog refresh gave up after %dms waiting for provider registrations', OPENROUTER_CATALOG_REFRESH_TIMEOUT_MS);
+        return;
+      }
+      if (signal.aborted || !modelRuntime) return;
+      const startedAt = Date.now();
+      const refreshed = await modelRuntime.refresh({ providers: ['openrouter'], signal });
+      const failure = refreshed.errors.get('openrouter');
+      if (failure) {
+        log('[PiRuntime] OpenRouter catalog refresh failed: %s', describeCatalogError(failure));
+        return;
+      }
+      if (clock.aborted) {
+        log('[PiRuntime] OpenRouter catalog refresh timed out after %dms', OPENROUTER_CATALOG_REFRESH_TIMEOUT_MS);
+        return;
+      }
+      if (refreshed.aborted) {
+        log('[PiRuntime] OpenRouter catalog refresh aborted before completing');
+        return;
+      }
+      let checkedAt: number | undefined;
+      try {
+        checkedAt = await savedCatalogCheckedAt(this._modelsStorePath(), 'openrouter');
+      } catch (err) {
+        log('[PiRuntime] OpenRouter catalog refresh ended, but its saved catalog could not be read: %s', describeCatalogError(err));
+        return;
+      }
+      if (checkedAt !== undefined && checkedAt >= startedAt) return;
+      log(
+        attempt === 1
+          ? '[PiRuntime] OpenRouter catalog refresh was superseded by another refresh of the provider; retrying once provider registrations are idle'
+          : '[PiRuntime] OpenRouter catalog refresh was superseded again; the saved or shipped list stays until the next applied key',
+      );
+    }
+  }
+
+  /** Resolves once `_providerSync` has nothing queued, or once `signal` fires. */
+  private async _whenProviderSyncIdle(signal: AbortSignal): Promise<void> {
+    const aborted = new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    let tail: Promise<void>;
+    do {
+      tail = this._providerSync;
+      await Promise.race([tail, aborted]);
+    } while (!signal.aborted && tail !== this._providerSync);
+  }
+
+  /** pi's models store, where a networked catalog refresh saves what it fetched. */
+  private _modelsStorePath(): string {
+    return path.join(this._agentDir, 'models-store.json');
   }
 
   /**
@@ -1509,7 +1714,7 @@ export class PiRuntime {
         log('[PiRuntime] runStructuredCompletion: no configured credential for provider %s', model.provider);
         return CREDENTIAL_REFUSED;
       }
-      // Without the clamp no level can be sent, and a request with none runs Claude 5.x at high effort.
+      // Without the clamp no level can be sent, and a request with none runs a Claude model that cannot disable thinking at high effort.
       const piAi = await loadPiAi();
       if (!piAi) {
         log('[PiRuntime] runStructuredCompletion: pi-ai unavailable, sub-call %s skipped', req.purpose);
@@ -1742,6 +1947,10 @@ export class PiRuntime {
     this._imageSettingsListener = null;
     this._toolExposureListener?.dispose();
     this._toolExposureListener = null;
+    this._disabledToolsListener?.dispose();
+    this._disabledToolsListener = null;
+    this._resourceExposureListener?.dispose();
+    this._resourceExposureListener = null;
     this._memoryJudgeSettingsListener?.dispose();
     this._memoryJudgeSettingsListener = null;
     this._modelRuntime = null;

@@ -13,7 +13,7 @@ import SlidingIndicator from '@/components/SlidingIndicator.vue';
 import { buildFileDiff, type DiffLine, type FileDiff } from '@/utils/parseUnifiedDiff';
 import type { ChatReviewComment } from '../../preload/review-channels';
 import { MAX_REVIEW_COMMENT_CHARS, MAX_REVIEW_COMMENTS } from '../../preload/review-channels';
-import { fileIcon } from '../file-icons';
+import FileIcon from '../components/FileIcon.vue';
 import StatusLetter from '../scm/StatusLetter.vue';
 import { visibleText } from '@shared/visible-text';
 import type { ChangesEntry, ChangesSource } from './changes-source';
@@ -447,11 +447,9 @@ defineExpose({ scrollTo, addComment });
             :style="{ height: `${remPx(ENTRY_REM)}px` }"
             @click="select(index, false)"
           >
-            <component
-              :is="fileIcon(entry.path).icon"
-              aria-hidden="true"
+            <FileIcon
+              :path="entry.path"
               class="size-3.25 shrink-0"
-              :style="{ color: fileIcon(entry.path).color }"
             />
             <span
               class="min-w-0 truncate"
@@ -496,11 +494,9 @@ defineExpose({ scrollTo, addComment });
           v-if="selected"
           class="@container/file relative flex h-7.5 shrink-0 items-center gap-1.75 border-b border-(--d-border) bg-(--d-panel) pr-1.5 pl-3 text-11.5"
         >
-          <component
-            :is="fileIcon(selected.path).icon"
-            aria-hidden="true"
+          <FileIcon
+            :path="selected.path"
             class="size-3.25 shrink-0"
-            :style="{ color: fileIcon(selected.path).color }"
           />
           <span
             data-testid="changes-path"

@@ -5,6 +5,7 @@ import tailwindcss from '@tailwindcss/vite';
 import { resolve } from 'path';
 import { DESKTOP_FONT_FILES, DESKTOP_FONT_LICENSES } from './src/desktop/main/desktop-fonts';
 import { shellWorkerTest } from './scripts/shell-workers.mjs';
+import { MATERIAL_ICON_DIR, materialIconNames } from './src/desktop/shell/material-icons';
 
 // Copies the desktop fonts and their licences to dist/desktop-shell/fonts/ under the names theme.ts's @font-face rules load.
 function desktopFonts(): Plugin {
@@ -18,6 +19,20 @@ function desktopFonts(): Plugin {
       for (const license of DESKTOP_FONT_LICENSES) {
         this.emitFile({ type: 'asset', fileName: `fonts/${license.output}`, source: packageFile(license.pkg, 'LICENSE') });
       }
+    },
+  };
+}
+
+// Every icon materialIconUrl() can load, under the directory it names, with the package's licence beside them.
+function materialFileIcons(): Plugin {
+  const packageDir = resolve(__dirname, 'node_modules', 'material-icon-theme');
+  return {
+    name: 'damocles-material-file-icons',
+    generateBundle() {
+      for (const name of materialIconNames()) {
+        this.emitFile({ type: 'asset', fileName: `${MATERIAL_ICON_DIR}/${name}.svg`, source: readFileSync(resolve(packageDir, 'icons', `${name}.svg`)) });
+      }
+      this.emitFile({ type: 'asset', fileName: `${MATERIAL_ICON_DIR}/LICENSE`, source: readFileSync(resolve(packageDir, 'LICENSE')) });
     },
   };
 }
@@ -51,7 +66,7 @@ function shellWorkersOnly(): Plugin {
 
 // The desktop shell and overlay pages; main generates their HTML (nonce CSP) and loads assets/index.{js,css} and assets/overlay.{js,css} by these fixed names.
 export default defineConfig({
-  plugins: [vue(), tailwindcss(), desktopFonts(), requiredPageAssets()],
+  plugins: [vue(), tailwindcss(), desktopFonts(), materialFileIcons(), requiredPageAssets()],
   root: 'src/desktop/shell',
   // Relative asset URLs: the shell is served under app://damocles/desktop-shell/, where a root-absolute /assets/ URL misses.
   base: './',

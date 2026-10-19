@@ -52,6 +52,8 @@ export function expandPromptTemplate(text: string, templates: readonly { name: s
 function parseCommandArgs(argsString: string): string[] {
   const args: string[] = [];
   let current = '';
+  // A quote starts a token, so an empty quoted argument is kept.
+  let hasToken = false;
   let inQuote: string | null = null;
   for (const char of argsString) {
     if (inQuote) {
@@ -59,16 +61,19 @@ function parseCommandArgs(argsString: string): string[] {
       else current += char;
     } else if (char === '"' || char === "'") {
       inQuote = char;
+      hasToken = true;
     } else if (/\s/.test(char)) {
-      if (current) {
+      if (hasToken) {
         args.push(current);
         current = '';
+        hasToken = false;
       }
     } else {
       current += char;
+      hasToken = true;
     }
   }
-  if (current) args.push(current);
+  if (hasToken) args.push(current);
   return args;
 }
 

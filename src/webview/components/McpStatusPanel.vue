@@ -14,7 +14,7 @@ import type { Component } from 'vue';
 import { ref, computed, nextTick, onMounted, onUnmounted, useId, useTemplateRef, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import {
-  Ban, ChevronRight, CircleCheck, CircleOff, CircleX, FileX, KeyRound, LoaderCircle, LogOut, Pencil, Plug, Plus,
+  Ban, ChevronRight, CircleCheck, CircleOff, CircleX, FileX, FolderOpen, KeyRound, LoaderCircle, LogOut, Pencil, Plug, Plus,
   RefreshCw, Search, Settings, ShieldAlert, Trash2, TriangleAlert, Zap,
 } from 'lucide-vue-next';
 import OverlayShell from './OverlayShell.vue';
@@ -57,6 +57,8 @@ const emit = defineEmits<{
   (e: 'deleteServer', serverName: string): void;
   (e: 'reloadConfig'): void;
   (e: 'setToolExposure', serverName: string, toolName: string, exposure: McpToolExposureSetting, scope: McpToolExposureScope): void;
+  (e: 'setResourceExposure', serverName: string, exposure: McpToolExposureSetting, scope: McpToolExposureScope): void;
+  (e: 'browseResources', serverName: string): void;
 }>();
 
 const TOOL_EXPOSURES: readonly { value: McpToolExposureSetting; labelKey: string; icon: Component }[] = [
@@ -86,15 +88,29 @@ function handleToolExposure(server: McpServerStatusInfo, tool: McpToolInfo, valu
   emit('setToolExposure', server.name, tool.name, value, saveScope.value);
 }
 
+function handleResourceExposure(server: McpServerStatusInfo, value: McpToolExposureSetting): void {
+  if (value === (server.resourceExposure ?? 'deferred')) return;
+  emit('setResourceExposure', server.name, value, saveScope.value);
+}
+
 /** The indicator is mixed into the opaque card under it, since a translucent one would show its seams. */
-function exposureIndicator(tool: McpToolInfo): string {
-  return (tool.exposure ?? 'deferred') === 'off'
+function exposureIndicator(exposure: McpToolExposureSetting | undefined): string {
+  return (exposure ?? 'deferred') === 'off'
     ? 'text-[color-mix(in_srgb,var(--d-text)_9%,var(--d-card))]'
     : 'text-[color-mix(in_srgb,var(--d-accent)_16%,var(--d-card))]';
 }
 
+/** A server the host resolved a resource exposure for, unless it is known to offer no resources. */
+function showsResources(server: McpServerStatusInfo): boolean {
+  return server.resourceExposure !== undefined && server.hasResources !== false;
+}
+
+function hasRows(server: McpServerStatusInfo): boolean {
+  return (server.tools?.length ?? 0) > 0 || showsResources(server);
+}
+
 const hasUntrustedServers = computed(() => props.servers.some((s) => s.untrusted === true));
-const hasToolRows = computed(() => props.servers.some((s) => (s.tools?.length ?? 0) > 0));
+const hasExposureRows = computed(() => props.servers.some(hasRows));
 
 /**
  * How long Reload config stays disabled with no answer. `mcpReloadConfig` carries no requestId, so a
@@ -428,6 +444,16 @@ function buildRowActions(server: McpServerStatusInfo): ServerRowAction[] {
       run: () => emit('signOut', server.name),
     });
   }
+  // VS Code's BrowseResourcesAction: shown while the capability is unknown too, and opening the picker connects the server.
+  if (server.enabled && server.untrusted !== true && props.mcpEnabled && server.hasResources !== false) {
+    actions.push({
+      key: 'browseResources',
+      icon: FolderOpen,
+      label: t('mcp.browseResources'),
+      class: 'text-(--d-accent)',
+      run: () => emit('browseResources', server.name),
+    });
+  }
   // Withheld while `~/.damocles/mcp.json` is unusable: every write reads that file first, so none of
   // these can succeed until it parses again.
   if (canEditMcpServer(server) && !damoclesConfigBroken.value) {
@@ -458,7 +484,8 @@ const SOURCE_COUNT = Object.keys(SOURCE_LABEL_KEYS).length;
 
 function toolsSummary(server: McpServerStatusInfo): string {
   const tools = server.tools ?? [];
-  if (tools.length === 0) return server.status === 'needs-auth' ? t('overlays.mcp.authToLoadTools') : t('overlays.mcp.noTools');
+  if (tools.length === 0 && server.status === 'needs-auth') return t('overlays.mcp.authToLoadTools');
+  if (tools.length === 0) return showsResources(server) ? t('overlays.mcp.resourcesNoTools') : t('overlays.mcp.noTools');
   const direct = tools.filter((tool) => tool.exposure === 'direct').length;
   const off = tools.filter((tool) => tool.exposure === 'off').length;
   return [
@@ -471,6 +498,13 @@ function toolsSummary(server: McpServerStatusInfo): string {
 function availableSummary(server: McpServerStatusInfo): string {
   const tools = server.tools ?? [];
   return t('overlays.mcp.available', { n: tools.filter((tool) => tool.exposure !== 'off').length, total: tools.length });
+}
+
+function expanderLabel(server: McpServerStatusInfo): string {
+  const shown = expandedServers.value.has(server.name);
+  if (!showsResources(server)) return shown ? t('overlays.mcp.hideTools') : t('overlays.mcp.showTools');
+  if ((server.tools?.length ?? 0) === 0) return shown ? t('overlays.mcp.hideResources') : t('overlays.mcp.showResources');
+  return shown ? t('overlays.mcp.hideToolsAndResources') : t('overlays.mcp.showToolsAndResources');
 }
 
 /**
@@ -644,9 +678,9 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
         :class="!mcpEnabled && 'pointer-events-none opacity-50'"
         :inert="!mcpEnabled"
       >
-        <!-- One choice for the whole panel: it applies to every tool's next exposure change. -->
+        <!-- One choice for the whole panel: it applies to the next exposure change of any tool or Resources row. -->
         <div
-          v-if="hasToolRows"
+          v-if="hasExposureRows"
           class="flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-lg border border-(--d-border) bg-(--d-panel) py-1.5 pr-2 pl-2.5 text-11 text-(--d-faint)"
         >
           <span :id="`${panelId}-save-to`">{{ t('mcp.toolExposureSaveTo') }}</span>
@@ -715,10 +749,10 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
               <button
                 type="button"
                 class="flex flex-none rounded-sm text-(--d-faint) transition-colors enabled:hover:text-(--d-text) disabled:opacity-35"
-                :disabled="!server.tools?.length"
+                :disabled="!hasRows(server)"
                 :aria-expanded="expandedServers.has(server.name)"
                 :aria-controls="`${panelId}-tools-${rowIndex}`"
-                :aria-label="expandedServers.has(server.name) ? t('overlays.mcp.hideTools') : t('overlays.mcp.showTools')"
+                :aria-label="expanderLabel(server)"
                 @click="toggleExpanded(server.name)"
               >
                 <ChevronRight
@@ -764,7 +798,7 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
               </p>
               <div class="flex flex-wrap gap-x-2.5 gap-y-0.5 text-(--d-faint)">
                 <button
-                  v-if="server.tools?.length"
+                  v-if="hasRows(server)"
                   type="button"
                   class="transition-colors hover:text-(--d-text)"
                   :aria-expanded="expandedServers.has(server.name)"
@@ -845,13 +879,52 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
 
             <Transition name="t-fade">
               <div
-                v-if="server.tools?.length && expandedServers.has(server.name)"
+                v-if="hasRows(server) && expandedServers.has(server.name)"
                 :id="`${panelId}-tools-${rowIndex}`"
                 class="mx-3 mb-3 overflow-hidden rounded-lg border border-(--d-border) @min-[35rem]/overlay:ml-11.5"
               >
-                <div class="flex items-center bg-(--d-panel) py-1.5 pr-2 pl-2.5 text-11 text-(--d-faint)">
+                <div
+                  v-if="(server.tools?.length ?? 0) > 0"
+                  class="flex items-center bg-(--d-panel) py-1.5 pr-2 pl-2.5 text-11 text-(--d-faint)"
+                >
                   <span class="flex-1" />
                   <span class="whitespace-nowrap">{{ availableSummary(server) }}</span>
+                </div>
+                <div
+                  v-if="showsResources(server)"
+                  class="flex flex-col gap-1.25 border-(--d-border) px-2.5 py-2 not-first:border-t"
+                  data-testid="mcp-resources-row"
+                >
+                  <div
+                    class="flex min-w-0 flex-wrap items-center gap-1.5 transition-opacity duration-200"
+                    :class="server.resourceExposure === 'off' && 'opacity-55'"
+                  >
+                    <span
+                      class="text-11.5 font-medium"
+                      :class="server.resourceExposure === 'off' && 'line-through'"
+                    >{{ t('mcp.resources') }}</span>
+                  </div>
+                  <div class="flex flex-wrap items-center gap-1.5">
+                    <SegmentedToggle
+                      :model-value="server.resourceExposure ?? 'deferred'"
+                      :options="exposureOptions"
+                      :indicator-class="exposureIndicator(server.resourceExposure)"
+                      :selected-class="server.resourceExposure === 'off' ? 'text-(--d-text)' : 'text-(--d-accent-text)'"
+                      class="border border-(--d-border)"
+                      data-testid="mcp-resource-exposure"
+                      :aria-label="t('mcp.resourceExposureLabel', { name: server.displayName ?? server.name })"
+                      :title="t('mcp.resourceExposureTooltip')"
+                      @update:model-value="(value: McpToolExposureSetting) => handleResourceExposure(server, value)"
+                    />
+                    <span
+                      data-testid="mcp-resource-exposure-source"
+                      class="rounded-full border border-(--d-border) bg-(--d-hover) px-1.75 text-10/4 text-(--d-faint-text)"
+                      :title="t('mcp.toolExposureSourceTitle', { source: t(`mcp.toolExposureSource.${server.resourceExposureSource ?? 'config'}`) })"
+                    >{{ t(`mcp.toolExposureSource.${server.resourceExposureSource ?? 'config'}`) }}</span>
+                  </div>
+                  <p class="text-11 text-(--d-faint) text-pretty">
+                    {{ t('mcp.resourcesDescription') }}
+                  </p>
                 </div>
                 <div
                   v-for="tool in server.tools"
@@ -884,7 +957,7 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
                     <SegmentedToggle
                       :model-value="tool.exposure ?? 'deferred'"
                       :options="exposureOptions"
-                      :indicator-class="exposureIndicator(tool)"
+                      :indicator-class="exposureIndicator(tool.exposure)"
                       :selected-class="(tool.exposure ?? 'deferred') === 'off' ? 'text-(--d-text)' : 'text-(--d-accent-text)'"
                       class="border border-(--d-border)"
                       data-testid="mcp-tool-exposure"

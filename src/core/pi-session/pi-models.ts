@@ -1,7 +1,7 @@
 import type { Model, Api } from '@earendil-works/pi-ai';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { ModelInfo, EffortLevel } from '../../shared/types/settings';
-import { DEFAULT_MODELS, DEFAULT_CONTEXT_WINDOW } from '../../shared/types/constants';
+import { DEFAULT_MODELS, DEFAULT_CONTEXT_WINDOW, thinkingDisableApplies } from '../../shared/types/constants';
 import { TOOL_ENTER_PLAN_MODE } from '../../shared/tool-names';
 import { TEAM_MAIN_PI_TOOL_NAMES } from './tools/team-tools';
 import { OPENAI_API_PROVIDER, OPENAI_CODEX_PROVIDER, type OpenAIAuthStatus } from './openai-auth';
@@ -36,6 +36,16 @@ const EFFORT_TO_PI_THINKING: Record<EffortLevel, ThinkingLevel> = {
  *  Thin accessor over the module-private `EFFORT_TO_PI_THINKING` for the team role resolver. */
 export function effortToPiThinking(effort: EffortLevel): ThinkingLevel {
   return EFFORT_TO_PI_THINKING[effort];
+}
+
+/**
+ * What a resumed conversation's recorded pi thinking `level` sets for `model`: thinking off or on where the model offers
+ * the switch, and the first effort the model lists that maps to the level. Anything it leaves out keeps the panel's value.
+ */
+export function recordedReasoning(model: string, level: string): { thinkingDisabled?: boolean; effort?: EffortLevel } {
+  const info = DEFAULT_MODELS.find((m) => m.value === model);
+  const effort = info?.supportedEffortLevels?.find((candidate) => EFFORT_TO_PI_THINKING[candidate] === level);
+  return { ...(thinkingDisableApplies(info) ? { thinkingDisabled: level === 'off' } : {}), ...(effort ? { effort } : {}) };
 }
 
 /** Resolve a Damocles thinking config to the pi thinking level to apply (clamped per-model by pi). */
@@ -128,6 +138,12 @@ function defaultInfoForPiModel(model: Model<Api>): ModelInfo | undefined {
   return DEFAULT_MODELS.find((m) => m.backend !== 'openai' && m.value === model.id);
 }
 
+/** A pi model's context window, or undefined when pi reports none; pi itself reads a 0 limit as unknown (pi-ai openrouter.js personalizeOpenRouterCatalog). */
+export function piContextWindow(model: Pick<Model<Api>, 'contextWindow'> | undefined): number | undefined {
+  const window = model?.contextWindow;
+  return typeof window === 'number' && window > 0 ? window : undefined;
+}
+
 /** Map a pi `Model` to a Damocles `ModelInfo`, reconciling display + pricing from `DEFAULT_MODELS`. */
 export function piModelToModelInfo(model: Model<Api>): ModelInfo {
   const info = defaultInfoForPiModel(model);
@@ -136,7 +152,7 @@ export function piModelToModelInfo(model: Model<Api>): ModelInfo {
     value: model.id,
     displayName: model.name || model.id,
     description: '',
-    contextWindow: model.contextWindow || DEFAULT_CONTEXT_WINDOW,
+    contextWindow: piContextWindow(model) ?? DEFAULT_CONTEXT_WINDOW,
     ...(isOpenAIProvider(model.provider) ? { backend: 'openai' as const, openaiModelId: model.id } : {}),
   };
 }

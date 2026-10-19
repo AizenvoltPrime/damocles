@@ -10,6 +10,7 @@ import type { ImageBlock } from '../../shared/types/content';
 import type { TeamState as WebviewTeamState } from '../../shared/types/team';
 import { agentInvocationsOnBranch, indexTeamMemberFiles, teamEventLogPath, teamMembersDir, type AgentInvocationData } from '../pi-session/agent-records';
 import { piSessionDirOf } from '../pi-session/session-store';
+import { agentFileHeldElsewhere } from '../pi-session/agent-file-owner';
 import { formatTeamUserSteerPrefix } from '../../shared/steer';
 import { oneLine } from '../pi-session/untrusted-text';
 import type { InterruptionCause } from '../pi-session/interruption-notice';
@@ -292,6 +293,11 @@ export class TeamService {
       candidate.restore(log, checkpoint, sessionFiles);
       await candidate.dropDeliveredMessages();
       for (const [agentId, path] of candidate.reopenedSessionFiles()) this.deps.assertResumableModel(path, agentId);
+      // Refused here, before the restored state is written, so the team stays resumable; the open's own check guards a later taker.
+      const heldElsewhere = candidate.resumedMemberFiles().find(({ store }) => agentFileHeldElsewhere(store));
+      if (heldElsewhere) {
+        throw new Error(`Team "${teamId}" cannot resume yet: the session file of "${heldElsewhere.name}" is still open in another Damocles window, whose stopped run has not finished. Wait for that run to stop or close that window, then resume the team again.`);
+      }
       // Before the first write: the checkpoint it came from stays the newest, as resumable as before, and nothing
       // under the session's folder is created after a delete removed it.
       if (stopSoFar() !== null) throw stoppedBeforeStart();

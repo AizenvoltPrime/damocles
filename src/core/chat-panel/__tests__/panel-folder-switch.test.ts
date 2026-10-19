@@ -15,6 +15,7 @@ import { createHarness, folderEntry, lastFolderUpdate, makeFakeHost, type FakeHo
 import { folderKey } from '../../workspace-folders/folder-key';
 import type { FakeSession } from './panel-manager-harness';
 import { restoredWorkspaceFolderKey } from '../panel-manager';
+import { releaseSessionLease, type SessionLeaseHolder } from '../../pi-session/session-store/session-lease';
 
 const ROOT = path.resolve(os.tmpdir(), 'pfs-root');
 const A = path.join(ROOT, 'alpha');
@@ -303,8 +304,8 @@ describe('switching folder', () => {
 
     const switching = h.manager.switchPanelFolder(panelId, folderKey(B), 'user');
     await vi.waitFor(() => expect(sessionOf(panelId).dispose).toHaveBeenCalled());
-    host.send({ type: 'sendMessage', content: 'first' });
-    host.send({ type: 'sendMessage', content: 'second' });
+    host.send({ type: 'sendMessage', content: 'first', sessionId: null });
+    host.send({ type: 'sendMessage', content: 'second', sessionId: null });
     expect(h.routed.filter((r) => r.message.type === 'sendMessage')).toHaveLength(0);
 
     h.holdCreation.gate = null;
@@ -548,7 +549,7 @@ describe('switch races and failures', () => {
       claimed.push(instance.session as unknown as FakeSession);
     });
     await vi.waitFor(() => expect(h.sessions[0]!.dispose).toHaveBeenCalled());
-    host.send({ type: 'sendMessage', content: 'during the resume' });
+    host.send({ type: 'sendMessage', content: 'during the resume', sessionId: null });
     h.holdCreation.gate = null;
     release();
     await switching;
@@ -642,7 +643,7 @@ describe('switch races and failures', () => {
     await h.instance(panelId).permissionHandler.activatePlanMode();
     expect(recovered.setPermissionMode).toHaveBeenCalledWith('plan');
 
-    host.send({ type: 'sendMessage', content: 'after the failure' });
+    host.send({ type: 'sendMessage', content: 'after the failure', sessionId: null });
     const delivered = h.routed.filter((r) => r.message.type === 'sendMessage');
     expect(delivered).toHaveLength(1);
     expect(delivered[0]!.session).toBe(recovered);
@@ -751,5 +752,30 @@ describe('Compass views target the focused panel folder', () => {
 
     expect(h.manager.getActivePanelFolder()).toBeUndefined();
     expect(h.activePanelChanges.count).toBe(before + 1);
+  });
+});
+
+describe("a hand-off's resume shows the conversation only once pi opened it", () => {
+  type ResumeInto = (instance: unknown, sessionId: string, beforeOpen?: (session: unknown) => void) => Promise<boolean>;
+
+  it.each([
+    ['could not open it', { kind: 'failed', reason: 'its file was not found' }, false, []],
+    ['let go of it first', { kind: 'cancelled' }, false, []],
+    ['opened it', { kind: 'switched' }, true, ['resumeAccepted', 'sessionStarted']],
+  ] as const)('posts nothing until pi opened it, and reports whether it did, when pi %s', async (_what, outcome, resumed, shown) => {
+    h = createHarness([folderEntry(A)]);
+    const { host, panelId } = await openPanel();
+    const session = sessionOf(panelId);
+    const order: string[] = [];
+    session.openResumeTarget.mockImplementationOnce(async () => { order.push('open'); return outcome; });
+    host.posted.length = 0;
+    const resumeInto = (h.manager as unknown as { resumeInto: ResumeInto }).resumeInto.bind(h.manager);
+
+    expect(await resumeInto(h.instance(panelId), 'sess-moved', () => order.push('beforeOpen'))).toBe(resumed);
+
+    // The place entry and note go in before the start that writes them first.
+    expect(order).toEqual(['beforeOpen', 'open']);
+    expect(host.posted.filter((m) => m.type === 'resumeAccepted' || m.type === 'sessionStarted').map((m) => m.type)).toEqual(shown);
+    releaseSessionLease('sess-moved', session as unknown as SessionLeaseHolder);
   });
 });

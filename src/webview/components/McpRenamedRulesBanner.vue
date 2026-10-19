@@ -1,9 +1,10 @@
 <script setup lang="ts">
 /**
- * Lists rules in files Damocles must not rewrite (committed project settings, Claude settings, hook
- * matchers) that still name an MCP tool by its old name. Rule text is file content: render as text only.
+ * Lists rules and tool lists Damocles must not rewrite (committed project settings, Claude settings, hook
+ * matchers, agent `disallowed_tools`, workspace settings) that still name an MCP tool by its old name. Rule
+ * text is file content: render as text only.
  */
-import type { McpRenamedToolRuleNotice } from '@shared/types/mcp';
+import { renamedRuleNoticeKey, type McpRenamedToolRuleNotice } from '@shared/types/mcp';
 import { useI18n } from 'vue-i18n';
 import { TriangleAlert } from 'lucide-vue-next';
 import DockBanner from './DockBanner.vue';
@@ -16,6 +17,7 @@ defineProps<{
 
 const emit = defineEmits<{
   (e: 'openFile', path: string): void;
+  (e: 'openSetting', key: string): void;
   (e: 'dismiss'): void;
 }>();
 </script>
@@ -42,19 +44,30 @@ const emit = defineEmits<{
     >
       <section
         v-for="notice in notices"
-        :key="notice.path"
+        :key="renamedRuleNoticeKey(notice)"
         data-testid="mcp-renamed-rules-file"
         class="text-xs"
       >
         <div class="flex items-center gap-2">
           <span class="min-w-0 break-all font-mono text-(--d-text)">{{ notice.displayPath }}</span>
           <button
+            v-if="'path' in notice"
             type="button"
             class="d-tool-btn h-6 shrink-0 px-2 text-xs text-(--d-accent)"
             :aria-label="t('mcp.renamedRules.openFileAria', { file: notice.displayPath })"
             @click="emit('openFile', notice.path)"
           >
             {{ t('mcp.renamedRules.openFile') }}
+          </button>
+          <button
+            v-else
+            type="button"
+            class="d-tool-btn h-6 shrink-0 px-2 text-xs text-(--d-accent)"
+            data-testid="mcp-renamed-rules-open-setting"
+            :aria-label="t('mcp.renamedRules.openSettingAria', { setting: notice.displayPath })"
+            @click="emit('openSetting', notice.setting)"
+          >
+            {{ t('mcp.renamedRules.openSetting') }}
           </button>
         </div>
         <ul class="mt-0.5 space-y-0.5 ps-2">

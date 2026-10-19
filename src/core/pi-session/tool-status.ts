@@ -7,7 +7,7 @@ import { CUSTOM_TOOL_NAMES, moduleToolNames } from './tools';
 import { TEAM_MAIN_PI_TOOL_NAMES } from './tools/team-tools';
 import { FULL_TOOL_CATALOG } from './tools/tool-catalog';
 import { deferredToolNames, initialActiveToolNames } from './tools/deferred-tools';
-import { TOOL_TOOL_SEARCH } from '../../shared/tool-names';
+import { MCP_RESOURCE_TOOL_NAMES, TOOL_TOOL_SEARCH } from '../../shared/tool-names';
 
 /**
  * The Tools-panel snapshot + full-active-set name assembly (US-017/Tools panel). Both are near-pure:
@@ -42,6 +42,11 @@ export interface ToolStatusDeps {
   mcpToolNames: string[];
   /** The MCP tools whose exposure is `deferred`; Always-loaded ones are active from the first turn. */
   mcpDeferrableToolNames: string[];
+  /**
+   * How the MCP resource tools reach the model: `direct` when an eligible resource server is Always
+   * loaded, `deferred` otherwise, null when no visible server offers resources with exposure on.
+   */
+  mcpResourceExposure: 'direct' | 'deferred' | null;
   /** `this.disabledToolSet()`. */
   disabled: Set<string>;
 }
@@ -71,6 +76,7 @@ export function fullActiveToolNames(deps: ToolStatusDeps): string[] {
       imageEligible: deps.imageEnabled && deps.imageAvailability.available,
     }),
     ...(deps.mcpEnabled ? deps.mcpToolNames : []),
+    ...(deps.mcpEnabled && deps.mcpResourceExposure !== null ? MCP_RESOURCE_TOOL_NAMES : []),
   ];
   // pi's setActiveToolsByName pushes one definition per name occurrence (no internal de-dup), so a
   // duplicate name would make the provider reject the request ("Tool names must be unique"). De-dup
@@ -87,8 +93,14 @@ export function fullActiveToolNames(deps: ToolStatusDeps): string[] {
  */
 export function activeToolNamesWithDeferral(deps: ToolStatusDeps, activated: ReadonlySet<string>): string[] {
   const eligible = fullActiveToolNames(deps);
-  const deferred = deferredToolNames(eligible, deps.mcpEnabled ? deps.mcpDeferrableToolNames : []);
+  const deferred = deferredToolNames(eligible, mcpDeferrableNames(deps));
   return initialActiveToolNames(eligible, deferred, activated);
+}
+
+/** The MCP names ToolSearch may load: the deferred MCP tools, plus the resource tools while no resource server is Always loaded. */
+export function mcpDeferrableNames(deps: Pick<ToolStatusDeps, 'mcpEnabled' | 'mcpDeferrableToolNames' | 'mcpResourceExposure'>): string[] {
+  if (!deps.mcpEnabled) return [];
+  return deps.mcpResourceExposure === 'deferred' ? [...deps.mcpDeferrableToolNames, ...MCP_RESOURCE_TOOL_NAMES] : deps.mcpDeferrableToolNames;
 }
 
 /**

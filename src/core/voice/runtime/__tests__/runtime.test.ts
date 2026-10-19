@@ -73,6 +73,7 @@ describe("VoiceRuntimeInstaller — smoke-check error path", () => {
     const installer = new VoiceRuntimeInstaller(getDefaultRuntimePaths(tmp));
     const events: string[] = [];
     const result = await installer.installAll({
+      allowInstall: true,
       userSpecifiedPython: "/this/path/does/not/exist/python",
       onProgress: (p) => events.push(`${p.stage}:${p.message}`),
     });
@@ -86,7 +87,7 @@ describe("VoiceRuntimeInstaller — smoke-check error path", () => {
       new Error("network blocked in unit test"),
     );
     try {
-      const result = await installer.installAll({ onProgress: () => {} });
+      const result = await installer.installAll({ onProgress: () => {}, allowInstall: true });
       expect(result.ok).toBe(false);
       expect(result.errorMessage).toMatch(/network|download|smoke check/i);
     } finally {
@@ -172,6 +173,7 @@ describe("VoiceRuntimeInstaller — runtime-mode compatibility gate", () => {
       vi.spyOn(installer, "detectDevice").mockResolvedValue(CPU_NO_SMI);
       const events: { stage: string; message: string }[] = [];
       const result = await installer.installAll({
+        allowInstall: true,
         runtimeMode: "cuda",
         onProgress: (p) => events.push({ stage: p.stage, message: p.message }),
       });

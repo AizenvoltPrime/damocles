@@ -7,7 +7,7 @@ import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@shar
 import { MAX_PENDING_TERMINAL_ATTACHMENT_CHARS, MAX_PENDING_TERMINAL_ATTACHMENTS, TerminalAttachmentManager } from '../terminal-attachment-manager';
 import { createChatHandlers } from '../message-router/handlers/chat-handlers';
 import type { HandlerContext, HandlerDependencies } from '../message-router/types';
-import { splitTerminalAttachments } from '../../terminal-attachment';
+import { splitTerminalAttachments, type RecordedAttachment } from '../../terminal-attachment';
 import type { SendOutcome, SlashInvocation } from '../../chat-session';
 import { createHarness, folderEntry, makeFakeHost, type Harness } from './panel-manager-harness';
 
@@ -17,6 +17,9 @@ vi.mock('../ide-context-manager', () => ({
     dispose(): void {}
   },
 }));
+
+const textOf = (attachment: RecordedAttachment): string | undefined => (attachment.kind === 'mcpResource' ? undefined : attachment.text);
+const previewOf = (info: ChatAttachmentInfo): string | undefined => (info.kind === 'mcpResource' ? undefined : info.preview);
 
 const input = (text: string, overrides: Partial<TerminalAttachmentInput> = {}): TerminalAttachmentInput => ({
   kind: 'terminal', source: 'command', commandLine: 'npm test', exitCode: 1, terminalTitle: 'pwsh', text, omittedLines: 0, ...overrides,
@@ -45,7 +48,7 @@ describe('TerminalAttachmentManager', () => {
     expect(published).toHaveLength(4);
 
     const taken = manager.take([third!, 'unknown', first!]);
-    expect(taken.map(({ attachment }) => attachment.text)).toEqual(['one', 'three']);
+    expect(taken.map(({ attachment }) => textOf(attachment))).toEqual(['one', 'three']);
     expect(manager.displayInfo()).toEqual([]);
     expect(published.at(-1)).toEqual([]);
     expect(manager.take([first!])).toEqual([]);
@@ -57,7 +60,7 @@ describe('TerminalAttachmentManager', () => {
   it('keeps the newest attachments when more are added than a composer holds', () => {
     const manager = new TerminalAttachmentManager(() => {});
     for (let index = 0; index < MAX_PENDING_TERMINAL_ATTACHMENTS + 2; index++) manager.add(input(`out ${index}`));
-    const previews = manager.displayInfo().map((info) => info.preview);
+    const previews = manager.displayInfo().map(previewOf);
     expect(previews).toHaveLength(MAX_PENDING_TERMINAL_ATTACHMENTS);
     expect(previews[0]).toBe('out 2');
   });
@@ -91,8 +94,31 @@ describe('TerminalAttachmentManager', () => {
     const taken = manager.take(ids);
     manager.add(input('three'));
     manager.restore(taken);
-    expect(manager.displayInfo().map((info) => info.preview)).toEqual(['one', 'two', 'three']);
+    expect(manager.displayInfo().map(previewOf)).toEqual(['one', 'two', 'three']);
     expect(manager.displayInfo().slice(0, 2).map((info) => info.id)).toEqual(ids);
+  });
+
+  it('keeps every taken attachment when those added since no longer fit, dropping the newest added and counting them', () => {
+    const manager = new TerminalAttachmentManager(() => {});
+    manager.add(input('one'));
+    manager.add(input('two'));
+    const taken = manager.take(manager.displayInfo().map((info) => info.id));
+    for (let index = 0; index < MAX_PENDING_TERMINAL_ATTACHMENTS; index++) manager.add(input(`added ${index}`));
+
+    expect(manager.restore(taken)).toBe(2);
+    expect(manager.displayInfo().map(previewOf)).toEqual(['one', 'two', ...Array.from({ length: MAX_PENDING_TERMINAL_ATTACHMENTS - 2 }, (_, index) => `added ${index}`)]);
+  });
+
+  it('keeps every taken attachment past the character bound too, dropping the newest added', () => {
+    const manager = new TerminalAttachmentManager(() => {});
+    const half = MAX_PENDING_TERMINAL_ATTACHMENT_CHARS / 2;
+    manager.add(input('a'.repeat(half)));
+    const taken = manager.take(manager.displayInfo().map((info) => info.id));
+    manager.add(input('b'.repeat(half)));
+    manager.add(input('c'.repeat(half)));
+
+    expect(manager.restore(taken)).toBe(1);
+    expect(manager.displayInfo().map((info) => previewOf(info)?.charAt(0))).toEqual(['a', 'b']);
   });
 });
 
@@ -113,7 +139,7 @@ function harness(options: { ideContext?: boolean } = {}) {
   const ideContext = options.ideContext ?? true;
   const ctx = {
     host: { id: 'panel-1' },
-    session: { sendMessage, resolveSlashInvocation },
+    session: { sendMessage, resolveSlashInvocation, beginSend: () => ({ signal: new AbortController().signal, end: () => undefined }) },
     ideContextManager: {
       getDisplayInfo: () => (ideContext ? { type: 'opened_file', filePath: 'a.ts', fileName: 'a.ts' } : null),
       buildContentBlocks: (content: unknown) => (ideContext ? [{ type: 'text', text: IDE_BLOCK }, ...(typeof content === 'string' ? [{ type: 'text', text: content }] : content as unknown[])] : content),
@@ -138,7 +164,7 @@ describe('sendMessage with terminal attachments', () => {
     expect(content).toHaveLength(4);
     expect(content[3]).toEqual({ type: 'text', text: 'what failed?' });
     expect(content[2]!.text.startsWith('<ide_opened_file>')).toBe(true);
-    expect(splitTerminalAttachments(content.map((block) => block.text).join('\n'), 2).attachments.map((block) => block.text)).toEqual(['FAIL a.test.ts', 'second']);
+    expect(splitTerminalAttachments(content.map((block) => block.text).join('\n'), 2).attachments.map(textOf)).toEqual(['FAIL a.test.ts', 'second']);
     expect(broadcast.content).toBe('what failed?');
     expect(broadcast.terminalAttachments.map((info) => info.id)).toEqual(ids);
     expect(h.terminalAttachments.displayInfo()).toEqual([]);
@@ -211,7 +237,7 @@ describe('sendMessage with terminal attachments', () => {
     expect(h.resolveSlashInvocation).toHaveBeenCalledWith('/review 7');
     const [content, , , broadcast] = h.sendMessage.mock.calls[0] as unknown as [Array<{ type: string; text: string }>, unknown, unknown, { content: string; terminalAttachments: TerminalAttachmentInfo[] }];
     expect(content.map((block) => block.text).slice(1)).toEqual([IDE_BLOCK, 'Review PR 7 with care.']);
-    expect(splitTerminalAttachments(content[0]!.text, 1).attachments.map((block) => block.text)).toEqual(['FAIL a.test.ts']);
+    expect(splitTerminalAttachments(content[0]!.text, 1).attachments.map(textOf)).toEqual(['FAIL a.test.ts']);
     expect(broadcast.content).toBe('/review 7');
     expect(broadcast.terminalAttachments.map((info) => info.id)).toEqual(ids);
   });

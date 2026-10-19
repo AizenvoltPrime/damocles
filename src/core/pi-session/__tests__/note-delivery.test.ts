@@ -4,6 +4,8 @@ import type { PermissionHandler } from '../../permission-handler';
 import { getPiCodingAgent, type PiCodingAgentModule } from '../pi-loader';
 import type { SessionOptions } from '../../session-types';
 import { PiSession } from '../pi-session';
+import type { AgentSession } from '@earendil-works/pi-coding-agent';
+import { trackRunLifecycle } from '../run-lifecycle';
 import type { CustomToolDeps } from '../tools';
 import { buildCustomTools } from '../tools';
 import type { ShellCancelRegistry } from '../tools/shell-cancel-registry';
@@ -38,8 +40,9 @@ function piQueue() {
     isStreaming: true,
     steers: steering,
     followUps: followUp,
-    // The panel echo stamps the prompt index, which is read from the branch; a Stop reads the leaf.
-    sessionManager: { getBranch: () => [], getLeafId: (): string | null => null },
+    // The panel echo stamps the prompt index, which is read from the branch; a Stop reads the leaf; a queued message
+    // naming no conversation reads that nothing is stored yet, as an in-memory manager has no file.
+    sessionManager: { getBranch: () => [], getLeafId: (): string | null => null, getSessionFile: (): string | undefined => undefined },
     prompt: vi.fn(async (text: string, opts?: PromptOptions) => {
       if (session.isStreaming) (opts?.streamingBehavior === 'followUp' ? followUp : steering).push(text);
       opts?.preflightResult?.(session.isStreaming ? 'queued' : 'started');
@@ -50,7 +53,15 @@ function piQueue() {
     steer: vi.fn(async () => undefined),
     followUp: vi.fn(async () => undefined),
     clearQueue: vi.fn(() => ({ steering: steering.splice(0), followUp: followUp.splice(0) })),
+    // pi-agent-core 1.3.0 agent.js:184 and :209-212: the steering queue when it holds any, else the follow-ups.
+    agent: {
+      steer: vi.fn(),
+      peekQueuedMessages: () => (steering.length > 0 ? steering : followUp).map((text) => ({ role: 'user', content: [{ type: 'text', text }] })),
+    },
     waitForIdle: vi.fn(async () => undefined),
+    isCompacting: false,
+    // The run's lifecycle events never fire here: its run is streaming throughout.
+    subscribe: () => () => undefined,
     extensionRunner: { hasHandlers: () => false },
   };
   return session;
@@ -85,12 +96,15 @@ function harness(): Harness {
   const session = new PiSession(options);
   const internals = session as unknown as {
     runtime: unknown;
+    runLifecycle: unknown;
     subagentManager: unknown;
     buildNestedMcp: unknown;
     agentRegistry: unknown;
   };
   const piSession = piQueue();
   internals.runtime = { session: piSession };
+  // `bindSession` binds the session's run lifecycle.
+  internals.runLifecycle = trackRunLifecycle(piSession as unknown as AgentSession);
   internals.subagentManager = { steer, abortAll: vi.fn(), getRecord: () => ({ type: 'Explore', description: 'look' }) };
   // The note path must not depend on the MCP snapshot, so the spawn's other half is stubbed out.
   internals.buildNestedMcp = () => ({ tools: [], names: [] });

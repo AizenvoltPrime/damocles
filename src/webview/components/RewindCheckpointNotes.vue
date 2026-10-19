@@ -4,8 +4,9 @@ import { useI18n } from 'vue-i18n';
 import { IconWarning, IconChevronRight } from '@/components/icons';
 import { useUIStore, skippedFilesKey } from '@/stores/useUIStore';
 import type { RewindHistoryItem, SkipReason, SkippedFilesTarget } from '@shared/types/session';
+import { formatBytes } from '@/utils/format-bytes';
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 const uiStore = useUIStore();
 
 const props = defineProps<{
@@ -17,18 +18,7 @@ const props = defineProps<{
 
 const expanded = ref(false);
 
-const KIB = 1024;
-const UNITS = ['B', 'KB', 'MB', 'GB', 'TB'];
-
-function formatBytes(bytes: number): string {
-  let value = bytes;
-  let unit = 0;
-  while (value >= KIB && unit < UNITS.length - 1) {
-    value /= KIB;
-    unit++;
-  }
-  return `${unit === 0 ? value : value.toFixed(1)} ${UNITS[unit]}`;
-}
+const size = (bytes: number): string => formatBytes(bytes, locale.value);
 
 const REASON_KEYS: Record<SkipReason, string> = {
   size: 'rewind.notRestored.reason.size',
@@ -118,7 +108,7 @@ const notRewindableDetail = computed(() => {
           :class="expanded ? 'rotate-90' : ''"
         />
         <span class="font-medium">{{ t('rewind.notRestored.title') }}</span>
-        <span>· {{ t('rewind.notRestored.summary', { n: skipped.totalCount, size: formatBytes(skipped.totalBytes) }, skipped.totalCount) }}</span>
+        <span>· {{ t('rewind.notRestored.summary', { n: skipped.totalCount, size: size(skipped.totalBytes) }, skipped.totalCount) }}</span>
       </button>
       <div
         v-if="expanded"
@@ -131,7 +121,7 @@ const notRewindableDetail = computed(() => {
           class="flex items-center gap-2 px-3 py-1.5"
         >
           <span class="text-foreground/80 flex-1 min-w-0">{{ t(REASON_KEYS[row.reason]) }}</span>
-          <span class="shrink-0 tabular-nums">{{ t('rewind.notRestored.summary', { n: row.count, size: formatBytes(row.bytes) }, row.count) }}</span>
+          <span class="shrink-0 tabular-nums">{{ t('rewind.notRestored.summary', { n: row.count, size: size(row.bytes) }, row.count) }}</span>
         </div>
         <div
           v-for="pattern in skipped.patterns"
@@ -170,7 +160,7 @@ const notRewindableDetail = computed(() => {
             <span
               v-if="file.bytes !== null"
               class="shrink-0 tabular-nums"
-            >{{ formatBytes(file.bytes) }}</span>
+            >{{ size(file.bytes) }}</span>
             <span class="shrink-0 text-muted-foreground/80">{{ t(REASON_KEYS[file.reason]) }}</span>
           </div>
         </template>

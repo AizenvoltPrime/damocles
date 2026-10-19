@@ -12,6 +12,7 @@ import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useStopTeamAgent } from '@/composables/useStopTeam';
 import { useTeamStore } from '@/stores/useTeamStore';
 import { useSessionStore } from '@/stores/useSessionStore';
+import { windDownText } from '@/utils/windDownText';
 
 const { t } = useI18n();
 
@@ -42,6 +43,10 @@ const color = computed(() => getAgentColor(props.index));
 const awaitingUser = computed(() => sessionStore.teamAgentsAwaitingUser.get(teamStore.selectedTeam?.teamId ?? '')?.has(props.agent.agentId) ?? false);
 const chip = computed(() => agentStatusChip(props.agent.status, awaitingUser.value));
 const model = computed(() => modelIdentity(props.agent.model));
+const windDownLine = computed(() => {
+  const windDown = teamStore.agentWindDown[props.agent.agentId];
+  return windDown ? windDownText(windDown, t) : null;
+});
 
 const memberStop = useStopTeamAgent(() => teamStore.selectedTeam, () => props.agent);
 
@@ -112,6 +117,16 @@ function cancelAgent(): void {
         :title="agent.description"
       >
         {{ agent.description }}
+      </p>
+
+      <p
+        v-if="windDownLine"
+        class="truncate text-xs text-(--d-accent) italic"
+        :title="windDownLine"
+        role="status"
+        data-testid="team-agent-wind-down"
+      >
+        {{ windDownLine }}
       </p>
 
       <div

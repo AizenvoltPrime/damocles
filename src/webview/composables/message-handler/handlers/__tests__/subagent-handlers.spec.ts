@@ -4,7 +4,11 @@ import { setActivePinia, createPinia } from 'pinia';
 import { createSubagentHandlers } from '../subagent-handlers';
 import type { HandlerContext, StoreContext } from '../../types';
 import { useStreamingStore } from '@/stores/useStreamingStore';
-import { useSubagentStore } from '@/stores/useSubagentStore';
+import { subagentStatusLine, useSubagentStore } from '@/stores/useSubagentStore';
+import { useTeamStore } from '@/stores/useTeamStore';
+import { useBackgroundTaskStore } from '@/stores/useBackgroundTaskStore';
+import { createUIHandlers } from '../ui-handlers';
+import { i18n } from '@/i18n';
 import { defined } from '@/__tests__/helpers';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
 
@@ -167,5 +171,43 @@ describe('subagentUsageUpdate', () => {
     update({ type: 'subagentUsageUpdate', agentToolId: 'toolu_1', usage: { ...usage, costUsd: 0.75 } }, ctx);
 
     expect(ctx.stores.subagentStore.subagents['toolu_1']).toMatchObject({ usage: { costUsd: 0.75 }, dollarBilled: false });
+  });
+});
+
+describe("a reloaded subagent card whose run core still holds", () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  const SHOWN = { phase: 'settle' as const, events: ['agent_settled'], extensions: ['/agent/extensions/held.js'] };
+
+  it('runs again with its Background Tasks row and wind-down from what core replays, and drops the line on the clear', () => {
+    const stores = { streamingStore: useStreamingStore(), subagentStore: useSubagentStore(), teamStore: useTeamStore(), backgroundTaskStore: useBackgroundTaskStore() };
+    const ctx = { stores: stores as unknown as StoreContext, refs: {} } as unknown as HandlerContext;
+    // The transcript of a run that has not settled ends without an outcome, which a replay shows as stopped.
+    stores.subagentStore.restoreSubagentFromHistory({
+      id: 'toolu_1',
+      name: 'Agent',
+      input: { subagent_type: 'Explore', description: 'dig', prompt: 'p', run_in_background: true },
+      result: JSON.stringify({ status: 'async_launched', agentId: 'agent-1' }),
+      agentStatus: 'interrupted',
+      sdkAgentId: 'agent-1',
+    });
+    expect(defined(stores.subagentStore.subagents['toolu_1'], 'card').status).toBe('cancelled');
+
+    const handlers = { ...createSubagentHandlers(), ...createUIHandlers() } as Record<string, (msg: ExtensionToWebviewMessage, ctx: HandlerContext) => void>;
+    defined(handlers['taskStarted'], 'taskStarted')({ type: 'taskStarted', taskId: 'agent-1', toolUseId: 'toolu_1', description: 'dig', taskType: 'Explore', isBackground: true }, ctx);
+    // What the `backgroundTaskStarted` handler does, which needs a component's i18n.
+    stores.backgroundTaskStore.handleTaskStarted({ taskId: 'agent-1', toolUseId: 'toolu_1', description: 'dig', status: 'running' });
+    defined(handlers['statusUpdate'], 'statusUpdate')({ type: 'statusUpdate', status: 'windingDown', windDown: SHOWN, parentToolUseId: 'toolu_1' }, ctx);
+
+    const card = defined(stores.subagentStore.subagents['toolu_1'], 'card');
+    expect(card.status).toBe('running');
+    expect(card.windDown).toEqual(SHOWN);
+    expect(subagentStatusLine(card, (key, params) => i18n.global.t(key, params))).toBe(
+      "Stopping: waiting for pi's agent_settled handlers to return. pi gives them no abort signal. pi extensions with such a handler: /agent/extensions/held.js.",
+    );
+    expect(stores.backgroundTaskStore.activeTasks.map((task) => task.toolUseId)).toEqual(['toolu_1']);
+
+    defined(handlers['statusUpdate'], 'statusUpdate')({ type: 'statusUpdate', status: 'windingDown', windDown: null, parentToolUseId: 'toolu_1' }, ctx);
+    expect(defined(stores.subagentStore.subagents['toolu_1'], 'card').windDown).toBeUndefined();
   });
 });

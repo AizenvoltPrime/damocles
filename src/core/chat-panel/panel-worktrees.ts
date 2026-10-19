@@ -94,8 +94,12 @@ export interface PanelWorktreesDeps {
   readonly post: (panelId: string, message: ExtensionToWebviewMessage) => void;
   /** Re-dispatches a held webview message to the panel's current session. */
   readonly dispatch: (panelId: string, message: WebviewToExtensionMessage) => Promise<void>;
-  /** Binds the panel's new session to stored session `sessionId` and replays it, as a resume does. */
-  readonly resumeInto: (instance: HostInstance, sessionId: string) => Promise<boolean>;
+  /**
+   * Binds the panel's new session to stored session `sessionId` and replays it, as a resume does: a session holding another
+   * conversation only once pi switched to it, false when it did not; one not started before its start, which then opens it.
+   * `beforeOpen` runs on the session before its start, which writes what it was given first.
+   */
+  readonly resumeInto: (instance: HostInstance, sessionId: string, beforeOpen?: (session: HostInstance['session']) => void) => Promise<boolean>;
   readonly releaseFolder: (key: string) => Promise<void>;
   readonly sessionsClosed: () => Promise<void>;
   /** The stored sessions listed under the open project `projectKey`, with each one's latest worktree entry. */
@@ -516,7 +520,8 @@ export class PanelWorktrees implements Disposable {
     this.optIns.delete(panelId);
     this.publish(panelId);
     if (state.worktreeId !== undefined) this.markUsed(state.worktreeId);
-    if (state.held) await this.deps.dispatch(panelId, state.held);
+    // The move to the worktree gave the chat a new session, and the held first prompt starts the conversation there.
+    if (state.held) await this.deps.dispatch(panelId, { ...state.held, sessionId: null });
   }
 
   /** A worktree a chat worked in is no leftover, even once its chats are gone. */
@@ -719,8 +724,7 @@ export class PanelWorktrees implements Disposable {
       let resumed = false;
       try {
         await this.bindTo(panelId, projectTarget, live, async (target) => {
-          resumed = await this.deps.resumeInto(target, sessionId);
-          if (resumed) target.session.noteWorkingFolder(live.workingFolder);
+          resumed = await this.deps.resumeInto(target, sessionId, (session) => session.noteWorkingFolder(live.workingFolder));
         });
       } catch (err) {
         log('[PanelWorktrees] moving %s to its worktree failed: %O', panelId, err);
@@ -761,10 +765,10 @@ export class PanelWorktrees implements Disposable {
       let moved: HostInstance | undefined;
       try {
         moved = await this.deps.moveTo(panelId, projectTarget.key, async (target) => {
-          resumed = await this.deps.resumeInto(target, sessionId);
-          if (!resumed) return;
-          target.session.worktree.appendPlace('project', reusable);
-          target.session.noteWorkingFolder(projectTarget.fsPath);
+          resumed = await this.deps.resumeInto(target, sessionId, (session) => {
+            session.worktree.appendPlace('project', reusable);
+            session.noteWorkingFolder(projectTarget.fsPath);
+          });
         });
       } catch (err) {
         log('[PanelWorktrees] moving %s to its project folder failed: %O', panelId, err);

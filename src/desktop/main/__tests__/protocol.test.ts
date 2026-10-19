@@ -18,6 +18,8 @@ beforeAll(() => {
   fs.writeFileSync(path.join(root, 'dist', 'webview', 'assets', 'monaco-editor.worker-Ab12.js'), 'self.onmessage = () => {};');
   fs.writeFileSync(path.join(root, 'dist', 'webview', 'assets', 'monaco-codicon-Cd34.ttf'), Buffer.from([0, 1, 0, 0]));
   fs.writeFileSync(path.join(root, 'dist', 'webview', 'assets', 'monaco-editor-Ef56.css'), '.monaco-editor{}');
+  fs.mkdirSync(path.join(root, 'dist', 'desktop-shell', 'file-icons'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'dist', 'desktop-shell', 'file-icons', 'folder.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
   fs.writeFileSync(path.join(root, 'dist', 'desktop', 'main.js'), 'secret');
   fs.mkdirSync(path.join(root, 'outside'));
   fs.writeFileSync(path.join(root, 'outside', 'secret.js'), 'secret');
@@ -149,6 +151,13 @@ describe('handleAppProtocol', () => {
     expect(script.headers.get('content-security-policy')).toBe("default-src 'none'; script-src app://damocles");
     const style = await fetchApp('app://damocles/webview/assets/monaco-editor-Ef56.css');
     expect(style.headers.get('content-security-policy')).toBeNull();
+  });
+
+  it('serves an SVG under a policy that runs no script if it is ever opened as a document', async () => {
+    const icon = await fetchApp('app://damocles/desktop-shell/file-icons/folder.svg');
+    expect(icon.status).toBe(200);
+    expect(icon.headers.get('content-type')).toBe('image/svg+xml');
+    expect(icon.headers.get('content-security-policy')).toBe("default-src 'none'; style-src 'unsafe-inline'");
   });
 
   it.each([

@@ -191,7 +191,7 @@ export class PanelManager {
         if (instance) this.postMessage(instance.host, message);
       },
       dispatch: (panelId, message) => this.handleWebviewMessage(message, panelId),
-      resumeInto: (instance, sessionId) => this.resumeInto(instance, sessionId),
+      resumeInto: (instance, sessionId, beforeOpen) => this.resumeInto(instance, sessionId, beforeOpen),
       releaseFolder: (key) => this.releaseFolder(key),
       sessionsClosed: async () => {
         await Promise.all([...this.closingSessions]);
@@ -705,12 +705,17 @@ export class PanelManager {
     return this.worktrees.whenDiscarded(panelId);
   }
 
-  // A hand-off's afterSwitch: the new session continues the stored conversation, as a resume does.
-  private async resumeInto(instance: HostInstance, sessionId: string): Promise<boolean> {
+  // A hand-off's afterSwitch: the new session continues the stored conversation, as a resume does. `beforeOpen` gives the
+  // session what its start must write first. False when it did not open, which the caller tells the user; a session that
+  // has not started opens it in the start the folder switch runs after this.
+  private async resumeInto(instance: HostInstance, sessionId: string, beforeOpen?: (session: ChatSession) => void): Promise<boolean> {
     const panelId = [...this.panels].find(([, candidate]) => candidate === instance)?.[0];
     if (panelId === undefined) return false;
     const refusal = claimStoredSession(this.platform.notifications, this.panels, { panelId, session: instance.session }, sessionId);
     if (refusal) return false;
+    beforeOpen?.(instance.session);
+    const outcome = await instance.session.openResumeTarget(sessionId);
+    if (outcome.kind !== "switched" && outcome.kind !== "deferred") return false;
     this.postMessage(instance.host, { type: "resumeAccepted", sessionId, continued: true });
     const rewindableIds = await this.loadHistory(instance.folder.fsPath, sessionId, instance.host, instance.session);
     instance.session.seedCheckpoints(rewindableIds ?? []);

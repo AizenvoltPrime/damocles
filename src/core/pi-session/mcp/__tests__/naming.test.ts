@@ -7,7 +7,6 @@ import {
   legacyServerPrefixMap,
   MCP_TOOL_PREFIX,
   parseLegacyMcpToolName,
-  resourceNameToToolName,
 } from '../naming';
 
 describe('createMcpToolName (pi port)', () => {
@@ -61,14 +60,6 @@ describe('assignServerToolNames', () => {
 
   it('names a tool listed twice once', () => {
     expect([...assignServerToolNames('docs', ['x', 'x'], new Set()).entries()]).toEqual([['x', 'mcp__docs__x']]);
-  });
-});
-
-describe('resourceNameToToolName', () => {
-  it('slugs resource names for get_* tools', () => {
-    expect(resourceNameToToolName('My Resource')).toBe('my_resource');
-    expect(resourceNameToToolName('123abc')).toBe('resource_123abc');
-    expect(resourceNameToToolName('!!!')).toBe('resource');
   });
 });
 

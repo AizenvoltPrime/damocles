@@ -42,6 +42,7 @@ import { createMcpToolName, legacyServerPrefixMap, parseLegacyMcpToolName } from
 import { resolveConfigPath } from "../../../pi-session/mcp/utils";
 import { stripControlChars } from "../../../pi-session/untrusted-text";
 import { getAssetSourcePrecedence } from "../../../asset-sources";
+import { serializeSettingWrite } from "../../../settings-write-chain";
 import { log } from "../../../logger";
 
 /** workspaceState key for the disabled user-scope server names, window-wide. */
@@ -660,31 +661,33 @@ export class McpManager {
       addPrefixes(legacyServerPrefixMap(names.folder, reserved));
     }
 
-    const disabledInspection = this.platform.settings.inspect<unknown>("damocles.tools.disabled");
-    const exposureInspection = this.platform.settings.inspect<unknown>(MCP_TOOL_EXPOSURE_SETTING);
     for (const scope of MIGRATABLE_SCOPES) {
-      const list = scope === "user" ? disabledInspection.userValue : disabledInspection.localValue;
-      if (!Array.isArray(list)) continue;
-      const exposureValue = scope === "user" ? exposureInspection.userValue : exposureInspection.localValue;
-      const exposure: McpToolExposureMap = isRecord(exposureValue) ? structuredClone(exposureValue as McpToolExposureMap) : {};
-      const kept: unknown[] = [];
-      let moved = 0;
-      for (const item of list) {
-        const parsed = typeof item === "string" ? parseLegacyMcpToolName(item) : null;
-        const servers = parsed ? serversByPrefix.get(parsed.prefix) : undefined;
-        const [server] = servers ?? [];
-        if (!parsed || !servers || servers.size !== 1 || createMcpToolName(server!, parsed.tool) === item) {
-          kept.push(item);
-          continue;
+      await serializeSettingWrite(async () => {
+        const disabledInspection = this.platform.settings.inspect<unknown>("damocles.tools.disabled");
+        const list = scope === "user" ? disabledInspection.userValue : disabledInspection.localValue;
+        if (!Array.isArray(list)) return;
+        const exposureInspection = this.platform.settings.inspect<unknown>(MCP_TOOL_EXPOSURE_SETTING);
+        const exposureValue = scope === "user" ? exposureInspection.userValue : exposureInspection.localValue;
+        const exposure: McpToolExposureMap = isRecord(exposureValue) ? structuredClone(exposureValue as McpToolExposureMap) : {};
+        const kept: unknown[] = [];
+        let moved = 0;
+        for (const item of list) {
+          const parsed = typeof item === "string" ? parseLegacyMcpToolName(item) : null;
+          const servers = parsed ? serversByPrefix.get(parsed.prefix) : undefined;
+          const [server] = servers ?? [];
+          if (!parsed || !servers || servers.size !== 1 || createMcpToolName(server!, parsed.tool) === item) {
+            kept.push(item);
+            continue;
+          }
+          exposure[server!] = { ...(isRecord(exposure[server!]) ? exposure[server!] : {}), [parsed.tool]: "off" };
+          moved++;
         }
-        exposure[server!] = { ...(isRecord(exposure[server!]) ? exposure[server!] : {}), [parsed.tool]: "off" };
-        moved++;
-      }
-      if (moved === 0) continue;
-      // The exposure lands before the disabled entries leave, so an interrupted migration never re-enables a tool.
-      await this.platform.settings.update(MCP_TOOL_EXPOSURE_SETTING, exposure, scope);
-      await this.platform.settings.update("damocles.tools.disabled", kept, scope);
-      log("[McpManager] moved %d per-tool MCP disables into %s at %s scope", moved, MCP_TOOL_EXPOSURE_SETTING, scope);
+        if (moved === 0) return;
+        // The exposure lands before the disabled entries leave, so an interrupted migration never re-enables a tool.
+        await this.platform.settings.update(MCP_TOOL_EXPOSURE_SETTING, exposure, scope);
+        await this.platform.settings.update("damocles.tools.disabled", kept, scope);
+        log("[McpManager] moved %d per-tool MCP disables into %s at %s scope", moved, MCP_TOOL_EXPOSURE_SETTING, scope);
+      });
     }
   }
 
@@ -835,6 +838,10 @@ export class McpManager {
       if (sdkServer?.stderrTail && !untrusted) info.stderrTail = sdkServer.stderrTail;
       if (sdkServer?.description && info.description === undefined) info.description = sdkServer.description;
       if (sdkServer?.tools) info.tools = sdkServer.tools as McpToolInfo[];
+      if (sdkServer?.hasResources !== undefined) info.hasResources = sdkServer.hasResources;
+      if (sdkServer?.resourceExposure) info.resourceExposure = sdkServer.resourceExposure;
+      if (sdkServer?.resourceExposureSource) info.resourceExposureSource = sdkServer.resourceExposureSource;
+      if (sdkServer?.configResourceExposure) info.configResourceExposure = sdkServer.configResourceExposure;
       if (entry.enabled && !untrusted && sdkServer?.supportsOAuth) info.supportsOAuth = true;
       return info;
     });

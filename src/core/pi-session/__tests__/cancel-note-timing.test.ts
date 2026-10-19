@@ -135,6 +135,6 @@ describe('a cancel note against pi', () => {
     const users = session.sessionManager.getBranch().flatMap((e) =>
       e.type === 'message' && e.message.role === 'user' ? [{ id: e.id, text: describeMessage(e.message) }] : []);
     expect(users.map((u) => u.text)).toEqual([`user: ${PROMPT}`, `user: ${NOTE}`]);
-    expect(watch.entry()).toEqual({ id: users[0]!.id, text: PROMPT });
+    expect(watch.entry()).toEqual({ id: users[0]!.id, text: PROMPT, images: 0 });
   });
 });

@@ -469,6 +469,30 @@ describe('TeamPersistence team state round trip', () => {
     expect(state?.agents.map(a => [a.name, a.description])).toEqual([['old', null], ['dev', 'Build the parser']]);
   });
 
+  it('reads each attempt task from its spawn, a specialist one from a log written before tasks were recorded too, on the card and for a resume', async () => {
+    const persistence = new TeamPersistence(join(DAMOCLES_HOME_DIR, 'team-task'), SESSION_ID);
+    persistence.initTeamFile(TEAM_ID);
+    persistence.appendTeamEntry({
+      type: 'team-created', teamId: TEAM_ID, title: 'Slice 3', toolUseId: 'tu-1', brief: 'b',
+      agents: [{ name: 'lead', role: 'lead' }, { name: 'old', role: 'specialist' }, { name: 'dev', role: 'specialist' }, { name: 'oldLead', role: 'lead' }],
+      timestamp: '2026-08-26T00:00:00.000Z',
+    });
+    const spawn = (agentId: string, name: string, role: string, fields: Record<string, unknown>, second: number) => persistence.appendTeamEntry({
+      type: 'agent-spawned', teamId: TEAM_ID, agentId, name, role, model: 'opus', attempt: 0, timestamp: `2026-08-26T00:00:0${second}.000Z`, ...fields,
+    });
+    spawn('lead-1', 'lead', 'lead', { specialization: 'Lead: Slice 3', task: 'Begin your mission.' }, 1);
+    spawn('old-1', 'old', 'specialist', { specialization: 'build it the old way' }, 2);
+    spawn('dev-1', 'dev', 'specialist', { specialization: 'build it', task: 'build it' }, 3);
+    spawn('old-lead-1', 'oldLead', 'lead', { specialization: 'Lead: Slice 2' }, 4);
+
+    const state = await persistence.loadTeamState(TEAM_ID);
+    const log = await persistence.readEventLog(TEAM_ID);
+
+    const expected = [['lead', 'Begin your mission.'], ['old', 'build it the old way'], ['dev', 'build it'], ['oldLead', null]];
+    expect(state?.agents.map(a => [a.name, a.task])).toEqual(expected);
+    expect(log.spawns.map(s => [s.name, s.task])).toEqual(expected);
+  });
+
   it('sums the usage of both attempts of a re-dispatched agent, taking its work fields from the last', async () => {
     // Every figure here is the one the observed run recorded for the specialist it cancelled and re-ran.
     const persistence = new TeamPersistence(join(DAMOCLES_HOME_DIR, 'team-redispatch'), SESSION_ID);

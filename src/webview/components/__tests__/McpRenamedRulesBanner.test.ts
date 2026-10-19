@@ -6,7 +6,7 @@ import { setActivePinia, createPinia } from 'pinia';
 import McpRenamedRulesBanner from '../McpRenamedRulesBanner.vue';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { i18n, applyLocale } from '@/i18n';
-import type { McpRenamedToolRuleNotice } from '@shared/types/mcp';
+import { renamedRuleNoticeKey, type McpRenamedToolRuleNotice } from '@shared/types/mcp';
 
 const mounted: { unmount: () => void }[] = [];
 function mountBanner(notices: McpRenamedToolRuleNotice[]) {
@@ -21,14 +21,20 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-const projectNotice: McpRenamedToolRuleNotice = {
+const projectNotice = {
   path: 'C:\\Users\\someone\\repo\\.damocles\\settings.json',
   displayPath: '~/repo/.damocles/settings.json',
   rules: [
     { old: 'mcp__context7__resolve-library-id', new: 'mcp__context7__resolve_library_id' },
     { old: 'mcp__docs__get-page(<b>x</b>)', new: 'mcp__docs__get_page(<b>x</b>)' },
   ],
-};
+} satisfies McpRenamedToolRuleNotice;
+
+const workspaceNotice = {
+  setting: 'damocles.tools.disabled',
+  displayPath: 'damocles.tools.disabled in workspace settings',
+  rules: [{ old: 'mcp__secret__get_passwords', new: 'mcp__secret__read_mcp_resource(secret://passwords)' }],
+} satisfies McpRenamedToolRuleNotice;
 
 describe('McpRenamedRulesBanner', () => {
   it('announces itself and lists each file by its display path with every rule as old → new', async () => {
@@ -67,6 +73,19 @@ describe('McpRenamedRulesBanner', () => {
     expect(document.body.querySelector('[data-testid="mcp-renamed-rules-banner"] [data-testid="banner-dismiss"]')?.getAttribute('aria-label')).toBe('Dismiss');
   });
 
+  it('opens the host settings at a setting kept in no file, from a button named for it', async () => {
+    const wrapper = mountBanner([projectNotice, workspaceNotice]);
+    await nextTick();
+
+    const sections = document.body.querySelectorAll('[data-testid="mcp-renamed-rules-file"]');
+    expect(sections[1]!.textContent).toContain('damocles.tools.disabled in workspace settings');
+    expect(sections[1]!.querySelector('[aria-label="Open ~/repo/.damocles/settings.json"]')).toBeNull();
+    document.body.querySelector<HTMLButtonElement>('[aria-label="Open settings at damocles.tools.disabled in workspace settings"]')!.click();
+
+    expect(wrapper.emitted('openSetting')).toEqual([['damocles.tools.disabled']]);
+    expect(wrapper.emitted('openFile')).toBeUndefined();
+  });
+
   it('is translated into Greek', async () => {
     applyLocale('el');
     mountBanner([projectNotice]);
@@ -85,8 +104,26 @@ describe('settings store: renamed-rule notices', () => {
     store.addMcpRenamedToolRules([{ ...projectNotice, rules: [projectNotice.rules[0]!] }]);
     store.addMcpRenamedToolRules([projectNotice, { path: '/h/.claude/settings.json', displayPath: '~/.claude/settings.json', rules: [{ old: 'a', new: 'b' }] }]);
 
-    expect(store.mcpRenamedToolRules.map((n) => n.path)).toEqual([projectNotice.path, '/h/.claude/settings.json']);
+    expect(store.mcpRenamedToolRules.map(renamedRuleNoticeKey)).toEqual([projectNotice.path, '/h/.claude/settings.json']);
     expect(store.mcpRenamedToolRules[0]!.rules).toEqual(projectNotice.rules);
+  });
+
+  it('replaces a listed rule\u2019s replacement with a later one, in place', () => {
+    const store = useSettingsStore();
+    const [first, second] = projectNotice.rules;
+    store.addMcpRenamedToolRules([projectNotice]);
+    store.addMcpRenamedToolRules([{ ...projectNotice, rules: [{ old: first!.old, new: 'mcp__docs__read_mcp_resource(docs://changed)' }] }]);
+
+    expect(store.mcpRenamedToolRules[0]!.rules).toEqual([{ old: first!.old, new: 'mcp__docs__read_mcp_resource(docs://changed)' }, second]);
+  });
+
+  it('merges a setting notice by its setting, apart from a file that holds the same rule', () => {
+    const store = useSettingsStore();
+    store.addMcpRenamedToolRules([workspaceNotice]);
+    store.addMcpRenamedToolRules([workspaceNotice, { path: '/repo/.damocles/settings.json', displayPath: '.damocles/settings.json', rules: workspaceNotice.rules }]);
+
+    expect(store.mcpRenamedToolRules.map(renamedRuleNoticeKey)).toEqual(['setting:damocles.tools.disabled', '/repo/.damocles/settings.json']);
+    expect(store.mcpRenamedToolRules[0]!.rules).toEqual(workspaceNotice.rules);
   });
 
   it('clears every notice on dismiss and on reset', () => {

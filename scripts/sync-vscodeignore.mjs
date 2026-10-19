@@ -83,7 +83,7 @@ function computeClosure() {
   const visited = new Set();
   const optional = optionalShipRoots();
   const requirers = new Map(); // top-level package -> the shipped packages that declare it
-  const esbuildDependents = new Set();
+  const buildTools = new Set(); // build-tool packages reached at any depth, with their requirer
 
   function walk(dir) {
     if (visited.has(dir)) return;
@@ -93,11 +93,11 @@ function computeClosure() {
     // Include peerDependencies: when actually installed (resolveDep gates on existence), a peer the
     // package require()s at runtime must ship too. Uninstalled peers (host-provided) resolve to null.
     const deps = { ...(json.dependencies || {}), ...(json.optionalDependencies || {}), ...(json.peerDependencies || {}) };
-    if (Object.hasOwn(deps, 'esbuild')) esbuildDependents.add(json.name);
     for (const dep of Object.keys(deps)) {
       if (isUnreachableOptionalPeer(json, dep)) continue;
       const resolved = resolveDep(dir, dep);
       if (!resolved) continue; // optional/peer dep not installed (other platform / host-provided) — nothing to ship
+      if (isBuildToolPackage(dep)) buildTools.add(`${dep} (required by ${json.name}@${deps[dep]})`);
       if (resolved.hoisted) {
         topLevel.add(dep);
         if (!requirers.has(dep)) requirers.set(dep, new Set());
@@ -121,10 +121,28 @@ function computeClosure() {
     topLevel.add(root);
     walk(dir);
   }
+  assertNoBuildToolPackages(buildTools);
   assertNoDevOnlyPackages(topLevel, requirers);
   assertNoDesktopOnlyPackages(topLevel, requirers);
-  assertEsbuildDependentsReviewed(esbuildDependents);
   return [...topLevel].sort();
+}
+
+/** esbuild and its per-platform binaries: build tooling no shipped code path loads. */
+export function isBuildToolPackage(name) {
+  return name === 'esbuild' || name.startsWith('@esbuild/');
+}
+
+/**
+ * Fail when the closure reaches esbuild at any depth. A nested copy under a shipped package is not
+ * top-level, so assertNoDevOnlyPackages never sees it, and its native binaries would ship in the VSIX unused.
+ */
+function assertNoBuildToolPackages(found) {
+  if (found.size) {
+    throw new Error(
+      `Build-tool package(s) in the VSIX closure: ${[...found].sort().join('; ')}. ` +
+      `Check whether the requiring package can reach esbuild at runtime before shipping it.`,
+    );
+  }
 }
 
 /**
@@ -143,19 +161,6 @@ function isUnreachableOptionalPeer(json, dep) {
   if (!UNREACHABLE_OPTIONAL_PEERS.get(json.name)?.has(dep)) return false;
   const declaredOnlyAsPeer = !Object.hasOwn(json.dependencies || {}, dep) && !Object.hasOwn(json.optionalDependencies || {}, dep);
   return declaredOnlyAsPeer && json.peerDependenciesMeta?.[dep]?.optional === true;
-}
-
-/** Fail loudly when a package outside the reviewed set brings esbuild into the ship closure. */
-function assertEsbuildDependentsReviewed(dependents) {
-  const unreviewed = [...dependents].filter((name) => !ESBUILD_DEPENDENTS_REVIEWED.has(name)).sort();
-  if (unreviewed.length) {
-    throw new Error(
-      `Shipped package(s) newly depending on esbuild: ${unreviewed.join(', ')}. ` +
-      `EXCLUDED_NESTED_DEPS keeps esbuild out of the VSIX on the grounds that only chord's unreachable ` +
-      `./bundler export used it. Re-check whether the new dependent can reach esbuild at runtime, then ` +
-      `either add it to ESBUILD_DEPENDENTS_REVIEWED or stop excluding esbuild.`,
-    );
-  }
 }
 
 /**
@@ -286,7 +291,7 @@ const NARROW_ALLOWLIST = {};
  *
  * A handful of packages — the pi agent harness, the provider SDKs it bundles, the MCP SDK — ship their
  * full publish tree: compiled `dist`/`esm` JS *plus* the TypeScript source, every `.map`, and (for the
- * pi harness) `docs/` + `examples/` + a 148 MB nested `node_modules`. Only the compiled JS, JSON, and a
+ * pi harness) `docs/` + `examples/` + `schemas/` + a 9.3 MB nested `node_modules`. Only the compiled JS, JSON, and a
  * few binary/asset files are ever `require()`d at runtime; the rest is ~67 MB / ~20k files of dead weight.
  *
  * vsce's filter is negate-wins and order-independent: a broad `!pkg/**` re-include forces the WHOLE
@@ -317,14 +322,9 @@ const RUNTIME_NARROW_PKGS = new Set(
         '@earendil-works/pi-agent-core',
         '@earendil-works/pi-telemetry',
         '@earendil-works/pi-tui',
-        '@earendil-works/chord',
         '@earendil-works/pi-mcp',
         '@earendil-works/pi-codemode',
         'quickjs-wasi',
-        // Not in the current closure. pi-coding-agent pulled pi-server (and pi-protocol under it) in
-        // 0.85.0 and declares neither at 1.1.0, so a later pi release can pull them back.
-        '@earendil-works/pi-protocol',
-        '@earendil-works/pi-server',
         'openai',
         '@anthropic-ai/sdk',
         '@modelcontextprotocol/sdk',
@@ -377,37 +377,15 @@ function isLicenseFile(name, parentDirName) {
  * source, but a few packages also ship docs/examples whose *assets* (PNG screenshots, example
  * package.json/wasm) share an extension with real runtime files and would otherwise be negated back in.
  * The pi harness's `docs/` (incl. a 1.5 MB `docs/images/exy.png`) and `examples/` (a 380 KB
- * `doom-overlay/doom/build/doom.wasm`, sample manifests) are pure documentation — never required at
+ * `doom-overlay/doom/build/doom.wasm`, sample manifests) are pure documentation, and its `schemas/`
+ * holds editor JSON Schemas its theme files cite only by `https://pi.dev` URL; none is read at
  * runtime. For these packages we scope the keep-globs to each runtime top-level dir instead of the whole
  * package, so the dead dirs are simply never negated. Only listed here when the dead dir actually holds
  * keep-extension files (so we don't pay extra patterns for packages whose docs are markdown-only).
  */
 const NARROW_DROP_DIRS = {
-  '@earendil-works/pi-coding-agent': new Set(['docs', 'examples']),
+  '@earendil-works/pi-coding-agent': new Set(['docs', 'examples', 'schemas']),
 };
-
-/**
- * Nested dependency directories a narrowed package must never re-include.
- *
- * esbuild enters the closure only through `@earendil-works/chord`, which declares it for its
- * `./bundler` export. `dist/node/bundle.js` holds the sole `import { build } from "esbuild"` in any
- * shipped package, and it is reachable only from `./bundler` and `dist/node/package.js`. pi imports
- * chord's `.`, `./context` and `./delta` entrypoints only, none of which reach it, and pi loads
- * extensions through jiti rather than chord's bundler, so no shipped code path can call esbuild.
- * It cost 40 MB across 42 files, 40 MB of that Android/OpenHarmony `.wasm` builds that cannot run on
- * any target in scripts/release-targets.mjs, with no host binary shipping at all.
- *
- * Targeted at esbuild rather than at `.wasm`, because `photon_rs_bg.wasm` and `web-tree-sitter` are
- * real runtime wasm that must keep shipping.
- */
-const EXCLUDED_NESTED_DEPS = new Set(['@esbuild', 'esbuild']);
-
-/**
- * Packages allowed to declare esbuild while EXCLUDED_NESTED_DEPS keeps it out of the VSIX. A dependent
- * outside this set means something new pulled esbuild in, so the reachability argument above has to be
- * re-checked before the exclusion can stand.
- */
-const ESBUILD_DEPENDENTS_REVIEWED = new Set(['@earendil-works/chord']);
 
 /** Extensionless files that are safe to drop from a narrowed package (ownership/build/CLI-shim). */
 const DROP_BASENAMES = new Set([
@@ -417,22 +395,16 @@ const DROP_BASENAMES = new Set([
   // Patchright: Linux `xdg-open` shell shim (patchright-core/lib/xdg-open) — spawned only to open a URL
   // in the OS default app (openExternal / trace report), never on the browser-launch path. Dead weight.
   'xdg-open',
-  // `node_modules/.bin/esbuild` shim. The esbuild package itself is dropped via EXCLUDED_NESTED_DEPS,
-  // but `.bin` is not a dependency directory and is still walked.
-  'esbuild',
 ]);
 
-/** Recursively list `{ name, parent }` (basename and parent dir basename) under a directory, skipping excluded nested deps (and traversal errors). */
-function listFiles(dir, acc = [], inNodeModules = false) {
+/** Recursively list `{ name, parent }` (basename and parent dir basename) under a directory, skipping traversal errors. */
+function listFiles(dir, acc = []) {
   let entries;
   try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return acc; }
   for (const e of entries) {
     const full = join(dir, e.name);
-    if (e.isDirectory()) {
-      // Excluded deps never ship, so their file types need no review and must not force a DROP_EXTS entry.
-      if (inNodeModules && EXCLUDED_NESTED_DEPS.has(e.name)) continue;
-      listFiles(full, acc, e.name === 'node_modules');
-    } else acc.push({ name: e.name, parent: basename(dir) });
+    if (e.isDirectory()) listFiles(full, acc);
+    else acc.push({ name: e.name, parent: basename(dir) });
   }
   return acc;
 }
@@ -464,24 +436,16 @@ function assertReviewed(pkgName, dir) {
   }
 }
 
-/**
- * The re-include base for one top-level dir of a narrowed package. A nested `node_modules` is emitted as
- * an extglob so the excluded deps are never negated: vsce keeps a file when no ignore matches OR any
- * negate matches (out/package.js), so routing around them here is the only way to drop them.
- */
+/** The re-include base for one top-level dir of a narrowed package ('' is the package root). */
 function prefixBase(pkgName, prefix) {
-  if (prefix !== 'node_modules') return prefix ? `${pkgName}/${prefix}` : pkgName;
-  return `${pkgName}/node_modules/!(${[...EXCLUDED_NESTED_DEPS].sort().join('|')})`;
+  return prefix ? `${pkgName}/${prefix}` : pkgName;
 }
 
 /** The runtime keep-extension globs for a narrowed package — only for extensions actually present. */
 function runtimeKeepPatterns(pkgName, dir) {
   assertReviewed(pkgName, dir);
   const dropDirs = NARROW_DROP_DIRS[pkgName] || new Set();
-  // A nested excluded dep forces the same per-top-level-dir scoping the dead doc/example dirs use, so the
-  // package's globs can route around `node_modules` instead of spanning it with a single `**`.
-  const nestsExcluded = [...EXCLUDED_NESTED_DEPS].some((d) => existsSync(join(dir, 'node_modules', d)));
-  const perDir = dropDirs.size > 0 || nestsExcluded;
+  const perDir = dropDirs.size > 0;
 
   // Collect the keep-extensions actually present, per top-level dir (so a package with dead doc/example
   // dirs can scope its globs to just the runtime dirs). `roots` keys: '' = package root files, else the
@@ -512,15 +476,6 @@ function runtimeKeepPatterns(pkgName, dir) {
     for (const top of readdirSync(dir, { withFileTypes: true })) {
       if (top.isDirectory()) {
         if (dropDirs.has(top.name)) continue;
-        if (top.name === 'node_modules') {
-          // Scan the nested deps one by one so an extension present only inside an excluded dep never
-          // produces a glob, which would otherwise re-include nothing and merely cost a pattern.
-          for (const dep of readdirSync(join(dir, 'node_modules'), { withFileTypes: true })) {
-            if (!dep.isDirectory() || EXCLUDED_NESTED_DEPS.has(dep.name)) continue;
-            scan(join(dir, 'node_modules', dep.name), 'node_modules');
-          }
-          continue;
-        }
         scan(join(dir, top.name), top.name);
       } else {
         if (isLicenseFile(top.name, basename(dir))) { addLicense('', top.name); continue; }

@@ -38,13 +38,16 @@ export type McpToolExposureScope = "user" | "project" | "local";
 /** Where a tool's effective exposure comes from: the highest settings scope holding its entry, else its config. */
 export type McpToolExposureSource = "config" | McpToolExposureScope;
 
+/** The per-server resource setting, `{ [serverName]: McpToolExposureSetting }`. */
+export const MCP_RESOURCE_EXPOSURE_SETTING = "damocles.mcp.resourceExposure";
+
 /** Fields shared by every transport, controlling lifecycle and resource exposure (US-014.2). */
 interface McpServerCommonConfig {
   /** eager (default) connects at MCP-client init; lazy connects on first use; keep-alive auto-reconnects. */
   lifecycle?: "eager" | "lazy" | "keep-alive";
   /** Idle-shutdown timeout in minutes (non-keep-alive only); overrides the global default. */
   idleTimeout?: number;
-  /** When false, the server's resources are not exposed as get_* tools. */
+  /** False sets the default resource exposure to Off: the resource tools do not reach the server unless `damocles.mcp.resourceExposure` turns it on. */
   exposeResources?: boolean;
   /** What the server offers, in a sentence; its ToolSearch menu line. */
   description?: string;
@@ -241,16 +244,30 @@ export interface McpServerErrorInfo {
   params?: Record<string, string>;
 }
 
-/**
- * Rules in one file Damocles must not rewrite (a repository's or another tool's settings, or a hook
- * matcher) that still name an MCP tool by its old name. Shown once per file and rule.
- */
-export interface McpRenamedToolRuleNotice {
-  /** Absolute, for opening in the editor. */
-  path: string;
-  /** Home collapsed to `~`, for rendering. */
+/** Where a renamed-tool notice's names are: a file it opens in the editor, or a setting the host's settings editor shows. */
+export type McpRenamedToolRuleLocation = {
+  /** The file with home collapsed to `~`, or the setting and its scope, for rendering. */
   displayPath: string;
-  rules: { old: string; new: string }[];
+} & (
+  | { /** Absolute, for opening in the editor. */ path: string }
+  | {
+      /** A `damocles.` setting key, for the host's settings editor. */
+      setting: string;
+      /** Set for the user scope's value; absent for the workspace's. */
+      scope?: "user";
+    }
+);
+
+/** Names Damocles must not rewrite, at one location. */
+export type McpRenamedToolRuleNotice = McpRenamedToolRuleLocation & { rules: { old: string; new: string }[] };
+
+/** Starts every notice key that is not a file path. */
+const SETTING_NOTICE_KEY_PREFIX = "setting:";
+
+/** The one location a notice stands for, under which it is merged on screen and its shown entries are remembered. */
+export function renamedRuleNoticeKey(notice: McpRenamedToolRuleLocation): string {
+  if ("path" in notice) return notice.path;
+  return `${SETTING_NOTICE_KEY_PREFIX}${notice.scope === "user" ? "user:" : ""}${notice.setting}`;
 }
 
 /** Characters kept at the end of a failed stdio server's stderr, after control characters are stripped. */
@@ -273,6 +290,13 @@ export interface McpServerStatusInfo {
     version: string;
   };
   tools?: McpToolInfo[];
+  /** Whether the server offers resources: its live capability, else the cached flag; absent while unknown. */
+  hasResources?: boolean;
+  /** Effective resource exposure in the panel's folder. */
+  resourceExposure?: McpToolExposureSetting;
+  resourceExposureSource?: McpToolExposureSource;
+  /** What the server's config alone gives its resources, under every settings scope. */
+  configResourceExposure?: McpToolExposureSetting;
   /**
    * Where this server's definition came from: `workspace` for the project `.mcp.json`, `damocles` for
    * the user-global `~/.damocles/mcp.json`, `damocles-local` for the personal
@@ -303,4 +327,27 @@ export interface McpServerStatusInfo {
   untrusted?: boolean;
   /** True when this server uses OAuth (definition has a URL and auth is not disabled). */
   supportsOAuth?: boolean;
+}
+
+/** A resource the MCP panel's picker lists. Text fields are server text flattened to one line; `uri` is exactly as listed. */
+export interface McpResourceRow {
+  uri: string;
+  name: string;
+  title?: string;
+  description?: string;
+  mimeType?: string;
+  /** Bytes, as the server reports them or as the directory read returned them. */
+  size?: number;
+  /** A directory: its MIME type, a URI ending in `/`, or a child with contents below it. Opened, never attached. */
+  directory?: true;
+  /** The deny rule that covers a read of this resource, as written in its settings file. */
+  denied?: { rule: string };
+}
+
+export interface McpResourceTemplateRow {
+  uriTemplate: string;
+  name: string;
+  title?: string;
+  description?: string;
+  mimeType?: string;
 }

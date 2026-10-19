@@ -32,6 +32,7 @@ const H = vi.hoisted(() => {
       getEntry: vi.fn(() => undefined as unknown),
       getSessionFile: vi.fn(() => undefined as string | undefined),
       getEntries: vi.fn(() => [] as unknown[]),
+      buildSessionContext: vi.fn(() => ({ messages: [] as unknown[] })),
       getHeader: vi.fn(() => null),
       appendCustomEntry: vi.fn(() => 'custom-1'),
     };
@@ -151,12 +152,16 @@ const H = vi.hoisted(() => {
   };
 });
 
-vi.mock('../pi-loader', () => ({
-  initPiLoader: vi.fn(async () => H.fakePi),
-  getPiCodingAgent: vi.fn(() => H.fakePi),
-  PI_MIN_NODE_MAJOR: 22,
-  nodeSupportsPi: () => true,
-}));
+vi.mock('../pi-loader', async () => {
+  const piAi = await import('@earendil-works/pi-ai');
+  return {
+    initPiLoader: vi.fn(async () => H.fakePi),
+    getPiCodingAgent: vi.fn(() => H.fakePi),
+    loadedPiAi: () => piAi,
+    PI_MIN_NODE_MAJOR: 22,
+    nodeSupportsPi: () => true,
+  };
+});
 
 vi.mock('../session-title', () => ({ generateSessionTitle: async () => null }));
 
@@ -253,8 +258,10 @@ async function openTurn(session: PiSession): Promise<() => Promise<void>> {
   (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(
     () => new Promise<void>((r) => { releasePrompt = () => r(); }),
   );
+  const prompts = live.prompt.mock.calls.length;
   const turn = session.sendMessage('go', undefined, 'c1', { content: 'go' });
-  while (!session.processing) await tick();
+  // The turn is open once pi has the prompt; the send holds `processing` from its first step.
+  while (live.prompt.mock.calls.length === prompts) await tick();
   return async () => {
     // The real settle path: pi's agent_settled reaches the adapter, which reports the idle turn state.
     H.fireEvent({ type: 'agent_settled' });
@@ -548,7 +555,7 @@ describe('session state publisher', () => {
       () => new Promise<void>((r) => { releasePrompt = () => r(); }),
     );
     const turn = session.sendMessage('go', undefined, 'c1', { content: 'go' });
-    while (!session.processing) await tick();
+    while (live.prompt.mock.calls.length === 0) await tick();
 
     const approval = permissionHandler.canUseTool('Bash', { command: 'echo hi' }, ctx('t1'));
     await waitFor(() => permissionHandler.pendingPrompts().length > 0);
@@ -578,7 +585,7 @@ describe('session state publisher', () => {
     const live = H.getLastSession()!;
     (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(() => new Promise<void>(() => {}));
     void session.sendMessage('go', undefined, 'c1', { content: 'go' });
-    while (!session.processing) await tick();
+    while (live.prompt.mock.calls.length === 0) await tick();
     expect(states(messages)).toEqual(['running']);
 
     session.cancel();
@@ -1024,7 +1031,7 @@ describe('single-writer discipline', () => {
     const start = source.indexOf('private publishSessionState(): void {');
     const body = source.slice(start, source.indexOf('\n  }\n', start));
     expect(body).toContain('listener({ state, pendingKinds, pendingPrompts, background })');
-    expect(body).toContain('this.emit({ type: "sessionStateChanged", state, sessionId, pendingPrompts: pendingPromptOwners(raised) })');
+    expect(body).toContain('this.emit({ type: "sessionStateChanged", state, sessionId, pendingPrompts: pendingPromptOwners(raised), ...(windDown ? { windDown } : {}) })');
     expect(source.match(new RegExp(activity.source, 'g'))).toHaveLength(1);
   });
 });

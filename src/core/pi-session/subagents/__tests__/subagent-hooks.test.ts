@@ -69,6 +69,7 @@ function makeCtx(plan: boolean, entriesByKey: Record<string, HookEntry[]>): Suba
     isPlanMode: () => plan,
     shellCancel: new ShellCancelStore().forContext(() => undefined),
     parentToolUseId: 'agent-7',
+    stopSignal: new AbortController().signal,
     // Slice 3 (contract §A) made this field REQUIRED so a future call site that forgets it is a compile
     // error rather than a silent loss of deferral. These hook/pruning cases predate it and are
     // indifferent to it; `[]` keeps them exercising exactly what they always did (no ToolSearch
@@ -151,6 +152,7 @@ describe('subagent hooks (US-008)', () => {
       isPlanMode: () => false,
       shellCancel: new ShellCancelStore().forContext(() => undefined),
       parentToolUseId: 'agent-7',
+      stopSignal: new AbortController().signal,
       deferrableToolNames: [],
     })(pi as never);
     expect(handlers.has('tool_call')).toBe(true);
@@ -181,6 +183,7 @@ describe('subagent context image pruning', () => {
     isPlanMode: () => false,
     shellCancel: new ShellCancelStore().forContext(() => undefined),
     parentToolUseId: 'agent-7',
+    stopSignal: new AbortController().signal,
     deferrableToolNames: [],
   });
 

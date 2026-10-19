@@ -2,7 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
-import { registerConfiguredHooks, HOOK_CONTEXT_CUSTOM_TYPE, type ConfiguredHooksDeps } from '../index';
+import { registerConfiguredHooks, postUserPromptVerdict, HOOK_CONTEXT_CUSTOM_TYPE, type ConfiguredHooksDeps } from '../index';
+import { dispatchInput } from '../dispatch';
 import { createPreToolUseContextStash, stashPreToolUseContext, type PreToolUseContextStash } from '../context-stash';
 import type { HookEntry } from '../types';
 import type { HooksConfigService } from '../config';
@@ -69,122 +70,82 @@ function fakeCtx(sessionId = 's1', messages: unknown[] = []): unknown {
   };
 }
 
+const userStart = (prompt = 'hi') => ({ type: 'before_agent_start', messageType: 'user', prompt });
+const customStart = () => ({
+  type: 'before_agent_start',
+  messageType: 'custom',
+  message: { role: 'custom', customType: 'ext.note', content: 'from an extension', display: true, timestamp: 0 },
+});
+
 function mkDeps(
   entriesByKey: Record<string, HookEntry[]>,
-  opts: { noPanel?: boolean; preToolUseContextStash?: PreToolUseContextStash; typedPrompts?: ReadonlyMap<string, string> } = {},
-): { deps: ConfiguredHooksDeps; postMessage: ReturnType<typeof vi.fn>; renameSession: ReturnType<typeof vi.fn> } {
+  opts: { noPanel?: boolean; preToolUseContextStash?: PreToolUseContextStash } = {},
+): { deps: ConfiguredHooksDeps; postMessage: ReturnType<typeof vi.fn> } {
   const config = {
     getEntries: (k: string) => entriesByKey[k] ?? [],
     hasEntries: (k: string) => (entriesByKey[k] ?? []).length > 0,
   } as unknown as HooksConfigService;
   const postMessage = vi.fn();
-  const renameSession = vi.fn(async () => {});
-  const registry = { get: () => (opts.noPanel ? undefined : { postMessage, typedPromptOf: (text: string) => opts.typedPrompts?.get(text) }) };
+  const registry = { get: () => (opts.noPanel ? undefined : { postMessage }) };
   return {
     deps: {
       dispatch: { config, workspaceRoot: process.cwd(), userHome: os.homedir() },
       registry,
-      renameSession,
       ...(opts.preToolUseContextStash ? { preToolUseContextStash: opts.preToolUseContextStash } : {}),
     },
     postMessage,
-    renameSession,
   };
 }
 
 describe('registerConfiguredHooks — UserPromptSubmit', () => {
-  it('blocks the prompt on a decision:block response and surfaces a notification', async () => {
-    const { pi, dispatch } = fakePi();
-    const { deps, postMessage } = mkDeps({
-      input: [nodeEntry('process.stdout.write(JSON.stringify({decision:"block",reason:"blocked!"}))')],
-    });
+  it('registers no input handler, so pi never runs a UserPromptSubmit hook on any prompt it is handed', () => {
+    const { pi, handlers } = fakePi();
+    const { deps } = mkDeps({ input: [nodeEntry('process.exit(2)')] });
     registerConfiguredHooks(pi as never, deps);
-    const result = await dispatch('input', { source: 'interactive', text: 'hi' }, fakeCtx());
-    expect(result).toEqual({ action: 'handled' });
-    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'notification', message: 'blocked!' }));
+    expect(handlers.has('input')).toBe(false);
   });
 
-  it('stashes additionalContext and drains it at before_agent_start as a hidden message', async () => {
-    const { pi, dispatch } = fakePi();
-    const { deps } = mkDeps({ input: [nodeEntry('process.stdout.write("inject me")')] });
-    registerConfiguredHooks(pi as never, deps);
-    const cont = await dispatch('input', { source: 'interactive', text: 'hi' }, fakeCtx());
-    expect(cont).toBeUndefined();
-    const drained = (await dispatch('before_agent_start', {}, fakeCtx())) as { message?: { content: string; customType: string; display: boolean } };
-    expect(drained?.message?.content).toBe('inject me');
-    expect(drained?.message?.customType).toBe(HOOK_CONTEXT_CUSTOM_TYPE);
-    expect(drained?.message?.display).toBe(false);
-    // The stash is cleared after draining.
-    expect(await dispatch('before_agent_start', {}, fakeCtx())).toBeUndefined();
+  it('shows a block\'s reason and each systemMessage of a verdict', async () => {
+    const post = vi.fn();
+    const deps = mkDeps({
+      input: [
+        nodeEntry('process.stdout.write(JSON.stringify({system_message:"prompt note"}))'),
+        nodeEntry('process.stdout.write(JSON.stringify({decision:"block",reason:"blocked!"}))'),
+      ],
+    }).deps.dispatch;
+    const verdict = await dispatchInput(deps, { common: { session_id: 's1', transcript_path: '/t.jsonl', cwd: process.cwd() }, prompt: 'hi' });
+    expect(verdict?.block).toBe(true);
+    postUserPromptVerdict(post, verdict!);
+    expect(post.mock.calls.map(([message]) => message)).toEqual([
+      { type: 'notification', notificationType: 'warning', message: 'prompt note' },
+      { type: 'notification', notificationType: 'warning', message: 'blocked!' },
+    ]);
   });
 
-  it('runs configured before_agent_start hooks and injects their stdout as context', async () => {
+  it('injects no hook context into a run a custom message started', async () => {
+    const { pi, dispatch } = fakePi();
+    const { deps } = mkDeps({ before_agent_start: [nodeEntry('process.stdout.write("from bas")')] });
+    registerConfiguredHooks(pi as never, deps);
+    expect(await dispatch('before_agent_start', customStart(), fakeCtx())).toBeUndefined();
+    const next = (await dispatch('before_agent_start', userStart(), fakeCtx())) as { message?: { content: string } };
+    expect(next?.message?.content).toBe('from bas');
+  });
+
+  it('runs configured before_agent_start hooks and injects their stdout as one hidden context message', async () => {
     const { pi, dispatch } = fakePi();
     const { deps } = mkDeps({ before_agent_start: [nodeEntry('process.stdout.write("from before_agent_start")')] });
     registerConfiguredHooks(pi as never, deps);
-    const result = (await dispatch('before_agent_start', { prompt: 'hi' }, fakeCtx())) as {
-      message?: { content: string };
+    const result = (await dispatch('before_agent_start', userStart(), fakeCtx())) as {
+      message?: { content: string; customType: string; display: boolean };
     };
-    expect(result?.message?.content).toBe('from before_agent_start');
+    expect(result?.message).toEqual({ content: 'from before_agent_start', customType: HOOK_CONTEXT_CUSTOM_TYPE, display: false });
   });
 
-  it('merges before_agent_start hook context with the drained UserPromptSubmit stash', async () => {
+  it('injects nothing at before_agent_start when no before_agent_start hook is configured, since UserPromptSubmit context travels with its own message', async () => {
     const { pi, dispatch } = fakePi();
-    const { deps } = mkDeps({
-      input: [nodeEntry('process.stdout.write("from input")')],
-      before_agent_start: [nodeEntry('process.stdout.write("from bas")')],
-    });
+    const { deps } = mkDeps({ input: [nodeEntry('process.stdout.write("from input")')] });
     registerConfiguredHooks(pi as never, deps);
-    await dispatch('input', { source: 'interactive', text: 'hi' }, fakeCtx());
-    const result = (await dispatch('before_agent_start', { prompt: 'hi' }, fakeCtx())) as {
-      message?: { content: string };
-    };
-    expect(result?.message?.content).toContain('from bas');
-    expect(result?.message?.content).toContain('from input');
-  });
-
-  it('renames the session on sessionTitle', async () => {
-    const { pi, dispatch } = fakePi();
-    const { deps, renameSession } = mkDeps({
-      input: [nodeEntry('process.stdout.write(JSON.stringify({session_title:"Renamed"}))')],
-    });
-    registerConfiguredHooks(pi as never, deps);
-    await dispatch('input', { source: 'interactive', text: 'hi' }, fakeCtx());
-    expect(renameSession).toHaveBeenCalledWith('s1', process.cwd(), 'Renamed');
-  });
-
-  it('surfaces a UserPromptSubmit systemMessage as a notification', async () => {
-    const { pi, dispatch } = fakePi();
-    const { deps, postMessage } = mkDeps({
-      input: [nodeEntry('process.stdout.write(JSON.stringify({system_message:"prompt note"}))')],
-    });
-    registerConfiguredHooks(pi as never, deps);
-    await dispatch('input', { source: 'interactive', text: 'hi' }, fakeCtx());
-    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'notification', message: 'prompt note' }));
-  });
-
-  it('ignores non-interactive input', async () => {
-    const { pi, dispatch } = fakePi();
-    const { deps } = mkDeps({ input: [nodeEntry('process.exit(2)')] });
-    registerConfiguredHooks(pi as never, deps);
-    expect(await dispatch('input', { source: 'rpc', text: 'hi' }, fakeCtx())).toBeUndefined();
-  });
-
-  it('hands the hook the text the user typed, whether pi got it alone or behind blocks and expanded', async () => {
-    const { pi, dispatch } = fakePi();
-    const blocksAndBody = '<terminal_output>FAIL</terminal_output>\nreview prompt body src';
-    const echoPrompt = 'let s="";process.stdin.on("data",(d)=>{s+=d}).on("end",()=>process.stdout.write(JSON.stringify({decision:"block",reason:JSON.parse(s).prompt})))';
-    const { deps, postMessage } = mkDeps(
-      { input: [nodeEntry(echoPrompt)] },
-      { typedPrompts: new Map([['/review src', '/review src'], [blocksAndBody, '/review src']]) },
-    );
-    registerConfiguredHooks(pi as never, deps);
-
-    await dispatch('input', { source: 'interactive', text: '/review src' }, fakeCtx());
-    await dispatch('input', { source: 'interactive', text: blocksAndBody }, fakeCtx());
-    await dispatch('input', { source: 'interactive', text: 'not one the panel sent' }, fakeCtx());
-
-    expect(postMessage.mock.calls.map(([message]) => (message as { message: string }).message)).toEqual(['/review src', '/review src', 'not one the panel sent']);
+    expect(await dispatch('before_agent_start', userStart(), fakeCtx())).toBeUndefined();
   });
 });
 
@@ -478,19 +439,18 @@ describe('registerConfiguredHooks — Tier-2 + exclusions (US-007)', () => {
     }
   });
 
-  it('drops undrained UserPromptSubmit context when the session ends, but keeps it across a reload', async () => {
+  it('keeps injecting before_agent_start context after any session_shutdown, for the session the run starts on', async () => {
     const { pi, dispatch } = fakePi();
-    const { deps } = mkDeps({ input: [nodeEntry('process.stdout.write("inject me")')] });
+    const { deps } = mkDeps({ before_agent_start: [nodeEntry('process.stdout.write("from bas")')] });
     registerConfiguredHooks(pi as never, deps);
 
-    await dispatch('input', { source: 'interactive', text: 'hi' }, fakeCtx('s1'));
     await dispatch('session_shutdown', { reason: 'reload' }, fakeCtx('s1'));
-    const afterReload = (await dispatch('before_agent_start', {}, fakeCtx('s1'))) as { message?: { content: string } };
-    expect(afterReload?.message?.content).toBe('inject me');
+    const afterReload = (await dispatch('before_agent_start', userStart(), fakeCtx('s1'))) as { message?: { content: string } };
+    expect(afterReload?.message?.content).toBe('from bas');
 
-    await dispatch('input', { source: 'interactive', text: 'hi' }, fakeCtx('s1'));
     await dispatch('session_shutdown', { reason: 'new' }, fakeCtx('s1'));
-    expect(await dispatch('before_agent_start', {}, fakeCtx('s1'))).toBeUndefined();
+    const afterNew = (await dispatch('before_agent_start', userStart(), fakeCtx('s2'))) as { message?: { content: string } };
+    expect(afterNew?.message?.content).toBe('from bas');
   });
 
   // A hook that dumps its stdin to a temp file, so the test can assert the exact payload the handler
@@ -563,9 +523,9 @@ describe('registerConfiguredHooks — Tier-2 + exclusions (US-007)', () => {
 describe('registerConfiguredHooks — scope guard', () => {
   it('does nothing when no panel is registered for the session (internal sub-calls)', async () => {
     const { pi, dispatch } = fakePi();
-    const { deps, postMessage } = mkDeps({ input: [nodeEntry('process.exit(2)')] }, { noPanel: true });
+    const { deps, postMessage } = mkDeps({ before_agent_start: [nodeEntry('process.stdout.write("from bas")')] }, { noPanel: true });
     registerConfiguredHooks(pi as never, deps);
-    expect(await dispatch('input', { source: 'interactive', text: 'hi' }, fakeCtx())).toBeUndefined();
+    expect(await dispatch('before_agent_start', userStart(), fakeCtx())).toBeUndefined();
     expect(postMessage).not.toHaveBeenCalled();
   });
 });

@@ -5,6 +5,8 @@ import type { McpToolSource } from '../../mcp/tool-source';
 import type { McpToolDescriptor } from '../../mcp/types';
 import { managerWithFake, specOf } from '../../mcp/__tests__/fake-server-manager';
 import { McpToolRegistrar } from '../mcp-tools';
+import { NO_RESOURCE_READ, type ResourceReadReach } from '../../mcp/content';
+import type { PanelGateContext } from '../../permission-gate';
 import { FolderRuntime } from '../../folder-runtime';
 import { createDamoclesExtensionFactory } from '../../damocles-extension';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
@@ -15,6 +17,8 @@ vi.mock('../../../logger', () => ({ log: vi.fn() }));
 const piStub = { defineTool: (tool: unknown) => tool } as unknown as PiCodingAgentModule;
 
 const STALE = 'This extension ctx is stale after session replacement or reload.';
+
+const NO_REACH = () => async () => NO_RESOURCE_READ;
 
 /**
  * An extension instance as pi builds one: `registerTool` throws once pi has invalidated it, which
@@ -36,7 +40,6 @@ function descriptor(piName: string): McpToolDescriptor {
     piName,
     serverName: 'srv',
     serverId: 'test/srv',
-    kind: 'tool',
     rawToolName: piName,
     description: piName,
     inputSchema: { type: 'object', properties: {} },
@@ -61,7 +64,7 @@ describe('McpToolRegistrar', () => {
 
   it('registers the current tools on attach', () => {
     const { source } = mutableSource(['mcp__srv__a', 'mcp__srv__b']);
-    const registrar = new McpToolRegistrar(piStub, source);
+    const registrar = new McpToolRegistrar(piStub, source, NO_REACH);
     const instance = fakeInstance();
 
     registrar.attach(instance.api);
@@ -73,7 +76,7 @@ describe('McpToolRegistrar', () => {
     // Each panel on a folder binds its own instance. Topping up only the last one minted left every
     // earlier panel without a server that connected after it opened.
     const tools = mutableSource(['mcp__srv__a']);
-    const registrar = new McpToolRegistrar(piStub, tools.source);
+    const registrar = new McpToolRegistrar(piStub, tools.source, NO_REACH);
     const older = fakeInstance();
     const newer = fakeInstance();
     registrar.attach(older.api);
@@ -90,7 +93,7 @@ describe('McpToolRegistrar', () => {
     // The shipped failure: the registrar kept the newest instance after its session was disposed, and
     // the next MCP connect threw "extension ctx is stale" once per tool.
     const tools = mutableSource([]);
-    const registrar = new McpToolRegistrar(piStub, tools.source);
+    const registrar = new McpToolRegistrar(piStub, tools.source, NO_REACH);
     const live = fakeInstance();
     const disposed = fakeInstance();
     registrar.attach(live.api);
@@ -108,7 +111,7 @@ describe('McpToolRegistrar', () => {
 
   it('a stale detach does not evict the same instance attached again', () => {
     const { source } = mutableSource([]);
-    const registrar = new McpToolRegistrar(piStub, source);
+    const registrar = new McpToolRegistrar(piStub, source, NO_REACH);
     const instance = fakeInstance();
     const firstDetach = registrar.attach(instance.api);
     registrar.attach(instance.api);
@@ -120,7 +123,7 @@ describe('McpToolRegistrar', () => {
 
   it('a tool pi rejects does not keep the other tools out, and is retried on the next sync', () => {
     const tools = mutableSource(['mcp__srv__bad', 'mcp__srv__good']);
-    const registrar = new McpToolRegistrar(piStub, tools.source);
+    const registrar = new McpToolRegistrar(piStub, tools.source, NO_REACH);
     const instance = fakeInstance();
     instance.registerTool.mockImplementationOnce(() => { throw new Error('must define an object parameter schema'); });
 
@@ -154,9 +157,11 @@ describe('MCP registration across extension instances (real FolderRuntime)', () 
       userMcp: managerWithFake({}).manager,
       createFolderMcp: (reservedToolNames) => managerWithFake({ blender: [{ name: 'render' }] }, reservedToolNames).manager,
       noticeMemory: { has: () => false, add: async () => {} },
+      additionMemory: { has: () => false, add: async () => {} },
       projectDisabledTools: () => null,
+      personalDisabledTools: () => ({ rewrite: async () => undefined, lists: () => [] }),
       toolExposureSetting: () => ({}),
-      renameSession: async () => undefined,
+      resourceExposureSetting: () => ({}),
       trust: platform.trust,
       fileWatchers: platform.fileWatchers,
     });
@@ -196,5 +201,54 @@ describe('MCP registration across extension instances (real FolderRuntime)', () 
     expect(live.names()).toContain('mcp__blender__render');
     expect(disposed.registerTool).not.toHaveBeenCalled();
     expect(vi.mocked(log).mock.calls.filter(([message]) => String(message).includes('[McpToolRegistrar]'))).toEqual([]);
+  });
+
+  it("a resource link's read hint is the calling panel's own, and a session with no panel gets none", async () => {
+    const platform = createFakePlatform();
+    const pool = managerWithFake({ docs: [{ name: 'search' }] }, undefined, { docs: { resources: [] } });
+    pool.fake.callTool.mockResolvedValue({ content: [{ type: 'resource_link', uri: 'docs://a', name: 'a' }], isError: false } as never);
+    const runtime = new FolderRuntime({
+      pi: piStub,
+      cwd: '/tmp/ws',
+      agentDir: '/tmp/agent',
+      modelRuntime: {} as ModelRuntime,
+      userMcp: managerWithFake({}).manager,
+      createFolderMcp: () => pool.manager,
+      noticeMemory: { has: () => false, add: async () => {} },
+      additionMemory: { has: () => false, add: async () => {} },
+      projectDisabledTools: () => null,
+      personalDisabledTools: () => ({ rewrite: async () => undefined, lists: () => [] }),
+      toolExposureSetting: () => ({}),
+      resourceExposureSetting: () => ({}),
+      trust: platform.trust,
+      fileWatchers: platform.fileWatchers,
+    });
+    folder = runtime;
+    const instance = fakeInstance();
+    const registered: Array<{ name: string; execute: (...args: unknown[]) => Promise<{ content: Array<{ text?: string }> }> }> = [];
+    instance.registerTool.mockImplementation((tool: { name: string }) => { registered.push(tool as (typeof registered)[number]); });
+    runtime.attachExtensionInstance(instance.api, () => undefined);
+    await runtime.reconcileFolder({ docs: specOf({ command: 'docs' }, { folderScoped: true }) }, []);
+    const panel = (reach: ResourceReadReach) => ({ mcpResourceReach: async () => reach }) as unknown as PanelGateContext;
+    runtime.registerPanel('loaded', panel({ readTool: 'direct', unreadable: () => false }));
+    runtime.registerPanel('deferred', panel({ readTool: 'deferred', unreadable: () => false }));
+    runtime.registerPanel('disabled', panel({ readTool: null, unreadable: () => false }));
+    const search = registered.find((tool) => tool.name === 'mcp__docs__search')!;
+    const linkFrom = async (sessionId: string) =>
+      (await search.execute('tc', {}, undefined, undefined, { sessionManager: { getSessionId: () => sessionId } })).content[0]!.text;
+
+    expect(await linkFrom('loaded')).toBe('[Resource docs://a "a". Read it with read_mcp_resource (server "docs")]');
+    expect(await linkFrom('deferred')).toBe('[Resource docs://a "a". Read it with read_mcp_resource (server "docs"), after loading it with ToolSearch({tools:["mcp_resources"]})]');
+    expect(await linkFrom('disabled')).toBe('[Resource docs://a "a"]');
+    expect(await linkFrom('no-panel')).toBe('[Resource docs://a "a"]');
+
+    // Only a result holding a resource link asks the panel.
+    const reach = vi.fn(async () => ({ readTool: 'direct' as const, unreadable: () => false }));
+    runtime.registerPanel('counted', { mcpResourceReach: reach } as unknown as PanelGateContext);
+    pool.fake.callTool.mockResolvedValueOnce({ content: [{ type: 'text', text: 'plain' }], isError: false } as never);
+    expect(await linkFrom('counted')).toBe('plain');
+    expect(reach).not.toHaveBeenCalled();
+    expect(await linkFrom('counted')).toBe('[Resource docs://a "a". Read it with read_mcp_resource (server "docs")]');
+    expect(reach).toHaveBeenCalledWith('docs');
   });
 });

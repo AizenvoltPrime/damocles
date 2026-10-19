@@ -2,7 +2,7 @@
 import { computed, ref, type Component } from "vue";
 import { useI18n } from "vue-i18n";
 import type { ToolAbandonReason, ToolCall } from "@shared/types/session";
-import { TOOL_STRUCTURED_OUTPUT, TOOL_GENERATE_IMAGE, LIVE_OUTPUT_TOOLS } from "@shared/tool-names";
+import { TOOL_STRUCTURED_OUTPUT, TOOL_GENERATE_IMAGE, LIVE_OUTPUT_TOOLS, isMcpToolName } from "@shared/tool-names";
 import { TEAM_TOOL_PRESENTATION } from "@shared/team-tool-labels";
 import { useDiffStore } from "@/stores/useDiffStore";
 import { useUIStore, type ExpandedToolSource } from "@/stores/useUIStore";
@@ -80,7 +80,7 @@ const props = defineProps<{
 
 const toolGroup = computed(() => groupForTool(props.toolCall.name));
 
-const isMcpTool = computed(() => props.toolCall.name.startsWith("mcp__"));
+const isMcpTool = computed(() => isMcpToolName(props.toolCall.name));
 const isStructuredOutput = computed(() => props.toolCall.name === TOOL_STRUCTURED_OUTPUT);
 
 /** Undefined for every tool that is not one of the twenty team tools. */

@@ -115,19 +115,125 @@ describe('system prompt sections — memory toggles exactly one section', () => 
   });
 });
 
+function withEnv(over: Partial<SystemPromptEnv>, rest: Partial<DamoclesSystemPromptInputs> = {}): DamoclesSystemPromptInputs {
+  return inputs({ ...rest, env: { ...env, ...over } });
+}
+
+/** Asserts that moving one input from `before` to `after` leaves the preamble and every other section byte-identical. */
+function expectOnly(before: DamoclesSystemPromptInputs, after: DamoclesSystemPromptInputs, expected: SectionDiff): void {
+  const a = assembleDamoclesSystemPrompt(before);
+  const b = assembleDamoclesSystemPrompt(after);
+  expect(b.preamble).toBe(a.preamble);
+  expect(diffSections(a.sections, b.sections)).toEqual(expected);
+  const touched = new Set([...expected.added, ...expected.removed, ...expected.changed]);
+  for (const key of Object.keys(a.sections).filter((k) => !touched.has(k))) expect(b.sections[key], key).toBe(a.sections[key]);
+}
+
+const none: SectionDiff = { added: [], removed: [], changed: [] };
+
+describe('system prompt sections — each runtime input moves only its own section', () => {
+  it('a model switch changes only damocles_model', () => {
+    expectOnly(withEnv({ model: 'claude-opus-5-5' }), withEnv({ model: 'claude-haiku-5-5' }), { ...none, changed: ['damocles_model'] });
+    const haiku = assembleDamoclesSystemPrompt(withEnv({ model: 'claude-haiku-5-5' }));
+    expect(haiku.sections['damocles_model']).toContain('You are powered by the model named Haiku 5.5. The exact model ID is claude-haiku-5-5.');
+    expect(haiku.sections['damocles_model']).toContain('Assistant knowledge cutoff is June 2026.');
+  });
+
+  it('turning thinking off adds damocles_output_form, and turning it on removes the key', () => {
+    expectOnly(withEnv({ thinkingDisabled: false }), withEnv({ thinkingDisabled: true }), { ...none, added: ['damocles_output_form'] });
+    expectOnly(withEnv({ thinkingDisabled: true }), withEnv({ thinkingDisabled: false }), { ...none, removed: ['damocles_output_form'] });
+    expect(assembleDamoclesSystemPrompt(withEnv({ thinkingDisabled: true })).sections['damocles_output_form']).toContain('# Output form');
+  });
+
+  // The Compass guide and the Explore fallback are mutually exclusive, so the toggle swaps one for the other.
+  it('enabling Compass swaps damocles_explore for compass', () => {
+    expectOnly(withEnv({ compassEnabled: false }), withEnv({ compassEnabled: true }), { added: ['compass'], removed: ['damocles_explore'], changed: [] });
+    expectOnly(withEnv({ compassEnabled: true }), withEnv({ compassEnabled: false }), { added: ['damocles_explore'], removed: ['compass'], changed: [] });
+  });
+
+  it('enabling web search adds damocles_web_verification', () => {
+    expectOnly(inputs({ webSearchEnabled: false }), inputs({ webSearchEnabled: true }), { ...none, added: ['damocles_web_verification'] });
+    expectOnly(inputs({ webSearchEnabled: true }), inputs({ webSearchEnabled: false }), { ...none, removed: ['damocles_web_verification'] });
+  });
+
+  it('enabling teams adds damocles_team', () => {
+    expectOnly(inputs({ teamEnabled: false }), inputs({ teamEnabled: true }), { ...none, added: ['damocles_team'] });
+    expectOnly(inputs({ teamEnabled: true }), inputs({ teamEnabled: false }), { ...none, removed: ['damocles_team'] });
+  });
+
+  it('a cwd change changes only damocles_environment', () => {
+    expectOnly(withEnv({ cwd: '/repo' }), withEnv({ cwd: '/other' }), { ...none, changed: ['damocles_environment'] });
+  });
+
+  it('a git repository appearing changes only damocles_environment', () => {
+    expectOnly(withEnv({ isGitRepo: false }), withEnv({ isGitRepo: true }), { ...none, changed: ['damocles_environment'] });
+  });
+
+  it('a platform, shell or OS change changes only damocles_environment', () => {
+    for (const over of [{ platform: 'linux' }, { shell: '/bin/zsh' }, { osVersion: 'Linux 6.8' }]) {
+      expectOnly(withEnv({}), withEnv(over), { ...none, changed: ['damocles_environment'] });
+    }
+  });
+});
+
+describe('system prompt sections — the preamble depends on no runtime input', () => {
+  it('builds one preamble across every combination of inputs', () => {
+    const preambles = new Set<string>();
+    const flags = [false, true];
+    for (const model of ['claude-opus-5-5', 'claude-haiku-5-5', 'gpt-6-astra', 'unknown-model']) {
+      for (const place of [{}, { cwd: '/other', isGitRepo: false, platform: 'darwin', shell: '/bin/zsh', osVersion: 'Darwin 25' }]) {
+        for (const thinkingDisabled of flags) {
+          for (const compassEnabled of flags) {
+            for (const webSearchEnabled of flags) {
+              for (const teamEnabled of flags) {
+                for (const memoryEnabled of flags) {
+                  for (const planMode of flags) {
+                    const built = assembleDamoclesSystemPrompt(withEnv({ model, thinkingDisabled, compassEnabled, ...place }, { webSearchEnabled, teamEnabled, memoryEnabled, planMode }));
+                    preambles.add(built.preamble);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    expect(preambles.size).toBe(1);
+  });
+});
+
 describe('system prompt sections — map shape', () => {
   it('never carries an empty-valued section and never uses preamble as a key', () => {
     for (const planMode of [false, true]) {
       for (const memoryEnabled of [false, true]) {
-        const built = assembleDamoclesSystemPrompt(inputs({ planMode, memoryEnabled }));
-        expect(built.preamble.length).toBeGreaterThan(0);
-        expect(Object.keys(built.sections)).not.toContain('preamble');
-        for (const [key, value] of Object.entries(built.sections)) {
-          expect(value, `section ${key} is empty`).not.toBe('');
-          // pi validates section names and throws on anything outside this shape.
-          expect(key).toMatch(/^[a-z][a-z0-9_-]*$/);
+        for (const toggles of [false, true]) {
+          const built = assembleDamoclesSystemPrompt(
+            withEnv({ thinkingDisabled: toggles, compassEnabled: toggles }, { planMode, memoryEnabled, webSearchEnabled: toggles, teamEnabled: toggles }),
+          );
+          expect(built.preamble.length).toBeGreaterThan(0);
+          expect(Object.keys(built.sections)).not.toContain('preamble');
+          for (const [key, value] of Object.entries(built.sections)) {
+            expect(value, `section ${key} is empty`).not.toBe('');
+            // pi validates section names and throws on anything outside this shape.
+            expect(key).toMatch(/^[a-z][a-z0-9_-]*$/);
+          }
         }
       }
     }
+  });
+
+  // The model reads cwd and platform closest to its first tool call, and the tone reminder must be last.
+  it('ends with environment, model, output form and tone', () => {
+    expect(Object.keys(assembleDamoclesSystemPrompt(withEnv({ thinkingDisabled: true })).sections).slice(-4)).toEqual([
+      'damocles_environment',
+      'damocles_model',
+      'damocles_output_form',
+      'damocles_tone',
+    ]);
+    expect(Object.keys(assembleDamoclesSystemPrompt(withEnv({ thinkingDisabled: false })).sections).slice(-3)).toEqual([
+      'damocles_environment',
+      'damocles_model',
+      'damocles_tone',
+    ]);
   });
 });

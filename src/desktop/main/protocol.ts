@@ -19,6 +19,8 @@ const BUILT_PAGE = /\.html?$/i;
 
 // Script responses carry a policy of their own: a worker does not inherit its page's CSP, and Monaco's workers are served here.
 const SCRIPT_CSP = `default-src 'none'; script-src ${APP_ORIGIN}`;
+// An SVG is a document when opened directly, and third-party icons are served same-origin; as an <img> it never runs script.
+const SVG_CSP = "default-src 'none'; style-src 'unsafe-inline'";
 
 // Single files outside the served roots, matched by exact URL path.
 const SERVED_FILES: Readonly<Record<string, readonly string[]>> = {
@@ -142,6 +144,7 @@ async function serveFile(root: string, filePath: string): Promise<Response> {
       'content-type': contentType,
       'x-content-type-options': 'nosniff',
       ...(contentType.startsWith('text/javascript') ? { 'content-security-policy': SCRIPT_CSP } : {}),
+      ...(contentType === 'image/svg+xml' ? { 'content-security-policy': SVG_CSP } : {}),
     },
   });
 }

@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { buildSystemPrompt } from '../system-prompt';
+import { assembleDamoclesSystemPrompt, renderSections } from '../agent-start';
+import { SYSTEM_PROMPT_PREAMBLE } from '../system-prompt';
+import { COMPASS_SYSTEM_PROMPT } from '../../compass/system-prompt';
 import { PROSE_RULES_BODY } from '../prose-rules';
-import { sessionMechanismBullet } from '../delivery-mechanisms';
+import { SESSION_MECHANISM_BULLET, SESSION_TEAM_RULE } from '../delivery-mechanisms';
 
 const baseOptions = {
   cwd: '/tmp/test',
@@ -12,9 +14,35 @@ const baseOptions = {
   osVersion: 'Linux 5.15.0-test',
 };
 
-describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
+type PromptOptions = typeof baseOptions & {
+  compassEnabled?: boolean;
+  webSearchEnabled?: boolean;
+  teamEnabled?: boolean;
+  thinkingDisabled?: boolean;
+};
+
+/** The assembled main prompt (preamble plus every section) with memory, plan mode, context files and skills off. */
+function fullPrompt(options: PromptOptions): string {
+  const { compassEnabled = false, webSearchEnabled = false, teamEnabled = false, thinkingDisabled = false, ...env } = options;
+  return renderSections(
+    assembleDamoclesSystemPrompt({
+      env: { ...env, compassEnabled, thinkingDisabled },
+      memoryEnabled: false,
+      planMode: false,
+      teamEnabled,
+      webSearchEnabled,
+      planFilePath: '/tmp/test/.damocles/plans/plan-abc.md',
+      existingPlanFile: undefined,
+      contextFiles: [],
+      skills: [],
+      skillFileReadTool: undefined,
+    }),
+  );
+}
+
+describe('the assembled system prompt — Claude 5-gen context-engineering pass', () => {
   describe('with Compass disabled', () => {
-    const prompt = buildSystemPrompt({ ...baseOptions, compassEnabled: false });
+    const prompt = fullPrompt({ ...baseOptions, compassEnabled: false });
 
     it('opens with the provider-agnostic AI coding agent identity', () => {
       expect(prompt.startsWith("You are an AI coding agent for software engineering tasks.")).toBe(true);
@@ -77,8 +105,8 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
     // Pinned explicitly as well as by the inline snapshots, so a blanket `vitest -u` cannot erase it.
     it('routes version-sensitive work through the web tools WITH the ToolSearch load step, not a bare WebSearch call', () => {
       for (const p of [
-        buildSystemPrompt({ ...baseOptions, compassEnabled: false, webSearchEnabled: true }),
-        buildSystemPrompt({ ...baseOptions, compassEnabled: true, webSearchEnabled: true }),
+        fullPrompt({ ...baseOptions, compassEnabled: false, webSearchEnabled: true }),
+        fullPrompt({ ...baseOptions, compassEnabled: true, webSearchEnabled: true }),
       ]) {
         expect(p).toContain('verify current versions and breaking changes with the web tools before acting (load them with ToolSearch if they are not already active).');
         // The bare tool name is a dead end now that `web` is deferred — it must not reappear.
@@ -95,9 +123,9 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
     // wasted turn costs the most. Both branches are pinned so neither can regress to unconditional.
     it('omits the version-verification bullet entirely when the web tools are disabled (the default)', () => {
       for (const p of [
-        buildSystemPrompt({ ...baseOptions, compassEnabled: false }),
-        buildSystemPrompt({ ...baseOptions, compassEnabled: false, webSearchEnabled: false }),
-        buildSystemPrompt({ ...baseOptions, compassEnabled: true, webSearchEnabled: false }),
+        fullPrompt({ ...baseOptions, compassEnabled: false }),
+        fullPrompt({ ...baseOptions, compassEnabled: false, webSearchEnabled: false }),
+        fullPrompt({ ...baseOptions, compassEnabled: true, webSearchEnabled: false }),
       ]) {
         expect(p).not.toContain('For version-sensitive work');
         expect(p).not.toContain('the web tools');
@@ -157,7 +185,10 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
       // Conciseness is stated once, in Tone and style. A second standalone imperative here is dead
       // weight the suite otherwise guards against.
       expect(prompt).toContain('Keep responses short and concise.');
-      expect(prompt).not.toContain('Keep outputs reasonably concise.');
+      // The deliberate restatement is the closing `damocles_tone` section, never the preamble.
+      expect(SYSTEM_PROMPT_PREAMBLE).not.toContain('Keep outputs reasonably concise.');
+      expect(prompt.split('Keep outputs reasonably concise.').length - 1).toBe(1);
+      expect(prompt.endsWith('<damocles_tone>\nKeep outputs reasonably concise.\n</damocles_tone>')).toBe(true);
     });
 
     it('emits the non-Compass broad-exploration fallback bullet', () => {
@@ -170,15 +201,16 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
     it('carries the two cheaper rungs in every configuration and the team rung only when teams are live', () => {
       const guidanceOf = (p: string) => p.slice(p.indexOf('# Session-specific guidance'), p.indexOf('# Text output'));
 
-      const teamOn = buildSystemPrompt({ ...baseOptions, compassEnabled: false, teamEnabled: true });
-      expect(guidanceOf(teamOn)).toContain(sessionMechanismBullet(true).trimStart());
-      expect(guidanceOf(teamOn)).toContain('Start a team (`create_team`) only when a job genuinely needs several perspectives at once or an independent reviewer');
+      const teamOn = fullPrompt({ ...baseOptions, compassEnabled: false, teamEnabled: true });
+      expect(guidanceOf(teamOn)).toContain(SESSION_MECHANISM_BULLET.trimStart());
+      expect(teamOn).toContain(`<damocles_team>\n${SESSION_TEAM_RULE}\n</damocles_team>`);
+      expect(SESSION_TEAM_RULE).toContain('Start a team (`create_team`) only when a job genuinely needs several perspectives at once or an independent reviewer');
       expect(teamOn.split('Start a team (`create_team`)').length - 1).toBe(1);
 
       for (const off of [
-        buildSystemPrompt({ ...baseOptions, compassEnabled: false }),
-        buildSystemPrompt({ ...baseOptions, compassEnabled: false, teamEnabled: false }),
-        buildSystemPrompt({ ...baseOptions, compassEnabled: true, teamEnabled: false }),
+        fullPrompt({ ...baseOptions, compassEnabled: false }),
+        fullPrompt({ ...baseOptions, compassEnabled: false, teamEnabled: false }),
+        fullPrompt({ ...baseOptions, compassEnabled: true, teamEnabled: false }),
       ]) {
         expect(guidanceOf(off)).toContain('Pick the smallest delivery mechanism that fits the job.');
         expect(guidanceOf(off)).toContain('one specialist subagent is the cheaper answer for a focused one');
@@ -189,8 +221,8 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
     // The flag's only effect is the team clause, so omitting it and disabling it must agree byte for
     // byte. The two golden full-prompt snapshots pin what the teams-off prompt is.
     it('treats an unset Team flag as off, byte for byte', () => {
-      const unset = buildSystemPrompt({ ...baseOptions, compassEnabled: false });
-      const off = buildSystemPrompt({ ...baseOptions, compassEnabled: false, teamEnabled: false });
+      const unset = fullPrompt({ ...baseOptions, compassEnabled: false });
+      const off = fullPrompt({ ...baseOptions, compassEnabled: false, teamEnabled: false });
       expect(off).toBe(unset);
     });
 
@@ -460,7 +492,6 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
 
         # Session-specific guidance
          - Use the Agent tool with a specialized subagent when the task matches its description, either to fan out across independent items or to protect the main context from large result sets. Don't spawn one for work you can do directly in a single response, don't spawn a subagent to verify your own work, and keep spawn counts low. One subagent that can do the job beats several. Don't duplicate searches you've delegated.
-         - For broad codebase exploration or research spanning more than 3 queries, spawn Agent with subagent_type=Explore; otherwise use Glob/Grep directly.
          - Pick the smallest delivery mechanism that fits the job. Your own edits are the cheapest for a small job, and one specialist subagent is the cheaper answer for a focused one.
          - When the user types \`/<skill-name>\`, invoke it via Skill, and only skills listed in the user-invocable skills section, never guessed.
 
@@ -491,6 +522,11 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
         Do: No. One writer, state restores from SQLite, no cross-host coordination. Redis adds a failure domain without removing a constraint.
         Don't: You're absolutely right that Redis could help. The real tension is that this isn't about caching, it's about architectural leverage.
 
+        <damocles_explore>
+        For broad codebase exploration or research spanning more than 3 queries, spawn Agent with subagent_type=Explore; otherwise use Glob/Grep directly.
+        </damocles_explore>
+
+        <damocles_environment>
         # Environment
         You have been invoked in the following environment: 
          - Primary working directory: /tmp/test
@@ -498,18 +534,32 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
          - Platform: linux
          - Shell: bash
          - OS Version: Linux 5.15.0-test
-         - You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5.
-         - Assistant knowledge cutoff is June 2026."
+        </damocles_environment>
+
+        <damocles_model>
+        You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5.
+        Assistant knowledge cutoff is June 2026.
+        </damocles_model>
+
+        <damocles_tone>
+        Keep outputs reasonably concise.
+        </damocles_tone>"
       `);
     });
   });
 
   describe('with Compass enabled', () => {
-    const prompt = buildSystemPrompt({ ...baseOptions, compassEnabled: true });
+    const prompt = fullPrompt({ ...baseOptions, compassEnabled: true });
 
     it('includes the reframed Compass paragraph', () => {
       expect(prompt).toContain('Compass is a workspace knowledge graph');
       expect(prompt).not.toContain('**Mandatory first step:**');
+    });
+
+    // `buildAgentPrompt` skips an append-mode subagent's own Compass block when the inherited prompt has `<compass>`.
+    it('renders the guide once, inside the <compass> wrapper', () => {
+      expect(prompt).toContain(`<compass>\n${COMPASS_SYSTEM_PROMPT}\n</compass>`);
+      expect(prompt.split('<compass>').length - 1).toBe(1);
     });
 
     it('drops the non-Compass broad-exploration fallback bullet', () => {
@@ -582,20 +632,6 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
          - Make independent tool calls in parallel; run dependent calls sequentially.
          - For work spanning more than 3 steps, lay out the plan in your first response so the user can verify scope.
 
-        <compass>
-        Compass is a workspace knowledge graph of every function, class, type, and file and how they connect (calls, imports, inheritance, references).
-
-        Use Compass when finding where something is defined, who calls/imports it, assessing change impact, or understanding architecture. Use Glob/Grep/Read directly when you already know the path/glob, need a known config file, or need a literal text search.
-
-        The Compass tools are NOT loaded at the start of your turn — call ToolSearch({tools:["compass"]}) first; they are callable from your next step.
-
-        Workflow: CompassSearch/CompassQuery to build a read list (1-3 calls), then Read the source — Compass tells you WHERE, the code tells you WHAT. For review, CompassReviewContext returns blast radius + risk + source in one call, so don't also call CompassBlastRadius.
-
-        Search ONE entity name per call — CompassSearch "AuthManager", not "AuthManager validateToken".
-
-        Empty results: CompassSearch returns nothing → the symbol likely doesn't exist by that name (it indexes symbols, not text); try a related name. CompassQuery "none" → read the first line for what the target resolved to; if it's the right entity but you expected results, verify with one Grep, since relationship coverage isn't guaranteed.
-        </compass>
-
         # Tone and style
          - Keep responses short and concise. No filler (just/really/basically/simply), no pleasantries (sure/certainly/happy to), no hedging, no flattery or agreement without a reason. Prefer short synonyms (big not extensive, fix not "implement a solution for"). Full sentences, professional but tight.
          - Write for a reader who knows their own project but not this codebase and not the jargon around it. The first time you use a term they may not have, define it inline in a few words ("promptMode: replace, meaning the subagent ignores the parent's rules"), then use it bare from then on. A clause, never a sentence of its own, never a tutorial, and never twice for the same term.
@@ -659,6 +695,21 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
         Do: No. One writer, state restores from SQLite, no cross-host coordination. Redis adds a failure domain without removing a constraint.
         Don't: You're absolutely right that Redis could help. The real tension is that this isn't about caching, it's about architectural leverage.
 
+        <compass>
+        Compass is a workspace knowledge graph of every function, class, type, and file and how they connect (calls, imports, inheritance, references).
+
+        Use Compass when finding where something is defined, who calls/imports it, assessing change impact, or understanding architecture. Use Glob/Grep/Read directly when you already know the path/glob, need a known config file, or need a literal text search.
+
+        The Compass tools are NOT loaded at the start of your turn — call ToolSearch({tools:["compass"]}) first; they are callable from your next step.
+
+        Workflow: CompassSearch/CompassQuery to build a read list (1-3 calls), then Read the source — Compass tells you WHERE, the code tells you WHAT. For review, CompassReviewContext returns blast radius + risk + source in one call, so don't also call CompassBlastRadius.
+
+        Search ONE entity name per call — CompassSearch "AuthManager", not "AuthManager validateToken".
+
+        Empty results: CompassSearch returns nothing → the symbol likely doesn't exist by that name (it indexes symbols, not text); try a related name. CompassQuery "none" → read the first line for what the target resolved to; if it's the right entity but you expected results, verify with one Grep, since relationship coverage isn't guaranteed.
+        </compass>
+
+        <damocles_environment>
         # Environment
         You have been invoked in the following environment: 
          - Primary working directory: /tmp/test
@@ -666,14 +717,22 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
          - Platform: linux
          - Shell: bash
          - OS Version: Linux 5.15.0-test
-         - You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5.
-         - Assistant knowledge cutoff is June 2026."
+        </damocles_environment>
+
+        <damocles_model>
+        You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5.
+        Assistant knowledge cutoff is June 2026.
+        </damocles_model>
+
+        <damocles_tone>
+        Keep outputs reasonably concise.
+        </damocles_tone>"
       `);
     });
   });
 
   describe('with Fable 5.1 selected', () => {
-    const prompt = buildSystemPrompt({ ...baseOptions, model: 'claude-fable-5-1', compassEnabled: false });
+    const prompt = fullPrompt({ ...baseOptions, model: 'claude-fable-5-1', compassEnabled: false });
 
     it('reports the Fable 5.1 identity and June 2026 cutoff', () => {
       expect(prompt).toContain('You are powered by the model named Fable 5.1. The exact model ID is claude-fable-5-1.');
@@ -681,7 +740,7 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
     });
 
     it('tolerates the pi-side 1M suffix Damocles never constructs', () => {
-      const onemPrompt = buildSystemPrompt({ ...baseOptions, model: 'claude-fable-5-1[1m]', compassEnabled: false });
+      const onemPrompt = fullPrompt({ ...baseOptions, model: 'claude-fable-5-1[1m]', compassEnabled: false });
       expect(onemPrompt).toContain('You are powered by the model named Fable 5.1. The exact model ID is claude-fable-5-1[1m].');
       expect(onemPrompt).toContain('Assistant knowledge cutoff is June 2026.');
     });
@@ -690,11 +749,11 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
   /**
    * `LEGACY_MODEL_MAP` only rewrites the id where `migrateLegacyModelValue` runs, which is the
    * `damocles.model` and `damocles.team.*Model` settings reads. A stored session file, a resumed panel
-   * and an Explore card all hand `buildSystemPrompt` the id verbatim, so the retired one still arrives
+   * and an Explore card all hand `buildModelSection` the id verbatim, so the retired one still arrives
    * here and must still name a model and a cutoff.
    */
   describe('with the retired bare claude-fable-5 id', () => {
-    const prompt = buildSystemPrompt({ ...baseOptions, model: 'claude-fable-5', compassEnabled: false });
+    const prompt = fullPrompt({ ...baseOptions, model: 'claude-fable-5', compassEnabled: false });
 
     it('still reports the Fable 5 identity and its January 2026 cutoff', () => {
       expect(prompt).toContain('You are powered by the model named Fable 5. The exact model ID is claude-fable-5.');
@@ -708,7 +767,7 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
   });
 
   describe('with Opus 5.5 selected', () => {
-    const prompt = buildSystemPrompt({ ...baseOptions, model: 'claude-opus-5-5', compassEnabled: false });
+    const prompt = fullPrompt({ ...baseOptions, model: 'claude-opus-5-5', compassEnabled: false });
 
     it('reports the Opus 5.5 identity and June 2026 cutoff', () => {
       expect(prompt).toContain('You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5.');
@@ -731,13 +790,13 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
   // `migrateLegacyModelValue` runs, so a session file or an Explore card still hands one over verbatim.
   describe('with a retired Opus id', () => {
     it('still reports the Opus 5 identity and May 2026 cutoff', () => {
-      const prompt = buildSystemPrompt({ ...baseOptions, model: 'claude-opus-5', compassEnabled: false });
+      const prompt = fullPrompt({ ...baseOptions, model: 'claude-opus-5', compassEnabled: false });
       expect(prompt).toContain('You are powered by the model named Opus 5. The exact model ID is claude-opus-5.');
       expect(prompt).toContain('Assistant knowledge cutoff is May 2026.');
     });
 
     it('still reports the Opus 4.8 identity and January 2026 cutoff', () => {
-      const prompt = buildSystemPrompt({ ...baseOptions, model: 'claude-opus-4-8', compassEnabled: false });
+      const prompt = fullPrompt({ ...baseOptions, model: 'claude-opus-4-8', compassEnabled: false });
       expect(prompt).toContain('You are powered by the model named Opus 4.8. The exact model ID is claude-opus-4-8.');
       expect(prompt).toContain('Assistant knowledge cutoff is January 2026.');
     });
@@ -748,7 +807,7 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
   // only correct while thinking is actually off, so both branches are pinned.
   describe('with thinking disabled', () => {
     it('adds the output-form guidance that keeps tool calls and internal tags out of visible text', () => {
-      const prompt = buildSystemPrompt({ ...baseOptions, compassEnabled: false, thinkingDisabled: true });
+      const prompt = fullPrompt({ ...baseOptions, compassEnabled: false, thinkingDisabled: true });
       expect(prompt).toContain('When you use a tool, you may say a brief sentence first.');
       expect(prompt).toContain('If no tool can express what the user asked for, say so instead of guessing.');
       expect(prompt).toContain('Do not include internal or system XML tags in your response.');
@@ -757,7 +816,7 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
     // Naming the tags specifically is less effective than the general rule, and any instruction not to
     // think or reason increases leakage rather than suppressing it.
     it('states the tag rule generally, without naming thinking tags or barring reasoning', () => {
-      const prompt = buildSystemPrompt({ ...baseOptions, compassEnabled: false, thinkingDisabled: true });
+      const prompt = fullPrompt({ ...baseOptions, compassEnabled: false, thinkingDisabled: true });
       expect(prompt).not.toContain('<thinking>');
       expect(prompt).not.toContain('Do not think');
       expect(prompt).not.toContain("don't reason");
@@ -765,8 +824,8 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
 
     it('omits the guidance while thinking is on', () => {
       for (const p of [
-        buildSystemPrompt({ ...baseOptions, compassEnabled: false }),
-        buildSystemPrompt({ ...baseOptions, compassEnabled: false, thinkingDisabled: false }),
+        fullPrompt({ ...baseOptions, compassEnabled: false }),
+        fullPrompt({ ...baseOptions, compassEnabled: false, thinkingDisabled: false }),
       ]) {
         expect(p).not.toContain('When you use a tool, you may say a brief sentence first.');
         expect(p).not.toContain('# Output form');
@@ -775,7 +834,7 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
   });
 
   describe('with GPT-6 Astra selected', () => {
-    const prompt = buildSystemPrompt({ ...baseOptions, model: 'gpt-6-astra', compassEnabled: false });
+    const prompt = fullPrompt({ ...baseOptions, model: 'gpt-6-astra', compassEnabled: false });
 
     it('reports the GPT-6 Astra identity and April 2026 cutoff', () => {
       expect(prompt).toContain('You are powered by the model named GPT-6 Astra. The exact model ID is gpt-6-astra.');
@@ -793,7 +852,7 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
       ['gpt-6.1-sol', 'GPT-6.1 Sol', 'April 2026'],
       ['gpt-6-luna', 'GPT-6 Luna', 'May 2026'],
     ])('reports the %s identity and its own cutoff', (model, displayName, cutoff) => {
-      const prompt = buildSystemPrompt({ ...baseOptions, model, compassEnabled: false });
+      const prompt = fullPrompt({ ...baseOptions, model, compassEnabled: false });
       expect(prompt).toContain(`You are powered by the model named ${displayName}. The exact model ID is ${model}.`);
       expect(prompt).toContain(`Assistant knowledge cutoff is ${cutoff}.`);
       expect(prompt).not.toContain('GPT-5.6');
@@ -802,7 +861,7 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
 
   describe('with Sonnet 5.5 selected', () => {
     it('reports the Sonnet 5.5 identity and its June 2026 cutoff, not the retired Sonnet 5 ones', () => {
-      const prompt = buildSystemPrompt({ ...baseOptions, model: 'claude-sonnet-5-5', compassEnabled: false });
+      const prompt = fullPrompt({ ...baseOptions, model: 'claude-sonnet-5-5', compassEnabled: false });
       expect(prompt).toContain('You are powered by the model named Sonnet 5.5. The exact model ID is claude-sonnet-5-5.');
       expect(prompt).toContain('Assistant knowledge cutoff is June 2026.');
       expect(prompt).not.toContain('January 2026');
@@ -811,7 +870,7 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
 
   describe('with Haiku 5.5 selected', () => {
     it('reports the Haiku 5.5 identity and its June 2026 cutoff, not the Haiku 4.5 ones', () => {
-      const prompt = buildSystemPrompt({ ...baseOptions, model: 'claude-haiku-5-5', compassEnabled: false });
+      const prompt = fullPrompt({ ...baseOptions, model: 'claude-haiku-5-5', compassEnabled: false });
       expect(prompt).toContain('You are powered by the model named Haiku 5.5. The exact model ID is claude-haiku-5-5.');
       expect(prompt).toContain('Assistant knowledge cutoff is June 2026.');
       expect(prompt).not.toContain('February 2025');
@@ -824,7 +883,7 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
       ['claude-sonnet-5', 'Sonnet 5', 'January 2026'],
       ['gpt-6-sol', 'GPT-6 Sol', 'April 2026'],
     ])('still reports the %s identity and its own cutoff', (model, displayName, cutoff) => {
-      const prompt = buildSystemPrompt({ ...baseOptions, model, compassEnabled: false });
+      const prompt = fullPrompt({ ...baseOptions, model, compassEnabled: false });
       expect(prompt).toContain(`You are powered by the model named ${displayName}. The exact model ID is ${model}.`);
       expect(prompt).toContain(`Assistant knowledge cutoff is ${cutoff}.`);
     });
@@ -836,7 +895,7 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
       ['gpt-5.6-sol', 'GPT-5.6 Sol'],
       ['gpt-5.6-luna', 'GPT-5.6 Luna'],
     ])('still reports the %s identity and February 2026 cutoff', (model, displayName) => {
-      const prompt = buildSystemPrompt({ ...baseOptions, model, compassEnabled: false });
+      const prompt = fullPrompt({ ...baseOptions, model, compassEnabled: false });
       expect(prompt).toContain(`You are powered by the model named ${displayName}. The exact model ID is ${model}.`);
       expect(prompt).toContain('Assistant knowledge cutoff is February 2026.');
     });

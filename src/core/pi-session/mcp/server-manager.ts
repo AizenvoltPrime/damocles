@@ -1,17 +1,27 @@
 /*
  * Adapted from pi-mcp-adapter (MIT). Copyright (c) 2026 Nico Bailon. See THIRD-PARTY-NOTICES.md.
  * Connection pool for MCP servers on `@earendil-works/pi-mcp`: transport selection (stdio /
- * streamable HTTP), connect dedup, tool/resource discovery, list_changed handling, and cancellable
- * tool calls. pi-mcp's value classes come from the dynamically imported bundle (it is esbuild-external).
+ * streamable HTTP), connect dedup, tool discovery, list_changed handling, and cancellable tool and
+ * resource requests. pi-mcp's value classes come from the dynamically imported bundle (it is esbuild-external).
  */
-import type { AuthProvider, CallToolResult, McpClient, McpTransport, ReadResourceResult } from '@earendil-works/pi-mcp';
+import type {
+  AuthProvider,
+  CallToolResult,
+  ListResourcesResult,
+  ListResourceTemplatesResult,
+  McpClient,
+  McpRequestOptions,
+  McpTransport,
+  ReadResourceResult,
+  Resource,
+  ResourceTemplate,
+} from '@earendil-works/pi-mcp';
 import type { McpServerErrorInfo } from '../../../shared/types/mcp';
 import { MCP_STDERR_TAIL_CHARS } from '../../../shared/types/mcp';
 import type { McpClientBundle } from './mcp-client-loader';
 import {
   normalizeServerConfig,
   type McpTool,
-  type McpResource,
   type McpServerDefinition,
   type McpServerSpec,
   type McpElicitationHandler,
@@ -30,6 +40,8 @@ export type ConnectionStatus = 'connected' | 'closed' | 'needs-auth';
 export const DEFAULT_MCP_TIMEOUT_MS = 120_000;
 /** Health checks ping servers one after another, so one hung server delays the rest by at most this. */
 export const HEALTH_PING_TIMEOUT_MS = 10_000;
+// MCP caps one completion reply at 100 values.
+const MAX_COMPLETION_VALUES = 100;
 
 export interface ServerConnection {
   client: McpClient;
@@ -37,7 +49,8 @@ export interface ServerConnection {
   /** The definition with its values resolved for this connect. */
   definition: McpServerDefinition;
   tools: McpTool[];
-  resources: McpResource[];
+  /** The server declared the `resources` capability at initialize. */
+  hasResources: boolean;
   serverInfo?: { name: string; version: string };
   /** The server's `initialize` instructions, trimmed. */
   instructions?: string;
@@ -52,6 +65,11 @@ export interface ServerConnection {
   transportClosed?: boolean;
 }
 
+export interface McpRequestCallOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
 /** Produces the auth provider for a remote server from its resolved definition, or undefined for none. */
 export type AuthProviderFactory = (serverName: string, url: string, definition: McpServerDefinition) => AuthProvider | undefined;
 
@@ -62,7 +80,7 @@ export interface McpServerManagerOptions {
   authProviderFactory?: AuthProviderFactory;
   /** The shell `!command` values run in on Windows, read on every connect. */
   shellPath?: () => string | undefined;
-  /** Fired after a server's tool/resource list changes (list_changed notification → refetch done). */
+  /** Fired after a server's tool list changes (list_changed notification → refetch done). */
   onListChanged?: (serverName: string) => void;
   /** Fired when a live connection drops on its own (process crash / transport loss), never via close(). */
   onConnectionLost?: (serverName: string) => void;
@@ -176,7 +194,8 @@ export class McpServerManager {
   }
 
   /**
-   * Connect a fresh client over `transport`, discover tools/resources, and build the live connection.
+   * Connect a fresh client over `transport`, list its tools, and build the live connection. Resources
+   * are listed only when a tool asks for them, so a slow `resources/list` never delays the tools.
    * With an auth provider, an authorization failure resolves to a `needs-auth` connection (already torn
    * down); any other failure tears down and throws, carrying a stdio server's stderr tail.
    */
@@ -192,17 +211,14 @@ export class McpServerManager {
       this.attachListChangedHandlers(name, client);
 
       // Servers without a capability do not answer its list method.
-      const [tools, resources] = await Promise.all([
-        client.serverCapabilities?.tools ? client.listTools() : Promise.resolve([]),
-        client.serverCapabilities?.resources ? this.fetchResources(name, client) : Promise.resolve([]),
-      ]);
+      const tools = client.serverCapabilities?.tools ? await client.listTools() : [];
 
       const connection: ServerConnection = {
         client,
         transport,
         definition,
         tools: tools as McpTool[],
-        resources,
+        hasResources: Boolean(client.serverCapabilities?.resources),
         lastUsedAt: Date.now(),
         inFlight: 0,
         status: 'connected',
@@ -230,7 +246,7 @@ export class McpServerManager {
           transport,
           definition,
           tools: [],
-          resources: [],
+          hasResources: false,
           lastUsedAt: Date.now(),
           inFlight: 0,
           status: 'needs-auth',
@@ -317,22 +333,9 @@ export class McpServerManager {
     return value;
   }
 
-  /** A server whose resource list fails still connects; its resources are simply not offered. */
-  private async fetchResources(serverName: string, client: McpClient): Promise<McpResource[]> {
-    try {
-      return (await client.listResources()) as McpResource[];
-    } catch (error) {
-      log('[McpServerManager] resources/list failed for %s: %s', serverName, failureForLog(error));
-      return [];
-    }
-  }
-
   private attachListChangedHandlers(serverName: string, client: McpClient): void {
     client.onNotification('notifications/tools/list_changed', () => {
       this.queueRefetch(serverName, () => this.refetchTools(serverName));
-    });
-    client.onNotification('notifications/resources/list_changed', () => {
-      this.queueRefetch(serverName, () => this.refetchResources(serverName));
     });
   }
 
@@ -353,22 +356,11 @@ export class McpServerManager {
     }
   }
 
-  private async refetchResources(serverName: string): Promise<void> {
-    const connection = this.connections.get(serverName);
-    if (!connection || connection.status !== 'connected') return;
-    try {
-      connection.resources = (await connection.client.listResources()) as McpResource[];
-      this.onListChanged?.(serverName);
-    } catch (error) {
-      log('[McpServerManager] refetch resources failed for %s: %s', serverName, failureForLog(error));
-    }
-  }
-
   async callTool(
     serverName: string,
     toolName: string,
     args: Record<string, unknown>,
-    opts: { signal?: AbortSignal; timeoutMs?: number } = {},
+    opts: McpRequestCallOptions = {},
   ): Promise<CallToolResult> {
     const connection = this.requireConnected(serverName);
     return this.run(serverName, connection, () =>
@@ -381,14 +373,55 @@ export class McpServerManager {
     );
   }
 
-  async readResource(
+  listResourcesPage(serverName: string, cursor: string | undefined, opts: McpRequestCallOptions = {}): Promise<ListResourcesResult> {
+    return this.request(serverName, (client, options) => client.listResourcesPage(cursor, options), opts);
+  }
+
+  listResources(serverName: string, opts: McpRequestCallOptions = {}): Promise<Resource[]> {
+    return this.request(serverName, (client, options) => client.listResources(options), opts);
+  }
+
+  listResourceTemplatesPage(
     serverName: string,
-    uri: string,
-    opts: { signal?: AbortSignal; timeoutMs?: number } = {},
-  ): Promise<ReadResourceResult> {
+    cursor: string | undefined,
+    opts: McpRequestCallOptions = {},
+  ): Promise<ListResourceTemplatesResult> {
+    return this.request(serverName, (client, options) => client.listResourceTemplatesPage(cursor, options), opts);
+  }
+
+  listResourceTemplates(serverName: string, opts: McpRequestCallOptions = {}): Promise<ResourceTemplate[]> {
+    return this.request(serverName, (client, options) => client.listResourceTemplates(options), opts);
+  }
+
+  readResource(serverName: string, uri: string, opts: McpRequestCallOptions = {}): Promise<ReadResourceResult> {
+    return this.request(serverName, (client, options) => client.readResource(uri, options), opts);
+  }
+
+  /** `completion/complete` for a resource template argument; no values from a server without the `completions` capability. */
+  async completeResourceArgument(
+    serverName: string,
+    params: { uri: string; argument: string; value: string; context: Readonly<Record<string, string>> },
+    opts: McpRequestCallOptions = {},
+  ): Promise<string[]> {
+    if (!this.requireConnected(serverName).client.serverCapabilities?.completions) return [];
+    const result = await this.request(serverName, (client, options) =>
+      client.request<unknown>('completion/complete', {
+        ref: { type: 'ref/resource', uri: params.uri },
+        argument: { name: params.argument, value: params.value },
+        ...(Object.keys(params.context).length > 0 ? { context: { arguments: { ...params.context } } } : {}),
+      }, options), opts);
+    const values = (result as { completion?: { values?: unknown } } | null)?.completion?.values;
+    return Array.isArray(values) ? values.filter((value): value is string => typeof value === 'string').slice(0, MAX_COMPLETION_VALUES) : [];
+  }
+
+  private request<T>(
+    serverName: string,
+    send: (client: McpClient, options: McpRequestOptions) => Promise<T>,
+    opts: McpRequestCallOptions,
+  ): Promise<T> {
     const connection = this.requireConnected(serverName);
     return this.run(serverName, connection, () =>
-      connection.client.readResource(uri, {
+      send(connection.client, {
         ...(opts.signal ? { signal: opts.signal } : {}),
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
         onProgress: () => {},
@@ -447,7 +480,6 @@ export class McpServerManager {
   private async markNeedsAuth(serverName: string, connection: ServerConnection): Promise<void> {
     connection.status = 'needs-auth';
     connection.tools = [];
-    connection.resources = [];
     connection.transportClosed = true;
     const errorInfo = this.scopeChallengeInfo(serverName, connection.definition);
     if (errorInfo) connection.errorInfo = errorInfo;

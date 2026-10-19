@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { ChevronRight, FilePen, Folder, Replace, ReplaceAll, X } from 'lucide-vue-next';
+import { ChevronRight, FilePen, Replace, ReplaceAll, X } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import { visibleText } from '@shared/visible-text';
-import { fileIcon } from '../file-icons';
+import FileIcon from '../components/FileIcon.vue';
 import type { ResultRow } from './search-store';
 
 const props = defineProps<{
@@ -44,7 +44,6 @@ const dir = computed(() => {
   const slash = path.value.lastIndexOf('/');
   return slash < 0 ? '' : path.value.slice(0, slash);
 });
-const icon = computed(() => (untitled.value ? { icon: FilePen, color: 'var(--d-muted)' } : fileIcon(name.value)));
 const count = computed(() => (props.row.kind === 'folder' ? props.row.node.files.length : props.row.kind === 'file' ? props.row.file.matches.length : 0));
 const badgeTitle = computed(() => (props.row.kind === 'folder' ? t('search.filesFound', count.value, { named: { count: count.value } }) : t('search.matchesFound', count.value, { named: { count: count.value } })));
 
@@ -116,17 +115,17 @@ const indent = computed(() => `${INDENT_START_REM + (props.row.level - 1) * INDE
           :class="row.expanded ? 'rotate-90' : ''"
         />
       </span>
-      <Folder
-        v-if="row.kind === 'folder'"
+      <FilePen
+        v-if="untitled"
         aria-hidden="true"
         class="size-3.5 shrink-0 text-(--d-muted)"
       />
-      <component
-        :is="icon.icon"
+      <FileIcon
         v-else
-        aria-hidden="true"
+        :path="path"
+        :directory="row.kind === 'folder'"
+        :open="row.kind === 'folder' && row.expanded"
         class="size-3.5 shrink-0"
-        :style="{ color: icon.color }"
       />
       <span class="min-w-0 truncate text-12.5 text-(--d-text)">{{ visibleText(row.kind === 'folder' ? row.node.label : name) }}</span>
       <span

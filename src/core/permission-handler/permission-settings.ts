@@ -6,6 +6,7 @@ import { writeJsonConfig } from "../config/json-config-write";
 import { personalConfigRoot } from "../worktrees/personal-config";
 import { parseSettingsText } from "../config/settings-file";
 import { TOOL_EDIT, TOOL_GENERATE_IMAGE, TOOL_READ, TOOL_WRITE } from "../../shared/tool-names";
+import { inertMcpSpecifierRule } from "./mcp-resource-rule";
 
 export interface FilePermissions {
   allow: string[];
@@ -102,8 +103,8 @@ function inertAllowRule(rule: string): string | null {
 }
 
 /**
- * The string entries of one rule list. Anything else, and an allow rule that can approve nothing, is
- * dropped and logged by file and index, never by value.
+ * The string entries of one rule list. Anything else, an allow rule that can approve nothing, and an
+ * `mcp__` rule whose parentheses no tool takes, is dropped and logged by file and index, never by value.
  */
 function ruleList(filePath: string, key: (typeof RULE_KEYS)[number], value: unknown): string[] {
   if (value === undefined) return [];
@@ -117,9 +118,9 @@ function ruleList(filePath: string, key: (typeof RULE_KEYS)[number], value: unkn
       log(`[PermissionSettings] ${filePath} permissions.${key}[${index}] is not a string; it was skipped`);
       return;
     }
-    const inert = key === "allow" ? inertAllowRule(entry) : null;
+    const inert = (key === "allow" ? inertAllowRule(entry) : null) ?? inertMcpSpecifierRule(entry);
     if (inert === null) rules.push(entry);
-    else log(`[PermissionSettings] ${filePath} permissions.allow[${index}] ${inert}; it was skipped`);
+    else log(`[PermissionSettings] ${filePath} permissions.${key}[${index}] ${inert}; it was skipped`);
   });
   return rules;
 }
@@ -217,16 +218,58 @@ export interface PermissionRuleRename {
   new: string;
 }
 
-/** `Tool` or `Tool(argument)`: the tool part is renamed and the argument part kept as written. */
+/**
+ * `Tool` or `Tool(argument)`: the tool part is renamed and the argument part kept as written. A
+ * replacement that is a name plus its own `(…)` specifier replaces a bare rule only.
+ */
 function renamedRule(rule: string, renames: ReadonlyMap<string, string>): string | undefined {
   const paren = rule.indexOf("(");
   const tool = paren >= 0 ? rule.slice(0, paren) : rule;
   const current = renames.get(tool);
   if (current === undefined) return undefined;
-  return paren >= 0 ? `${current}${rule.slice(paren)}` : current;
+  if (paren < 0) return current;
+  // A tool name never holds `(`; such a replacement names one resource, and the old rule's argument has no place in it.
+  return current.includes("(") ? undefined : `${current}${rule.slice(paren)}`;
 }
 
-function ruleRenamesIn(settings: unknown, renames: ReadonlyMap<string, string>): PermissionRuleRename[] {
+/** Rules to insert right after a rule of one list, so the list keeps covering what that rule covered. */
+export type PermissionRuleAdditions = (rule: string, list: (typeof RULE_KEYS)[number]) => readonly string[];
+
+/**
+ * One list with its renames applied and its additions inserted, plus what changed. A renamed or added rule
+ * already in the list, as written or produced earlier, is not written again; the list's own duplicates stay.
+ */
+function updatedRuleList(
+  list: readonly unknown[],
+  key: (typeof RULE_KEYS)[number],
+  renames: ReadonlyMap<string, string>,
+  additions: PermissionRuleAdditions | undefined,
+): { list: unknown[]; changes: PermissionRuleRename[] } {
+  const present = new Set(list.filter((rule): rule is string => typeof rule === "string"));
+  const next: unknown[] = [];
+  const changes: PermissionRuleRename[] = [];
+  for (const rule of list) {
+    if (typeof rule !== "string") {
+      next.push(rule);
+      continue;
+    }
+    const renamed = renamedRule(rule, renames);
+    const kept = renamed ?? rule;
+    if (renamed === undefined || !present.has(renamed)) next.push(kept);
+    present.add(kept);
+    const added: string[] = [];
+    for (const extra of additions?.(rule, key) ?? []) {
+      if (present.has(extra)) continue;
+      present.add(extra);
+      added.push(extra);
+      next.push(extra);
+    }
+    if (renamed !== undefined || added.length > 0) changes.push({ old: rule, new: [kept, ...added].join(", ") });
+  }
+  return { list: next, changes };
+}
+
+function ruleRenamesIn(settings: unknown, renames: ReadonlyMap<string, string>, additions?: PermissionRuleAdditions): PermissionRuleRename[] {
   if (!settings || typeof settings !== "object") return [];
   const perms = (settings as { permissions?: unknown }).permissions;
   if (!perms || typeof perms !== "object") return [];
@@ -234,19 +277,16 @@ function ruleRenamesIn(settings: unknown, renames: ReadonlyMap<string, string>):
   for (const key of RULE_KEYS) {
     const list = (perms as Record<string, unknown>)[key];
     if (!Array.isArray(list)) continue;
-    for (const rule of list) {
-      if (typeof rule !== "string") continue;
-      const next = renamedRule(rule, renames);
-      if (next !== undefined) found.push({ old: rule, new: next });
-    }
+    found.push(...updatedRuleList(list, key, renames, additions).changes);
   }
   return found;
 }
 
-/** The rules in one settings file that name a renamed tool. An absent or unusable file has none. */
+/** The rules in one settings file that name a renamed tool or take an addition. An absent or unusable file has none. */
 export async function findPermissionRuleRenames(
   filePath: string,
   renames: ReadonlyMap<string, string>,
+  additions?: PermissionRuleAdditions,
 ): Promise<PermissionRuleRename[]> {
   let content: string;
   try {
@@ -263,7 +303,7 @@ export async function findPermissionRuleRenames(
     log(`[PermissionSettings] ${filePath} is not valid JSON; its rules were not checked for renamed tools`);
     return [];
   }
-  return ruleRenamesIn(settings, renames);
+  return ruleRenamesIn(settings, renames, additions);
 }
 
 /** Aborts a write whose re-read under the lock found nothing left to rename. */
@@ -271,16 +311,18 @@ class NothingToRewrite extends Error {}
 
 /**
  * Rename tools in one Damocles-owned settings file's `allow`/`ask`/`deny` rules, keeping each rule's
- * `(…)` argument part. Runs inside the file's write critical section, re-reading it there, so it
- * cannot interleave with a rule being saved. Idempotent. Returns the rules renamed. `confineTo` is the
- * repository's own `.damocles` directory for a folder file, which a symlink must not lead out of.
+ * `(…)` argument part, and insert each rule's `additions` after it. Runs inside the file's write
+ * critical section, re-reading it there, so it cannot interleave with a rule being saved. Idempotent.
+ * Returns the rules changed. `confineTo` is the repository's own `.damocles` directory for a folder
+ * file, which a symlink must not lead out of.
  */
 export async function rewritePermissionRuleToolNames(
   filePath: string,
   renames: ReadonlyMap<string, string>,
-  options: { confineTo?: string } = {},
+  options: { confineTo?: string; additions?: PermissionRuleAdditions } = {},
 ): Promise<PermissionRuleRename[]> {
-  if ((await findPermissionRuleRenames(filePath, renames)).length === 0) return [];
+  const { additions } = options;
+  if ((await findPermissionRuleRenames(filePath, renames, additions)).length === 0) return [];
   let rewritten: PermissionRuleRename[] = [];
   try {
     await writeJsonConfig(filePath, (current) => {
@@ -293,13 +335,13 @@ export async function rewritePermissionRuleToolNames(
         log(`[PermissionSettings] ${filePath} is not valid JSON; its rules were not checked for renamed tools`);
         throw new NothingToRewrite();
       }
-      rewritten = ruleRenamesIn(settings, renames);
+      rewritten = ruleRenamesIn(settings, renames, additions);
       if (rewritten.length === 0) throw new NothingToRewrite();
       const perms = settings["permissions"] as Record<string, unknown>;
       for (const key of RULE_KEYS) {
         const list = perms[key];
         if (!Array.isArray(list)) continue;
-        perms[key] = list.map((rule: unknown) => (typeof rule === "string" ? (renamedRule(rule, renames) ?? rule) : rule));
+        perms[key] = updatedRuleList(list, key, renames, additions).list;
       }
       return `${JSON.stringify(settings, null, 2)}\n`;
     }, options.confineTo !== undefined ? { confineTo: options.confineTo } : {});

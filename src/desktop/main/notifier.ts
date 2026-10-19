@@ -166,8 +166,10 @@ export class NotifierHost implements ToastSink {
     this.send(OVERLAY_CHANNELS.toastsFocus, undefined);
   }
 
+  // A hidden window is raised by place() once the page reports the new card.
   show(toast: OverlayToast): void {
     this.send(OVERLAY_CHANNELS.toast, toast);
+    if (this.showing) this.popup?.window.moveTop();
   }
 
   dismiss(id: string): void {
@@ -353,7 +355,11 @@ export class NotifierHost implements ToastSink {
     // Linux has no pointer forwarding: the window's shape is its toasts and pill, which clips their shadows too.
     if (this.deps.platform === 'linux') window.setShape(popupShape(this.area, bounds));
     this.takePointer(true);
-    if (!window.isVisible()) window.showInactive();
+    if (window.isVisible()) return;
+    window.showInactive();
+    // Showing without activation keeps the window's old place among always-on-top windows, beneath a full-screen
+    // player raised since; moveTop restacks it at the top without taking focus.
+    window.moveTop();
   }
 
   // Windows and macOS: the shown window ignores the pointer, except while the page reports it over a toast or the pill,

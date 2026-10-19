@@ -3,7 +3,6 @@ import { Folder } from 'lucide-vue-next';
 import type { OverlayQuickPickIcon, OverlayQuickPickItem, PaletteCommand, QuickOpenMatch, QuickOpenResponse, QuickOpenResult } from '../../preload/overlay-channels';
 import type { TerminalProfileOption, TerminalProjectOption } from '../../preload/terminal-channels';
 import { compareScoredItems, prepareQuery, scoreItem, type FuzzyItem, type ItemScore, type PreparedQuery } from '../../../core/quick-open/fuzzy-match';
-import { fileIcon } from '../file-icons';
 import { glyphLook, terminalGlyph } from '../terminal/terminal-icons';
 import { QUICK_PICK_ICON_COMPONENTS } from './icons';
 
@@ -18,6 +17,8 @@ export interface QuickPickItem {
   readonly icon?: Component;
   // a --d-* colour token
   readonly iconColor?: string;
+  // a Quick Open file's project-relative path, drawn as its file icon in place of `icon`
+  readonly file?: string;
   // the project chip at the row's end
   readonly project?: string;
   // a command's "Category: " prefix of label, drawn quieter
@@ -93,7 +94,6 @@ export function quickOpenModel(response: QuickOpenResponse, grouped: boolean, la
         rows.push({ kind: 'separator', label });
       }
     }
-    const { icon, color } = fileIcon(result.label);
     rows.push({
       kind: 'item',
       item: {
@@ -102,8 +102,7 @@ export function quickOpenModel(response: QuickOpenResponse, grouped: boolean, la
         description: result.description,
         labelMatches: result.labelMatches,
         descriptionMatches: result.descriptionMatches,
-        icon,
-        iconColor: color,
+        file: result.relativePath,
         project: result.projectName,
       },
     });

@@ -239,6 +239,10 @@
       "light": "Light",
       "system": "System"
     },
+    "fileIconTheme": {
+      "material": "Material",
+      "minimal": "Minimal"
+    },
     "language": {
       "system": "System"
     },
@@ -246,6 +250,10 @@
       "theme": {
         "label": "Theme",
         "description": "System follows your OS setting."
+      },
+      "fileIconTheme": {
+        "label": "File icons",
+        "description": "Material gives each file type and well-known folder its own colored icon, with variants for the light theme. Minimal uses a few monochrome icons in the theme's colors."
       },
       "reduceMotion": {
         "label": "Reduce motion",

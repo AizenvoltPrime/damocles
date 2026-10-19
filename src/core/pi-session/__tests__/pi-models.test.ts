@@ -15,7 +15,7 @@ import {
   modelValueOfPiModel,
   type ModelLookup,
 } from '../pi-models';
-import { DEFAULT_MODELS, MODEL_SUBSTITUTES } from '../../../shared/types/constants';
+import { DEFAULT_CONTEXT_WINDOW, DEFAULT_MODELS, MODEL_SUBSTITUTES } from '../../../shared/types/constants';
 
 /** A shipped catalog file keyed by api, then by model id, with only its chat models: pi keys each entry `<type>:<id>`. */
 function readChatCatalog<T>(file: string): Record<string, Record<string, T>> {
@@ -85,6 +85,11 @@ describe('piModelToModelInfo', () => {
     const info = piModelToModelInfo(model('openai', 'gpt-custom-9'));
     expect(info.value).toBe('gpt-custom-9');
     expect(info.backend).toBe('openai');
+  });
+
+  it.each([0, -1, Number.NaN])('takes a window of %s from pi as unknown', (contextWindow) => {
+    const info = piModelToModelInfo({ ...model('openai', 'gpt-custom-9'), contextWindow } as Model<Api>);
+    expect(info.contextWindow).toBe(DEFAULT_CONTEXT_WINDOW);
   });
 });
 
@@ -227,9 +232,9 @@ describe('DEFAULT_MODELS: claude-haiku-5-5 effort catalog agrees with the instal
   const haiku = readChatCatalog<unknown>(fileURLToPath(anthropicJsonUrl))['anthropic-messages']?.['claude-haiku-5-5'] as Model<'anthropic-messages'> | undefined;
   const info = DEFAULT_MODELS.find((m) => m.value === 'claude-haiku-5-5');
 
-  it('declares pi levels plus ultracode, with no catalog default effort', () => {
+  it('declares pi levels except off plus ultracode, with no catalog default effort', () => {
     expect(haiku).toBeDefined();
-    expect(info?.supportedEffortLevels).toEqual([...getSupportedThinkingLevels(haiku!).filter((level) => level !== 'minimal'), 'ultracode']);
+    expect(info?.supportedEffortLevels).toEqual([...getSupportedThinkingLevels(haiku!).filter((level) => level !== 'minimal' && level !== 'off'), 'ultracode']);
     expect(info?.defaultEffort).toBeUndefined();
     expect(info?.contextWindow).toBe(haiku?.contextWindow);
   });
@@ -298,14 +303,9 @@ describe('DEFAULT_MODELS: thinkingAlwaysOn agrees with the installed pi metadata
     readChatCatalog<ThinkingEntry>(fileURLToPath(anthropicJsonUrl))
   )['anthropic-messages'] ?? {};
 
-  /**
-   * pi forces adaptive thinking on for these, so `thinkingLevel: "off"` buys high effort instead of no
-   * thinking: `buildParams` sets `thinking: { type: "adaptive" }` for any model with
-   * `supportsMidConvoEffort`, and the `disabled` branch is separately blocked by `thinkingLevelMap.off`
-   * being explicitly null.
-   */
+  /** pi's `buildParams` sends `thinking: { type: "disabled" }` for a disabled request unless `thinkingLevelMap.off` is explicitly null. */
   function forcesThinking(entry: ThinkingEntry): boolean {
-    return entry.compat?.supportsMidConvoEffort === true || entry.thinkingLevelMap?.off === null;
+    return entry.thinkingLevelMap?.off === null;
   }
 
   const covered = DEFAULT_MODELS.filter((m) => !m.backend && !m.piProvider && entries[m.value]);
@@ -315,6 +315,7 @@ describe('DEFAULT_MODELS: thinkingAlwaysOn agrees with the installed pi metadata
     expect(forcesThinking(entries['claude-fable-5-1']!)).toBe(true);
     expect(forcesThinking(entries['claude-sonnet-5-5']!)).toBe(true);
     expect(forcesThinking(entries['claude-haiku-4-5-20251001']!)).toBe(false);
+    expect(forcesThinking(entries['claude-haiku-5-5']!)).toBe(false);
   });
 
   it.each(covered.map((m) => m.value))('%s carries the flag exactly when pi forces thinking', (value) => {
@@ -356,9 +357,8 @@ describe.each(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-luna'])('DEFAULT_MODELS: %s 
     expect(info?.supportedEffortLevels).toEqual(offered(getSupportedThinkingLevels(codexEntry!)));
   });
 
-  it('carries the context window both catalogs report', () => {
-    expect(apiKeyEntry?.contextWindow).toBe(info?.contextWindow);
-    expect(codexEntry?.contextWindow).toBe(info?.contextWindow);
+  it('carries the smaller of the two catalogs\' windows, so the pre-adoption fallback never overstates headroom', () => {
+    expect(info?.contextWindow).toBe(Math.min(apiKeyEntry!.contextWindow, codexEntry!.contextWindow));
   });
 
   it('routes to the id both catalogs key it by, on either auth mode', () => {

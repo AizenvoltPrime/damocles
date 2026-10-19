@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isMcpResourceToolName } from '../../../shared/tool-names';
 
 /** Prefix that marks a pi tool as MCP-backed; webview routing keys on it (App.vue). */
 export const MCP_TOOL_PREFIX = 'mcp__';
@@ -6,6 +7,11 @@ export const MCP_TOOL_PREFIX = 'mcp__';
 /** Whether a pi tool name is an MCP tool. */
 export function isMcpToolName(name: string): boolean {
   return name.startsWith(MCP_TOOL_PREFIX);
+}
+
+/** Whether a name reaches a nested agent through its frozen MCP snapshot: a server tool or a resource tool. */
+export function isNestedMcpName(name: string): boolean {
+  return isMcpToolName(name) || isMcpResourceToolName(name);
 }
 
 /** Provider tool names are limited to 64 characters of `[A-Za-z0-9_-]`. */
@@ -59,20 +65,6 @@ export function assignServerToolNames(
     assigned.set(tool, name);
   }
   return assigned;
-}
-
-/** Convert an MCP resource name into a tool-name-safe slug for `get_{slug}`. */
-export function resourceNameToToolName(name: string): string {
-  let result = name
-    .replace(/[^a-zA-Z0-9]/g, '_')
-    .replace(/_+/g, '_')
-    .replace(/^_+/, '')
-    .replace(/_+$/, '')
-    .toLowerCase();
-  if (!result || /^\d/.test(result)) {
-    result = 'resource' + (result ? '_' + result : '');
-  }
-  return result;
 }
 
 /** Longest server prefix the legacy names used. */

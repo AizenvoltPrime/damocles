@@ -33,7 +33,7 @@ import { stoppedOnBranch } from './turn-stopped';
 import { isSteerData } from './steer';
 import { DAMOCLES_STEER_ENTRY } from './constants';
 import { storedTypedText } from './prompt-context';
-import { extractTerminalAttachmentCounts } from './terminal-attachments';
+import { extractAttachmentImageCounts, extractTerminalAttachmentCounts } from './terminal-attachments';
 import { attachmentInfo, splitTerminalAttachments } from '../../terminal-attachment';
 import type { ChatAttachmentInfo } from '../../../shared/types/chat-attachment';
 import { toImageBlocks } from '../branch-text';
@@ -134,10 +134,13 @@ function userVisibleText(content: unknown, attachmentCount: number): string {
 }
 
 /** Reverse-map pi image blocks to the webview `{ source: { base64 } }` shape, with the user text.
- *  `overrideText` substitutes the displayed text (the original typed input when a slash command was expanded). */
-function userContentBlocks(content: unknown, attachmentCount: number, overrideText?: string): ContentBlock[] | undefined {
+ *  `overrideText` substitutes the displayed text (the original typed input when a slash command was expanded).
+ *  The last `attachmentImages` images are the attachments' own, shown by their chips as in the live transcript; the
+ *  sidecar records that count only when pi stored every image the prompt was given (`PiSession.recordPromptSidecars`). */
+function userContentBlocks(content: unknown, attachmentCount: number, attachmentImages: number, overrideText?: string): ContentBlock[] | undefined {
   if (!Array.isArray(content)) return undefined;
-  const images = toImageBlocks(content);
+  const all = toImageBlocks(content);
+  const images = all.slice(0, Math.max(0, all.length - attachmentImages));
   if (images.length === 0) return undefined;
   const text = overrideText ?? userVisibleText(content, attachmentCount);
   return [...images, ...(text ? [{ type: 'text' as const, text }] : [])];
@@ -162,6 +165,7 @@ export function reconstructMessages(
 ): { messages: ReplayMessage[]; usage: ContextSnapshot } {
   const originalInputs = extractOriginalInputs(branch);
   const attachmentCounts = extractTerminalAttachmentCounts(branch);
+  const attachmentImageCounts = extractAttachmentImageCounts(branch);
   const midStreamIds = extractMidStreamEntryIds(branch);
   const stopped = stoppedOnBranch(branch);
   const omitted = omittedEntryIds(branch);
@@ -243,7 +247,7 @@ export function reconstructMessages(
       const attachmentCount = attachmentCounts.get(entry.id) ?? 0;
       const content = original ?? userVisibleText(message?.content, attachmentCount);
       if (!content && !Array.isArray(message?.content)) continue;
-      const blocks = userContentBlocks(message?.content, attachmentCount, original);
+      const blocks = userContentBlocks(message?.content, attachmentCount, attachmentImageCounts.get(entry.id) ?? 0, original);
       const sentAt = sentAtOf(entry);
       const attachments = splitTerminalAttachments(textOf(message?.content), attachmentCount).attachments.map((attachment, index) => attachmentInfo(`${entry.id}:${index}`, attachment));
       messages.push({

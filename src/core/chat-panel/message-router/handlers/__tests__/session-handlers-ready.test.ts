@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { createSessionHandlers } from '../session-handlers';
 import { createFakePlatform } from '../../../../../__mocks__/fake-platform';
 import { TerminalAttachmentManager } from '../../../terminal-attachment-manager';
+import type { ResumeOutcome } from '../../../../chat-session';
 vi.mock('../../../../pi-session/session-store', () => ({ renamePiSession: vi.fn(), deletePiSession: vi.fn(), tagPiSession: vi.fn() }));
 vi.mock('../../../../pi-session/pi-runtime', () => ({ PiRuntime: { liveSessionMutator: () => undefined } }));
 vi.mock('../../../../logger', () => ({ log: vi.fn() }));
@@ -23,6 +24,7 @@ describe('ready handler — releases dialogs the restarted webview can no longer
       onWebviewReady: () => calls.push('onWebviewReady'),
       getToolStatus: () => ({}),
       setResumeSession: () => undefined,
+      openResumeTarget: async () => ({ kind: 'switched' as const }),
       initializeEarly: async () => undefined,
     };
     const deps = {
@@ -174,6 +176,7 @@ describe('ready handler: restores the panel into the right folder', () => {
       holdsSession: () => false,
       setPanelToken: vi.fn(),
       setResumeSession: vi.fn(),
+      openResumeTarget: vi.fn(async (): Promise<ResumeOutcome> => { order.push('open'); return { kind: 'switched' }; }),
       initializeEarly: vi.fn(async () => { order.push('start'); }),
     };
   }
@@ -227,8 +230,32 @@ describe('ready handler: restores the panel into the right folder', () => {
     } as unknown as Parameters<typeof createSessionHandlers>[0];
     const ctx = { session, host, panelId: 'p1', permissionHandler: {}, terminalAttachments: new TerminalAttachmentManager(() => {}), folder: A } as never;
     const compassPosts = () => posted.filter((m) => m.type === 'compassStatusUpdate');
-    return { deps, ctx, session, instance, switchPanelFolder, loadSessionHistory, postWorkspaceFolderState, order, compassPosts };
+    return { deps, ctx, session, instance, switchPanelFolder, loadSessionHistory, postWorkspaceFolderState, order, compassPosts, posted };
   }
+
+  // The session tells the user why it could not open one, so the handler adds no notice of its own.
+  it.each([
+    ['could not open', { kind: 'failed', reason: 'its file was not found' }],
+    ['let go of first', { kind: 'cancelled' }],
+  ] as const)('shows none of a saved conversation that pi, holding another one, %s, and starts a new conversation in its place', async (_what, outcome) => {
+    const h = harness();
+    h.session.openResumeTarget.mockImplementationOnce(async () => { h.order.push('open'); return outcome; });
+    await createSessionHandlers(h.deps).ready!({ type: 'ready', savedSessionId: 's-a' } as never, h.ctx);
+
+    expect(h.order).toEqual(['open', 'list', 'history', 'start']);
+    expect(h.loadSessionHistory).not.toHaveBeenCalled();
+    expect(h.posted.some((m) => m.type === 'sessionStarted')).toBe(false);
+    expect((h.deps.platform as ReturnType<typeof createFakePlatform>).notifications.calls).toEqual([]);
+  });
+
+  it("replays a saved conversation a panel that has not started opens in its start, which runs after the lists", async () => {
+    const h = harness();
+    h.session.openResumeTarget.mockImplementationOnce(async () => { h.order.push('open'); return { kind: 'deferred' }; });
+    await createSessionHandlers(h.deps).ready!({ type: 'ready', savedSessionId: 's-a' } as never, h.ctx);
+
+    expect(h.order).toEqual(['open', 'load', 'list', 'history', 'start']);
+    expect(h.posted.filter((m) => m.type === 'sessionStarted')).toEqual([{ type: 'sessionStarted', sessionId: 's-a', stored: true }]);
+  });
 
   it('tells the webview its folder state', async () => {
     const h = harness();
@@ -261,8 +288,8 @@ describe('ready handler: restores the panel into the right folder', () => {
     await createSessionHandlers(h.deps).ready!({ type: 'ready', savedSessionId: 's-b', savedWorkspaceFolderKey: A.key } as never, h.ctx);
 
     expect(h.switchPanelFolder).toHaveBeenCalledWith('p1', B.key, 'restore', expect.any(Function));
-    // Resumed inside the switch, before queued webview messages are let through; started after the lists.
-    expect(h.order).toEqual(['load', 'gate-open', 'list', 'history', 'start']);
+    // Opened and replayed inside the switch, before queued webview messages are let through; pi opens it before the replay.
+    expect(h.order).toEqual(['open', 'load', 'gate-open', 'list', 'history', 'start']);
     expect(h.instance.session).not.toBe(h.session);
     expect(h.instance.session.setResumeSession).toHaveBeenCalledWith('s-b');
     expect(h.session.setResumeSession).not.toHaveBeenCalled();
@@ -325,6 +352,7 @@ describe('ready handler: paints the conversation before the session-wide lists',
       holdsSession: () => false,
       setPanelToken: () => undefined,
       setResumeSession: () => undefined,
+      openResumeTarget: async () => { order.push('openResumeTarget'); return { kind: 'switched' as const }; },
       initializeEarly: async () => { order.push('initializeEarly'); },
     };
     const host = { id: 'host' };
@@ -360,11 +388,11 @@ describe('ready handler: paints the conversation before the session-wide lists',
 
   const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
-  it('replays a restored conversation before listing sessions or prompt history, then starts the session and asks for models', async () => {
+  it('opens a restored conversation in pi, replays it before listing sessions or prompt history, then asks for models', async () => {
     const h = harness();
     await createSessionHandlers(h.deps).ready!({ type: 'ready', savedSessionId: 's-a' } as never, h.ctx);
     await settle();
-    expect(h.order).toEqual(['sendCurrentSettings', 'loadSessionHistory', 'sessionStarted', 'getStoredSessions', 'getPromptHistory', 'initializeEarly', 'sendAvailableModels:own']);
+    expect(h.order).toEqual(['sendCurrentSettings', 'openResumeTarget', 'loadSessionHistory', 'sessionStarted', 'getStoredSessions', 'getPromptHistory', 'initializeEarly', 'sendAvailableModels:own']);
   });
 
   it('asks the session the panel holds by then for models', async () => {
@@ -413,6 +441,7 @@ describe('ready handler: a conversation pi has not written yet', () => {
       holdsSession: () => false,
       setPanelToken: vi.fn(),
       setResumeSession: vi.fn(),
+      openResumeTarget: async () => ({ kind: 'switched' as const }),
       initializeEarly: async () => undefined,
     };
     const host = { id: 'host' };

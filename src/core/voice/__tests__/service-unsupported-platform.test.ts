@@ -71,7 +71,7 @@ describe("VoiceService on an unsupported platform", () => {
   ])("reports the refusal and never installs or offers the first-run install (%o)", async (settings) => {
     const { service, statuses, firstRuns } = setup(settings);
     hostAs("win32", "arm64");
-    await service.start();
+    await service.ensureStarted({ install: true });
     expect(statuses).toEqual([{ kind: "error", code: "unsupported-platform", message: WINDOWS_ARM64_REFUSAL }]);
     expect(firstRuns).toEqual([]);
     expect(counts.installs).toBe(0);
@@ -81,7 +81,7 @@ describe("VoiceService on an unsupported platform", () => {
   it("still offers the first-run install when the install fails on a supported platform", async () => {
     const { service, statuses, firstRuns } = setup({ "damocles.voice.mode": "wake-word" });
     hostAs("win32", "x64");
-    await service.start();
+    await service.ensureStarted({ install: true });
     expect(statuses).toEqual([]);
     expect(firstRuns).toEqual([{ reason: "missing-runtime" }]);
     expect(counts.installs).toBe(1);

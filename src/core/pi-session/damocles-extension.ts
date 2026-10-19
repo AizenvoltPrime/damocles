@@ -27,8 +27,6 @@ export interface HooksWiring {
   config: HooksConfigService;
   workspaceRoot: string | undefined;
   userHome: string;
-  /** Rename the session, preferring the live mutator (anti-fork) over the file writer. */
-  renameSession: (sessionId: string, cwd: string, newName: string) => Promise<void>;
 }
 
 /** Build the per-tool-call PreToolUse gate (Section 3.3): runs `tool_call` hooks + raises the notice that a hook allowed or blocked the call. */
@@ -44,12 +42,12 @@ function buildPreToolUseGate(
     cwd: ctx.cwd,
   };
   return {
-    run: (event) =>
+    run: (event, signal) =>
       dispatchToolCall(deps, {
         common,
         toolName: mapPiToolName(event.toolName),
         toolInput: normalizeToolInput(event.toolName, event.input as Record<string, unknown>),
-      }),
+      }, signal),
     onDecision: (toolName, decision, reason, terminate) => {
       log('[Hooks] PreToolUse %s%s for %s%s', decision, terminate ? ' (terminate)' : '', toolName, reason ? `: ${reason}` : '');
       // A terminating block is the only one the user gets no other signal about: the run settles
@@ -227,12 +225,6 @@ export function createDamoclesExtensionFactory(
       const sessionId = ctx.sessionManager.getSessionId();
       const panel = registry.get(sessionId);
       if (!panel) return undefined;
-      // Before the prompt is built, so Always-loaded MCP tools that connect in time are in its first request.
-      try {
-        await panel.waitForAlwaysLoadedMcp?.(sessionId);
-      } catch (err) {
-        log('[DamoclesExtension] Always-loaded MCP wait failed; building the prompt without it: %O', err);
-      }
       try {
         // Every holder of a deleted session unregisters before the delete.
         return await buildAgentStartResult(event, panel, sessionId, ctx.sessionManager, () => registry.get(sessionId) !== undefined);
@@ -307,10 +299,10 @@ export function createDamoclesExtensionFactory(
     });
 
     // ---- configured hooks (US-004/005/006/007) ----------------------------
-    // tool_result / input (+ before_agent_start context drain) / agent_end Stop / session lifecycle /
-    // Tier-2 observe-only. PreToolUse lives in the gate above (Section 3.3), not here. Fail-soft.
+    // tool_result / before_agent_start context / agent_end Stop / session lifecycle / Tier-2 observe-only.
+    // PreToolUse lives in the gate above (Section 3.3) and UserPromptSubmit in `PiSession`, not here. Fail-soft.
     if (hooks && hookDispatch) {
-      registerConfiguredHooks(pi, { dispatch: hookDispatch, registry, renameSession: hooks.renameSession, preToolUseContextStash });
+      registerConfiguredHooks(pi, { dispatch: hookDispatch, registry, preToolUseContextStash });
     }
   };
 }

@@ -11,6 +11,7 @@ import type { ActivitySource } from './chat-panel/activity';
 import type { ChatReviewSnapshot, CommentPlace, DraftComment, ReviewFileDiff, ReviewSubmitOutcome } from './pi-session/chat-review';
 import type { ChatScope } from './pi-session/chat-changes';
 import type { SessionWorktree } from './pi-session/session-worktree';
+import type { McpUserResourcePort } from './pi-session/mcp/tool-source';
 import type { ChatAttachmentInfo } from '../shared/types/chat-attachment';
 
 /** What the transcript shows for a sent message: the typed text, its images and the attachments sent with it. */
@@ -19,6 +20,8 @@ export interface UserBroadcast {
   contentBlocks?: UserContentBlock[];
   // the prompt starts with one formatted block per attachment, in this order
   terminalAttachments?: ChatAttachmentInfo[];
+  // the prompt's last images are the attachments' own, which their chips stand for
+  attachmentImageCount?: number;
 }
 
 /**
@@ -26,6 +29,24 @@ export interface UserBroadcast {
  * `withdrawn`: the session itself returned the prompt to the composer, its chips through `onWithdrawn`, before it reached the conversation.
  */
 export type SendOutcome = 'sent' | 'unsent' | 'withdrawn';
+
+/** A send claimed before its content is built (`ChatSession.beginSend`). */
+export interface SendTicket {
+  /** Aborted once a Stop, New chat, resume switch or disposal stopped the send; one that pi did not hold yet went back to the composer. */
+  readonly signal: AbortSignal;
+  /** Frees the session for the next send when this one ends without `sendMessage`; a no-op after `sendMessage` took it. */
+  end: () => void;
+}
+
+/**
+ * What became of a resume: pi bound the conversation, could not (the session told the user `reason`), or the panel let go of
+ * it first; `deferred` when the panel has not started, so it holds no other conversation and its start opens this one.
+ */
+export type ResumeOutcome =
+  | { readonly kind: 'switched' }
+  | { readonly kind: 'failed'; readonly reason: string }
+  | { readonly kind: 'cancelled' }
+  | { readonly kind: 'deferred' };
 
 /** What pi's `prompt()` makes of a text sent alone: an extension command it runs, the skill or template body it expands to, or text. */
 export type SlashInvocation = { kind: 'command' } | { kind: 'expanded'; text: string } | { kind: 'text' };
@@ -83,6 +104,13 @@ export interface ChatSession extends ActivitySource {
   /** The stored session whose file this session is on, or opens at start (a resume or fork target); null while it has no file. */
   readonly storedSessionId: string | null;
   setResumeSession(sessionId: string | null): void;
+  /**
+   * Opens the stored session `setResumeSession` named. A started or starting panel resolves once pi holds it, could not open
+   * it (the panel then holds what it held before and the target's lease is released), or let go of it first. A panel that
+   * has not started resolves `deferred` at once: the caller shows the conversation, then starts the session, which opens it
+   * or tells the user why it could not and keeps it as the target. Never rejects.
+   */
+  openResumeTarget(sessionId: string): Promise<ResumeOutcome>;
   /** The review tab's changed files in a scope (D60); fresh reads again whatever changed (a user's open, a hand-off). */
   chatReviewSnapshot(scope: ChatScope, opts?: { readonly fresh?: boolean }): Promise<ChatReviewSnapshot>;
   /** One file's diff in the review tab's scope, as git prints it; missing when the file is not listed there. */
@@ -97,26 +125,44 @@ export interface ChatSession extends ActivitySource {
   /** The webview (re)started with an empty dialog queue, so nothing on screen can answer what this
    *  side is still awaiting. Called from the `ready` handler. */
   onWebviewReady(): void;
+  /** A replay of `sessionId` rebuilt its subagent cards from their files; when it is the bound conversation, its live runs are posted again. */
+  replayLiveAgents(sessionId: string): void;
 
-  /** `onWithdrawn` runs at most once: when pi queued the prompt into a running run and a stop, the budget, a new chat or a resume switch dropped it before it committed, or when the session's disposal returned it before pi queued it or opened a run with it. */
+  /**
+   * Claims the session's one send for a message whose content still needs reading, so a Stop, New chat, resume
+   * switch or disposal meanwhile returns it (`returnUnsent`'s text, then `onWithdrawn`) and aborts the ticket's
+   * signal. Null, with the refusal reported, while another send or a compaction holds the session.
+   */
+  beginSend(correlationId: string, userBroadcast: UserBroadcast, onWithdrawn: () => void): SendTicket | null;
+  /**
+   * `onWithdrawn` runs at most once, whenever the prompt goes back to the composer without committing: a Stop, New
+   * chat, resume switch or disposal before pi held it, a New chat, resume switch or disposal before pi accepted it, or
+   * pi's queue dropped after pi queued it. `ticket` continues a `beginSend`, whose `onWithdrawn` then applies.
+   * `target` is the conversation the send was written for, absent when the sender showed none; a send for any other
+   * conversation than the one pi would prompt goes back to the composer (docs/invariants.md, "A send names its conversation").
+   */
   sendMessage(
     prompt: ContentInput,
-    _agentId?: string,
+    target?: string,
     correlationId?: string,
     userBroadcast?: UserBroadcast,
     onWithdrawn?: () => void,
+    ticket?: SendTicket,
   ): Promise<SendOutcome>;
   /** Resolves `text` as pi would when it starts the prompt, for a caller that puts blocks ahead of it. */
   resolveSlashInvocation(text: string): Promise<SlashInvocation>;
-  /** `typed` is what the user typed, which a UserPromptSubmit hook gets when `content` is a rewrite of it. */
-  queueInput(content: ContentInput, messageId?: string, typed?: string): 'queued' | 'flushed' | false;
+  /**
+   * `typed` is what the user typed, which a UserPromptSubmit hook gets when `content` is a rewrite of it.
+   * `otherConversation`: the message names another conversation than the running one (`sendMessage`'s `target`), so it was not queued.
+   */
+  queueInput(content: ContentInput, messageId?: string, typed?: string, target?: string): 'queued' | 'flushed' | 'otherConversation' | false;
   interrupt(): Promise<void>;
   cancel(): void;
   /** Stops one running shell call; the turn continues, unlike interrupt/cancel which tear it down. */
   cancelToolCall(toolUseId: string, note?: string): boolean;
   cancelAutoCompact(): Promise<void>;
-  /** Manually compact the conversation, optionally focusing the summary with `instructions` (US-030). `onAccepted` runs only when it is not refused. */
-  compact(instructions?: string, onAccepted?: () => void): Promise<void>;
+  /** Manually compact the conversation, optionally focusing the summary with `instructions` (US-030). `onAccepted` runs only when it is not refused; `target` as `sendMessage`'s. */
+  compact(instructions?: string, onAccepted?: () => void, target?: string): Promise<void>;
   reset(): void;
   clear(): void;
   dispose(): Promise<void>;
@@ -127,7 +173,8 @@ export interface ChatSession extends ActivitySource {
   steerTarget(agentId: string, message: string, images: ImageBlock[] | undefined, requestId: string): Promise<void>;
   listSteerTargets(): SteerTargetInfo[];
 
-  sendBtw(btwId: string, question: string): Promise<void>;
+  /** `target` as `sendMessage`'s: the aside reads the conversation the question was asked in, or none. */
+  sendBtw(btwId: string, question: string, target?: string): Promise<void>;
   cancelBtw(btwId: string): void;
 
   getMemoryInjection(promptIndex: number): Promise<MemoryInjectionDisplay | undefined>;
@@ -157,6 +204,8 @@ export interface ChatSession extends ActivitySource {
   getMcpToolInfoMarkdown(piName: string): string | undefined;
 
   getMcpServerStatus(): Promise<McpServerStatusInfo[]>;
+  /** The MCP panel's own resource requests, which resource exposure never restricts (D13); null before the folder resolves. */
+  mcpUserResources(): McpUserResourcePort | null;
   setMcpServers(scope: McpScope): void;
   /** Register a listener fired whenever live MCP runtime status changes (connect/disconnect/list-change),
    * so the webview reflects connecting → connected without a manual refresh. */

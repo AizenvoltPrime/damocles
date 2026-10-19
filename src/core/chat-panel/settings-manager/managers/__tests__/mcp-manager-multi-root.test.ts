@@ -475,6 +475,26 @@ describe("a single-folder window", () => {
     expect(connectedIn(manager, A.key)).toEqual({ shared: { command: "user-shared" }, alpha: { command: "a-alpha" } });
     expect(manager.getServersForUI(A.key).map(s => [s.name, s.source])).toEqual([["shared", "damocles"], ["alpha", "workspace"]]);
   });
+
+  it("carries the runtime's resource capability and exposure into the panel's status", async () => {
+    const manager = await loaded(memento(), () => [A]);
+    const runtime = {
+      name: "alpha",
+      status: "connected",
+      enabled: true,
+      hasResources: true,
+      resourceExposure: "direct",
+      resourceExposureSource: "project",
+      configResourceExposure: "deferred",
+    } as const;
+
+    expect(manager.buildRuntimeStatus(A.key, [runtime]).find(s => s.name === "alpha")).toMatchObject({
+      hasResources: true,
+      resourceExposure: "direct",
+      resourceExposureSource: "project",
+      configResourceExposure: "deferred",
+    });
+  });
 });
 
 describe("a disabled user server", () => {

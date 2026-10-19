@@ -128,6 +128,20 @@ export function createCommandModel<M extends OwnedMarker>(mark: () => M | undefi
       prompt = null;
       input = null;
     },
+    /** After a clear screen erased the rows from `fromLine` down in place: the commands and pending prompt marked there are gone. */
+    erased(fromLine: number): void {
+      const erased = (marker: M | null): boolean => marker !== null && !marker.isDisposed && marker.line >= fromLine;
+      for (const command of commands) if (erased(command.commandMarker)) dropCommand(command);
+      commands = commands.filter((command) => !command.commandMarker.isDisposed);
+      if (erased(prompt)) {
+        drop(prompt);
+        prompt = null;
+      }
+      if (erased(input)) {
+        drop(input);
+        input = null;
+      }
+    },
     /** After xterm.clear, which disposes every marker but keeps the cursor's row: a prompt still pending is marked there again. */
     cleared(): void {
       if (prompt) prompt = mark() ?? null;

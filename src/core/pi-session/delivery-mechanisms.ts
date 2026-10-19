@@ -52,9 +52,8 @@ export function mechanismRecordRule(teamEnabled: boolean): string {
  * The same ladder for an agent choosing how to do the job in front of it, rather than assigning a
  * mechanism to a slice it is planning. One bullet for the main session guidance.
  */
-export function sessionMechanismBullet(teamEnabled: boolean): string {
-  const teamClause = teamEnabled
-    ? ` Start a team (\`create_team\`) only when a job genuinely needs several perspectives at once or an independent reviewer: ${TEAM_CASES}. Give each team a \`brief\` scoped to its job, and use as few teams as the work allows.`
-    : '';
-  return ` - Pick the smallest delivery mechanism that fits the job. Your own edits are the cheapest for a small job, and one specialist subagent is the cheaper answer for a focused one.${teamClause}`;
-}
+export const SESSION_MECHANISM_BULLET =
+  ' - Pick the smallest delivery mechanism that fits the job. Your own edits are the cheapest for a small job, and one specialist subagent is the cheaper answer for a focused one.';
+
+/** The session ladder's team rung, emitted only while `create_team` is in the session's toolset. */
+export const SESSION_TEAM_RULE: string = `Start a team (\`create_team\`) only when a job genuinely needs several perspectives at once or an independent reviewer: ${TEAM_CASES}. Give each team a \`brief\` scoped to its job, and use as few teams as the work allows.`;

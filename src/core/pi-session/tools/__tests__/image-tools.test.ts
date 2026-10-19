@@ -319,6 +319,14 @@ describe('imageAvailability — eligibility', () => {
     expect(CATALOG.filter(isOfferedImageModel)).toEqual([MODEL]);
   });
 
+  it('checks every price tier: a tiered model is offered only when each tier is priced too', () => {
+    const tier = { input: 0.6, output: 5, cacheRead: 0, cacheWrite: 0, inputTokensAbove: 200_000 };
+    const tiered = (extra: Partial<typeof tier>) =>
+      ({ ...MODEL, cost: { ...MODEL.cost, tiers: [{ ...tier, ...extra }] } }) as ImageModel<ImageApi>;
+    expect(isOfferedImageModel(tiered({}))).toBe(true);
+    expect(isOfferedImageModel(tiered({ output: -1_000_000 }))).toBe(false);
+  });
+
   it('is available once the model resolves and the credential exists', () => {
     expect(imageAvailability(MODEL.id, runtime(true))).toEqual({ available: true });
   });

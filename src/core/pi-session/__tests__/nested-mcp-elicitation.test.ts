@@ -6,6 +6,7 @@ import type { McpServerManager, ServerConnection, McpServerManagerOptions } from
 import type { McpElicitationHandler, McpTool } from '../mcp/types';
 import type { ElicitationUI } from '../mcp/elicitation-handler';
 import { buildMcpPiTool, buildNestedMcpToolset } from '../tools/mcp-tools';
+import { NO_RESOURCE_READ } from '../mcp/content';
 import { WebviewExtensionUIContext } from '../extension-ui-context';
 import type { PiCodingAgentModule } from '../pi-loader';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
@@ -164,6 +165,8 @@ async function startManager(transport: ReturnType<typeof fakeTransport>, servers
 function nestedTools(mgr: McpClientManager, elicitationUi?: ElicitationUI) {
   const toolset = buildNestedMcpToolset(piStub, mgr, {
     eligible: new Set(mgr.allToolNames()),
+    disabledEntries: [],
+    resourceRuleFilter: async () => ({ serverCovered: () => false, resourceDenied: () => false, resourceDenyRule: () => undefined, contentCovered: () => false }),
     ...(elicitationUi ? { elicitationUi } : {}),
   });
   return (piName: string) => (toolset.tools.find((t) => t.name === piName)!.execute as unknown as ExecuteFn);
@@ -248,7 +251,7 @@ describe('criterion 2 — no UI means NO `elicitationUi` KEY (the no-op is never
     // Capture what the REAL `McpClientManager.callTool` RECEIVED (spyOn calls through to the real body).
     const callTool = vi.spyOn(mgr, 'callTool');
     const descriptor = mgr.getAllToolDescriptors().find((d) => d.piName === 'mcp__git__status')!;
-    const execute = buildMcpPiTool(piStub, descriptor, mgr).execute as unknown as ExecuteFn;
+    const execute = buildMcpPiTool(piStub, descriptor, mgr, { resourceReach: () => async () => NO_RESOURCE_READ }).execute as unknown as ExecuteFn;
 
     const ctx = piContext() as { ui: unknown; hasUI: boolean };
     expect(ctx.ui, 'pi hands an unbound session a TRUTHY no-op UI — that is the trap').toBeTruthy();
@@ -279,7 +282,7 @@ describe('criterion 2 — no UI means NO `elicitationUi` KEY (the no-op is never
     const p = panel();
     const callTool = vi.spyOn(mgr, 'callTool');
     const descriptor = mgr.getAllToolDescriptors().find((d) => d.piName === 'mcp__git__status')!;
-    const execute = buildMcpPiTool(piStub, descriptor, mgr).execute as unknown as ExecuteFn;
+    const execute = buildMcpPiTool(piStub, descriptor, mgr, { resourceReach: () => async () => NO_RESOURCE_READ }).execute as unknown as ExecuteFn;
 
     const call = execute('tc-1', {}, undefined, undefined, piContext(p.uiContext as unknown as ElicitationUI));
     const dialogs = await p.answerAll(['Continue', 'Enter value', 'README.md', 'Submit']);

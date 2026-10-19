@@ -13,6 +13,8 @@
 # 13.1 is the latest stable patch on the 13.x line.
 websockets==13.1
 numpy==1.26.4
+# nemo's datasets dependency pulls pyarrow unpinned, and pyarrow 26 imports only with NumPy 2.
+pyarrow==25.0.1
 
 # torch + torchaudio are installed in a separate pip step against
 # --index-url <channel> to keep their wheel versions ABI-locked. The

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 // @ts-expect-error -- plain .mjs helper, no types
-import { allowPatterns, platformFamilyGlob, desktopOnlyIn, DESKTOP_ONLY_PACKAGES, DESKTOP_EXCLUDE_RULES, vsixExclusionProblems, forbiddenVsixEntries } from '../sync-vscodeignore.mjs';
+import { allowPatterns, platformFamilyGlob, desktopOnlyIn, DESKTOP_ONLY_PACKAGES, DESKTOP_EXCLUDE_RULES, vsixExclusionProblems, forbiddenVsixEntries, isBuildToolPackage } from '../sync-vscodeignore.mjs';
 
 /**
  * `.github/workflows/release.yml` runs `sync-vscodeignore.mjs --check` on `ubuntu-latest` while every
@@ -77,6 +77,13 @@ describe('the generated .vscodeignore allowlist', () => {
     const shipped = block.map((line) => line.slice('!node_modules/'.length).replace(/\/\*\*$/, ''));
     expect(desktopOnlyIn(shipped)).toEqual([]);
     expect(desktopOnlyIn(['zod', 'electron', 'undici', 'node-pty', '@xterm/xterm', '@xterm/addon-fit'])).toEqual(['@xterm/addon-fit', '@xterm/xterm', 'electron', 'node-pty']);
+  });
+
+  // The generator refuses esbuild at any depth of the closure; this pins the top-level half and the name match.
+  it('carries no esbuild package', () => {
+    const shipped = block.map((line) => line.slice('!node_modules/'.length).split('/'));
+    expect(shipped.filter((segments) => isBuildToolPackage(segments[0]!.startsWith('@') ? `${segments[0]}/${segments[1]}` : segments[0]))).toEqual([]);
+    expect(['esbuild', '@esbuild/win32-x64', '@esbuild/linux-arm64', 'esbuild-wasm', 'zod'].filter(isBuildToolPackage)).toEqual(['esbuild', '@esbuild/win32-x64', '@esbuild/linux-arm64']);
   });
 });
 

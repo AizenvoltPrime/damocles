@@ -67,6 +67,11 @@ describe("ThinkingManager", () => {
       expect(manager.resolveDisabled("panel-A", TOGGLE, config as never, undefined)).toBe(false);
     });
 
+    it("applies the stored default to Haiku 5.5, which can stop thinking", () => {
+      const config = makeConfig({ thinkingDisabled: true });
+      expect(manager.resolveDisabled("panel-A", "claude-haiku-5-5", config as never, undefined)).toBe(true);
+    });
+
     it("per-panel override beats workspace default", () => {
       const config = makeConfig({ thinkingDisabled: true });
       manager.setPanelDisabled("panel-A", false);

@@ -106,7 +106,7 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
           await writePlanFile(computePlanFilePath(continuationId, newMessage), fullPlan);
         }
 
-        await ctx.session.sendMessage(newMessage, undefined, correlationId);
+        await ctx.session.sendMessage(newMessage, continuationId ?? undefined, correlationId);
 
         return;
       }

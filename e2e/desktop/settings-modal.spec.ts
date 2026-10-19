@@ -137,6 +137,14 @@ test('Appearance applies live, and the modal re-attaches to the chat the user se
   await expect.poll(() => app.evaluate(({ nativeTheme }) => nativeTheme.themeSource)).toBe('light');
   await chooseSegment(settingsRow(overlay, 'damocles.desktop.theme'), 'Dark');
   await expect.poll(() => app.evaluate(({ nativeTheme }) => nativeTheme.themeSource)).toBe('dark');
+  const shellRoot = (await shellPage(app)).locator('html');
+  await expect(shellRoot).toHaveAttribute('data-file-icon-theme', 'material');
+  await chooseSegment(settingsRow(overlay, 'damocles.desktop.fileIconTheme'), 'Minimal');
+  await expect.poll(() => userSettings(home.damoclesDir)['damocles.desktop.fileIconTheme']).toBe('minimal');
+  await expect(shellRoot).toHaveAttribute('data-file-icon-theme', 'minimal');
+  await expect(overlay.locator('html')).toHaveAttribute('data-file-icon-theme', 'minimal');
+  await chooseSegment(settingsRow(overlay, 'damocles.desktop.fileIconTheme'), 'Material');
+  await expect(shellRoot).toHaveAttribute('data-file-icon-theme', 'material');
 
   // The first chat goes to plan mode; a new chat selected while the modal is open re-attaches it to that chat.
   await settingsNav(overlay, 'chat').click();

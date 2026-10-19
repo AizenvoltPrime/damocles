@@ -6,7 +6,9 @@ import { renderSections, type DamoclesPromptSections } from './agent-start';
 import { piMessageText } from './branch-text';
 import { resolveCompactionBudget } from './compaction-budget';
 import { isMcpToolName } from './mcp/naming';
+import { resourceToolsExposure } from './mcp/exposure';
 import type { McpToolSource } from './mcp/tool-source';
+import { isMcpResourceToolName } from '../../shared/tool-names';
 import type { AgentRegistry } from './subagents/agent-types';
 import { AGENT_SCOPE_BY_SOURCE } from './subagents/types';
 import { BUILTIN_DEFERRED_GROUPS } from './tools/deferred-tools';
@@ -77,7 +79,8 @@ export function buildContextUsage(
   // tokens when only getAllTools() throws" catches it.
   const activeNames = activeToolNames(session);
   const toolsByName = registeredToolsByName(session);
-  const deferrableBuiltinNames = eligibleDeferredBuiltinNames(deps.eligibleToolNames);
+  const resourceToolsDirect = resourceToolsExposure(deps.mcpClientManager?.resourceServers() ?? []) === 'direct';
+  const deferrableBuiltinNames = eligibleDeferredBuiltinNames(deps.eligibleToolNames, resourceToolsDirect);
   // Computed together and consumed together: the `?? []` fallbacks below are only sound while these two
   // share one guard, so a maintainer weakening one of them in isolation would silently drop that
   // section's tokens from the `Tools` row rather than fail.
@@ -380,7 +383,7 @@ function activeToolNames(session: AgentSession): Set<string> | null {
 
 /**
  * Every REGISTERED tool by name, or null when the read throws. pi builds `_toolDefinitions` from the
- * whole registry, independently of the active set (`agent-session.ts:3529` in pi 1.1.0), so a deferred tool has a
+ * whole registry, independently of the active set (`agent-session.ts:3559` in pi 1.3.0), so a deferred tool has a
  * real `ToolInfo` and a real cost — these sections never have to fabricate one.
  */
 function registeredToolsByName(session: AgentSession): Map<string, ToolInfo> | null {
@@ -392,10 +395,12 @@ function registeredToolsByName(session: AgentSession): Map<string, ToolInfo> | n
   }
 }
 
-/** The browser + compass + web deferrable names this panel is actually eligible to load. */
-function eligibleDeferredBuiltinNames(eligibleToolNames: string[]): Set<string> {
+/** The built-in deferrable names this panel is actually eligible to load; the resource tools only while no resource server makes them Always loaded. */
+function eligibleDeferredBuiltinNames(eligibleToolNames: string[], resourceToolsDirect: boolean): Set<string> {
   const eligible = new Set(eligibleToolNames);
-  return new Set(BUILTIN_DEFERRED_GROUPS.flatMap((g) => g.names).filter((name) => eligible.has(name)));
+  return new Set(
+    BUILTIN_DEFERRED_GROUPS.flatMap((g) => g.names).filter((name) => eligible.has(name) && !(resourceToolsDirect && isMcpResourceToolName(name))),
+  );
 }
 
 /** Active tools costing context right now, minus the ones the MCP and deferred sections already own. */

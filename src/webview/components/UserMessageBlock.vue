@@ -8,6 +8,7 @@ import MarkdownRenderer from "./MarkdownRenderer.vue";
 import UserMessageImageChip from "./UserMessageImageChip.vue";
 import TerminalAttachmentChip from "./TerminalAttachmentChip.vue";
 import CommitAttachmentChip from "./CommitAttachmentChip.vue";
+import McpResourceAttachmentChip from "./McpResourceAttachmentChip.vue";
 import { ArrowUp, Check, ChevronDown, ChevronRight, ChevronUp, Copy, Database, Pin, RotateCcw, X } from "lucide-vue-next";
 import { formatClock } from "@/utils/clock";
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard";
@@ -306,6 +307,10 @@ onUnmounted(() => {
             >
               <CommitAttachmentChip
                 v-if="attachment.kind === 'commit'"
+                :attachment="attachment"
+              />
+              <McpResourceAttachmentChip
+                v-else-if="attachment.kind === 'mcpResource'"
                 :attachment="attachment"
               />
               <TerminalAttachmentChip

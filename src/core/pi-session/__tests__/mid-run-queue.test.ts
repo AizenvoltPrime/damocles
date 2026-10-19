@@ -8,7 +8,9 @@ import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { BUDGET_STOP_HOOK, installTurnDecider } from '../finish-turn';
 import { registerConfiguredHooks } from '../hooks';
-import type { PiSession } from '../pi-session';
+import { workingFolderNote, type PiSession } from '../pi-session';
+import { DAMOCLES_AGENT_INVOCATION_ENTRY, DAMOCLES_INTERRUPTION_NOTICE, DAMOCLES_MID_STREAM_ENTRY } from '../session-store/constants';
+import { SUBAGENT_RESULTS_CUSTOM_TYPE } from '../subagents/background-results';
 import { bindPanel, blockingShell, callPowerShell, panelSession, realPiSessions, wire } from './real-pi-fixtures';
 
 /** Queued typed input and cancel notes against pi's real queue and agent loop, with a scripted model. */
@@ -54,6 +56,9 @@ const userTexts = (session: AgentSession): string[] =>
     const content = e.message.content;
     return [typeof content === 'string' ? content : content.map((p) => (p.type === 'text' ? p.text : '')).join('')];
   });
+
+/** `userTexts` without the note pi's run start appends for an image it cannot resize, which `PNG_DATA` is. */
+const typedTexts = (session: AgentSession): string[] => userTexts(session).map((text) => text.replace(/\n\n\[Image omitted: [^\]]*\]$/, ''));
 
 describe('the mid-run queue against pi', () => {
   const { boot, dispose } = realPiSessions();
@@ -127,7 +132,7 @@ describe('the mid-run queue against pi', () => {
     expect(contexts[1]?.slice(-2)).toEqual(['toolResult: call-1', 'user: first\n\nsecond']);
   });
 
-  it('keeps a batch ESC withdrew out of pi when another extension\'s input handler returns after the run has ended', async () => {
+  it("sends and stops a batch ESC overtook in pi's hands when another extension's input handler returns after the run has ended", async () => {
     const shell = blockingShell();
     const emitted: ExtensionToWebviewMessage[] = [];
     const panel = panelSession(emitted);
@@ -143,6 +148,7 @@ describe('the mid-run queue against pi', () => {
     const replies = ['First.', 'Second.'].map((text) => fauxAssistantMessage(text));
     const { session, contexts } = await boot(tool, [callPowerShell, ...replies], slowInputHook);
     bindPanel(panel, session);
+    readyToSend(panel);
 
     const run = session.prompt(PROMPT).catch(() => undefined);
     await shell.started;
@@ -153,19 +159,32 @@ describe('the mid-run queue against pi', () => {
     await stopped;
     await run;
     expect(session.isStreaming).toBe(false);
+    // pi holds the batch with no verdict yet, so the Stop gives it to neither the composer nor the transcript.
+    expect(emitted.filter((m) => m.type === 'queueCancelled' || m.type === 'queueBatchProcessed')).toEqual([]);
 
     hooks.shift()!();
     await vi.waitFor(() => expect((panel as unknown as { resteerRunning: boolean }).resteerRunning).toBe(false));
+    await session.waitForIdle();
 
-    // Without the check, pi would find no run streaming and start one with the withdrawn batch.
+    // pi opened a run with the batch, and the run stopped at its start: the batch is a sent, stopped turn.
     expect(session.isStreaming).toBe(false);
     expect(session.pendingMessageCount).toBe(0);
+    expect(contexts).toHaveLength(1);
     expect(contexts.flat()).not.toContain(`user: ${QUEUED}`);
-    expect(userTexts(session)).toEqual([PROMPT]);
-    expect(emitted).toContainEqual({ type: 'queueCancelled', messageId: 'q1', returnToInput: true });
+    expect(userTexts(session)).toEqual([PROMPT, QUEUED]);
+    expect(emitted).toContainEqual({ type: 'queueBatchProcessed', messageIds: ['q1'], combinedContent: QUEUED });
+    expect(emitted.some((m) => m.type === 'queueCancelled')).toBe(false);
+    // A reload shows it as the queued batch it was live, not as a prompt of its own.
+    const branch = session.sessionManager.getBranch();
+    const batchEntry = branch.find((e) => e.type === 'message' && e.message.role === 'user' && userContent(session, QUEUED) === e.message.content);
+    expect(branch.some((e) => e.type === 'custom' && e.customType === DAMOCLES_MID_STREAM_ENTRY && (e.data as { userEntryId: string }).userEntryId === batchEntry?.id)).toBe(true);
+
+    expect(await panel.sendMessage('Start over.', undefined, 'c1', { content: 'Start over.' })).toBe('sent');
+    expect(contexts).toHaveLength(2);
+    expect(contexts.at(-1)?.at(-1)).toBe('user: Start over.');
   });
 
-  it('refuses the run a withdrawn batch would open, even when ESC lands after every input handler returned', async () => {
+  it('stops the run a withdrawn batch opens, before any request, when ESC lands after every input handler returned', async () => {
     const shell = blockingShell();
     const emitted: ExtensionToWebviewMessage[] = [];
     const panel = panelSession(emitted);
@@ -177,7 +196,7 @@ describe('the mid-run queue against pi', () => {
         return undefined;
       });
       pi.on('before_agent_start', async (event) => {
-        if (event.prompt === QUEUED) await new Promise<void>((resolve) => startGate.push(resolve));
+        if (event.messageType === 'user' && event.prompt === QUEUED) await new Promise<void>((resolve) => startGate.push(resolve));
         return undefined;
       });
     };
@@ -185,6 +204,7 @@ describe('the mid-run queue against pi', () => {
     const replies = ['First.', 'Second.'].map((text) => fauxAssistantMessage(text));
     const { session, contexts } = await boot(tool, [callPowerShell, ...replies], slowExtension);
     bindPanel(panel, session);
+    readyToSend(panel);
 
     const run = session.prompt(PROMPT);
     await shell.started;
@@ -196,15 +216,23 @@ describe('the mid-run queue against pi', () => {
     // The run ended on its own, so pi now prepares a run of the batch's own.
     inputGate.shift()!();
     await vi.waitFor(() => expect(startGate).toHaveLength(1));
-    await panel.interrupt();
+    // pi's abort() waits for the starting run, so the handler is released after ESC lands and before the wait.
+    const stopped = panel.interrupt();
     startGate.shift()!();
+    await stopped;
     await vi.waitFor(() => expect((panel as unknown as { resteerRunning: boolean }).resteerRunning).toBe(false));
 
+    // pi aborts the run at `agent_start`, so the batch is a sent, stopped turn that reached no model.
     expect(session.isStreaming).toBe(false);
     expect(contexts).toHaveLength(2);
     expect(contexts.flat()).not.toContain(`user: ${QUEUED}`);
-    expect(userTexts(session)).toEqual([PROMPT]);
-    expect(emitted).toContainEqual({ type: 'queueCancelled', messageId: 'q1', returnToInput: true });
+    expect(userTexts(session)).toEqual([PROMPT, QUEUED]);
+    expect(emitted).toContainEqual({ type: 'queueBatchProcessed', messageIds: ['q1'], combinedContent: QUEUED });
+    expect(emitted.some((m) => m.type === 'queueCancelled')).toBe(false);
+
+    expect(await panel.sendMessage('Start over.', undefined, 'c1', { content: 'Start over.' })).toBe('sent');
+    expect(contexts).toHaveLength(3);
+    expect(contexts.at(-1)?.at(-1)).toBe('user: Start over.');
   });
 
   it('a batch another extension\'s input handler consumes loses its chip and leaves nothing held for a later re-steer', async () => {
@@ -329,24 +357,24 @@ describe('the mid-run queue against pi', () => {
       '});',
     ].join('\n');
     const entries = { input: [{ command: [process.execPath, '-e', hookScript] }] } as Record<string, unknown[]>;
+    const dispatch = {
+      config: { getEntries: (key: string) => entries[key] ?? [], hasEntries: (key: string) => (entries[key] ?? []).length > 0 } as never,
+      workspaceRoot: process.cwd(),
+      userHome: os.homedir(),
+    };
+    // Loaded as the folder's Damocles extension loads it, so a hook pi's input handlers ran would be judged twice.
     const configuredHooks = (pi: ExtensionAPI): void =>
-      registerConfiguredHooks(pi, {
-        dispatch: {
-          config: { getEntries: (key: string) => entries[key] ?? [], hasEntries: (key: string) => (entries[key] ?? []).length > 0 } as never,
-          workspaceRoot: process.cwd(),
-          userHome: os.homedir(),
-        },
-        registry: { get: () => ({ postMessage: (message) => emitted.push(message) }) },
-        renameSession: async () => {},
-      });
+      registerConfiguredHooks(pi, { dispatch, registry: { get: () => ({ postMessage: (message) => emitted.push(message) }) } });
     const { tool, store } = wire(shell, () => bound.session, panel);
     const replies = ['Noted.', 'Checked.'].map((text) => fauxAssistantMessage(text));
     const { session, contexts } = await boot(tool, [callPowerShell, ...replies], configuredHooks);
     bound.session = session;
     bindPanel(panel, session);
     internals(panel).adapter.subscribe(session);
+    readyToSend(panel);
+    Object.assign(panel, { folder: { getHooksDispatchDeps: () => dispatch, services: { settingsManager: session.settingsManager } } });
 
-    const run = session.prompt(PROMPT);
+    const run = panel.sendMessage(PROMPT, undefined, 'c0', { content: PROMPT });
     await shell.started;
     for (const [text, id] of [['allowed one', 'q1'], ['forbidden two', 'q2'], ['allowed three', 'q3']] as const) {
       expect(panel.queueInput(text, id)).toBe('queued');
@@ -477,15 +505,19 @@ describe('the mid-run queue against pi', () => {
     await run;
     hooks.get(QUEUED)!();
     await new Promise((resolve) => setTimeout(resolve, 0));
+    await session.waitForIdle();
 
     expect(withdrawn).toHaveBeenCalledOnce();
     expect(contexts).toHaveLength(1);
-    expect(userTexts(session)).toEqual([PROMPT]);
+    // The batch the stop left in pi's hands opens a run of its own once the run ended, which stops at its start.
+    expect(userTexts(session)).toEqual([PROMPT, QUEUED]);
+    expect(emitted).toContainEqual({ type: 'queueBatchProcessed', messageIds: ['q1'], combinedContent: QUEUED });
   });
 
-  it('keeps a queued prompt ESC returned from opening a run of its own when its re-queue lands after the run ended', async () => {
+  it('sends and stops the first of the prompts ESC overtook in pi\'s hands to open a run of its own after the run ended, and returns the one that queues into it', async () => {
     const shell = blockingShell();
-    const panel = panelSession([]);
+    const emitted: ExtensionToWebviewMessage[] = [];
+    const panel = panelSession(emitted);
     const hooks = new Map<string, () => void>();
     // The last handlers pi runs before it decides whether a prompt opens a run.
     const reachedStart: string[] = [];
@@ -495,7 +527,7 @@ describe('the mid-run queue against pi', () => {
         return undefined;
       });
       pi.on('before_agent_start', (event) => {
-        reachedStart.push(event.prompt);
+        if (event.messageType === 'user') reachedStart.push(event.prompt);
         return undefined;
       });
     };
@@ -514,14 +546,32 @@ describe('the mid-run queue against pi', () => {
     shell.release();
     await stopped;
     await run;
+    // pi holds both with no verdict yet, so the Stop returns neither.
+    expect(withdrawn).not.toHaveBeenCalled();
+    expect(emitted.filter((m) => m.type === 'queueCancelled')).toEqual([]);
     for (const release of hooks.values()) release();
-    await vi.waitFor(() => expect(reachedStart).toEqual(expect.arrayContaining([LOOK, QUEUED])));
+    // pi counts a starting run as busy, so whichever withdrawn prompt comes second queues into it.
+    await vi.waitFor(() => expect(reachedStart.slice(1)).toHaveLength(1));
+    const opened = reachedStart[1];
+    expect([LOOK, QUEUED]).toContain(opened);
     await new Promise((resolve) => setTimeout(resolve, 0));
     await session.waitForIdle();
 
-    expect(withdrawn).toHaveBeenCalledOnce();
+    // The run it opens stops at its start: no request, and the prompt stays as a sent, stopped turn.
     expect(contexts).toHaveLength(1);
-    expect(userTexts(session)).toEqual([PROMPT]);
+    expect(typedTexts(session)).toEqual([PROMPT, opened]);
+    // The one that queued into that run goes back to the composer, once; the sent one does not.
+    if (opened === LOOK) {
+      expect(withdrawn).not.toHaveBeenCalled();
+      expect(emitted.filter((m) => m.type === 'queueCancelled')).toEqual([{ type: 'queueCancelled', messageId: 'q1', returnToInput: true }]);
+    } else {
+      expect(withdrawn).toHaveBeenCalledOnce();
+      expect(emitted).toContainEqual({ type: 'queueBatchProcessed', messageIds: ['q1'], combinedContent: QUEUED });
+      expect(emitted.filter((m) => m.type === 'queueCancelled')).toEqual([{ type: 'queueCancelled', messageId: 'c1', returnToInput: true }]);
+    }
+    expect(await panel.sendMessage('Start over.', undefined, 'c2', { content: 'Start over.' })).toBe('sent');
+    expect(contexts).toHaveLength(2);
+    expect(contexts.at(-1)?.at(-1)).toBe('user: Start over.');
   });
 
   it("drops all pi holds for a budget-stopped run when a withdrawn re-queue lands in it, another extension's follow-up included", async () => {
@@ -616,7 +666,8 @@ describe('the mid-run queue against pi', () => {
       first.release();
       await stopped;
       await run;
-      expect(withdrawn).toHaveBeenCalledOnce();
+      // pi holds its re-queue with no verdict yet, which decides whether it went back.
+      expect(withdrawn).not.toHaveBeenCalled();
 
       const next = session.prompt(NEXT);
       await second.started;
@@ -728,7 +779,7 @@ describe('the mid-run queue against pi', () => {
   });
 
   it.each([
-    ['opens no run of its own', false],
+    ['reaches no model in the run pi still opens with it', false],
     ['never reaches the running run', true],
   ])("a folder switch returns a typed prompt pi's input handlers hold to the input once, with its text, image and chips, and it %s", async (_what, running) => {
     const shell = blockingShell();
@@ -746,6 +797,8 @@ describe('the mid-run queue against pi', () => {
     const { session, contexts } = await boot(tool, [callPowerShell, fauxAssistantMessage('Looked.')], holdTyped);
     bindPanel(panel, session);
     readyToSend(panel);
+    // The panel's disposal tears pi's session down, as the runtime does (agent-session-runtime.js:102-113).
+    (panel as unknown as { runtime: { dispose: () => Promise<void> } }).runtime.dispose = async () => session.dispose();
     const withdrawn = vi.fn();
     const typed = [{ type: 'text' as const, text: LOOK }, SCREENSHOT];
     const returned = () => emitted.filter((m) => m.type === 'interruptRecovery' || m.type === 'queueCancelled');
@@ -768,7 +821,176 @@ describe('the mid-run queue against pi', () => {
     expect(returned()).toHaveLength(1);
     expect(session.pendingMessageCount).toBe(0);
     expect(contexts.flat()).not.toContain(`user: ${LOOK}`);
-    expect(userTexts(session)).toEqual(running ? [PROMPT] : []);
+    // pi still opens a run with it on the disposed session, which reaches no model and, disconnected, records nothing.
+    expect(typedTexts(session)).toEqual(running ? [PROMPT] : []);
+    expect(contexts).toHaveLength(running ? 1 : 0);
+  });
+
+  describe('while a before_agent_start handler holds a prompt, which pi already counts as busy', () => {
+    const FIRST = 'Look at the logs.';
+    const SECOND = 'Try again.';
+    const THIRD = 'One more thing.';
+    const replies = () => ['First.', 'Second.', 'Third.'].map((text) => fauxAssistantMessage(text));
+
+    /** Holds the run each user prompt in `held` starts until the test releases it. */
+    function holdingStart(held: readonly string[]): { gate: Array<() => void>; extend: (pi: ExtensionAPI) => void } {
+      const gate: Array<() => void> = [];
+      const extend = (pi: ExtensionAPI): void => {
+        pi.on('before_agent_start', async (event) => {
+          if (event.messageType === 'user' && held.includes(event.prompt)) await new Promise<void>((resolve) => gate.push(resolve));
+          return undefined;
+        });
+      };
+      return { gate, extend };
+    }
+
+    /** How many custom messages of `customType` the branch holds and the agent's context carries. */
+    const customCount = (session: AgentSession, customType: string): { branch: number; context: number } => ({
+      branch: session.sessionManager.getBranch().filter((e) => e.type === 'custom_message' && e.customType === customType).length,
+      context: session.agent.state.messages.filter((m) => m.role === 'custom' && m.customType === customType).length,
+    });
+
+    it('a Stop stops the run before any request, the prompt stays sent and is not returned, and the next send runs to completion', async () => {
+      const emitted: ExtensionToWebviewMessage[] = [];
+      const panel = panelSession(emitted);
+      const { gate, extend } = holdingStart([FIRST]);
+      const { session, contexts } = await boot(blockingShell().definition, replies(), extend);
+      bindPanel(panel, session);
+      readyToSend(panel);
+
+      const sending = panel.sendMessage(FIRST, undefined, 'c1', { content: FIRST });
+      await vi.waitFor(() => expect(gate).toHaveLength(1));
+      const stopped = panel.interrupt();
+      gate.shift()!();
+      expect(await sending).toBe('sent');
+      await stopped;
+      expect(session.isIdle).toBe(true);
+      expect(contexts).toHaveLength(0);
+      expect(userTexts(session)).toEqual([FIRST]);
+      expect(emitted.some((m) => m.type === 'interruptRecovery' || m.type === 'queueCancelled')).toBe(false);
+      expect(emitted).toContainEqual(expect.objectContaining({ type: 'userMessage', correlationId: 'c1', content: FIRST }));
+      expect(await panel.sendMessage(SECOND, undefined, 'c2', { content: SECOND })).toBe('sent');
+
+      expect(contexts).toHaveLength(1);
+      expect(contexts[0]?.at(-1)).toBe(`user: ${SECOND}`);
+      expect(userTexts(session)).toEqual([FIRST, SECOND]);
+      expect(session.isIdle).toBe(true);
+    });
+
+    it("a send right after a Stop that caught a prompt in pi's input handlers waits for that prompt's stopped run, then runs", async () => {
+      const emitted: ExtensionToWebviewMessage[] = [];
+      const panel = panelSession(emitted);
+      const hooks: Array<() => void> = [];
+      // A UserPromptSubmit-like handler that holds the first prompt before pi opens its run.
+      const holdFirst = (pi: ExtensionAPI): void => {
+        pi.on('input', async (event) => {
+          if (event.text === FIRST) await new Promise<void>((resolve) => hooks.push(resolve));
+          return undefined;
+        });
+      };
+      const { session, contexts } = await boot(blockingShell().definition, replies(), holdFirst);
+      bindPanel(panel, session);
+      readyToSend(panel);
+
+      const first = panel.sendMessage(FIRST, undefined, 'c1', { content: FIRST });
+      await vi.waitFor(() => expect(hooks).toHaveLength(1));
+      await panel.interrupt();
+      const second = panel.sendMessage(SECOND, undefined, 'c2', { content: SECOND });
+      hooks.shift()!();
+
+      expect(await first).toBe('sent');
+      expect(await second).toBe('sent');
+      expect(contexts).toHaveLength(1);
+      expect(contexts[0]?.at(-1)).toBe(`user: ${SECOND}`);
+      expect(userTexts(session)).toEqual([FIRST, SECOND]);
+      expect(emitted.some((m) => m.type === 'error' || m.type === 'interruptRecovery')).toBe(false);
+      expect(session.isIdle).toBe(true);
+    });
+
+    it('a message queued meanwhile steers into the run the held prompt opens', async () => {
+      const panel = panelSession([]);
+      const { gate, extend } = holdingStart([FIRST]);
+      const { session, contexts } = await boot(blockingShell().definition, replies(), extend);
+      bindPanel(panel, session);
+      readyToSend(panel);
+
+      const sending = panel.sendMessage(FIRST, undefined, 'c1', { content: FIRST });
+      await vi.waitFor(() => expect(gate).toHaveLength(1));
+      expect(panel.queueInput(QUEUED, 'q1')).toBe('queued');
+      await vi.waitFor(() => expect([...session.getSteeringMessages()]).toEqual([QUEUED]));
+      gate.shift()!();
+      expect(await sending).toBe('sent');
+
+      expect(userTexts(session)).toEqual([FIRST, QUEUED]);
+      expect(contexts.at(-1)?.at(-1)).toBe(`user: ${QUEUED}`);
+      expect(session.isIdle).toBe(true);
+    });
+
+    it('background results no turn delivered reach the model once when a send arrives while another run starts', async () => {
+      const panel = panelSession([]);
+      const { gate, extend } = holdingStart([FIRST]);
+      const { session } = await boot(blockingShell().definition, replies(), extend);
+      bindPanel(panel, session);
+      readyToSend(panel);
+      const finished = { id: 'agent-1', toolCallId: 'tc-1', type: 'Explore', description: 'look around', status: 'completed', result: 'found it' };
+      (panel as unknown as { subagentManager: unknown }).subagentManager = {
+        deliverableLive: () => [finished],
+        getRecord: () => undefined,
+        liveStatus: () => undefined,
+      };
+
+      const run = session.prompt(FIRST);
+      await vi.waitFor(() => expect(gate).toHaveLength(1));
+      expect(await panel.sendMessage(SECOND, undefined, 'c1', { content: SECOND })).toBe('sent');
+      gate.shift()!();
+      await run;
+      expect(await panel.sendMessage(THIRD, undefined, 'c2', { content: THIRD })).toBe('sent');
+
+      expect(userTexts(session)).toEqual([FIRST, SECOND, THIRD]);
+      expect(customCount(session, SUBAGENT_RESULTS_CUSTOM_TYPE)).toEqual({ branch: 1, context: 1 });
+    });
+
+    it('the interruption notice reaches the model once when a send arrives while another run starts', async () => {
+      const panel = panelSession([]);
+      const { gate, extend } = holdingStart([FIRST]);
+      const { session } = await boot(blockingShell().definition, replies(), extend);
+      bindPanel(panel, session);
+      readyToSend(panel);
+      session.sessionManager.appendCustomEntry(DAMOCLES_AGENT_INVOCATION_ENTRY, { kind: 'subagent', id: 'agent-1', toolCallId: 'tc-1', resume: false });
+      (panel as unknown as { interruptionCheckPending: boolean }).interruptionCheckPending = true;
+
+      const run = session.prompt(FIRST);
+      await vi.waitFor(() => expect(gate).toHaveLength(1));
+      expect(await panel.sendMessage(SECOND, undefined, 'c1', { content: SECOND })).toBe('sent');
+      gate.shift()!();
+      await run;
+      (panel as unknown as { interruptionCheckPending: boolean }).interruptionCheckPending = true;
+      expect(await panel.sendMessage(THIRD, undefined, 'c2', { content: THIRD })).toBe('sent');
+
+      expect(userTexts(session)).toEqual([FIRST, SECOND, THIRD]);
+      expect(customCount(session, DAMOCLES_INTERRUPTION_NOTICE)).toEqual({ branch: 1, context: 1 });
+    });
+
+    it('the working-folder note reaches the model once when it lands while a run starts', async () => {
+      const panel = panelSession([]);
+      const { gate, extend } = holdingStart([FIRST]);
+      const { session } = await boot(blockingShell().definition, replies(), extend);
+      bindPanel(panel, session);
+      readyToSend(panel);
+      const note = workingFolderNote('/elsewhere');
+      const noteCount = () => session.sessionManager.getBranch().filter((e) => e.type === 'custom_message' && e.content === note).length;
+
+      const run = session.prompt(FIRST);
+      await vi.waitFor(() => expect(gate).toHaveLength(1));
+      panel.noteWorkingFolder('/elsewhere');
+      gate.shift()!();
+      await run;
+      expect(await panel.sendMessage(SECOND, undefined, 'c1', { content: SECOND })).toBe('sent');
+
+      expect(userTexts(session)).toEqual([FIRST, SECOND]);
+      expect(noteCount()).toBe(1);
+      expect(session.agent.state.messages.filter((m) => m.role === 'custom' && m.content === note)).toHaveLength(1);
+    });
   });
 
   it('names each prompt by its own user entry, not the one before it', async () => {

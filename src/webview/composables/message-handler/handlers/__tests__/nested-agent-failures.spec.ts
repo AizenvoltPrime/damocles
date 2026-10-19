@@ -46,7 +46,7 @@ function teamWithAgent(agentId: string): TeamState {
   return {
     teamId: 'team-1', toolUseId: 'toolu_team', title: 'Team', status: 'running', phase: 'working',
     agents: [{
-      agentId, name: 'worker', role: 'specialist', description: null, model: '', profileId: null, attempt: 0,
+      agentId, name: 'worker', role: 'specialist', description: null, task: null, model: '', profileId: null, attempt: 0,
       status: 'running', activeMs: 0, runningSince: 1, toolCount: 0, lastToolName: null, totalInputTokens: 0,
       totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0, dollarBilled: true, effort: null,
       progressSummary: null, result: null, logFilePath: null,

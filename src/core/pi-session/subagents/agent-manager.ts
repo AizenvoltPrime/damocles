@@ -61,6 +61,10 @@ import { DAMOCLES_AGENT_LAUNCH_ENTRY, DAMOCLES_AGENT_SEGMENT_ENTRY, DAMOCLES_AGE
 import { createSubagentExtensionFactory } from './subagent-extension-factory';
 import { SubagentStreamBridge, buildAgentResultJson } from './subagent-stream-bridge';
 import { runSubagent } from './subagent-runner';
+import { noticeWindDown } from '../wind-down-notice';
+import { trackRunLifecycle } from '../run-lifecycle';
+import { agentFileHeldElsewhere, takeAgentFile, waitForAgentFile, type AgentFileOwner, type AgentFileStore } from '../agent-file-owner';
+import type { AgentWindDown } from '../../../shared/types/wind-down';
 import { getStatusNote, recordOutcomeText } from './status-note';
 import { addUsage, getLifetimeTotal } from './usage';
 import { PLAN_AGENT_NAME, type AgentConfig, type AgentRecord, type PendingSteer, type SubagentType, type ThinkingLevel } from './types';
@@ -281,7 +285,8 @@ export class AgentManager {
   private running = 0;
   /** Resolves each record's lifetime `promise` exactly once at its terminal state. Created at spawn so a
    *  spawn that never reaches `startRecord` (queued, then aborted) still settles its awaiters. */
-  private readonly doneResolvers = new Map<string, (text: string) => void>();
+  // Keyed by record: a resume reuses the id while the stopped run it replaces may still be settling.
+  private readonly doneResolvers = new Map<AgentRecord, (text: string) => void>();
   private disposed = false;
   /** Bumped by `abortAll`, so a resume that was validating across an ESC, reset or dispose never starts. */
   private abortEpoch = 0;
@@ -418,6 +423,9 @@ export class AgentManager {
         throw new Error(`Subagent "${agentId}" was a "${launch.agentType}" agent, which is no longer available.`);
       }
       if (path) this.engine.assertResumableModel(path, agentId);
+      if (agentFileHeldElsewhere(path ? { kind: 'reopen', path, agentId } : { kind: 'file', dir: this.engine.subagentStoreDir(), id: agentId })) {
+        throw new Error(`Subagent "${agentId}" cannot be resumed yet: its session file is still open in another Damocles window, whose stopped run has not finished. Wait for that run to stop or close that window, then resume it again.`);
+      }
       return { agentId, path, launch };
     } catch (err) {
       this.resuming.delete(agentId);
@@ -511,6 +519,8 @@ export class AgentManager {
     }
     if (record.status !== 'running') return 'finished';
     if (record.session) {
+      // pi settles the task's own run, which takes no more messages and is its last.
+      if (record.prompted && record.run?.settling) return 'finished';
       try {
         await deliverSteer(record.session, wrapped);
       } catch (err) {
@@ -616,15 +626,15 @@ export class AgentManager {
       background: runInBackground(spec),
     };
     // The executor runs synchronously, so the resolver is registered before this returns.
-    record.promise = new Promise<string>((resolve) => this.doneResolvers.set(id, resolve));
+    record.promise = new Promise<string>((resolve) => this.doneResolvers.set(record, resolve));
     return record;
   }
 
   /** Resolve a record's lifetime promise once, with its final result text. No-op if already settled. */
-  private settleDone(id: string, text: string): void {
-    const resolve = this.doneResolvers.get(id);
+  private settleDone(record: AgentRecord, text: string): void {
+    const resolve = this.doneResolvers.get(record);
     if (!resolve) return;
-    this.doneResolvers.delete(id);
+    this.doneResolvers.delete(record);
     resolve(text);
     this.engine.onRunsChanged();
   }
@@ -756,6 +766,7 @@ export class AgentManager {
       // the shell too — otherwise its own description promises a read-only mode the runtime never had.
       readOnlyShell: toolset.readOnly,
       parentToolUseId,
+      stopSignal: record.abortController!.signal,
       deferrableToolNames: deferredToolNames(eligibleToolNames, mcp.deferrable),
       // Gate parity with the panel: a CLASSIFIER (auto-allow vs `canUseTool`), never a grant filter.
       // Without it `toolCategory('mcp__*')` is 'other' and every nested MCP call, annotated read
@@ -782,8 +793,13 @@ export class AgentManager {
     const fresh = spec.kind === 'spawn'
       ? { description: spec.description, prompt: spec.prompt, background: spec.runInBackground }
       : spec.target.launch;
-    const createSession = () =>
-      this.engine.createSession({
+    const store: AgentFileStore = reopenPath !== null
+      ? { kind: 'reopen', path: reopenPath, agentId: record.id }
+      : { kind: 'file', dir: this.engine.subagentStoreDir(), id: record.id };
+    const openSession = (owner: AgentFileOwner): Promise<AgentSession> => {
+      // Released by `afterComplete`, which runs whether or not the session opens.
+      record.fileOwner = owner;
+      return this.engine.createSession({
         cwd: this.engine.cwd,
         systemPrompt: prepared.systemPrompt,
         ...(reopenPath === null && resolved.model ? { model: resolved.model } : {}),
@@ -797,10 +813,17 @@ export class AgentManager {
 
         excludeTools: [...PI_EXCLUDED_TOOLS],
         extensionFactory: prepared.extensionFactory,
-        store: reopenPath !== null
-          ? { kind: 'reopen', path: reopenPath, agentId: record.id }
-          : { kind: 'file', dir: this.engine.subagentStoreDir(), id: record.id },
+        store,
       });
+    };
+    const createSession = (): Promise<AgentSession> => {
+      const owner = takeAgentFile(store);
+      if (owner) return openSession(owner);
+      return waitForAgentFile(store, {
+        signal: record.abortController!.signal,
+        onWindDown: (windDown) => this.postWindDown(record, windDown),
+      }).then(openSession);
+    };
     const launch: SubagentLaunchData | null = reopenPath !== null ? null : {
       agentId: record.id,
       kind: 'subagent',
@@ -832,11 +855,15 @@ export class AgentManager {
       signal: record.abortController!.signal,
       onSessionCreated: (session) => {
         record.session = session;
+        const run = trackRunLifecycle(session);
+        record.run = run;
+        record.fileOwner?.watch(run, record.abortController!.signal);
         // A reopened session runs on the model its file recorded, which may bill differently from the launch.
         const dollarBilled = reopenPath !== null && session.model ? this.engine.modelDollarBilled(session.model) : resolved.dollarBilled;
         // The level pi clamped to this session's model, never the requested one.
         const effort = sessionEffort(session);
         record.bridgeUnsub = bridge.attach(session, dollarBilled, effort);
+        record.windDown = noticeWindDown(run, record.abortController!.signal, (windDown) => this.postWindDown(record, windDown));
         // Appended before prompt(), so each entry precedes this run's messages. A new file is only
         // written once pi commits the task prompt; a reopened file takes the entry at once.
         if (launch) session.sessionManager.appendCustomEntry(DAMOCLES_AGENT_LAUNCH_ENTRY, effort ? { ...launch, effort } : launch);
@@ -850,6 +877,7 @@ export class AgentManager {
           record.pendingSteers = undefined;
         }
       },
+      onPrompted: () => { record.prompted = true; },
       onToolActivity: (activity) => {
         if (activity.type === 'end') record.toolUses++;
       },
@@ -864,6 +892,28 @@ export class AgentManager {
     record.session = result.session;
     record.completedAt ??= Date.now();
     return result.responseText;
+  }
+
+  /** The one writer of a card's wind-down, its own run's or the one a resume relays while it waits for the file. */
+  private postWindDown(record: AgentRecord, windDown: AgentWindDown | null): void {
+    record.shownWindDown = windDown ?? undefined;
+    if (this.disposed || this.agents.get(record.id) !== record) return;
+    this.engine.postMessage({ type: 'statusUpdate', status: 'windingDown', windDown, parentToolUseId: record.toolCallId });
+  }
+
+  /**
+   * A reloaded webview rebuilt the bound session's cards from their files, which end a run that has not settled. Each such
+   * run's card is running again, with its Background Tasks row and the wind-down it shows, until the run's own outcome.
+   */
+  replayLive(): void {
+    if (this.disposed) return;
+    for (const record of this.agents.values()) {
+      if (!this.doneResolvers.has(record)) continue;
+      this.engine.postMessage({ type: 'taskStarted', taskId: record.id, toolUseId: record.toolCallId, description: record.description, taskType: record.type, isBackground: record.background === true });
+      // A queued run has no row until it starts (`startRecord`).
+      if (record.background && record.status !== 'queued') this.emitBackgroundTaskStarted(record);
+      if (record.shownWindDown) this.postWindDown(record, record.shownWindDown);
+    }
   }
 
   /** Roll this run's cost delta into the parent budget meter, from the reading its bridge published. */
@@ -881,6 +931,8 @@ export class AgentManager {
     const browserSuccess = record.status === 'completed' || record.status === 'steered';
     // A record `clear()` dropped belongs to a session the panel no longer shows, and its spend is already counted.
     const tracked = !this.disposed && this.agents.get(id) === record;
+    record.windDown?.end();
+    record.windDown = undefined;
     // Settle before the card resolves: spend that raised no event, such as a cache warm, rolls here.
     if (tracked) bridge.settleUsage();
     if (record.bridgeUnsub) {
@@ -913,6 +965,11 @@ export class AgentManager {
       this.engine.forgetSession(record.session);
       record.session = undefined;
     }
+    record.run?.dispose();
+    record.run = undefined;
+    // The run settled and its session is disposed, here or by an earlier `dispose`, so it writes no more.
+    record.fileOwner?.release();
+    record.fileOwner = undefined;
     // AFTER the session is torn down, so no tool call can still be in flight. An aborted turn resolves
     // its tool call immediately while the underlying browser work keeps running, and a scope disposed
     // while that work is mid-flight would be resurrected by it. Auto-close this subagent's tab(s) ONLY
@@ -929,7 +986,7 @@ export class AgentManager {
       if (record.background) this.emitBackgroundTaskCompleted(record);
     }
     this.running = Math.max(0, this.running - 1);
-    this.settleDone(id, responseText);
+    this.settleDone(record, responseText);
     this.drainQueue();
   }
 
@@ -976,7 +1033,7 @@ export class AgentManager {
     }
     this.bridges.delete(id);
     this.running = Math.max(0, this.running - 1);
-    this.settleDone(id, error);
+    this.settleDone(record, error);
     this.drainQueue();
   }
 
@@ -1047,7 +1104,7 @@ export class AgentManager {
       });
     }
     this.bridges.delete(record.id);
-    this.settleDone(record.id, responseText);
+    this.settleDone(record, responseText);
   }
 
   /**
@@ -1120,6 +1177,8 @@ export class AgentManager {
         this.engine.forgetSession(record.session);
         record.session = undefined;
       }
+      record.run?.dispose();
+      record.run = undefined;
     }
     this.agents.clear();
     this.bridges.clear();

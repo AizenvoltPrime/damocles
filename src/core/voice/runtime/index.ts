@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { homedir, platform } from "node:os";
 import { dirname, join } from "node:path";
@@ -22,6 +21,7 @@ import {
 } from "./compiler-check";
 import { ensurePortAudio, MissingSystemLibraryError } from "./system-libs-check";
 import { requireVoiceRuntimePlatform } from "./supported-platforms";
+import { detectInstalledRuntime, detectInstalledTorchChannel } from "./installed-runtime";
 
 export type RuntimeMode = "auto" | "cuda" | "cpu";
 export type TorchChannel = "cu121" | "cu118" | "cpu";
@@ -67,15 +67,6 @@ export function getDefaultRuntimePaths(rootDir: string = DEFAULT_RUNTIME_DIR): R
   };
 }
 
-export async function detectInstalledRuntime(paths: RuntimePaths): Promise<{ present: boolean; pythonExe: string }> {
-  try {
-    await fs.access(paths.pythonExe);
-    return { present: true, pythonExe: paths.pythonExe };
-  } catch {
-    return { present: false, pythonExe: paths.pythonExe };
-  }
-}
-
 export type InstallAllOptions = {
   paths?: RuntimePaths;
   userSpecifiedPython?: string;
@@ -94,6 +85,8 @@ export type InstallAllOptions = {
    * `"auto"` (install matches detection; sidecar lets the engine choose).
    */
   runtimeMode?: RuntimeMode;
+  /** Whether a missing or broken runtime may be downloaded, repaired or reinstalled; when false, only verified. */
+  allowInstall: boolean;
 };
 
 export type InstallAllResult = {
@@ -107,7 +100,7 @@ export class VoiceRuntimeInstaller {
   private readonly paths: RuntimePaths;
   private initialized = false;
   private detection: GpuDetection | null = null;
-  private installPromise: Promise<InstallAllResult> | null = null;
+  private installRun: { allowInstall: boolean; promise: Promise<InstallAllResult> } | null = null;
 
   constructor(paths: RuntimePaths = getDefaultRuntimePaths()) {
     this.paths = paths;
@@ -130,16 +123,23 @@ export class VoiceRuntimeInstaller {
     return this.detection;
   }
 
-  async installAll(opts: InstallAllOptions = {}): Promise<InstallAllResult> {
-    if (this.installPromise !== null) return this.installPromise;
-    this.installPromise = (async (): Promise<InstallAllResult> => {
-      try {
-        return await this.doInstallAll(opts);
-      } finally {
-        this.installPromise = null;
-      }
+  /**
+   * Joins the run in flight when it serves this caller: any run serves a verify-only caller, and only an installing run
+   * serves one that may install. Otherwise the new run starts after it, so two runs never touch the venv at once.
+   */
+  async installAll(opts: InstallAllOptions): Promise<InstallAllResult> {
+    const inFlight = this.installRun;
+    if (inFlight !== null && (inFlight.allowInstall || !opts.allowInstall)) return inFlight.promise;
+    const promise = (async (): Promise<InstallAllResult> => {
+      if (inFlight !== null) await inFlight.promise.catch(() => undefined);
+      return this.doInstallAll(opts);
     })();
-    return this.installPromise;
+    this.installRun = { allowInstall: opts.allowInstall, promise };
+    const clear = (): void => {
+      if (this.installRun?.promise === promise) this.installRun = null;
+    };
+    promise.then(clear, clear);
+    return promise;
   }
 
   private async doInstallAll(opts: InstallAllOptions): Promise<InstallAllResult> {
@@ -179,6 +179,8 @@ export class VoiceRuntimeInstaller {
       onProgress({ stage: "done", pct: 100, message: "Voice runtime ready." });
       return { ok: true, pythonExe: opts.userSpecifiedPython, device: effective };
     }
+
+    if (!opts.allowInstall) return this.verifyInstalled(effective, smokeLogPath, onProgress);
 
     onProgress({ stage: "detecting", pct: 3, message: "Checking C++ toolchain..." });
     let cxxEnv: Record<string, string> | undefined;
@@ -269,6 +271,28 @@ export class VoiceRuntimeInstaller {
       return { ok: false, pythonExe: this.paths.pythonExe, device: effective, errorMessage: msg };
     }
 
+    onProgress({ stage: "done", pct: 100, message: "Voice runtime ready." });
+    return { ok: true, pythonExe: this.paths.pythonExe, device: effective };
+  }
+
+  private async verifyInstalled(
+    effective: GpuDetection,
+    smokeLogPath: string,
+    onProgress: RuntimeProgressCallback,
+  ): Promise<InstallAllResult> {
+    const fail = (errorMessage: string): InstallAllResult => {
+      onProgress({ stage: "error", pct: 10, message: errorMessage });
+      return { ok: false, pythonExe: this.paths.pythonExe, device: effective, errorMessage };
+    };
+    if (!(await detectInstalledRuntime(this.paths)).present) return fail("The voice runtime is not installed.");
+    const expectedChannel = expectedTorchChannel(effective);
+    const installedChannel = await detectInstalledTorchChannel(this.paths.pythonExe);
+    if ((installedChannel === "cu121" || installedChannel === "cu118" || installedChannel === "cpu") && installedChannel !== expectedChannel) {
+      return fail(`The installed torch wheel is ${installedChannel} but ${expectedChannel} is required; reinstall the voice runtime.`);
+    }
+    onProgress({ stage: "smoke-check", pct: 10, message: "Verifying existing runtime..." });
+    const smoke = await runImportSmokeCheck(this.paths.pythonExe, { logPath: smokeLogPath });
+    if (!smoke.ok) return fail(formatSmokeError(smoke));
     onProgress({ stage: "done", pct: 100, message: "Voice runtime ready." });
     return { ok: true, pythonExe: this.paths.pythonExe, device: effective };
   }
@@ -462,65 +486,6 @@ export function expectedTorchChannel(detection: GpuDetection): TorchChannel {
   return "cpu";
 }
 
-/**
- * Read `torch.version.cuda` from the installed venv to discover which torch
- * wheel was installed previously. Used to detect channel mismatch between an
- * existing runtime and what the current (detection, user-setting) tuple would
- * install — when they disagree, the installer wipes and reinstalls instead of
- * letting the sidecar crash at engine load.
- *
- * Returns:
- *   - `cu121` / `cu118` / `cpu`: matching the wheel that's installed
- *   - `missing`: torch isn't importable (use full reinstall path)
- *   - `unknown`: torch is present but the version string didn't parse
- */
-export async function detectInstalledTorchChannel(
-  pythonExe: string,
-): Promise<TorchChannel | "missing" | "unknown"> {
-  const script =
-    "import sys\n" +
-    "try:\n" +
-    "    import torch\n" +
-    "except Exception:\n" +
-    "    sys.stdout.write('missing'); sys.exit(0)\n" +
-    "v = getattr(torch.version, 'cuda', None)\n" +
-    "if v is None:\n" +
-    "    sys.stdout.write('cpu')\n" +
-    "elif v.startswith('12.'):\n" +
-    "    sys.stdout.write('cu121')\n" +
-    "elif v.startswith('11.'):\n" +
-    "    sys.stdout.write('cu118')\n" +
-    "else:\n" +
-    "    sys.stdout.write('unknown')\n";
-  return await new Promise((resolve) => {
-    const child = spawn(pythonExe, ["-c", script], {
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    let out = "";
-    let settled = false;
-    const settle = (val: TorchChannel | "missing" | "unknown"): void => {
-      if (settled) return;
-      settled = true;
-      resolve(val);
-    };
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      settle("unknown");
-    }, 30_000);
-    child.stdout?.on("data", (chunk: Buffer) => { out += chunk.toString("utf8"); });
-    child.on("error", () => { clearTimeout(timer); settle("missing"); });
-    child.on("exit", (code) => {
-      clearTimeout(timer);
-      if (code !== 0) return settle("missing");
-      const trimmed = out.trim();
-      if (trimmed === "cu121" || trimmed === "cu118" || trimmed === "cpu") return settle(trimmed);
-      if (trimmed === "missing") return settle("missing");
-      return settle("unknown");
-    });
-  });
-}
-
 function formatGb(bytes: number): string {
   return (bytes / 1024 / 1024 / 1024).toFixed(1);
 }
@@ -538,5 +503,5 @@ function formatSmokeError(result: SmokeCheckResult): string {
   return `Voice runtime smoke check failed${moduleClause}.\n${tail}${logClause}`;
 }
 
-export { detectGpu, runImportSmokeCheck, checkDiskSpace, INSTALL_SIZE_BYTES };
+export { detectGpu, runImportSmokeCheck, checkDiskSpace, INSTALL_SIZE_BYTES, detectInstalledRuntime, detectInstalledTorchChannel };
 export type { GpuDetection, DiskCheck, SmokeCheckResult };

@@ -14,14 +14,14 @@ export const IMAGE_PI_TOOL_NAMES: readonly string[] = [TOOL_GENERATE_IMAGE];
 export const IMAGE_PROVIDER = 'openrouter';
 
 /**
- * Whether Damocles offers this catalog model: every price finite and non-negative, and a positive output
+ * Whether Damocles offers this catalog model: every price in every tier finite and non-negative, and a positive output
  * token price, because the image is the output and pi's token-priced `usage` is the recorded spend whenever
  * OpenRouter's response carries no billed `usage.cost`.
  * A negative price is OpenRouter's "variable price" sentinel (`openrouter/auto`), which pi turns into a
  * negative cost that disables the budget limit; a zero output price means per-image billing pi records as $0.
  */
 export function isOfferedImageModel(model: ImageModel<ImageApi>): boolean {
-  const prices = Object.values(model.cost);
+  const prices = [model.cost, ...(model.cost.tiers ?? [])].flatMap((rates) => [rates.input, rates.output, rates.cacheRead, rates.cacheWrite]);
   return prices.every((price) => Number.isFinite(price) && price >= 0) && model.cost.output > 0;
 }
 

@@ -119,6 +119,62 @@ describe('what a screen reader gets', () => {
   });
 });
 
+describe("a stopped run's wind-down, as core published it", () => {
+  const LINE = "Stopping: waiting for pi's agent_settled handlers to return. pi gives them no abort signal. pi extensions with such a handler: C:\\x\\held.js.";
+
+  function mountWindDown(isProcessing: boolean, windDown: string | undefined) {
+    return mount(StatusBar, {
+      props: { isProcessing, awaitingUserAction: false, windDown },
+      global: { plugins: [i18n] },
+    });
+  }
+
+  it('puts the bar up with the line after the Stop, though the turn shows stopped', () => {
+    const bar = mountWindDown(false, LINE);
+
+    expect(bar.find('[data-testid="status-row"]').exists()).toBe(true);
+    expect(bar.get('[data-testid="status-wind-down"]').text()).toBe(LINE);
+    expect(bar.get('[data-testid="status-wind-down"]').attributes('title')).toBe(LINE);
+    // Esc has no send to take back.
+    expect(bar.text()).not.toContain('Esc to interrupt');
+  });
+
+  it('says why a send that waits behind it has not started, in place of the phrase, and keeps Esc', () => {
+    const bar = mountWindDown(true, LINE);
+
+    expect(bar.get('[data-testid="status-wind-down"]').text()).toBe(LINE);
+    expect(bar.find('.d-glint').exists()).toBe(false);
+    expect(bar.text()).toContain('Esc to interrupt');
+  });
+
+  it('takes the line down once it is cleared', async () => {
+    const bar = mountWindDown(false, LINE);
+
+    await bar.setProps({ windDown: undefined });
+
+    expect(bar.find('[data-testid="status-wind-down"]').exists()).toBe(false);
+    expect(bar.find('[data-testid="status-row"]').exists()).toBe(false);
+  });
+
+  it('announces the line in the one status region', () => {
+    const bar = mountWindDown(false, LINE);
+
+    expect(bar.findAll('[role="status"]')).toHaveLength(1);
+    expect(bar.get('[role="status"]').text()).toBe(LINE);
+    expect(bar.get('[data-testid="status-wind-down"]').attributes('aria-hidden')).toBe('true');
+  });
+
+  it('gives way to a prompt waiting on the user', () => {
+    const bar = mount(StatusBar, {
+      props: { isProcessing: false, awaitingUserAction: true, windDown: LINE },
+      global: { plugins: [i18n] },
+    });
+
+    expect(bar.find('[data-testid="status-wind-down"]').exists()).toBe(false);
+    expect(bar.get('[data-testid="status-label"]').text()).toBe('Waiting for your answer');
+  });
+});
+
 describe('the parked label in Greek', () => {
   it('renders the translated string, not the key', () => {
     applyLocale('el');

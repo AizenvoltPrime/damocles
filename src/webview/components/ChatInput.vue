@@ -445,7 +445,7 @@ function handleSend() {
   resetHistory();
 }
 
-// Terminal attachments go only with a message sent now; a queued one leaves the chips for the next send.
+// Pending attachments go only with a message sent now; a queued one leaves the chips for the next send.
 function dispatch(content: string | UserContentBlock[], terminalAttachmentIds: string[] = []) {
   if (props.isProcessing) emit("queue", content);
   else emit("send", content, ideContextEnabled.value, terminalAttachmentIds);
