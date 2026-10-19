@@ -177,6 +177,7 @@ describe('ready handler: restores the panel into the right folder', () => {
       setPanelToken: vi.fn(),
       setResumeSession: vi.fn(),
       openResumeTarget: vi.fn(async (): Promise<ResumeOutcome> => { order.push('open'); return { kind: 'switched' }; }),
+      letGoOfUnreadTarget: vi.fn((_sessionId: string) => false),
       initializeEarly: vi.fn(async () => { order.push('start'); }),
     };
   }
@@ -197,7 +198,7 @@ describe('ready handler: restores the panel into the right folder', () => {
       order.push('gate-open');
       return instance;
     });
-    const loadSessionHistory = vi.fn(async (..._args: unknown[]) => { order.push('load'); });
+    const loadSessionHistory = vi.fn(async (..._args: unknown[]): Promise<string[] | null> => { order.push('load'); return []; });
     const postWorkspaceFolderState = vi.fn();
     const deps = {
       platform: createFakePlatform(),
@@ -255,6 +256,19 @@ describe('ready handler: restores the panel into the right folder', () => {
 
     expect(h.order).toEqual(['open', 'load', 'list', 'history', 'start']);
     expect(h.posted.filter((m) => m.type === 'sessionStarted')).toEqual([{ type: 'sessionStarted', sessionId: 's-a', stored: true }]);
+  });
+
+  // The webview would otherwise name a conversation no start can open, and every send would be refused.
+  it("lets go of a saved conversation whose file the replay could not read, names it to no webview, and starts a new one", async () => {
+    const h = harness();
+    h.session.openResumeTarget.mockImplementationOnce(async () => { h.order.push('open'); return { kind: 'deferred' }; });
+    h.loadSessionHistory.mockImplementationOnce(async () => { h.order.push('load'); return null; });
+    h.session.letGoOfUnreadTarget.mockReturnValueOnce(true);
+    await createSessionHandlers(h.deps).ready!({ type: 'ready', savedSessionId: 's-a' } as never, h.ctx);
+
+    expect(h.session.letGoOfUnreadTarget).toHaveBeenCalledWith('s-a');
+    expect(h.order).toEqual(['open', 'load', 'list', 'history', 'start']);
+    expect(h.posted.some((m) => m.type === 'sessionStarted')).toBe(false);
   });
 
   it('tells the webview its folder state', async () => {
@@ -442,6 +456,8 @@ describe('ready handler: a conversation pi has not written yet', () => {
       setPanelToken: vi.fn(),
       setResumeSession: vi.fn(),
       openResumeTarget: async () => ({ kind: 'switched' as const }),
+      // pi holds the conversation it switched to, so the session keeps it whatever the replay read.
+      letGoOfUnreadTarget: () => false,
       initializeEarly: async () => undefined,
     };
     const host = { id: 'host' };

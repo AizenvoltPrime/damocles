@@ -111,6 +111,11 @@ export interface ChatSession extends ActivitySource {
    * or tells the user why it could not and keeps it as the target. Never rejects.
    */
   openResumeTarget(sessionId: string): Promise<ResumeOutcome>;
+  /**
+   * A `deferred` open whose replay read no file of `sessionId` showed none of it, so the panel lets go of it while no start
+   * has bound it, and its start opens a new conversation. Whether it let go.
+   */
+  letGoOfUnreadTarget(sessionId: string): boolean;
   /** The review tab's changed files in a scope (D60); fresh reads again whatever changed (a user's open, a hand-off). */
   chatReviewSnapshot(scope: ChatScope, opts?: { readonly fresh?: boolean }): Promise<ChatReviewSnapshot>;
   /** One file's diff in the review tab's scope, as git prints it; missing when the file is not listed there. */

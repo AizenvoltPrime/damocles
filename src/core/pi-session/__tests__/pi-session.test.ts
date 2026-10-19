@@ -12102,6 +12102,35 @@ describe('a resume shows its conversation only once pi bound it, and a send reac
         await session.dispose();
       });
     });
+
+    // Kept as the target, the conversation would refuse every send while no start can open it.
+    it.each(['resume', 'restore'] as const)('a %s whose replay finds its file gone lets go of it: the start opens a new conversation, which a send reaches', async (path_) => {
+      const b = stored('in B');
+      const created = opensWhatPiIsAsked();
+      filesOnDisk(b);
+      const session = recordsStart(reloadableSession());
+      const { deps, ctx } = readyDeps(session);
+      (deps.historyManager as unknown as { loadSessionHistory: () => Promise<string[] | null> }).loadSessionHistory = async () => {
+        order.push('replay');
+        fsSync.rmSync(b.file);
+        return null;
+      };
+
+      if (path_ === 'resume') await resumeStoredSession(deps, 'p1', b.id);
+      else await createSessionHandlers(deps).ready!({ type: 'ready', savedSessionId: b.id } as never, ctx);
+      await vi.waitFor(() => expect(created).toHaveLength(1));
+
+      expect(order).toEqual(path_ === 'resume' ? ['resumeAccepted', 'replay', 'start'] : ['replay', 'storedSessions', 'promptHistory', 'start']);
+      expect(posted.filter(({ message }) => message.type === 'sessionStarted' && message.sessionId === b.id)).toEqual([]);
+      expect(session.holdsSession(b.id)).toBe(false);
+      expect(sessionLeasesOf(session)).not.toContain(b.id);
+      expect(bound(session)).toBe(created[0]!.getSessionId());
+      expect(errors()).toEqual([]);
+
+      await session.sendMessage('fresh', undefined, 'c1', { content: 'fresh' });
+      expect(promptsIn(created[0]!.getSessionFile()!)).toEqual(['fresh']);
+      await session.dispose();
+    });
   });
 
   it('a resume whose rebind throws after pi installed it goes back to the conversation the panel created and shows, and a send naming that one lands in its file', async () => {

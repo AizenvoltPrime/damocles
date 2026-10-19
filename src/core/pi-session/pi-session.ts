@@ -3371,6 +3371,13 @@ export class PiSession implements ChatSession {
     return request.outcome;
   }
 
+  letGoOfUnreadTarget(sessionId: string): boolean {
+    // A runtime holds the conversation pi opened; only a target no start has bound is let go of.
+    if (this.runtime || this.resumeSessionId !== sessionId) return false;
+    this.setResumeSession(null);
+    return true;
+  }
+
   /**
    * Switch the live runtime to `request`'s stored session, chained onto resetPromise so a following send awaits the switch.
    * A panel that has not started opens it in `start()` instead.

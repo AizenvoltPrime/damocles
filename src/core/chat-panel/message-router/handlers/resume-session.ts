@@ -50,8 +50,11 @@ export async function resumeStoredSession(deps: HandlerDependencies, panelId: st
 
       try {
         const rewindableIds = await deps.historyManager.loadSessionHistory(instance.folder.fsPath, sessionId, instance.host, instance.session);
-        instance.session.seedCheckpoints(rewindableIds ?? []);
-        postMessage(instance.host, { type: "sessionStarted", sessionId, stored: rewindableIds !== null });
+        // The replay told the user why it read nothing, so the start below opens a new conversation instead.
+        if (rewindableIds !== null || !instance.session.letGoOfUnreadTarget(sessionId)) {
+          instance.session.seedCheckpoints(rewindableIds ?? []);
+          postMessage(instance.host, { type: "sessionStarted", sessionId, stored: rewindableIds !== null });
+        }
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') return;
         log("[MessageRouter] Error loading session history:", err);

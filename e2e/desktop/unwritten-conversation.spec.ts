@@ -160,6 +160,16 @@ test('restoring a chat whose written conversation was deleted meanwhile says so 
     desktop = await launch({ args: ['--lang=el-GR'] });
     tab = await activeChat(desktop.app);
     await expect(tab.getByText('Το αρχείο αυτής της συνομιλίας δεν βρέθηκε. Μπορεί να έχει διαγραφεί.')).toBeVisible();
+
+    // The chat starts a new conversation in its place, so the next message is answered and written to a file of its own.
+    const after = tab.getByPlaceholder(GREEK_PLACEHOLDER);
+    await after.fill('after the deletion');
+    await after.press('Enter');
+    await tab.getByText('Echo: after the deletion', { exact: true }).waitFor();
+    await expect.poll(() => savedSessionId(tab)).toBeTruthy();
+    const fresh = (await savedSessionId(tab))!;
+    expect(fresh).not.toBe(written);
+    expect(sessionFiles(home.agentDir, fresh)).toHaveLength(1);
   } finally {
     await stub.close();
   }

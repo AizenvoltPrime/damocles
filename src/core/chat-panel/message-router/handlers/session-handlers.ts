@@ -177,6 +177,11 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
           try {
             const rewindableIds = await timed("ready.replay", () =>
               deps.historyManager.loadSessionHistory(instance.folder.fsPath, savedSessionId, instance.host, instance.session));
+            // The replay told the user why it read nothing, so the panel opens a new conversation, and the place published is the panel's own.
+            if (rewindableIds === null && instance.session.letGoOfUnreadTarget(savedSessionId)) {
+              placeSignaled = false;
+              return false;
+            }
             signalStarted(instance.host, { type: "sessionStarted", sessionId: savedSessionId, stored: rewindableIds !== null });
           } catch (err) {
             if (err instanceof Error && err.name === 'AbortError') return true;
