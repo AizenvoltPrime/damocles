@@ -826,7 +826,8 @@ jobs:
             scripts=$(rpm -qp --scripts "$rpm")
             grep -q apparmor <<<"$scripts"
             # Fedora has no AppArmor, so this also proves the scripts never fail the install without it.
-            dnf install -y "$rpm"
+            # Cisco serves openh264 from one host outside the Fedora mirrors; without that repo, noopenh264 from Fedora provides the library.
+            dnf install -y --disable-repo=fedora-cisco-openh264 "$rpm"
             test -x /opt/Damocles/damocles
             test -f /opt/Damocles/resources/app.asar
             test -d /opt/Damocles/resources/app.asar.unpacked
