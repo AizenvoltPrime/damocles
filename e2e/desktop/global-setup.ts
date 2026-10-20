@@ -4,7 +4,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { build } from 'esbuild';
 import { EXTENSION_EXTERNALS } from '../../scripts/extension-externals.mjs';
-import { hermeticEnv, REPO_ROOT, WINDOWS_POWERSHELL_CACHE, WINDOWS_POWERSHELL_CACHE_IN_PROFILE } from './support/hermetic';
+import { launchDesktop, mainLog } from './support/app';
+import { createHermeticHome, hermeticEnv, REPO_ROOT, WINDOWS_POWERSHELL_CACHE, WINDOWS_POWERSHELL_CACHE_IN_PROFILE } from './support/hermetic';
 import { PACKAGED_APP_ENV, packagedAppPath } from './support/packaged-app';
 import { SECOND_PROCESS_BUNDLE } from './support/second-process';
 
@@ -31,6 +32,31 @@ export default async function globalSetup(): Promise<void> {
     logLevel: 'warning',
   });
   if (process.platform === 'win32') warmWindowsPowerShellCache();
+  await warmFirstLaunch();
+}
+
+const WARM_LAUNCH_TIMEOUT_MS = 180_000;
+// The main log line of a chat that started: after the git probe, the first window and pi's import.
+const CHAT_STARTED = '[perf] start.total';
+
+/** Launches the app once to its first chat, so no test pays a fresh runner's first launch (docs/release.md, "Desktop end-to-end suite"). */
+async function warmFirstLaunch(): Promise<void> {
+  const home = createHermeticHome();
+  const started = Date.now();
+  try {
+    const desktop = await launchDesktop(home);
+    try {
+      while (!mainLog(home).includes(CHAT_STARTED)) {
+        if (Date.now() - started > WARM_LAUNCH_TIMEOUT_MS) throw new Error(`The warm-up launch logged no "${CHAT_STARTED}" within ${WARM_LAUNCH_TIMEOUT_MS / 1000} s:\n${mainLog(home)}`);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+    } finally {
+      await desktop.close();
+    }
+  } finally {
+    await home.dispose();
+  }
+  console.log(`Warmed the app's first launch in ${((Date.now() - started) / 1000).toFixed(1)} s`);
 }
 
 // Analysing a runner's whole module path takes minutes, never more than this.

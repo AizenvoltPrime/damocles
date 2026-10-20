@@ -17,16 +17,21 @@ export interface Box {
 export async function colouredPixelsPerFrame(app: ElectronApplication, page: Page, box: Box, act: () => Promise<void>, done: () => Promise<void>): Promise<number[]> {
   const cdp = await app.context().newCDPSession(page);
   const frames: string[] = [];
-  cdp.on('Page.screencastFrame', ({ data, sessionId }) => {
+  // An ack still pending at detach rejects, so each is awaited before it.
+  const acks: Array<Promise<unknown>> = [];
+  const onFrame = ({ data, sessionId }: { data: string; sessionId: number }): void => {
     frames.push(data);
-    void cdp.send('Page.screencastFrameAck', { sessionId });
-  });
+    acks.push(cdp.send('Page.screencastFrameAck', { sessionId }));
+  };
+  cdp.on('Page.screencastFrame', onFrame);
   await cdp.send('Page.startScreencast', { format: 'png', everyNthFrame: 1 });
   await expect.poll(() => frames.length).toBeGreaterThan(0);
   await act();
   await done();
   await settled(page);
+  cdp.off('Page.screencastFrame', onFrame);
   await cdp.send('Page.stopScreencast');
+  await Promise.all(acks);
   await cdp.detach();
   return page.evaluate(async ({ frames, box }) => {
     const counts: number[] = [];

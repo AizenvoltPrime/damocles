@@ -373,6 +373,8 @@ test('`git worktree remove` in a terminal on a chat worktree: Delete then succee
     await openProjectChat(app, repo.project);
     const tab = await optIn(app);
     await turn(tab, 'Removed in a terminal', 'Soon removed outside');
+    // The turn's checkpoint runs git in the worktree after the reply shows, and Windows refuses to remove a folder a process works in.
+    await expect(tab.getByTestId('user-message-rewind').first()).toBeVisible();
     const [record] = liveRecords(home);
     const shell = await shellPage(app);
     // a terminal of the project folder: Windows refuses to remove a folder a shell has as its working directory
