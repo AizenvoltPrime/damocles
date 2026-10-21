@@ -31,6 +31,8 @@ interface ParsedMarkdownFile {
 export class SlashCommandService {
   private cache: CustomSlashCommandInfo[] | null = null;
   private skillCache: SkillInfo[] | null = null;
+  /** Bumped by every invalidation; a scan that started under an older value is stale. */
+  private generation = 0;
   private watchers: FileWatcher[] = [];
   private commandDebounceTimer: NodeJS.Timeout | null = null;
   private skillDebounceTimer: NodeJS.Timeout | null = null;
@@ -58,6 +60,7 @@ export class SlashCommandService {
   }
 
   private invalidateAll(): void {
+    this.generation++;
     this.cache = null;
     this.skillCache = null;
     this.onCacheInvalidate?.();
@@ -81,6 +84,7 @@ export class SlashCommandService {
         clearTimeout(this.commandDebounceTimer);
       }
       this.commandDebounceTimer = setTimeout(() => {
+        this.generation++;
         this.cache = null;
         log("Slash command cache invalidated due to file change");
         this.onCacheInvalidate?.();
@@ -92,6 +96,7 @@ export class SlashCommandService {
         clearTimeout(this.skillDebounceTimer);
       }
       this.skillDebounceTimer = setTimeout(() => {
+        this.generation++;
         this.skillCache = null;
         log("Skill cache invalidated due to file change");
         this.onCacheInvalidate?.();
@@ -121,7 +126,15 @@ export class SlashCommandService {
     if (this.cache) {
       return this.cache;
     }
+    const generation = this.generation;
+    const commands = await this.scanCommands();
+    // An invalidation during the scan (a trust grant, a file change) leaves its result out of date.
+    if (generation !== this.generation) return this.getCommands();
+    this.cache = commands;
+    return commands;
+  }
 
+  private async scanCommands(): Promise<CustomSlashCommandInfo[]> {
     const byName = new Map<string, CustomSlashCommandInfo>();
     const untrusted = this.workspacePath !== null && !this.platform.trust.isTrusted(this.workspacePath);
 
@@ -145,8 +158,6 @@ export class SlashCommandService {
 
     const commands = [...byName.values()];
     commands.sort((a, b) => a.name.localeCompare(b.name));
-
-    this.cache = commands;
     return commands;
   }
 
@@ -300,7 +311,14 @@ export class SlashCommandService {
     if (this.skillCache) {
       return this.skillCache;
     }
+    const generation = this.generation;
+    const skills = await this.scanSkills();
+    if (generation !== this.generation) return this.getSkills();
+    this.skillCache = skills;
+    return skills;
+  }
 
+  private async scanSkills(): Promise<SkillInfo[]> {
     const byName = new Map<string, SkillInfo>();
     const untrusted = this.workspacePath !== null && !this.platform.trust.isTrusted(this.workspacePath);
 
@@ -320,8 +338,6 @@ export class SlashCommandService {
 
     const skills = [...byName.values()];
     skills.sort((a, b) => a.name.localeCompare(b.name));
-
-    this.skillCache = skills;
     return skills;
   }
 

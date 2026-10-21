@@ -408,6 +408,23 @@ describe('SlashCommandService asset-source precedence', () => {
       expect((await svc.getCommands())[0]?.untrusted).toBeFalsy();
     });
 
+    // A panel moved onto a just-added project scans it before the grant lands; that scan must not outlive the grant.
+    it('a scan in flight when trust is granted neither caches nor returns the flagged entries', async () => {
+      writeSkill(ws, '.damocles/skills', 'foo', 'project version');
+      writeCommand(ws, '.damocles/commands', 'bar', 'project version');
+      setTrusted(false);
+
+      const svc = makeService();
+      const skills = svc.getSkills();
+      const commands = svc.getCommands();
+      platform.trust.grantTrust([ws]);
+
+      expect((await skills)[0]?.untrusted).toBeFalsy();
+      expect((await commands)[0]?.untrusted).toBeFalsy();
+      expect((await svc.findSkill('foo'))?.untrusted).toBeFalsy();
+      expect((await svc.findCommand('bar'))?.untrusted).toBeFalsy();
+    });
+
     it('stops re-scanning once disposed', async () => {
       writeSkill(ws, '.damocles/skills', 'foo', 'project version');
       setTrusted(false);
