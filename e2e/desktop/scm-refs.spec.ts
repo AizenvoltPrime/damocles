@@ -5,7 +5,7 @@ import { expect, test } from './support/fixtures';
 import { git, initRepo, type GitHome } from './support/git';
 import { writeUserSettings } from './support/hermetic';
 import { menuItem, overlayMenu, readyOverlay } from './support/overlay';
-import { answerInput, bareClone, moreActions, openScmProject, pickItem, quickInput, quickInputField, scmSection, write } from './support/scm';
+import { answerInput, bareClone, gitLog, moreActions, openScmProject, pickItem, quickInput, quickInputField, scmSection, write } from './support/scm';
 import { overlayPage, selectedProjectKey } from './support/shell';
 import { clickSectionAction } from './support/shell-ui';
 import { setContentSize } from './support/settings';
@@ -266,7 +266,7 @@ test('More Actions › Stash says why Pop Latest Stash is off when the repositor
 
 test('Stash Staged stashes the staged changes only, and is offered only with git 2.35 or later', async ({ foreground: _foreground, home, launch }) => {
   await initRepo(home, home.project, { 'a.ts': 'export const a = 1;\n', 'b.ts': 'export const b = 1;\n' });
-  const { app } = await launch();
+  const { app } = await launch({ env: { DAMOCLES_E2E_HOOKS: '1' } });
   const shell = await openScmProject(app, home.project);
   const capable = await gitAtLeast(home, home.project, 2, 35);
   await clickSectionAction(shell, 'scm-more-actions');
@@ -282,7 +282,9 @@ test('Stash Staged stashes the staged changes only, and is offered only with git
   await git(home, home.project, 'add', 'a.ts');
   write(home.project, 'b.ts', 'export const b = 2;\n');
   await stash(app, shell, 'stashStaged', 'staged only');
-  await expect(async () => expect(await stashList(home, home.project)).toBe('On main: staged only')).toPass();
+  // git stash stores refs/stash before it resets the index, so the reads wait for the push's Git log line, written on exit
+  await expect.poll(() => gitLog(app)).toContain('> git stash push --staged');
+  expect(await stashList(home, home.project)).toBe('On main: staged only');
   expect(await git(home, home.project, 'diff', '--cached', '--name-only')).toBe('');
   expect(await git(home, home.project, 'diff', '--name-only')).toBe('b.ts');
 });
@@ -410,7 +412,8 @@ test('Create Worktree\'s folder button sets the path to the picked folder and th
   await expect(quickInputField(overlay)).toBeFocused();
   expect(await quickInputField(overlay).evaluate((input: HTMLInputElement) => input.value.slice(input.selectionStart ?? 0, input.selectionEnd ?? 0))).toBe('wt-one');
   await quickInputField(overlay).press('Enter');
-  await expect.poll(() => fs.existsSync(path.join(picked, 'wt-one', '.git'))).toBe(true);
+  // git writes the worktree's .git file before its HEAD; main records the adopted worktree only after `worktree add` exited
+  await expect.poll(() => registryRecords(home).find((record) => record.kind === 'adopted')?.branch).toBe('wt-one');
   expect(await git(home, path.join(picked, 'wt-one'), 'branch', '--show-current')).toBe('wt-one');
 
   // the folder of the first worktree is remembered for this repository

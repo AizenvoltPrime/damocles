@@ -200,6 +200,8 @@ async function dragSash(shell: Page, testId: string, dx: number, dy: number): Pr
  * Drags a sidebar section by its header and drops it `y` px below the top of another section. Playwright's dragTo starts no
  * HTML5 drag in Electron, so the pointer goes through the DevTools protocol: Chromium starts the drag from the header itself
  * (draggable, dragstart, the data it set), hands the drag data back, and the drop is dispatched with that data.
+ * Callers take the foreground fixture: a move without buttons, as Chromium's replay of an unparked OS cursor over the window
+ * sends, ends the press before the drag starts.
  */
 async function dragSection(app: ElectronApplication, shell: Page, from: string, to: string, y: number): Promise<void> {
   // The sidebar slides and its sections grow in at launch: measure once they rest, or the press misses the header.
@@ -233,7 +235,7 @@ async function dragSection(app: ElectronApplication, shell: Page, from: string, 
     }
   }
 }
-test('a sidebar section dragged by its header lands on the half it is dropped on, keeps its place after a restart, and its header menu moves and resets it', async ({ launch }) => {
+test('a sidebar section dragged by its header lands on the half it is dropped on, keeps its place after a restart, and its header menu moves and resets it', async ({ foreground: _foreground, launch }) => {
   const header = (shell: Page, name: string) => shell.locator(`section[data-section="${name}"] [data-testid="sidebar-section-header"]`);
   const visualOrder = async (shell: Page): Promise<string[]> => {
     const tops = await shell.locator('section[data-section]').evaluateAll((nodes) => nodes.map((node) => [node.getAttribute('data-section')!, node.getBoundingClientRect().top] as const));
@@ -272,7 +274,7 @@ test('a sidebar section dragged by its header lands on the half it is dropped on
   await expect.poll(() => visualOrder(shell)).toEqual(['projects', 'chats', 'files', 'scm', 'graph', 'repos', 'search']);
 });
 
-test('a sash sits in every gap between sidebar sections wherever they are, and one beside collapsed sections moves the open ones past them', async ({ launch }) => {
+test('a sash sits in every gap between sidebar sections wherever they are, and one beside collapsed sections moves the open ones past them', async ({ foreground: _foreground, launch }) => {
   const { app } = await launch();
   const shell = await shellPage(app);
   // within the 1024x768 displays of the macOS and Windows runners, whose work areas cap the height

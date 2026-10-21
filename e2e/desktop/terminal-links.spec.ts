@@ -137,9 +137,12 @@ test('a path outside the project, a missing file and a ../ escape are never link
   const cols = await activeTerminal(shell).getAttribute('data-cols');
   await shell.getByTestId('toggle-sidebar').click();
   await expect(shell.getByTestId('sidebar')).toHaveAttribute('inert', '');
-  // The grid widens as the sidebar slides out, and the terminal reflows to it.
-  await expect(activeTerminal(shell)).not.toHaveAttribute('data-cols', cols ?? '');
   await settled(shell);
+  // Printed once the slide has ended: its input sends the pty the final size first, and the redraw a pty resize brings
+  // re-renders the rows, which drops a hovered link until main resolves it again.
+  await print(shell, 'src/lib');
+  // The grid widened as the sidebar slid out, and the terminal reflowed to it.
+  await expect(activeTerminal(shell)).not.toHaveAttribute('data-cols', cols ?? '');
   await hoverTerminalText(shell, 'src/lib', 'lib');
   await expect(linkUnderline(shell)).toHaveCount(1);
   await shell.keyboard.down(MODIFIER);

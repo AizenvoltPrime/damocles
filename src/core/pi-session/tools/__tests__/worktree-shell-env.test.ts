@@ -1,10 +1,14 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PiCodingAgentModule } from '../../pi-loader';
 import { createBashTool, type ShellOptions } from '../bash-tool';
 import { createTrackedPowerShellOperations } from '../powershell-tool';
 
 /** Slice 12a rule 13: the worktree variables reach the agent's shells through pi's spawnHook and the PowerShell env, never process.env. */
 describe('the worktree shell environment', () => {
+  // A test run from a Damocles worktree chat's shell inherits the variable.
+  beforeEach(() => vi.stubEnv('DAMOCLES_WORKTREE_INDEX', undefined));
+  afterEach(() => vi.unstubAllEnvs());
+
   it('adds the variables through spawnHook, rebuilds when they change, and leaves process.env alone', async () => {
     const built: Array<{ spawnHook?: (ctx: { command: string; cwd: string; env: NodeJS.ProcessEnv }) => { env: NodeJS.ProcessEnv } }> = [];
     const execute = vi.fn(async () => ({ content: [], details: undefined }));
