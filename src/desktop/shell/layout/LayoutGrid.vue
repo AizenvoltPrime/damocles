@@ -15,7 +15,7 @@ import PaneGrip from './PaneGrip.vue';
 import TerminalPane from './TerminalPane.vue';
 
 // focusOverlay: the editor covers the window, so nothing else in the grid takes focus or pointer input.
-const props = defineProps<{ api: DamoclesShellApi; state: ShellState; focusOverlay: boolean }>();
+const props = defineProps<{ api: DamoclesShellApi; state: ShellState; focusOverlay: boolean; sidebarSliding: boolean }>();
 const { t, locale } = useI18n();
 
 // rem the pointer travels on a grip before a press becomes a drag.
@@ -75,6 +75,7 @@ function onTrackTransition(event: TransitionEvent, running: boolean): void {
   else glidingTracks.delete(event.propertyName);
   tracksGliding.value = glidingTracks.size > 0;
 }
+const gliding = computed(() => tracksGliding.value || props.sidebarSliding);
 
 function onSashStart(): void {
   sashDragging.value = true;
@@ -237,7 +238,7 @@ function takeClick(): boolean {
   return take;
 }
 
-const context: GridContext = { dragging, press, takeClick, openMoveMenu, tracksGliding };
+const context: GridContext = { dragging, press, takeClick, openMoveMenu, gliding };
 provide(GRID_CONTEXT, context);
 onBeforeUnmount(() => release?.());
 

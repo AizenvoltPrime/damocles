@@ -749,6 +749,20 @@ describe('chats section', () => {
 });
 
 describe('sidebar layout', () => {
+  it('reports its own margin-left slide, and no transition its sections run', async () => {
+    const api = fakeShellApi(CHATS);
+    const wrapper = track(mount(Sidebar, { props: { api, state: STATE }, global: sidebarGlobal(api), attachTo: document.body }));
+    await flushPromises();
+    const transition = (element: Element, type: string, propertyName: string) => element.dispatchEvent(Object.assign(new Event(type, { bubbles: true }), { propertyName }));
+    const nav = wrapper.get('[data-testid="sidebar"]').element;
+    transition(nav, 'transitionrun', 'margin-left');
+    transition(nav, 'transitionend', 'margin-left');
+    transition(nav, 'transitionrun', 'width');
+    transition(wrapper.get('[data-testid="files-section"]').element, 'transitionrun', 'margin-left');
+    transition(nav, 'transitioncancel', 'margin-left');
+    expect(wrapper.emitted('slide')).toEqual([[true], [false], [false]]);
+  });
+
   it('lists Files only for an open project; the home folder shows the open-a-project hint', async () => {
     const api = fakeShellApi(CHATS);
     const wrapper = track(mount(Sidebar, { props: { api, state: { ...STATE, selected: { projectKey: 'home', chatId: 'c1' } } }, global: sidebarGlobal(api), attachTo: document.body }));

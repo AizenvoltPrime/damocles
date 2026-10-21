@@ -22,6 +22,7 @@ const state = shallowRef<ShellState | null>(null);
 const titleBar = ref<InstanceType<typeof TitleBar> | null>(null);
 const sidebar = ref<InstanceType<typeof Sidebar> | null>(null);
 const grid = ref<InstanceType<typeof LayoutGrid> | null>(null);
+const sidebarSliding = ref(false);
 
 const editor = createEditorStore(props.api);
 provide(EDITOR_STORE, editor);
@@ -144,6 +145,7 @@ onBeforeUnmount(() => {
           ref="sidebar"
           :api="api"
           :state="state"
+          @slide="sidebarSliding = $event"
         />
       </div>
       <LayoutGrid
@@ -151,6 +153,7 @@ onBeforeUnmount(() => {
         :api="api"
         :state="state"
         :focus-overlay="editor.focusOverlay.value"
+        :sidebar-sliding="sidebarSliding"
       >
         <template #chat>
           <FocusOverlay

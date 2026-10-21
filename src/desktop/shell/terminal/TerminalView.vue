@@ -101,7 +101,7 @@ function refit(): void {
   if (!xterm || !fit || !props.shown || !screenVisible || !fit.proposeDimensions()) return;
   fit.fit();
   // A glide's frames can be further apart than the settle time on a busy renderer, which would send a size it passes through.
-  if (grid?.tracksGliding.value) return;
+  if (grid?.gliding.value) return;
   ptyResize.request({ cols: Math.min(xterm.cols, MAX_TERMINAL_COLS), rows: Math.min(xterm.rows, MAX_TERMINAL_ROWS) });
 }
 
@@ -622,7 +622,7 @@ watch(() => props.settings.decorationsEnabled, (enabled) => {
 });
 useResizeObserver(host, refit);
 // The glide's last frame may already have been observed, so the size it settled at is sent from here.
-watch(() => grid?.tracksGliding.value, (gliding) => {
+watch(() => grid?.gliding.value, (gliding) => {
   if (gliding === false) refit();
 });
 

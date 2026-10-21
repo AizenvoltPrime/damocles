@@ -1,9 +1,11 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { defineComponent, inject } from 'vue';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { DEFAULT_GRID_LAYOUT, type ShellGridLayout, type ShellState } from '../../preload/shell-channels';
 import type { OverlayAnswer } from '../../preload/overlay-channels';
 import { LAYOUT_SETTLED_EVENT } from '../content-bounds';
+import { GRID_CONTEXT, type GridContext } from '../layout/grid-context';
 import LayoutGrid from '../layout/LayoutGrid.vue';
 import Sash from '../layout/Sash.vue';
 import { shellI18n } from '../i18n';
@@ -22,7 +24,7 @@ afterEach(() => {
 function mountGrid(state: ShellState = WITH_TERMINAL) {
   const api = fakeShellApi();
   wrapper = mount(LayoutGrid, {
-    props: { api, state, focusOverlay: false },
+    props: { api, state, focusOverlay: false, sidebarSliding: false },
     global: { plugins: [shellI18n], stubs: { transition: true, TerminalPane: true, PaneGrip: true } },
   });
   const sash = wrapper.findAllComponents(Sash).find((candidate) => candidate.props('orientation') === 'horizontal')!;
@@ -140,7 +142,7 @@ describe('layout grid pane drag', () => {
     vi.spyOn(HTMLElement.prototype, 'setPointerCapture').mockImplementation(() => {});
     const api = fakeShellApi([], { requestOverlay: vi.fn(requestOverlay) });
     wrapper = mount(LayoutGrid, {
-      props: { api, state: WITH_TERMINAL, focusOverlay: false },
+      props: { api, state: WITH_TERMINAL, focusOverlay: false, sidebarSliding: false },
       global: { plugins: [shellI18n], stubs: { transition: true, TerminalPane: true } },
       attachTo: document.body,
     });
@@ -180,13 +182,41 @@ describe('layout grid pane drag', () => {
   });
 });
 
+describe('the grid context', () => {
+  it('reports gliding while a grid-template transition runs on the grid or the sidebar beside it slides', async () => {
+    let context: GridContext | undefined;
+    const Probe = defineComponent({ setup: () => { context = inject(GRID_CONTEXT); return () => null; } });
+    wrapper = mount(LayoutGrid, {
+      props: { api: fakeShellApi(), state: WITH_TERMINAL, focusOverlay: false, sidebarSliding: false },
+      slots: { chat: Probe },
+      global: { plugins: [shellI18n], stubs: { transition: true, TerminalPane: true, PaneGrip: true } },
+    });
+    const grid = wrapper.get('[data-testid="layout-grid"]');
+    const transition = (type: string, propertyName: string) => grid.element.dispatchEvent(Object.assign(new Event(type, { bubbles: true }), { propertyName }));
+    expect(context!.gliding.value).toBe(false);
+
+    transition('transitionrun', 'grid-template-rows');
+    transition('transitionrun', 'grid-template-columns');
+    transition('transitionend', 'grid-template-rows');
+    expect(context!.gliding.value).toBe(true);
+    transition('transitioncancel', 'grid-template-columns');
+    expect(context!.gliding.value).toBe(false);
+    // a transition a pane's content runs bubbles to the grid
+    wrapper.get('[data-testid="chat-slot"]').element.dispatchEvent(Object.assign(new Event('transitionrun', { bubbles: true }), { propertyName: 'grid-template-rows' }));
+    expect(context!.gliding.value).toBe(false);
+
+    await wrapper.setProps({ sidebarSliding: true });
+    expect(context!.gliding.value).toBe(true);
+  });
+});
+
 describe('a pane drag whose pointer capture ends', () => {
   // Chromium ends the grip's capture when main shows the overlay above the shell; the window still gets the pressed pointer.
   it('follows the pointer and its release through the window once the drag began', async () => {
     vi.spyOn(HTMLElement.prototype, 'setPointerCapture').mockImplementation(() => {});
     const api = fakeShellApi([], { requestOverlay: vi.fn(async () => ({ kind: 'dropZones' as const, slot: null })) });
     wrapper = mount(LayoutGrid, {
-      props: { api, state: WITH_TERMINAL, focusOverlay: false },
+      props: { api, state: WITH_TERMINAL, focusOverlay: false, sidebarSliding: false },
       global: { plugins: [shellI18n], stubs: { transition: true, TerminalPane: true } },
       attachTo: document.body,
     });

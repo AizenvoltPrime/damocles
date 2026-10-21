@@ -79,6 +79,11 @@ const slideStyle = computed(() => ({
   marginLeft: props.state.layout.sidebarVisible ? '0px' : `-${width.value}px`,
   transition: dragging.value ? 'none' : 'margin-left .28s cubic-bezier(.2, .8, .2, 1)',
 }));
+// The panes beside the sidebar take every width in between while it slides; a transition its sections run bubbles here too.
+const emit = defineEmits<{ slide: [running: boolean] }>();
+function onSlide(event: TransitionEvent, running: boolean): void {
+  if (event.target === root.value && event.propertyName === 'margin-left') emit('slide', running);
+}
 const bodySize = (name: SizedSection): number | undefined => (filler.value === name ? undefined : sizes.value[name]);
 
 // The sections keep their DOM order and show in the user's order through CSS `order` (odd values), so a move never detaches a
@@ -302,6 +307,9 @@ defineExpose({
     class="relative flex shrink-0 flex-col overflow-hidden border-r border-(--d-border) bg-(--d-panel) [reading-flow:flex-visual]"
     :class="rowDragging ? '' : 'sidebar-sections-animated'"
     :style="slideStyle"
+    @transitionrun="onSlide($event, true)"
+    @transitionend="onSlide($event, false)"
+    @transitioncancel="onSlide($event, false)"
     @focusin="onFocusIn"
     @focusout="onFocusOut"
   >

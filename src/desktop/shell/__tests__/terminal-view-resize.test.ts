@@ -116,8 +116,8 @@ describe('terminal view pty size', () => {
   it('sends no size while the grid tracks glide, and the size it settles at once they stop', async () => {
     const api = fakeShellApi();
     const store = { state: shallowRef(TERMINAL_STATE), focusRequest: shallowRef(null), pasteRequest: shallowRef(null), actionRequest: shallowRef(null), attach: () => () => undefined } as unknown as TerminalStore;
-    const tracksGliding = ref(true);
-    const grid = { dragging: ref(null), press: () => undefined, takeClick: () => true, openMoveMenu: async () => undefined, tracksGliding } satisfies GridContext;
+    const gliding = ref(true);
+    const grid = { dragging: ref(null), press: () => undefined, takeClick: () => true, openMoveMenu: async () => undefined, gliding } satisfies GridContext;
     wrapper = mount(TerminalView, {
       props: { api, terminal: info, shown: true, settings: TERMINAL_STATE.settings, passKeys: [], platform: 'linux', splitShortcut: 'Ctrl+Shift+5', screenReader: false, windowsBuild: 0 },
       global: { plugins: [shellI18n], provide: { [TERMINAL_STORE as symbol]: store, [GRID_CONTEXT as symbol]: grid } },
@@ -126,7 +126,7 @@ describe('terminal view pty size', () => {
     await new Promise((resolve) => setTimeout(resolve, PTY_RESIZE_SETTLE_MS * 2));
     expect(api.terminal.resize).not.toHaveBeenCalled();
 
-    tracksGliding.value = false;
+    gliding.value = false;
     await vi.waitFor(() => expect(api.terminal.resize).toHaveBeenCalledWith({ id: 'term-1', cols: 80, rows: 24 }));
     expect(api.terminal.resize).toHaveBeenCalledTimes(1);
   });
