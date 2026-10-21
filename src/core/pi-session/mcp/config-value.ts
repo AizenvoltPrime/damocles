@@ -1,6 +1,7 @@
 import type { McpServerConfig, McpServerErrorInfo } from '../../../shared/types/mcp';
 import { initPiLoader } from '../pi-loader';
 import { processLauncher } from '../../process-launcher';
+import { findBash } from '../../system-tools';
 import { interpolateEnvVars } from './utils';
 
 /** pi runs config commands with a 10 s timeout (`resolve-config-value.ts`). */
@@ -166,7 +167,9 @@ export async function runConfigCommand(
   const base = { timeoutMs, ...(opts.signal ? { signal: opts.signal } : {}) };
   if (process.platform === 'win32') {
     const pi = await initPiLoader();
-    const shellConfig = pi ? configuredShell(pi.getShellConfig, opts.shellPath) : undefined;
+    // pi's own lookup would start `where` synchronously (findBash)
+    const shellPath = opts.shellPath ?? (await findBash());
+    const shellConfig = pi && shellPath !== undefined ? configuredShell(pi.getShellConfig, shellPath) : undefined;
     if (shellConfig) {
       const fromStdin = shellConfig.commandTransport === 'stdin';
       const result = await capture(shellConfig.shell, fromStdin ? shellConfig.args : [...shellConfig.args, command], {
@@ -182,8 +185,8 @@ export async function runConfigCommand(
 
 type ShellConfig = { shell: string; args: string[]; commandTransport?: 'argv' | 'stdin' };
 
-/** pi's `getShellConfig` throws when no bash is found or `shellPath` does not exist; pi then uses the default shell. */
-function configuredShell(getShellConfig: (shellPath?: string) => ShellConfig, shellPath: string | undefined): ShellConfig | undefined {
+/** pi's `getShellConfig` throws when `shellPath` does not exist; pi then uses the default shell. */
+function configuredShell(getShellConfig: (shellPath?: string) => ShellConfig, shellPath: string): ShellConfig | undefined {
   try {
     return getShellConfig(shellPath);
   } catch {

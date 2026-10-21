@@ -5,6 +5,7 @@ import { Type } from 'typebox';
 import type { BashOperations, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { PiCodingAgentModule } from '../pi-loader';
 import { processLauncher, type LaunchedProcess, type SessionJob } from '../../process-launcher';
+import { findBash } from '../../system-tools';
 
 /** pi's own ceiling, mirrored because `resolveTimeoutMs` is internal to its bash tool. */
 const MAX_TIMEOUT_MS = 2_147_483_647;
@@ -76,6 +77,20 @@ export async function waitForShellExit(shell: LaunchedProcess): Promise<ShellExi
   return exit;
 }
 
+type ShellConfig = ReturnType<PiCodingAgentModule['getShellConfig']>;
+
+/**
+ * pi's shell choice, with the bash found by `findBash` so pi never looks one up itself. Without one, POSIX gets pi's
+ * `sh` fallback; on Windows pi would only search further where Damocles never runs a tool from (the working folder).
+ */
+async function shellConfigFor(pi: PiCodingAgentModule, shellPath: string | undefined): Promise<ShellConfig> {
+  if (shellPath !== undefined) return pi.getShellConfig(shellPath);
+  const bash = await findBash();
+  if (bash !== undefined) return pi.getShellConfig(bash);
+  if (process.platform !== 'win32') return { shell: '/bin/sh', args: ['-c'] };
+  throw new Error('No bash shell found. Install Git for Windows (https://git-scm.com/download/win), add a bash.exe folder to PATH, or set shellPath in settings.json.');
+}
+
 /**
  * pi's local bash operations, reimplemented so the shell starts on the process launcher inside the panel's
  * session job.
@@ -99,7 +114,7 @@ export function createTrackedBashOperations(
       if (signal?.aborted) throw new Error('aborted');
       // Omitting it makes spawn inherit the extension host environment, which holds provider credentials.
       if (env === undefined) throw new Error('bash exec requires an explicit environment');
-      const shellConfig = pi.getShellConfig(getShellOptions().shellPath);
+      const shellConfig = await shellConfigFor(pi, getShellOptions().shellPath);
       try {
         await access(cwd, constants.F_OK);
       } catch {

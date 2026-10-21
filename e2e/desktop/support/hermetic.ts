@@ -133,6 +133,7 @@ export const OS_KEYRING_ENV = 'DAMOCLES_E2E_OS_KEYRING';
 
 const PASSTHROUGH_ENV = [
   'PATH', 'Path', 'PATHEXT', 'SystemRoot', 'SYSTEMROOT', 'windir', 'ComSpec', 'COMSPEC', 'SystemDrive',
+  'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432',
   'PROCESSOR_ARCHITECTURE', 'NUMBER_OF_PROCESSORS', 'OS',
   'DISPLAY', 'WAYLAND_DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR', 'LANG', 'LC_ALL', 'SHELL', 'TERM',
 ];

@@ -25,10 +25,28 @@ export async function findOnAbsolutePathAsync(fileNames: string | readonly strin
   for (const dir of searchPathEntries(platform, env)) {
     for (const fileName of typeof fileNames === 'string' ? [fileNames] : fileNames) {
       const candidate = join(dir, fileName);
-      if (await fs.promises.stat(candidate).then((stat) => stat.isFile(), () => false)) return candidate;
+      if (await isFileAsync(candidate)) return candidate;
     }
   }
   return undefined;
+}
+
+function isFileAsync(candidate: string): Promise<boolean> {
+  return fs.promises.stat(candidate).then((stat) => stat.isFile(), () => false);
+}
+
+/**
+ * The bash pi's `getShellConfig` would pick, found without its synchronous `where`/`which` start, which on Windows runs
+ * outside the spawn lock and can hold the thread for its 5 s timeout: Git Bash where Git for Windows installs, then an
+ * absolute PATH folder's bash. Windows' own System32\bash.exe on PATH is WSL's, which pi runs with the command on stdin.
+ */
+export async function findBash(env: Env = process.env): Promise<string | undefined> {
+  if (process.platform !== 'win32') return (await isFileAsync('/bin/bash')) ? '/bin/bash' : findOnAbsolutePathAsync('bash', process.platform, env);
+  const installed = [env['ProgramFiles'], env['ProgramFiles(x86)']]
+    .filter((root): root is string => root !== undefined && executablePathForm(root, 'win32').kind === 'absolute')
+    .map((root) => path.win32.join(root, 'Git', 'bin', 'bash.exe'));
+  for (const candidate of installed) if (await isFileAsync(candidate)) return candidate;
+  return findOnAbsolutePathAsync('bash.exe', 'win32', env);
 }
 
 /** `%SystemRoot%\System32`; a root that is not a local absolute path falls back to C:\Windows. */

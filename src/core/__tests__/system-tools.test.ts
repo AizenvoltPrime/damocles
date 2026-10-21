@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { findOnAbsolutePath, posixTool, windowsPowerShell, windowsSystemTool } from '../system-tools';
+import { findBash, findOnAbsolutePath, posixTool, windowsPowerShell, windowsSystemTool } from '../system-tools';
 
 const SRC = path.join(__dirname, '..', '..');
 
@@ -76,6 +76,35 @@ describe('findOnAbsolutePath and posixTool', () => {
     expect(posixTool('ldconfig', pathEnv(bin), [sbin])).toBe(path.join(bin, 'ldconfig'));
     expect(posixTool('bash', pathEnv(bin), [sbin])).toBe(path.join(sbin, 'bash'));
     expect(posixTool('bash', pathEnv('.', bin), [folder('empty')])).toBeUndefined();
+  });
+});
+
+describe.runIf(process.platform === 'win32')('findBash', () => {
+  const gitBash = (programFiles: string): string => {
+    fs.mkdirSync(path.join(programFiles, 'Git', 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(programFiles, 'Git', 'bin', 'bash.exe'), '');
+    return path.join(programFiles, 'Git', 'bin', 'bash.exe');
+  };
+
+  it('takes Git for Windows\' bash before PATH, Program Files before Program Files (x86), as pi does', async () => {
+    const x86 = folder('pf86');
+    const onPath = folder('msys', 'bash.exe');
+    expect(await findBash({ 'ProgramFiles(x86)': x86, PATH: onPath })).toBe(path.join(onPath, 'bash.exe'));
+    const x86Bash = gitBash(x86);
+    expect(await findBash({ 'ProgramFiles(x86)': x86, PATH: onPath })).toBe(x86Bash);
+    const native = folder('pf');
+    expect(await findBash({ ProgramFiles: native, 'ProgramFiles(x86)': x86, PATH: onPath })).toBe(x86Bash);
+    const nativeBash = gitBash(native);
+    expect(await findBash({ ProgramFiles: native, 'ProgramFiles(x86)': x86, PATH: onPath })).toBe(nativeBash);
+  });
+
+  it('falls back to an absolute PATH folder, never a relative one or a relative Program Files', async () => {
+    const relative = path.relative(process.cwd(), folder('planted', 'bash.exe'));
+    gitBash(folder('rel-pf'));
+    const env = { ProgramFiles: path.relative(process.cwd(), path.join(root, 'rel-pf')), PATH: [relative, folder('empty')].join(';') };
+    expect(await findBash(env)).toBeUndefined();
+    const msys = folder('msys', 'bash.exe');
+    expect(await findBash({ ...env, PATH: [relative, msys].join(';') })).toBe(path.join(msys, 'bash.exe'));
   });
 });
 
