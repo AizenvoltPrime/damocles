@@ -87,6 +87,8 @@ describe("VoiceRuntimeInstaller — smoke-check error path", () => {
 
   it("reports ok=false when installed runtime missing and full-install path fails", async () => {
     const installer = new VoiceRuntimeInstaller(getDefaultRuntimePaths(tmp), noExtractWorker, noModelsMissing);
+    // The host's free space would decide whether the install gets as far as the download.
+    vi.spyOn(installer, "checkDisk").mockResolvedValue({ ok: true, freeBytes: 1e12, requiredBytes: 1 });
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(
       new Error("network blocked in unit test"),
     );

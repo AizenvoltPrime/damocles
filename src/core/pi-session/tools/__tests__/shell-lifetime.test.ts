@@ -29,9 +29,32 @@ const koffiExternal: Plugin = {
 let root: string;
 let launcher: Launcher;
 let previous: Launcher | undefined;
+let inheritedFds: number[] = [];
 const jobs: SessionJob[] = [];
 
+const O_CLOEXEC = 0o2000000;
+
+/** This process's fds above stdio without close-on-exec, which its parent leaked (a GitHub Linux runner leaks two). */
+function leakedFds(): number[] {
+  return fs
+    .readdirSync('/proc/self/fd')
+    .filter((fd) => {
+      if (Number(fd) <= 2) return false;
+      try {
+        const flags = /^flags:\s*([0-7]+)$/m.exec(fs.readFileSync(`/proc/self/fdinfo/${fd}`, 'utf8'));
+        return flags !== null && (parseInt(flags[1]!, 8) & O_CLOEXEC) === 0;
+      } catch {
+        // the directory handle readdirSync listed is closed by now
+        return false;
+      }
+    })
+    .map(Number)
+    .sort((a, b) => a - b);
+}
+
 beforeAll(async () => {
+  // Read before the launcher opens anything, so a launcher fd that a shell would inherit cannot hide in the expectation.
+  if (process.platform === 'linux') inheritedFds = leakedFds();
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-shell-lifetime-'));
   const options: BuildOptions = { bundle: true, platform: 'node', format: 'cjs', target: 'node24', logLevel: 'silent', plugins: [koffiExternal] };
   const workerPath = path.join(root, 'process-launcher-worker.js');
@@ -128,7 +151,7 @@ describe('a shell call started on the launcher', { timeout: SPAWN_TEST_TIMEOUT_M
     await vi.waitFor(() => expect(alive(pid)).toBe(false), { timeout: SPAWN_TEST_TIMEOUT_MS });
   });
 
-  it.runIf(process.platform === 'linux')('starts a shell holding only fds 0, 1 and 2 while its session sentinel runs', async () => {
+  it.runIf(process.platform === 'linux')('starts a shell holding no fd the launcher opened while its session sentinel runs', async () => {
     const job = sessionJob();
     // The first call starts the sentinel, so the second runs while the sentinel's pipe is open.
     await run(job, 'true');
@@ -136,6 +159,7 @@ describe('a shell call started on the launcher', { timeout: SPAWN_TEST_TIMEOUT_M
     // `; true` stops bash from exec'ing ls in its own place, which would list ls's directory fd instead.
     const result = await run(job, 'ls /proc/$$/fd; true');
 
-    expect(result.output.trim().split(/\s+/)).toEqual(['0', '1', '2']);
+    const shellFds = result.output.trim().split(/\s+/).map(Number).sort((a, b) => a - b);
+    expect(shellFds).toEqual([0, 1, 2, ...inheritedFds]);
   });
 });
