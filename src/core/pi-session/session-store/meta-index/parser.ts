@@ -88,12 +88,16 @@ export function createThreadParser(entry: string, piPackageDir: string, stallMs:
     stallTimer.unref();
   };
 
-  const stopped = (reason: string): void => {
-    if (waiting.size > 0) log('[session-meta-index] the parse thread stopped (%s); %d parse(s) dropped', reason, waiting.size);
+  const dropWaiting = (): void => {
     for (const done of waiting.values()) done(undefined);
     waiting.clear();
     worker = undefined;
     watchStall();
+  };
+
+  const stopped = (reason: string): void => {
+    if (waiting.size > 0) log('[session-meta-index] the parse thread stopped (%s); %d parse(s) dropped', reason, waiting.size);
+    dropWaiting();
   };
 
   const start = (): Worker => {
@@ -131,8 +135,8 @@ export function createThreadParser(entry: string, piPackageDir: string, stallMs:
     },
     async close() {
       const running = worker;
-      worker = undefined;
-      stopped('closed');
+      // a closing index answers its pending lookups itself, so dropping their parses is no failure to log
+      dropWaiting();
       await running?.terminate();
     },
   };

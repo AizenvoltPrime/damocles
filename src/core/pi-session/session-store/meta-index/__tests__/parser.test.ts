@@ -1,11 +1,23 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { build } from 'esbuild';
 import { REPO_ROOT } from '../../../../../__mocks__/source-tree';
+import { installLogSink } from '../../../../logger';
 import { createThreadParser } from '../parser';
 import { PI_PACKAGE_DIR } from './in-process';
+
+let logged: string[];
+
+beforeEach(() => {
+  logged = [];
+  installLogSink({ appendLine: (line) => logged.push(line), show: () => undefined, dispose: () => undefined });
+});
+
+afterEach(() => installLogSink({ appendLine: () => undefined, show: () => undefined, dispose: () => undefined }));
+
+const stopLines = (): string[] => logged.filter((line) => line.includes('the parse thread stopped'));
 
 // The parse thread runs the worker bundle in its parse role, so it is tested through that bundle.
 let workDir: string;
@@ -60,18 +72,20 @@ describe('the thread parser', () => {
     const parser = createThreadParser(silent, PI_PACKAGE_DIR, 200);
     try {
       expect(await parser.parse(path.join(workDir, 'any.jsonl'), 1)).toBeUndefined();
+      expect(stopLines()).toEqual([expect.stringContaining('no answer for 200ms); 1 parse(s) dropped')]);
     } finally {
       await parser.close();
     }
   }, 10_000);
 
-  it('answers parses it had not finished with nothing when it closes, and starts a new thread for the next parse', async () => {
+  it('answers parses it had not finished with nothing when it closes, logging no failure, and starts a new thread for the next parse', async () => {
     const dir = fs.mkdtempSync(path.join(workDir, 'sessions-'));
     const file = writeSession(dir, 4);
     const parser = createThreadParser(bundle, PI_PACKAGE_DIR);
     const dropped = parser.parse(file, fs.statSync(file).mtimeMs);
     await parser.close();
     expect(await dropped).toBeUndefined();
+    expect(stopLines()).toEqual([]);
 
     try {
       expect((await parser.parse(file, fs.statSync(file).mtimeMs))?.stored?.preview).toBe('prompt 4');
