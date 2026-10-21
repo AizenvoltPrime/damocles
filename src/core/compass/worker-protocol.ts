@@ -1,5 +1,10 @@
 import type { CompassConfig, IndexStatus } from './types';
 
+export interface CompassWorkerData {
+	// the host process's spawn lock, which its git starts take (process-launcher/spawn-lock.ts)
+	readonly spawnLock: SharedArrayBuffer;
+}
+
 export interface InitRequest {
 	type: 'init';
 	id: number;

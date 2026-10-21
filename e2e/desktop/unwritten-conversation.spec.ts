@@ -38,7 +38,9 @@ async function launchRecordingSessionStarts(launch: (options?: LaunchOptions) =>
     const wrap = (contents: Electron.WebContents): void => {
       const send = contents.send.bind(contents);
       contents.send = (sent: string, ...args: unknown[]): void => {
-        const message = args[0] as { type?: unknown; sessionId?: unknown } | undefined;
+        // main forwards core's messages to a chat page as JSON text
+        const payload = args[0];
+        const message = (typeof payload === 'string' ? JSON.parse(payload) : payload) as { type?: unknown; sessionId?: unknown } | undefined;
         if (sent === channel && message?.type === 'sessionStarted' && typeof message.sessionId === 'string' && message.sessionId !== '') {
           starts.push({ url: contents.getURL(), sessionId: message.sessionId });
         }

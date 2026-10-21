@@ -596,8 +596,21 @@ describe('loadPiSessionHistory — rewindable ids', () => {
       t.mockRestore();
     }
 
-    expect(posts.map((m) => m.type)).toEqual(['sessionCleared', 'errorReplay', 'done']);
-    expect(posts[1]).toEqual({ type: 'errorReplay', content: 'Το αρχείο αυτής της συνομιλίας δεν βρέθηκε. Μπορεί να έχει διαγραφεί.' });
+    expect(posts.map((m) => m.type)).toEqual(['sessionCleared', 'sessionCleared', 'errorReplay', 'done']);
+    expect(posts[2]).toEqual({ type: 'errorReplay', content: 'Το αρχείο αυτής της συνομιλίας δεν βρέθηκε. Μπορεί να έχει διαγραφεί.' });
+  });
+
+  // A send made while the replay runs names the conversation; one made after a replay that read nothing names none.
+  it('names the replayed conversation when it clears the panel, and clears it unnamed when the replay reads nothing', async () => {
+    hoisted.branch = [userMsg('u1', 'one'), assistantMsg('a1', 'r1')];
+    const read: ExtensionToWebviewMessage[] = [];
+    await loadPiSessionHistory('/cwd', 'sess-home', (m) => read.push(m));
+    vi.mocked(resolvePiSessionFile).mockResolvedValueOnce(null);
+    const unread: ExtensionToWebviewMessage[] = [];
+    await loadPiSessionHistory('/cwd', 'sess-gone', (m) => unread.push(m));
+
+    expect(read.filter((m) => m.type === 'sessionCleared')).toEqual([{ type: 'sessionCleared', sessionId: 'sess-home' }]);
+    expect(unread.filter((m) => m.type === 'sessionCleared')).toEqual([{ type: 'sessionCleared', sessionId: 'sess-gone' }, { type: 'sessionCleared' }]);
   });
 });
 

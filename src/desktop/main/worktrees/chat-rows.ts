@@ -3,7 +3,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ChatPlace, WorktreeStateData } from '../../../shared/types/messages';
-import type { ChatWorktreeRecord, WorktreeRegistry } from '../../../core/worktrees/registry';
+import type { ChatWorktreeRecord } from '../../../core/worktrees/registry';
+import type { WorktreeRecordReader } from './records';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import type { ShellChatWorktree, WorktreeFinishState } from '../../preload/shell-channels';
 
@@ -15,7 +16,7 @@ export interface ChatRowSources {
 }
 
 export interface ChatRowDeps {
-  readonly registry: WorktreeRegistry;
+  readonly registry: WorktreeRecordReader;
   readonly finish: (record: ChatWorktreeRecord) => WorktreeFinishState;
   // the branch checked out in the project folder; undefined while detached
   readonly baseBranch: (record: ChatWorktreeRecord) => string | undefined;

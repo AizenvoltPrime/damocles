@@ -290,41 +290,28 @@ describe('memory database corrupt-file quarantine', () => {
     cleanup(filePath);
   });
 
-  it('quarantines a corrupt file aside and returns a fresh working DB', async () => {
-    // Garbage bytes (not a valid SQLite header) → open+migrate fails as a parse error → quarantine.
-    fs.writeFileSync(filePath, Buffer.from('this is not a sqlite database file — pure garbage bytes'));
+  it('reports a corrupt file and leaves it in place for the repair', async () => {
+    // Garbage bytes (not a valid SQLite header) → open+migrate fails as a parse error.
+    const garbage = Buffer.from('this is not a sqlite database file — pure garbage bytes');
+    fs.writeFileSync(filePath, garbage);
 
-    const opened = await openMemoryDatabaseAt(filePath);
-    expect(opened).not.toBeNull();
-    expect(opened!.quarantinedFrom).toBeTruthy();
+    expect(await openMemoryDatabaseAt(filePath)).toBe('corrupt');
 
-    // The corrupt original was renamed to a `.corrupt-*` sibling.
-    const dir = path.dirname(filePath);
+    expect(fs.readFileSync(filePath)).toEqual(garbage);
     const base = path.basename(filePath);
-    const siblings = fs.readdirSync(dir).filter((e) => e.startsWith(base + '.corrupt-'));
-    expect(siblings.length).toBeGreaterThanOrEqual(1);
-
-    // A fresh, empty, migrated, writable DB was returned in its place.
-    const db = opened!.db;
-    const row = db.prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number };
-    expect(row.n).toBe(0);
-    const id = crypto.randomUUID();
-    insertMemory(db, id, 'fresh store works');
-    expect(countById(db, id)).toBe(1);
-    db.close();
+    expect(fs.readdirSync(path.dirname(filePath)).filter((e) => e.startsWith(base + '.corrupt-'))).toEqual([]);
   });
 
   it('creates a fresh store for a first-run missing file, with NO quarantine', async () => {
     // DatabaseSync creates the file on open, so a missing path is a normal fresh-store creation, not
-    // corruption: no `quarantinedFrom`, no `.corrupt-*` sibling. (null is reserved for an open THROW.)
+    // corruption: no `.corrupt-*` sibling. (null is reserved for an open THROW.)
     expect(fs.existsSync(filePath)).toBe(false);
 
     const opened = await openMemoryDatabaseAt(filePath);
-    expect(opened).not.toBeNull();
-    expect(opened!.quarantinedFrom).toBeUndefined();
+    if (opened === null || opened === 'corrupt') throw new Error(`open failed: ${opened}`);
 
     // Fresh, empty, migrated, writable store.
-    const db = opened!.db;
+    const db = opened.db;
     const row = db.prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number };
     expect(row.n).toBe(0);
     const id = crypto.randomUUID();
@@ -338,132 +325,4 @@ describe('memory database corrupt-file quarantine', () => {
     const siblings = fs.readdirSync(dir).filter((e) => e.startsWith(base + '.corrupt-'));
     expect(siblings.length).toBe(0);
   });
-});
-
-describe('desynced FTS index self-heal (not quarantine)', () => {
-  let filePath: string;
-
-  beforeEach(() => {
-    filePath = path.join(os.tmpdir(), `damocles-fts-heal-${crypto.randomUUID()}.memory.v2.db`);
-  });
-
-  afterEach(() => {
-    cleanup(filePath);
-  });
-
-  it('rebuilds a desynced index on open — data preserved, writes and search work, no quarantine', async () => {
-    // Byte-corrupt the FTS index's leaf pages (index spans several pages at this row count): the index
-    // reads inconsistently — every write trigger throws SQLITE_CORRUPT — while the base table stays
-    // intact. Corrupting leaves (not the b-tree root) keeps it rebuild-recoverable, matching the field case.
-    const ROWS = 400;
-    let pageSize: number;
-    let leafPages: number[];
-    {
-      const raw = new DatabaseSync(filePath, { timeout: 5000 });
-      const db = createDatabaseWrapper(raw);
-      runMigrations(db);
-      for (let i = 0; i < ROWS; i++) {
-        insertMemory(db, crypto.randomUUID(), `searchable term unique${i} ${'filler '.repeat(20)}`);
-      }
-      pageSize = (raw.prepare('PRAGMA page_size').get() as { page_size: number }).page_size;
-      const root = (raw.prepare("SELECT rootpage FROM sqlite_master WHERE name = 'memories_fts_data'").get() as { rootpage: number }).rootpage;
-      const pages = (raw.prepare("SELECT pageno FROM dbstat WHERE name = 'memories_fts_data' ORDER BY pageno").all() as Array<{ pageno: number }>).map((r) => r.pageno);
-      leafPages = pages.filter((pg) => pg !== root);
-      raw.close(); // rollback-journal mode (no WAL) so the pages live in the main file
-    }
-    const fd = fs.openSync(filePath, 'r+');
-    for (const pg of leafPages) {
-      fs.writeSync(fd, Buffer.alloc(pageSize - 50, 0x00), 0, pageSize - 50, (pg - 1) * pageSize + 40);
-    }
-    fs.closeSync(fd);
-
-    // Before the heal, a raw open sees a broken index (an FTS op throws) but the base table is fine.
-    {
-      const raw = new DatabaseSync(filePath, { timeout: 5000 });
-      expect((raw.prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number }).n).toBe(ROWS);
-      expect(() => raw.prepare("INSERT INTO memories_fts(memories_fts) VALUES('integrity-check')").run()).toThrow();
-      raw.close();
-    }
-
-    // Production open heals in place — no quarantine, data intact.
-    const opened = await openMemoryDatabaseAt(filePath);
-    expect(opened).not.toBeNull();
-    expect(opened!.quarantinedFrom).toBeUndefined();
-    const db = opened!.db;
-
-    expect((db.prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number }).n).toBe(ROWS);
-
-    // Writes (which fire the FTS triggers — the thing that failed with "cannot rollback") now work.
-    const id = crypto.randomUUID();
-    insertMemory(db, id, 'delta searchable needle');
-    expect(countById(db, id)).toBe(1);
-
-    // The rebuilt index actually searches, including the just-written row.
-    const hits = db.prepare("SELECT COUNT(*) AS n FROM memories_fts WHERE memories_fts MATCH 'needle'").get() as { n: number };
-    expect(hits.n).toBe(1);
-    db.close();
-
-    // No `.corrupt-*` sibling: a recoverable index desync must never quarantine the store.
-    const dir = path.dirname(filePath);
-    const base = path.basename(filePath);
-    expect(fs.readdirSync(dir).filter((e) => e.startsWith(base + '.corrupt-')).length).toBe(0);
-  }, 30_000);
-});
-
-describe('corrupt-table salvage rebuild', () => {
-  let filePath: string;
-
-  beforeEach(() => {
-    filePath = path.join(os.tmpdir(), `damocles-salvage-${crypto.randomUUID()}.memory.v3.db`);
-  });
-
-  afterEach(() => {
-    cleanup(filePath);
-  });
-
-  it('recovers durable rows into a rebuilt store when a transient table is corrupt (field case)', async () => {
-    // Reproduce the field failure: byte-corrupt memory_candidates' pages. The table cannot even be
-    // DROPped in place, yet memories/edges/retrievals/profile all read cleanly — salvage must carry
-    // them into the fresh store instead of losing everything to a bare quarantine.
-    const ROWS = 40;
-    let pageSize: number;
-    let candidatePages: number[];
-    {
-      const raw = new DatabaseSync(filePath, { timeout: 5000 });
-      const db = createDatabaseWrapper(raw);
-      runMigrations(db);
-      for (let i = 0; i < ROWS; i++) insertMemory(db, `mem-${i}`, `durable fact number ${i}`);
-      const insertCandidate = raw.prepare(
-        "INSERT INTO memory_candidates (id, session_id, prompt_index, user_text, assistant_text, files, salient, consumed, reprocessed, created_at) VALUES (?, 's', 0, ?, ?, '[]', 0, 0, 0, ?)",
-      );
-      for (let i = 0; i < 200; i++) insertCandidate.run(`cand-${i}`, `user turn ${i} ${'pad '.repeat(40)}`, `assistant ${i}`, Date.now());
-      pageSize = (raw.prepare('PRAGMA page_size').get() as { page_size: number }).page_size;
-      candidatePages = (raw.prepare("SELECT pageno FROM dbstat WHERE name = 'memory_candidates' ORDER BY pageno").all() as Array<{ pageno: number }>).map((r) => r.pageno);
-      raw.close();
-    }
-    const fd = fs.openSync(filePath, 'r+');
-    for (const pg of candidatePages) {
-      fs.writeSync(fd, Buffer.alloc(pageSize - 50, 0xee), 0, pageSize - 50, (pg - 1) * pageSize + 40);
-    }
-    fs.closeSync(fd);
-
-    const opened = await openMemoryDatabaseAt(filePath);
-    expect(opened).not.toBeNull();
-    expect(opened!.quarantinedFrom).toBeTruthy();
-    expect(opened!.salvagedMemories).toBe(ROWS);
-    const db = opened!.db;
-
-    // Durable rows recovered; the corrupt transient buffer is dropped, not carried over.
-    expect((db.prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number }).n).toBe(ROWS);
-    expect((db.prepare('SELECT COUNT(*) AS n FROM memory_candidates').get() as { n: number }).n).toBe(0);
-    expect(countById(db, 'mem-7')).toBe(1);
-
-    // The rebuilt FTS searches the salvaged rows, and consolidation-style writes work again.
-    const hits = db.prepare("SELECT COUNT(*) AS n FROM memories_fts WHERE memories_fts MATCH 'durable'").get() as { n: number };
-    expect(hits.n).toBe(ROWS);
-    db.prepare(
-      "INSERT INTO memory_candidates (id, session_id, prompt_index, user_text, assistant_text, files, salient, consumed, reprocessed, created_at) VALUES ('c-new', 's', 0, 'u', 'a', '[]', 0, 0, 0, ?)",
-    ).run(Date.now());
-    db.close();
-  }, 30_000);
 });

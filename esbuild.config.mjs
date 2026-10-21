@@ -78,6 +78,46 @@ const usageStatsWorkerOptions = {
 };
 
 /** @type {esbuild.BuildOptions} */
+const memoryIntegrityWorkerOptions = {
+  ...usageStatsWorkerOptions,
+  entryPoints: ['src/core/memory/integrity-worker.ts'],
+  outfile: 'dist/memory-integrity-worker.js',
+};
+
+/** @type {esbuild.BuildOptions} */
+const sessionMetaIndexWorkerOptions = {
+  ...usageStatsWorkerOptions,
+  entryPoints: ['src/core/pi-session/session-store/meta-index/worker.ts'],
+  outfile: 'dist/session-meta-index-worker.js',
+  // pi is ESM-only and loads by dynamic import from the path the host passes, so it is never bundled.
+  external: ['node:sqlite', '@earendil-works/*'],
+};
+
+/** @type {esbuild.BuildOptions} */
+const voiceExtractWorkerOptions = {
+  ...usageStatsWorkerOptions,
+  entryPoints: ['src/core/voice/runtime/extract-worker.ts'],
+  outfile: 'dist/voice-extract-worker.js',
+  external: [],
+};
+
+/** @type {esbuild.BuildOptions} */
+const processLauncherWorkerOptions = {
+  entryPoints: ['src/core/process-launcher/worker.ts'],
+  bundle: true,
+  outfile: 'dist/process-launcher-worker.js',
+  // koffi resolves its native module relative to its own folder, so it is never bundled.
+  external: ['koffi'],
+  format: 'cjs',
+  platform: 'node',
+  target: 'node24',
+  sourcemap: isWatch,
+  minify: !isWatch,
+  logLevel: 'info',
+  plugins: [assertOutfileWritten],
+};
+
+/** @type {esbuild.BuildOptions} */
 const sentinelOptions = {
   entryPoints: ['src/core/pi-session/tools/shell-sentinel.ts'],
   bundle: true,
@@ -106,6 +146,14 @@ const desktopMainOptions = {
   minify: false,
   logLevel: 'info',
   plugins: [assertOutfileWritten],
+};
+
+/** @type {esbuild.BuildOptions} */
+const coreHostOptions = {
+  ...desktopMainOptions,
+  entryPoints: ['src/desktop/core-host/index.ts'],
+  // Forked from inside app.asar (coreHostEntryPath), so its externals resolve from app.asar/node_modules as main's do.
+  outfile: 'dist/core-host.js',
 };
 
 /** @type {esbuild.BuildOptions} */
@@ -202,17 +250,22 @@ async function buildDesktop() {
     esbuild.build(watchWorkerOptions),
     esbuild.build(askpassMainOptions),
     esbuild.build(desktopMainOptions),
+    esbuild.build(coreHostOptions),
     esbuild.build(desktopPreloadOptions),
     esbuild.build(desktopShellPreloadOptions),
     esbuild.build(desktopOverlayPreloadOptions),
     esbuild.build(workerOptions),
     esbuild.build(usageStatsWorkerOptions),
+    esbuild.build(memoryIntegrityWorkerOptions),
+    esbuild.build(sessionMetaIndexWorkerOptions),
+    esbuild.build(voiceExtractWorkerOptions),
+    esbuild.build(processLauncherWorkerOptions),
     esbuild.build(sentinelOptions),
   ]);
   // Settings › About's What's new reads it next to main.js (src/desktop/main/release-notes.ts).
   copyFileSync('CHANGELOG.md', 'dist/desktop/CHANGELOG.md');
   copyAskpassScripts();
-  console.log('Desktop main + preload + formatter host + pty host + askpass helper + workers + sentinel build complete');
+  console.log('Desktop main + core host + preload + formatter host + pty host + askpass helper + workers + sentinel build complete');
 }
 
 async function build() {
@@ -221,19 +274,27 @@ async function build() {
     return;
   }
   if (isWatch) {
-    const [extCtx, workerCtx, usageStatsWorkerCtx, sentinelCtx] = await Promise.all([
+    const contexts = await Promise.all([
       esbuild.context(extensionOptions),
       esbuild.context(workerOptions),
       esbuild.context(usageStatsWorkerOptions),
+      esbuild.context(memoryIntegrityWorkerOptions),
+      esbuild.context(sessionMetaIndexWorkerOptions),
+      esbuild.context(voiceExtractWorkerOptions),
+      esbuild.context(processLauncherWorkerOptions),
       esbuild.context(sentinelOptions),
     ]);
-    await Promise.all([extCtx.watch(), workerCtx.watch(), usageStatsWorkerCtx.watch(), sentinelCtx.watch()]);
+    await Promise.all(contexts.map((ctx) => ctx.watch()));
     console.log('Watching for changes...');
   } else {
     await Promise.all([
       esbuild.build(extensionOptions),
       esbuild.build(workerOptions),
       esbuild.build(usageStatsWorkerOptions),
+      esbuild.build(memoryIntegrityWorkerOptions),
+      esbuild.build(sessionMetaIndexWorkerOptions),
+      esbuild.build(voiceExtractWorkerOptions),
+      esbuild.build(processLauncherWorkerOptions),
       esbuild.build(sentinelOptions),
     ]);
     console.log('Extension + workers + sentinel build complete');

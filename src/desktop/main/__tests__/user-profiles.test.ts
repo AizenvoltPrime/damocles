@@ -16,7 +16,7 @@ import {
 } from '../terminal/user-profiles';
 
 const linkCheck = vi.hoisted(() => vi.fn<(base: string, segments: readonly string[]) => Promise<boolean>>());
-vi.mock(import('../documents/confine'), async (importOriginal) => ({ ...(await importOriginal()), followsLocalLinksOnly: linkCheck }));
+vi.mock(import('../../local-services/confine'), async (importOriginal) => ({ ...(await importOriginal()), followsLocalLinksOnly: linkCheck }));
 
 const PWSH: TerminalProfile = { id: 'pwsh', name: 'PowerShell', file: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe', args: [], icon: 'powershell' };
 const CMD: TerminalProfile = { id: 'cmd', name: 'Command Prompt', file: 'C:\\Windows\\System32\\cmd.exe', args: [], icon: 'cmd' };

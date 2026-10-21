@@ -1,7 +1,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createGitRunner, GitError, parseGitVersion, type GitCloner, type GitRunner } from '../git-runner';
+import { createGitRunner, type GitCloner, type GitRunner } from '../git-runner';
+import { parseGitVersion } from '../git-version';
+import { GitError } from '../errors';
 import { folder, freshStatus, git, GIT_PATH, harness, HAS_GIT, makeRepo, ready, sandbox, statusOf, useGitSandbox, waitFor, write, type Harness } from './git-harness';
 
 /**

@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Locator, Page } from '@playwright/test';
-import { logFiles, mainLog } from './support/app';
+import { coreLog, logFiles } from './support/app';
 import { expect, test } from './support/fixtures';
 import { git, initRepo, type GitHome } from './support/git';
 import { startGitHttpServer, type GitHttpServer } from './support/git-http-server';
@@ -128,7 +128,7 @@ test('autofetch fetches only the selected project and moves with the selection, 
 
   // a fetch's Git log line is written once git exits, before autofetch logs its failure
   const fetches = async (): Promise<number> => (await gitLog(app)).split('\n').filter((line) => line.startsWith('> git fetch')).length;
-  const failures = (): string[] => mainLog(home).split('\n').filter((line) => line.includes('[scm] autofetch failed'));
+  const failures = (): string[] => coreLog(home).split('\n').filter((line) => line.includes('[scm] autofetch failed'));
   expect(failures()).toEqual([]);
 
   // a failure other than a credential's is logged once, however many rounds repeat it

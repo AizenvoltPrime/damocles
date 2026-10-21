@@ -1,5 +1,4 @@
-import { spawn } from 'child_process';
-import { log } from '../../logger';
+import { processLauncher } from '../../process-launcher';
 import type { ExecEnv, Result } from './types';
 
 interface ProcessOutput {
@@ -77,7 +76,8 @@ export type TrackChild = (pid: number) => () => void;
  * killed child whose stdio a grandchild still holds open never emits `close` at all, which is the
  * hang this parameter exists to bound. Callers that pass nothing wait as long as the process runs.
  *
- * `track` sees the child's pid right after spawn and is released once the child has exited or failed.
+ * The process starts on the launcher (`process-launcher/`). `track` sees the child's pid once the launcher reports the start
+ * and is released once the child has closed (exited with every output closed) or failed.
  *
  * With `maxStdoutBytes`, a process that writes more stdout is killed and the promise rejects with ExecOutputTooLargeError.
  */
@@ -93,25 +93,25 @@ export function exec(
 ): Promise<ProcessOutput> {
   return new Promise<ProcessOutput>((resolve, reject) => {
     const file = typeof command === 'string' ? command : command();
-    const child = spawn(file, args, {
-      cwd,
-      env: childEnv(env),
-      windowsHide: true,
-    });
+    const child = processLauncher().launch({ file, args, ...(cwd !== undefined ? { cwd } : {}), env: childEnv(env), windowsHide: true });
     let untrack: (() => void) | undefined;
-    if (track && child.pid !== undefined) {
-      try {
-        untrack = track(child.pid);
-      } catch (err) {
-        child.kill('SIGKILL');
-        reject(err instanceof Error ? err : new Error(String(err)));
-        return;
-      }
-    }
+    let released = false;
     const release = (): void => {
+      released = true;
       untrack?.();
       untrack = undefined;
     };
+    if (track) {
+      child.pid.then((pid) => {
+        if (released) return;
+        try {
+          untrack = track(pid);
+        } catch (err) {
+          child.kill({ signal: 'SIGKILL' });
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      }, () => undefined);
+    }
 
     // Decoded once at close: a multi-byte character can straddle two chunks.
     const stdoutChunks: Buffer[] = [];
@@ -121,53 +121,52 @@ export function exec(
     let timedOut = false;
     const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
       timedOut = true;
-      child.kill('SIGKILL');
+      child.kill({ signal: 'SIGKILL' });
       reject(new Error(`${file} ${args.join(' ')} timed out after ${timeoutMs}ms and was killed`));
     }, timeoutMs);
 
-    child.stdout.on('data', (chunk: Buffer) => {
+    child.onData('stdout', (chunk) => {
       if (overflowed) return;
       stdoutBytes += chunk.length;
       if (maxStdoutBytes !== undefined && stdoutBytes > maxStdoutBytes) {
         overflowed = true;
         stdoutChunks.length = 0;
-        child.kill('SIGKILL');
+        child.kill({ signal: 'SIGKILL' });
         return;
       }
       stdoutChunks.push(chunk);
     });
-    child.stderr.on('data', (chunk: Buffer) => {
+    child.onData('stderr', (chunk) => {
       stderrChunks.push(chunk);
     });
-    child.stdin.on('error', (err) => {
-      log('[Checkpoints] %s stdin write failed: %s', file, err.message);
-    });
-    child.stdin.end(input);
+    child.end(input);
 
-    child.on('error', (err) => {
-      if (timer) clearTimeout(timer);
-      release();
-      reject(err);
-    });
-    child.on('close', (code) => {
-      if (timer) clearTimeout(timer);
-      release();
-      // The timer already rejected, and the kill's own close code says nothing the caller can use.
-      if (timedOut) return;
-      if (overflowed) {
-        reject(new ExecOutputTooLargeError(`${file} ${args.join(' ')} wrote more than ${maxStdoutBytes} bytes and was killed`));
-        return;
-      }
-      const bytes = Buffer.concat(stdoutChunks);
-      const stdout = bytes.toString('utf8');
-      const stderr = Buffer.concat(stderrChunks).toString('utf8');
-      if (code === 0) {
-        resolve({ stdout, bytes, stderr });
-        return;
-      }
-      const detail = stderr.trim() || stdout.trim();
-      reject(new ExecExitError(`${file} ${args.join(' ')} exited with code ${code}${detail ? `: ${detail}` : ''}`, code));
-    });
+    Promise.all([child.exited, child.closed]).then(
+      ([{ code }]) => {
+        if (timer) clearTimeout(timer);
+        release();
+        // The timer already rejected, and the kill's own close code says nothing the caller can use.
+        if (timedOut) return;
+        if (overflowed) {
+          reject(new ExecOutputTooLargeError(`${file} ${args.join(' ')} wrote more than ${maxStdoutBytes} bytes and was killed`));
+          return;
+        }
+        const bytes = Buffer.concat(stdoutChunks);
+        const stdout = bytes.toString('utf8');
+        const stderr = Buffer.concat(stderrChunks).toString('utf8');
+        if (code === 0) {
+          resolve({ stdout, bytes, stderr });
+          return;
+        }
+        const detail = stderr.trim() || stdout.trim();
+        reject(new ExecExitError(`${file} ${args.join(' ')} exited with code ${code}${detail ? `: ${detail}` : ''}`, code));
+      },
+      (err: unknown) => {
+        if (timer) clearTimeout(timer);
+        release();
+        reject(err);
+      },
+    );
   });
 }
 

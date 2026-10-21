@@ -16,6 +16,21 @@ export function findOnAbsolutePath(fileName: string, platform: NodeJS.Platform, 
     .find(isFile);
 }
 
+/**
+ * findOnAbsolutePath without blocking the thread on a slow PATH folder, such as a disconnected network drive. With several
+ * names, the first PATH folder holding any of them wins, as a PATHEXT lookup picks one.
+ */
+export async function findOnAbsolutePathAsync(fileNames: string | readonly string[], platform: NodeJS.Platform, env: Env): Promise<string | undefined> {
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  for (const dir of searchPathEntries(platform, env)) {
+    for (const fileName of typeof fileNames === 'string' ? [fileNames] : fileNames) {
+      const candidate = join(dir, fileName);
+      if (await fs.promises.stat(candidate).then((stat) => stat.isFile(), () => false)) return candidate;
+    }
+  }
+  return undefined;
+}
+
 /** `%SystemRoot%\System32`; a root that is not a local absolute path falls back to C:\Windows. */
 export function windowsSystemDirectory(env: Env = process.env): string {
   const root = [env['SystemRoot'], env['windir'], env['WINDIR']].find((value) => value !== undefined && executablePathForm(value, 'win32').kind === 'absolute');

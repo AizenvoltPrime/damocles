@@ -73,7 +73,9 @@ export const settingsViewHandlers: SettingsViewHandlers = {
   },
   voiceConfigUpdate: (msg, ctx) => {
     ctx.stores.settingsStore.setVoiceConfig(msg.config, msg.hasApiKey);
-    ctx.stores.settingsStore.setVoiceRuntimeUnsupported(msg.localRuntimeUnsupported);
+  },
+  voiceRuntimeStatus: (msg, ctx) => {
+    ctx.stores.settingsStore.setVoiceRuntimeStatus(msg.status);
   },
   voiceFilesSizeUpdate: (msg, ctx) => {
     ctx.stores.voiceJarvisStore.setVoiceFilesBytes(msg.bytes);

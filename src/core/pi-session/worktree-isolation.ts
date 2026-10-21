@@ -4,7 +4,7 @@
 import * as path from 'node:path';
 import { canonicalPath, spelledPath } from '../canonical-path';
 import { TOOL_BASH, TOOL_POWERSHELL, WRITE_TOOLS } from '../../shared/tool-names';
-import { folderContains } from '../worktrees/registry';
+import { folderContains } from '../worktrees/records';
 import { COMPUTED_TEXT, DECLARATION_BUILTINS, parseShellStructure, type ShellStructure } from './readonly-shell';
 import { resolveToCwd } from './tools/search-tools';
 

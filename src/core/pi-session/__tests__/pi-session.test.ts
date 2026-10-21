@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as path from 'path';
 import * as os from 'os';
 import type { SessionOptions } from '../../session-types';
+import { processLauncher } from '../../process-launcher';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { MAX_IMAGE_BASE64_LENGTH } from '../../../shared/types/content';
 import { formatUserSteerPrefix, type UserSteerNote } from '../../../shared/steer';
@@ -336,18 +337,6 @@ vi.mock('../pi-loader', async () => {
 });
 
 
-// The real factory returns undefined off win32, which would make every assertion below vacuous, so the
-// module is faked to hand out a distinct disposable per call.
-const JOB = vi.hoisted(() => ({ created: [] as Array<{ id: number; disposed: number }>, next: 0 }));
-vi.mock('../tools/process-tree', () => ({
-  createShellSessionJob: () => {
-    const handle = { id: JOB.next++, disposed: 0 };
-    JOB.created.push(handle);
-    return { dispose: () => { handle.disposed += 1; } };
-  },
-  createShellJob: () => undefined,
-  killProcessTree: () => undefined,
-}));
 
 // A recording pass-through, not a stub: every other test in this file needs the real tool set, and the
 // only thing this adds is the deps object each of the three build sites hands in.
@@ -8847,12 +8836,20 @@ describe('cancel note delivery: the main build site', () => {
  * commands on dispose, so the two-instance case is the one that matters here.
  */
 describe('the shell session job is scoped to the panel', () => {
+  const JOB = { created: [] as Array<{ id: number; disposed: number }>, next: 0 };
   beforeEach(() => {
     JOB.created.length = 0;
     JOB.next = 0;
+    // Each session job is recorded rather than created, so the cases below can count and identify them.
+    vi.spyOn(processLauncher(), 'createSessionJob').mockImplementation(() => {
+      const handle = { id: JOB.next++, disposed: 0 };
+      JOB.created.push(handle);
+      return { id: handle.id, dispose: () => { handle.disposed += 1; } };
+    });
     H.resetServices();
   });
   afterEach(async () => {
+    vi.mocked(processLauncher().createSessionJob).mockRestore();
     await PiRuntime.disposeInstance();
   });
 
@@ -11993,7 +11990,8 @@ describe('a resume shows its conversation only once pi bound it, and a send reac
       await session.dispose();
     });
 
-    it('a restore replays it, then posts the lists, then starts the session', async () => {
+    // The prompt history waits for the complete list, which a cold index parses for long, so the start does not wait for it.
+    it('a restore replays it, then posts the session list, then starts the session, with the prompt history after', async () => {
       const b = stored('in B');
       opensInOrder(b.file);
       filesOnDisk(b);
@@ -12004,7 +12002,7 @@ describe('a resume shows its conversation only once pi bound it, and a send reac
       await vi.waitFor(() => expect(bound(session)).toBe(b.id));
       await session.sendMessage('for B', b.id, 'c1', { content: 'for B' });
 
-      expect(order).toEqual(['replay', 'sessionStarted', 'storedSessions', 'promptHistory', 'start']);
+      expect(order).toEqual(['replay', 'sessionStarted', 'storedSessions', 'start', 'promptHistory']);
       expect(errors()).toEqual([]);
       expect(promptsIn(b.file)).toEqual(['in B', 'for B']);
       await session.dispose();
@@ -12120,7 +12118,7 @@ describe('a resume shows its conversation only once pi bound it, and a send reac
       else await createSessionHandlers(deps).ready!({ type: 'ready', savedSessionId: b.id } as never, ctx);
       await vi.waitFor(() => expect(created).toHaveLength(1));
 
-      expect(order).toEqual(path_ === 'resume' ? ['resumeAccepted', 'replay', 'start'] : ['replay', 'storedSessions', 'promptHistory', 'start']);
+      expect(order).toEqual(path_ === 'resume' ? ['resumeAccepted', 'replay', 'start'] : ['replay', 'storedSessions', 'start', 'promptHistory']);
       expect(posted.filter(({ message }) => message.type === 'sessionStarted' && message.sessionId === b.id)).toEqual([]);
       expect(session.holdsSession(b.id)).toBe(false);
       expect(sessionLeasesOf(session)).not.toContain(b.id);

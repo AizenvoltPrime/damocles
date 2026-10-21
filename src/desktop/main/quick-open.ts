@@ -1,4 +1,5 @@
-import { spawn } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
+import { processLauncher } from '../../core/process-launcher';
 import { parseQuickOpenQuery } from '../../core/quick-open/fuzzy-match';
 import type { WebContents } from 'electron';
 import {
@@ -15,7 +16,7 @@ import {
 } from '../preload/overlay-channels';
 import type { FileRef } from '../preload/shell-channels';
 import { parseWorkerReply, ripgrepFileArgs, type WorkerReply, type WorkerRequest } from '../quick-open-worker/protocol';
-import type { Project } from './documents/confine';
+import type { Project } from '../local-services/confine';
 import type { MenuState } from './menu';
 import type { RgProcess } from './search/search-service';
 import { tickDeadline } from './tick-deadline';
@@ -52,7 +53,7 @@ export interface QuickOpenDeps {
 }
 
 function spawnRipgrep(rgPath: string, args: readonly string[]): RgProcess {
-  return spawn(rgPath, args, { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  return processLauncher().launch({ file: rgPath, args, stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
 export interface QuickOpenContext {
@@ -259,13 +260,12 @@ export class QuickOpenIndex {
       this.listings.delete(rg);
       worker.postMessage({ kind: 'listEnd', listing, ...(error !== undefined ? { error } : {}) });
     };
-    rg.stdout.on('data', (data: Buffer) => worker.postMessage({ kind: 'listOutput', listing, data }));
-    rg.stderr.setEncoding('utf8');
-    rg.stderr.on('data', (chunk: string) => {
-      if (stderr.length < MAX_LISTING_STDERR_CHARS) stderr += chunk.slice(0, MAX_LISTING_STDERR_CHARS - stderr.length);
+    rg.onData('stdout', (data) => worker.postMessage({ kind: 'listOutput', listing, data }));
+    const decoder = new StringDecoder('utf8');
+    rg.onData('stderr', (chunk) => {
+      if (stderr.length < MAX_LISTING_STDERR_CHARS) stderr += decoder.write(chunk).slice(0, MAX_LISTING_STDERR_CHARS - stderr.length);
     });
-    rg.on('error', (err) => end(err.message));
-    rg.on('close', (code) => {
+    Promise.all([rg.exited, rg.closed]).then(([{ code }]) => {
       // 1 is ripgrep's "nothing found".
       if (code !== 0 && code !== 1) {
         end(`ripgrep exited with ${String(code)}: ${stderr.trim()}`);
@@ -273,7 +273,7 @@ export class QuickOpenIndex {
       }
       if (stderr.trim() !== '') this.deps.log(`[quick-open] ripgrep: ${stderr.trim().slice(0, 500)}`);
       end(undefined);
-    });
+    }, (err: Error) => end(err.message));
   }
 
   // Every message from the worker restarts the deadline; it runs only while a query waits.

@@ -157,6 +157,19 @@ async function unlessAborted(wait: Promise<void>, signal: AbortSignal | undefine
  */
 const inProcessTails = new Map<string, Promise<void>>();
 
+// The withRepoLock calls of this process that hold or wait for a repo lock, and the waits for none to be left.
+let lockedWork = 0;
+const releasedWaiters = new Set<() => void>();
+
+/**
+ * Settles once no work of this process holds or waits for a checkpoint repo lock. A process about to be killed awaits it: the
+ * lock is a directory nothing removes once its holder is gone, so the next holder would wait out `STALE_LOCK_MS` for it.
+ */
+export function heldRepoLocksReleased(): Promise<void> {
+  if (lockedWork === 0) return Promise.resolve();
+  return new Promise((resolve) => releasedWaiters.add(resolve));
+}
+
 /** Lock options: `signal` bounds the wait; the timings are module defaults that tests shrink. */
 export interface LockOptions {
   signal?: AbortSignal;
@@ -190,12 +203,18 @@ export async function withRepoLock<T>(repoDir: string, fn: (hold: LockHold) => P
   // Chained on `previous`, so an aborted waiter still keeps everyone behind it after its predecessor.
   const tail = previous.then(() => mine);
   inProcessTails.set(key, tail);
+  lockedWork++;
   try {
     await unlessAborted(previous, options?.signal);
     return await withDirLock(repoDir, fn, options);
   } finally {
     release();
     if (inProcessTails.get(key) === tail) inProcessTails.delete(key);
+    lockedWork--;
+    if (lockedWork === 0) {
+      for (const resolve of [...releasedWaiters]) resolve();
+      releasedWaiters.clear();
+    }
   }
 }
 

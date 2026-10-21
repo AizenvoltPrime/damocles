@@ -58,7 +58,7 @@ const menuHeading = computed(() =>
 );
 
 function compactNow(): void {
-  postMessage({ type: 'sendMessage', content: '/compact', sessionId: sessionStore.currentSessionId });
+  postMessage({ type: 'sendMessage', content: '/compact', sessionId: sessionStore.sendTargetSessionId });
 }
 
 const cacheHitRate = computed(() => agentCacheHitRate(props.stats));

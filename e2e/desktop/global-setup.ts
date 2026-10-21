@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { build } from 'esbuild';
 import { EXTENSION_EXTERNALS } from '../../scripts/extension-externals.mjs';
-import { launchDesktop, mainLog } from './support/app';
+import { coreLog, launchDesktop } from './support/app';
 import { createHermeticHome, hermeticEnv, REPO_ROOT, WINDOWS_POWERSHELL_CACHE, WINDOWS_POWERSHELL_CACHE_IN_PROFILE } from './support/hermetic';
 import { PACKAGED_APP_ENV, packagedAppPath } from './support/packaged-app';
 import { SECOND_PROCESS_BUNDLE } from './support/second-process';
@@ -14,7 +14,7 @@ export default async function globalSetup(): Promise<void> {
   if (packaged !== undefined) {
     if (!fs.existsSync(packaged)) throw new Error(`${PACKAGED_APP_ENV} names ${packaged}, which does not exist; build the app with \`npm run dist\` first`);
   } else {
-    for (const built of ['dist/desktop/main.js', 'dist/desktop/preload-panel.js', 'dist/webview/index.html']) {
+    for (const built of ['dist/desktop/main.js', 'dist/core-host.js', 'dist/process-launcher-worker.js', 'dist/desktop/preload-panel.js', 'dist/webview/index.html']) {
       if (!fs.existsSync(path.join(REPO_ROOT, built))) {
         throw new Error(`${built} is missing; run the suite through \`npm run test:desktop\`, which builds it first`);
       }
@@ -36,7 +36,7 @@ export default async function globalSetup(): Promise<void> {
 }
 
 const WARM_LAUNCH_TIMEOUT_MS = 180_000;
-// The main log line of a chat that started: after the git probe, the first window and pi's import.
+// Damocles Core's log line of a chat that started: after the git probe, the first window, core's start and pi's import.
 const CHAT_STARTED = '[perf] start.total';
 
 /** Launches the app once to its first chat, so no test pays a fresh runner's first launch (docs/release.md, "Desktop end-to-end suite"). */
@@ -46,8 +46,8 @@ async function warmFirstLaunch(): Promise<void> {
   try {
     const desktop = await launchDesktop(home);
     try {
-      while (!mainLog(home).includes(CHAT_STARTED)) {
-        if (Date.now() - started > WARM_LAUNCH_TIMEOUT_MS) throw new Error(`The warm-up launch logged no "${CHAT_STARTED}" within ${WARM_LAUNCH_TIMEOUT_MS / 1000} s:\n${mainLog(home)}`);
+      while (!coreLog(home).includes(CHAT_STARTED)) {
+        if (Date.now() - started > WARM_LAUNCH_TIMEOUT_MS) throw new Error(`The warm-up launch's core logged no "${CHAT_STARTED}" within ${WARM_LAUNCH_TIMEOUT_MS / 1000} s:\n${coreLog(home)}`);
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
     } finally {

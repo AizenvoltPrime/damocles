@@ -150,7 +150,7 @@ import { isTerminalId } from '../pty-host/protocol';
 import { isRelativeFilePath } from '../../shared/relative-path';
 import { MAX_CONTEXT_LINES, MAX_REPLACEMENT_LENGTH, MAX_SEARCH_GLOBS_LENGTH, MAX_SEARCH_PATTERN_LENGTH, type SearchQuery, type SearchRange } from '../../shared/text-search';
 import { GestureGrant, isActivationKey, isContextMenuKey, isContextMenuMouse, isPrimaryClick } from './clipboard-gestures';
-import { isRelativeOrRoot } from './documents/confine';
+import { isRelativeOrRoot } from '../local-services/confine';
 import { parseOverlayRequest } from './overlay';
 import { APP_ORIGIN, SHELL_PAGE_URL } from './protocol';
 import { loadAppPage, loggableUrl, mainFrameLoadFailed } from './security';
@@ -186,6 +186,7 @@ export interface ShellActions {
   // window DIP
   openAppMenu(anchor: { readonly x: number; readonly y: number }): void;
   toggleTheme(): void;
+  restartEngine(): void;
   toggleSidebar(): void;
   showSidebar(): void;
   windowControl(control: WindowControl): void;
@@ -346,7 +347,7 @@ export interface ShellEditorActions {
   flushed(requestId: string): void;
 }
 
-// Every path is confined to its project in main (documents/confine.ts).
+// Every path is confined to its project in main (local-services/confine.ts).
 export interface ShellFilesActions {
   // report: a failure is reported to the user, for a listing a user action waits on
   list(projectKey: string, relativeDir: string, report: boolean): Promise<FilesListResult>;
@@ -1070,6 +1071,7 @@ export class ShellHost {
       this.actions.openAppMenu({ x: Math.round(anchor.x * zoom), y: Math.round(anchor.y * zoom) });
     });
     this.handle(SHELL_CHANNELS.toggleTheme, () => this.actions.toggleTheme());
+    this.handle(SHELL_CHANNELS.restartEngine, () => this.actions.restartEngine());
     this.handle(SHELL_CHANNELS.toggleSidebar, () => this.actions.toggleSidebar());
     this.handle(SHELL_CHANNELS.showSidebar, () => this.actions.showSidebar());
     this.handle(SHELL_CHANNELS.windowControl, (control) => {

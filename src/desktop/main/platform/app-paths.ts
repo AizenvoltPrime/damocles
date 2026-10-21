@@ -6,6 +6,10 @@ const WORKER_BUNDLES: Readonly<Record<WorkerName, string>> = {
   compass: 'compass-worker.js',
   usageStats: 'usage-stats-worker.js',
   sentinel: 'sentinel.js',
+  processLauncher: 'process-launcher-worker.js',
+  memoryIntegrity: 'memory-integrity-worker.js',
+  sessionMetaIndex: 'session-meta-index-worker.js',
+  voiceExtract: 'voice-extract-worker.js',
 };
 
 export type DesktopLayout =
@@ -40,8 +44,14 @@ export function watchWorkerPath(paths: AppPaths): string {
   return path.join(paths.unpackedRoot, 'dist', 'watch-worker.js');
 }
 
+// dist/core-host.js, which utilityProcess.fork loads from inside app.asar when packaged, so its bare imports resolve
+// app.asar/node_modules and it stays under asar integrity; never add it to ASAR_UNPACK.
+export function coreHostEntryPath(paths: AppPaths): string {
+  return path.join(paths.resourceRoot, 'dist', 'core-host.js');
+}
+
 export interface PtyHostPaths {
-  // dist/pty-host.js, which a utility process loads as a real file.
+  // dist/pty-host.js, which main forks from the unpacked tree (ASAR_UNPACK).
   readonly script: string;
   // The node-pty package the host requires. Under app.asar when packaged: node-pty rewrites its spawn-helper path from app.asar to
   // app.asar.unpacked, so a copy loaded from app.asar.unpacked would point at app.asar.unpacked.unpacked.

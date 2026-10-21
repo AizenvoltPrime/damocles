@@ -50,6 +50,12 @@ export const useSessionStore = defineStore('session', () => {
   /** What the main chat's stopped run still waits for, as the published session state carries it. */
   const windDown = ref<AgentWindDown | null>(null);
 
+  /**
+   * The conversation a send names (docs/invariants.md "A send names its conversation"): the last `sessionStarted`'s, else the
+   * stored one the panel shows before its session starts (a restore's saved one, a `resumeAccepted`'s, a replay's), else none.
+   */
+  const sendTargetSessionId = computed(() => currentSessionId.value ?? currentResumedSessionId.value);
+
   const selectedSession = computed(() => {
     if (!selectedSessionId.value) return null;
     return storedSessions.value.find(s => s.id === selectedSessionId.value) ?? null;
@@ -283,6 +289,7 @@ export const useSessionStore = defineStore('session', () => {
     selectedSessionId,
     selectedSessionName,
     currentResumedSessionId,
+    sendTargetSessionId,
     storedSessions,
     hasMoreSessions,
     nextSessionsOffset,

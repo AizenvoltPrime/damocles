@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import type { QuickOpenScope } from '../../preload/overlay-channels';
 import type { FileRef } from '../../preload/shell-channels';
 import { MAX_TERMINAL_LINK_PATH_LENGTH, type TerminalLinkKind } from '../../preload/terminal-channels';
-import { confineExisting, type Project } from '../documents/confine';
+import { confineExisting, type Project } from '../../local-services/confine';
 
 // How a terminal writes paths: a Windows shell, a WSL distro's shell on Windows, or a macOS or Linux shell.
 export type LinkPathStyle = 'win32' | 'wsl' | 'posix';

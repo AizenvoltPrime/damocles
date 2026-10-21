@@ -4,7 +4,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createGitRunner, GitError, type GitRunner } from '../../scm/git-runner';
+import { createGitRunner, type GitRunner } from '../../scm/git-runner';
+import { GitError } from '../../scm/errors';
 import { folder, git, GIT_PATH, HAS_GIT, MapMemento, makeRepo, useGitSandbox, watchers, write } from '../../scm/__tests__/git-harness';
 import { approveSetup, createChatWorktree, discardChatWorktree, isSetupApproved, readSetupCommands, worktreeOptions, WorktreeCreateError } from '../create';
 import { apply, applyPlan, branchContained, isRewritten, aheadBehind, mergeInto, rebaseOnto, removeWorktree, settlePendingBase, unmergedCommits, updateFrom, worktreeFolderState } from '../integrate';
@@ -379,6 +380,16 @@ describe.skipIf(!HAS_GIT)('worktree chats against real git', { timeout: 120_000 
     expect(findings.some((f) => f.reason === 'gitRecordOnly' && f.path.toLowerCase().endsWith('gone'))).toBe(true);
     expect(fs.existsSync(stray)).toBe(true);
     expect(git(['worktree', 'list', '--porcelain'], project)).toContain('prunable');
+  });
+
+  it('scans the other open projects when one project\'s folder is gone', async () => {
+    const { project, registry, run } = setup('leftovers-missing-project');
+    const gone = path.join(folder('gone-parent-2'), 'gone');
+    git(['worktree', 'add', '--quiet', '-b', 'gone', gone], project);
+    fs.rmSync(gone, { recursive: true, force: true });
+    const missingProject = path.join(folder('removed-project'), 'project');
+    const findings = await scanLeftovers({ registry, git: run, projects: [missingProject, project], isTrusted: () => true });
+    expect(findings.some((f) => f.reason === 'gitRecordOnly' && f.path.toLowerCase().endsWith('gone'))).toBe(true);
   });
 
   it('marks a record whose folder was removed in a terminal deleted, and reads a linked worktree without git', async () => {

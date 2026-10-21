@@ -17,9 +17,15 @@ files:
   - dist/desktop/**
   - dist/desktop-shell/**
   - dist/webview/**
+  # Damocles Core's bundle, forked from inside app.asar and never unpacked (coreHostEntryPath).
+  - dist/core-host.js
   - dist/compass-worker.js
   - dist/usage-stats-worker.js
   - dist/sentinel.js
+  - dist/process-launcher-worker.js
+  - dist/memory-integrity-worker.js
+  - dist/session-meta-index-worker.js
+  - dist/voice-extract-worker.js
   - dist/formatter-host.js
   - dist/pty-host.js
   - dist/quick-open-worker.js
@@ -56,7 +62,7 @@ files:
   - '!node_modules/node-pty/prebuilds/!(${platform}-${arch}){,/**}'
   - '!node_modules/node-pty/**/*.pdb'
   - '!node_modules/node-pty/{build,deps,src,third_party,scripts}{,/**}'
-  # Nothing on Windows loads @parcel/watcher (src/desktop/main/platform/file-watcher-factory.ts), and only a Windows install has these.
+  # Nothing on Windows loads @parcel/watcher (src/desktop/local-services/file-watcher-factory.ts), and only a Windows install has these.
   # Never move an exclusion under win: electron-builder reads a platform files set that only excludes as "everything but", and ships it all.
   - '!node_modules/@parcel/watcher-win32-*{,/**}'
 
@@ -75,6 +81,10 @@ asarUnpack:
   - dist/compass-worker.js
   - dist/usage-stats-worker.js
   - dist/sentinel.js
+  - dist/process-launcher-worker.js
+  - dist/memory-integrity-worker.js
+  - dist/session-meta-index-worker.js
+  - dist/voice-extract-worker.js
   - dist/formatter-host.js
   - dist/pty-host.js
   - dist/quick-open-worker.js
@@ -86,6 +96,7 @@ asarUnpack:
   - python/**
   - node_modules/web-tree-sitter/**
   - node_modules/@vscode/ripgrep-*/**
+  - node_modules/koffi/**
   - node_modules/@koromix/koffi-*/**
   - node_modules/@parcel/watcher-*/**
   - node_modules/node-pty/prebuilds/**

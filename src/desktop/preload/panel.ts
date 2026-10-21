@@ -16,8 +16,23 @@ function current(): { state: unknown; theme: PanelTheme } | undefined {
 }
 const listeners = new Set<(message: unknown) => void>();
 
-ipcRenderer.on(PANEL_CHANNELS.message, (_event, message: unknown) => {
-  for (const listener of [...listeners]) listener(message);
+function parsed(payload: string): { readonly message: unknown } | undefined {
+  try {
+    return { message: JSON.parse(payload) as unknown };
+  } catch {
+    return undefined;
+  }
+}
+
+// Main forwards core's messages as JSON text, and one holding binary (a browser page's frame) as a structured clone. Main
+// parses only the page-state types it persists, so text that is not JSON is dropped here; the page's console says so.
+ipcRenderer.on(PANEL_CHANNELS.message, (_event, payload: unknown) => {
+  const delivered = typeof payload === 'string' ? parsed(payload) : { message: payload };
+  if (delivered === undefined) {
+    console.warn('[damocles] dropped a host message that is not JSON');
+    return;
+  }
+  for (const listener of [...listeners]) listener(delivered.message);
 });
 
 // The panel HTML carries the theme CSS from its creation; this brings a reloaded or crash-recreated page up to the current theme too.

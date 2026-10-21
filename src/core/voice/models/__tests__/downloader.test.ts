@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
+import { promises as fsPromises } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ChecksumMismatchError, ModelLockBusyError, downloadModel } from "../downloader";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CancelledError, ChecksumMismatchError, downloadModel } from "../downloader";
 import type { ModelEntry } from "../manifest";
 
 function sha256OfBytes(bytes: Uint8Array): string {
@@ -52,6 +53,8 @@ describe("downloadModel", () => {
     tmp = await mkdtemp(join(tmpdir(), "damocles-dl-"));
   });
   afterEach(async () => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
     await rm(tmp, { recursive: true, force: true });
   });
 
@@ -143,26 +146,85 @@ describe("downloadModel", () => {
     expect(Array.from(written)).toEqual([1, 2, 3, 4]);
   });
 
-  it("blocks concurrent download of same model with a fresh lock", async () => {
+  it("waits out a download of the same model in flight and keeps the files it finished", async () => {
     const body = new Uint8Array([1, 2, 3, 4]);
     const entry = makeEntry({}, body);
     const lockDir = join(tmp, "parakeet", ".lock");
     await mkdir(lockDir, { recursive: true });
-    await expect(
-      downloadModel({
-        entry,
-        modelsRoot: tmp,
-        fetchImpl: fetchOk(body),
-      }),
-    ).rejects.toBeInstanceOf(ModelLockBusyError);
+    const statSpy = vi.spyOn(fsPromises, "stat");
+    let fetched = false;
+    const run = downloadModel({
+      entry,
+      modelsRoot: tmp,
+      fetchImpl: async () => {
+        fetched = true;
+        return new Response(body);
+      },
+    });
+
+    // The download saw the lock taken; the holder then finishes its file and lets go.
+    await vi.waitFor(() => expect(statSpy).toHaveBeenCalledWith(lockDir));
+    await mkdir(join(tmp, "parakeet", "v2.0.0"), { recursive: true });
+    await writeFile(join(tmp, "parakeet", "v2.0.0", "model.bin"), body);
+    await rm(lockDir, { recursive: true });
+
+    await expect(run).resolves.toEqual({ status: "ok" });
+    expect(fetched).toBe(false);
   });
 
-  it("reclaims a stale lock older than 10 minutes", async () => {
+  it("stops waiting for another download's lock on abort", async () => {
+    const entry = makeEntry({}, new Uint8Array([1, 2, 3, 4]));
+    const lockDir = join(tmp, "parakeet", ".lock");
+    await mkdir(lockDir, { recursive: true });
+    const statSpy = vi.spyOn(fsPromises, "stat");
+    const controller = new AbortController();
+    const run = downloadModel({ entry, modelsRoot: tmp, signal: controller.signal, fetchImpl: fetchOk(new Uint8Array([1, 2, 3, 4])) });
+
+    await vi.waitFor(() => expect(statSpy).toHaveBeenCalledWith(lockDir));
+    controller.abort();
+
+    await expect(run).rejects.toBeInstanceOf(CancelledError);
+    expect(await stat(lockDir).then(() => true, () => false)).toBe(true);
+  });
+
+  it("keeps its lock fresh while it downloads, and leaves a lock another process took over", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const body = new Uint8Array([1, 2, 3, 4]);
+    const entry = makeEntry({}, body);
+    const lockDir = join(tmp, "parakeet", ".lock");
+    let sendRest!: () => void;
+    const rest = new Promise<void>((resolve) => (sendRest = resolve));
+    const run = downloadModel({
+      entry,
+      modelsRoot: tmp,
+      fetchImpl: async () => new Response(new ReadableStream<Uint8Array>({
+        async start(controller) {
+          controller.enqueue(body.subarray(0, 2));
+          await rest;
+          controller.enqueue(body.subarray(2));
+          controller.close();
+        },
+      })),
+    });
+    await vi.waitFor(async () => expect(await stat(join(lockDir, "owner")).then(() => true, () => false)).toBe(true));
+    const old = new Date(Date.now() - 60 * 60 * 1000);
+    await utimes(lockDir, old, old);
+
+    vi.advanceTimersByTime(20_000);
+
+    await vi.waitFor(async () => expect(Date.now() - (await stat(lockDir)).mtimeMs).toBeLessThan(60_000));
+    await writeFile(join(lockDir, "owner"), "another process");
+    sendRest();
+    await expect(run).resolves.toEqual({ status: "ok" });
+    expect(await readFile(join(lockDir, "owner"), "utf8")).toBe("another process");
+  });
+
+  it("reclaims a lock nobody refreshed for over two minutes", async () => {
     const body = new Uint8Array([1, 2, 3, 4]);
     const entry = makeEntry({}, body);
     const lockDir = join(tmp, "parakeet", ".lock");
     await mkdir(lockDir, { recursive: true });
-    const oldTime = new Date(Date.now() - 11 * 60 * 1000);
+    const oldTime = new Date(Date.now() - 3 * 60 * 1000);
     await utimes(lockDir, oldTime, oldTime);
     const result = await downloadModel({
       entry,

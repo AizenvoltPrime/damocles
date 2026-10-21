@@ -2,7 +2,9 @@ import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { MAX_COMMIT_ATTACHMENT_CHARS, MAX_COMMIT_ATTACHMENT_LINES, MAX_COMMIT_LABEL_CHARS } from '../../../shared/types/chat-attachment';
 import { readCommitAttachment } from '../commit-attachment';
-import { createGitRunner, GitUntrustedError, parseGitVersion } from '../git-runner';
+import { createGitRunner } from '../git-runner';
+import { parseGitVersion } from '../git-version';
+import { GitUntrustedError } from '../errors';
 import { MAX_MESSAGE_CHARS, Repository } from '../repository';
 import { folder, git, GIT_PATH, harness, HAS_GIT, makeRepo, ready, sandbox, statusOf, useGitSandbox, waitFor, write } from './git-harness';
 

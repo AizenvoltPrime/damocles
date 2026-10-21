@@ -8,13 +8,11 @@ import type { Disposable } from '../../platform/disposable';
 import type { FileWatcher, FileWatcherFactory } from '../../platform/file-watcher';
 import { writeJsonConfig } from '../config/json-config-write';
 import { folderKey } from '../workspace-folders/folder-key';
-import { isWorktreeId } from '../../shared/worktree-id';
+import { folderContains, isAbsolutePath, liveChatRecordAt, liveChatRecords, projectWorktreesFolder, validRecord } from './records';
 
 export type WorktreeId = string;
 export const REGISTRY_FILE = 'registry.json';
 const REGISTRY_VERSION = 1;
-// AD12 Names: the folder name cut to 24 characters keeps worktree paths short on Windows.
-const PROJECT_DIR_NAME_LENGTH = 24;
 
 interface RecordBase {
   id: WorktreeId;
@@ -74,6 +72,8 @@ export interface WorktreeRegistryOptions {
   rootDir: string;
   watcherFactory: FileWatcherFactory;
   log: (line: string) => void;
+  // what an earlier instance last read (a restarted Damocles Core's predecessor), served while the file does not parse
+  lastRecords?: readonly unknown[];
 }
 
 // 252 is the largest multiple of 36 a byte holds, so drawing again above it keeps every character equally likely.
@@ -85,27 +85,6 @@ export function newWorktreeId(): WorktreeId {
     for (const byte of crypto.randomBytes(8 - id.length)) if (byte < UNBIASED_BYTE_LIMIT) id += (byte % 36).toString(36);
   }
   return id;
-}
-
-/** `<rootDir>/<project>/<chat>`: the project folder's name cut to 24 characters plus 6 hex of its path hash (AD12 Names). */
-export function worktreeFolderFor(rootDir: string, projectPath: string, id: WorktreeId): string {
-  return path.join(projectWorktreesFolder(rootDir, projectPath), id);
-}
-
-/** `<rootDir>/<project>`, the folder holding every chat worktree of the project. */
-export function projectWorktreesFolder(rootDir: string, projectPath: string): string {
-  const name = path.basename(path.resolve(projectPath)).slice(0, PROJECT_DIR_NAME_LENGTH).replace(/[^A-Za-z0-9._-]/g, '_');
-  const hash = crypto.createHash('sha256').update(folderKey(projectPath)).digest('hex').slice(0, 6);
-  return path.join(rootDir, `${name || 'project'}-${hash}`);
-}
-
-/** True when `child` is `parent` or lies inside it, compared with folderKey. */
-export function folderContains(parent: string, child: string): boolean {
-  const p = folderKey(parent);
-  const c = folderKey(child);
-  if (c === p) return true;
-  const withSep = p.endsWith(path.sep) ? p : p + path.sep;
-  return c.startsWith(withSep);
 }
 
 export class WorktreeRegistry implements Disposable {
@@ -131,6 +110,8 @@ export class WorktreeRegistry implements Disposable {
     if (read) {
       this.cache = read.records;
       this.foreign = read.foreign;
+    } else if (options.lastRecords) {
+      this.cache = validRecords(options.lastRecords, this.rootDir, this.log).records;
     }
     this.watcher = options.watcherFactory.watch(this.rootDir, REGISTRY_FILE);
     const reload = (): void => this.reload();
@@ -164,8 +145,7 @@ export class WorktreeRegistry implements Disposable {
 
   /** The live chat record whose working folder is exactly `folder`. */
   liveChatRecordAt(folder: string): ChatWorktreeRecord | undefined {
-    const key = folderKey(folder);
-    return this.cache.find((r): r is ChatWorktreeRecord => r.kind === 'chat' && r.deletedAt === undefined && folderKey(r.workingFolder) === key);
+    return liveChatRecordAt(this.cache, folder);
   }
 
   /** The project of the chat worktree holding `folder`; never derived from path text, and adopted records have none here (AD12). */
@@ -184,8 +164,7 @@ export class WorktreeRegistry implements Disposable {
 
   /** Live chat records of the project. */
   liveChatRecords(projectPath: string): readonly ChatWorktreeRecord[] {
-    const key = folderKey(projectPath);
-    return this.cache.filter((r): r is ChatWorktreeRecord => r.kind === 'chat' && r.deletedAt === undefined && folderKey(r.projectPath) === key);
+    return liveChatRecords(this.cache, projectPath);
   }
 
   /** Adds a chat record, re-checking its index against the file under the lock; resolves the record as written. */
@@ -405,11 +384,6 @@ function freshId(records: readonly WorktreeRecord[]): WorktreeId {
   }
 }
 
-const isString = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 4096 && !v.includes('\0');
-const isAbsolutePath = (v: unknown): v is string => isString(v) && path.isAbsolute(v);
-const isTime = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0;
-const isObjectId = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(v);
-
 /**
  * The records this version reads, and the raw ones it does not (`foreign`). The file lives in the user's home, but any process
  * can write it, so a chat record is valid only at the one folder its project and id name under `rootDir`; an invalid or
@@ -424,6 +398,11 @@ export function parseRegistry(text: string, rootDir: string, log: (line: string)
   }
   const list = (parsed as { records?: unknown } | null)?.records;
   if (!Array.isArray(list)) throw new Error('registry.json holds no records list');
+  return validRecords(list, rootDir, log);
+}
+
+// The first record of each id that passes validRecord, and every other one as it was.
+function validRecords(list: readonly unknown[], rootDir: string, log: (line: string) => void): { records: WorktreeRecord[]; foreign: unknown[] } {
   const records: WorktreeRecord[] = [];
   const foreign: unknown[] = [];
   const ids = new Set<string>();
@@ -438,66 +417,4 @@ export function parseRegistry(text: string, rootDir: string, log: (line: string)
     records.push(record);
   }
   return { records, foreign };
-}
-
-function validPendingBase(raw: unknown): PendingBase | undefined {
-  if (typeof raw !== 'object' || raw === null) return undefined;
-  const p = raw as Record<string, unknown>;
-  if (!isObjectId(p['commit']) || (p['side'] !== 'project' && p['side'] !== 'worktree')) return undefined;
-  return { commit: p['commit'], side: p['side'] };
-}
-
-const depth = (relative: string): number => (relative === '' ? 0 : relative.split(path.sep).length);
-
-function validRecord(raw: unknown, rootDir: string): WorktreeRecord | undefined {
-  if (typeof raw !== 'object' || raw === null) return undefined;
-  const r = raw as Record<string, unknown>;
-  if (!isWorktreeId(r['id'])) return undefined;
-  if (!isAbsolutePath(r['repositoryRoot']) || !isAbsolutePath(r['worktreeRoot']) || !isAbsolutePath(r['workingFolder']) || !isTime(r['createdAt'])) return undefined;
-  if (!folderContains(r['worktreeRoot'], r['workingFolder'])) return undefined;
-  if (r['deletedAt'] !== undefined && !isTime(r['deletedAt'])) return undefined;
-  const base = {
-    id: r['id'],
-    repositoryRoot: r['repositoryRoot'],
-    worktreeRoot: r['worktreeRoot'],
-    workingFolder: r['workingFolder'],
-    createdAt: r['createdAt'],
-    ...(r['deletedAt'] !== undefined ? { deletedAt: r['deletedAt'] as number } : {}),
-  };
-  if (r['kind'] === 'chat') {
-    if (!isAbsolutePath(r['projectPath']) || !isString(r['branch']) || !isObjectId(r['baseCommit'])) return undefined;
-    if (typeof r['index'] !== 'number' || !Number.isInteger(r['index']) || r['index'] < 1) return undefined;
-    if (r['lastAppliedTree'] !== undefined && !isObjectId(r['lastAppliedTree'])) return undefined;
-    const pendingBase = r['pendingBase'] === undefined ? undefined : validPendingBase(r['pendingBase']);
-    if (r['pendingBase'] !== undefined && pendingBase === undefined) return undefined;
-    if (r['usedAt'] !== undefined && !isTime(r['usedAt'])) return undefined;
-    if (folderKey(r['worktreeRoot']) !== folderKey(worktreeFolderFor(rootDir, r['projectPath'], r['id']))) return undefined;
-    if (folderContains(rootDir, r['projectPath']) || folderContains(rootDir, r['repositoryRoot'])) return undefined;
-    // Apply writes into repositoryRoot, so it must hold the project, and the working folder the same subfolder of the worktree:
-    // as deep, since the project keeps its own spelling (an 8.3 alias) and the working folder has git's names.
-    if (!folderContains(r['repositoryRoot'], r['projectPath'])) return undefined;
-    if (depth(path.relative(r['worktreeRoot'], r['workingFolder'])) !== depth(path.relative(r['repositoryRoot'], r['projectPath']))) return undefined;
-    return {
-      ...base,
-      kind: 'chat',
-      projectPath: r['projectPath'],
-      branch: r['branch'],
-      index: r['index'],
-      baseCommit: r['baseCommit'],
-      ...(r['lastAppliedTree'] !== undefined ? { lastAppliedTree: r['lastAppliedTree'] as string } : {}),
-      ...(pendingBase !== undefined ? { pendingBase } : {}),
-      ...(r['usedAt'] !== undefined ? { usedAt: r['usedAt'] as number } : {}),
-    };
-  }
-  if (r['kind'] === 'adopted') {
-    if (r['projectPath'] !== undefined && !isAbsolutePath(r['projectPath'])) return undefined;
-    if (r['branch'] !== undefined && !isString(r['branch'])) return undefined;
-    return {
-      ...base,
-      kind: 'adopted',
-      ...(r['projectPath'] !== undefined ? { projectPath: r['projectPath'] as string } : {}),
-      ...(r['branch'] !== undefined ? { branch: r['branch'] as string } : {}),
-    };
-  }
-  return undefined;
 }

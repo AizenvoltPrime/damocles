@@ -1,74 +1,157 @@
-import { ChatPanelProvider } from '../../core/chat-panel';
-import type { CompassViewsHandle } from '../../core/chat-panel/types';
 import { log } from '../../core/logger';
-import { setMcpSecretStorage } from '../../core/pi-session/mcp/mcp-auth';
-import { PiRuntime } from '../../core/pi-session/pi-runtime';
-import { runCheckpointMaintenance } from '../../core/pi-session/checkpoints';
-import { setupAutoDisable } from '../../core/voice/auto-disable';
-import type { Disposable } from '../../platform/disposable';
-import type { PlatformWithWorktrees } from '../../core/worktrees/host';
+import { createMainEndpoint, type CoreInit } from '../core-protocol';
+import { CoreClient } from './core-client';
+import { forkCore, type CoreExit } from './core-process';
+import { createHostServices, type HostServicesDeps } from './core-services/host-services';
+import type { DesktopPlatform } from './platform';
+import { bounded } from './shutdown';
+import type { TrustStore } from './trust-store';
 
-const MAINTENANCE_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const MAINTENANCE_FIRST_DELAY_MS = 20_000;
-
-// Compass tree views are VS Code UI; desktop has none.
-const NO_COMPASS_VIEWS: CompassViewsHandle = {
-  register: () => undefined,
-  setActive: () => undefined,
-  dispose: () => undefined,
-};
-
+/** One running Damocles Core process as main sees it: its client, and the shutdown that ends it. */
 export interface DesktopCore {
-  readonly provider: ChatPanelProvider;
-  // The extension's deactivate chain, then its subscriptions, awaited to the end.
+  readonly client: CoreClient;
+  // the process's pid once it spawned
+  readonly pid: () => number | undefined;
+  // settles once core published its folder targets, before which no caller gets the core; rejects when core ended first
+  readonly ready: Promise<void>;
+  isReady(): boolean;
+  // the process ended, ready or not
+  hasEnded(): boolean;
+  // the window's terminal pane was shown or hidden
+  terminalToggleChanged(): void;
+  // core.shutdown (ChatPanelProvider.dispose and core's config writes) within closeTimeoutMs, then the kill and the exit.
   dispose(): Promise<void>;
 }
 
+export interface CoreConnectionDeps
+  extends Pick<HostServicesDeps, 'theme' | 'terminalToggle' | 'resolveProxy' | 'createView' | 'git' | 'e2eHooks' | 'paths' | 'logs' | 'language' | 'power' | 'ui' | 'log'> {
+  // main's platform: what core's proxies reach
+  readonly platform: DesktopPlatform;
+  readonly trust: TrustStore;
+  // dist/core-host.js (coreHostEntryPath)
+  readonly entry: string;
+  // core's stdout follows main's (the unpackaged app, whose sinks echo there)
+  readonly echo: boolean;
+  // how long a quit or reload waits for core.shutdown's reply before it kills core
+  readonly closeTimeoutMs: number;
+  // how long core has to publish its folder targets before main kills it and takes the crash path
+  readonly readyTimeoutMs: number;
+}
+
+export interface CoreStart {
+  // the cores that ended earlier in this app run holding session leases no live process holds
+  readonly endedCores: CoreInit['endedCores'];
+  // the worktree records main last read from a core
+  readonly worktreeRecords: CoreInit['worktreeRecords'];
+  // core's process ended without main asking it to, or main killed it for a protocol violation or a missed ready deadline
+  readonly crashed: (pid: number | undefined, how: string) => void;
+  // core's process ended without core.shutdown answering, so the session leases it held were not released; before crashed
+  readonly leftLeases: (pid: number) => void;
+}
+
+const describeExit = (exit: CoreExit): string => `code ${exit.code}, reason ${exit.reason ?? 'none'}`;
+
 /**
- * The core services src/vscode/extension.ts activate builds, in the same order, minus VS Code-only UI
- * (sidebar, panel serializers, compass views, voice status bar). The caller runs the legacy settings
- * migrations once per app run, before the first start.
+ * Forks a Damocles Core and connects to it: a fresh init (every mirror read now), endpoint, host services and client, so no
+ * state crosses from an earlier core. A message outside the contract in either direction kills core, which then takes the
+ * crash path like any exit main did not ask for.
  */
-export function startCore(platform: PlatformWithWorktrees): DesktopCore {
-  const subscriptions: Disposable[] = [];
-  setMcpSecretStorage(platform.secrets);
-
-  const provider = new ChatPanelProvider(platform, {
-    subscriptions,
-    createCompassViews: () => NO_COMPASS_VIEWS,
+export function startDesktopCore(deps: CoreConnectionDeps, start: CoreStart): DesktopCore {
+  const child = forkCore(deps.entry, deps.echo);
+  let stopping = false;
+  let ended = false;
+  let isReady = false;
+  let violation: string | undefined;
+  // Electron forgets the pid once the process exited; the logs and the lease check still name it.
+  let pid: number | undefined;
+  const pidText = (): string => String(pid ?? 'unknown');
+  const endpoint = createMainEndpoint(child.transport, (line) => log(line), (error) => {
+    if (violation !== undefined) return;
+    violation = error.message;
+    log(`[core] protocol violation (${error.message}); killing Damocles Core (pid ${pidText()})`);
+    // nothing core sent after the violation is read or served
+    isReady = false;
+    endpoint.close(`Damocles Core broke the protocol (${error.message})`);
+    child.kill();
+  });
+  const hostServices = createHostServices({ ...deps, endpoint, state: deps.platform.state, endedCores: start.endedCores, worktreeRecords: start.worktreeRecords });
+  // The init is the channel's first message; core parses everything after it with the protocol's tables.
+  child.transport.post(hostServices.init);
+  const client = new CoreClient(endpoint, (view, attach) => hostServices.adopt(view, attach));
+  void child.spawned.then(() => {
+    pid = child.pid;
+    log(`[core] started (pid ${pidText()})`);
   });
 
-  subscriptions.push(
-    platform.settings.onDidChange('damocles.pi.webSearch.enabled', () => {
-      if (PiRuntime.exists) void PiRuntime.get().refreshWebSearch();
-    }),
-  );
-
-  const panelManager = provider.getPanelManager();
-  setupAutoDisable(provider.getVoiceService(), subscriptions, {
-    onPanelsAllClosed: (callback: () => void) => panelManager.onAllPanelsClosed(callback),
-  });
-
-  const runSweep = (): void => {
-    const retentionDays = platform.settings.get<number>('damocles.checkpoints.retentionDays', 30);
-    runCheckpointMaintenance({ retentionDays }).catch((err: unknown) => {
-      log(`[Checkpoints] maintenance sweep threw unexpectedly: ${err instanceof Error ? err.message : String(err)}`);
+  // A core hung before ready (a stalled startup await, a constructor that never returns) would hold every request forever.
+  let readyMissed = false;
+  const readyDeadline = setTimeout(() => {
+    readyMissed = true;
+    log(`[core] not ready within ${deps.readyTimeoutMs} ms; killing Damocles Core (pid ${pidText()})`);
+    endpoint.close('Damocles Core did not become ready');
+    child.kill();
+  }, deps.readyTimeoutMs);
+  let rejectReady!: (err: Error) => void;
+  const ready = new Promise<void>((resolve, reject) => {
+    rejectReady = reject;
+    const published = client.onFoldersChanged(() => {
+      published.dispose();
+      clearTimeout(readyDeadline);
+      isReady = !ended;
+      log(`[core] ready (pid ${pidText()})`);
+      resolve();
     });
-  };
-  const initial = setTimeout(runSweep, MAINTENANCE_FIRST_DELAY_MS);
-  initial.unref();
-  const timer = setInterval(runSweep, MAINTENANCE_INTERVAL_MS);
-  timer.unref();
-  subscriptions.push({ dispose: () => { clearTimeout(initial); clearInterval(timer); } });
+  });
+  // A core that never became ready is not waited on by anyone but the callers of ready.
+  ready.catch(() => undefined);
+  child.onExit((code) => {
+    ended = true;
+    isReady = false;
+    clearTimeout(readyDeadline);
+    log(`[core] exited (pid ${pidText()}, code ${code})`);
+    endpoint.close('Damocles Core stopped');
+    rejectReady(new Error('Damocles Core stopped before it was ready'));
+    if (stopping) return;
+    if (pid !== undefined) start.leftLeases(pid);
+    start.crashed(pid, violation !== undefined ? 'protocol violation' : readyMissed ? `not ready within ${deps.readyTimeoutMs} ms` : `exit code ${code}`);
+  });
+  // Chromium's reason and core's stderr only for an exit main did not ask for; stderr can carry library output
+  void child.ended.then((exit) => {
+    if (!stopping) log(`[core] ended (pid ${pidText()}, ${describeExit(exit)})${exit.stderr !== null ? `; stderr: ${exit.stderr}` : ''}`);
+  });
 
   return {
-    provider,
+    client,
+    pid: () => pid,
+    ready,
+    isReady: () => isReady,
+    hasEnded: () => ended,
+    terminalToggleChanged: () => hostServices.terminalToggleChanged(),
     dispose: async () => {
-      const runtimeDisposed = PiRuntime.exists ? PiRuntime.disposeInstance() : Promise.resolve();
-      await provider.dispose();
-      await runtimeDisposed;
-      for (const subscription of subscriptions.reverse()) subscription.dispose();
-      log('Damocles core disposed');
+      stopping = true;
+      clearTimeout(readyDeadline);
+      let leftLeases = false;
+      if (!ended) {
+        const began = Date.now();
+        let answered = false;
+        const shutdown = client.shutdown().then(
+          () => {
+            answered = true;
+            log(`[core] shut down in ${Date.now() - began} ms (pid ${pidText()})`);
+          },
+          (err: unknown) => log(`[core] shutdown failed (pid ${pidText()}): ${err instanceof Error ? err.message : String(err)}`),
+        );
+        await bounded(shutdown, deps.closeTimeoutMs, () => {
+          if (!answered) log(`[core] shutdown did not finish within ${deps.closeTimeoutMs} ms; killing Damocles Core (pid ${pidText()})`);
+        });
+        leftLeases = !answered;
+        child.kill();
+      }
+      await child.exited;
+      if (leftLeases && pid !== undefined) start.leftLeases(pid);
+      client.dispose();
+      hostServices.dispose();
+      endpoint.close('Desktop main closed the core channel');
     },
   };
 }

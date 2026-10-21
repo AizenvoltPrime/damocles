@@ -36,6 +36,12 @@ vi.mock("../sidecar", () => ({
     async stop(): Promise<void> {
       this.record.stopped = true;
     }
+    isAlive(): boolean {
+      return this.record.started && !this.record.stopped;
+    }
+    getStatus(): SidecarManagerStatus {
+      return { kind: "stopped" };
+    }
   },
 }));
 

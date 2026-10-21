@@ -1,17 +1,28 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import type { LaunchedProcess, ProcessExit } from "../../../process-launcher";
 import type { SpawnOptions, SpawnResult } from "../spawn";
 import type { ManagerConfig, CpuFallbackEvent } from "../manager";
 
-class FakeChild extends EventEmitter {
-  pid: number = 4242;
-  killed: boolean = false;
-  stdout: NodeJS.ReadableStream | null = null;
-  stderr: NodeJS.ReadableStream | null = null;
-  kill(_signal?: NodeJS.Signals | number): boolean {
-    this.killed = true;
-    this.emit("exit", null, "SIGTERM");
-    return true;
+class FakeChild implements LaunchedProcess {
+  readonly pid: Promise<number> = Promise.resolve(4242);
+  readonly exited: Promise<ProcessExit>;
+  readonly closed: Promise<void>;
+  private finish!: (exit: ProcessExit) => void;
+  constructor() {
+    this.exited = new Promise((resolve) => (this.finish = resolve));
+    this.closed = this.exited.then(() => undefined);
+  }
+  onData(): void {}
+  write(): Promise<void> {
+    return Promise.resolve();
+  }
+  end(): void {}
+  kill(): void {
+    this.exit(null, "SIGTERM");
+  }
+  exit(code: number | null, signal: NodeJS.Signals | null): void {
+    this.finish({ code, signal });
   }
 }
 
@@ -41,11 +52,10 @@ vi.mock("../spawn", () => {
       const child = new FakeChild();
       spawnedChildren.push(child);
       return {
-        child: child as unknown as SpawnResult["child"],
+        child,
+        pid: 4242,
         port: 65000 + spawnedChildren.length,
         token: "test-token",
-        // The fake sidecar never reaches the kill path, so it needs no job to terminate.
-        job: undefined,
       };
     },
     pickEphemeralPort: async (): Promise<number> => 65000,
@@ -122,25 +132,22 @@ describe("VoiceSidecarManager CPU fallback", () => {
     manager.on("error", () => {});
 
     void manager.start().catch(() => {});
-    await new Promise((r) => setTimeout(r, 20));
+    await vi.waitFor(() => expect(spawnedChildren.length).toBeGreaterThanOrEqual(1));
 
-    expect(spawnCalls.length).toBeGreaterThanOrEqual(1);
     expect(spawnCalls[0]?.runtimeMode).toBe("cuda");
 
     const firstChild = spawnedChildren[0];
     expect(firstChild).toBeDefined();
 
     if (firstChild !== undefined) {
-      firstChild.emit("exit", 7, null);
+      firstChild.exit(7, null);
     }
 
-    await new Promise((r) => setTimeout(r, 50));
+    await vi.waitFor(() => expect(spawnCalls.length).toBeGreaterThanOrEqual(2));
 
     expect(cpuFallbackEvents.length).toBe(1);
     expect(cpuFallbackEvents[0]?.reason).toBe("cuda-oom-fallback");
     expect(manager.isCpuFallbackActive()).toBe(true);
-
-    expect(spawnCalls.length).toBeGreaterThanOrEqual(2);
     expect(spawnCalls[spawnCalls.length - 1]?.runtimeMode).toBe("cpu");
   });
 
@@ -150,9 +157,8 @@ describe("VoiceSidecarManager CPU fallback", () => {
     manager.on("error", () => {});
 
     void manager.start().catch(() => {});
-    await new Promise((r) => setTimeout(r, 20));
+    await vi.waitFor(() => expect(spawnCalls.length).toBe(1));
 
-    expect(spawnCalls.length).toBe(1);
     expect(spawnCalls[0]?.runtimeMode).toBe("cpu");
     expect(manager.isCpuFallbackActive()).toBe(false);
   });

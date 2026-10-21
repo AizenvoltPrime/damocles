@@ -7,7 +7,7 @@ import { parse } from 'yaml';
 vi.mock('electron', () => ({ app: { getVersion: () => '9.8.7' } }));
 
 import { createDesktopAppInfo } from '../platform/app-info';
-import { askpassPaths, createDesktopAppPaths, ptyHostPaths, quickOpenWorkerPath, unpackagedResourceRoot, watchWorkerPath } from '../platform/app-paths';
+import { askpassPaths, coreHostEntryPath, createDesktopAppPaths, ptyHostPaths, quickOpenWorkerPath, unpackagedResourceRoot, watchWorkerPath } from '../platform/app-paths';
 import { ASAR_UNPACK, asarUnpackFor, WATCHER_UNPACK } from '../platform/unpacked-assets';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
@@ -27,6 +27,11 @@ describe('desktop AppPaths', () => {
     expect(paths.workerEntry('compass')).toBe(path.join(REPO_ROOT, 'dist', 'compass-worker.js'));
     expect(paths.workerEntry('usageStats')).toBe(path.join(REPO_ROOT, 'dist', 'usage-stats-worker.js'));
     expect(paths.workerEntry('sentinel')).toBe(path.join(REPO_ROOT, 'dist', 'sentinel.js'));
+    expect(paths.workerEntry('processLauncher')).toBe(path.join(REPO_ROOT, 'dist', 'process-launcher-worker.js'));
+    expect(paths.workerEntry('memoryIntegrity')).toBe(path.join(REPO_ROOT, 'dist', 'memory-integrity-worker.js'));
+    expect(paths.workerEntry('sessionMetaIndex')).toBe(path.join(REPO_ROOT, 'dist', 'session-meta-index-worker.js'));
+    expect(paths.workerEntry('voiceExtract')).toBe(path.join(REPO_ROOT, 'dist', 'voice-extract-worker.js'));
+    expect(coreHostEntryPath(paths)).toBe(path.join(REPO_ROOT, 'dist', 'core-host.js'));
     expect(ptyHostPaths(paths)).toEqual({
       script: path.join(REPO_ROOT, 'dist', 'pty-host.js'),
       nodePty: path.join(REPO_ROOT, 'node_modules', 'node-pty'),
@@ -49,8 +54,17 @@ describe('desktop AppPaths', () => {
     expect(paths.workerEntry('compass')).toBe(path.join(unpacked, 'dist', 'compass-worker.js'));
     expect(paths.workerEntry('usageStats')).toBe(path.join(unpacked, 'dist', 'usage-stats-worker.js'));
     expect(paths.workerEntry('sentinel')).toBe(path.join(unpacked, 'dist', 'sentinel.js'));
+    expect(paths.workerEntry('processLauncher')).toBe(path.join(unpacked, 'dist', 'process-launcher-worker.js'));
+    expect(paths.workerEntry('memoryIntegrity')).toBe(path.join(unpacked, 'dist', 'memory-integrity-worker.js'));
+    expect(paths.workerEntry('sessionMetaIndex')).toBe(path.join(unpacked, 'dist', 'session-meta-index-worker.js'));
+    expect(paths.workerEntry('voiceExtract')).toBe(path.join(unpacked, 'dist', 'voice-extract-worker.js'));
     expect(quickOpenWorkerPath(paths)).toBe(path.join(unpacked, 'dist', 'quick-open-worker.js'));
     expect(watchWorkerPath(paths)).toBe(path.join(unpacked, 'dist', 'watch-worker.js'));
+  });
+
+  it('forks Damocles Core from inside app.asar when packaged, so its bare imports resolve app.asar/node_modules', () => {
+    const asarPath = path.join(os.tmpdir(), 'Damocles', 'resources', 'app.asar');
+    expect(coreHostEntryPath(createDesktopAppPaths({ packaged: true, asarPath }))).toBe(path.join(asarPath, 'dist', 'core-host.js'));
   });
 
   it('runs the askpass scripts and helper from app.asar.unpacked when packaged, since git executes them as real files', () => {
@@ -101,7 +115,7 @@ describe('ASAR_UNPACK', () => {
   it('covers every path the packaged AppPaths promises under the unpacked root', () => {
     const paths = createDesktopAppPaths({ packaged: true, asarPath: '/app.asar' });
     const promised = [
-      ...(['compass', 'usageStats', 'sentinel'] as const).map((name) => paths.workerEntry(name)),
+      ...(['compass', 'usageStats', 'sentinel', 'processLauncher', 'memoryIntegrity', 'sessionMetaIndex', 'voiceExtract'] as const).map((name) => paths.workerEntry(name)),
       ptyHostPaths(paths).script,
       quickOpenWorkerPath(paths),
       watchWorkerPath(paths),
@@ -112,6 +126,11 @@ describe('ASAR_UNPACK', () => {
     for (const file of promised) {
       expect(ASAR_UNPACK.some((pattern) => path.posix.matchesGlob(file, pattern)), file).toBe(true);
     }
+  });
+
+  // The core bundle loads from app.asar: an unpacked copy would leave asar integrity and fail to resolve pi by bare specifier.
+  it('keeps the core host bundle inside app.asar', () => {
+    expect(ASAR_UNPACK.some((pattern) => path.posix.matchesGlob('dist/core-host.js', pattern))).toBe(false);
   });
 
   // Electron redirects a native module required from app.asar to its unpacked copy; node-pty's JS must stay in the archive.

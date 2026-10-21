@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  ABANDONED_SOCKET_FOLDER_AGE_MS,
   ASKPASS_REQUEST_DEADLINE_MS,
   classifyPrompt,
   createAskpassServer,
@@ -13,6 +14,7 @@ import {
   promptText,
   MAX_WAITING_CONNECTIONS,
   PROMPT_CANCELLED,
+  removeAbandonedSocketFolders,
   WITHDRAWN_PROMPT_GRACE_MS,
   type AskpassServer,
   type AskpassServerDeps,
@@ -409,5 +411,67 @@ describe('askpass requests and prompts', () => {
   it('sends only an answer with no line break or NUL within the bound', () => {
     expect(isSendableAnswer('p@ss word')).toBe(true);
     for (const answer of ['a\nb', 'a\rb', 'a\0b', 'x'.repeat(4097)]) expect(isSendableAnswer(answer)).toBe(false);
+  });
+});
+
+describe('the sweep of abandoned socket folders', () => {
+  const bases: string[] = [];
+  afterEach(() => {
+    for (const base of bases.splice(0)) fs.rmSync(base, { recursive: true, force: true });
+  });
+
+  // a socket folder under a base of its own, last changed `ageMs` before now
+  function folderIn(base: string, name: string, entries: readonly string[], ageMs: number, now: number): string {
+    const dir = path.join(base, name);
+    fs.mkdirSync(dir);
+    for (const entry of entries) fs.writeFileSync(path.join(dir, entry), '');
+    const at = new Date(now - ageMs);
+    fs.utimesSync(dir, at, at);
+    return dir;
+  }
+
+  it('removes an old folder whose socket refuses or is missing, and keeps one that answers, is young, holds more or is not its', async () => {
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'dam-sweep-')));
+    bases.push(base);
+    const now = Date.now();
+    const old = ABANDONED_SOCKET_FOLDER_AGE_MS + 1000;
+    const refused = folderIn(base, 'damocles-askpass-refused', ['askpass.sock'], old, now);
+    const empty = folderIn(base, 'damocles-askpass-empty', [], old, now);
+    const live = folderIn(base, 'damocles-askpass-live', ['askpass.sock'], old, now);
+    const unknown = folderIn(base, 'damocles-askpass-busy', ['askpass.sock'], old, now);
+    const starting = folderIn(base, 'damocles-askpass-young', [], 1000, now);
+    const crowded = folderIn(base, 'damocles-askpass-crowded', ['askpass.sock', 'other'], old, now);
+    const foreign = folderIn(base, 'other-askpass-old', [], old, now);
+    const answers = new Map([[refused, 'refused'], [live, 'listening'], [unknown, 'unknown']] as const);
+    const probed: string[] = [];
+    const log: string[] = [];
+    await removeAbandonedSocketFolders({
+      tmpdir: () => base,
+      runtimeDir: () => undefined,
+      now,
+      log: (line) => log.push(line),
+      probe: async (socketPath) => {
+        probed.push(socketPath);
+        return answers.get(path.dirname(socketPath)) ?? 'unknown';
+      },
+    });
+    expect([refused, empty].map((dir) => fs.existsSync(dir))).toEqual([false, false]);
+    expect([live, unknown, starting, crowded, foreign].map((dir) => fs.existsSync(dir))).toEqual([true, true, true, true, true]);
+    expect(probed.filter((socketPath) => socketPath.startsWith(base)).sort()).toEqual([live, refused, unknown].map((dir) => path.join(dir, 'askpass.sock')).sort());
+    expect(log.filter((line) => line.includes(base))).toHaveLength(2);
+  });
+
+  it.skipIf(process.platform === 'win32')('keeps the folder of a server that listens, in this process or another, and removes one whose socket is gone', async () => {
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'dam-sweep-')));
+    bases.push(base);
+    const { server } = start(undefined, { runtimeDir: () => base });
+    const liveDir = path.dirname((await server.register('interactive', 'push')).env['DAMOCLES_ASKPASS_HANDLE']!);
+    const now = Date.now();
+    const at = new Date(now - ABANDONED_SOCKET_FOLDER_AGE_MS - 1000);
+    fs.utimesSync(liveDir, at, at);
+    const gone = folderIn(base, 'damocles-askpass-gone', [], ABANDONED_SOCKET_FOLDER_AGE_MS + 1000, now);
+    await removeAbandonedSocketFolders({ runtimeDir: () => base, tmpdir: () => base, now, log: () => undefined });
+    expect(fs.existsSync(liveDir)).toBe(true);
+    expect(fs.existsSync(gone)).toBe(false);
   });
 });

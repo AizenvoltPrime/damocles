@@ -1,7 +1,7 @@
-import { spawn } from "node:child_process";
 import { access, constants as fsConstants } from "node:fs/promises";
 import * as path from "node:path";
 import { executablePathForm } from "../../executable-path";
+import { runProcess } from "../../process-launcher";
 import { findOnAbsolutePath, windowsSystemDirectory } from "../../system-tools";
 
 export type CudaInfo = {
@@ -112,36 +112,14 @@ async function isExecutable(file: string): Promise<boolean> {
   }
 }
 
-function runSpecificNvidiaSmi(cmd: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    const child = spawn(
-      cmd,
-      ["--query-gpu=driver_version", "--format=csv,noheader"],
-      { stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
+async function runSpecificNvidiaSmi(cmd: string): Promise<string | null> {
+  try {
+    const { exit, stdout } = await runProcess(
+      { file: cmd, args: ["--query-gpu=driver_version", "--format=csv,noheader"], stdio: ["ignore", "pipe", "pipe"] },
+      { timeoutMs: SMI_TIMEOUT_MS },
     );
-    let stdout = "";
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        child.kill("SIGKILL");
-        resolve(null);
-      }
-    }, SMI_TIMEOUT_MS);
-    child.stdout?.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8");
-    });
-    child.on("error", () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(null);
-    });
-    child.on("exit", (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(code === 0 ? stdout : null);
-    });
-  });
+    return exit?.code === 0 ? stdout.toString("utf8") : null;
+  } catch {
+    return null;
+  }
 }

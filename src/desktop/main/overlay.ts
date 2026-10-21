@@ -546,7 +546,10 @@ export function parseMessageRequest(raw: unknown): Extract<OverlayRequest, { kin
 function parseNotificationsAnswer(raw: Record<string, unknown>): OverlayAnswer | undefined {
   const action = field(raw, 'action');
   const entryId = field(raw, 'entryId');
-  return action === 'open' && isNonEmptyText(entryId, MAX_OVERLAY_ID_LENGTH) ? { kind: 'notifications', action: 'open', entryId } : undefined;
+  if (!isNonEmptyText(entryId, MAX_OVERLAY_ID_LENGTH)) return undefined;
+  if (action === 'open') return { kind: 'notifications', action: 'open', entryId };
+  const label = field(raw, 'label');
+  return action === 'answer' && isNonEmptyText(label, MAX_OVERLAY_LABEL_LENGTH) ? { kind: 'notifications', action: 'answer', entryId, label } : undefined;
 }
 
 function parseQuickOpenAnswer(raw: Record<string, unknown>): OverlayAnswer | undefined {

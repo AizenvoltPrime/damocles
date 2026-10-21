@@ -1,9 +1,11 @@
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
-import { extract as tarExtract } from "tar";
+import { StringDecoder } from "node:string_decoder";
+import { Worker } from "node:worker_threads";
+import { processLauncher } from "../../process-launcher";
+import { VOICE_EXTRACT_WORKER_MARKER, type ExtractEvent, type ExtractWorkerData } from "./extract-protocol";
 import type { GpuDetection } from "./gpu-detect";
 import { requireVoiceRuntimePlatform, type PbsTriple } from "./supported-platforms";
 import tarballChecksums from "./tarball-checksums.json";
@@ -241,8 +243,53 @@ async function sha256OfFile(path: string): Promise<string> {
   });
 }
 
+/** Starts the extraction worker for one archive. */
+export type ExtractWorkerFactory = (data: ExtractWorkerData) => Worker;
+
+export function extractWorkerAt(workerPath: string): ExtractWorkerFactory {
+  return (data) => new Worker(workerPath, { workerData: data });
+}
+
+/** The archive's one top-level folder. */
+const PYTHON_HOME_FOLDER: string = "python";
+
+/**
+ * Extracts `file` into `cwd` on a worker, because tar inflates each read synchronously. A rejection, an abort included,
+ * ends the worker and removes the partial `python/` folder, so no attempt extracts over another's leftovers.
+ */
+export async function extractTarball(
+  file: string,
+  cwd: string,
+  signal: AbortSignal | undefined,
+  createWorker: ExtractWorkerFactory,
+): Promise<void> {
+  if (signal?.aborted === true) throw new CancelledError();
+  const worker = createWorker({ marker: VOICE_EXTRACT_WORKER_MARKER, file, cwd });
+  let onAbort = (): void => {};
+  try {
+    await new Promise<void>((resolve, reject) => {
+      onAbort = () => reject(new CancelledError());
+      signal?.addEventListener("abort", onAbort, { once: true });
+      worker.on("message", (event: ExtractEvent) => {
+        if (event.type === "done") resolve();
+        else reject(new Error(event.message));
+      });
+      worker.on("error", reject);
+      worker.on("exit", (code) => reject(new Error(`voice extract worker exited with code ${code} before answering`)));
+    });
+  } catch (err) {
+    await worker.terminate();
+    // Retries cover Windows refusing a folder whose last file handles are still closing.
+    await fs.rm(join(cwd, PYTHON_HOME_FOLDER), { recursive: true, force: true, maxRetries: 3 });
+    throw err;
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+  }
+}
+
 export type DownloadAndExtractOptions = {
   targetDir: string;
+  createExtractWorker: ExtractWorkerFactory;
   signal?: AbortSignal;
   onProgress?: RuntimeInstallProgressCallback;
   fetchImpl?: typeof fetch;
@@ -306,26 +353,14 @@ export async function downloadAndExtractPython(
     opts.onProgress({ stage: "extracting-python", pct: 65, message: "Extracting Python runtime..." });
   }
 
-  await tarExtract({
-    file: tarballPath,
-    cwd: opts.targetDir,
-    strict: true,
-    filter: (path) => {
-      // Defense-in-depth alongside the SHA-256 verification above. The tar
-      // npm package already rejects absolute paths and parent-dir traversal
-      // by default, but we re-assert here so a future supply-chain
-      // compromise of the indygreg tarball cannot extract outside the
-      // target dir even if someone disables the default safeguards.
-      if (path.length === 0) return false;
-      if (path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path)) return false;
-      if (path === ".." || path.startsWith("../") || path.includes("/../") || path.endsWith("/..")) return false;
-      if (path.includes("\\..\\") || path.startsWith("..\\") || path.endsWith("\\..")) return false;
-      return true;
-    },
-  });
-  await fs.rm(tarballPath, { force: true });
+  try {
+    await extractTarball(tarballPath, opts.targetDir, opts.signal, opts.createExtractWorker);
+  } finally {
+    // The download never reuses a finished archive, only its `.partial` file.
+    await fs.rm(tarballPath, { force: true });
+  }
 
-  const pythonHomeDir = join(opts.targetDir, "python");
+  const pythonHomeDir = join(opts.targetDir, PYTHON_HOME_FOLDER);
   const pythonExe = platform === "win32"
     ? join(pythonHomeDir, "python.exe")
     : join(pythonHomeDir, "bin", "python3");
@@ -336,8 +371,13 @@ export async function downloadAndExtractPython(
 
 export type SpawnLineCallback = (line: string) => void;
 
+/** Each stream keeps only its tail: pip prints megabytes of progress over a torch install. */
+export const CAPTURE_TAIL_LENGTH: number = 64 * 1024;
+const LINE_BREAK = /\r\n|\r|\n/;
+
 export type SpawnCaptureResult = {
   exitCode: number | null;
+  /** The last `CAPTURE_TAIL_LENGTH` characters. */
   stdout: string;
   stderr: string;
 };
@@ -352,65 +392,34 @@ async function spawnAndCapture(
     envOverride?: Record<string, string>;
   },
 ): Promise<SpawnCaptureResult> {
-  return new Promise((resolve, reject) => {
-    const env = cleanSubprocessEnv();
-    if (options.envOverride !== undefined) {
-      for (const [key, value] of Object.entries(options.envOverride)) {
-        env[key] = value;
-      }
+  const env = cleanSubprocessEnv();
+  if (options.envOverride !== undefined) {
+    for (const [key, value] of Object.entries(options.envOverride)) {
+      env[key] = value;
     }
-    const spawnOpts: Parameters<typeof spawn>[2] = {
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-      ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
-    };
-    const child = spawn(cmd, args, spawnOpts);
-    let stdout = "";
-    let stderr = "";
-    let stdoutBuf = "";
-    let stderrBuf = "";
-
-    const onAbort = (): void => {
-      child.kill("SIGTERM");
-    };
-    if (options.signal !== undefined) options.signal.addEventListener("abort", onAbort, { once: true });
-
-    if (child.stdout === null || child.stderr === null) {
-      reject(new Error(`Failed to attach stdio for ${cmd}`));
-      return;
-    }
-    const childStdout = child.stdout;
-    const childStderr = child.stderr;
-    childStdout.setEncoding("utf8");
-    childStderr.setEncoding("utf8");
-    childStdout.on("data", (chunk: string) => {
-      stdout += chunk;
-      stdoutBuf += chunk;
-      const lines = stdoutBuf.split(/\r?\n/);
-      stdoutBuf = lines.pop() ?? "";
-      if (options.onLine !== undefined) for (const l of lines) if (l.length > 0) options.onLine(l);
-    });
-    childStderr.on("data", (chunk: string) => {
-      stderr += chunk;
-      stderrBuf += chunk;
-      const lines = stderrBuf.split(/\r?\n/);
-      stderrBuf = lines.pop() ?? "";
-      if (options.onLine !== undefined) for (const l of lines) if (l.length > 0) options.onLine(l);
-    });
-    child.on("error", (err) => {
-      if (options.signal !== undefined) options.signal.removeEventListener("abort", onAbort);
-      reject(err);
-    });
-    child.on("exit", (code) => {
-      if (options.signal !== undefined) options.signal.removeEventListener("abort", onAbort);
-      if (options.onLine !== undefined) {
-        if (stdoutBuf.length > 0) options.onLine(stdoutBuf);
-        if (stderrBuf.length > 0) options.onLine(stderrBuf);
-      }
-      resolve({ exitCode: code, stdout, stderr });
-    });
-  });
+  }
+  const child = processLauncher().launch(
+    { file: cmd, args, env, stdio: ["ignore", "pipe", "pipe"], ...(options.cwd !== undefined ? { cwd: options.cwd } : {}) },
+    options.signal !== undefined ? { signal: options.signal } : {},
+  );
+  const output = { stdout: "", stderr: "" };
+  const partial = { stdout: "", stderr: "" };
+  const decoders = { stdout: new StringDecoder("utf8"), stderr: new StringDecoder("utf8") };
+  const append = (stream: "stdout" | "stderr", text: string): void => {
+    output[stream] = (output[stream] + text).slice(-CAPTURE_TAIL_LENGTH);
+    const lines = (partial[stream] + text).split(LINE_BREAK);
+    partial[stream] = (lines.pop() ?? "").slice(-CAPTURE_TAIL_LENGTH);
+    if (options.onLine !== undefined) for (const l of lines) if (l.length > 0) options.onLine(l);
+  };
+  for (const stream of ["stdout", "stderr"] as const) child.onData(stream, (chunk) => append(stream, decoders[stream].write(chunk)));
+  const [{ code }] = await Promise.all([child.exited, child.closed]);
+  // The launcher kills the tree on an abort; the run it cut short is a cancel, not a failure of the program.
+  if (options.signal?.aborted === true) throw new CancelledError();
+  for (const stream of ["stdout", "stderr"] as const) {
+    append(stream, decoders[stream].end());
+    if (options.onLine !== undefined && partial[stream].length > 0) options.onLine(partial[stream]);
+  }
+  return { exitCode: code, stdout: output.stdout, stderr: output.stderr };
 }
 
 export type CreateVenvOptions = {
@@ -514,7 +523,7 @@ async function runPip(
 
 function pipFailureMessage(result: SpawnCaptureResult, label: string): string {
   const lines = `${result.stdout}\n${result.stderr}`
-    .split(/\r?\n/)
+    .split(LINE_BREAK)
     .filter((l) => l.trim().length > 0);
   const tail = lines.slice(-30).join("\n");
   return `${label} failed (exit ${result.exitCode}):\n${tail}`;

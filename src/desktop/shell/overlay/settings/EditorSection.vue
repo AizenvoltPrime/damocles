@@ -18,7 +18,7 @@ import {
   EDITOR_RENDER_WHITESPACES,
   EDITOR_TAB_SIZE_SETTING,
   EDITOR_WORD_WRAP_SETTING,
-} from '../../../main/desktop-configuration';
+} from '../../../local-services/desktop-configuration';
 import { useDesktopPrefs } from './desktop-prefs';
 import { integerSetting } from './integer-setting';
 

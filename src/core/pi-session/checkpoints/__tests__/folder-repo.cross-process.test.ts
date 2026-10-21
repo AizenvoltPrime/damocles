@@ -25,6 +25,8 @@ beforeAll(async () => {
     format: 'cjs',
     target: 'node24',
     outfile: childBundle,
+    // koffi loads its native module beside its own files; the child's git calls need no job object
+    external: ['koffi'],
     logLevel: 'silent',
   });
 });

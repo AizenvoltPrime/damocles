@@ -1,12 +1,12 @@
 import { access, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
-import { createInterface } from 'node:readline';
+import { StringDecoder } from 'node:string_decoder';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'child_process';
 import picomatch from 'picomatch';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { FindOperations, FindToolDetails, GrepToolDetails, ToolDefinition } from '@earendil-works/pi-coding-agent';
+import { processLauncher, type LaunchedProcess } from '../../process-launcher';
 import type { PiCodingAgentModule } from '../pi-loader';
 
 /**
@@ -85,9 +85,9 @@ function aborted(): Error {
 /** A walk from a drive root can print megabytes of access errors; the first ones name the cause. */
 const STDERR_LIMIT = 8 * 1024;
 
-function captureStderr(stream: NodeJS.ReadableStream): () => string {
+function captureStderr(child: LaunchedProcess): () => string {
   let text = '';
-  stream.on('data', (chunk: Buffer) => {
+  child.onData('stderr', (chunk) => {
     if (text.length < STDERR_LIMIT) text += chunk.toString().slice(0, STDERR_LIMIT - text.length);
   });
   return () => text;
@@ -139,15 +139,16 @@ async function runGrep(
   const matches: GrepMatch[] = [];
   let matchLimitReached = false;
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(rgPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    const lines = createInterface({ input: child.stdout });
-    const stderr = captureStderr(child.stderr);
+    const child = processLauncher().launch({ file: rgPath, args, stdio: ['ignore', 'pipe', 'pipe'] });
+    const stderr = captureStderr(child);
     let killedDueToLimit = false;
     const onAbort = (): void => {
       child.kill();
     };
     signal?.addEventListener('abort', onAbort, { once: true });
-    lines.on('line', (line) => {
+    const decoder = new StringDecoder('utf8');
+    let pending = '';
+    const onLine = (line: string): void => {
       if (!line.trim() || matches.length >= effectiveLimit) return;
       let event: { type?: string; data?: { path?: { text?: string }; line_number?: number; lines?: { text?: string } } };
       try {
@@ -170,18 +171,21 @@ async function runGrep(
         killedDueToLimit = true;
         child.kill();
       }
+    };
+    child.onData('stdout', (chunk) => {
+      const lines = (pending + decoder.write(chunk)).split(/\r?\n/);
+      pending = lines.pop() ?? '';
+      for (const line of lines) onLine(line);
     });
-    child.on('error', (error) => {
-      lines.close();
-      signal?.removeEventListener('abort', onAbort);
-      reject(new Error(`Failed to run ripgrep: ${error.message}`));
-    });
-    child.on('close', (code) => {
-      lines.close();
+    Promise.all([child.exited, child.closed]).then(([{ code }]) => {
+      onLine(pending + decoder.end());
       signal?.removeEventListener('abort', onAbort);
       if (signal?.aborted) return reject(aborted());
       if (!killedDueToLimit && code !== 0 && code !== 1) return reject(new Error(stderr().trim() || `ripgrep exited with code ${code}`));
       resolve();
+    }, (error: Error) => {
+      signal?.removeEventListener('abort', onAbort);
+      reject(new Error(`Failed to run ripgrep: ${error.message}`));
     });
   });
 
@@ -328,8 +332,8 @@ async function listMatchingPaths(
 
   return new Promise<string[]>((resolve, reject) => {
     if (signal?.aborted) return reject(aborted());
-    const child = spawn(rgPath, args, { cwd: searchPath, stdio: ['ignore', 'pipe', 'pipe'] });
-    const stderr = captureStderr(child.stderr);
+    const child = processLauncher().launch({ file: rgPath, args, cwd: searchPath, stdio: ['ignore', 'pipe', 'pipe'] });
+    const stderr = captureStderr(child);
     let listedAny = false;
     let pending = '';
     const onAbort = (): void => {
@@ -359,22 +363,21 @@ async function listMatchingPaths(
       if (covered(file)) onLeftOut();
       else add(file);
     };
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      const entries = (pending + chunk).split('\0');
+    const decoder = new StringDecoder('utf8');
+    child.onData('stdout', (chunk) => {
+      const entries = (pending + decoder.write(chunk)).split('\0');
       pending = entries.pop() ?? '';
       for (const entry of entries) if (entry) take(entry);
     });
-    child.on('error', (error) => {
-      signal?.removeEventListener('abort', onAbort);
-      reject(new Error(`Failed to run ripgrep: ${error.message}`));
-    });
-    child.on('close', (code) => {
+    Promise.all([child.exited, child.closed]).then(([{ code }]) => {
       signal?.removeEventListener('abort', onAbort);
       if (signal?.aborted) return reject(aborted());
       // rg exits 2 on any error, such as one unreadable directory; with files listed, that is a partial walk.
       if (code !== 0 && code !== 1 && !listedAny) return reject(new Error(stderr().trim() || `ripgrep exited with code ${code}`));
       resolve(results);
+    }, (error: Error) => {
+      signal?.removeEventListener('abort', onAbort);
+      reject(new Error(`Failed to run ripgrep: ${error.message}`));
     });
   });
 }

@@ -17,7 +17,6 @@ const OUTDATED = {
 
 vi.mock("../../../../voice/models", () => ({
   loadManifest: vi.fn(async () => ({ models: [OUTDATED] })),
-  compareInstalled: vi.fn(async () => ({ ok: false, missing: [], outdated: [OUTDATED] })),
   cleanupOldVersions: vi.fn(),
   downloadModel: vi.fn(),
 }));
@@ -31,7 +30,7 @@ function hostAs(platform: NodeJS.Platform, arch: string): void {
   Object.defineProperty(process, "arch", { value: arch, configurable: true });
 }
 
-async function enableVoiceStream(): Promise<string[]> {
+async function enableVoiceStream(consented = true): Promise<string[]> {
   const platform = installFakePlatform();
   const posted: string[] = [];
   const voiceService = {
@@ -41,6 +40,8 @@ async function enableVoiceStream(): Promise<string[]> {
     isReady: () => false,
     ensureStarted: vi.fn(async () => {}),
     failureMessage: () => null,
+    downloadConsentGiven: async () => consented,
+    missingModels: async () => [OUTDATED],
     getPaths: () => ({ rootDir: "/fake/voice", modelsDir: "/fake/voice/models", pythonExe: "/fake/python", venvDir: "/fake/venv" }),
   };
   const deps = {
@@ -68,5 +69,10 @@ describe("voiceStreamEnable model upgrade notice", () => {
   it("offers the upgrade on a supported platform", async () => {
     hostAs("win32", "x64");
     expect(await enableVoiceStream()).toContain("voiceModelUpgradeAvailable");
+  });
+
+  it("leaves an outdated model to the first-run dialog until the user consented to downloads", async () => {
+    hostAs("win32", "x64");
+    expect(await enableVoiceStream(false)).not.toContain("voiceModelUpgradeAvailable");
   });
 });

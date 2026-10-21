@@ -1,5 +1,5 @@
-import { spawn } from "node:child_process";
 import { access, constants as fsConstants } from "node:fs/promises";
+import { runProcess } from "../../process-launcher";
 import { posixTool } from "../../system-tools";
 
 /**
@@ -84,31 +84,11 @@ async function knownPathsContainPortAudio(paths: readonly string[]): Promise<boo
 async function ldconfigListsPortAudio(signal?: AbortSignal): Promise<boolean> {
   const ldconfig = posixTool("ldconfig");
   if (ldconfig === undefined) return false;
-  return await new Promise<boolean>((resolve) => {
-    const child = spawn(ldconfig, ["-p"], {
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-      ...(signal !== undefined ? { signal } : {}),
-    });
-    let stdout = "";
-    let settled = false;
-    const settle = (val: boolean): void => {
-      if (settled) return;
-      settled = true;
-      resolve(val);
-    };
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      settle(false);
-    }, 5_000);
-    child.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
-    child.on("error", () => { clearTimeout(timer); settle(false); });
-    child.on("exit", (code) => {
-      clearTimeout(timer);
-      if (code !== 0) return settle(false);
-      settle(/\blibportaudio\.so\.2\b/.test(stdout));
-    });
-  });
+  const run = await runProcess(
+    { file: ldconfig, args: ["-p"], stdio: ["ignore", "pipe", "pipe"] },
+    { timeoutMs: 5_000, ...(signal !== undefined ? { signal } : {}) },
+  ).catch(() => undefined);
+  return run?.exit?.code === 0 && /\blibportaudio\.so\.2\b/.test(run.stdout.toString("utf8"));
 }
 
 async function defaultLinuxProbe(signal?: AbortSignal): Promise<boolean> {

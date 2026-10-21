@@ -50,12 +50,12 @@ import {
   EDITOR_WORD_WRAPS,
   EDITOR_WORD_WRAP_SETTING,
   isDesktopSettingValue,
-} from './desktop-configuration';
+} from '../local-services/desktop-configuration';
 import type { BackupRecord } from './documents/backups';
 import { isDocumentDirty, movedPath, type Document, type DocumentService, type ShellEdit, type TextDocument } from './documents/document-service';
 import type { FormatTarget } from './formatting/format-service';
 import { DEFAULT_SEARCH_EDITOR_CONFIG, resultLocation } from './search/search-editor-format';
-import { projectOfPath, type Project } from './documents/confine';
+import { projectOfPath, type Project } from '../local-services/confine';
 import { languageIdForName } from './platform/editor-document';
 import type { BrowserTabsEditor } from './browser-tabs';
 import type { AskMessage } from './message-dialog';
@@ -323,6 +323,8 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   private readonly contextListeners = new Set<(context: ActiveEditorContext | undefined) => void>();
   private readonly flushes = new Map<string, () => void>();
   private readonly logReloads = new Map<string, NodeJS.Timeout>();
+  // each showDiff tab still open, settling its closed once the tab is gone
+  private readonly diffClosed = new Map<string, () => void>();
   private readonly subscriptions: Disposable[];
   private stateScheduled = false;
   private persistScheduled = false;
@@ -638,15 +640,16 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     left: DiffSide | NotShownSide,
     right: DiffSide | NotShownSide,
     opts: { readonly focus: boolean; readonly scm?: { readonly root: string; readonly repoId: string; readonly git?: Omit<ShellDiffGit, 'repoId'> } },
-  ): Promise<{ close(): void }> {
+  ): Promise<{ close(): void; readonly closed: Promise<void> }> {
     const [original, modified] = await Promise.all([this.sideDocument(left), this.sideDocument(right)]);
     const fileSide = 'path' in right ? modified : 'path' in left ? original : undefined;
     const subject: DiffSubject = fileSide ? { documentId: fileSide.id } : { place: await this.placeOfPath(filePath) };
     const scm = opts.scm;
     const tab = this.openDiffTab(title, original, modified, subject, scm ? { scmRoot: scm.root, scmRepoId: scm.repoId, ...(scm.git ? { scmGit: scm.git } : {}) } : {});
     this.afterOpen(tab, { focus: opts.focus });
+    const closed = new Promise<void>((resolve) => this.diffClosed.set(tab.id, resolve));
     // Edits the user made to the file in this tab are asked about, as VS Code's tabGroups.close asks before closing a dirty editor.
-    return { close: () => this.closeTabs([tab.id], { ask: true }) };
+    return { close: () => this.closeTabs([tab.id], { ask: true }), closed };
   }
 
   /**
@@ -718,6 +721,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     const targets = this.tabs.filter((tab) => [tab.documentId, tab.diff?.modifiedId, tab.diff?.originalId].some((id) => id !== undefined && ids.has(id)));
     if (targets.length === 0) return true;
     this.tabs = this.tabs.filter((tab) => !targets.includes(tab));
+    this.tabsRemoved();
     const held = new Set(this.tabs.flatMap((tab) => [tab.documentId, tab.diff?.originalId, tab.diff?.modifiedId]));
     for (const tab of targets) {
       for (const id of tab.diff ? [tab.diff.originalId, tab.diff.modifiedId] : tab.documentId !== undefined ? [tab.documentId] : []) {
@@ -997,6 +1001,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     } else {
       for (const document of dirty) this.deps.documents.release(document.id, true);
       this.tabs = this.tabs.filter((tab) => !dirty.some((document) => tab.documentId === document.id || tab.diff?.modifiedId === document.id));
+      this.tabsRemoved();
     }
     this.persist();
     this.released = true;
@@ -1184,6 +1189,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   private replaceWithFileTab(tab: Tab, document: TextDocument): void {
     const fileTab: Tab = { id: randomUUID(), kind: this.kindFor(document), documentId: document.id };
     this.tabs.splice(this.tabs.indexOf(tab), 1, fileTab);
+    this.tabsRemoved();
     const originalId = tab.diff!.originalId;
     if (originalId !== document.id && !this.tabs.some((other) => other.documentId === originalId || other.diff?.originalId === originalId || other.diff?.modifiedId === originalId)) this.releaseDocument(originalId);
     if (this.activeId === tab.id) this.setActive(fileTab.id);
@@ -1293,6 +1299,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
         if ((await this.askToSave(document as TextDocument, opts.cancellable === true)) === 'cancel') return;
       }
       this.tabs = this.tabs.filter((candidate) => candidate !== tab);
+      this.tabsRemoved();
       // Asked again after the question: another tab may have opened the document meanwhile.
       for (const id of documentIds) if (!heldElsewhere(id)) this.releaseDocument(id);
       if (tab.review) this.deps.reviewClosed(tab.review.reviewId);
@@ -1317,6 +1324,15 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     await this.flush(this.formatsOnSave([document]));
     const result = await this.deps.documents.save(document.id, document.version, document.text);
     return result.ok ? 'saved' : 'cancel';
+  }
+
+  // Every removal of a tab from this.tabs calls this, so a showDiff caller learns its tab is gone however it went.
+  private tabsRemoved(): void {
+    for (const [tabId, closed] of this.diffClosed) {
+      if (this.tabs.some((tab) => tab.id === tabId)) continue;
+      this.diffClosed.delete(tabId);
+      closed();
+    }
   }
 
   private releaseDocument(documentId: string): void {

@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
-import { restoredWorkspaceFolderKey, type PanelManager } from "../../core/chat-panel/panel-manager";
+import type { PanelManager } from "../../core/chat-panel/panel-manager";
+import { restoredWorkspaceFolderKey } from "../../shared/restored-folder-key";
 import { wrapSidebarView } from "./webview-hosts";
 
 export class SidebarViewProvider implements vscode.WebviewViewProvider {

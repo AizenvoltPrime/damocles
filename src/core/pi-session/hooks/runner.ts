@@ -1,6 +1,6 @@
-import { spawn, type ChildProcess } from 'child_process';
+import { StringDecoder } from 'node:string_decoder';
 import { log } from '../../logger';
-import { windowsSystemTool } from '../../system-tools';
+import { processLauncher } from '../../process-launcher';
 import type { HookEntry, HookDecision } from './types';
 import { emptyDecision } from './types';
 import { substituteCommand, type SubstitutionContext } from './substitute';
@@ -48,38 +48,6 @@ function summarizeDecision(decision: HookDecision): string {
   return parts.length ? parts.join(',') : 'no-op';
 }
 
-/** Best-effort kill of the child and any descendants it spawned (a shell-string hook spawns its own tree). */
-function killProcessTree(child: ChildProcess): void {
-  if (child.pid === undefined) return;
-  const directKill = (): void => {
-    try {
-      child.kill('SIGKILL');
-    } catch {
-      // already dead
-    }
-  };
-  if (process.platform === 'win32') {
-    try {
-      const tk = spawn(windowsSystemTool('taskkill'), ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
-      // spawn reports a missing/blocked `taskkill` ASYNCHRONOUSLY via an 'error' event, not a sync throw;
-      // an unhandled 'error' on a ChildProcess crashes the extension host. Swallow it and fall back.
-      tk.on('error', directKill);
-    } catch {
-      directKill();
-    }
-    return;
-  }
-  try {
-    // The child is its own process-group leader (spawned `detached`), so a negative pid signals the
-    // whole group — the shell AND its descendants — not just the shell.
-    process.kill(-child.pid, 'SIGKILL');
-    return;
-  } catch {
-    // group already gone, or not a leader — fall through to a direct kill
-  }
-  directKill();
-}
-
 function spawnHook(
   command: string | string[],
   payload: Record<string, unknown>,
@@ -101,66 +69,60 @@ function spawnHook(
       reject(err instanceof Error ? err : new Error(String(err)));
       return;
     }
-    // POSIX: run the child in its own process group so a timeout kill reaches its descendants too.
-    const detached = process.platform !== 'win32';
-    const child = Array.isArray(command)
-      ? spawn(command[0]!, command.slice(1), { cwd: ctx.cwd, env: ctx.env, shell: false, detached })
-      : spawn(command, { cwd: ctx.cwd, env: ctx.env, shell: true, detached });
+    const hook = processLauncher().launch({
+      file: Array.isArray(command) ? command[0]! : command,
+      args: Array.isArray(command) ? command.slice(1) : [],
+      cwd: ctx.cwd,
+      env: ctx.env,
+      shell: !Array.isArray(command),
+      // POSIX: the hook leads its own process group, so a tree kill reaches its descendants too.
+      detached: process.platform !== 'win32',
+    });
 
     let stdout = '';
     let stderr = '';
-    let timedOut = false;
     let settled = false;
-
+    // The timeout and an abort settle at once rather than at `closed`, so the caller never waits for the tree to die.
     const timer = setTimeout(() => {
-      timedOut = true;
-      killProcessTree(child);
+      hook.kill({ tree: true });
+      finish(() => resolve({ exitCode: 0, stdout, stderr, timedOut: true, cancelled: false }));
     }, timeoutMs);
-    // Settles at once rather than at `close`, so a cancelled caller never waits for the tree to die.
-    const onAbort = (): void => {
+    function onAbort(): void {
+      hook.kill({ tree: true });
+      finish(() => resolve({ exitCode: 0, stdout, stderr, timedOut: false, cancelled: true }));
+    }
+    function finish(settle: () => void): void {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      killProcessTree(child);
-      resolve({ exitCode: 0, stdout, stderr, timedOut: false, cancelled: true });
-    };
+      signal?.removeEventListener('abort', onAbort);
+      settle();
+    }
     signal?.addEventListener('abort', onAbort, { once: true });
 
-    // Decode as UTF-8 via the stream's internal StringDecoder so a multi-byte character split across two
-    // chunks isn't corrupted into U+FFFD (which would make otherwise-valid JSON stdout unparseable).
-    child.stdout?.setEncoding('utf8');
-    child.stderr?.setEncoding('utf8');
+    // A decoder per stream, so a multi-byte character split across two chunks isn't corrupted into U+FFFD
+    // (which would make otherwise-valid JSON stdout unparseable).
+    const stdoutText = new StringDecoder('utf8');
+    const stderrText = new StringDecoder('utf8');
     // Slice to the remaining budget so a single huge write can't overshoot the cap by a full chunk.
-    child.stdout?.on('data', (chunk: string) => {
-      if (stdout.length < MAX_HOOK_OUTPUT_CHARS) stdout += chunk.slice(0, MAX_HOOK_OUTPUT_CHARS - stdout.length);
+    hook.onData('stdout', (chunk) => {
+      if (stdout.length < MAX_HOOK_OUTPUT_CHARS) stdout += stdoutText.write(chunk).slice(0, MAX_HOOK_OUTPUT_CHARS - stdout.length);
     });
-    child.stderr?.on('data', (chunk: string) => {
-      if (stderr.length < MAX_HOOK_OUTPUT_CHARS) stderr += chunk.slice(0, MAX_HOOK_OUTPUT_CHARS - stderr.length);
-    });
-    // A hook that never reads stdin would otherwise crash us with EPIPE on the write below.
-    child.stdin?.on('error', () => {});
-
-    child.on('error', (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
-      reject(err);
+    hook.onData('stderr', (chunk) => {
+      if (stderr.length < MAX_HOOK_OUTPUT_CHARS) stderr += stderrText.write(chunk).slice(0, MAX_HOOK_OUTPUT_CHARS - stderr.length);
     });
 
-    child.on('close', (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
-      resolve({ exitCode: code ?? 0, stdout, stderr, timedOut, cancelled: false });
-    });
+    void Promise.all([hook.exited, hook.closed]).then(
+      ([exit]) => finish(() => {
+        // a trailing partial character becomes U+FFFD rather than vanishing
+        if (stdout.length < MAX_HOOK_OUTPUT_CHARS) stdout += stdoutText.end().slice(0, MAX_HOOK_OUTPUT_CHARS - stdout.length);
+        if (stderr.length < MAX_HOOK_OUTPUT_CHARS) stderr += stderrText.end().slice(0, MAX_HOOK_OUTPUT_CHARS - stderr.length);
+        resolve({ exitCode: exit.code ?? 0, stdout, stderr, timedOut: false, cancelled: false });
+      }),
+      (err: Error) => finish(() => reject(err)),
+    );
 
-    try {
-      child.stdin?.end(serializedPayload);
-    } catch {
-      // stdin already closed (process exited) — ignore.
-    }
+    hook.end(serializedPayload);
   });
 }
 

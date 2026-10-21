@@ -20,7 +20,7 @@ import {
   TOGGLE_TERMINAL_ACCELERATOR,
 } from './commands';
 import { CHAT_FEATURE_IDS, commandTitle, desktopCommands, EDITOR_GIT_MENU_GROUPS, GIT_MENU_GROUPS, isEnabled, isHidden, keyFires, MENU_IDS, openChatForProjectId, resolveLabel, SEARCH_EDITOR_COMMAND_IDS, terminalPassKeys, type Command } from './commands';
-import type { DesktopLocalizationService } from './platform/localization-service';
+import type { DesktopLocalizationService } from '../local-services/localization-service';
 import type { ScmCommitVariant } from '../preload/scm-channels';
 import type { ScmActiveFileOp, ScmMenuState, ScmPaletteRequest } from './scm/scm-host';
 
@@ -196,6 +196,8 @@ export interface MenuActions {
   newBrowserPage(): void;
   toggleBrowserDevTools(): void;
   showLog(): void;
+  // a new engine replaces the running or halted one, its crash count cleared
+  restartEngine(): void;
   // Settings › About
   about(): void;
   // Settings › About with the running version expanded in What's new
@@ -332,6 +334,7 @@ export function installApplicationMenu(
       item(MENU_IDS.togglePromptNavigator),
       { type: 'separator' },
       item(MENU_IDS.showLog),
+      item(MENU_IDS.restartEngine),
     ],
   };
   const viewMenu: MenuItemConstructorOptions = {

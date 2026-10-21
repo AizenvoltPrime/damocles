@@ -646,7 +646,6 @@ When one open folder sits inside another, pi also loads the outer folder's `CLAU
 | `damocles.voice.autoSubmit` | Jarvis: auto-send the message when the local transcript finalizes | `true` |
 | `damocles.voice.diagnostics` | Jarvis: verbose sidecar logs in the "Damocles Voice" output channel (no transcript content) | `false` |
 | `damocles.voice.runtimePath` | Jarvis: Python of an existing venv holding the pinned voice stack, used instead of the bundled runtime; Windows x64, Linux x64 and macOS arm64 only (machine-scope) | `""` |
-| `damocles.voice.pinModelVersion` | Jarvis: per-model version pin overriding `MODEL_MANIFEST.json` (machine-scope) | `{}` |
 | `damocles.autoCompact.enabled` | Enable automatic context compaction (opt-in; applies to all providers including GPT) | `false` |
 | `damocles.autoCompact.triggerPercent` | Compact once context usage crosses this % of the window (50–95) | `80` |
 | `damocles.autoCompact.modelOverrides` | Per-model auto-compact budgets keyed by the model picker's value, e.g. `{"claude-opus-5-5": {"triggerPercent": 90, "keepRecentPercent": 20}}`. `triggerPercent` is 50–95, `keepRecentPercent` is 1–50 | `{}` |

@@ -97,7 +97,7 @@ describe('vsixExclusionProblems', () => {
 
   it('names every desktop-only category', () => {
     expect(DESKTOP_EXCLUDE_RULES).toEqual(expect.arrayContaining([
-      'dist/webview/assets/monaco-*', 'dist/desktop/**', 'dist/desktop-shell/**', 'dist/formatter-host.js', 'dist/pty-host.js', 'dist/quick-open-worker.js', 'dist/watch-worker.js', 'dist-desktop/**', 'dist/e2e*/**',
+      'dist/webview/assets/monaco-*', 'dist/desktop/**', 'dist/desktop-shell/**', 'dist/core-host.js', 'dist/formatter-host.js', 'dist/pty-host.js', 'dist/quick-open-worker.js', 'dist/watch-worker.js', 'dist-desktop/**', 'dist/e2e*/**',
       'e2e/**', 'playwright.desktop.config.ts', 'electron-builder.yml', 'build/**', '**/*.log',
     ]));
   });
@@ -126,6 +126,7 @@ describe('forbiddenVsixEntries', () => {
       'extension/python/damocles_voice_sidecar/run.log',
       'extension/dist/desktop/main.js',
       'extension/dist/desktop-shell/index.html',
+      'extension/dist/core-host.js',
       'extension/dist/formatter-host.js',
       'extension/dist/pty-host.js',
       'extension/dist/quick-open-worker.js',
@@ -156,6 +157,10 @@ describe('forbiddenVsixEntries', () => {
       'extension/dist/compass-worker.js',
       'extension/dist/usage-stats-worker.js',
       'extension/dist/sentinel.js',
+      'extension/dist/process-launcher-worker.js',
+      'extension/dist/memory-integrity-worker.js',
+      'extension/dist/session-meta-index-worker.js',
+      'extension/dist/voice-extract-worker.js',
       'extension/dist/webview/index.js',
       'extension/dist/webview/assets/index-abc.js',
       'extension/resources/grammars/tree-sitter-typescript.wasm',

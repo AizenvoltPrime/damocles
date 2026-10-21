@@ -17,11 +17,15 @@ const REFUSAL = 'Jarvis voice mode is not available on Windows arm64.';
 
 let wrapper: VueWrapper | null = null;
 
-async function openVoice(mode: VoiceMode, localRuntimeUnsupported: string | null): Promise<void> {
+async function openVoice(mode: VoiceMode, unsupported: string | null): Promise<void> {
   const settingsStore = useSettingsStore();
   const ctx = { stores: { settingsStore, uiStore: useUIStore(), extensionUiStore: useExtensionUiStore(), voiceJarvisStore: useVoiceJarvisStore() } };
   settingsViewHandlers.voiceConfigUpdate(
-    { type: 'voiceConfigUpdate', config: { ...settingsStore.voiceConfig, mode, ttsEnabled: true }, hasApiKey: false, localRuntimeUnsupported },
+    { type: 'voiceConfigUpdate', config: { ...settingsStore.voiceConfig, mode, ttsEnabled: true }, hasApiKey: false },
+    ctx,
+  );
+  settingsViewHandlers.voiceRuntimeStatus(
+    { type: 'voiceRuntimeStatus', status: unsupported === null ? { kind: 'idle' } : { kind: 'unsupported', message: unsupported } },
     ctx,
   );
   wrapper = mount(SettingsModal, {
@@ -48,6 +52,7 @@ describe('voice settings on a platform the Jarvis runtime does not support', () 
   it.each<VoiceMode>(['push-to-talk', 'wake-word'])('shows the refusal and offers no model download or voice test in %s mode', async (mode) => {
     await openVoice(mode, REFUSAL);
     expect(byTestId('voice-runtime-unsupported')?.textContent?.trim()).toBe(REFUSAL);
+    expect(byTestId('voice-runtime-status')).toBeNull();
     expect(byTestId('voice-redownload')).toBeNull();
     expect(byTestId('voice-test-voice')).toBeNull();
     expect(byTestId('voice-remove-all')).not.toBeNull();

@@ -47,6 +47,32 @@ export type VoiceConfig = {
   diagnostics: boolean;
 };
 
+/** A runtime install step, the models it downloads, then `launching` while the sidecar starts and loads them. */
+export type VoiceRuntimeStage =
+  | "detecting"
+  | "checking-disk"
+  | "downloading-python"
+  | "extracting-python"
+  | "creating-venv"
+  | "installing-pip"
+  | "smoke-check"
+  | "downloading-models"
+  | "launching";
+
+/**
+ * The local voice runtime as Settings > Voice shows it; `needs-install` is a failed start that was not allowed to download,
+ * with `consentRequired` when the user has not accepted the first-run dialog, which Install then opens.
+ */
+export type VoiceRuntimeStatus =
+  | { kind: "not-needed" }
+  | { kind: "unsupported"; message: string }
+  | { kind: "idle" }
+  | { kind: "starting"; stage: VoiceRuntimeStage; pct: number; installing: boolean }
+  | { kind: "ready" }
+  | { kind: "needs-install"; message: string; consentRequired: boolean }
+  | { kind: "failed"; message: string }
+  | { kind: "cancelled" };
+
 export type VoiceStatus = "idle" | "starting" | "recording" | "transcribing" | "error";
 
 export type WakeWordState =

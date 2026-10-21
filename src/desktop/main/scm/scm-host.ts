@@ -4,15 +4,13 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { SettingsStore } from '../../../platform/settings-store';
-import { UNREACHABLE, type StructuredCompletionRequest, type StructuredCompletionResult } from '../../../core/pi-session/structured-completion';
-import { generateCommitMessage, type CommitMessageComplete } from '../../../core/scm/commit-message';
 import { isInside, samePath } from '../../../core/scm/discovery';
-import { GitUntrustedError, redactUrls } from '../../../core/scm/git-runner';
+import { gitErrorText, GitUntrustedError, redactUrls, RemoteCancelledError, StashKeptError, SyncBranchChangedError, type SyncBranch } from '../../../core/scm/errors';
 import { isRemoteName, isRemoteUrl, type Remote } from '../../../core/scm/remotes';
 import { isObjectName, type CommitPairDiff, type StashArtifact, type WorktreeArtifact } from '../../../core/scm/artifacts';
-import type { Change, ChangeGroup, Repository } from '../../../core/scm/repository';
+import type { Change, ChangeGroup } from '../../../core/scm/repository';
 import type { StageRefusal, TextCodec } from '../../../core/scm/staging';
-import { gitErrorText, RemoteCancelledError, StashKeptError, SyncBranchChangedError, type ProjectView, type ScmService, type SyncBranch } from '../../../core/scm/scm-service';
+import type { ProjectView } from '../../../core/scm/scm-service';
 import { SCM_SETTING_KEYS, type OpenAfterClone, type PostCommitCommand, type PromptToSaveFilesBeforeCommit } from '../../../core/scm/settings-keys';
 import { canStashStaged } from '../../../core/scm/stash';
 import type { CommitAttachmentInput } from '../../../shared/types/chat-attachment';
@@ -86,8 +84,8 @@ import {
   type SCM_FETCH_SCOPES,
   type SCM_STAGE_ALL_SCOPES,
 } from '../../preload/scm-channels';
-import { isDesktopSettingValue } from '../desktop-configuration';
-import { confineExisting, type Project } from '../documents/confine';
+import { isDesktopSettingValue } from '../../local-services/desktop-configuration';
+import { confineExisting, type Project } from '../../local-services/confine';
 import { parseRootKey } from '../../preload/folder-root';
 import type { Document, DocumentService } from '../documents/document-service';
 import type { EditorPane, NotShownSide } from '../editor-pane';
@@ -96,6 +94,7 @@ import type { AskInput } from '../overlay';
 import { MAX_OVERLAY_LABEL_LENGTH, type OverlayQuickPickIcon } from '../../preload/overlay-channels';
 import { decodeDocument } from '../platform/editor-document';
 import { CANCELLED, OK, pickEntry, RefFlows, remote, TOLD, type PickEntry } from './ref-flows';
+import type { ScmRepository, ScmServiceClient } from './scm-client';
 
 // OverlayQuickPickItem's fields main's pickers use
 export interface ScmQuickPickItem {
@@ -135,7 +134,8 @@ export interface ScmWorktreeDeps {
 }
 
 export interface ScmHostDeps {
-  readonly service: ScmService;
+  // core's ScmService (scm-client.ts)
+  readonly service: ScmServiceClient;
   readonly settings: SettingsStore;
   // the editor's documents: a stage reads the buffer from here, and every editor git read the document's encoding
   readonly documents: DocumentService;
@@ -174,7 +174,6 @@ export interface ScmHostDeps {
   readonly mention: (target: FileRef | { readonly path: string }) => Promise<void>;
   // the selected chat's pending attachment, else a new chat's in projectKey; prompt, when given, joins the composer's draft
   readonly addToChat: (projectKey: string, attachment: CommitAttachmentInput, prompt: string | undefined) => Promise<void>;
-  readonly complete: CommitMessageComplete;
   readonly send: {
     view(view: ScmView): void;
     state(snapshot: ScmRepoSnapshot): void;
@@ -190,8 +189,6 @@ export interface ScmHostDeps {
   // MenuState's scm fields changed
   readonly menuChanged: () => void;
   readonly log: (line: string) => void;
-  // a line of the Git log
-  readonly gitLog: (line: string) => void;
   readonly platform: NodeJS.Platform;
 }
 
@@ -423,7 +420,7 @@ function expandHome(folder: string): string {
 }
 
 // A deleted change's folder may be gone, so its lexical path under the root names it; never opened, only shown or copied.
-async function entryOrLexical(repo: Repository, relativePath: string): Promise<string> {
+async function entryOrLexical(repo: ScmRepository, relativePath: string): Promise<string> {
   try {
     return await repo.confinedEntry(relativePath);
   } catch (err) {
@@ -431,34 +428,6 @@ async function entryOrLexical(repo: Repository, relativePath: string): Promise<s
     if (code !== 'ENOENT' && code !== 'ENOTDIR') throw err;
     return path.join(repo.root, ...relativePath.split('/'));
   }
-}
-
-// What a structured sub-call needs of PiRuntime.
-export interface SubCallRuntime {
-  folder(cwd: string): Promise<unknown>;
-  syncCustomProviders(getSecret: (key: string) => PromiseLike<string | undefined>): Promise<unknown>;
-  runStructuredCompletion<T>(request: StructuredCompletionRequest): Promise<StructuredCompletionResult<T>>;
-}
-
-/**
- * Generate commit message's sub-call, with the runtime prepared as a chat's start prepares it: the project's folder runtime,
- * whose provider registrations the Background model resolves against, and the key-backed providers. runtime creates the
- * runtime when no chat has, and answers null once shutdown retired it.
- */
-export function backgroundCompletion(runtime: () => SubCallRuntime | null, getSecret: (key: string) => PromiseLike<string | undefined>, log: (line: string) => void): CommitMessageComplete {
-  return async (request) => {
-    const live = runtime();
-    const cwd = request.attribution?.cwd;
-    if (!live || cwd === undefined) return UNREACHABLE;
-    try {
-      await live.folder(cwd);
-      await live.syncCustomProviders(getSecret);
-    } catch (err) {
-      log(`[scm] the model runtime could not start: ${err instanceof Error ? err.message : String(err)}`);
-      return UNREACHABLE;
-    }
-    return live.runStructuredCompletion<{ message?: unknown }>(request);
-  };
 }
 
 export class ScmHost {
@@ -564,9 +533,9 @@ export class ScmHost {
     this.deps.service.setAutofetchProject(this.deps.selectedProjectKey());
   }
 
-  /** One autofetch round of the selected project now; only the gated e2e hook calls it. */
-  autofetchNow(): void {
-    this.deps.service.autofetchNow();
+  /** One autofetch round of the selected project now; only the gated e2e hook calls it. Settles once core started it. */
+  autofetchNow(): Promise<void> {
+    return this.deps.service.autofetchNow();
   }
 
   state(): ScmShellState {
@@ -716,7 +685,7 @@ export class ScmHost {
     const target = this.deps.service.repository(request.repoId);
     if (!target) return { ok: false };
     const t = this.deps.t;
-    const result = await generateCommitMessage(target.repo, this.deps.complete, target.projectPath).catch((err: unknown) => {
+    const result = await this.deps.service.generateMessage(request.repoId).catch((err: unknown) => {
       this.deps.log(`[scm] generating a commit message failed: ${err instanceof Error ? err.message : String(err)}`);
       return { ok: false as const, reason: 'failed' as const };
     });
@@ -913,7 +882,7 @@ export class ScmHost {
     }
   }
 
-  private async copyField(repo: Repository, request: ScmCopyRequest): Promise<void> {
+  private async copyField(repo: ScmRepository, request: ScmCopyRequest): Promise<void> {
     if (request.kind === 'commitId' || request.kind === 'commitMessage') {
       if (!(await this.deps.service.isCommit(request.repoId, request.value))) {
         void this.deps.notify.warn(this.deps.t('The commit {0} is not in this repository.', shortHash(request.value)));
@@ -1865,7 +1834,7 @@ export class ScmHost {
     return { stashStaged: canStashStaged(this.deps.service.gitVersion()) };
   }
 
-  repo(repoId: string): Repository {
+  repo(repoId: string): ScmRepository {
     const target = this.deps.service.repository(repoId);
     if (!target) throw new Error('Unknown repository');
     return target.repo;
@@ -1937,7 +1906,7 @@ export class ScmHost {
   }
 
   // A git side as text, or the placeholder of one absent there, past MAX_SHOW_BYTES or binary, whose bytes stay in main.
-  private async gitSide(repo: Repository, where: 'HEAD' | 'index', file: string, name: string): Promise<GitSide> {
+  private async gitSide(repo: ScmRepository, where: 'HEAD' | 'index', file: string, name: string): Promise<GitSide> {
     const bytes = await repo.show(where, file);
     if (bytes === undefined) return { name, notDisplayed: 'missing' };
     if (bytes === 'tooLarge') return { name, notDisplayed: 'tooLarge' };
@@ -2034,7 +2003,7 @@ export class ScmHost {
     return isDesktopSettingValue(key, value) ? (value as T) : fallback;
   }
 
-  private changesTitle(repo: Repository, group: ChangeGroup): string {
+  private changesTitle(repo: ScmRepository, group: ChangeGroup): string {
     const t = this.deps.t;
     const label = group === 'index' ? t('Staged Changes') : group === 'merge' ? t('Merge Changes') : group === 'untracked' ? t('Untracked Changes') : t('Changes');
     return `${path.basename(repo.root)}: ${label}`;

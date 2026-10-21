@@ -409,8 +409,8 @@ describe('Full pipeline integration', () => {
 			expect(score).toBeLessThan(vtScore + 0.30);
 		});
 
-		it('analyzeChanges returns sorted risks with test gaps', () => {
-			const analysis = analyzeChanges(store, ['/src/auth/service.ts']);
+		it('analyzeChanges returns sorted risks with test gaps', async () => {
+			const analysis = await analyzeChanges(store, ['/src/auth/service.ts']);
 			expect(analysis.risks.length).toBeGreaterThan(0);
 			expect(analysis.test_gaps.length).toBeGreaterThan(0);
 
@@ -430,14 +430,14 @@ describe('Full pipeline integration', () => {
 	});
 
 	describe('MCP tool handlers on seeded graph', () => {
-		it('handleContext produces compact overview', () => {
-			const result = handleContext(store, '/workspace', {});
+		it('handleContext produces compact overview', async () => {
+			const result = await handleContext(store, '/workspace', {});
 			expect(result).toContain('nodes');
 			expect(result).toContain('edges');
 		});
 
-		it('handleContext with changed_files shows risk', () => {
-			const result = handleContext(store, '/workspace', { changed_files: ['/src/auth/service.ts'] });
+		it('handleContext with changed_files shows risk', async () => {
+			const result = await handleContext(store, '/workspace', { changed_files: ['/src/auth/service.ts'] });
 			expect(result).toContain('Changes');
 		});
 
@@ -525,7 +525,7 @@ describe('Full pipeline integration', () => {
 			expect(impact.changed_nodes.length).toBeGreaterThan(0);
 			expect(impact.impacted_nodes.length).toBeGreaterThan(0);
 
-			const analysis = analyzeChanges(store, ['/src/auth/service.ts']);
+			const analysis = await analyzeChanges(store, ['/src/auth/service.ts']);
 			expect(analysis.risks.length).toBeGreaterThan(0);
 
 			const affected = getAffectedFlows(store, ['/src/auth/service.ts']);

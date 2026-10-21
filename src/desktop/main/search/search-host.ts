@@ -48,8 +48,8 @@ import {
   SEARCH_SMART_CASE_SETTING,
   SEARCH_SORT_ORDER_SETTING,
   SEARCH_USE_REPLACE_PREVIEW_SETTING,
-} from '../desktop-configuration';
-import type { Project } from '../documents/confine';
+} from '../../local-services/desktop-configuration';
+import type { Project } from '../../local-services/confine';
 import type { DocumentService, TextDocument } from '../documents/document-service';
 import type { EditorPane } from '../editor-pane';
 import type { SearchMenuState } from '../menu';

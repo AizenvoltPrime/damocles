@@ -4,7 +4,8 @@
 // written, unlike VS Code.
 import { isObjectName } from '../../shared/git-object-name';
 import { diffRefs } from './artifacts';
-import { gitAtLeast, GitQueueDisposedError, GitUntrustedError, isSafeRevision, revision } from './git-runner';
+import { gitAtLeast, GitQueueDisposedError, isSafeRevision, revision } from './git-runner';
+import { GitUntrustedError } from './errors';
 import { isRemoteName } from './remotes';
 import { MAX_MESSAGE_CHARS, MAX_SHOW_BYTES, type Repository } from './repository';
 

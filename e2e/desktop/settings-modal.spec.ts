@@ -433,3 +433,29 @@ test('This chat › Workspace folder asks first, then starts a new conversation 
     await stub.close();
   }
 });
+
+test('the voice runtime asks for the download consent before it downloads anything, and Cancel keeps it that way', async ({ home, launch }, testInfo) => {
+  test.skip(!['win32-x64', 'linux-x64'].includes(`${process.platform}-${process.arch}`), 'the voice runtime installs on Windows x64 and Linux x64 only, and the desktop app hides voice on macOS');
+  writeUserSettings(home, { 'damocles.voice.tts.enabled': true });
+  const { app } = await launch();
+  await expect(chatInput(await activeChat(app))).toBeVisible();
+  const overlay = await openSettingsModal(app, 'voice');
+  const row = settingsRow(overlay, 'voice-runtime');
+  await expect(row.getByTestId('voice-runtime-status')).toHaveText('Not running yet.');
+
+  await row.getByTestId('voice-runtime-start').click();
+
+  const consent = overlay.getByTestId('voice-runtime-consent');
+  await expect(consent).toBeVisible({ timeout: 30_000 });
+  await expect(consent).toContainText('CC-BY-4.0');
+  await expect(row.getByTestId('voice-runtime-status')).toHaveText('The voice runtime is not installed.');
+  await overlay.screenshot({ path: testInfo.outputPath('voice-consent.png') });
+  await consent.getByTestId('confirm-cancel').click();
+  await expect(consent).toHaveCount(0);
+
+  await row.getByTestId('voice-runtime-install').click();
+  await expect(consent).toBeVisible();
+  await consent.getByTestId('confirm-cancel').click();
+  expect(fs.existsSync(path.join(home.home, '.damocles', 'voice', 'runtime'))).toBe(false);
+  await closeSettingsModal(overlay);
+});

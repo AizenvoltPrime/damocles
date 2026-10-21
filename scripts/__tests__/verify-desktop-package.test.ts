@@ -10,6 +10,7 @@ import {
   checkAsarEntries,
   checkAskpassScripts,
   checkChangelog,
+  checkCoreHost,
   checkFuses,
   checkNodePtyLayout,
   checkShellIntegrationScripts,
@@ -20,6 +21,7 @@ import {
   SHELL_INTEGRATION_FILES,
   verifyPackage,
   WINDOWS_PUBLISHER,
+  WORKERS,
 } from '../verify-desktop-package.mjs';
 import { parse } from 'yaml';
 import { ASAR_UNPACK } from '../../src/desktop/main/platform/unpacked-assets';
@@ -38,6 +40,15 @@ const failures = (results: Result[]): string[] => results.filter((r) => !r.ok).m
 const tempDirs: string[] = [];
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+describe('WORKERS', () => {
+  it('names every top-level dist script the build writes but the extension and Damocles Core, which stays packed', () => {
+    const config = readFileSync(join(__dirname, '..', '..', 'esbuild.config.mjs'), 'utf8');
+    const outfiles = [...config.matchAll(/outfile: 'dist\/([^/']+\.js)'/g)].map((match) => match[1]).filter((name) => name !== 'extension.js' && name !== 'core-host.js');
+    expect(outfiles).toContain('process-launcher-worker.js');
+    expect([...WORKERS].sort()).toEqual(outfiles.sort());
+  });
 });
 
 describe('checkFuses', () => {
@@ -100,6 +111,21 @@ describe('checkAsarEntries', () => {
     for (const entry of ['src/core/x.ts', 'dist/desktop/main.js.map', 'node_modules/esbuild/package.json', 'node_modules/electron/index.js', 'e2e/desktop/a.spec.ts']) {
       expect(failures(checkAsarEntries([entry])), entry).toEqual(['asar contents']);
     }
+  });
+});
+
+// utilityProcess.fork loads the core host from inside app.asar; an unpacked copy would run outside asar integrity.
+describe('checkCoreHost', () => {
+  const packed = { path: 'dist/core-host.js', entry: {} };
+
+  it('passes the bundle inside app.asar only', () => {
+    expect(failures(checkCoreHost([packed], []))).toEqual([]);
+  });
+
+  it('fails a missing bundle, one marked unpacked and an unpacked copy', () => {
+    expect(checkCoreHost([], [])[0].detail).toBe('not in app.asar');
+    expect(checkCoreHost([{ path: 'dist/core-host.js', entry: { unpacked: true } }], [])[0].detail).toBe('marked unpacked in app.asar');
+    expect(checkCoreHost([packed], ['dist/core-host.js'])[0].detail).toBe('has a copy in app.asar.unpacked');
   });
 });
 
@@ -311,6 +337,10 @@ describe('verifyPackage', () => {
       'dist/compass-worker.js',
       'dist/usage-stats-worker.js',
       'dist/sentinel.js',
+      'dist/process-launcher-worker.js',
+      'dist/memory-integrity-worker.js',
+      'dist/session-meta-index-worker.js',
+      'dist/voice-extract-worker.js',
       'dist/formatter-host.js',
       'dist/pty-host.js',
       'dist/quick-open-worker.js',
@@ -323,6 +353,7 @@ describe('verifyPackage', () => {
       'python/damocles_voice_sidecar/damocles_voice_sidecar/models/MODEL_MANIFEST.json',
       ...Object.keys(WAKE_FILES).map((file) => `python/damocles_voice_sidecar/damocles_voice_sidecar/models/wake/${file}`),
       'node_modules/web-tree-sitter/tree-sitter.wasm',
+      'node_modules/koffi/package.json',
       `node_modules/@vscode/ripgrep-${target}/bin/${platform === 'win32' ? 'rg.exe' : 'rg'}`,
       `node_modules/@koromix/koffi-${target}/${target.replace('-', '_')}/koffi.node`,
       ...(platform === 'win32' ? [] : [`node_modules/@parcel/watcher-${target}/watcher.node`]),
@@ -342,10 +373,10 @@ describe('verifyPackage', () => {
     for (const [file, content] of Object.entries(WAKE_FILES)) put(join(unpacked, 'python', 'damocles_voice_sidecar', 'damocles_voice_sidecar', 'models', 'wake', file), content);
     const packed: Record<string, string> = {
       'package.json': JSON.stringify({ name: 'damocles', version: '2.36.0', main: 'dist/desktop/main.js' }),
-      'node_modules/koffi/package.json': '{}',
       'node_modules/node-pty/package.json': '{}',
       'node_modules/node-pty/lib/index.js': '',
       'dist/desktop/main.js': '',
+      'dist/core-host.js': '',
       'dist/desktop/CHANGELOG.md': CHANGELOG,
       LICENSE: 'MIT',
       'THIRD-PARTY-NOTICES.md': '# Third-Party Notices',

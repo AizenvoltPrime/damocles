@@ -1,5 +1,7 @@
 export interface NotificationOptions {
   readonly modal?: boolean;
+  // withdraws a modal notification, which then answers undefined; VS Code cannot withdraw one and ignores it
+  readonly signal?: AbortSignal;
 }
 
 export interface NotificationService {

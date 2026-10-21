@@ -1,7 +1,7 @@
 // The integrated terminal's channels (AD6), shared by the shell preload, main and (as types only) the shell and overlay apps.
 // Main issues every terminal id and resolves every cwd from a project key; the renderer never sends a path.
 
-import type { TERMINAL_COLORS, TERMINAL_CUSTOM_ICONS, TerminalCursorStyle } from '../main/desktop-configuration';
+import type { TERMINAL_COLORS, TERMINAL_CUSTOM_ICONS, TerminalCursorStyle } from '../local-services/desktop-configuration';
 import type { FileRef } from './shell-channels';
 
 export const TERMINAL_CHANNELS = {
@@ -111,7 +111,7 @@ export const TERMINAL_PANE_SIZES_EPSILON = 0.001;
 export const TERMINAL_ICONS = ['powershell', 'cmd', 'git-bash', 'wsl', 'bash', 'zsh', 'fish', 'shell'] as const;
 export type TerminalIcon = (typeof TERMINAL_ICONS)[number];
 
-export { TERMINAL_COLORS, TERMINAL_CURSOR_STYLES, TERMINAL_CUSTOM_ICONS, type TerminalCursorStyle } from '../main/desktop-configuration';
+export { TERMINAL_COLORS, TERMINAL_CURSOR_STYLES, TERMINAL_CUSTOM_ICONS, type TerminalCursorStyle } from '../local-services/desktop-configuration';
 
 export type TerminalCustomIcon = (typeof TERMINAL_CUSTOM_ICONS)[number];
 // What a terminal row or quick pick item draws: a profile's icon or a custom one.

@@ -1,5 +1,5 @@
 // The path validators every renderer-named project path passes: search, Quick Open, the Search Editor, the file drag, shell IPC
-// and main's confinement (documents/confine.ts).
+// and main's confinement (local-services/confine.ts).
 
 // Must stay equal to MAX_RELATIVE_PATH_LENGTH in src/desktop/preload/shell-channels.ts.
 const MAX_RELATIVE_PATH_LENGTH = 4096;

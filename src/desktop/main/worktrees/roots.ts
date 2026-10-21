@@ -1,10 +1,11 @@
 // The folders main lets a renderer name files in (AD5, AD12 Confinement): each open project's folder and its live `chat`
 // worktrees. Every channel's root key resolves here, so an adopted, deleted or closing worktree, or another project's, is
 // never a root.
-import type { ChatWorktreeRecord, WorktreeRegistry } from '../../../core/worktrees/registry';
+import type { ChatWorktreeRecord } from '../../../core/worktrees/registry';
+import type { WorktreeRecordReader } from './records';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { parseRootKey, rootKey, type FolderRoot } from '../../preload/folder-root';
-import type { Project } from '../documents/confine';
+import type { Project } from '../../local-services/confine';
 
 export interface RootProject extends Project {
   readonly root: FolderRoot;
@@ -15,7 +16,7 @@ export interface RootProject extends Project {
 export interface WorktreeRootsDeps {
   // the open projects, keyed by folderKey
   readonly projects: () => readonly Project[];
-  readonly registry: () => WorktreeRegistry | undefined;
+  readonly registry: () => WorktreeRecordReader | undefined;
 }
 
 export class WorktreeRoots {

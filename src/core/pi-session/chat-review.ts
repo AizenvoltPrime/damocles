@@ -4,7 +4,6 @@
  * from one snapshot per scope, read again only once its inputs changed.
  */
 
-import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import type { Disposable } from '../../platform/disposable';
@@ -42,12 +41,11 @@ import {
   type WorktreeGit,
 } from './chat-changes';
 import { getCheckpointEntries, getFolderRepoDir, type PendingBaseline } from './checkpoints';
-import { checkpointCommitFile, repoDirOf } from './session-store/rewind';
+import { classifyFileBytes, createBlobReaders, type BlobReaders } from './checkpoints/blob-reader';
+import { repoDirOf } from './session-store/rewind';
 
 // The counter recomputes this long after the last change that could move it.
 export const CHAT_CHANGES_DEBOUNCE_MS = 500;
-// git's binary test: a NUL among the first 8000 bytes.
-const BINARY_PROBE_LENGTH = 8000;
 
 /** The live session as the review reads it; undefined while the chat has no session file. */
 export interface ReviewSession {
@@ -138,9 +136,7 @@ export async function readDiskText(absolute: string): Promise<DiskRead> {
     const stat = await fs.stat(absolute);
     if (!stat.isFile()) return { kind: 'absent' };
     if (stat.size > EDITOR_MAX_DOCUMENT_BYTES) return { kind: 'tooLarge' };
-    const bytes = await fs.readFile(absolute);
-    if (bytes.subarray(0, BINARY_PROBE_LENGTH).includes(0)) return { kind: 'binary', digest: createHash('sha1').update(bytes).digest('hex') };
-    return { kind: 'text', text: bytes.toString('utf8') };
+    return classifyFileBytes(await fs.readFile(absolute));
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'ENOENT' || code === 'ENOTDIR') return { kind: 'absent' };
@@ -231,6 +227,8 @@ export class ChatReview {
   // the folders of every file the chat's records changed, watched so an edit on disk (back to the baseline, or from outside
   // the chat) recomputes the review; keyed by folder, holding the files it watches for
   private readonly watched = new Map<string, { files: ReadonlySet<string>; readonly watcher: Disposable }>();
+  // the blob readers of the reads in flight, closed when their read ends or the review is disposed
+  private readonly readers = new Set<BlobReaders>();
 
   constructor(deps: ChatReviewDeps) {
     this.deps = deps;
@@ -313,9 +311,16 @@ export class ChatReview {
     }
     const records = collectRecords({ branch: session.branch, folder: session.initialFolder ?? session.cwd, handOffs: session.handOffs ?? [], agentMessages: await agentMessagesOf(session) });
     const latestTurn = turnsOnBranch(session.branch).at(-1);
-    const files = await projectChatChanges(records, scope, latestTurn, session.cwd, this.io(session, latestTurn));
-    // tool records leave shell commands' changes out, in a worktree chat's Last turn too
-    return { files, shellChangesNotListed: true, generation, watched: records.map((record) => nowPath(record, session.cwd)) };
+    const readers = createBlobReaders();
+    this.readers.add(readers);
+    try {
+      const files = await projectChatChanges(records, scope, latestTurn, session.cwd, this.io(session, latestTurn, readers));
+      // tool records leave shell commands' changes out, in a worktree chat's Last turn too
+      return { files, shellChangesNotListed: true, generation, watched: records.map((record) => nowPath(record, session.cwd)) };
+    } finally {
+      this.readers.delete(readers);
+      await readers.close();
+    }
   }
 
   // Watches the folders of these files, and stops watching folders none of them is in.
@@ -394,7 +399,8 @@ export class ChatReview {
     for (const held of this.watched.values()) held.watcher.dispose();
     this.watched.clear();
     this.reads.clear();
-    return this.chain;
+    const readers = [...this.readers].map((held) => held.close());
+    return Promise.all([this.chain, ...readers]).then(() => undefined);
   }
 
   private enqueue(work: () => Promise<void>): void {
@@ -403,14 +409,14 @@ export class ChatReview {
 
   // Baselines from the checkpoint repo of the folder each turn ran in: a persisted entry first, and only for the latest
   // turn's before state the producer's in-memory before-commit, which waits while its baseline is still being taken.
-  private io(session: ReviewSession, latestTurn: string | undefined): ChatChangesIo {
+  private io(session: ReviewSession, latestTurn: string | undefined, readers: BlobReaders): ChatChangesIo {
     return {
       checkpoint: async (turn, relativePath, side) => {
         if (!session.fileCheckpoints) return { kind: 'unavailable' };
         const persisted = checkpointCommitOf(session.branch, session.sessionFile, turn, side, undefined);
         const pending = persisted || side !== 'before' || turn !== latestTurn ? undefined : await this.deps.pendingBaseline();
         const source = persisted ?? checkpointCommitOf(session.branch, session.sessionFile, turn, side, pending);
-        return source ? checkpointCommitFile(source.repoDir, source.commit, relativePath) : { kind: 'unavailable' };
+        return source ? readers.read(source.repoDir, source.commit, relativePath) : { kind: 'unavailable' };
       },
       disk: readDiskText,
     };

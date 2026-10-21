@@ -25,7 +25,7 @@ function setup(world: Partial<World> = {}) {
   const w: World = { busy: false, waiting: [], terminals: new Map(), setups: new Map(), answer: 0, asked: [], killAsked: [], trail: [], ...world };
   const deps: RemoveProjectDeps = {
     project: () => ({ name: 'acme' }),
-    busy: () => w.busy,
+    busy: async () => w.busy,
     waitingChats: () => [...w.waiting],
     terminals: {
       idsIn: () => [...w.terminals.keys()],

@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import type { Disposable } from '../../../platform/disposable';
 import type { KeyValueState, Memento } from '../../../platform/key-value-state';
 import { jsonConfigWritesSettled, writeJsonConfig } from '../../../core/config/json-config-write';
-import { Emitter } from './emitter';
+import { Emitter } from '../../local-services/emitter';
 
 function readValues(filePath: string, log: (line: string) => void): Map<string, unknown> {
   let text: string;
@@ -29,11 +29,13 @@ class JsonFileMemento implements Memento {
   private readonly filePath: string;
   private values: Map<string, unknown>;
   private readonly listeners = new Map<string, Emitter<[]>>();
+  private readonly updates: Emitter<[string]>;
   private readonly log: (line: string) => void;
 
   constructor(filePath: string, log: (line: string) => void) {
     this.filePath = filePath;
     this.log = log;
+    this.updates = new Emitter('state', log);
     this.values = readValues(filePath, log);
   }
 
@@ -55,6 +57,15 @@ class JsonFileMemento implements Memento {
     });
     this.values = next;
     this.listeners.get(key)?.fire();
+    this.updates.fire(key);
+  }
+
+  onDidUpdate(listener: (key: string) => void): Disposable {
+    return this.updates.add(listener);
+  }
+
+  snapshot(): Readonly<Record<string, unknown>> {
+    return Object.fromEntries(this.values);
   }
 
   onDidChange(key: string, listener: () => void): Disposable {
@@ -72,6 +83,9 @@ export type StateScope = 'global' | 'workspace';
 export interface DesktopKeyValueState extends KeyValueState {
   // Fires after an update of key in this process has been written; the files are private to this app.
   onDidChange(scope: StateScope, key: string, listener: () => void): Disposable;
+  // Fires after any key's update in this process has been written, after that key's onDidChange listeners.
+  onDidUpdate(listener: (scope: StateScope, key: string) => void): Disposable;
+  snapshot(scope: StateScope): Readonly<Record<string, unknown>>;
   // Settles once every write to both files, one queued meanwhile included, has landed or failed; a quit awaits it.
   flush(): Promise<void>;
 }
@@ -87,6 +101,11 @@ export function createDesktopKeyValueState(userDataDir: string, log: (line: stri
   return {
     ...mementos,
     onDidChange: (scope, key, listener) => mementos[scope].onDidChange(key, listener),
+    onDidUpdate: (listener) => {
+      const subscriptions = (['global', 'workspace'] as const).map((scope) => mementos[scope].onDidUpdate((key) => listener(scope, key)));
+      return { dispose: () => { for (const subscription of subscriptions) subscription.dispose(); } };
+    },
+    snapshot: (scope) => mementos[scope].snapshot(),
     // One wait over both files: each round re-lists both queues, so a write to either queued meanwhile is included.
     flush: () => jsonConfigWritesSettled(() => files),
   };

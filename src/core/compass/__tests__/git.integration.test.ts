@@ -98,28 +98,28 @@ afterAll(() => {
 });
 
 describe.skipIf(!HAS_GIT)('compass git against a real repository', { timeout: 60_000 }, () => {
-	it('reads changed files back from a real diff', () => {
+	it('reads changed files back from a real diff', async () => {
 		const root = makeRepo();
 
-		const files = getChangedFiles(root);
+		const files = await getChangedFiles(root);
 
 		expect(files).toEqual([path.resolve(root, 'src/a.ts').replace(/\\/g, '/')]);
 	});
 
-	it('reads changed files of a workspace reached through a link or an 8.3 alias, spelled as the workspace is', () => {
+	it('reads changed files of a workspace reached through a link or an 8.3 alias, spelled as the workspace is', async () => {
 		const root = makeRepo();
 		// A junction needs no privilege on Windows; elsewhere a directory symlink is the same kind of second spelling.
 		const link = path.join(sandbox, 'linked-workspace');
 		fs.symlinkSync(root, link, process.platform === 'win32' ? 'junction' : 'dir');
-		expect(getChangedFiles(link)).toEqual([forwardSlashed(path.join(link, 'src', 'a.ts'))]);
-		expect([...parseGitDiffRanges(link).keys()]).toEqual([forwardSlashed(path.join(link, 'src', 'a.ts'))]);
+		expect(await getChangedFiles(link)).toEqual([forwardSlashed(path.join(link, 'src', 'a.ts'))]);
+		expect([...(await parseGitDiffRanges(link)).keys()]).toEqual([forwardSlashed(path.join(link, 'src', 'a.ts'))]);
 		if (process.platform !== 'win32') return;
 		const short = execSync(`for %I in ("${root}") do @echo %~sI`, { shell: 'cmd.exe', encoding: 'utf8' }).trim();
 		if (short === root) return;
-		expect(getChangedFiles(short)).toEqual([forwardSlashed(path.join(short, 'src', 'a.ts'))]);
+		expect(await getChangedFiles(short)).toEqual([forwardSlashed(path.join(short, 'src', 'a.ts'))]);
 	});
 
-	it('does not let the repository own core.fsmonitor command run during getChangedFiles', (ctx) => {
+	it('does not let the repository own core.fsmonitor command run during getChangedFiles', async (ctx) => {
 		const root = makeRepo();
 		const sentinel = armFsmonitor(root, 'changed-files');
 
@@ -134,12 +134,12 @@ describe.skipIf(!HAS_GIT)('compass git against a real repository', { timeout: 60
 		if (!fs.existsSync(sentinel)) ctx.skip();
 
 		fs.rmSync(sentinel, { force: true });
-		getChangedFiles(root);
+		await getChangedFiles(root);
 
 		expect(fs.existsSync(sentinel)).toBe(false);
 	});
 
-	it('does not let the repository own core.fsmonitor command run during parseGitDiffRanges', (ctx) => {
+	it('does not let the repository own core.fsmonitor command run during parseGitDiffRanges', async (ctx) => {
 		const root = makeRepo();
 		const sentinel = armFsmonitor(root, 'diff-ranges');
 
@@ -152,7 +152,7 @@ describe.skipIf(!HAS_GIT)('compass git against a real repository', { timeout: 60
 		if (!fs.existsSync(sentinel)) ctx.skip();
 
 		fs.rmSync(sentinel, { force: true });
-		parseGitDiffRanges(root);
+		await parseGitDiffRanges(root);
 
 		expect(fs.existsSync(sentinel)).toBe(false);
 	});

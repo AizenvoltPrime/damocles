@@ -11,6 +11,7 @@ import { isUuid } from "../../../../shared/uuid";
 import type { ExtensionToWebviewMessage } from "../../../../shared/types/messages";
 import type { ResumeBinding } from "../../panel-worktrees";
 import { resumeStoredSession } from "./resume-session";
+import { postVoiceRuntimeStatus } from "./voice-stream-handlers";
 
 // Past the moment a lease turns stale, so the retried claim takes it over.
 const RESTORE_RETRY_MARGIN_MS = 1_000;
@@ -78,6 +79,8 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       };
       let handOver: (() => void) | undefined;
       let binding: ResumeBinding | undefined;
+      // The replay clears the panel itself: under the saved conversation's name, or unnamed when it reads nothing.
+      let replayed = false;
       try {
         // The webview renders the conversation with these, so they precede any replay.
         const settingsSpan = perfSpan("ready.settings");
@@ -87,10 +90,11 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
         settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId, ctx.folder);
         postMessage(ctx.host, { type: "languageChange", locale: getLanguagePreference() });
+        postVoiceRuntimeStatus(deps, ctx.host);
         settingsSpan.end();
         deps.postWorkspaceFolderState(ctx.panelId);
 
-        // Both parse session files synchronously on this thread, so they run after the replay, never beside it.
+        // Both come from the session metadata worker, after the replay, so the conversation's posts go first.
         const postSessionList = async (): Promise<void> => {
           try {
             const { sessions, hasMore, nextOffset } = await timed("ready.sessions", () => storageManager.getStoredSessions());
@@ -142,11 +146,28 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
             announceLeaseRefusal(deps.platform.notifications, leaseRefusal, { retryScheduled: heldUntilMs !== undefined, takeover });
           }
           if (heldUntilMs !== undefined) {
+            const waiting = deps.getPanels().get(ctx.panelId);
+            if (waiting) {
+              waiting.restoreRetry = savedSessionId;
+              deps.restoreRetryChanged(ctx.panelId);
+            }
+            // Cleared once the retry settled, so the host sees the session bound before it stops seeing the retry.
+            const retried = (): void => {
+              const instance = deps.getPanels().get(ctx.panelId);
+              if (instance?.restoreRetry !== savedSessionId) return;
+              delete instance.restoreRetry;
+              deps.restoreRetryChanged(ctx.panelId);
+            };
             setTimeout(() => {
               const instance = deps.getPanels().get(ctx.panelId);
               // The panel closed, or the user started or opened a conversation there meanwhile.
-              if (!instance || instance.session.hasConversation()) return;
-              resumeStoredSession(deps, ctx.panelId, savedSessionId).catch((err) => log("[MessageRouter] Retrying the restore of %s failed: %O", savedSessionId, err));
+              if (!instance || instance.session.hasConversation()) {
+                retried();
+                return;
+              }
+              resumeStoredSession(deps, ctx.panelId, savedSessionId)
+                .catch((err) => log("[MessageRouter] Retrying the restore of %s failed: %O", savedSessionId, err))
+                .finally(retried);
             }, heldUntilMs - Date.now() + RESTORE_RETRY_MARGIN_MS);
           }
         }
@@ -175,6 +196,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
             instance.session.worktree.publishStored(resumeBinding.state, savedSessionId);
           }
           try {
+            replayed = true;
             const rewindableIds = await timed("ready.replay", () =>
               deps.historyManager.loadSessionHistory(instance.folder.fsPath, savedSessionId, instance.host, instance.session));
             // The replay told the user why it read nothing, so the panel opens a new conversation, and the place published is the panel's own.
@@ -192,7 +214,8 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         };
 
         let route: "switch" | "restore" | "fresh";
-        if (target.key !== ctx.folder.key) {
+        const switching = target.key !== ctx.folder.key;
+        if (switching) {
           // Claimed inside the switch, so a message the webview sent meanwhile reaches the restored session.
           let resumed = false;
           await deps.switchPanelFolder(ctx.panelId, target.key, "restore", async (instance) => { resumed = await resumeSaved(instance); });
@@ -202,13 +225,18 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
           const compass = deps.compassRegistry?.get(ctx.folder.key);
           if (compass?.isEnabled) postMessage(ctx.host, { type: "compassStatusUpdate", status: compass.getStatus() });
           route = (await resumeSaved(ctx)) ? "restore" : "fresh";
+        }
+        // The webview names its saved conversation from mount, so a restore that never replayed it (a lease or another
+        // panel refused it, its open failed) drops that name before a send can carry it.
+        if (savedSessionId && !replayed) postMessage(ctx.host, { type: "sessionCleared" });
+        if (!switching) {
           // The webview persists only a stored conversation's id, so a reload of a panel whose conversation pi has not written yet sends none.
           const liveId = route === "fresh" ? ctx.session.currentSessionId : null;
           if (liveId) signalStarted(ctx.host, { type: "sessionStarted", sessionId: liveId, stored: ctx.session.hasSessionFile() });
         }
         await postSessionList();
-        await postPromptHistory();
-        total.end({ path: route });
+        // On a cold index the history waits for the worker to parse every file, so the session start does not wait for it.
+        void postPromptHistory().then(() => total.end({ path: route }));
       } finally {
         const landed = deps.getPanels().get(ctx.panelId);
         binding?.settle(landed);
@@ -220,7 +248,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         handOver?.();
       }
       // Starting the session builds the pi runtime, folder runtime and project MCP, which block this thread
-      // in long stretches, so it waits until the conversation and the lists are posted.
+      // in long stretches, so it waits until the conversation and the session list are posted.
       const current = deps.getPanels().get(ctx.panelId)?.session;
       if (current) {
         void current.initializeEarly().then(async () => {

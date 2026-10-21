@@ -1,5 +1,5 @@
-import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
+import { runProcess, type RunOutput } from "../../process-launcher";
 import type { RuntimePaths, TorchChannel } from "./index";
 
 export async function detectInstalledRuntime(paths: RuntimePaths): Promise<{ present: boolean; pythonExe: string }> {
@@ -41,31 +41,16 @@ export async function detectInstalledTorchChannel(
     "    sys.stdout.write('cu118')\n" +
     "else:\n" +
     "    sys.stdout.write('unknown')\n";
-  return await new Promise((resolve) => {
-    const child = spawn(pythonExe, ["-c", script], {
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    let out = "";
-    let settled = false;
-    const settle = (val: TorchChannel | "missing" | "unknown"): void => {
-      if (settled) return;
-      settled = true;
-      resolve(val);
-    };
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      settle("unknown");
-    }, 30_000);
-    child.stdout?.on("data", (chunk: Buffer) => { out += chunk.toString("utf8"); });
-    child.on("error", () => { clearTimeout(timer); settle("missing"); });
-    child.on("exit", (code) => {
-      clearTimeout(timer);
-      if (code !== 0) return settle("missing");
-      const trimmed = out.trim();
-      if (trimmed === "cu121" || trimmed === "cu118" || trimmed === "cpu") return settle(trimmed);
-      if (trimmed === "missing") return settle("missing");
-      return settle("unknown");
-    });
-  });
+  let run: RunOutput;
+  try {
+    run = await runProcess({ file: pythonExe, args: ["-c", script], stdio: ["ignore", "pipe", "pipe"] }, { timeoutMs: 30_000 });
+  } catch {
+    return "missing";
+  }
+  if (run.exit === null) return "unknown";
+  if (run.exit.code !== 0) return "missing";
+  const trimmed = run.stdout.toString("utf8").trim();
+  if (trimmed === "cu121" || trimmed === "cu118" || trimmed === "cpu") return trimmed;
+  if (trimmed === "missing") return "missing";
+  return "unknown";
 }

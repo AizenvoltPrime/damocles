@@ -1,33 +1,30 @@
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { app, BrowserWindow, clipboard, dialog, Menu, powerMonitor, screen, session, shell as electronShell, webContents, WebContentsView, type WebContents } from 'electron';
 import { installLogSink, log, showLog } from '../../core/logger';
-import { mainProcessProfiler, StallMonitor } from './stall-monitor';
+import { processProfiler, StallMonitor } from '../local-services/stall-monitor';
 import { getRipgrepSearchOptions, resolveRgPath } from '../../core/chat-panel/ripgrep';
 import { locateSettingsFile, saveSettingsFileText } from '../../core/chat-panel/settings-file-editor';
 import type { MentionTarget } from '../../core/chat-panel/mention-resolver';
 import { installPlatform } from '../../core/platform-host';
 import type { ChatActivity } from '../../core/pi-session/session-state';
-import { restoredWorkspaceFolderKey } from '../../core/chat-panel/panel-manager';
-import { LANGUAGE_PREFERENCE_KEY } from '../../core/chat-panel/message-router/index';
+import { LANGUAGE_PREFERENCE_KEY } from '../../shared/language-preference';
 import type { CatalogResult } from '../../core/chat-panel/session-catalog';
-import { announceLeaseRefusal, leaseRefusalFor } from '../../core/chat-panel/session-ownership';
-import type { HostInstance } from '../../core/chat-panel/types';
-import { flushCoreWrites } from '../../core/chat-panel';
 import { runLegacySettingsMigrations } from '../../core/config/legacy-settings-migrations';
 import { movePreferApiKeyToGlobalState } from '../../core/pi-session/openai-auth';
 import { deleteRetiredSecrets } from '../../core/config/retired-secrets';
 import { providerKeyStored } from '../../core/pi-session/custom-providers';
 import { PROVIDER_SECRET_KEYS } from '../../core/pi-session/explore-providers';
-import { setCheckpointGitAvailability } from '../../core/pi-session/checkpoints';
 import { DAMOCLES_HOME_DIR } from '../../core/paths';
 import { folderKey } from '../../core/workspace-folders/folder-key';
-import { homeDirectory, settingsFolderOf } from '../../core/workspace-folders/folder-registry';
+import { homeDirectory } from '../../core/workspace-folders/folder-registry';
 import type { Disposable } from '../../platform/disposable';
+import type { InputBoxOptions } from '../../platform/dialog-service';
 import type { PanelOptions } from '../../platform/window-service';
+import type { ChatPermissions, PanelCreate } from '../core-protocol';
+import type { RelayView } from './core-services/host-services';
 import type { StoredSession } from '../../shared/types/session';
 import type { ChatAttachmentInput } from '../../shared/types/chat-attachment';
 import { MAX_OVERLAY_TAGS, OVERLAY_CHANNELS, type OverlayAnswer, type OverlayRequest } from '../preload/overlay-channels';
@@ -63,10 +60,12 @@ import { ChatReviewHost } from './chat-review-host';
 import { handleAboutChannels, runUpdateAction, type AboutDeps } from './about-channels';
 import { ActivationFocus, onWindowActivated, onWindowDeactivated } from './activation-focus';
 import { trayIcon, windowIcon } from './app-icon';
-import { startCore, type DesktopCore } from './bootstrap';
+import { startDesktopCore, type CoreConnectionDeps, type DesktopCore } from './bootstrap';
+import { CORE_READY_TIMEOUT_MS, restartDecision, RESTART_LIMIT } from './core-process';
+import type { CoreClient } from './core-client';
 import { BrowserTabs } from './browser-tabs';
-import { chatsToUnload, ChatWorkQueue, isActiveActivity } from './chat-pool';
-import { resolveChatTab } from './chat-tab-target';
+import { chatsToUnload, ChatWorkQueue } from './chat-pool';
+import { isActiveActivity } from '../../shared/chat-retention';
 import { storedTitle } from './chat-title';
 import { parseUserDataDir } from './cli';
 import { CoreHost } from './core-host';
@@ -87,9 +86,9 @@ import {
   TERMINAL_PROFILES_SETTING,
   THEME_SETTING,
   type DesktopLanguageSetting,
-} from './desktop-configuration';
+} from '../local-services/desktop-configuration';
 import { BackupStore } from './documents/backups';
-import type { Project } from './documents/confine';
+import type { Project } from '../local-services/confine';
 import { DocumentService } from './documents/document-service';
 import { EditorPane, editorSettings } from './editor-pane';
 import { FormatService } from './formatting/format-service';
@@ -124,37 +123,34 @@ import {
   type MenuActions,
   type MenuState,
 } from './menu';
-import { createAskpassBridge } from './askpass-bridge';
+import { createAskpassBridge, type AskCredential } from './askpass-bridge';
 import { createMessageAsker, type AskMessage } from './message-dialog';
-import { installCaCertificates } from './network/ca-certificates';
-import { installProxyDispatcher } from './network/proxy-dispatcher';
-import { DO_NOT_DISTURB_KEY, handleCenterChannels, NotificationCenter, runEntryAction, type ChatKey, type ChatRef, type EntryActionDeps } from './notification-center';
+import { DO_NOT_DISTURB_KEY, handleCenterChannels, NotificationCenter, runEntryAction, type ChatKey, type ChatRef, type EntryActionDeps, type StickyNotice } from './notification-center';
 import { NotifierHost } from './notifier';
 import { createInputAsker, createQuickPickAsker, OverlayHost, overlayHtml } from './overlay';
 import { OverlaySettings, writeDesktopSetting } from './overlay-settings';
 import type { SettingsTarget } from '../../shared/settings-sections';
 import { PanelStateStore } from './panel-state-store';
 import { createDesktopPlatform, type DesktopPlatform } from './platform';
-import { askpassPaths, ptyHostPaths, quickOpenWorkerPath, unpackagedResourceRoot, type DesktopLayout } from './platform/app-paths';
+import { askpassPaths, coreHostEntryPath, createDesktopAppPaths, ptyHostPaths, quickOpenWorkerPath, unpackagedResourceRoot, watchWorkerPath, type DesktopLayout } from './platform/app-paths';
 import type { ChatTabMessenger } from './platform/editor-service';
 import { createDesktopKeyValueState, type DesktopKeyValueState } from './platform/key-value-state';
-import { createDesktopLocalizationService, launchLanguage, readLanguageSetting, type DesktopLocalizationService } from './platform/localization-service';
-import { createDesktopLogSinkFactory, logFileName } from './platform/log-sink';
-import { Emitter } from './platform/emitter';
+import { createDesktopLocalizationService, launchLanguage, readLanguageSetting, type DesktopLocalizationService } from '../local-services/localization-service';
+import { createDesktopLogSinkFactory, logFileName } from '../local-services/log-sink';
+import { Emitter } from '../local-services/emitter';
 import { createDesktopNotificationService } from './platform/notification-service';
-import { logUncaughtErrors } from './process-errors';
+import { logUncaughtErrors } from '../local-services/process-errors';
 import { ProjectList } from './projects';
 import { announceInstalledVersion, ReleaseNotesSource } from './release-notes';
 import { appResourceUri, handleAppProtocol, registerAppScheme } from './protocol';
 import { restrictPermissions, hardenWebContents } from './security';
 import { reportFailure, ShellHost, shellHtml, type ShellActions } from './shell';
 import { mergeLoginShellEnv, probeGit, type GitProbe } from './shell-env';
-import { backgroundCompletion, NO_SCM_MENU_STATE, ScmHost, type ScmWorktreeDeps } from './scm/scm-host';
+import { NO_SCM_MENU_STATE, ScmHost, type ScmWorktreeDeps } from './scm/scm-host';
 import type { ScmWorktreeChat } from '../preload/scm-channels';
-import { createAskpassServer, type AskpassServer } from '../../core/scm/askpass/askpass-server';
-import { createGitRunner } from '../../core/scm/git-runner';
-import { ScmService } from '../../core/scm/scm-service';
-import { PiRuntime } from '../../core/pi-session/pi-runtime';
+import { createLauncherPool, installProcessLauncher, lockThreadSpawns, processLauncher, type Launcher } from '../../core/process-launcher';
+import { allJsonConfigWritesSettled } from '../../core/config/json-config-write';
+import { createScmClient, type ScmClient } from './scm/scm-client';
 import { SUBCALL_USAGE_LEDGER_PATH } from '../../core/paths';
 import { TaskbarBadges } from './taskbar-badges';
 import { TaskbarCounter } from './taskbar-counter';
@@ -162,21 +158,19 @@ import { currentTheme, currentThemeKind, followThemeSettings, LIGHT_THEME, onThe
 import { AppTray } from './tray';
 import { TrustStore } from './trust-store';
 import { loadAutoUpdater, shellPlatform, UpdateService } from './updater';
-import { WorktreeRegistry, type ChatWorktreeRecord, type WorktreeRecord } from '../../core/worktrees/registry';
-import { folderInRepository, linkedWorktreeOf } from '../../core/worktrees/leftovers';
-import { removeAbandonedTempFolders, tempFoldersSettled } from '../../core/worktrees/create';
+import type { ChatWorktreeRecord, WorktreeRecord } from '../../core/worktrees/registry';
 import { worktreeEnvironment } from '../../core/worktrees/environment';
-import type { FileWatcherFactory } from '../../platform/file-watcher';
-import type { GitRunner } from '../../core/scm/git-runner';
-import type { WorktreeHostServices } from '../../core/worktrees/host';
+import { worktreeEngine, type WorktreeEngine } from './worktrees/engine';
+import { WorktreeRecords } from './worktrees/records';
 import { SCM_SETTING_KEYS } from '../../core/scm/settings-keys';
 import type { WorktreeStateData } from '../../shared/types/messages';
 import type { UserContentBlock } from '../../shared/types/content';
 import { parseRootKey, rootKey } from '../preload/folder-root';
 import type { ChatsWorktreeOptions, NewChatInWorktreeRequest, NewChatWorktree, ShowFolderRequest, WorktreeFinishAction, WorktreeFinishRequest } from '../preload/shell-channels';
 import { RootSet, WorktreeRoots, type RootProject } from './worktrees/roots';
-import { closeWorktreeRoot } from './worktrees/close-worktree';
+import { closeWorktreeRoot, type CloseOutcome } from './worktrees/close-worktree';
 import { HeldPrompts } from './held-prompts';
+import { KeptPermissions } from './kept-permissions';
 import { removeProject, type WaitingChat } from './remove-project';
 import { ShownFolderState } from './worktrees/shown-folder';
 import { setupTaskKey, WorktreeController } from './worktrees/worktree-controller';
@@ -208,6 +202,8 @@ const DISPOSE_TIMEOUT_MS = 10_000;
 // within DISPOSE_TIMEOUT_MS: the wait for the window to close and its pages' requests to settle
 const CLOSE_TIMEOUT_MS = 3_000;
 const CHAT_PANEL: PanelOptions = { kind: 'chat', title: 'Damocles', localResourceRoots: [] };
+// Playwright's hooks (globalThis.__damoclesE2e and core's e2e.* requests), in the unpackaged app only.
+const E2E_HOOKS = !app.isPackaged && process.env['DAMOCLES_E2E_HOOKS'] === '1';
 const BROWSER_ENABLED_KEY = 'damocles.browser.enabled';
 // What a shell call answers once main has reported its failure to the user.
 const CHAT_CHANGE_FAILED: ChatMutationResult = { ok: false, reason: 'failed' };
@@ -248,8 +244,17 @@ function normalBoundsOf(window: BrowserWindow): Rect {
 
 // The bounds main applied to a window and its last read while neither maximized, minimized nor full screen.
 interface WindowBoundsTracker {
-  readonly applied: AppliedBounds | undefined;
+  applied: AppliedBounds | undefined;
   normal: Rect;
+}
+
+// Every placement main makes ends here, once the window is at `bounds`' position: the constructor and setBounds size a
+// frameless Windows window up to 4 DIP off its request at 150% (electron/electron#51572), and setContentSize sizes it exactly.
+function sizeExactly(window: BrowserWindow, bounds: Rect, tracker: WindowBoundsTracker): void {
+  window.setContentSize(bounds.width, bounds.height);
+  const read = normalBoundsOf(window);
+  tracker.applied = { bounds, read };
+  tracker.normal = read;
 }
 
 // Read on every save as well as on 'resize' and 'move': X11 applies setBounds asynchronously, so those events can carry the
@@ -382,14 +387,17 @@ class DesktopApp {
   });
   private readonly core = new CoreHost<DesktopCore>({
     start: () => this.startCoreServices(),
-    openTabs: () => this.openInitialChats(),
+    openTabs: (afterRestart) => this.openInitialChats(afterRestart),
     retainTabStates: (retain) => {
       if (retain) this.heldPrompts.keep();
       this.views?.retainStatesOnClose(retain);
     },
     log: (line) => log(line),
     drainTimeoutMs: CLOSE_TIMEOUT_MS,
+    haltedChanged: () => this.engineHaltChanged(),
   });
+  // the error notice a halt raised, offering Restart until the engine runs again
+  private haltNotice: StickyNotice | undefined;
   private localization: DesktopLocalizationService | undefined;
   private window: BrowserWindow | undefined;
   private views: PanelViews | undefined;
@@ -410,14 +418,21 @@ class DesktopApp {
   private beforeChatRestore = (): Promise<void> => Promise.resolve();
   // Runs as each Graph history request begins; the e2e hooks hold it open.
   private beforeHistory = (): Promise<void> => Promise.resolve();
+  // The browser page restores main asked core for, while the e2e hooks count them.
+  private e2ePageRestores: { count: number } | undefined;
+  // Settles once the launch reopened its chats, restores and page restores included, or found it should not.
+  private launchTabs: Promise<void> = Promise.resolve();
   // Settles once core finished restoring or setting up a chat, whether core registered the chat or not; every chat has one.
   private readonly chatRestores = new WeakMap<DesktopPanel, Promise<void>>();
   private fileTree: FileTree | undefined;
   private quickOpenIndex: QuickOpenIndex | undefined;
   private search: SearchHost | undefined;
   private scm: ScmHost | undefined;
-  private askpass: AskpassServer | undefined;
-  // the git probeGit found at startup; source control spawns its absolute path
+  // core's ScmService as ScmHost reads and calls it; one per app run, each core attaches
+  private scmClient: ScmClient | undefined;
+  // the overlay's credential prompts core's askpass server asks for
+  private askCredential: AskCredential | undefined;
+  // the git probeGit found at startup; core's source control spawns its absolute path
   private gitProbe: GitProbe = { available: false, reason: '' };
   // the e2e hooks' stand-in for the commit-message model (DAMOCLES_E2E_HOOKS, unpackaged only)
   private palette: CommandPalette | undefined;
@@ -439,6 +454,19 @@ class DesktopApp {
   private restoreAtLaunch = true;
   private tray: AppTray | undefined;
   private platform: DesktopPlatform | undefined;
+  // main's own process launcher pool (search, Quick Open, terminal profiles, the login shell and git probes)
+  private launcher: Launcher | undefined;
+  // what each Damocles Core is forked and connected with
+  private coreDeps: CoreConnectionDeps | undefined;
+  // the times (performance.now) of core's crashes the restart policy counts (restartDecision)
+  private coreCrashes: readonly number[] = [];
+  // the times of the reloads core asked for, which the same policy bounds
+  private coreReloads: readonly number[] = [];
+  // the cores that ended in this app run without releasing their session leases (a crash, or a kill after core.shutdown
+  // failed or timed out) and when main saw each end; the next core takes those leases over at once
+  private readonly endedCores: { pid: number; endedAt: number }[] = [];
+  // the open window's bounds tracker, which a placement main makes records what it applied in
+  private windowBounds: WindowBoundsTracker | undefined;
   private updates: UpdateService | undefined;
   private releaseNotes: ReleaseNotesSource | undefined;
   private readonly disposables: Disposable[] = [];
@@ -460,8 +488,8 @@ class DesktopApp {
   private readonly activity = new Map<string, ChatActivity>();
   // the chats' review tabs and draft comments (D60)
   private readonly chatReviews = new ChatReviewHost({
-    session: (panelId) => this.core.current()?.provider.getPanelManager().getPanels().get(panelId)?.session,
-    sessionId: (panelId) => this.core.current()?.provider.getPanelManager().sessionIdOf(panelId),
+    session: (panelId) => this.core.current()?.client.reviewSession(panelId),
+    sessionId: (panelId) => this.core.current()?.client.chat(panelId)?.sessionId,
     title: (panelId) => {
       const panel = this.panelOfCore(panelId);
       return panel ? this.titleOf(panel) : '';
@@ -475,13 +503,13 @@ class DesktopApp {
   // Each project's stored sessions from its last catalog read, for titles outside a list request.
   private readonly catalogRows = new Map<string, readonly StoredSession[]>();
   private readonly chatWork = new ChatWorkQueue();
-  // Worktree chats (slice 12a): one registry per app run, built with the platform, which every core receives.
-  private worktreeRegistry: WorktreeRegistry | undefined;
-  private readonly roots = new WorktreeRoots({ projects: () => this.desktopProjects(), registry: () => this.worktreeRegistry });
+  // Worktree chats (slice 12a): core's registry as its worktrees mirror shows it, kept across a core restart.
+  private readonly worktreeRecords = new WorktreeRecords(path.join(DAMOCLES_HOME_DIR, 'worktrees'), (line) => log(line));
+  // core's worktree git and registry work, on the running core
+  private readonly worktreeEngine: WorktreeEngine = worktreeEngine((method, args) => this.core.run(`Worktree ${method}`, (core) => core.client.worktreeCall(method, args)));
+  private readonly roots = new WorktreeRoots({ projects: () => this.desktopProjects(), registry: () => this.worktreeRecords });
   private worktrees: WorktreeController | undefined;
   private askWorktreeDialog: AskWorktreeDialog | undefined;
-  // the trust-gated runner source control and the worktree actions share; undefined when git is missing
-  private gitRunner: GitRunner | undefined;
   // core's last worktree state by core panel id
   private readonly worktreeStates = new Map<string, WorktreeEvent>();
   private readonly shownFolders = new ShownFolderState({
@@ -496,9 +524,10 @@ class DesktopApp {
   private editorRootKeys: ReadonlySet<string> = new Set();
   private readonly heldPrompts = new HeldPrompts({
     chats: () => (this.views?.chats() ?? []).map((chat) => ({ panelId: chat.panelId, corePanelId: this.corePanelIdOf(chat) })),
-    held: (corePanelId) => this.core.current()?.provider.getPanelManager().heldPrompt(corePanelId),
+    held: (corePanelId) => this.core.current()?.client.chat(corePanelId)?.heldPrompt as readonly UserContentBlock[] | undefined,
     store: { setHeldPrompt: (panelId, held) => this.states.setHeldPrompt(panelId, held) },
   });
+  private readonly keptPermissions = new KeptPermissions();
   // worktree roots source control keeps open while a flow needs their repository (Push branch)
   private readonly pinnedScmRoots = new Set<string>();
   // chats a worktree delete unloads, whose close selects no other chat
@@ -507,10 +536,6 @@ class DesktopApp {
   private readonly openingInWorktree = new WeakSet<DesktopPanel>();
   private retentionScheduled = false;
   private readonly chatFoldersChanged = new Emitter<[]>('chat-folders', (line) => log(line));
-  // a listed project, by its path as listed, whose repository's branches or HEAD changed, from source control's .git watcher (AD4)
-  private readonly refsChanged = new Emitter<[string]>('refs', (line) => log(line));
-  // a project folder whose repositories source control (re)discovered, which worktree availability follows (D30)
-  private readonly projectRepositoryChanged = new Emitter<[string]>('project-repository', (line) => log(line));
   private shellFocusedPart: ShellFocusPart | null = null;
   // Whether focus in the terminal pane is an xterm's own input, as the shell reports; it only routes the user's Edit › Paste.
   private terminalInputFocused = false;
@@ -548,7 +573,7 @@ class DesktopApp {
   // The stores log what they skip while reading their files, so they are read only once the log sink is installed.
   constructor() {
     installLogSink(this.logSink);
-    logUncaughtErrors(process, (line) => log(line));
+    logUncaughtErrors(process, 'main', (line) => log(line));
     this.states = new PanelStateStore(this.userDataDir, (line) => log(line));
     this.windowLayout = new WindowLayoutStore(this.userDataDir, (line) => log(line));
     this.projects = new ProjectList(this.userDataDir, (line) => log(line));
@@ -559,7 +584,7 @@ class DesktopApp {
 
   private startStallMonitor(bootLog: (line: string) => void): StallMonitor | undefined {
     try {
-      const monitor = new StallMonitor({ dir: path.join(this.logsDir, 'stalls'), log: bootLog, startProfile: mainProcessProfiler(process.platform) });
+      const monitor = new StallMonitor({ process: 'main', dir: path.join(this.logsDir, 'stalls'), log: bootLog, startProfile: processProfiler(process.platform) });
       this.disposables.push(monitor);
       return monitor;
     } catch (err) {
@@ -598,7 +623,12 @@ class DesktopApp {
       });
     });
 
-    await mergeLoginShellEnv(bootLog);
+    // Before the first process start, the login shell read; its workers share process.env, so they see what the read merges.
+    const appPaths = createDesktopAppPaths(layout);
+    lockThreadSpawns();
+    this.launcher = createLauncherPool({ workerPath: appPaths.workerEntry('processLauncher'), sentinelPath: appPaths.workerEntry('sentinel') });
+    installProcessLauncher(this.launcher);
+    await mergeLoginShellEnv(processLauncher(), bootLog);
     await app.whenReady();
     if (stalls) {
       const suspend = (): void => stalls.suspend();
@@ -616,8 +646,6 @@ class DesktopApp {
       app.exit(1);
       return;
     }
-    installCaCertificates(bootLog);
-    this.disposables.push(installProxyDispatcher(session.defaultSession, bootLog));
     // The Language setting replaces the language the chat webview stored, so the webview follows it too.
     if (this.languageSetting !== 'system' && this.state.global.get<string>(LANGUAGE_PREFERENCE_KEY) !== undefined) {
       await this.state.global.update(LANGUAGE_PREFERENCE_KEY, undefined);
@@ -625,7 +653,6 @@ class DesktopApp {
     const localization = createDesktopLocalizationService(resourceRoot, this.preferredLanguage(), bootLog);
     this.localization = localization;
     const git = await probeGit(bootLog, (message, ...args) => localization.t(message, ...args));
-    setCheckpointGitAvailability(git);
     this.gitProbe = git;
     restrictPermissions(session.defaultSession);
     handleAppProtocol(resourceRoot, {
@@ -646,25 +673,77 @@ class DesktopApp {
       projects: this.projects,
       trust: this.trust,
       window: () => this.window,
-      views: () => this.requireViews(),
-      openChat: (options) => this.openCoreChat(options),
       showChatReview: (panelId, scope) => this.showChatReview(panelId, scope),
       openAppSettings: (section, account) => this.openSettings({ ...(section !== undefined ? { section } : {}), ...(account !== undefined ? { account } : {}) }),
       toggleTerminal: () => this.toggleTerminal(false),
       terminalToggle: () => this.terminalToggle(),
-      prompts: () => this.core.current()?.provider.getWebviewPrompts(),
       chatTabs: this.chatTabs,
       editorPane: () => this.requireEditorPane(),
       chatFolders: {
-        folders: () => [...this.chatInstances().values()].flatMap((instance) => settingsFolderOf(instance.folder) ?? []),
+        folders: () => (this.core.current()?.client.chats() ?? []).flatMap((chat) => chat.settingsFolder ?? []),
         onDidChange: (cb) => this.chatFoldersChanged.add(cb),
       },
-      reload: () => this.core.reload(),
-      worktrees: (watchers) => this.startWorktrees(watchers),
+      reload: () => this.coreRequestedReload(),
       log: bootLog,
     });
     installPlatform(this.platform);
+    const worktrees = this.startWorktrees();
     this.startEditor(this.platform, localization);
+    // After the editor pane, whose active context core mirrors.
+    const worker = (name: Parameters<typeof appPaths.workerEntry>[0]): string => appPaths.workerEntry(name);
+    this.coreDeps = {
+      platform: this.platform,
+      trust: this.trust,
+      theme: { css: () => currentTheme().css, onDidChange: (listener) => onThemeChange((theme) => listener(theme.css)) },
+      terminalToggle: () => this.terminalToggle(),
+      resolveProxy: (url) => session.defaultSession.resolveProxy(url),
+      createView: (panelId, create) => this.createCoreView(panelId, create),
+      git: git.available ? { available: true, path: git.path, version: git.version } : { available: false, reason: git.reason },
+      e2eHooks: E2E_HOOKS,
+      paths: {
+        resourceRoot: appPaths.resourceRoot,
+        unpackedRoot: appPaths.unpackedRoot,
+        workers: {
+          compass: worker('compass'),
+          usageStats: worker('usageStats'),
+          sentinel: worker('sentinel'),
+          processLauncher: worker('processLauncher'),
+          memoryIntegrity: worker('memoryIntegrity'),
+          sessionMetaIndex: worker('sessionMetaIndex'),
+          voiceExtract: worker('voiceExtract'),
+        },
+        watchWorker: watchWorkerPath(appPaths),
+        // core's process.execPath is this same executable
+        askpass: askpassPaths(appPaths, process.execPath),
+      },
+      logs: { dir: this.logsDir, echo: !app.isPackaged },
+      language: { current: () => localization.language, onDidChange: (listener) => localization.onDidChangeLanguage(() => listener()) },
+      power: {
+        onSuspend: (listener) => {
+          powerMonitor.on('suspend', listener);
+          return { dispose: () => powerMonitor.removeListener('suspend', listener) };
+        },
+        onResume: (listener) => {
+          powerMonitor.on('resume', listener);
+          return { dispose: () => powerMonitor.removeListener('resume', listener) };
+        },
+      },
+      ui: {
+        showLog: (name, preserveFocus) => this.openLogTab(path.join(this.logsDir, logFileName(name)), preserveFocus),
+        trash: (absolutePath) => this.trashEntry(absolutePath),
+        ask: (question, signal) => this.ask(question, signal),
+        askpass: (prompt, signal) => {
+          if (!this.askCredential) throw new Error('Source control used before startup finished');
+          return this.askCredential(prompt, signal);
+        },
+        worktrees: worktrees.ui(),
+      },
+      entry: coreHostEntryPath(appPaths),
+      echo: !app.isPackaged,
+      closeTimeoutMs: CLOSE_TIMEOUT_MS,
+      readyTimeoutMs: CORE_READY_TIMEOUT_MS,
+      log: bootLog,
+    };
     this.terminals = this.createTerminals(this.platform, localization);
     log(`Damocles desktop starting (version ${this.platform.appInfo.version}, Electron ${process.versions.electron}, userData ${this.userDataDir})`);
     const version = this.platform.appInfo.version;
@@ -783,7 +862,7 @@ class DesktopApp {
     }
     // Saved tabs come back with "Reopen where I left off"; a backup comes back either way, since it holds text the user never discarded.
     await this.requireEditorPane().restore(this.windowLayout.editor(), await this.backups.list());
-    this.core.start();
+    const launched = this.core.start();
     this.createWindow();
     this.tray = new AppTray(trayIcon(resourceRoot), {
       windowVisible: () => this.window?.isVisible() ?? false,
@@ -797,7 +876,8 @@ class DesktopApp {
       },
       quit: () => app.quit(),
     }, localization);
-    await this.core.openTabs();
+    this.launchTabs = this.openTabsAtLaunch(launched);
+    await this.launchTabs;
     await this.adoptOpenWorktrees().catch(this.report('Recording adopted worktrees'));
     this.requireWorktrees().scanAtStartup(this.desktopProjects().map((project) => project.fsPath)).catch(this.report('Scanning for leftover worktrees'));
 
@@ -813,6 +893,14 @@ class DesktopApp {
     }).catch(this.report('Announcing the installed version'));
   }
 
+  // The launch's chats reopen into the first core once it is ready. A quit that began meanwhile opens nothing, and a core that
+  // ended before it was ready took the crash path, whose reload reopens them into the next core.
+  private async openTabsAtLaunch(launched: DesktopCore): Promise<void> {
+    const ready = await launched.ready.then(() => true, () => false);
+    if (!ready || this.lifecycle.phase === 'disposing' || this.lifecycle.phase === 'done' || this.core.started() !== launched) return;
+    await this.core.openTabs();
+  }
+
   // The webview normalizes what it stores.
   private preferredLanguage(): 'en' | 'el' {
     return launchLanguage(this.languageSetting, this.state.global.get<string>(LANGUAGE_PREFERENCE_KEY), app.getLocale());
@@ -825,6 +913,21 @@ class DesktopApp {
   private requirePlatform(): DesktopPlatform {
     if (!this.platform) throw new Error('Desktop platform used before startup finished');
     return this.platform;
+  }
+
+  private requireCoreDeps(): CoreConnectionDeps {
+    if (!this.coreDeps) throw new Error('Damocles Core started before startup finished');
+    return this.coreDeps;
+  }
+
+  private requireScmClient(): ScmClient {
+    if (!this.scmClient) throw new Error('Source control used before startup finished');
+    return this.scmClient;
+  }
+
+  // The running core's client; undefined before startup finished and while a reload replaces the core.
+  private client(): CoreClient | undefined {
+    return this.core.current()?.client;
   }
 
   private requireLocalization(): DesktopLocalizationService {
@@ -938,7 +1041,7 @@ class DesktopApp {
   // The selected project, else the first one; undefined with no project open.
   private currentProjectKey(): string | undefined {
     const projects = this.desktopProjects();
-    const selected = this.selectedProjectKey ?? this.core.current()?.provider.getFolderRegistry().defaultTarget().key;
+    const selected = this.selectedProjectKey ?? this.client()?.defaultTarget()?.key;
     const key = projects.find((project) => project.key === selected)?.key ?? projects[0]?.key;
     // a new terminal starts in the project's shown folder (D31)
     return key === undefined ? undefined : this.shownFolders.rootKeyOf(key);
@@ -955,13 +1058,20 @@ class DesktopApp {
 
   // Quick Open's roots (D31): the selected project's shown folder, and the other projects' folders.
   private quickOpenRoots(): RootProject[] {
-    const selected = this.selectedProjectKey ?? this.core.current()?.provider.getFolderRegistry().defaultTarget().key;
+    const selected = this.selectedProjectKey ?? this.client()?.defaultTarget()?.key;
     return this.desktopProjects().map((project) => (project.key === selected ? this.roots.resolve(this.shownFolders.rootKeyOf(project.key)) : undefined) ?? { ...project, root: { projectKey: project.key } });
   }
 
   private startCoreServices(): DesktopCore {
-    const core = startCore(this.requirePlatform());
-    const panelManager = core.provider.getPanelManager();
+    // core's exit is reported on a later turn, once hosted exists
+    const core = startDesktopCore(this.requireCoreDeps(), {
+      endedCores: [...this.endedCores],
+      // a new core's registry serves them while registry.json does not parse, as the one before it did
+      worktreeRecords: [...this.worktreeRecords.records()],
+      crashed: (pid, how) => this.coreCrashed(hosted, pid, how),
+      leftLeases: (pid) => this.endedCores.push({ pid, endedAt: Date.now() }),
+    });
+    const { client } = core;
     // The previous core's chats closed with it.
     for (const corePanelId of this.activity.keys()) {
       this.notificationCenter.panelClosed(corePanelId);
@@ -971,36 +1081,126 @@ class DesktopApp {
     this.worktreeStates.clear();
     this.catalogRows.clear();
     const subscriptions = [
-      panelManager.onDidChangeWorktreeState((event) => this.onWorktreeState(event)),
-      core.provider.getFolderRegistry().onDidChange(() => {
+      client.onWorktreeState((event) => this.onWorktreeState(event)),
+      client.onFoldersChanged(() => {
         this.followSelectedChat();
         this.shellStateChanged();
       }),
-      panelManager.onAllPanelsClosed(() => log('[chats] the last loaded chat closed')),
-      panelManager.onActivity((panelId, activity) => this.onChatActivity(panelId, activity)),
-      panelManager.onChatChanges((panelId, totals, generation) => this.chatReviews.chatChanged(panelId, totals, generation)),
-      panelManager.onTurnSettled((panelId, outcome) => {
+      client.onAllChatsClosed(() => log('[chats] the last loaded chat closed')),
+      client.onActivity((panelId, activity) => this.onChatActivity(panelId, activity)),
+      client.onChatChanges((panelId, totals, generation) => this.chatReviews.chatChanged(panelId, totals, generation)),
+      client.onTurnSettled((panelId, outcome) => {
         const panel = this.panelOfCore(panelId);
         if (panel) this.chatsChanged(this.projectOf(panel));
         this.notificationCenter.turnSettled(panelId, outcome);
         this.scheduleRetention();
       }),
-      panelManager.onUsageThreshold((crossing) => this.notificationCenter.usageThreshold(crossing)),
-      core.provider.getSessionCatalog().onDidChange((change) => {
-        if (change.projectKey === undefined) this.catalogRows.clear();
-        else this.catalogRows.delete(change.projectKey);
-        this.chatsChanged(change.projectKey);
+      client.onUsageThreshold((crossing) => this.notificationCenter.usageThreshold(crossing)),
+      client.onCatalogChanged((projectKey) => {
+        if (projectKey === undefined) this.catalogRows.clear();
+        else this.catalogRows.delete(projectKey);
+        this.chatsChanged(projectKey);
         this.refreshSelectedCatalog();
       }),
+      // the user chose Open here on a lease refusal: the selection goes through the same path that was refused
+      client.onTakeover((sessionId) => {
+        if (this.views) this.selectChat(sessionId).catch(this.report('Opening a conversation here'));
+      }),
+      client.onWorktreeRecords((records) => this.worktreeRecords.apply(records)),
+      client.onNewChatInWorktree((projectPath, worktreeId) => {
+        this.newChatInWorktree({ projectKey: folderKey(projectPath), worktreeId }).catch(this.newChatInWorktreeFailure());
+      }),
+      client.onNewChatInProject((projectPath) => {
+        this.newChat(folderKey(projectPath)).catch(this.shellFailure('New Chat', 'Damocles could not open a new conversation: {0}'));
+      }),
+      this.requireScmClient().attach(client),
     ];
-    return {
-      provider: core.provider,
+    const hosted: DesktopCore = {
+      client,
+      pid: core.pid,
+      terminalToggleChanged: () => core.terminalToggleChanged(),
+      ready: core.ready,
+      isReady: () => core.isReady(),
+      hasEnded: () => core.hasEnded(),
       dispose: async () => {
+        this.overlaySettings?.coreEnded();
         await this.beforeCoreDispose();
         for (const subscription of subscriptions) subscription.dispose();
+        const views = this.views?.chats() ?? [];
+        this.keptPermissions.coreEnded(views.map((view) => view.panelId), (viewId) => client.chatOfView(viewId)?.permissions);
+        // A chat whose restore waits for a stale lease keeps that session as its restore target for the next core.
+        for (const chat of client.chats()) {
+          if (chat.restoring !== undefined) views.find((view) => view.panelId === chat.viewId)?.keepRestoreTarget(chat.restoring);
+        }
         await core.dispose();
       },
     };
+    return hosted;
+  }
+
+  // Core asks for a reload (lifecycle.reload, the chat's Reload after an extension change): bounded as crashes are, so a core
+  // cannot fork cores without end.
+  private coreRequestedReload(): Promise<void> {
+    const decision = restartDecision(this.coreReloads, performance.now());
+    this.coreReloads = decision.crashes;
+    if (!decision.restart) {
+      log(`[core] refused a reload core asked for: ${RESTART_LIMIT} in 5 minutes already`);
+      return Promise.reject(new Error('The Damocles engine asked to restart too often'));
+    }
+    return this.core.reload();
+  }
+
+  // Core's process ended without main asking: VS Code's extension host policy restarts it at most RESTART_LIMIT times in
+  // RESTART_WINDOW_MS, then leaves it down with a notice whose Restart starts it again (docs/invariants.md "Desktop host").
+  private coreCrashed(core: DesktopCore, pid: number | undefined, how: string): void {
+    // The quit stopped the host, which neither restarts nor halts the engine now.
+    const phase = this.lifecycle.phase;
+    if (phase === 'disposing' || phase === 'done') {
+      log(`[core] stopped unexpectedly (pid ${pid ?? 'unknown'}, ${how}) during the quit`);
+      return;
+    }
+    const decision = restartDecision(this.coreCrashes, performance.now());
+    this.coreCrashes = decision.crashes;
+    const { t } = this.requireLocalization();
+    if (decision.restart) {
+      log(`[core] stopped unexpectedly (pid ${pid ?? 'unknown'}, ${how}); restarting (${decision.count} of ${RESTART_LIMIT} in 5 minutes)`);
+      void this.notifications.info(t('The Damocles engine stopped unexpectedly and was restarted.'));
+      this.core.restart(core).catch(this.report('Restarting the engine'));
+      return;
+    }
+    log(`[core] stopped unexpectedly (pid ${pid ?? 'unknown'}, ${how}); not restarting after ${RESTART_LIMIT} restarts in 5 minutes`);
+    this.core.halt().catch(this.report('Stopping the engine'));
+    const restart = t('Restart');
+    this.haltNotice?.withdraw();
+    const notice = this.notificationCenter.stickyNotice('error', t('The Damocles engine stopped unexpectedly {0} times in 5 minutes, so it was not restarted.', RESTART_LIMIT + 1), [restart]);
+    this.haltNotice = notice;
+    notice.answer.then((choice) => {
+      if (choice === restart) this.restartEngine();
+    }, this.report('The engine notice'));
+  }
+
+  // Restart Engine and the halt notice's Restart: the crash count starts again, and a new core replaces the running or
+  // halted one.
+  private restartEngine(): void {
+    this.coreCrashes = [];
+    this.core.reload().catch(this.report('Restarting the engine'));
+  }
+
+  // The title bar's pill and the menu follow the halt; once the engine runs again the halt notice offers Restart no more.
+  private engineHaltChanged(): void {
+    if (!this.core.halted()) {
+      this.haltNotice?.withdraw();
+      this.haltNotice = undefined;
+    }
+    this.shellStateChanged();
+  }
+
+  // The view for a panel core creates: a chat core opens itself, or a browser page of a loaded chat.
+  private createCoreView(panelId: string, create: Omit<PanelCreate, 'owner'> & { readonly owner?: RelayView }): RelayView {
+    const { owner, ...rest } = create;
+    const options: PanelOptions = { ...rest, localResourceRoots: [...rest.localResourceRoots], ...(owner ? { owner } : {}) };
+    if (options.kind === 'chat') return this.openCoreChat(options, panelId);
+    return this.requireViews().create({ options, panelId });
   }
 
   private createWindow(): void {
@@ -1030,10 +1230,9 @@ class DesktopApp {
         spellcheck: false,
       },
     });
-    // The constructor sizes a frameless Windows window up to 4 DIP off its request at 150%; setContentSize sizes it exactly.
-    if (restored) window.setContentSize(restored.width, restored.height);
-    const read = normalBoundsOf(window);
-    const tracker: WindowBoundsTracker = { applied: restored && { bounds: restored, read }, normal: read };
+    const tracker: WindowBoundsTracker = { applied: undefined, normal: bounds };
+    sizeExactly(window, bounds, tracker);
+    this.windowBounds = tracker;
     const trackNormal = (): void => refreshNormalBounds(window, tracker);
     window.on('resize', trackNormal);
     window.on('move', trackNormal);
@@ -1087,7 +1286,7 @@ class DesktopApp {
       setPages: (chatPanelId, pages) => this.states.setPages(chatPanelId, pages),
       retainingStates: () => views.retainingStates,
       browserEnabled: () => this.browserEnabled(),
-      newPage: (chat) => this.core.run('New Browser Page', (core) => core.provider.getBrowserService().openNewPageForChat(chat)),
+      newPage: (chat) => this.core.run('New Browser Page', (core) => core.client.newBrowserPage(chat.panelId)),
       openExternal: (url) => this.requirePlatform().shell.openExternal(url),
       openExternalFailed: () => void this.notifications.error(this.requireLocalization().t('Damocles could not open the page in the system browser.')),
       copy: (text) => this.requirePlatform().clipboard.writeText(text),
@@ -1114,7 +1313,7 @@ class DesktopApp {
     const overlaySettings = new OverlaySettings({
       overlay,
       settings: this.requirePlatform().settings,
-      panelManager: () => this.core.current()?.provider.getPanelManager(),
+      core: () => this.client(),
       targetPanel: () => this.settingsTarget(),
       focused: () => webContents.getFocusedWebContents() ?? undefined,
       relaunch: () => {
@@ -1263,7 +1462,7 @@ class DesktopApp {
     return this.core.run('Settings', async (core) => {
       const selected = this.views?.selected();
       if (selected) return (await this.restoredCorePanel(selected)).corePanelId;
-      return (await core.provider.getPanelManager().promptTarget(undefined))?.panelId;
+      return core.client.promptTarget();
     });
   }
 
@@ -1275,7 +1474,9 @@ class DesktopApp {
     if (window && !window.isDestroyed()) {
       if (window.isFullScreen()) window.setFullScreen(false);
       if (window.isMaximized()) window.unmaximize();
-      window.setBounds(defaultWindowBounds(screen.getDisplayMatching(window.getBounds()).workArea));
+      const bounds = defaultWindowBounds(screen.getDisplayMatching(window.getBounds()).workArea);
+      window.setBounds(bounds);
+      if (this.windowBounds) sizeExactly(window, bounds, this.windowBounds);
     }
     this.terminals?.setListWidth(TERMINAL_LIST_DEFAULT_REM);
     this.shellStateChanged();
@@ -1321,12 +1522,14 @@ class DesktopApp {
     }, this.report('Reporting a crashed window'));
   }
 
-  // A second launch, a tray click or a macOS dock click: focus the window, or reopen it with its chats when it was closed.
+  // A second launch, a tray click or a macOS dock click: focus the window, or reopen it with its chats when it was closed,
+  // which needs a running engine.
   private showWindow(): void {
     // A quit past its last question has closed the window for good.
     const phase = this.lifecycle.phase;
-    if (phase === 'disposing' || phase === 'done' || !this.core.current()) return;
+    if (phase === 'disposing' || phase === 'done') return;
     if (!this.window) {
+      if (!this.core.current()) return;
       this.createWindow();
       this.core.openTabs().catch(this.report('Reopening chats'));
       return;
@@ -1346,13 +1549,15 @@ class DesktopApp {
   // Every saved chat loads again; the saved selection, else a saved chat of the saved project, else the first, is shown
   // before any of them loads. With none saved, the saved (else default) project gets a new chat. The shown chat takes
   // keyboard focus once its page is ready, unless the user acted first; a reopened window and a host reload do the same.
-  // Only CoreHost calls this, so a reload never disposes the core it reopens the chats into.
-  private async openInitialChats(): Promise<void> {
+  // Only CoreHost calls this, so a reload never disposes the core it reopens the chats into; it runs only once that core is
+  // ready (openTabsAtLaunch, the reload path), and creates the views before its first await, so a request a reload held
+  // finds them. After a restart each chat gets the permissions the ended core published for it.
+  private async openInitialChats(afterRestart: boolean): Promise<void> {
     const core = this.requireCore();
     const views = this.requireViews();
+    const kept = this.keptPermissions.reopening(afterRestart);
     const persisted = this.states.list();
     const selection = this.states.selected();
-    const registry = core.provider.getFolderRegistry();
     const savedProject = selection && this.isKnownProject(selection.projectKey, core) ? selection.projectKey : undefined;
     if (persisted.length === 0) {
       await this.newChatIn(core, this.restoreAtLaunch ? savedProject : undefined, { focus: 'whenReady' });
@@ -1360,7 +1565,7 @@ class DesktopApp {
     }
     const restored = persisted.map((saved) => {
       const host = views.create({ options: CHAT_PANEL, restore: { panelId: saved.panelId, state: saved.state } });
-      this.trackChat(host, restoredWorkspaceFolderKey(saved.state) ?? registry.defaultTarget().key);
+      this.trackChat(host, host.savedFolderKey ?? this.defaultProjectKey(core));
       // A chat whose saved pages are on their way back is active, so retention keeps it until they arrive.
       if (saved.browser.pages.length > 0) this.browserTabs?.setRestoring(host, true);
       if (saved.heldPrompt) this.heldPrompts.restoring(saved.panelId);
@@ -1377,7 +1582,7 @@ class DesktopApp {
     let previous: Promise<void> = Promise.resolve();
     for (const { host, saved } of ordered) {
       const restore = previous.then(async () => {
-        await this.restoreInCore(core, host, restoredWorkspaceFolderKey(saved.state));
+        await this.restoreInCore(core, host, host.savedFolderKey, kept.get(saved.panelId));
         this.restorePages(core, host, saved.browser.pages, saved.browser.activePage);
         this.restoreHeldPrompt(core, host, saved.heldPrompt);
       });
@@ -1388,11 +1593,11 @@ class DesktopApp {
     this.scheduleRetention();
   }
 
-  private async restoreInCore(core: DesktopCore, chat: DesktopPanel, folderKey: string | undefined): Promise<void> {
+  private async restoreInCore(core: DesktopCore, chat: DesktopPanel, folderKey: string | undefined, permissions?: ChatPermissions): Promise<void> {
     await this.beforeChatRestore();
     // A chat closed meanwhile (dropped while an earlier one loaded, or by the quit) is gone; setting up a session for it would leak one.
     if (chat.isDisposed) return;
-    await core.provider.restorePanel(chat, folderKey);
+    await core.client.restoreChat(chat, folderKey, permissions);
   }
 
   // Every chat main creates outside openInitialChats is restored here, so a request for it can wait until core registered it.
@@ -1414,7 +1619,7 @@ class DesktopApp {
   private restoreHeldPrompt(core: DesktopCore, chat: DesktopPanel, held: readonly UserContentBlock[] | undefined): void {
     const corePanelId = this.corePanelIdOf(chat);
     if (!held || corePanelId === undefined) return;
-    core.provider.getPanelManager().restoreDraft(corePanelId, [...held]).then(
+    core.client.restoreDraft(corePanelId, held).then(
       () => this.heldPrompts.restored(chat.panelId),
       this.report('Putting a held prompt back in its composer'),
     );
@@ -1426,7 +1631,8 @@ class DesktopApp {
     // A chat the quit closed while core restored it has no tabs left to restore into.
     if (urls.length === 0 || chat.isDisposed) return;
     const browserTabs = this.browserTabs;
-    core.provider.getBrowserService().restoreChatPages(chat, urls, activePage)
+    if (this.e2ePageRestores) this.e2ePageRestores.count += 1;
+    core.client.restorePages(chat.panelId, urls, activePage)
       .catch(this.report('Restoring browser pages'))
       .finally(() => browserTabs?.setRestoring(chat, false));
   }
@@ -1439,13 +1645,13 @@ class DesktopApp {
 
   // A chat core opens itself (Open Chat, a fork, a dialog with no chat loaded) lands in the selected project,
   // which core uses as its default folder.
-  private openCoreChat(options: PanelOptions): DesktopPanel {
+  private openCoreChat(options: PanelOptions, panelId: string): DesktopPanel {
     const core = this.requireCore();
     const views = this.requireViews();
-    const host = views.create({ options });
-    this.trackChat(host, this.selectedProjectKey ?? core.provider.getFolderRegistry().defaultTarget().key);
+    const host = views.create({ options, panelId });
+    this.trackChat(host, this.selectedProjectKey ?? this.defaultProjectKey(core));
     // Core sets the chat up once this returns; a mention or Add to Chat waits for that as for a chat main restores.
-    this.chatRestores.set(host, this.beforeChatRestore().then(() => core.provider.getPanelManager().whenSetUp(host)));
+    this.chatRestores.set(host, this.beforeChatRestore().then(() => core.client.whenSetUp(host.panelId)));
     this.showChat(host, { focus: true });
     return host;
   }
@@ -1457,7 +1663,7 @@ class DesktopApp {
 
   private async newChatIn(core: DesktopCore, projectKey: string | undefined, options: { readonly focus: ShowFocus } = { focus: true }, worktree?: NewChatWorktree): Promise<void> {
     const views = this.requireViews();
-    const key = projectKey ?? this.selectedProjectKey ?? core.provider.getFolderRegistry().defaultTarget().key;
+    const key = projectKey ?? this.selectedProjectKey ?? this.defaultProjectKey(core);
     if (!this.isKnownProject(key, core)) throw new Error(this.requireLocalization().t('The project is no longer in the project list.'));
     if (worktree && !(await this.requireWorktrees().checkOptIn(this.projectByKey(key), worktree.startRef, worktree.bringChanges))) {
       throw new Error(this.requireLocalization().t('The worktree options changed. Open the New menu again.'));
@@ -1476,7 +1682,7 @@ class DesktopApp {
       await this.restoreChat(core, host, key);
       const corePanelId = this.corePanelIdOf(host);
       if (corePanelId === undefined) throw new Error(this.requireLocalization().t('The chat closed before it could use a worktree.'));
-      await core.provider.getPanelManager().setWorktreeOptIn(corePanelId, { startRef: worktree.startRef, bringChanges: worktree.bringChanges });
+      await core.client.setWorktreeOptIn(corePanelId, worktree.startRef, worktree.bringChanges);
     } catch (err) {
       if (!host.isDisposed) host.close();
       throw err;
@@ -1492,14 +1698,14 @@ class DesktopApp {
       const { t } = this.requireLocalization();
       const request = target ?? this.menuState().newChatInWorktree;
       if (!request) throw new Error(t('The selected chat does not work in a worktree.'));
-      const live = this.newChatInTarget(this.worktreeRegistry?.get(request.worktreeId));
+      const live = this.newChatInTarget(this.worktreeRecords.get(request.worktreeId));
       if (live?.projectKey !== request.projectKey) throw new Error(t('The worktree is no longer a worktree of this project.'));
       const host = this.requireViews().create({ options: CHAT_PANEL });
       this.trackChat(host, request.projectKey);
       this.openingInWorktree.add(host);
       const started = this.beforeChatRestore().then(async () => {
         if (host.isDisposed) throw new Error(t('The chat closed before it could use a worktree.'));
-        await core.provider.startInWorktree(host, request.projectKey, request.worktreeId);
+        await core.client.startInWorktree(host, request.projectKey, request.worktreeId);
       });
       this.chatRestores.set(host, started);
       try {
@@ -1561,39 +1767,44 @@ class DesktopApp {
   // A project of the list, or the folder chats open in while the list is empty.
   private isKnownProject(key: string, core: DesktopCore): boolean {
     if (this.projects.folders().some((folder) => folderKey(folder.fsPath) === key)) return true;
-    return core.provider.getFolderRegistry().defaultTarget().key === key;
+    return core.client.defaultTarget()?.key === key;
   }
 
-  private chatInstances(): Map<unknown, HostInstance> {
-    const panels = this.core.current()?.provider.getPanelManager().getPanels();
-    return new Map([...(panels?.values() ?? [])].map((instance) => [instance.host, instance]));
+  // The folder chats open in when none is named; core publishes its folder targets as it starts.
+  private defaultProjectKey(core: DesktopCore): string {
+    const key = core.client.defaultTarget()?.key;
+    if (key === undefined) throw new Error('Damocles Core has not reported its folders yet');
+    return key;
   }
 
+  // The chat's core panel id once core registered it.
   private corePanelIdOf(panel: DesktopPanel): string | undefined {
-    for (const [panelId, instance] of this.core.current()?.provider.getPanelManager().getPanels() ?? []) {
-      if (instance.host === panel) return panelId;
-    }
-    return undefined;
+    return this.client()?.chatOfView(panel.panelId)?.panelId;
   }
 
   private panelOfCore(corePanelId: string): DesktopPanel | undefined {
-    const host = this.core.current()?.provider.getPanelManager().getPanels().get(corePanelId)?.host;
-    return this.views?.chats().find((chat) => chat === host);
+    const viewId = this.client()?.chat(corePanelId)?.viewId;
+    return viewId === undefined ? undefined : this.views?.chats().find((chat) => chat.panelId === viewId);
   }
 
   private boundSessionIdOf(panel: DesktopPanel): string | undefined {
-    const corePanelId = this.corePanelIdOf(panel);
-    return corePanelId === undefined ? undefined : this.core.current()?.provider.getPanelManager().sessionIdOf(corePanelId);
+    return this.client()?.chatOfView(panel.panelId)?.sessionId;
   }
 
-  // The chat's stored session: the one core bound, else, while it restores, the one its saved state names.
+  // The session a restore its lease refused opens once the lease turns stale (a crashed core's, after a restart).
+  private restoreRetryOf(panel: DesktopPanel): string | undefined {
+    return this.client()?.chatOfView(panel.panelId)?.restoring;
+  }
+
+  // The chat's stored session: the one core bound, else, while it restores, the one a lease retry or its saved state names.
   private sessionIdOf(panel: DesktopPanel): string | undefined {
-    return this.boundSessionIdOf(panel) ?? panel.savedSessionId;
+    return this.boundSessionIdOf(panel) ?? this.restoreRetryOf(panel) ?? panel.savedSessionId;
   }
 
-  // Core binds a restored chat's saved session only in its webview's `ready`, well after it registers the chat.
+  // Core binds a restored chat's saved session only in its webview's `ready`, well after it registers the chat, and a
+  // refused restore only once its retry runs.
   private isRestoring(panel: DesktopPanel): boolean {
-    return this.boundSessionIdOf(panel) === undefined && panel.savedSessionId !== undefined;
+    return this.boundSessionIdOf(panel) === undefined && (this.restoreRetryOf(panel) !== undefined || panel.savedSessionId !== undefined);
   }
 
   private activityOf(panel: DesktopPanel): ChatActivity | undefined {
@@ -1603,9 +1814,9 @@ class DesktopApp {
 
   // A chat core has registered that has no conversation and no session file, bound or being restored.
   private isEmpty(panel: DesktopPanel): boolean {
-    const corePanelId = this.corePanelIdOf(panel);
-    if (corePanelId === undefined) return false;
-    return !this.requireCore().provider.getPanelManager().hasConversation(corePanelId) && this.sessionIdOf(panel) === undefined;
+    const chat = this.client()?.chatOfView(panel.panelId);
+    if (!chat) return false;
+    return !chat.hasConversation && this.sessionIdOf(panel) === undefined;
   }
 
   private chatIdOf(panel: DesktopPanel): string {
@@ -1614,11 +1825,11 @@ class DesktopApp {
 
   // A chat whose folder left the project list is the default target's: core sets it up or moves it there (PanelManager.setUpHost, movePanelOffRemovedFolders).
   private projectOf(panel: DesktopPanel): string | undefined {
-    const key = this.chatInstances().get(panel)?.folder.key ?? this.openedInProject.get(panel);
-    const registry = this.core.current()?.provider.getFolderRegistry();
-    if (key === undefined || !registry) return key;
+    const client = this.client();
+    const key = client?.chatOfView(panel.panelId)?.folder.key ?? this.openedInProject.get(panel);
+    if (key === undefined || !client) return key;
     // a chat working in its worktree belongs to the worktree's project (AD12)
-    return registry.projectOf(key)?.key ?? registry.defaultTarget().key;
+    return client.projectOf(key)?.key ?? client.defaultTarget()?.key;
   }
 
   private loadedChat(chatId: string): DesktopPanel | undefined {
@@ -1634,16 +1845,19 @@ class DesktopApp {
   // The stored session with this id in the project's catalog, else in any other project's.
   private async storedChat(core: DesktopCore, sessionId: string): Promise<{ readonly session: StoredSession; readonly projectKey: string } | undefined> {
     const keys = [...new Set([this.selectedProjectKey, ...this.projects.folders().map((folder) => folderKey(folder.fsPath))])];
-    for (const key of keys) {
-      if (key === undefined) continue;
-      const session = (await this.catalogList(core, key)).find((row) => row.id === sessionId);
-      if (session) return { session, projectKey: key };
+    // The shown lists first, which hold a clicked row; only a miss waits for the rows still being parsed.
+    for (const read of [(key: string) => core.client.listSessions(key), (key: string) => core.client.listSessions(key, true)]) {
+      for (const key of keys) {
+        if (key === undefined) continue;
+        const session = (await read(key)).find((row) => row.id === sessionId);
+        if (session) return { session, projectKey: key };
+      }
     }
     return undefined;
   }
 
   private async catalogList(core: DesktopCore, projectKey: string): Promise<readonly StoredSession[]> {
-    const rows = await core.provider.getSessionCatalog().list(projectKey);
+    const rows = await core.client.listSessions(projectKey);
     this.catalogRows.set(projectKey, rows);
     return rows;
   }
@@ -1651,7 +1865,7 @@ class DesktopApp {
   private refreshSelectedCatalog(): void {
     const key = this.selectedProjectKey;
     if (key === undefined || this.catalogRows.has(key) || !this.core.current()) return;
-    this.core.run('Read Chat List', (core) => this.catalogList(core, key)).then(() => this.shellStateChanged(), this.report('Reading the chat list'));
+    this.core.read('Read Chat List', (core) => this.catalogList(core, key)).then(() => this.shellStateChanged(), this.report('Reading the chat list'));
   }
 
   private showChat(panel: DesktopPanel, options: { readonly focus: ShowFocus }): void {
@@ -1676,9 +1890,9 @@ class DesktopApp {
     this.lastChatByProject.set(projectKey, this.chatIdOf(panel));
     const sessionId = this.sessionIdOf(panel);
     this.states.select({ projectKey, panelId: panel.panelId, ...(sessionId !== undefined ? { sessionId } : {}) });
-    const registry = this.core.current()?.provider.getFolderRegistry();
-    if (projectChanged && registry && registry.defaultTarget().key !== projectKey) {
-      registry.setDefault(projectKey).catch(this.report('Following the selected project'));
+    const client = this.client();
+    if (projectChanged && client && client.defaultTarget()?.key !== projectKey) {
+      client.setDefaultFolder(projectKey).catch(this.report('Following the selected project'));
     }
     this.refreshSelectedCatalog();
     this.shownFolders.refresh();
@@ -1707,20 +1921,8 @@ class DesktopApp {
       }
       const stored = await this.storedChat(core, chatId);
       if (!stored) return this.missingChat();
-      // Another Damocles process holds the conversation: the selection stays where it is.
-      const refusal = leaseRefusalFor(chatId);
-      if (refusal) {
-        announceLeaseRefusal(this.notifications, refusal, {
-          takeover: {
-            sessionId: chatId,
-            canOpen: () => this.views !== undefined,
-            open: async () => {
-              await this.selectChat(chatId);
-            },
-          },
-        });
-        return { ok: false, reason: 'leased' };
-      }
+      // Another Damocles process holds the conversation: the selection stays where it is, and core offers a takeover.
+      if (await core.client.leaseRefused(chatId, true)) return { ok: false, reason: 'leased' };
       const views = this.requireViews();
       const host = views.create({ options: CHAT_PANEL, restore: { panelId: randomUUID(), state: { sessionId: chatId, workspaceFolderKey: stored.projectKey } } });
       this.trackChat(host, stored.projectKey);
@@ -1775,7 +1977,7 @@ class DesktopApp {
 
   // undefined: projectKey is not a project of the list
   private listChats(projectKey: string): Promise<ShellChatList | undefined> {
-    return this.core.run('List Chats', async (core) => (this.isKnownProject(projectKey, core) ? this.listChatsIn(core, projectKey) : undefined));
+    return this.core.read('List Chats', async (core) => (this.isKnownProject(projectKey, core) ? this.listChatsIn(core, projectKey) : undefined));
   }
 
   private async listChatsIn(core: DesktopCore, projectKey: string): Promise<ShellChatList> {
@@ -1784,10 +1986,10 @@ class DesktopApp {
   }
 
   private searchChats(projectKey: string, query: string): Promise<ShellChatList | undefined> {
-    return this.core.run('Search Chats', async (core) => {
+    return this.core.read('Search Chats', async (core) => {
       if (!this.isKnownProject(projectKey, core)) return undefined;
       if (query.trim() === '') return this.listChatsIn(core, projectKey);
-      return this.chatList(projectKey, await core.provider.getSessionCatalog().search(projectKey, query), false);
+      return this.chatList(projectKey, await core.client.searchSessions(projectKey, query), false);
     });
   }
 
@@ -1835,8 +2037,7 @@ class DesktopApp {
 
   // A Chats row's worktree badge and read-only state (AD12 Listing).
   private rowWorktree(chat: DesktopPanel | undefined, row: StoredSession | undefined): Pick<ShellChat, 'worktree' | 'readOnly'> {
-    const registry = this.worktreeRegistry;
-    if (!registry) return { readOnly: false };
+    const registry = this.worktreeRecords;
     const event = chat ? this.worktreeEventOf(chat) : undefined;
     const found = chatRowWorktree(
       {
@@ -1868,12 +2069,12 @@ class DesktopApp {
 
   private async renameChat(chatId: string, name: string): Promise<ChatMutationResult> {
     if (chatId.startsWith(NEW_CHAT_ID_PREFIX)) return this.loadedChat(chatId) ? this.unwrittenChat() : this.missingChat();
-    return this.core.run('Rename Chat', (core) => this.chatWork.run(chatId, async () => this.mutationResult(await core.provider.getSessionCatalog().rename(chatId, name), 'rename')));
+    return this.core.run('Rename Chat', (core) => this.chatWork.run(chatId, async () => this.mutationResult(await core.client.renameSession(chatId, name), 'rename')));
   }
 
   private async tagChat(chatId: string, tag: string | null): Promise<ChatMutationResult> {
     if (chatId.startsWith(NEW_CHAT_ID_PREFIX)) return this.loadedChat(chatId) ? this.unwrittenChat() : this.missingChat();
-    return this.core.run('Tag Chat', (core) => this.chatWork.run(chatId, async () => this.mutationResult(await core.provider.getSessionCatalog().tag(chatId, tag), 'tag')));
+    return this.core.run('Tag Chat', (core) => this.chatWork.run(chatId, async () => this.mutationResult(await core.client.tagSession(chatId, tag), 'tag')));
   }
 
   // Core deletes lease first and detaches every holder; the detached chat then unloads like any other.
@@ -1887,7 +2088,7 @@ class DesktopApp {
     const deleted = await this.core.run('Delete Chat', (core) => this.chatWork.run(chatId, async () => {
       const holder = this.loadedChat(chatId);
       const worktreeId = (holder ? this.worktreeEventOf(holder)?.worktreeId : undefined) ?? (await this.storedChat(core, chatId))?.session.worktree?.worktreeId;
-      const result = this.mutationResult(await core.provider.getSessionCatalog().delete(chatId), 'delete');
+      const result = this.mutationResult(await core.client.deleteSession(chatId), 'delete');
       if (result.ok && holder && !holder.isDisposed) {
         const corePanelId = this.corePanelIdOf(holder);
         if (corePanelId !== undefined) this.worktreeStates.delete(corePanelId);
@@ -1907,7 +2108,8 @@ class DesktopApp {
     const views = this.views;
     if (this.closingForWorktree.has(panel)) return;
     if (!views || views.retainingStates || this.lifecycle.phase !== 'running' || views.selected() !== undefined) return;
-    this.selectProject(projectKey ?? this.requireCore().provider.getFolderRegistry().defaultTarget().key).catch(this.report('Selecting a chat after a close'));
+    const key = projectKey ?? this.client()?.defaultTarget()?.key;
+    if (key !== undefined) this.selectProject(key).catch(this.report('Selecting a chat after a close'));
   }
 
   private onChatActivity(corePanelId: string, activity: ChatActivity): void {
@@ -1948,10 +2150,10 @@ class DesktopApp {
   private applyRetention(): void {
     const views = this.views;
     if (!views || !this.core.current() || views.retainingStates || this.lifecycle.phase !== 'running') return;
-    const panels = this.requireCore().provider.getPanelManager().getPanels();
-    for (const corePanelId of [...this.worktreeStates.keys()]) if (!panels.has(corePanelId)) this.worktreeStates.delete(corePanelId);
+    const client = this.requireCore().client;
+    for (const corePanelId of [...this.worktreeStates.keys()]) if (!client.chat(corePanelId)) this.worktreeStates.delete(corePanelId);
     for (const corePanelId of [...this.activity.keys()]) {
-      if (panels.has(corePanelId)) continue;
+      if (client.chat(corePanelId)) continue;
       this.activity.delete(corePanelId);
       this.notificationCenter.panelClosed(corePanelId);
       void this.chatReviews.panelClosed(corePanelId).catch(this.report('Closing a chat review'));
@@ -1961,8 +2163,9 @@ class DesktopApp {
       if (!chat) continue;
       this.chatWork.run(this.chatIdOf(chat), async () => {
         if (chat.isDisposed || !this.chatsToUnload().includes(chat.panelId)) return;
+        // core closes it only while it is still idle and, unloaded as empty, still empty
         log(`[chats] unloading chat ${chat.panelId}`);
-        chat.close();
+        if (!(await client.unload(chat.panelId, this.isEmpty(chat)))) log(`[chats] core kept chat ${chat.panelId} loaded`);
       }).catch(this.report('Unloading a chat'));
     }
   }
@@ -2034,20 +2237,18 @@ class DesktopApp {
     }
   }
 
-  // D33's busy rule over the project's loaded chats, those working in its owned folders (worktrees) included.
-  private projectBusy(projectKey: string): boolean {
-    for (const [corePanelId, instance] of this.core.current()?.provider.getPanelManager().getPanels() ?? []) {
-      if ((instance.folder.ownerKey ?? instance.folder.key) !== projectKey) continue;
-      if (instance.session.processing || isActiveActivity(this.activity.get(corePanelId))) return true;
-    }
-    return false;
+  // D33's busy rule over the project's loaded chats, those working in its owned folders (worktrees) included. A halted
+  // engine runs nothing; a restart or reload under way still answers from the core it starts.
+  private projectBusy(projectKey: string): Promise<boolean> {
+    if (this.core.halted()) return Promise.resolve(false);
+    return this.core.run('Project Busy', (core) => core.client.projectBusy(projectKey));
   }
 
   // The loaded chats of the project, its worktrees' included, that hold their first prompt for their worktree (rule 6).
   private waitingChats(projectKey: string): WaitingChat[] {
-    const panelManager = this.core.current()?.provider.getPanelManager();
-    return [...panelManager?.getPanels() ?? []].flatMap(([corePanelId, instance]): WaitingChat[] => {
-      const prompt = (instance.folder.ownerKey ?? instance.folder.key) === projectKey ? panelManager?.heldPrompt(corePanelId) : undefined;
+    return (this.client()?.chats() ?? []).flatMap((chat): WaitingChat[] => {
+      const corePanelId = chat.panelId;
+      const prompt = (chat.folder.ownerKey ?? chat.folder.key) === projectKey ? chat.heldPrompt as UserContentBlock[] | undefined : undefined;
       if (prompt === undefined) return [];
       const panel = this.panelOfCore(corePanelId);
       const worktreeId = this.worktreeStates.get(corePanelId)?.worktreeId;
@@ -2057,11 +2258,11 @@ class DesktopApp {
 
   // Each chat closes, as Delete closes one, which drops its hold and panels.json entry; core discards its unused worktree.
   private async discardWaitingChats(chats: readonly WaitingChat[]): Promise<void> {
-    const panelManager = this.requireCore().provider.getPanelManager();
+    const client = this.requireCore().client;
     await Promise.all(chats.map((chat) => {
       const panel = this.panelOfCore(chat.corePanelId);
       if (panel && !panel.isDisposed) panel.close();
-      return panelManager.whenWorktreeDiscarded(chat.corePanelId);
+      return client.whenWorktreeDiscarded(chat.corePanelId);
     }));
   }
 
@@ -2120,6 +2321,7 @@ class DesktopApp {
       ),
       openAppMenu: (anchor) => popupApplicationMenu(window, anchor),
       toggleTheme: () => { this.toggleTheme().catch(this.shellFailure('Toggle Theme', 'Damocles could not change the theme: {0}')); },
+      restartEngine: () => this.restartEngine(),
       toggleSidebar: () => this.toggleSidebar(),
       showSidebar: () => this.showSidebar(),
       windowControl: (control) => {
@@ -2308,7 +2510,10 @@ class DesktopApp {
       allowTerminalPaste: () => this.terminalPaste.allow('clipboard'),
       log: (line) => log(line),
     });
-    if (answer.kind === 'notifications') this.notificationCenter.open(answer.entryId);
+    if (answer.kind === 'notifications') {
+      if (answer.action === 'open') this.notificationCenter.open(answer.entryId);
+      else this.notificationCenter.answer(answer.entryId, answer.label);
+    }
     if (answer.kind === 'dropZones' && request.kind === 'dropZones' && answer.slot !== null) this.layoutMove(request.pane, answer.slot);
     return answer;
   }
@@ -2467,9 +2672,8 @@ class DesktopApp {
       lineDelimiter: process.platform === 'win32' ? '\r\n' : '\n',
     });
     documents.onDidChangeText((change) => search.documentChanged(change.documentId));
-    // Source control (AD4). The Git log records argv, duration and exit code, redacted as it is written; Show Git Output
-    // opens it as a log tab (D36).
-    const gitLog = this.logSinks.create('Git');
+    // Source control (AD4) runs in Damocles Core, which writes the Git log (argv, duration and exit code, redacted as it is
+    // written); Show Git Output opens it as a log tab (D36).
     const git = this.gitProbe;
     const askInput = createInputAsker({
       overlay: () => this.overlay,
@@ -2477,26 +2681,15 @@ class DesktopApp {
       unavailable: () => void platform.notifications.error(t('The text box could not be shown, so nothing was changed. Try again.')),
       log: report,
     });
-    const askpass = createAskpassServer({ paths: askpassPaths(platform.paths, process.execPath), prompt: createAskpassBridge({ ask: this.ask, askInput, t }), log: (line) => gitLog.appendLine(line) });
-    this.askpass = askpass;
-    const gitRunner = git.available ? createGitRunner({ git: { path: git.path, version: git.version }, log: gitLog, isTrusted: (project) => platform.trust.isTrusted(project) }) : undefined;
-    this.gitRunner = gitRunner;
-    const scmService = new ScmService({
-      runner: gitRunner,
-      askpass,
-      trust: platform.trust,
-      watchers: platform.fileWatchers,
-      settings: platform.settings,
-      globalState: this.state.global,
-      ask: this.ask,
-      notify: (message, ...actions) => platform.notifications.info(message, ...actions),
-      trash: (absolutePath) => this.trashEntry(absolutePath),
-      t,
+    this.askCredential = createAskpassBridge({ ask: this.ask, askInput, t });
+    const scmClient = createScmClient({
+      core: (label, work) => this.core.run(label, (core) => work(core.client)),
+      gitVersion: git.available ? git.version : undefined,
       log: report,
     });
-    const commitMessageCompletion = backgroundCompletion(() => PiRuntime.unlessRetired(), (key) => platform.secrets.get(key), report);
+    this.scmClient = scmClient;
     const scm = new ScmHost({
-      service: scmService,
+      service: scmClient,
       settings: platform.settings,
       documents,
       projects: () => this.scmRoots(),
@@ -2505,7 +2698,7 @@ class DesktopApp {
       selection: { get: (projectKey) => this.windowLayout.scmSelected(projectKey), set: (projectKey, root) => this.windowLayout.setScmSelected(projectKey, root) },
       notify: platform.notifications,
       t,
-      showGitLog: () => gitLog.show(false),
+      showGitLog: () => this.openLogTab(path.join(this.logsDir, logFileName('Git')), false),
       copy: (text) => platform.clipboard.writeText(text),
       reveal: (absolutePath) => platform.shell.revealPath(absolutePath),
       openExternal: async (url) => {
@@ -2527,7 +2720,6 @@ class DesktopApp {
       askInput,
       mention: (target) => this.mentionInSelectedChat(target),
       addToChat: (projectKey, attachment, prompt) => this.addAttachmentToChat(projectKey, attachment, t('The chat could not be loaded, so the commit was not added to it.'), prompt),
-      complete: commitMessageCompletion,
       send: {
         view: (view) => this.shell?.scmView(view),
         state: (snapshot) => this.shell?.scmState(snapshot),
@@ -2541,24 +2733,12 @@ class DesktopApp {
       },
       menuChanged: () => this.refreshMenuState(),
       log: report,
-      gitLog: (line) => gitLog.appendLine(line),
       platform: process.platform,
     });
     this.scm = scm;
-    this.disposables.push(scmService.onDidChange((event) => {
-      if (event.kind === 'view') {
-        const project = this.projects.folders().find((folder) => folderKey(folder.fsPath) === event.projectKey);
-        if (project) this.projectRepositoryChanged.fire(project.fsPath);
-        return;
-      }
-      if (event.kind !== 'artifacts' || !event.groups.includes('branches')) return;
-      // by project path, as listed: a repository root is its realpath, which an 8.3 or linked project path never equals
-      const repository = scmService.repository(event.repoId);
-      if (repository !== undefined) this.refsChanged.fire(repository.projectPath);
-    }));
+    // the list each core receives as it attaches (ScmClient)
     scm.setProjects(this.scmRoots());
-    // Disposed in reverse, so the Git log outlives everything that writes to it; the quit closes the askpass server (closeServers).
-    this.disposables.push(gitLog, scm, scmService);
+    this.disposables.push(scm, scmClient);
 
     this.palette = new CommandPalette({
       commands: () => desktopCommands(this.projects.folders(), this.menuActions(), process.platform),
@@ -2576,14 +2756,31 @@ class DesktopApp {
     this.editorPane = editorPane;
     // Playwright drives the agent's side of EditorService (openFile, showDiff without approvalId), raises host prompts and modal
     // questions, stores their answers as secrets, routes the browser's requests and makes Files' trash or permanent delete fail
-    // through this, in the unpackaged app only.
-    if (!app.isPackaged && process.env['DAMOCLES_E2E_HOOKS'] === '1') {
+    // through this, in the unpackaged app only. What reaches the engine goes through core's e2e.* requests.
+    if (E2E_HOOKS) {
       const hooks = {
         editor: platform.editor,
-        dialogs: platform.dialogs,
+        dialogs: { inputBox: (options: InputBoxOptions) => this.requireCore().client.e2eInputBox(options) },
+        // core's capabilities read this platform until the next core starts; null restores the real one, which is returned
+        setCorePlatform: (next: NodeJS.Platform | null) => this.core.run('e2e', (core) => core.client.e2eSetPlatform(next)),
+        // core's renames to a file of this name wait delayMs from now on, and how many waited (core's writeJsonConfig)
+        slowCoreRenames: (basename: string, delayMs: number) => this.core.run('e2e', (core) => core.client.e2eSlowRenames(basename, delayMs)),
+        slowedCoreRenames: (basename: string) => this.core.run('e2e', (core) => core.client.e2eSlowedRenames(basename)),
+        // core's next core.shutdown never answers, so the quit's bound kills core
+        holdCoreShutdown: () => this.core.run('e2e', (core) => core.client.e2eHoldShutdown()),
         notifications: platform.notifications,
         secrets: platform.secrets,
-        browser: () => this.requireCore().provider.getBrowserService(),
+        // requests of the active page's browser context whose URL matches pattern load from toHost instead; routed lists them
+        browser: {
+          route: (pattern: string, toHost: string) => this.requireCore().client.e2eRouteBrowser(pattern, toHost),
+          routed: () => this.requireCore().client.e2eRoutedRequests(),
+        },
+        // counts the browser page restores main asks core for, from now on
+        countPageRestores: () => {
+          this.e2ePageRestores = { count: 0 };
+          return this.e2ePageRestores;
+        },
+        launchTabsOpened: () => this.launchTabs,
         failFiles: (failure: { readonly trash?: string; readonly remove?: string }) => {
           if (failure.trash !== undefined) this.trashEntry = () => Promise.reject(new Error(failure.trash));
           if (failure.remove !== undefined) this.removeEntry = () => Promise.reject(new Error(failure.remove));
@@ -2702,7 +2899,7 @@ class DesktopApp {
 
   // Search's folder: the selected project's shown folder (D31), resolved against main's own roots.
   private searchFolder(): SearchFolder | undefined {
-    const key = this.selectedProjectKey ?? this.core.current()?.provider.getFolderRegistry().defaultTarget().key;
+    const key = this.selectedProjectKey ?? this.client()?.defaultTarget()?.key;
     const root = key === undefined ? undefined : this.roots.resolve(this.shownFolders.rootKeyOf(key));
     return root ? { projectKey: root.key, fsPath: root.fsPath } : undefined;
   }
@@ -2719,21 +2916,19 @@ class DesktopApp {
 
   // The project list as Files, Quick Open and the editor confine to it: each key is folderKey(fsPath), as the shell names it.
   private desktopProjects(): readonly Project[] {
-    const registry = this.core.current()?.provider.getFolderRegistry();
+    const client = this.client();
     return this.projects.folders().map((folder) => {
       const key = folderKey(folder.fsPath);
-      return { key, fsPath: folder.fsPath, name: registry?.resolve(key)?.label ?? folder.name };
+      return { key, fsPath: folder.fsPath, name: client?.resolve(key)?.label ?? folder.name };
     });
   }
 
-  // The registry, trust's view of it, and the controller core reaches as Platform.worktrees; once per app run.
-  private startWorktrees(watchers: FileWatcherFactory): WorktreeHostServices {
-    const registry = new WorktreeRegistry({ rootDir: path.join(DAMOCLES_HOME_DIR, 'worktrees'), watcherFactory: watchers, log: (line) => log(line) });
-    this.worktreeRegistry = registry;
-    removeAbandonedTempFolders(os.tmpdir(), Date.now()).catch((err: unknown) => log(`[worktrees] could not look for abandoned temp folders: ${err instanceof Error ? err.message : String(err)}`));
+  // Trust's view of core's worktree records, and the controller whose UI core's worktree services reach; once per app run.
+  private startWorktrees(): WorktreeController {
+    const records = this.worktreeRecords;
     this.trust.setWorktrees({
-      projectOf: (folder) => registry.liveChatRecordAt(folder)?.projectPath,
-      workingFolders: (projectPath) => registry.liveChatRecords(projectPath).map((record) => record.workingFolder),
+      projectOf: (folder) => records.liveChatRecordAt(folder)?.projectPath,
+      workingFolders: (projectPath) => records.liveChatRecords(projectPath).map((record) => record.workingFolder),
     });
     const t = (message: string, ...args: Array<string | number>): string => this.requireLocalization().t(message, ...args);
     const report = (line: string): void => log(line);
@@ -2747,9 +2942,10 @@ class DesktopApp {
     });
     this.askWorktreeDialog = askDialog;
     const controller = new WorktreeController({
-      registry,
+      records,
+      engine: this.worktreeEngine,
       roots: this.roots,
-      git: () => this.gitRunner,
+      gitFound: this.gitProbe.available,
       branchPrefix: () => this.requirePlatform().settings.get<string>(SCM_SETTING_KEYS.branchPrefix, '') ?? '',
       isTrusted: (folder) => this.trust.isTrusted(folder),
       askDialog,
@@ -2762,23 +2958,17 @@ class DesktopApp {
         this.showTerminalPane();
         this.requireTerminals().runTask(request);
       },
-      retrySetup: (worktreeId) => this.core.run('Retry Setup', (core) => core.provider.getPanelManager().retrySetup(worktreeId)),
+      retrySetup: (worktreeId) => this.core.run('Retry Setup', (core) => core.client.retrySetup(worktreeId)),
       worktreeEnv: (record) => worktreeEnvironment(record),
       chatsUsing: (worktreeId) => [...this.worktreeStates.values()].filter((event) => event.worktreeId === worktreeId).map((event) => ({ panelId: event.panelId, busy: event.busy })),
       sessionsUsing: (worktreeId) => this.sessionsUsing(worktreeId),
-      leasedElsewhere: (sessionId) => leaseRefusalFor(sessionId) !== undefined,
+      leasedElsewhere: (sessionId) => this.core.run('Lease Check', (core) => core.client.leaseRefused(sessionId, false)),
       closeWorktree: (worktreeId, key, stop) => this.closeWorktreeRoot(worktreeId, key, stop),
       afterClose: (worktreeId, removed) => this.worktreeClosed(worktreeId, removed),
       showProjectFolder: (projectKey) => {
         this.shownFolders.show(projectKey, 'project');
       },
-      newChatInProject: (projectPath) => {
-        this.newChat(folderKey(projectPath)).catch(this.shellFailure('New Chat', 'Damocles could not open a new conversation: {0}'));
-      },
-      newChatInWorktree: (projectPath, worktreeId) => {
-        this.newChatInWorktree({ projectKey: folderKey(projectPath), worktreeId }).catch(this.newChatInWorktreeFailure());
-      },
-      beginFinish: (worktreeId, action) => this.requireCore().provider.getPanelManager().beginWorktreeFinish(worktreeId, action),
+      beginFinish: (worktreeId, action) => this.core.run(`Worktree ${action}`, (core) => core.client.beginWorktreeFinish(worktreeId, action, () => !core.isReady())),
       showTask: (key) => {
         const terminals = this.requireTerminals();
         const id = terminals.taskTerminal(key);
@@ -2792,9 +2982,6 @@ class DesktopApp {
         const id = terminals?.taskTerminal(key);
         if (terminals && id !== undefined) terminals.kill(id);
       },
-      onDidChangeRefs: (listener) => this.refsChanged.add(listener),
-      onDidChangeProjectRepository: (listener) => this.projectRepositoryChanged.add(listener),
-      projectRepository: (projectPath) => this.scm?.projectRepository(folderKey(projectPath)),
       projectRepositoryWhenReady: async (projectPath) => this.scm?.projectRepositoryWhenReady(folderKey(projectPath)),
       worktreeChats: (projectPath) => this.worktreeChats(folderKey(projectPath)),
       openConflicts: (folder, files, applyBranch) => this.openWorktreeConflicts(folder, files, applyBranch),
@@ -2810,13 +2997,13 @@ class DesktopApp {
       reveal: (absolutePath) => this.requirePlatform().shell.revealPath(absolutePath),
     });
     this.worktrees = controller;
-    this.disposables.push(registry, registry.onDidChange(() => this.worktreesChanged()));
-    return controller.hostServices();
+    this.disposables.push(records, records.onDidChange(() => this.worktreesChanged()));
+    return controller;
   }
 
   // What source control's worktree flows need of worktree chats (D58, B40, B45, rules 14 and 16).
   private scmWorktreeDeps(): ScmWorktreeDeps {
-    const liveChatAt = (worktreePath: string): ChatWorktreeRecord | undefined => this.worktreeRegistry?.records().find(
+    const liveChatAt = (worktreePath: string): ChatWorktreeRecord | undefined => this.worktreeRecords.records().find(
       (record): record is ChatWorktreeRecord => record.kind === 'chat' && record.deletedAt === undefined && folderKey(record.worktreeRoot) === folderKey(worktreePath),
     );
     return {
@@ -2827,7 +3014,7 @@ class DesktopApp {
         return true;
       },
       adopt: async (project, worktree, repositoryRoot, mainProject) => {
-        await this.requireWorktreeRegistry().upsertAdopted({
+        await this.worktreeEngine.upsertAdopted({
           worktreeRoot: worktree.path,
           workingFolder: project.fsPath,
           repositoryRoot,
@@ -2837,13 +3024,9 @@ class DesktopApp {
       },
       adoptCreated: async (projectKey, repositoryRoot, worktreePath, branch) => {
         const project = this.desktopProjects().find((candidate) => candidate.key === projectKey);
-        await this.requireWorktreeRegistry().upsertAdopted({ worktreeRoot: worktreePath, workingFolder: worktreePath, repositoryRoot, ...(project ? { projectPath: project.fsPath } : {}), ...(branch !== undefined ? { branch } : {}) });
+        await this.worktreeEngine.upsertAdopted({ worktreeRoot: worktreePath, workingFolder: worktreePath, repositoryRoot, ...(project ? { projectPath: project.fsPath } : {}), ...(branch !== undefined ? { branch } : {}) });
       },
-      markRemoved: async (worktreePath) => {
-        const registry = this.requireWorktreeRegistry();
-        const removed = registry.records().filter((record) => record.kind === 'adopted' && record.deletedAt === undefined && folderKey(record.worktreeRoot) === folderKey(worktreePath));
-        for (const record of removed) await registry.markDeleted(record.id);
-      },
+      markRemoved: (worktreePath) => this.worktreeEngine.markAdoptedRemoved(worktreePath),
       closeProject: (projectKey) => this.closeProjectForDelete(projectKey),
       chatOf: (worktreePath) => {
         const record = liveChatAt(worktreePath);
@@ -2896,58 +3079,34 @@ class DesktopApp {
   private async closeProjectForDelete(projectKey: string): Promise<'closed' | 'cancelled' | { readonly reason: string }> {
     const project = this.projectByKey(projectKey);
     const running = { reason: this.requireLocalization().t('A conversation is running in {0}. Stop it or wait for it to finish, then remove the project.', project.name) };
-    if (this.projectBusy(projectKey)) return running;
+    if (await this.projectBusy(projectKey)) return running;
     const terminals = this.requireTerminals();
     if (!(await terminals.confirmKill(terminals.idsIn(projectKey)))) return 'cancelled';
     // a turn may have started while the question was open
-    if (this.projectBusy(projectKey)) return running;
-    const loaded = [...this.chatInstances().values()].filter((instance) => (instance.folder.ownerKey ?? instance.folder.key) === projectKey);
-    for (const instance of loaded) {
-      const panel = this.views?.chats().find((chat) => chat === instance.host);
+    if (await this.projectBusy(projectKey)) return running;
+    const loaded = (this.client()?.chats() ?? []).filter((chat) => (chat.folder.ownerKey ?? chat.folder.key) === projectKey);
+    for (const chat of loaded) {
+      const panel = this.panelOfCore(chat.panelId);
       if (panel && !panel.isDisposed) panel.close();
     }
     await this.projects.remove(project.fsPath);
-    await this.core.current()?.provider.getPanelManager().whenFolderReleased(project.fsPath);
+    await this.client()?.whenFolderReleased(project.fsPath);
     return 'closed';
   }
 
-  // Rule 16's pass: an open project that is a linked worktree gets an adopted record under the open project holding its
-  // main worktree, so its chats list under that project read-only once its folder goes; with that project closed, none.
-  private async adoptOpenWorktrees(): Promise<void> {
-    const registry = this.requireWorktreeRegistry();
-    const projects = this.desktopProjects();
-    for (const project of projects) {
-      if (registry.liveChatRecordAt(project.fsPath)) continue;
-      const linked = await linkedWorktreeOf(project.fsPath);
-      if (!linked) continue;
-      const others = projects.filter((candidate) => candidate.key !== project.key);
-      const mainPath = await folderInRepository(linked.repositoryRoot, others.map((candidate) => candidate.fsPath));
-      const main = others.find((candidate) => candidate.fsPath === mainPath);
-      const existing = registry.records().find((record) => record.kind === 'adopted' && record.deletedAt === undefined && folderKey(record.workingFolder) === project.key);
-      const sameProject = existing && (existing.projectPath === undefined ? main === undefined : main !== undefined && folderKey(existing.projectPath) === main.key);
-      if (sameProject) continue;
-      await registry.upsertAdopted({
-        worktreeRoot: linked.worktreeRoot,
-        workingFolder: project.fsPath,
-        repositoryRoot: linked.repositoryRoot,
-        ...(main ? { projectPath: main.fsPath } : {}),
-        ...(linked.branch !== undefined ? { branch: linked.branch } : {}),
-      });
-    }
+  // Rule 16's pass, in core: an open project that is a linked worktree gets an adopted record under the open project holding
+  // its main worktree.
+  private adoptOpenWorktrees(): Promise<void> {
+    return this.worktreeEngine.adoptOpenWorktrees(this.desktopProjects().map((project) => ({ key: project.key, fsPath: project.fsPath })));
   }
 
   // ShellProject.worktreeOf: the project whose main worktree this adopted project's folder belongs to.
   private adoptedProjectName(projectKey: string): string | undefined {
-    const record = this.worktreeRegistry?.records().find((candidate) => candidate.kind === 'adopted' && candidate.deletedAt === undefined && folderKey(candidate.workingFolder) === projectKey);
+    const record = this.worktreeRecords.records().find((candidate) => candidate.kind === 'adopted' && candidate.deletedAt === undefined && folderKey(candidate.workingFolder) === projectKey);
     if (!record) return undefined;
     if (record.projectPath === undefined) return path.basename(record.repositoryRoot);
     const main = folderKey(record.projectPath);
     return this.desktopProjects().find((project) => project.key === main)?.name ?? path.basename(record.projectPath);
-  }
-
-  private requireWorktreeRegistry(): WorktreeRegistry {
-    if (!this.worktreeRegistry) throw new Error('The worktree registry used before startup finished');
-    return this.worktreeRegistry;
   }
 
   private requireWorktrees(): WorktreeController {
@@ -3046,7 +3205,7 @@ class DesktopApp {
   // Slice 12's merge editor on the first conflicted file of the repository holding folder; Apply's conflicts take the
   // worktree branch's Incoming label.
   private async openWorktreeConflicts(folder: string, files: readonly string[], applyBranch?: string): Promise<void> {
-    const live = this.worktreeRegistry?.liveChatRecordAt(folder);
+    const live = this.worktreeRecords.liveChatRecordAt(folder);
     const key = live ? this.worktreeRootKey(live) : folderKey(folder);
     await this.withScmRoot(key, async (repoId) => {
       const scm = this.requireScm();
@@ -3060,7 +3219,7 @@ class DesktopApp {
 
   // Per worktree, the project's chats working in it and their latest activity, listed or loaded (the New menu's rows).
   private async worktreeChats(projectKey: string): Promise<Map<string, { count: number; lastActivity: number }>> {
-    const rows = await this.core.run('Read Chat List', (core) => this.catalogList(core, projectKey));
+    const rows = await this.core.read('Read Chat List', (core) => this.catalogList(core, projectKey));
     // only chats working there, as sharedWith counts them; a loaded chat's live state is newer than its file
     const chats = new Map<string, { worktreeId: string; lastActivity: number } | undefined>();
     for (const row of rows) if (row.worktree?.place === 'worktree') chats.set(row.id, { worktreeId: row.worktree.worktreeId, lastActivity: row.timestamp });
@@ -3083,11 +3242,11 @@ class DesktopApp {
 
   // The sessions whose latest worktree entry names the worktree, stored or loaded.
   private async sessionsUsing(worktreeId: string): Promise<string[]> {
-    const record = this.worktreeRegistry?.get(worktreeId);
+    const record = this.worktreeRecords.get(worktreeId);
     const ids = new Set<string>();
     if (record?.projectPath !== undefined) {
       const projectKey = folderKey(record.projectPath);
-      const rows = await this.core.run('Read Chat List', (core) => this.catalogList(core, projectKey));
+      const rows = await this.core.read('Read Chat List', (core) => this.catalogList(core, projectKey));
       for (const row of rows) if (row.worktree?.worktreeId === worktreeId) ids.add(row.id);
     }
     for (const event of this.worktreeStates.values()) if (event.worktreeId === worktreeId && event.sessionId !== undefined) ids.add(event.sessionId);
@@ -3095,7 +3254,7 @@ class DesktopApp {
   }
 
   // Rule 14's first half for a chat worktree (close-worktree.ts): every question first, then what runs there stops.
-  private closeWorktreeRoot(worktreeId: string, key: string, stop: () => boolean): Promise<boolean> {
+  private closeWorktreeRoot(worktreeId: string, key: string, stop: () => Promise<boolean>): Promise<CloseOutcome> {
     const terminals = this.requireTerminals();
     return closeWorktreeRoot({
       editor: this.requireEditorPane(),
@@ -3107,8 +3266,8 @@ class DesktopApp {
       rootsChanged: () => this.worktreesChanged(),
       releaseFormatter: (rootKey) => this.formatterHosts?.release(rootKey) ?? Promise.resolve(),
       whenFolderReleased: async () => {
-        const record = this.worktreeRegistry?.get(worktreeId);
-        if (record) await this.core.current()?.provider.getPanelManager().whenFolderReleased(record.workingFolder);
+        const record = this.worktreeRecords.get(worktreeId);
+        if (record) await this.client()?.whenFolderReleased(record.workingFolder);
       },
     }, key, stop);
   }
@@ -3123,11 +3282,11 @@ class DesktopApp {
 
   private worktreeClosed(worktreeId: string, removed: boolean): void {
     if (removed) {
-      const record = this.worktreeRegistry?.get(worktreeId);
+      const record = this.worktreeRecords.get(worktreeId);
       if (record?.projectPath !== undefined) this.windowLayout.forgetRoot(rootKey({ projectKey: folderKey(record.projectPath), worktreeId }));
     }
     this.worktreesChanged();
-    const projectPath = this.worktreeRegistry?.get(worktreeId)?.projectPath;
+    const projectPath = this.worktreeRecords.get(worktreeId)?.projectPath;
     if (this.views && !this.views.selected() && projectPath !== undefined) this.selectProject(folderKey(projectPath)).catch(this.report('Selecting a chat after a worktree delete'));
   }
 
@@ -3150,12 +3309,10 @@ class DesktopApp {
     return { shown: this.windowLayout.sidebar().grid.visible.terminal, shortcut: shellShortcutLabels().toggleTerminal };
   }
 
-  // Every loaded chat's header toggle follows the pane; a chat view that loads later gets it with its ready.
+  // Every loaded chat's header toggle follows the pane (core posts it as the terminal mirror changes); a chat view that loads
+  // later gets it with its ready.
   private postTerminalShown(): void {
-    const panelManager = this.core.current()?.provider.getPanelManager();
-    if (!panelManager) return;
-    const message = { type: 'terminalShown', ...this.terminalToggle() } as const;
-    for (const instance of panelManager.getPanels().values()) panelManager.postMessage(instance.host, message);
+    this.core.started()?.terminalToggleChanged();
   }
 
   // A click shows or hides the pane; Ctrl+` also focuses a shown terminal that lacks focus, as VS Code's toggle does. Showing
@@ -3353,9 +3510,7 @@ class DesktopApp {
         log(`[${attachment.kind}] Add to Chat: the chat closed before it was ready`);
         return;
       }
-      const panels = core.provider.getPanelManager();
-      if (!panels.addTerminalAttachment(corePanelId, attachment)) return;
-      if (prompt !== undefined) await panels.appendToComposer(corePanelId, prompt);
+      if (!(await core.client.addAttachment(corePanelId, attachment, prompt))) return;
       this.views?.focusChat();
     });
   }
@@ -3421,7 +3576,7 @@ class DesktopApp {
         void this.requirePlatform().notifications.warn(restored?.failed ? t('The chat could not be loaded, so the file was not mentioned in it.') : t('Open a chat to mention a file in it.'));
         return;
       }
-      await core.provider.getPanelManager().mentionFile(corePanelId, target);
+      await core.client.mention(corePanelId, target);
     });
   }
 
@@ -3445,7 +3600,7 @@ class DesktopApp {
 
   private notificationProject(key: string): NotificationProject {
     const folder = this.projects.folders().find((candidate) => folderKey(candidate.fsPath) === key);
-    const name = this.core.current()?.provider.getFolderRegistry().resolve(key)?.label ?? folder?.name;
+    const name = this.client()?.resolve(key)?.label ?? folder?.name;
     return { key, name: name ?? path.basename(key) };
   }
 
@@ -3456,7 +3611,7 @@ class DesktopApp {
     if (!panel || projectKey === undefined) return undefined;
     const sessionId = this.sessionIdOf(panel);
     if (sessionId !== undefined && this.titleOf(panel) === '') {
-      await this.core.run('Read Chat List', (core) => this.catalogList(core, projectKey)).catch(this.report('Reading the chat list'));
+      await this.core.read('Read Chat List', (core) => this.catalogList(core, projectKey)).catch(this.report('Reading the chat list'));
     }
     return {
       panelId: panel.panelId,
@@ -3482,21 +3637,22 @@ class DesktopApp {
     // AD11: a message for a chat's UI goes out once that chat's view is ready, so a chat that just loaded never drops it.
     whenReady: async (panel) => {
       const corePanelId = this.corePanelIdOf(panel);
-      const panelManager = this.core.current()?.provider.getPanelManager();
-      const instance = corePanelId === undefined ? undefined : panelManager?.getPanels().get(corePanelId);
-      if (!panelManager || !instance || corePanelId === undefined) {
+      const client = this.client();
+      if (!client || corePanelId === undefined) {
         log('[notifications] the chat is not ready for its action');
         return false;
       }
-      await instance.webviewReady;
-      return panelManager.getPanels().get(corePanelId) === instance;
+      return client.whenReady(corePanelId);
     },
-    post: (panel, message) => this.core.current()?.provider.getPanelManager().postMessage(panel, message),
+    post: (panel, message) => {
+      const corePanelId = this.corePanelIdOf(panel);
+      if (corePanelId !== undefined) this.client()?.post(corePanelId, message).catch(this.report('Posting to a chat'));
+    },
   };
 
   private shellState(views: PanelViews): Omit<ShellState, 'revision'> {
-    const registry = this.core.current()?.provider.getFolderRegistry();
-    const defaultKey = registry?.defaultTarget().key;
+    const client = this.client();
+    const defaultKey = client?.defaultTarget()?.key;
     const counts = new Map<string, { running: number; waiting: number }>();
     for (const chat of views.chats()) {
       const key = this.projectOf(chat);
@@ -3509,11 +3665,11 @@ class DesktopApp {
     }
     const projects = this.projects.folders().map((folder): ShellProject => {
       const key = folderKey(folder.fsPath);
-      const branch = registry?.branchOf(key);
+      const branch = client?.branchOf(key);
       const worktreeOf = this.adoptedProjectName(key);
       return {
         key,
-        name: registry?.resolve(key)?.label ?? folder.name,
+        name: client?.resolve(key)?.label ?? folder.name,
         fsPath: folder.fsPath,
         trusted: this.trust.isTrusted(folder.fsPath),
         ...(branch !== undefined ? { branch } : {}),
@@ -3537,6 +3693,7 @@ class DesktopApp {
       layoutRevision: this.layoutRevision,
       shortcuts: shellShortcutLabels(),
       notifications: this.notificationCenter.bell(),
+      engineHalted: this.core.halted(),
       search: shellSearchSettings(this.requirePlatform().settings),
       shownFolders: this.shownFolders.all(),
       sidebar: { alwaysShowHeaderActions: this.requirePlatform().settings.get<unknown>(SIDEBAR_ALWAYS_SHOW_HEADER_ACTIONS_SETTING) === true },
@@ -3566,7 +3723,7 @@ class DesktopApp {
       return;
     }
     for (const folder of this.projects.folders()) shell.chatsChanged(folderKey(folder.fsPath));
-    const defaultKey = this.core.current()?.provider.getFolderRegistry().defaultTarget().key;
+    const defaultKey = this.client()?.defaultTarget()?.key;
     if (defaultKey !== undefined) shell.chatsChanged(defaultKey);
   }
 
@@ -3633,7 +3790,7 @@ class DesktopApp {
   private selectedWorktreeMenuState(): Pick<MenuState, 'worktree' | 'handOff' | 'newChatInWorktree'> {
     const selected = this.views?.selected();
     const event = selected ? this.worktreeEventOf(selected) : undefined;
-    const record = event?.worktreeId !== undefined ? this.worktreeRegistry?.get(event.worktreeId) : undefined;
+    const record = event?.worktreeId !== undefined ? this.worktreeRecords.get(event.worktreeId) : undefined;
     const live = record?.kind === 'chat' && record.deletedAt === undefined ? record : undefined;
     const working = event?.state.phase === 'ready' && event.state.place === 'worktree';
     return {
@@ -3723,22 +3880,12 @@ class DesktopApp {
   }
 
   private readonly chatTabs: ChatTabMessenger = {
-    deliver: async (panelId, message) => {
+    deliver: (panelId, message) => {
       const views = this.requireViews();
-      const panelManager = this.requireCore().provider.getPanelManager();
-      const target = await resolveChatTab({
-        panels: () => panelManager.getPanels(),
-        selected: () => views.selected(),
-        chats: () => views.chats(),
-        openChat: () => panelManager.show(),
-      }, panelId);
-      panelManager.postMessage(target.host, message);
-      return target.panelId;
+      return this.requireCore().client.deliver(panelId, views.selected()?.panelId, views.chats().map((chat) => chat.panelId), message);
     },
     post: (panelId, message) => {
-      const panelManager = this.core.current()?.provider.getPanelManager();
-      const instance = panelManager?.getPanels().get(panelId);
-      if (panelManager && instance) panelManager.postMessage(instance.host, message);
+      this.client()?.post(panelId, message).catch(this.report('Posting to a chat'));
     },
   };
 
@@ -3766,7 +3913,7 @@ class DesktopApp {
       // core checks again that the chat is idle before it moves anything (D61)
       handOff: (to) => {
         const panelId = this.selectedCorePanelId();
-        if (panelId !== undefined) this.core.run('Hand Off', (core) => core.provider.getPanelManager().chatMove(panelId, to)).catch(report('Hand Off'));
+        if (panelId !== undefined) this.core.run('Hand Off', (core) => core.client.handOff(panelId, to)).catch(report('Hand Off'));
       },
       worktreeFinish: (action: WorktreeFinishAction) => {
         const selected = this.views?.selected();
@@ -3776,10 +3923,10 @@ class DesktopApp {
       addProject: () => { this.addProject().catch(report('Add Project')); },
       newChat: () => { this.newChat(undefined).catch(report('New Chat')); },
       newChatInWorktree: (target) => { this.newChatInWorktree(target).catch(this.newChatInWorktreeFailure()); },
-      openChat: () => { this.core.run('Open Chat', (core) => core.provider.show()).catch(report('Open Chat')); },
+      openChat: () => { this.core.run('Open Chat', (core) => core.client.openChat()).catch(report('Open Chat')); },
       openChatForProject: (fsPath) => { this.newChat(folderKey(fsPath)).catch(report('Open Chat in Project')); },
-      newSession: () => { this.core.run('New Session', (core) => core.provider.newSession()).catch(report('New Session')); },
-      cancelSession: () => { this.core.run('Cancel Session', (core) => core.provider.cancelSession()).catch(report('Cancel Session')); },
+      newSession: () => { this.core.run('New Session', (core) => core.client.newSession()).catch(report('New Session')); },
+      cancelSession: () => { this.core.run('Cancel Session', (core) => core.client.cancelSession()).catch(report('Cancel Session')); },
       quickOpen: () => { this.openQuickOpen('files').catch(report('Quick Open')); },
       showCommands: () => { this.openQuickOpen('commands').catch(report('Command Palette')); },
       searchInFiles: (replace) => this.requireSearch().searchInFiles(replace),
@@ -3854,11 +4001,12 @@ class DesktopApp {
       selectRelativeChat: (delta) => { this.selectRelativeChat(delta).catch(report('Select Chat')); },
       focusPart: (delta) => this.focusPart(delta),
       togglePromptNavigator: () => {
-        if (this.views?.selected()) this.core.run('Toggle Prompt Navigator', (core) => core.provider.getPanelManager().postToActivePanel({ type: 'togglePromptNavigator' })).catch(report('Toggle Prompt Navigator'));
+        if (this.views?.selected()) this.core.run('Toggle Prompt Navigator', (core) => core.client.postToActive({ type: 'togglePromptNavigator' })).catch(report('Toggle Prompt Navigator'));
       },
       newBrowserPage: () => { this.browserTabs?.newPage().catch(report('New Browser Page')); },
       toggleBrowserDevTools: () => this.browserTabs?.activePage()?.deliver({ type: 'openDevTools' }),
       showLog: () => showLog(),
+      restartEngine: () => this.restartEngine(),
       about: () => this.openSettings({ section: 'about' }),
       releaseNotes: () => this.openSettings({ section: 'about', release: platform.appInfo.version }),
       checkForUpdates: () => this.requireUpdates().check('help'),
@@ -3881,7 +4029,7 @@ class DesktopApp {
     return released;
   }
 
-  // The extension's deactivate chain (session list cache flush, lease release, sentinels, stores), after the window closed.
+  // The extension's deactivate chain (session metadata index close, lease release, sentinels, stores), after the window closed.
   private async disposeAll(): Promise<void> {
     // Before the window closes, so its requests waiting on a reload settle and the window's close is not held up.
     this.core.stop();
@@ -3892,16 +4040,12 @@ class DesktopApp {
         this.window?.close();
         return this.windowClosed;
       },
-      // core's dispose interrupts no worktree git work (git apply must finish), so the quit waits, within its bound, for its temp folders.
-      disposeCore: async () => {
-        await this.core.dispose();
-        await tempFoldersSettled();
-      },
+      // core's own shutdown waits for its worktree temp folders (git apply must finish), within CLOSE_TIMEOUT_MS
+      disposeCore: () => this.core.dispose(),
       // The stores last: closing the chats can still change their saved state, and core writes the others.
       flushStores: () => this.flushStores(),
       disposeTerminals: async () => this.terminals?.dispose(),
       closeWatchers: async () => this.platform?.fileWatchers.close(),
-      closeServers: async () => this.askpass?.dispose(),
       closeTimeoutMs: CLOSE_TIMEOUT_MS,
       timeoutMs: DISPOSE_TIMEOUT_MS,
       log: (line) => log(line),
@@ -3913,9 +4057,11 @@ class DesktopApp {
     this.tray?.dispose();
     this.tray = undefined;
     this.platform?.settings.dispose();
+    await this.launcher?.dispose();
   }
 
-  // Every store under userData, the settings files and every config file core writes; each flush also waits for a write queued while it runs.
+  // Every store under userData, the settings files and every other config file main writes (a settings file editor save);
+  // each flush also waits for a write queued while it runs. Core settles its own writes in core.shutdown.
   private async flushStores(): Promise<void> {
     await this.beforeStoreFlush();
     await Promise.all([
@@ -3926,7 +4072,8 @@ class DesktopApp {
       this.usageWarnings.flush(),
       this.state.flush(),
       this.platform?.flush(),
-      flushCoreWrites(),
+      allJsonConfigWritesSettled(),
+      this.logSinks.flushed(),
     ]);
   }
 }

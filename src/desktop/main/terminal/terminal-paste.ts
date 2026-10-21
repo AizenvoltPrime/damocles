@@ -1,6 +1,6 @@
 import { MAX_TERMINAL_INPUT_CHARS, type TerminalPaste } from '../../preload/terminal-channels';
 import { GestureGrant } from '../clipboard-gestures';
-import type { TerminalMultiLinePasteWarning } from '../desktop-configuration';
+import type { TerminalMultiLinePasteWarning } from '../../local-services/desktop-configuration';
 import type { AskMessage } from '../message-dialog';
 
 // A lone CR is a line break too: the pty takes it as Enter.

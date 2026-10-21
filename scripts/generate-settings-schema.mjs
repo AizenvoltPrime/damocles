@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseContributedConfiguration } from '../src/core/config/contributed-configuration.ts';
-import { DESKTOP_CONFIGURATION } from '../src/desktop/main/desktop-configuration.ts';
+import { DESKTOP_CONFIGURATION } from '../src/desktop/local-services/desktop-configuration.ts';
 import { isEntryPoint } from './entry-point.mjs';
 
 /**
@@ -13,7 +13,7 @@ import { isEntryPoint } from './entry-point.mjs';
  *
  * `user` covers ~/.damocles/settings.json; `project` covers <folder>/.damocles/settings.json and settings.local.json,
  * where user-only keys are flagged. Every top-level key the settings readers accept is listed, the desktop-only keys of
- * src/desktop/main/desktop-configuration.ts included, and any other key is flagged as unknown.
+ * src/desktop/local-services/desktop-configuration.ts included, and any other key is flagged as unknown.
  */
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');

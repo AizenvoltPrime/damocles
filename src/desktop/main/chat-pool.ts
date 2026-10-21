@@ -1,3 +1,4 @@
+import { holdsWorktreeSetup } from '../../shared/chat-retention';
 import type { WorktreePhase } from '../../shared/types/messages';
 
 // Which loaded chats stay loaded (plan AD8): the selected chat, every active or restoring chat and the most recently viewed idle chats
@@ -22,12 +23,6 @@ export interface PooledChat {
   readonly worktreePhase?: WorktreePhase;
 }
 
-// Creating a worktree, running its setup, or showing the setup's or the creation's failure holds the first prompt, so the
-// chat stays loaded; only an opt-in with no git work yet (pending) leaves like any empty chat (slice 12a rule 6).
-export function holdsWorktreeSetup(phase: WorktreePhase | undefined): boolean {
-  return phase === 'creating' || phase === 'settingUp' || phase === 'setupFailed' || phase === 'createFailed';
-}
-
 /** The ids of the chats to unload, given every loaded chat. */
 export function chatsToUnload(chats: readonly PooledChat[], retainedIdle: number = RETAINED_IDLE_CHATS): string[] {
   const unload: string[] = [];
@@ -40,11 +35,6 @@ export function chatsToUnload(chats: readonly PooledChat[], retainedIdle: number
   idleWithSession.sort((a, b) => b.lastViewed - a.lastViewed);
   for (const chat of idleWithSession.slice(retainedIdle)) unload.push(chat.id);
   return unload;
-}
-
-/** Whether a chat's last reported activity keeps it loaded; `background` stays true until a later event clears it. */
-export function isActiveActivity(activity: { readonly state: 'idle' | 'running' | 'requires_action'; readonly background: boolean } | undefined): boolean {
-  return activity !== undefined && (activity.state !== 'idle' || activity.background);
 }
 
 /** Runs work for one chat after the work queued for it before has settled; chats do not wait on each other. */

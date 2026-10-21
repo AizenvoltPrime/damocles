@@ -89,7 +89,7 @@ describe('finding a session across the folders of a project with worktree chats'
     write(path.join(subagentsDir(stored.dir, stored.id), 'x_agent.jsonl'));
     write(path.join(teamsDir(stored.dir, stored.id), 'team.jsonl'));
 
-    await deletePiSession(project, stored.id);
+    await deletePiSession(project, stored.id, { forget: () => undefined });
 
     expect(fs.existsSync(stored.file)).toBe(false);
     expect(fs.existsSync(path.join(stored.dir, stored.id))).toBe(false);

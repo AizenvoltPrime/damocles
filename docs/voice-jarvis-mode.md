@@ -6,8 +6,8 @@ Hands-free voice input via a wake phrase ("Hey Jarvis" by default), automatic tr
 
 1. Open Damocles settings (Command Palette → "Damocles: Open Settings").
 2. Under "Voice", set **Mode** to **Wake-word (local)**.
-3. Accept the first-run privacy modal.
-4. Wait for the runtime + models to download (~11 GB CUDA / ~6 GB CPU on first activation; models account for ~4.5 GB).
+3. Accept the first-run privacy dialog. A chat in wake-word mode opens it; so do Start, Install and Retry on the Voice runtime row while nothing is accepted. Nothing downloads before you accept it, and the answer is kept, so later starts and repairs do not ask again (see [Download consent](#download-consent)).
+4. Wait for the runtime + models to download (~11 GB CUDA / ~6 GB CPU on first activation; models account for ~4.5 GB). Settings › Voice › Voice runtime shows the step and its percent.
 5. When the status bar shows `🎙️ Listening`, say *"Hey Jarvis, ..."* (or your own phrase; see [Changing the wake phrase](#changing-the-wake-phrase)).
 
 ## Engines (all permissively licensed)
@@ -44,8 +44,7 @@ Steady-state with TTS enabled: ~3.7 GB GPU, well within a 6 GB RTX 4050. With TT
 | `damocles.voice.maxUtteranceMs` | `30000` | Hard cap on a single utterance. |
 | `damocles.voice.autoSubmit` | `true` | Auto-send on `transcript_final`. |
 | `damocles.voice.diagnostics` | `false` | Verbose sidecar logs. |
-| `damocles.voice.runtimePath` | `""` | Advanced: the Python of an existing venv that already holds the pinned voice stack, used instead of the downloaded runtime. Damocles only smoke-checks it. Windows x64, Linux x64 and macOS arm64 only. |
-| `damocles.voice.pinModelVersion` | `{}` | Advanced: per-model version pin. |
+| `damocles.voice.runtimePath` | `""` | Advanced: the absolute path of the Python of an existing venv that already holds the pinned voice stack, used instead of the downloaded runtime; a relative path is refused. Damocles only smoke-checks it. Windows x64, Linux x64 and macOS arm64 only. |
 
 ## Architecture
 
@@ -78,12 +77,14 @@ useJarvisLifecycle ──ws──> voice-stream-handlers ──ws/json──> se
 ### Lifecycle
 
 - Sidecar runs only when `mode === wake-word` AND a Damocles chat panel is open.
-- Singleton-per-machine via mkdir lock at `~/.damocles/voice/sidecar.lock`. Multiple VS Code windows attach to the same sidecar; the sidecar self-terminates 30 s after the last client disconnects.
+- Singleton-per-machine via mkdir lock at `~/.damocles/voice/sidecar.lock`. Multiple VS Code windows attach to the same sidecar; the sidecar self-terminates 30 s after the last client disconnects. Every window using the sidecar, its owner and each attached one, touches the lock folder every 20 s (`lockfile.ts`); a lock whose pid is gone, or that nobody touched for 2 minutes, is taken over, so a live sidecar is never replaced however long it has run. The data file names the acquire that wrote it, and a window removes the lock only while it is still its own. Model downloads use the same scheme per model (`<model>/.lock`): a second download of the model waits for the first and keeps the files it finished.
+- On Linux and macOS the sidecar starts detached, as the leader of its own process group, so a forced stop and the synchronous disposal kill reach its Python workers; on Windows the launcher's job object does the same.
 - Health check: ping every 2 s; 3 missed pongs → restart.
 - Restart strategy: parses stderr for fatal signatures (`CUDA error`, `ImportError`, etc.); on those, surfaces the actual error and stops. Otherwise restarts up to 2 times in 60 s.
 - Cold-start: ~5–10 s warm, ~15–30 s on first launch (cuDNN handle creation + weight load). Mic is gated until `ready` arrives.
 - One start or stop runs at a time (`VoiceService.enqueue`): a settings change supersedes the start in flight and waits for it to end before its own, so no sidecar outlives its owner.
 - Spoken replies: replies that wait for a start are not queued; once the sidecar is ready, only the latest is spoken (`VoiceService.speakReply`). A reply that arrives while the sidecar restarts itself after a crash is not spoken, and does not replace it.
+- Runtime status: `VoiceService.runtimeStatus()` is the one source of the state Settings › Voice shows (not needed, unsupported, idle, starting with its stage and percent, ready, needs install, failed, cancelled). Its `runtimeStatus` event, at most 4 a second within one stage and at once on a new stage or state, goes to every panel, not only the one that turned voice on, and a panel or attached settings view gets the current state when it loads (`ready`, `requestSettingsState`).
 
 ### Wake-phrase exclusion (FR-11)
 
@@ -110,20 +111,35 @@ The bundled venv is corrupt or missing dependencies. Fix:
 rm -rf ~/.damocles/voice/runtime
 ```
 
-Then turn wake-word mode or `damocles.voice.tts.enabled` off and on, or press Test voice, to install it again.
+Then turn wake-word mode or `damocles.voice.tts.enabled` off and on, or press the Voice runtime row's button in Settings › Voice (Start, Install or Retry, by the row's state), to install it again.
 
-These actions install the runtime when it is missing or broken:
+### Install and status
+
+An install is the runtime and then the models the sidecar loads (`VoiceRuntimeInstaller.installAll`, its `downloading-models` stage). The models are the ones `engines/loader.py` loads under the current settings (`modelIdsLoadedBy` in `models/provision.ts`): wake-word mode needs Silero VAD and Parakeet, spoken replies need VibeVoice, and the keyword spotter ships with the app. A model counts as missing unless its folder for the version `MODEL_MANIFEST.json` lists is complete, because that is the only version the sidecar reads; an older version on disk is replaced, not used. So a runtime is ready only with its models on disk. A start that may not download reports what is missing instead. Nothing in the manifest is gated.
+
+These actions install the runtime when it is missing or broken, once the user has consented to the downloads:
 
 - changing `damocles.voice.mode`, `damocles.voice.tts.enabled` or, in wake-word mode, `damocles.voice.wakeWord`;
 - opening a chat in wake-word mode, or switching to it (`voiceStreamEnable`, which `useJarvisLifecycle` sends as the chat loads);
 - pressing Test voice;
+- pressing Start, Install or Retry on the Voice runtime row (`VoiceService.install`);
 - accepting the first-run download, which starts voice once the models are in place.
 
-Speaking a reply uses a runtime that is already installed and never downloads or repairs one. A start that failed, or a sidecar that failed after it was ready and used up its own restarts, is not tried again under the same voice settings until a settings change, Test voice or the first-run download (`VoiceService.ensureStarted`). Opening a chat tries again only after a start that was not allowed to install. The reason shows as the Jarvis error in the chat input and in Test voice.
+Speaking a reply uses a runtime that is already installed and never downloads or repairs one. A start that failed, or a sidecar that failed after it was ready and used up its own restarts, is not tried again under the same voice settings until a settings change, Test voice, Start, Install or Retry, or the first-run download (`VoiceService.ensureStarted`). Opening a chat tries again only after a start that was not allowed to download. The reason shows as the Jarvis error in the chat input, in Test voice, after Install, and on the Voice runtime row, which shows its first line with the rest under Details. A reply left unspoken shows one notice per failed or cancelled start, not one per reply, with the reason's first line; its Voice settings action opens Settings › Voice in front, in the reply's chat or, once that chat has closed, the active one.
 
-### "Need ~16 GB free, have 4 GB"
+Cancel on the Voice runtime row (`VoiceService.cancelStart`) aborts the start in flight: the download, the extraction worker, pip, the smoke check and the sidecar spawn. It records no failure, but no caller starts voice again under the same settings until a start runs: Start, Install, Retry, Test voice, the first-run download or a settings change. A cancel never removes the installed runtime: a repair the abort stopped leaves it as it was, and the next install verifies it and repairs or reinstalls it. A failed or cancelled extraction removes the half-extracted `python/` folder.
 
-Set `damocles.voice.runtimePath` to a path on a different filesystem with more free space, or free disk via the settings panel's "Free disk space (delete unused versions)" button. The disk pre-check applies a ×1.5 safety margin over the raw install size.
+### Download consent
+
+No start downloads the runtime or a model until the user accepted the first-run dialog (`VoiceFirstRunModal.vue`, which states the size, the always-on microphone and the model licenses). The acceptance is kept in host global state (`damocles.voice.downloadConsent`, `src/core/voice/consent.ts`), never in a setting, so a settings file a repository ships cannot accept for the user. It is a fingerprint of what the dialog disclosed: a disclosure version, each model's id and license, the wake model's, and the model download in whole gigabytes. A manifest that adds a model, changes a license or grows the download past the next gigabyte asks again; a new version of a model under the same license does not.
+
+Without consent a start that may install only verifies. An installed runtime with its models starts as usual. When a download would fix it, the row shows the missing part with Install, and a start from a chat (opening it in wake-word mode, a settings change, Test voice) opens the first-run dialog in that chat (`firstRunRequired`). Settings › Voice opens the same disclosure itself: Install while the row says consent is needed, and Start or Retry once their start finds something to download (`needs-install` with `consentRequired`). Accepting records the consent and installs; cancelling the chat's dialog switches the mode back to push-to-talk, and cancelling the Settings one changes nothing. A reply never opens the dialog.
+
+Re-download models and the model update notice count as consent for the models they download, without recording it. The update notice offers only an outdated model a start left behind, and only once consent is stored; before that the first-run dialog covers it.
+
+### "The voice runtime needs about 16 GB free"
+
+Free disk space on the drive that holds `~/.damocles/voice`, for example with the settings panel's "Free disk space (delete unused versions)" button, and press Install or Retry. `damocles.voice.runtimePath` does not move the install: it names the Python of a venv you installed yourself, and it must be an absolute path. The disk pre-check applies a ×1.5 safety margin over the raw install size.
 
 ### "Your CUDA driver appears incompatible with the installed PyTorch wheel"
 

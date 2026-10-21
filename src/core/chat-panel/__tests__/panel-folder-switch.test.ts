@@ -14,7 +14,7 @@ vi.mock('../ide-context-manager', () => ({
 import { createHarness, folderEntry, lastFolderUpdate, makeFakeHost, type FakeHost, type Harness } from './panel-manager-harness';
 import { folderKey } from '../../workspace-folders/folder-key';
 import type { FakeSession } from './panel-manager-harness';
-import { restoredWorkspaceFolderKey } from '../panel-manager';
+import { restoredWorkspaceFolderKey } from '../../../shared/restored-folder-key';
 import { releaseSessionLease, type SessionLeaseHolder } from '../../pi-session/session-store/session-lease';
 
 const ROOT = path.resolve(os.tmpdir(), 'pfs-root');
@@ -386,6 +386,71 @@ describe('permission resets on a confirmed switch', () => {
 
     expect(sessionOf(panelId).setPermissionMode).toHaveBeenCalledWith('plan');
     expect(old.setPermissionMode).not.toHaveBeenCalled();
+  });
+});
+
+// A desktop engine restart reopens each chat with what its ended core published; the user's defaults here would grant more.
+describe('the permissions a host restart hands a restored panel', () => {
+  const ASK_NO_YOLO = { permissionMode: 'default', dangerouslySkipPermissions: false } as const;
+
+  async function permissiveDefaults(): Promise<void> {
+    await h.platform.settings.update('damocles.permissionMode', 'acceptEdits', 'user');
+    await h.platform.settings.update('damocles.dangerouslySkipPermissions', true, 'user');
+  }
+
+  const restoredPanel = (host: FakeHost): { panelId: string; handler: ReturnType<Harness['instance']>['permissionHandler'] } => {
+    const [panelId, instance] = [...h.manager.getPanels()].find(([, candidate]) => candidate.host === host)!;
+    return { panelId, handler: instance.permissionHandler };
+  };
+
+  it('replace the defaults, before the session is created, and survive the restore moving the panel to its conversation\'s folder', async () => {
+    h = createHarness([folderEntry(A), folderEntry(B)]);
+    await permissiveDefaults();
+    const host = makeFakeHost();
+
+    await h.manager.restorePanel(host, folderKey(A), ASK_NO_YOLO);
+    const { panelId, handler } = restoredPanel(host);
+    expect(handler.getPermissions()).toEqual(ASK_NO_YOLO);
+
+    await h.manager.switchPanelFolder(panelId, folderKey(B), 'restore');
+    expect(sessionOf(panelId).cwd).toBe(B);
+    expect(handler.getPermissions()).toEqual(ASK_NO_YOLO);
+  });
+
+  it('bring plan mode back', async () => {
+    h = createHarness([folderEntry(A)]);
+    await permissiveDefaults();
+    const host = makeFakeHost();
+    await h.manager.restorePanel(host, folderKey(A), { permissionMode: 'plan', dangerouslySkipPermissions: false });
+    expect(restoredPanel(host).handler.getPermissions()).toEqual({ permissionMode: 'plan', dangerouslySkipPermissions: false });
+  });
+
+  it('are absent for a launch, which starts from the defaults and takes YOLO\'s default of the folder the restore moves to', async () => {
+    h = createHarness([folderEntry(A), folderEntry(B)]);
+    await permissiveDefaults();
+    const host = makeFakeHost();
+    await h.manager.restorePanel(host, folderKey(A));
+    const { panelId, handler } = restoredPanel(host);
+    expect(handler.getPermissions()).toEqual({ permissionMode: 'acceptEdits', dangerouslySkipPermissions: true });
+    handler.setDangerouslySkipPermissions(false);
+
+    await h.manager.switchPanelFolder(panelId, folderKey(B), 'restore');
+    expect(handler.getDangerouslySkipPermissions()).toBe(true);
+  });
+
+  it('are reported to the host on every change once the panel is registered, a new conversation\'s YOLO reset included', async () => {
+    h = createHarness([folderEntry(A), folderEntry(B)]);
+    const changed: string[] = [];
+    h.manager.onPermissionsChanged((panelId) => changed.push(panelId));
+    const host = makeFakeHost();
+    await h.manager.restorePanel(host, folderKey(A), ASK_NO_YOLO);
+    const { panelId, handler } = restoredPanel(host);
+    expect(changed).toEqual([]);
+
+    handler.setPermissionMode('plan');
+    handler.setDangerouslySkipPermissions(true);
+    await h.manager.switchPanelFolder(panelId, folderKey(B), 'user');
+    expect(changed).toEqual([panelId, panelId, panelId]);
   });
 });
 

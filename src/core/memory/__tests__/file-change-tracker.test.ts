@@ -72,7 +72,8 @@ describe('FileChangeTracker — Slice 11 file-staleness correctness', () => {
   let tracker: FileChangeTracker;
 
   beforeEach(async () => {
-    vi.useFakeTimers();
+    // Only the debounce is faked: the tracker batches a turn's bumps with a real setImmediate.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     fake = createFakePlatform();
     db = await createTestMemoryDb();
     writeQueue = new MemoryWriteQueue(db);
@@ -82,6 +83,12 @@ describe('FileChangeTracker — Slice 11 file-staleness correctness', () => {
     tracker?.dispose();
     vi.useRealTimers();
   });
+
+  /** Ends the event loop turn, so the tracker's batch runs, then waits for its write. */
+  async function flushed(): Promise<void> {
+    await new Promise((resolve) => setImmediate(resolve));
+    await writeQueue.drain();
+  }
 
   function buildTracker(workspaceRoots: string | string[] = ROOT): FileChangeTracker {
     const roots = typeof workspaceRoots === 'string' ? [workspaceRoots] : workspaceRoots;
@@ -99,11 +106,11 @@ describe('FileChangeTracker — Slice 11 file-staleness correctness', () => {
 
     latestWatcher().fireChange(file);
     // Nothing bumped before the debounce elapses.
-    await writeQueue.drain();
+    await flushed();
     expect(staleness(db, id)).toBe(0);
 
     vi.advanceTimersByTime(5000);
-    await writeQueue.drain();
+    await flushed();
     expect(staleness(db, id)).toBe(1);
   });
 
@@ -113,39 +120,70 @@ describe('FileChangeTracker — Slice 11 file-staleness correctness', () => {
     buildTracker();
 
     latestWatcher().fireCreate(file);
-    await writeQueue.drain();
+    await flushed();
     expect(staleness(db, id)).toBe(0);
 
     vi.advanceTimersByTime(5000);
-    await writeQueue.drain();
+    await flushed();
     expect(staleness(db, id)).toBe(1);
   });
 
-  it('marks stale IMMEDIATELY on delete (before any timer advance)', async () => {
+  it('marks stale without the debounce on delete', async () => {
     const file = path.join(ROOT, 'src', 'gone.ts');
     const id = seedObservation(db, { filesModified: [file] });
     buildTracker();
 
     latestWatcher().fireDelete(file);
-    await writeQueue.drain();
-    // Asserted before advancing timers — deletes do not debounce.
+    await flushed();
     expect(staleness(db, id)).toBe(1);
 
     vi.advanceTimersByTime(5000);
-    await writeQueue.drain();
+    await flushed();
     // No second bump from a lingering debounce timer.
     expect(staleness(db, id)).toBe(1);
   });
 
-  it('marks stale IMMEDIATELY on rename of the old path (before any timer advance)', async () => {
+  it('marks stale without the debounce on rename of the old path', async () => {
     const oldFile = path.join(ROOT, 'src', 'old-name.ts');
     const newFile = path.join(ROOT, 'src', 'new-name.ts');
     const id = seedObservation(db, { filesModified: [oldFile] });
     buildTracker();
 
     fake.fileWatchers.fireRename([{ oldPath: oldFile, newPath: newFile }]);
-    await writeQueue.drain();
+    await flushed();
     expect(staleness(db, id)).toBe(1);
+  });
+
+  it('counts a rename between two of an observation\'s files once', async () => {
+    const oldFile = path.join(ROOT, 'src', 'a.ts');
+    const newFile = path.join(ROOT, 'src', 'b.ts');
+    const id = seedObservation(db, { filesModified: [oldFile, newFile] });
+    buildTracker();
+
+    fake.fileWatchers.fireRename([{ oldPath: oldFile, newPath: newFile }]);
+    await flushed();
+    expect(staleness(db, id)).toBe(1);
+  });
+
+  it('counts one batch of changes to several of an observation\'s files once, and a later batch again', async () => {
+    const files = ['a.ts', 'b.ts', 'c.ts', 'd.ts'].map((name) => path.join(ROOT, 'src', name));
+    const id = seedObservation(db, { filesModified: files });
+    const other = seedObservation(db, { filesRead: [files[0]!] });
+    buildTracker();
+
+    const w = latestWatcher();
+    for (const file of files) w.fireChange(file);
+    vi.advanceTimersByTime(5000);
+    await flushed();
+    // One checkout touching four files is one change, so it alone cannot reach STALENESS_THRESHOLD (3).
+    expect(staleness(db, id)).toBe(1);
+    expect(staleness(db, other)).toBe(1);
+
+    w.fireChange(files[1]!);
+    vi.advanceTimersByTime(5000);
+    await flushed();
+    expect(staleness(db, id)).toBe(2);
+    expect(staleness(db, other)).toBe(1);
   });
 
   it('coalesces a burst of rapid changes into a single stale increment', async () => {
@@ -160,11 +198,11 @@ describe('FileChangeTracker — Slice 11 file-staleness correctness', () => {
     vi.advanceTimersByTime(1000);
     w.fireChange(file);
     // Only ~2s of the repeatedly-reset debounce has elapsed — nothing yet.
-    await writeQueue.drain();
+    await flushed();
     expect(staleness(db, id)).toBe(0);
 
     vi.advanceTimersByTime(5000);
-    await writeQueue.drain();
+    await flushed();
     expect(staleness(db, id)).toBe(1);
   });
 
@@ -176,7 +214,7 @@ describe('FileChangeTracker — Slice 11 file-staleness correctness', () => {
     const eventPath = path.resolve(ROOT, 'src/foo.ts');
     latestWatcher().fireChange(eventPath);
     vi.advanceTimersByTime(5000);
-    await writeQueue.drain();
+    await flushed();
     expect(staleness(db, id)).toBe(1);
   });
 
@@ -190,7 +228,7 @@ describe('FileChangeTracker — Slice 11 file-staleness correctness', () => {
     expect(eventPath).not.toBe(storedUnderOtherRoot); // full paths genuinely differ
     latestWatcher().fireChange(eventPath);
     vi.advanceTimersByTime(5000);
-    await writeQueue.drain();
+    await flushed();
     expect(staleness(db, id)).toBe(1);
   });
 
@@ -205,7 +243,7 @@ describe('FileChangeTracker — Slice 11 file-staleness correctness', () => {
 
     latestWatcher().fireChange(path.resolve(ROOT, relPath));
     vi.advanceTimersByTime(5000);
-    await writeQueue.drain();
+    await flushed();
 
     expect(staleness(db, mine)).toBe(1);
     expect(staleness(db, theirs)).toBe(0); // other workspace's row was never indexed by this tracker
@@ -219,13 +257,13 @@ describe('FileChangeTracker — Slice 11 file-staleness correctness', () => {
 
     latestWatcher().fireChange(path.resolve(SECOND, 'notes.ts'));
     vi.advanceTimersByTime(5000);
-    await writeQueue.drain();
+    await flushed();
     expect(staleness(db, inSecond)).toBe(1);
     expect(staleness(db, inFirst)).toBe(0);
 
     latestWatcher().fireChange(path.resolve(ROOT, 'notes.ts'));
     vi.advanceTimersByTime(5000);
-    await writeQueue.drain();
+    await flushed();
     expect(staleness(db, inFirst)).toBe(1);
     expect(staleness(db, inSecond)).toBe(1);
   });
@@ -240,13 +278,13 @@ describe('FileChangeTracker — Slice 11 file-staleness correctness', () => {
 
     latestWatcher().fireChange(path.resolve(ROOT, relPath));
     vi.advanceTimersByTime(5000);
-    await writeQueue.drain();
+    await flushed();
     expect(staleness(db, inFirst)).toBe(1);
     expect(staleness(db, inSecond)).toBe(0);
 
     latestWatcher().fireChange(path.resolve(SECOND, relPath));
     vi.advanceTimersByTime(5000);
-    await writeQueue.drain();
+    await flushed();
     expect(staleness(db, inFirst)).toBe(1);
     expect(staleness(db, inSecond)).toBe(1);
   });
@@ -260,7 +298,7 @@ describe('FileChangeTracker — Slice 11 file-staleness correctness', () => {
 
     latestWatcher().fireChange(path.join(NESTED, relPath));
     vi.advanceTimersByTime(5000);
-    await writeQueue.drain();
+    await flushed();
     expect(staleness(db, inNested)).toBe(1);
     expect(staleness(db, inOuter)).toBe(0);
   });
@@ -276,7 +314,7 @@ describe('FileChangeTracker — Slice 11 file-staleness correctness', () => {
     latestWatcher().fireChange(path.resolve(SECOND, 'second.ts'));
     latestWatcher().fireChange(path.resolve(ROOT, 'first.ts'));
     vi.advanceTimersByTime(5000);
-    await writeQueue.drain();
+    await flushed();
 
     expect(staleness(db, inSecond)).toBe(1);
     expect(staleness(db, inFirst)).toBe(0); // the removed folder's rows left the index
@@ -290,7 +328,7 @@ describe('FileChangeTracker — Slice 11 file-staleness correctness', () => {
 
     latestWatcher().fireChange(path.resolve(SECOND, 'live.ts'));
     vi.advanceTimersByTime(5000);
-    await writeQueue.drain();
+    await flushed();
     expect(staleness(db, id)).toBe(1);
   });
 
@@ -303,7 +341,7 @@ describe('FileChangeTracker — Slice 11 file-staleness correctness', () => {
 
     latestWatcher().fireChange(file);
     vi.advanceTimersByTime(5000);
-    await writeQueue.drain();
+    await flushed();
 
     expect(staleness(db, liveId)).toBe(1);
     expect(staleness(db, forgottenId)).toBe(0);
@@ -321,14 +359,14 @@ describe('FileChangeTracker — Slice 11 file-staleness correctness', () => {
     // First change bumps it via suffix fallback.
     latestWatcher().fireChange(eventPath);
     vi.advanceTimersByTime(5000);
-    await writeQueue.drain();
+    await flushed();
     expect(staleness(db, id)).toBe(1);
 
     // After removeObservation, a later change must not bump it again.
     tracker.removeObservation(id);
     latestWatcher().fireChange(eventPath);
     vi.advanceTimersByTime(5000);
-    await writeQueue.drain();
+    await flushed();
     expect(staleness(db, id)).toBe(1);
   });
 
@@ -343,13 +381,13 @@ describe('FileChangeTracker — Slice 11 file-staleness correctness', () => {
     expect(w.disposed).toBe(true);
 
     vi.advanceTimersByTime(5000);
-    await writeQueue.drain();
+    await flushed();
     expect(staleness(db, id)).toBe(0);
 
     // Watcher callbacks are cleared on dispose, so post-dispose emits are inert.
     w.fireChange(file);
     vi.advanceTimersByTime(5000);
-    await writeQueue.drain();
+    await flushed();
     expect(staleness(db, id)).toBe(0);
   });
 });
@@ -403,16 +441,16 @@ describe('R5 — forward-slash normalization of files_read / files_modified', ()
     const backslashId = seedObservationRow(db, ['a\\b\\c.ts'], ['d\\e.ts']);
     const cleanId = seedObservationRow(db, ['already/clean.ts']);
 
-    // Constructing the manager runs the guarded GLOB '*\*' sweep once.
-    new ObservationManager(db);
+    // The guarded GLOB '*\*' sweep selects only rows holding a backslash.
+    new ObservationManager(db).normalizeStoredFilePaths();
     const swept = readFiles(db, backslashId);
     expect(JSON.parse(swept.files_read)).toEqual(['a/b/c.ts']);
     expect(JSON.parse(swept.files_modified)).toEqual(['d/e.ts']);
     // Already-clean row is untouched (byte-identical JSON).
     expect(readFiles(db, cleanId).files_read).toBe(JSON.stringify(['already/clean.ts']));
 
-    // Idempotent: a second construction is a no-op (guard selects zero rows).
-    new ObservationManager(db);
+    // Idempotent: a second sweep is a no-op (guard selects zero rows).
+    new ObservationManager(db).normalizeStoredFilePaths();
     const again = readFiles(db, backslashId);
     expect(JSON.parse(again.files_read)).toEqual(['a/b/c.ts']);
     expect(JSON.parse(again.files_modified)).toEqual(['d/e.ts']);

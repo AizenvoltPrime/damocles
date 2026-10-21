@@ -102,8 +102,10 @@ export interface PanelWorktreesDeps {
   readonly resumeInto: (instance: HostInstance, sessionId: string, beforeOpen?: (session: HostInstance['session']) => void) => Promise<boolean>;
   readonly releaseFolder: (key: string) => Promise<void>;
   readonly sessionsClosed: () => Promise<void>;
-  /** The stored sessions listed under the open project `projectKey`, with each one's latest worktree entry. */
+  /** The stored sessions listed under the open project `projectKey` so far, with each one's latest worktree entry; rows still being parsed arrive as a stored sessions change. */
   readonly storedSessionsOf: (projectKey: string) => Promise<readonly StoredSession[]>;
+  /** `storedSessionsOf` once none is still being parsed: for a decision a missing row would make wrong. */
+  readonly completeStoredSessionsOf: (projectKey: string) => Promise<readonly StoredSession[]>;
 }
 
 const MAX_HELD_TEXT = 4000;
@@ -202,7 +204,7 @@ export class PanelWorktrees implements Disposable {
     for (const project of this.deps.folderRegistry.targets()) {
       const deleted = registry.recordsOfProject(project.fsPath).filter((r) => r.deletedAt !== undefined);
       if (deleted.length === 0) continue;
-      for (const stored of await this.deps.storedSessionsOf(project.key)) if (stored.worktree) named.add(stored.worktree.worktreeId);
+      for (const stored of await this.deps.completeStoredSessionsOf(project.key)) if (stored.worktree) named.add(stored.worktree.worktreeId);
       for (const record of deleted) {
         if (!named.has(record.id) && !(await holdsSessionFile(piSessionDir(record.workingFolder)))) unused.push(record.id);
       }

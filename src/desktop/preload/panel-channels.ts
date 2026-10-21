@@ -1,7 +1,7 @@
 // Shared by the panel preload and main. The names are fixed: main listens on each view's own webContents.ipc, which only
 // that view's messages reach, so the renderer never needs to know which panel it is.
 
-import type { FileIconTheme } from '../main/desktop-configuration';
+import type { FileIconTheme } from '../local-services/desktop-configuration';
 
 export type ThemeKind = 'dark' | 'light';
 
@@ -27,7 +27,7 @@ export const PANEL_CHANNELS = {
   post: 'damocles:panel:post',
   // renderer → main, the webview state to persist
   setState: 'damocles:panel:set-state',
-  // main → renderer, one host message
+  // main → renderer, one host message: JSON text, or a structured clone when it holds binary
   message: 'damocles:panel:message',
   // main → renderer, PanelTheme after a theme or reduce motion change
   theme: 'damocles:panel:theme',

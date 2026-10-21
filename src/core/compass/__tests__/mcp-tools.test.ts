@@ -44,38 +44,38 @@ describe('compass_context', () => {
 	let store: GraphStore;
 	afterEach(() => store?.close());
 
-	it('returns graph stats', () => {
+	it('returns graph stats', async () => {
 		store = createTestStore();
 		seedGraph(store);
-		const result = handleContext(store, '/workspace', {});
+		const result = await handleContext(store, '/workspace', {});
 		expect(result).toContain('nodes');
 		expect(result).toContain('edges');
 	});
 
-	it('includes risk assessment when changed_files provided', () => {
+	it('includes risk assessment when changed_files provided', async () => {
 		store = createTestStore();
 		seedGraph(store);
-		const result = handleContext(store, '/workspace', { changed_files: ['/src/a.ts'] });
+		const result = await handleContext(store, '/workspace', { changed_files: ['/src/a.ts'] });
 		expect(result).toContain('Changes');
 	});
 
-	it('suggests review tools for review task', () => {
+	it('suggests review tools for review task', async () => {
 		store = createTestStore();
 		seedGraph(store);
-		const result = handleContext(store, '/workspace', { task: 'review PR' });
+		const result = await handleContext(store, '/workspace', { task: 'review PR' });
 		expect(result).toContain('compass_blast_radius');
 	});
 
-	it('suggests debug tools for debug task', () => {
+	it('suggests debug tools for debug task', async () => {
 		store = createTestStore();
 		seedGraph(store);
-		const result = handleContext(store, '/workspace', { task: 'debug auth bug' });
+		const result = await handleContext(store, '/workspace', { task: 'debug auth bug' });
 		expect(result).toContain('compass_search');
 	});
 
-	it('suggests default tools when no task', () => {
+	it('suggests default tools when no task', async () => {
 		store = createTestStore();
-		const result = handleContext(store, '/workspace', {});
+		const result = await handleContext(store, '/workspace', {});
 		expect(result).toContain('compass_search');
 	});
 });
@@ -585,52 +585,52 @@ describe('compass_review_context', () => {
 	let store: GraphStore;
 	afterEach(() => store?.close());
 
-	it('returns comprehensive review context', () => {
+	it('returns comprehensive review context', async () => {
 		store = createTestStore();
 		seedGraph(store);
-		const result = handleReviewContext(store, '/workspace', { changed_files: ['/src/a.ts'] });
+		const result = await handleReviewContext(store, '/workspace', { changed_files: ['/src/a.ts'] });
 		expect(result).toContain('Review Context');
 		expect(result).toContain('Risk:');
 		expect(result).toContain('Blast Radius:');
 	});
 
-	it('includes risk breakdown', () => {
+	it('includes risk breakdown', async () => {
 		store = createTestStore();
 		seedGraph(store);
-		const result = handleReviewContext(store, '/workspace', { changed_files: ['/src/a.ts'] });
+		const result = await handleReviewContext(store, '/workspace', { changed_files: ['/src/a.ts'] });
 		expect(result).toMatch(/HIGH|MEDIUM|LOW/);
 	});
 
-	it('includes impacted files section', () => {
+	it('includes impacted files section', async () => {
 		store = createTestStore();
 		seedGraph(store);
-		const result = handleReviewContext(store, '/workspace', { changed_files: ['/src/a.ts'] });
+		const result = await handleReviewContext(store, '/workspace', { changed_files: ['/src/a.ts'] });
 		expect(result).toContain('Impacted Files');
 	});
 
-	it('handles empty changed files', () => {
+	it('handles empty changed files', async () => {
 		store = createTestStore();
 		seedGraph(store);
-		const result = handleReviewContext(store, '/workspace', { changed_files: [] });
+		const result = await handleReviewContext(store, '/workspace', { changed_files: [] });
 		expect(result).toContain('Review Context');
 		expect(result).toContain('Changed Files: 0');
 	});
 
-	it('surfaces truncation when changed functions exceed the analysis cap (US-012)', () => {
+	it('surfaces truncation when changed functions exceed the analysis cap (US-012)', async () => {
 		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'File', name: 'big.ts', file_path: '/src/big.ts', line_start: 1, line_end: 5200 }));
 		for (let i = 0; i < 510; i++) {
 			store.upsertNode(makeNode({ name: `func${String(i).padStart(3, '0')}`, file_path: '/src/big.ts', line_start: i * 10 + 1, line_end: i * 10 + 5 }));
 		}
 
-		const result = handleReviewContext(store, '/workspace', { changed_files: ['/src/big.ts'] });
+		const result = await handleReviewContext(store, '/workspace', { changed_files: ['/src/big.ts'] });
 		expect(result).toContain('analyzed 500 of 510 changed functions');
 	});
 
-	it('omits the truncation line below the cap', () => {
+	it('omits the truncation line below the cap', async () => {
 		store = createTestStore();
 		seedGraph(store);
-		const result = handleReviewContext(store, '/workspace', { changed_files: ['/src/a.ts'] });
+		const result = await handleReviewContext(store, '/workspace', { changed_files: ['/src/a.ts'] });
 		expect(result).not.toContain('changed functions');
 	});
 });

@@ -214,6 +214,7 @@ export function createHarness(initial: ReturnType<typeof folderEntry>[], options
     inheritSettingsFromPanel: () => undefined,
     loadHistory: options.loadHistory ?? (async () => []),
     storedSessionsOf: async () => [],
+    completeStoredSessionsOf: async () => [],
     sendFolderState: async (instance) => {
       folderStatePushes.push(instance);
       if (holdFolderState.gate) await holdFolderState.gate;

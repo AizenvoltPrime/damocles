@@ -5,7 +5,7 @@ import type { PaletteCommand } from '../preload/overlay-channels';
 import type { ScmCommitVariant } from '../preload/scm-channels';
 import { EDITOR_GIT_KEYBINDINGS, type EditorCommand, type EditorMenuShortcut, type SearchEditorCommand, type SearchViewCommand } from '../preload/shell-channels';
 import type { MenuActions, MenuState } from './menu';
-import type { DesktopLocalizationService } from './platform/localization-service';
+import type { DesktopLocalizationService } from '../local-services/localization-service';
 
 // Stable ids: tests find items with Menu.getApplicationMenu().getMenuItemById(id) and click() them; the palette runs them.
 export const MENU_IDS = {
@@ -86,6 +86,7 @@ export const MENU_IDS = {
   newBrowserPage: 'damocles.browser.newPage',
   toggleBrowserDevTools: 'damocles.browser.toggleDevTools',
   showLog: 'damocles.showLog',
+  restartEngine: 'damocles.restartEngine',
   openSettings: 'damocles.openSettings',
   about: 'damocles.about',
   releaseNotes: 'damocles.releaseNotes',
@@ -775,6 +776,8 @@ export function desktopCommands(projects: readonly OpenFolder[], actions: MenuAc
     { id: MENU_IDS.chatHandOffToProjectFolder, title: t('Hand Off to Project Folder'), category: chat, enabled: (context) => context.handOff?.canHandOff === true && context.handOff.place === 'worktree', run: () => actions.handOff('project') },
     ...worktreeCommands(actions),
     { id: MENU_IDS.showLog, title: pkg('command.showLog.title'), category: chat, run: () => actions.showLog() },
+    // VS Code's Restart Extension Host: a new engine replaces the running one, or the one left down after its fourth crash
+    { id: MENU_IDS.restartEngine, title: t('Restart Engine'), category: chat, run: () => actions.restartEngine() },
     { id: MENU_IDS.about, title: t('About Damocles'), category: help, run: () => actions.about() },
     { id: MENU_IDS.releaseNotes, title: t('Release Notes'), category: help, run: () => actions.releaseNotes() },
     { id: MENU_IDS.checkForUpdates, title: t('Check for Updates...'), category: help, enabled: (context) => context.updateCheck, run: () => actions.checkForUpdates() },

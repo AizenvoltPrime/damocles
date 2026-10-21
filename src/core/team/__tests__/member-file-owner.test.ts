@@ -269,7 +269,7 @@ describe("a team member's session file while a pi extension holds its stopped ru
     const p = panel([{ responses: [fauxAssistantMessage('On it.')], holdBeforeSettle: true }]);
     const { memberFile } = await stoppedWhileHeld(p);
 
-    await deletePiSession(p.cwd, SESSION);
+    await deletePiSession(p.cwd, SESSION, { forget: () => undefined });
     expect(fs.existsSync(memberFile)).toBe(false);
     p.held[0]!.release();
     await within(p.opened[0]!.forgotten, 10_000, 'the old member session');
@@ -290,7 +290,7 @@ describe("a team member's session file while a pi extension holds its stopped ru
       throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' });
     });
     try {
-      await deletePiSession(p.cwd, SESSION);
+      await deletePiSession(p.cwd, SESSION, { forget: () => undefined });
     } finally {
       rm.mockRestore();
     }

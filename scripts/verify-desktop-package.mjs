@@ -4,7 +4,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, posix, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FuseState, FuseV1Options, getCurrentFuseWire } from '@electron/fuses';
-import { asarUnpackFor } from '../src/desktop/main/platform/unpacked-assets.ts';
+import { ASAR_UNPACK, asarUnpackFor } from '../src/desktop/main/platform/unpacked-assets.ts';
 import { asarFiles, readAsarFile, readAsarHeader } from './asar-archive.mjs';
 import { isEntryPoint } from './entry-point.mjs';
 
@@ -31,12 +31,14 @@ export const REPORTED_FUSES = ['LoadBrowserProcessSpecificV8Snapshot', 'WasmTrap
 const PUBLISH = { provider: 'github', owner: 'AizenvoltPrime', repo: 'damocles' };
 // Must equal win.signtoolOptions.publisherName in electron-builder.yml: the common name of the SignPath Foundation release certificate.
 export const WINDOWS_PUBLISHER = 'SignPath Foundation';
-// The scripts that run outside the main process: the worker threads, the shell sentinel, the formatter and pty hosts, the Quick
-// Open and watch workers, and the askpass helper git and ssh start.
-const WORKERS = ['compass-worker.js', 'usage-stats-worker.js', 'quick-open-worker.js', 'watch-worker.js', 'sentinel.js', 'formatter-host.js', 'pty-host.js', 'askpass-main.js'];
+// Every bundled script ASAR_UNPACK lists: the worker threads (the process launcher's among them), the shell sentinel, the
+// formatter and pty hosts, the Quick Open and watch workers, and the askpass helper git and ssh start.
+export const WORKERS = ASAR_UNPACK.filter((glob) => /^dist\/[^/*]+\.js$/.test(glob)).map((glob) => glob.slice('dist/'.length));
 // The license notices electron-builder.yml ships inside app.asar (files) and beside it (extraResources).
 const PACKED_NOTICES = ['LICENSE', 'THIRD-PARTY-NOTICES.md'];
 const RESOURCE_NOTICES = ['monaco-editor-ThirdPartyNotices.txt'];
+// Damocles Core's bundle: utilityProcess.fork loads it from inside app.asar, so it stays under asar integrity (coreHostEntryPath).
+export const CORE_HOST_BUNDLE = 'dist/core-host.js';
 // Settings › About's What's new reads it (src/desktop/main/release-notes.ts); the desktop build copies it from the repo root.
 const PACKED_CHANGELOG = 'dist/desktop/CHANGELOG.md';
 const LINUX_INSTALL_BINARY = '/opt/Damocles/damocles';
@@ -216,6 +218,17 @@ export function checkAsarEntries(entries) {
   return [forbidden.length === 0 ? pass('asar contents', `${entries.length} entries, no sources, tests, source maps or build tooling`) : fail('asar contents', `must not ship: ${forbidden.slice(0, 10).join(', ')}`)];
 }
 
+/** The core host bundle is packed inside app.asar and has no unpacked copy. */
+export function checkCoreHost(entries, unpackedFiles) {
+  const entry = entries.find(({ path }) => path === CORE_HOST_BUNDLE);
+  const problems = [
+    ...(entry === undefined ? ['not in app.asar'] : []),
+    ...(entry?.entry.unpacked ? ['marked unpacked in app.asar'] : []),
+    ...(unpackedFiles.includes(CORE_HOST_BUNDLE) ? ['has a copy in app.asar.unpacked'] : []),
+  ];
+  return [problems.length === 0 ? pass('core host', `${CORE_HOST_BUNDLE} is inside app.asar only`) : fail('core host', problems.join('; '))];
+}
+
 function listFiles(dir) {
   if (!existsSync(dir)) return [];
   return readdirSync(dir, { recursive: true, withFileTypes: true })
@@ -361,6 +374,7 @@ export async function verifyPackage({ platform, arch, app, repoRoot, readFuseWir
 
   const unpackedFiles = listFiles(unpacked);
   results.push(...checkUnpackedSet(unpackedFiles, asarUnpackFor(platform)));
+  results.push(...checkCoreHost(entries, unpackedFiles));
   const unpackedScripts = unpackedFiles.filter((file) => /\.(c|m)?js$/.test(file));
   results.push(pass('unpacked scripts (outside asar integrity)', unpackedScripts.join(', ')));
 
@@ -389,7 +403,8 @@ export async function verifyPackage({ platform, arch, app, repoRoot, readFuseWir
   if (platform === 'win32') {
     const triplet = `win32_${arch}`;
     results.push(checkFile('koffi native', join(unpacked, 'node_modules', '@koromix', `koffi-win32-${arch}`, triplet, 'koffi.node')));
-    results.push(packedPaths.includes('node_modules/koffi/package.json') ? pass('koffi loader', 'node_modules/koffi in app.asar') : fail('koffi loader', 'node_modules/koffi/package.json is not in app.asar'));
+    // the launcher worker runs from app.asar.unpacked, so it requires koffi from there
+    results.push(checkFile('koffi loader', join(unpacked, 'node_modules', 'koffi', 'package.json')));
   }
   if (platform === 'win32') {
     // Windows watches with fs.watch and never loads @parcel/watcher; electron-builder.yml files leaves out its prebuild.

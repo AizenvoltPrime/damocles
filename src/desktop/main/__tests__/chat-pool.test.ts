@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { ChatWorkQueue, chatsToUnload, holdsWorktreeSetup, isActiveActivity, RETAINED_IDLE_CHATS, type PooledChat } from '../chat-pool';
+import { holdsWorktreeSetup, isActiveActivity } from '../../../shared/chat-retention';
+import { ChatWorkQueue, chatsToUnload, RETAINED_IDLE_CHATS, type PooledChat } from '../chat-pool';
 
 function chat(id: string, lastViewed: number, overrides: Partial<PooledChat> = {}): PooledChat {
   return { id, selected: false, active: false, restoring: false, hasSession: true, empty: false, lastViewed, ...overrides };

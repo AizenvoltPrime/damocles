@@ -1,14 +1,21 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication } from '@playwright/test';
-import { logBeforeQuit, mainLog, quitLog } from './support/app';
+import { coreQuitLog, logBeforeQuit, logFiles, mainLog, quitLog } from './support/app';
 import { activeChat, expect, test } from './support/fixtures';
-import { OS_KEYRING_ENV } from './support/hermetic';
+import { OS_KEYRING_ENV, type HermeticHome } from './support/hermetic';
 import { closeSettingsModal, openSettingsModal, settingsRow, waitForSettingsState } from './support/settings';
 import { chatInput } from './support/ui';
 
 // Leading words of the notice in src/core/volatile-secrets-notice.ts.
 const KEYRING_WARNING = 'Damocles cannot reach your operating system\'s keyring, so the key or sign-in you just saved';
+
+/** Fails when any log file of the quit app, main's, core's or Git's, holds text. */
+function expectNoLogHolds(home: HermeticHome, text: string): void {
+  quitLog(home);
+  coreQuitLog(home);
+  for (const file of logFiles(home)) expect(fs.readFileSync(file, 'utf8'), file).not.toContain(text);
+}
 
 /** Saves the DeepSeek key through the settings modal, as a user does, and waits for the host's answer to this save. */
 async function saveDeepseekKey(app: ElectronApplication, key: string): Promise<void> {
@@ -52,7 +59,7 @@ test('with no keyring on Linux, secrets stay in memory and the user is warned on
   expect(logBeforeQuit(home).split(`[notification:warning] ${KEYRING_WARNING}`).length - 1).toBe(1);
   for (const key of ['e2e-secret-value', 'e2e-secret-value-2']) {
     expect(desktop.output()).not.toContain(key);
-    expect(quitLog(home)).not.toContain(key);
+    expectNoLogHolds(home, key);
   }
   const relaunched = await launch({ args: ['--password-store=basic'] });
   const again = await activeChat(relaunched.app);
@@ -78,7 +85,7 @@ test('secrets are encrypted at rest and survive a restart', async ({ home, launc
 
   await desktop.close();
   expect(desktop.output()).not.toContain(secret);
-  expect(quitLog(home)).not.toContain(secret);
+  expectNoLogHolds(home, secret);
   const relaunched = await launch();
   const again = await activeChat(relaunched.app);
   await expect(chatInput(again)).toBeVisible();

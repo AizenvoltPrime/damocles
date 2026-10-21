@@ -1,5 +1,5 @@
 import type { InputParse } from '@/components/settings/controls/SettingInput.vue';
-import { DESKTOP_CONFIGURATION } from '../../../main/desktop-configuration';
+import { DESKTOP_CONFIGURATION } from '../../../local-services/desktop-configuration';
 
 /**
  * A whole number within the key's declared range, as `isDesktopSettingValue` in main requires. Only decimal digits count, with

@@ -1,6 +1,6 @@
 import { MAX_MESSAGE_PREVIEW_LINES, MAX_OVERLAY_LABEL_LENGTH } from '../../preload/overlay-channels';
 import type { TerminalStatus } from '../../preload/terminal-channels';
-import type { TerminalConfirmOnKill } from '../desktop-configuration';
+import type { TerminalConfirmOnKill } from '../../local-services/desktop-configuration';
 import type { MessageQuestion } from '../message-dialog';
 import type { KillListEntry } from './terminal-service';
 

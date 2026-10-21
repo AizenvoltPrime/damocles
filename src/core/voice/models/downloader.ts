@@ -1,11 +1,16 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
+import { log } from "../../logger";
 import type { ModelEntry, ModelFileEntry } from "./manifest";
 import { modelVersionDir } from "./manifest";
 
-const STALE_LOCK_AGE_MS: number = 10 * 60 * 1000;
+// A holder touches its lock every LOCK_HEARTBEAT_MS, so a lock untouched for STALE_LOCK_AGE_MS outlived its process.
+const LOCK_HEARTBEAT_MS: number = 20_000;
+const STALE_LOCK_AGE_MS: number = 2 * 60 * 1000;
+const LOCK_POLL_MS: number = 500;
+const LOCK_OWNER_FILE = "owner";
 
 export type DownloadProgress = {
   modelId: string;
@@ -44,13 +49,6 @@ export class CancelledError extends Error {
   }
 }
 
-export class ModelLockBusyError extends Error {
-  constructor(modelId: string) {
-    super(`Another download is already in progress for model ${modelId}`);
-    this.name = "ModelLockBusyError";
-  }
-}
-
 export type DownloadModelOptions = {
   entry: ModelEntry;
   modelsRoot: string;
@@ -67,7 +65,8 @@ export async function downloadModel(opts: DownloadModelOptions): Promise<Downloa
 
   const versionDir = modelVersionDir(opts.modelsRoot, opts.entry);
   const lockDir = join(opts.modelsRoot, opts.entry.id, ".lock");
-  const release = await acquireModelLock(lockDir);
+  // A download of the same model in flight, in this process or another, is waited out; its finished files are then kept.
+  const release = await acquireModelLock(lockDir, opts.signal);
   try {
     await fs.mkdir(versionDir, { recursive: true });
     for (const file of opts.entry.files) {
@@ -222,28 +221,53 @@ async function sha256OfFile(path: string): Promise<string> {
   });
 }
 
-async function acquireModelLock(lockDir: string): Promise<() => Promise<void>> {
+/**
+ * Takes the model's lock folder, waiting while another holder keeps it fresh; rejects with CancelledError on abort. The
+ * release removes the folder only while it is still this holder's.
+ */
+async function acquireModelLock(lockDir: string, signal: AbortSignal | undefined): Promise<() => Promise<void>> {
   await fs.mkdir(dirname(lockDir), { recursive: true });
+  const owner = randomUUID();
   while (true) {
+    if (signal?.aborted === true) throw new CancelledError();
     try {
       await fs.mkdir(lockDir, { recursive: false });
-      return async (): Promise<void> => {
-        try {
-          await fs.rm(lockDir, { recursive: true, force: true });
-        } catch {
-          /* swallowed: best-effort cleanup */
-        }
-      };
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
       const stat = await fs.stat(lockDir).catch(() => null);
       if (stat === null) continue;
-      const age = Date.now() - stat.mtimeMs;
-      if (age > STALE_LOCK_AGE_MS) {
+      if (Date.now() - stat.mtimeMs > STALE_LOCK_AGE_MS) {
         await fs.rm(lockDir, { recursive: true, force: true });
         continue;
       }
-      throw new ModelLockBusyError(dirname(lockDir).split(/[/\\]/).pop() ?? "?");
+      await delay(LOCK_POLL_MS, signal);
+      continue;
     }
+    await fs.writeFile(join(lockDir, LOCK_OWNER_FILE), owner);
+    const heartbeat = setInterval(() => {
+      const now = new Date();
+      fs.utimes(lockDir, now, now).catch((err: unknown) => log("[VoiceModels] could not refresh the download lock %s:", lockDir, err));
+    }, LOCK_HEARTBEAT_MS);
+    heartbeat.unref();
+    return async (): Promise<void> => {
+      clearInterval(heartbeat);
+      const holder = await fs.readFile(join(lockDir, LOCK_OWNER_FILE), "utf8").catch(() => null);
+      if (holder === owner) await fs.rm(lockDir, { recursive: true, force: true });
+    };
   }
+}
+
+/** Resolves after `ms`, or rejects with CancelledError once `signal` aborts. */
+function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(new CancelledError());
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }

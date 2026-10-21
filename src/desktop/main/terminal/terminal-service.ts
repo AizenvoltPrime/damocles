@@ -44,7 +44,7 @@ import {
   type TerminalConfirmOnKill,
   type TerminalCursorStyle,
   type TerminalMultiLinePasteWarning,
-} from '../desktop-configuration';
+} from '../../local-services/desktop-configuration';
 import { terminalsToConfirm } from './kill-confirmation';
 import { MAX_OVERLAY_LABEL_LENGTH } from '../../preload/overlay-channels';
 import { cwdFolderName, newShellNonce, Osc633Stream, parseShellSequence, sanitizeDisplayText, sanitizeTitle } from './shell-integration';

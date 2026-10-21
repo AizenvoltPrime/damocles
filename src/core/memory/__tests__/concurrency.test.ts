@@ -101,6 +101,7 @@ function makeCtx(
     fallbackWorkspace: () => WORKSPACE,
     openFolders: () => [],
     nonProjectFolders: () => [],
+    folderExists: async () => true,
     autoExtractEnabled: true,
     trigger: 'auto',
     onNoModel: () => {},

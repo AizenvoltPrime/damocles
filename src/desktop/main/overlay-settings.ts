@@ -1,21 +1,26 @@
 import type { WebContents } from 'electron';
 import type { Disposable } from '../../platform/disposable';
 import type { SettingsStore } from '../../platform/settings-store';
-import type { PanelManager } from '../../core/chat-panel/panel-manager';
-import type { WebviewToExtensionMessage } from '../../shared/types/messages';
+import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../../shared/types/messages';
 import { isSettingsAccountId, isSettingsSectionId, type SettingsTarget } from '../../shared/settings-sections';
 import { SETTINGS_VIEW_REQUEST_TYPES } from '../../shared/settings-view-messages';
 import { MAX_SETTINGS_MESSAGE_CHARS, OVERLAY_CHANNELS, type OverlayPrefs, type OverlayPrefWrite } from '../preload/overlay-channels';
 import type { TerminalProfileReport } from '../preload/terminal-channels';
-import { DESKTOP_CONFIGURATION, isDesktopSettingValue, TERMINAL_PROFILES_SETTING, type DesktopLanguageSetting } from './desktop-configuration';
+import { DESKTOP_CONFIGURATION, isDesktopSettingValue, TERMINAL_PROFILES_SETTING, type DesktopLanguageSetting } from '../local-services/desktop-configuration';
 import type { OverlayHost } from './overlay';
 import { isVersion } from './release-notes';
 import { asJsonValue, isWebviewMessage } from './views';
 
+// The running core's side of the settings modal (PanelManager.attachView): an attachment is named by its generation.
+export interface SettingsViewHost {
+  attachSettingsView(panelId: string, attachment: number, view: { post(message: ExtensionToWebviewMessage): void; detached(): void }): Promise<Disposable>;
+  dispatchSettingsView(attachment: number, message: WebviewToExtensionMessage): Promise<void>;
+}
+
 export interface OverlaySettingsDeps {
   readonly overlay: OverlayHost;
   readonly settings: SettingsStore;
-  readonly panelManager: () => PanelManager | undefined;
+  readonly core: () => SettingsViewHost | undefined;
   // the core panel id of the selected chat, opening an empty chat on the default project when none is loaded (the
   // promptTarget rule); undefined when no chat could be had
   readonly targetPanel: () => Promise<string | undefined>;
@@ -39,6 +44,8 @@ interface Attachment {
   readonly panelId: string;
   readonly generation: number;
   readonly handle: Disposable;
+  // false once core detached it (the chat closed, or another view took its place)
+  live: boolean;
 }
 
 /**
@@ -120,6 +127,15 @@ export class OverlaySettings {
     this.deps.overlay.dismiss('settings');
   }
 
+  /**
+   * The core the modal is attached to ended without detaching it (a crash, a halt, a reload): nothing it sends reaches a
+   * chat until it attaches to the next core's, which an open modal does once that core is ready.
+   */
+  coreEnded(): void {
+    if (this.attachment) this.attachment.live = false;
+    this.selectionChanged();
+  }
+
   /** The selected chat may have changed; an open modal follows it. */
   selectionChanged(): void {
     if (!this.open) return;
@@ -135,25 +151,33 @@ export class OverlaySettings {
   private async attachToTarget(): Promise<void> {
     if (!this.open) return;
     const panelId = await this.deps.targetPanel();
-    const panelManager = this.deps.panelManager();
-    if (!this.open || panelId === undefined || panelManager === undefined) return;
+    const core = this.deps.core();
+    if (!this.open || panelId === undefined || core === undefined) return;
     const current = this.attachment;
-    if (current !== undefined && current.panelId === panelId && panelManager.attachedView(panelId) !== undefined) return;
+    if (current !== undefined && current.panelId === panelId && current.live) return;
     const generation = ++this.generation;
     // Sent before the attach, which posts the chat's host prompts to the view; the renderer resets its stores on this.
     // The first attachment's generation travels in the request itself.
     if (current !== undefined) this.deps.overlay.send(OVERLAY_CHANNELS.settingsAttached, { generation });
-    // Both callbacks compare this.generation, not this.attachment: attachView calls post before it returns the handle.
-    const handle = panelManager.attachView(panelId, {
+    let detachedEarly = false;
+    // Both callbacks compare this.generation, not this.attachment: the attach posts before it resolves.
+    const handle = await core.attachSettingsView(panelId, generation, {
       post: (message) => {
         if (this.generation === generation) this.deps.overlay.send(OVERLAY_CHANNELS.settingsMessage, message);
       },
       // The chat closed under the open modal: it follows the selection to another chat.
       detached: () => {
+        if (this.attachment?.generation === generation) this.attachment.live = false;
+        else detachedEarly = true;
         if (this.open && this.generation === generation) this.selectionChanged();
       },
     });
-    this.attachment = { panelId, generation, handle };
+    // the modal closed while core attached it
+    if (this.generation !== generation) {
+      handle.dispose();
+      return;
+    }
+    this.attachment = { panelId, generation, handle, live: !detachedEarly };
     current?.handle.dispose();
   }
 
@@ -169,15 +193,22 @@ export class OverlaySettings {
       this.deps.log('[settings] dropped a settings message sent for an earlier attachment');
       return;
     }
+    if (!attachment.live) {
+      this.deps.log('[settings] dropped a settings message: the chat or engine it was attached to is gone');
+      return;
+    }
     const message = value.message;
     // Only the type is ever logged: these messages carry API keys and prompt answers.
     if (!isWebviewMessage(message) || !SETTINGS_VIEW_REQUEST_TYPES.has(message.type)) {
       this.deps.log(`[settings] refused a settings message of type ${isWebviewMessage(message) ? JSON.stringify(message.type.slice(0, 64)) : 'none'}`);
       return;
     }
-    const panelManager = this.deps.panelManager();
-    if (panelManager === undefined) return;
-    panelManager.dispatchFromView(attachment.panelId, message as WebviewToExtensionMessage)
+    const core = this.deps.core();
+    if (core === undefined) {
+      this.deps.log(`[settings] dropped ${message.type}: the engine is not running`);
+      return;
+    }
+    core.dispatchSettingsView(attachment.generation, message as WebviewToExtensionMessage)
       .catch((err: unknown) => this.deps.log(`[settings] ${message.type} failed: ${err instanceof Error ? err.message : String(err)}`));
   }
 

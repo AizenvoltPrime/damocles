@@ -4,7 +4,7 @@ import { DAMOCLES_USER_RENAMED_ENTRY, DAMOCLES_TAG_ENTRY } from './constants';
 import { extractOriginalInputs } from './original-input';
 import { storedTypedText } from './prompt-context';
 import { extractTerminalAttachmentCounts } from './terminal-attachments';
-import { latestWorktreeEntry } from '../../worktrees/hand-off';
+import { latestWorktreeEntry } from '../../worktrees/worktree-entry';
 
 /** Fields computed from a single opened pi session, including the in-tree rename marker and tag. */
 export interface PiSessionFields {
@@ -173,7 +173,7 @@ export function newestUniquePrompts(branch: readonly SessionEntry[]): string[] {
   return newest;
 }
 
-/** Persisted by `session-meta-cache.ts`: a change to what fills it must bump `SESSION_META_SCHEMA`. */
+/** Persisted by the session metadata index: a change to what fills it must bump `SESSION_META_SCHEMA` (`meta-index/store.ts`). */
 export interface SessionFileMeta {
   /** `null` when the file has no session header. */
   stored: StoredSession | null;

@@ -5,7 +5,7 @@ import type { NotificationService } from '../../platform/notification-service';
 import type { ShellService } from '../../platform/shell-service';
 import type { ShellPlatform } from '../preload/shell-channels';
 import { canCheck, type UpdateSnapshot, type UpdateState, type VersionInfo } from '../preload/updates';
-import { Emitter } from './platform/emitter';
+import { Emitter } from '../local-services/emitter';
 
 // updater.test.ts keeps this equal to package.json repository.url.
 export const RELEASES_URL = 'https://github.com/AizenvoltPrime/damocles/releases';

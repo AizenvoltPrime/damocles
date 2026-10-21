@@ -16,6 +16,7 @@ import {
   sessionLeaseBlocker,
   sessionLeasePath,
   sessionLeasesOf,
+  setEndedLeaseHolders,
   type SessionLeaseHolder,
 } from '../session-lease';
 import { ensurePiSessionDir } from '../session-dir';
@@ -136,6 +137,68 @@ describe('session lease across processes', () => {
     fs.utimesSync(sessionLeasePath(sessionId), heartbeatStopped, heartbeatStopped);
     expect(acquireSessionLease(sessionId, mine)).toBe(true);
     releaseSessionLease(sessionId, mine);
+  });
+
+  describe('a holder the host saw end', () => {
+    afterEach(() => setEndedLeaseHolders([]));
+
+    async function killedHolder(sessionId: string): Promise<{ pid: number; endedAt: number }> {
+      const other = await otherWindow(sessionId);
+      const pid = other.child.pid!;
+      const exited = new Promise((resolve) => other.child.once('exit', resolve));
+      other.child.kill('SIGKILL');
+      await exited;
+      return { pid, endedAt: Date.now() };
+    }
+
+    it('takes its lease over at once, and records this process as the owner', async () => {
+      const sessionId = newSessionId();
+      const ended = await killedHolder(sessionId);
+      setEndedLeaseHolders([ended]);
+
+      expect(sessionLeaseBlocker(sessionId)).toBeUndefined();
+      const mine = holder();
+      expect(acquireSessionLease(sessionId, mine)).toBe(true);
+      expect(readSessionLeaseOwner(sessionId)?.pid).toBe(process.pid);
+      expect(fs.readdirSync(SESSION_LEASE_DIR).filter((name) => name.startsWith(sessionId) && name.endsWith('.ended'))).toEqual([]);
+      releaseSessionLease(sessionId, mine);
+    });
+
+    it('takes nothing over when the lock moved after the process ended, as a later holder with a reused pid moves it', async () => {
+      const sessionId = newSessionId();
+      const ended = await killedHolder(sessionId);
+      const heartbeat = new Date(ended.endedAt + 2_000);
+      fs.utimesSync(sessionLeasePath(sessionId), heartbeat, heartbeat);
+      setEndedLeaseHolders([ended]);
+
+      expect(acquireSessionLease(sessionId, holder())).toBe(false);
+      expect(sessionLeaseBlocker(sessionId)).toEqual({ kind: 'other-process' });
+      fs.rmSync(sessionLeasePath(sessionId), { recursive: true, force: true });
+    });
+
+    it('leaves a lease about to turn stale to the staleness takeover any process may make', async () => {
+      const sessionId = newSessionId();
+      const ended = await killedHolder(sessionId);
+      const lastHeartbeat = new Date(Date.now() - SESSION_LEASE_STALE_MS + 1_000);
+      fs.utimesSync(sessionLeasePath(sessionId), lastHeartbeat, lastHeartbeat);
+      setEndedLeaseHolders([ended]);
+
+      expect(acquireSessionLease(sessionId, holder())).toBe(false);
+      expect(sessionLeaseBlocker(sessionId)).toEqual({ kind: 'other-process', heldUntilMs: lastHeartbeat.getTime() + SESSION_LEASE_STALE_MS });
+      fs.rmSync(sessionLeasePath(sessionId), { recursive: true, force: true });
+    });
+
+    it('trusts no owner record from another host', async () => {
+      const sessionId = newSessionId();
+      const ended = await killedHolder(sessionId);
+      const ownerFile = path.join(SESSION_LEASE_DIR, `${sessionId}.owner`);
+      const owner = JSON.parse(fs.readFileSync(ownerFile, 'utf8')) as Record<string, unknown>;
+      fs.writeFileSync(ownerFile, JSON.stringify({ ...owner, hostname: `not-${os.hostname()}` }));
+      setEndedLeaseHolders([ended]);
+
+      expect(acquireSessionLease(sessionId, holder())).toBe(false);
+      fs.rmSync(sessionLeasePath(sessionId), { recursive: true, force: true });
+    });
   });
 
   it('tells every holder once its lock is taken from it, and forgets the lease', () => {

@@ -56,6 +56,8 @@ export interface NotificationEntry {
   readonly at: number;
   readonly read: boolean;
   readonly body: NotificationBody;
+  // a notice main keeps until it is answered (the engine halted): the row offers its actions until then
+  readonly awaitingAnswer?: true;
 }
 
 export interface NotificationCenterState {

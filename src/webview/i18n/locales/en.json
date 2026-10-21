@@ -222,7 +222,30 @@
       "keyStored": "Key stored",
       "noKey": "No key",
       "language": "Language",
-      "languageHint": "Language used for speech-to-text transcription."
+      "languageHint": "Language used for speech-to-text transcription.",
+      "runtime": {
+        "idle": "Not running yet.",
+        "ready": "Running.",
+        "cancelled": "Cancelled.",
+        "details": "Details",
+        "stage": {
+          "detecting": "Checking this computer…",
+          "checking-disk": "Checking disk space…",
+          "downloading-python": "Downloading Python…",
+          "extracting-python": "Extracting Python…",
+          "creating-venv": "Creating the Python environment…",
+          "installing-pip": "Installing the voice packages…",
+          "smoke-check": "Verifying the runtime…",
+          "downloading-models": "Downloading the voice models…",
+          "launching": "Starting voice…"
+        },
+        "action": {
+          "start": "Start",
+          "install": "Install",
+          "retry": "Retry",
+          "cancel": "Cancel"
+        }
+      }
     },
     "explore": {
       "modelDefault": "Default",
@@ -2572,6 +2595,10 @@
       "voiceLanguage": {
         "label": "Spoken language",
         "description": "Language used for speech-to-text transcription."
+      },
+      "voiceRuntime": {
+        "label": "Voice runtime",
+        "description": "The on-device runtime behind the wake word and spoken replies."
       },
       "wakePhrase": {
         "label": "Wake phrase",

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import type { Disposable } from '../../../platform/disposable';
-import type { DiffView, EditorService } from '../../../platform/editor-service';
+import type { DiffRequest, DiffView, EditorService } from '../../../platform/editor-service';
 import type { WindowService } from '../../../platform/window-service';
 import type { ChatReviewScope, ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { EditorPane } from '../editor-pane';
@@ -15,6 +15,15 @@ export interface ChatTabMessenger {
   post(panelId: string, message: ExtensionToWebviewMessage): void;
 }
 
+/** A diff main shows: closed settles once it is gone, its tab closed by the user or by close(). */
+export interface HostDiffView extends DiffView {
+  readonly closed: Promise<void>;
+}
+
+export interface DesktopEditorService extends EditorService {
+  showDiff(req: DiffRequest): Promise<HostDiffView>;
+}
+
 /**
  * D15: an approval diff (showDiff with approvalId) goes to the asking chat's Monaco overlay, held there until the permission
  * card's Open diff; every other open goes to the editor pane, taking focus only when the caller did not set preserveFocus.
@@ -25,7 +34,7 @@ export function createDesktopEditorService(
   pane: () => EditorPane,
   openAppSettings: WindowService['openAppSettings'],
   showChatReview: (panelId: string, scope: ChatReviewScope) => Promise<void>,
-): EditorService {
+): DesktopEditorService {
   const unavailable = (feature: string): Promise<never> => Promise.reject(new Error(`${feature} is not available in the desktop app yet`));
   return {
     openFile: (filePath, opts) => {
@@ -38,10 +47,10 @@ export function createDesktopEditorService(
     },
     // The disk text: desktop's unsaved buffers are the user's, and the agent's tools read and write the disk.
     readText: (filePath) => readFileText(filePath),
-    showDiff: async (req): Promise<DiffView> => {
+    showDiff: async (req): Promise<HostDiffView> => {
       if (req.approvalId === undefined) {
         const view = await pane().showDiff(req.title, req.filePath, req.left, req.right, { focus: req.preserveFocus !== true });
-        return { close: () => Promise.resolve(view.close()) };
+        return { close: () => Promise.resolve(view.close()), closed: view.closed };
       }
       const [original, modified] = await Promise.all([sideDocument(req.left), sideDocument(req.right)]);
       const viewId = randomUUID();
@@ -54,13 +63,18 @@ export function createDesktopEditorService(
         original,
         modified,
       });
-      let closed = false;
+      // The chat's overlay deciding nothing, an approval diff goes only when core closes it.
+      let settle!: () => void;
+      const closed = new Promise<void>((resolve) => (settle = resolve));
+      let closing = false;
       return {
         close: async () => {
-          if (closed) return;
-          closed = true;
+          if (closing) return;
+          closing = true;
           tabs.post(panelId, { type: 'editorCloseView', viewId });
+          settle();
         },
+        closed,
       };
     },
     // A rendered preview tab in the pane, never the OS, so a model-named file is not launched.

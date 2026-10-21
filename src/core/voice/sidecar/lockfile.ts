@@ -1,7 +1,9 @@
-import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { userInfo } from "node:os";
 import { join } from "node:path";
+import { log } from "../../logger";
+import { runProcess } from "../../process-launcher";
 import { windowsSystemTool } from "../../system-tools";
 
 export type LockContents = {
@@ -12,15 +14,19 @@ export type LockContents = {
   startedAt: number;
 };
 
+/** Every holder, the owner and each attached window, keeps the lock fresh until it releases or detaches. */
 export type AcquireResult =
   | {
       kind: "owned";
       commit: (contents: LockContents) => Promise<void>;
+      /** Removes the lock while it is still this owner's. */
       release: () => Promise<void>;
     }
-  | { kind: "attached"; existing: LockContents };
+  | { kind: "attached"; existing: LockContents; detach: () => void };
 
-const STALE_LOCK_AGE_MS = 10 * 60 * 1000;
+// A holder touches the lock folder every LOCK_HEARTBEAT_MS, so one untouched for STALE_LOCK_AGE_MS has no live holder.
+const LOCK_HEARTBEAT_MS = 20_000;
+const STALE_LOCK_AGE_MS = 2 * 60 * 1000;
 // Must be strictly larger than VoiceSidecarManager.COLD_START_TIMEOUT_MS
 // (60s). Otherwise a second window can give up waiting for the owner
 // to commit and delete the live owner's lockdir while it's still
@@ -35,11 +41,13 @@ const CLAIMING_POLL_INTERVAL_MS = 250;
 // than a clean failure.
 const HARD_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
 
-type LockFileOnDisk = LockContents & { state: "claiming" | "ready" };
+// `owner` names the acquire that wrote the lock, so a release never removes a lock another window took over.
+type LockFileOnDisk = LockContents & { state: "claiming" | "ready"; owner: string };
 
 export async function acquireSidecarLock(lockDir: string): Promise<AcquireResult> {
   const dataPath = join(lockDir, "data.json");
   const hardDeadline = Date.now() + HARD_LOCK_TIMEOUT_MS;
+  const owner = randomUUID();
   while (true) {
     try {
       await fs.mkdir(lockDir, { recursive: false });
@@ -47,8 +55,8 @@ export async function acquireSidecarLock(lockDir: string): Promise<AcquireResult
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
 
       const ready = await waitForReady(dataPath, CLAIMING_GRACE_MS);
-      if (ready !== null && (await isLockOwnerAlive(ready))) {
-        return { kind: "attached", existing: stripState(ready) };
+      if (ready !== null && (await isLockOwnerAlive(ready, lockDir))) {
+        return { kind: "attached", existing: stripState(ready), detach: keepFresh(lockDir) };
       }
       // Before evicting: re-read and confirm the claimer is actually
       // dead. Nuking a live writer's lockdir lets two managers race
@@ -74,6 +82,7 @@ export async function acquireSidecarLock(lockDir: string): Promise<AcquireResult
       continue;
     }
 
+    const stopFresh = keepFresh(lockDir);
     await writeAtomic(dataPath, {
       pid: process.pid,
       port: 0,
@@ -81,16 +90,30 @@ export async function acquireSidecarLock(lockDir: string): Promise<AcquireResult
       protocolVersion: 0,
       startedAt: Date.now(),
       state: "claiming",
+      owner,
     });
 
     return {
       kind: "owned",
       commit: async (contents: LockContents) => {
-        await writeAtomic(dataPath, { ...contents, state: "ready" });
+        await writeAtomic(dataPath, { ...contents, state: "ready", owner });
       },
-      release: async () => removeLockDir(lockDir),
+      release: async () => {
+        stopFresh();
+        if ((await readLockFile(dataPath))?.owner === owner) await removeLockDir(lockDir);
+      },
     };
   }
+}
+
+/** Touches the lock folder every LOCK_HEARTBEAT_MS until the returned stop is called. */
+function keepFresh(lockDir: string): () => void {
+  const timer = setInterval(() => {
+    const now = new Date();
+    fs.utimes(lockDir, now, now).catch((err: unknown) => log("[VoiceSidecar] could not refresh the sidecar lock %s:", lockDir, err));
+  }, LOCK_HEARTBEAT_MS);
+  timer.unref();
+  return () => clearInterval(timer);
 }
 
 async function waitForReady(dataPath: string, timeoutMs: number): Promise<LockFileOnDisk | null> {
@@ -124,6 +147,7 @@ async function readLockFile(dataPath: string): Promise<LockFileOnDisk | null> {
       protocolVersion: parsed.protocolVersion,
       startedAt: parsed.startedAt,
       state,
+      owner: typeof parsed.owner === "string" ? parsed.owner : "",
     };
   } catch {
     return null;
@@ -158,15 +182,11 @@ async function applyOwnerOnlyAcl(filePath: string): Promise<void> {
   if (process.platform !== "win32") return;
   const username = userInfo().username;
   if (username.length === 0) return;
-  await new Promise<void>((resolve) => {
-    const proc = spawn(
-      windowsSystemTool("icacls"),
-      [filePath, "/inheritance:r", "/grant:r", `${username}:F`],
-      { stdio: "ignore", windowsHide: true },
-    );
-    proc.once("error", () => resolve());
-    proc.once("exit", () => resolve());
-  });
+  await runProcess({
+    file: windowsSystemTool("icacls"),
+    args: [filePath, "/inheritance:r", "/grant:r", `${username}:F`],
+    stdio: ["ignore", "ignore", "ignore"],
+  }).catch(() => undefined);
 }
 
 async function isProcessAlive(pid: number): Promise<boolean> {
@@ -179,25 +199,14 @@ async function isProcessAlive(pid: number): Promise<boolean> {
 }
 
 /**
- * Combine PID-liveness with a coarse start-time sanity check so a recycled
- * Windows PID owned by an unrelated process doesn't masquerade as our owner.
- *
- * On Windows ``process.kill(pid, 0)`` returns ``EPERM`` for any PID owned by
- * a process the current user can't query — including a fresh, unrelated
- * process that happens to have inherited the recycled number. The PID alone
- * therefore can't tell "our sidecar is alive" from "some other program got
- * our old PID after we crashed."
- *
- * The lockfile's ``startedAt`` is recorded at lock acquire and is only
- * minutes old in normal operation. Reject any owner whose declared start
- * time is implausibly old (older than the stale-by-age threshold) — that
- * combination can only happen if the lockfile was orphaned and the PID was
- * recycled to something unrelated.
+ * PID liveness plus a lock some window keeps fresh. The PID alone cannot tell the sidecar from an unrelated process that
+ * was given its number after it died (on Windows `process.kill(pid, 0)` answers EPERM for any process the user cannot
+ * query), and every window using the sidecar refreshes the lock, so a lock nobody refreshed has no sidecar behind it.
  */
-async function isLockOwnerAlive(file: LockFileOnDisk): Promise<boolean> {
+async function isLockOwnerAlive(file: LockFileOnDisk, lockDir: string): Promise<boolean> {
   if (!(await isProcessAlive(file.pid))) return false;
+  if (await isStaleByAge(lockDir)) return false;
   const ageMs = Date.now() - file.startedAt;
-  if (ageMs > STALE_LOCK_AGE_MS) return false;
   if (ageMs < -60_000) {
     // startedAt in the future by more than a minute — clock skew or
     // tampering. Treat as not-alive and let the caller reclaim.

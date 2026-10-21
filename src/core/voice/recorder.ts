@@ -1,8 +1,8 @@
-import { spawn, type ChildProcess } from "child_process";
 import * as path from "path";
 import * as os from "os";
 import * as fs from "fs";
 import { log } from "../logger";
+import { processLauncher, type LaunchedProcess } from "../process-launcher";
 import { posixTool, windowsPowerShell } from "../system-tools";
 
 export interface RecordingResult {
@@ -10,7 +10,12 @@ export interface RecordingResult {
   mimeType: string;
 }
 
-let activeProcess: ChildProcess | null = null;
+interface Recorder {
+  readonly process: LaunchedProcess;
+  exited: boolean;
+}
+
+let activeProcess: Recorder | null = null;
 let tempFilePath = "";
 let tempScriptPath = "";
 let recording = false;
@@ -55,7 +60,7 @@ export function cancelRecording(): void {
   if (!recording) return;
 
   if (activeProcess) {
-    activeProcess.kill();
+    activeProcess.process.kill();
     activeProcess = null;
   }
   recording = false;
@@ -72,13 +77,14 @@ function cleanupTempFiles(): void {
 
 function spawnRecorder(command: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
-    activeProcess = proc;
+    const proc = processLauncher().launch({ file: command, args, stdio: ["pipe", "pipe", "pipe"] });
+    const recorder: Recorder = { process: proc, exited: false };
+    activeProcess = recorder;
 
     let resolved = false;
     let stderrOutput = "";
 
-    proc.stdout?.on("data", (data: Buffer) => {
+    proc.onData("stdout", (data) => {
       const output = data.toString().trim();
       log("[Recorder] stdout:", output);
       if (output.includes("RECORDING_STARTED") && !resolved) {
@@ -87,20 +93,16 @@ function spawnRecorder(command: string, args: string[]): Promise<void> {
       }
     });
 
-    proc.stderr?.on("data", (data: Buffer) => {
+    proc.onData("stderr", (data) => {
       stderrOutput += data.toString();
       log("[Recorder] stderr:", data.toString().trim());
     });
 
-    proc.on("error", (err) => {
-      log("[Recorder] process error:", err);
-      if (!resolved) {
-        resolved = true;
-        reject(err);
-      }
-    });
-
-    proc.on("close", (code) => {
+    const ended = (): void => {
+      recorder.exited = true;
+    };
+    proc.exited.then(ended, ended);
+    Promise.all([proc.exited, proc.closed]).then(([{ code }]) => {
       log("[Recorder] process closed with code:", code);
       if (!resolved) {
         resolved = true;
@@ -112,6 +114,12 @@ function spawnRecorder(command: string, args: string[]): Promise<void> {
               : "Recording process exited without starting",
           ),
         );
+      }
+    }, (err: unknown) => {
+      log("[Recorder] process error:", err);
+      if (!resolved) {
+        resolved = true;
+        reject(err);
       }
     });
 
@@ -255,30 +263,31 @@ echo "RECORDING_SAVED"`;
 
 function stopActiveProcess(): Promise<void> {
   return new Promise((resolve, reject) => {
-    if (!activeProcess) {
+    const recorder = activeProcess;
+    if (!recorder) {
       resolve();
       return;
     }
 
-    if (activeProcess.exitCode !== null) {
+    if (recorder.exited) {
       activeProcess = null;
       resolve();
       return;
     }
 
     const timeout = setTimeout(() => {
-      activeProcess?.kill();
+      recorder.process.kill();
       activeProcess = null;
       reject(new Error("Stop recording timed out"));
     }, 10_000);
 
-    activeProcess.on("close", () => {
+    const closed = (): void => {
       clearTimeout(timeout);
       activeProcess = null;
       resolve();
-    });
+    };
+    recorder.process.closed.then(closed, closed);
 
-    activeProcess.stdin?.write("\n");
-    activeProcess.stdin?.end();
+    recorder.process.end("\n");
   });
 }

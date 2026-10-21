@@ -11,8 +11,8 @@ type SqlParam = null | number | bigint | string | Buffer | Uint8Array;
 
 const CURRENT_VERSION = 7;
 
-// Shared so the desynced-index heal can DROP + recreate the FTS table with identical DDL.
-const CREATE_FTS_SQL = `CREATE VIRTUAL TABLE memories_fts USING fts5(
+// Shared so the integrity worker's FTS repair can DROP + recreate the table with identical DDL.
+export const CREATE_FTS_SQL = `CREATE VIRTUAL TABLE memories_fts USING fts5(
   content, title, summary, tags, facts, observation_tags, search_terms, files_read, files_modified,
   content=memories, content_rowid=rowid,
   tokenize='porter unicode61'
@@ -223,10 +223,6 @@ export interface OpenDatabaseOptions {
 
 export interface OpenDatabaseResult {
   db: DatabaseInstance;
-  /** Set only when a corrupt file was renamed aside and a fresh DB created in its place. */
-  quarantinedFrom?: string;
-  /** Memories recovered by the salvage rebuild (set only when salvage ran; the store is not empty). */
-  salvagedMemories?: number;
   /** Set when a newer Damocles migrated the file past this build's schema; every write path must stay off. */
   readOnly?: true;
 }
@@ -365,7 +361,7 @@ function createWrapper(db: NodeDatabaseSync, onPersistFailure?: (n: number) => v
 // v3 isolates the node:sqlite (WAL) engine in its own file. The sql.js build rewrites its DB file
 // whole from memory, so two builds sharing one file corrupt it (WAL frames against replaced pages).
 // v2 is imported once at v3 creation and left untouched for older builds.
-async function getDbPathAsync(): Promise<string> {
+export async function memoryDatabasePath(): Promise<string> {
   const dir = path.join(os.homedir(), '.damocles');
   await fs.promises.mkdir(dir, { recursive: true });
   return path.join(dir, 'memory.v3.db');
@@ -395,7 +391,7 @@ function fileExistsNonEmpty(dbPath: string): boolean {
  * Classify an open/migrate error as data corruption vs a transient/uncertain fault. Only corruption
  * justifies renaming the file aside; when uncertain, return false so readable data is never destroyed.
  */
-function isCorruptionError(err: unknown): boolean {
+export function isCorruptionError(err: unknown): boolean {
   const code = (err as { code?: string })?.code ?? '';
   // node:sqlite reports the SQLite result code numerically on `errcode` (the string `code` is the
   // generic 'ERR_SQLITE_ERROR'); mask off the extended bits so CORRUPT_VTAB (267) etc. still match.
@@ -413,75 +409,12 @@ function isCorruptionError(err: unknown): boolean {
 }
 
 /**
- * Rename the DB file and its `-wal`/`-shm` siblings aside to a quarantine path. Missing siblings are
- * fine, but a failure to move the MAIN file (e.g. EBUSY/EPERM when a sibling window holds it) means
- * the "fresh" open would reopen the same corrupt file — surface that by throwing.
- */
-function quarantineFiles(dbPath: string, quarantinePath: string): void {
-  fs.renameSync(dbPath, quarantinePath); // main file: a failure here must not be swallowed
-  for (const suffix of ['-wal', '-shm']) {
-    try {
-      fs.renameSync(`${dbPath}${suffix}`, `${quarantinePath}${suffix}`);
-    } catch {
-      /* sibling may not exist; best-effort */
-    }
-  }
-}
-
-function baseTableReadable(raw: NodeDatabaseSync): boolean {
-  try {
-    raw.prepare('SELECT rowid FROM memories').all();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Full-database verification at open. Runtime-only corruption (e.g. a torn page in one table) can
- * pass open+migrate and then fail every consolidation write forever — quick_check catches it up
- * front so the salvage path runs instead. Throws a corruption-classified error on any finding.
- */
-function verifyIntegrity(raw: NodeDatabaseSync): void {
-  const rows = raw.prepare('PRAGMA quick_check').all() as Array<{ quick_check: string }>;
-  if (rows.length === 1 && rows[0]!.quick_check === 'ok') return;
-  const detail = rows.map((r) => r.quick_check).join('; ').slice(0, 200);
-  const err = new Error(`quick_check failed: ${detail}`) as Error & { code: string };
-  err.code = 'SQLITE_CORRUPT';
-  throw err;
-}
-
-/**
- * A desynced `memories_fts` external-content index throws SQLITE_CORRUPT on every FTS op — including
- * the write triggers, so ALL writes fail — while the base rows stay intact and rebuildable. When the
- * FTS probe errors but the base table still reads, rebuild rather than quarantine the whole store;
- * fall back to DROP + recreate if the shadow b-tree is too corrupt for an in-place rebuild. A base
- * table that is also unreadable is genuine page corruption — rethrow so quarantine handles it.
- */
-function healFtsIndexIfDesynced(raw: NodeDatabaseSync): void {
-  try {
-    raw.prepare("INSERT INTO memories_fts(memories_fts) VALUES('integrity-check')").run();
-    return;
-  } catch (err) {
-    if (!baseTableReadable(raw)) throw err;
-  }
-  log('[Memory] FTS index desynced from base table; rebuilding');
-  try {
-    raw.exec("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')");
-  } catch {
-    log('[Memory] In-place FTS rebuild failed; dropping and recreating the index');
-    raw.exec('DROP TABLE memories_fts');
-    raw.exec(CREATE_FTS_SQL);
-    raw.exec("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')");
-  }
-}
-
-/**
  * Open, apply pragmas, wrap, and migrate at an explicit path. May throw. On failure the connection is
  * closed before rethrowing: a corrupt file still opens and holds an OS file lock (the parse error
  * surfaces on first pragma/query), and on Windows that lock blocks the quarantine rename with EBUSY.
+ * The integrity check runs on a worker after the open (`integrity.ts`).
  */
-function openAndMigrate(dbPath: string, options?: OpenDatabaseOptions): { db: DatabaseInstance; readOnly: boolean } {
+export function openAndMigrate(dbPath: string, options?: OpenDatabaseOptions): { db: DatabaseInstance; readOnly: boolean } {
   const raw = new DatabaseSync(dbPath, { timeout: 5000, enableForeignKeyConstraints: true });
   try {
     if (isSchemaAhead(createWrapper(raw))) {
@@ -492,8 +425,6 @@ function openAndMigrate(dbPath: string, options?: OpenDatabaseOptions): { db: Da
     applyPragmas(raw);
     const wrapped = createWrapper(raw, options?.onPersistFailure);
     runMigrations(wrapped);
-    healFtsIndexIfDesynced(raw);
-    verifyIntegrity(raw);
     return { db: wrapped, readOnly: false };
   } catch (err) {
     try {
@@ -513,12 +444,12 @@ function openAndMigrate(dbPath: string, options?: OpenDatabaseOptions): { db: Da
 const SALVAGE_TABLES = ['memories', 'memory_edges', 'memory_retrievals', 'memory_profile'] as const;
 
 /**
- * Copy every readable durable row from `sourcePath` (a corrupt or legacy DB) into the freshly-migrated
- * `dest`, then rebuild the FTS index from the copied rows. Per-table: a table whose pages are torn is
+ * Copy every readable durable row from `sourcePath` (a corrupt or legacy DB) into the migrated `dest`, keeping
+ * a row `dest` already has, then rebuild the FTS index from the copied rows. Per-table: a table whose pages are torn is
  * skipped whole (its data is unreadable anyway) without failing the rest. Returns the number of
  * memories recovered.
  */
-function copyDurableRows(sourcePath: string, dest: DatabaseInstance): number {
+export function copyDurableRows(sourcePath: string, dest: DatabaseInstance): number {
   const src = new DatabaseSync(sourcePath, { readOnly: true, timeout: 5000 });
   try {
     let memories = 0;
@@ -548,64 +479,39 @@ function copyDurableRows(sourcePath: string, dest: DatabaseInstance): number {
 }
 
 /**
- * Open the memory DB at an explicit path with pragmas, migrations, and corrupt-file recovery. NEVER
- * throws. On corruption the file is set aside and a fresh store is created; a salvage pass then copies
- * every readable durable row back from the quarantined file (only the transient candidate buffer and
- * any physically unreadable table are lost), so quarantine no longer means losing all memories.
- * Returns `null` only when the store cannot be opened at all.
+ * Open the memory DB at an explicit path with pragmas and migrations. NEVER throws. `corrupt`: the file is
+ * damaged and stays where it is, for the integrity worker's repair to salvage (`integrity-worker.ts`).
+ * `null` when the store cannot be opened for any other reason, so readable data is never moved aside.
  */
 export async function openMemoryDatabaseAt(
   dbPath: string,
   options?: OpenDatabaseOptions,
-): Promise<OpenDatabaseResult | null> {
+): Promise<OpenDatabaseResult | 'corrupt' | null> {
   try {
     const { db, readOnly } = openAndMigrate(dbPath, options);
     return readOnly ? { db, readOnly } : { db };
   } catch (err) {
     if (fileExistsNonEmpty(dbPath) && isCorruptionError(err)) {
-      const quarantinePath = `${dbPath}.corrupt-${Date.now()}`;
-      log(`[Memory] Database at ${dbPath} is corrupt (${err}); quarantining to ${quarantinePath}`);
-      try {
-        quarantineFiles(dbPath, quarantinePath);
-      } catch (moveErr) {
-        // Could not move the corrupt file aside (e.g. another window holds it) — reopening would just
-        // re-hit the same corruption, so disable rather than loop on a broken store.
-        log(`[Memory] Failed to quarantine corrupt database at ${dbPath}: ${moveErr}`);
-        return null;
-      }
-      try {
-        const { db } = openAndMigrate(dbPath, options);
-        let salvaged = 0;
-        try {
-          salvaged = copyDurableRows(quarantinePath, db);
-          log(`[Memory] Salvage recovered ${salvaged} memories from the quarantined database`);
-        } catch (salvageErr) {
-          // Fresh store stays usable even when nothing could be copied back.
-          log(`[Memory] Salvage from quarantined database failed: ${salvageErr}`);
-        }
-        return { db, quarantinedFrom: quarantinePath, salvagedMemories: salvaged };
-      } catch (freshErr) {
-        // Fresh DB failed too — not recoverable corruption of an old file; do not loop.
-        log(`[Memory] Failed to create fresh database after quarantine: ${freshErr}`);
-        return null;
-      }
+      log(`[Memory] Database at ${dbPath} is corrupt: ${err}`);
+      return 'corrupt';
     }
-    // First-run failure, transient IO, or uncertain error: never destroy readable data.
     log(`[Memory] Failed to open database at ${dbPath}: ${err}`);
     return null;
   }
 }
 
 /**
- * Resolve the shared `~/.damocles/memory.v3.db` path and open it. On first run, durable rows are
- * imported once from the legacy v2 file (left untouched — older sql.js builds keep using it, so the
- * two engines never write the same file). NEVER throws — `null` on failure.
+ * Open the shared store at {@link memoryDatabasePath}. With `importLegacy`, a store created by this open
+ * imports durable rows once from the legacy v2 file (left untouched — older sql.js builds keep using it, so
+ * the two engines never write the same file). NEVER throws.
  */
-export async function openDatabaseAsync(options?: OpenDatabaseOptions): Promise<OpenDatabaseResult | null> {
-  const dbPath = await getDbPathAsync();
-  const importFromV2 = !fileExistsNonEmpty(dbPath) && fileExistsNonEmpty(getLegacyV2Path());
+export async function openDatabaseAsync(
+  dbPath: string,
+  options: OpenDatabaseOptions & { importLegacy: boolean },
+): Promise<OpenDatabaseResult | 'corrupt' | null> {
+  const importFromV2 = options.importLegacy && !fileExistsNonEmpty(dbPath) && fileExistsNonEmpty(getLegacyV2Path());
   const opened = await openMemoryDatabaseAt(dbPath, options);
-  if (opened && importFromV2) {
+  if (opened && opened !== 'corrupt' && importFromV2) {
     try {
       const imported = copyDurableRows(getLegacyV2Path(), opened.db);
       log(`[Memory] Imported ${imported} memories from legacy memory.v2.db`);

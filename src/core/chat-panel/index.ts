@@ -1,6 +1,7 @@
 import type { Disposable } from "../../platform/disposable";
 import type { PlatformWithWorktrees } from "../worktrees/host";
 import type { PanelHost } from "../../platform/window-service";
+import type { ChatPermissions } from "../permission-handler";
 import * as path from "path";
 import { PanelManager } from "./panel-manager";
 import { onListingChange, StorageManager } from "./storage-manager";
@@ -17,7 +18,7 @@ import type { CompassService } from "../compass";
 import { CompassRegistry } from "../compass/compass-registry";
 import { VoiceService } from "../voice/service";
 import { UsageStatsService } from "../usage-stats";
-import { OPENAI_KEY_MOVED_MARKER_PATH, SUBCALL_USAGE_LEDGER_PATH, USAGE_INDEX_DB_PATH } from "../paths";
+import { OPENAI_KEY_MOVED_MARKER_PATH, SESSION_META_CACHE_DIR, SUBCALL_USAGE_LEDGER_PATH, USAGE_INDEX_DB_PATH } from "../paths";
 import { showOpenAIKeyMovedNotice } from "../pi-session/openai-key-migration";
 import { PI_AGENT_DIR } from "../pi-session/agent-dir";
 import { readClaudeAuthFromDisk } from "../pi-session/subscription";
@@ -27,7 +28,7 @@ import { PiRuntime } from "../pi-session/pi-runtime";
 import { typesafeAuthStatus } from "./settings-manager/managers/explore-manager";
 import { TYPESAFE_SECRET_KEY } from "../pi-session/custom-providers";
 import { PROVIDER_SECRET_KEYS } from "../pi-session/explore-providers";
-import { setSessionMetaCacheVersion } from "../pi-session/session-store";
+import { SessionMetaIndex } from "../pi-session/session-store";
 import { WorkspaceFolderRegistry } from "../workspace-folders/folder-registry";
 import type { FolderTarget } from "../workspace-folders/folder-registry";
 import type { CompassViewsHandle, CompassViewsOptions } from "./types";
@@ -39,6 +40,7 @@ import { perfSpan } from "../perf";
 import { checkpointMaxFileSizeBytes } from "../pi-session/checkpoint-service";
 import { allJsonConfigWritesSettled } from "../config/json-config-write";
 import { installWorktreeProjectLookup } from "../worktrees/personal-config";
+import { openAppSettingsFor } from "./open-app-settings";
 
 /**
  * Settles once every config file write core started (MCP, settings and permission files), one queued meanwhile included,
@@ -96,8 +98,6 @@ export class ChatPanelProvider {
       folders: () => [...this.folderRegistry.targets(), ...this.folderRegistry.ownedFolders()],
     });
 
-    // Before the first session list: the persisted list metadata is only valid for the version that wrote it.
-    setSessionMetaCacheVersion(platform.appInfo.version);
     this.storageManager = new StorageManager({
       folders: () => this.folderRegistry.targets(),
       isMultiRoot: () => this.folderRegistry.isMultiRoot,
@@ -105,6 +105,11 @@ export class ChatPanelProvider {
       getPanels: () => this.panelManager.getPanels(),
       liveSession: (sessionId) => PiRuntime.liveSessionMutator(sessionId),
       fileWatchers: platform.fileWatchers,
+      metaIndex: new SessionMetaIndex({
+        workerPath: platform.paths.workerEntry("sessionMetaIndex"),
+        cacheDir: SESSION_META_CACHE_DIR,
+        piPackageDir: path.join(platform.paths.resourceRoot, "node_modules", "@earendil-works", "pi-coding-agent"),
+      }),
     });
 
     this.historyManager = new HistoryManager({
@@ -154,6 +159,9 @@ export class ChatPanelProvider {
     this.browserService = new BrowserService(platform);
     this.voiceService = new VoiceService({ platform });
     this.voiceService.registerWithExtension(this.subscriptions);
+    const onReplyNotSpoken = ({ reason, origin }: { reason: string; origin: string }): void => this.noticeReplyNotSpoken(reason, origin);
+    this.voiceService.on("replyNotSpoken", onReplyNotSpoken);
+    this.subscriptions.push({ dispose: () => this.voiceService.off("replyNotSpoken", onReplyNotSpoken) });
 
     this.usageStatsService = new UsageStatsService({
       workerPath: platform.paths.workerEntry("usageStats"),
@@ -215,7 +223,7 @@ export class ChatPanelProvider {
       getMemoryService: () => this.memoryService,
       getRawBrowserService: () => this.browserService,
       getCompassService: (folderKey) => this.startCompassFor(folderKey),
-      onAssistantTextFinal: (text) => this.dispatchTtsForReply(text),
+      onAssistantTextFinal: (text, panelId) => this.dispatchTtsForReply(text, panelId),
       platform: this.platform,
     });
 
@@ -246,6 +254,7 @@ export class ChatPanelProvider {
       switchPanelFolder: (panelId, folderKey, reason, afterSwitch) =>
         this.panelManager.switchPanelFolder(panelId, folderKey, reason, afterSwitch),
       postWorkspaceFolderState: (panelId) => this.panelManager.postWorkspaceFolderState(panelId),
+      restoreRetryChanged: (panelId) => this.panelManager.restoreRetryChanged(panelId),
       webviewPrompts: this.webviewPrompts,
       worktrees: () => this.panelManager.worktrees,
     });
@@ -301,6 +310,7 @@ export class ChatPanelProvider {
       loadHistory: (cwd, sessionId, host, session) =>
         this.historyManager.loadSessionHistory(cwd, sessionId, host, session),
       storedSessionsOf: (projectKey) => this.storageManager.sessionsOf(projectKey),
+      completeStoredSessionsOf: (projectKey) => this.storageManager.completeSessionsOf(projectKey),
     });
     // A chat created, deleted or handed off changes how many chats share a worktree, and which deleted records any chat uses.
     if (worktreeHost) this.subscriptions.push(this.storageManager.onDidChangeSessions(() => void this.panelManager.worktrees.storedSessionsChanged()));
@@ -516,19 +526,34 @@ export class ChatPanelProvider {
     this.compassViews.setActive(service, this.folderRegistry.isMultiRoot ? target.label : undefined);
   }
 
-  private dispatchTtsForReply(text: string): void {
-    if (!this.platform.settings.get<boolean>("damocles.voice.tts.enabled", false)) return;
+  private dispatchTtsForReply(text: string, panelId: string): void {
+    // A host without voice (desktop macOS) hides its settings, so a hand-set tts.enabled has nothing to speak with.
+    if (!this.platform.capabilities.voice || !this.platform.settings.get<boolean>("damocles.voice.tts.enabled", false)) return;
     const trimmed = text.trim();
     if (trimmed.length === 0) return;
-    this.voiceService.speakReply(trimmed).catch((err) => log("[ChatPanelProvider] tts dispatch failed:", err));
+    this.voiceService.speakReply(trimmed, panelId).catch((err) => log("[ChatPanelProvider] tts dispatch failed:", err));
+  }
+
+  private noticeReplyNotSpoken(reason: string, panelId: string): void {
+    const action = t("Voice settings");
+    // A pip or smoke-check failure runs to 30 lines; Settings > Voice shows them all.
+    const firstLine = reason.split(/\r?\n/, 1)[0] ?? reason;
+    this.platform.notifications
+      .warn(t("A reply could not be spoken: {0}", firstLine), action)
+      .then((choice) => {
+        if (choice !== action) return;
+        const host = this.panelManager.getPanels().get(panelId)?.host ?? this.panelManager.activePanelHost();
+        openAppSettingsFor(this.platform, (target, message) => this.panelManager.postMessage(target, message), host, "voice");
+      })
+      .catch((err: unknown) => log("[ChatPanelProvider] Could not show the reply-not-spoken notice:", err));
   }
 
   async show(): Promise<void> {
     await this.panelManager.show();
   }
 
-  async restorePanel(host: PanelHost, workspaceFolderKey: string | undefined): Promise<void> {
-    await this.panelManager.restorePanel(host, workspaceFolderKey);
+  async restorePanel(host: PanelHost, workspaceFolderKey: string | undefined, permissions?: ChatPermissions): Promise<void> {
+    await this.panelManager.restorePanel(host, workspaceFolderKey, permissions);
   }
 
   /** A new chat on `host` working in the live chat worktree `worktreeId` of project `projectKey`; rejects when refused. */
@@ -560,16 +585,16 @@ export class ChatPanelProvider {
    * Tear down every owned service.
    *
    * Resolves only once Chrome has exited (`BrowserService.dispose()`), so it does not outlive the host,
-   * every panel's session is disposed, which releases its session lease, and the memory database has
-   * flushed its queued writes and closed. Callers must await it. The synchronous disposals still run
-   * first and unconditionally.
+   * every panel's session is disposed, which releases its session lease, the memory database has
+   * flushed its queued writes and closed, and the session metadata worker has committed and closed (at most
+   * 2 s). Callers must await it. The synchronous disposals still run first and unconditionally.
    */
   async dispose(): Promise<void> {
     this.compassViews.dispose();
     this.compassRegistry.dispose().catch((err: unknown) => log("[ChatPanelProvider] compass dispose error: %O", err));
     const memoryClosed = this.memoryService.dispose();
     const browserClosed = this.browserService.dispose().catch((err: unknown) => log('[ChatPanelProvider] browser dispose error: %O', err));
-    this.storageManager.dispose();
+    const storageClosed = this.storageManager.dispose();
     this.workspaceManager.dispose();
     this.settingsManager.dispose();
     this.voiceService.dispose();
@@ -578,6 +603,6 @@ export class ChatPanelProvider {
     this.webviewPrompts.dispose();
     const sessionsDisposed = this.panelManager.dispose();
     this.folderRegistry.dispose();
-    await Promise.all([browserClosed, sessionsDisposed, memoryClosed]);
+    await Promise.all([browserClosed, sessionsDisposed, memoryClosed, storageClosed]);
   }
 }

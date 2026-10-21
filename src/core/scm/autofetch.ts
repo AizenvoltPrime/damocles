@@ -2,7 +2,7 @@
 // project's repositories fetch at once and then every period, one fetch per common dir, never prompting. A failure is logged
 // once per common dir and distinct failure, until a fetch there succeeds or autofetch starts over, and a refused credential
 // stops that common dir until the next start.
-import { GitError } from './git-runner';
+import { GitError } from './errors';
 import { AUTHENTICATION_FAILED } from './sync';
 
 // setTimeout overflows past 2^31 - 1 ms, so the schema's maximum of a day is enforced here too

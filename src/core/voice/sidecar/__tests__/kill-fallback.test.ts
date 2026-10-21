@@ -1,22 +1,19 @@
-import { spawn, spawnSync } from "node:child_process";
-import type { ChildProcess } from "node:child_process";
-import { EventEmitter } from "node:events";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { installProcessLauncher, type KillOptions, type LaunchedProcess, type Launcher, type ProcessExit, type SpawnSpec } from "../../../process-launcher";
 import { VoiceSidecarManager } from "../manager";
 import type { ManagerConfig } from "../manager";
-import type { ShellJob } from "../../../pi-session/tools/process-tree";
+import { spawnSidecar } from "../spawn";
 
 // Passthrough, so only the taskkill call a case sets up is faked.
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
-  return { ...actual, spawn: vi.fn(actual.spawn), spawnSync: vi.fn(actual.spawnSync) };
+  return { ...actual, spawnSync: vi.fn(actual.spawnSync) };
 });
 
-const spawnMock = vi.mocked(spawn);
 const spawnSyncMock = vi.mocked(spawnSync);
 const realPlatform = process.platform;
+const PID = 4242;
 
 function setPlatform(platform: NodeJS.Platform): void {
   Object.defineProperty(process, "platform", { value: platform, configurable: true });
@@ -28,31 +25,51 @@ function enoent(): NodeJS.ErrnoException {
   return err;
 }
 
-/** The signals the sidecar child was asked to die by. Its exit is what lets `stop()` settle. */
-class FakeChild extends EventEmitter {
-  pid = 4242;
-  killed = false;
-  readonly signals: (NodeJS.Signals | number | undefined)[] = [];
-  kill(signal?: NodeJS.Signals | number): boolean {
-    this.killed = true;
-    this.signals.push(signal);
-    this.emit("exit", null, signal);
-    return true;
+/** A launched process that records how it was asked to die; a kill ends it unless it was told to survive. */
+class FakeChild implements LaunchedProcess {
+  readonly pid: Promise<number> = Promise.resolve(PID);
+  readonly exited: Promise<ProcessExit>;
+  readonly closed: Promise<void>;
+  readonly kills: KillOptions[] = [];
+  private readonly survives: boolean;
+  private finish!: (exit: ProcessExit) => void;
+  private fail!: (error: Error) => void;
+  constructor(survives = false) {
+    this.survives = survives;
+    this.exited = new Promise((resolve, reject) => {
+      this.finish = resolve;
+      this.fail = reject;
+    });
+    this.closed = this.exited.then(() => undefined);
+    this.closed.catch(() => undefined);
+  }
+  onData(): void {}
+  write(): Promise<void> {
+    return Promise.resolve();
+  }
+  end(): void {}
+  kill(options: KillOptions = {}): void {
+    this.kills.push(options);
+    if (!this.survives) this.exit(null, options.signal ?? "SIGTERM");
+  }
+  exit(code: number | null, signal: NodeJS.Signals | null): void {
+    this.finish({ code, signal });
+  }
+  workerDied(): void {
+    this.fail(new Error("The process launcher worker that ran this process stopped"));
   }
 }
 
 /** A manager holding one child, with nothing started, because both kill paths read only that child. */
 function managerWith(child: FakeChild): VoiceSidecarManager {
   const manager = new VoiceSidecarManager({} as ManagerConfig);
-  (manager as unknown as { child: ChildProcess | null }).child = child as unknown as ChildProcess;
+  Object.assign(manager as unknown as { child: LaunchedProcess; childPid: number }, { child, childPid: PID });
   return manager;
 }
 
-/** The exit wiring the manager installs on a real spawn, reachable without spawning python. */
+/** The exit wiring the manager installs on a real start, reachable without starting python. */
 function attachExitHandler(manager: VoiceSidecarManager, child: FakeChild): void {
-  (manager as unknown as { attachExitHandler(c: ChildProcess): void }).attachExitHandler(
-    child as unknown as ChildProcess,
-  );
+  (manager as unknown as { attachExitHandler(c: LaunchedProcess): void }).attachExitHandler(child);
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -62,72 +79,90 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   ]);
 }
 
+// The processes the manager starts itself (the graceful taskkill), each answering with an exit code.
+let launched: SpawnSpec[];
+let previous: Launcher | undefined;
+
 beforeEach(() => {
-  spawnMock.mockClear();
   spawnSyncMock.mockClear();
+  launched = [];
+  const launcher: Launcher = {
+    launch: (spec) => {
+      launched.push(spec);
+      const sweep = new FakeChild();
+      sweep.exit(1, null);
+      return sweep;
+    },
+    createSessionJob: () => ({ id: 1, dispose: () => undefined }),
+    dispose: async () => undefined,
+  };
+  previous = installProcessLauncher(launcher);
 });
 
 afterEach(() => {
+  if (previous) installProcessLauncher(previous);
   setPlatform(realPlatform);
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
-describe("the voice sidecar child dies when taskkill cannot be spawned", () => {
-  it("force-kills the child from the async stop path, so the Python interpreter releases its VRAM", async () => {
+describe("the voice sidecar's force kill", () => {
+  it("kills the sidecar's tree from the async stop path, so the Python workers release their VRAM", async () => {
     setPlatform("win32");
     const child = new FakeChild();
-    const killer = new EventEmitter();
-    // spawn reports a missing taskkill on a later tick as an 'error' event, never by throwing, so a
-    // stub that throws would pass against code that only logs. Every call is stubbed, or the graceful
-    // sweep this case outlives would reach the real taskkill with a pid this host owns.
-    spawnMock.mockImplementation(() => {
-      setImmediate(() => killer.emit("error", enoent()));
-      return killer as unknown as ReturnType<typeof spawn>;
-    });
+    await managerWith(child).stop(0);
+    expect(child.kills).toEqual([{ tree: true, signal: "SIGKILL" }]);
+  });
 
-    // `stop()` waits on the child's exit, so the kill is asserted before it is awaited; a child that
-    // never dies must report the missing signal rather than a timeout.
-    const stopped = managerWith(child).stop(0);
-    await new Promise((resolve) => setTimeout(resolve, 20));
+  it("runs a failed graceful sweep without a fallback, because every other kill on Windows is the force path", async () => {
+    setPlatform("win32");
+    vi.useFakeTimers();
+    const child = new FakeChild();
 
-    expect(child.signals).toEqual(["SIGKILL"]);
+    const stopped = managerWith(child).stop(10_000);
+    // The graceful sweep runs at 1s and the force kill at 10s, so this window holds the graceful one alone.
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(launched).toEqual([expect.objectContaining({ args: ["/T", "/PID", String(PID)] })]);
+    expect(launched[0]!.file).toMatch(/taskkill\.exe$/i);
+    expect(child.kills).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(9_000);
+    expect(child.kills).toEqual([{ tree: true, signal: "SIGKILL" }]);
     await stopped;
   });
 
-  it("force-kills the child from the synchronous disposal path, which no thrown error ever reaches", () => {
+  it("signals the sidecar itself on POSIX, SIGTERM first", async () => {
+    setPlatform("linux");
+    vi.useFakeTimers();
+    const child = new FakeChild(true);
+    const stopped = managerWith(child).stop(5_000);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(child.kills).toEqual([{ signal: "SIGTERM" }]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(child.kills).toEqual([{ signal: "SIGTERM" }, { tree: true, signal: "SIGKILL" }]);
+    await stopped;
+  });
+});
+
+describe("the voice sidecar's synchronous disposal kill", () => {
+  it("asks the launcher for the tree kill and kills the root itself when taskkill cannot be spawned", () => {
     setPlatform("win32");
-    const child = new FakeChild();
+    const child = new FakeChild(true);
+    const kill = vi.spyOn(process, "kill").mockReturnValue(true);
     // spawnSync reports a missing taskkill synchronously by returning `error`, never by throwing, so a
     // stub that throws would pass against code whose catch never fires.
     spawnSyncMock.mockImplementationOnce(() => ({ error: enoent() }) as unknown as ReturnType<typeof spawnSync>);
 
     managerWith(child).killChildSync();
 
-    expect(child.signals).toEqual(["SIGKILL"]);
+    expect(child.kills).toEqual([{ tree: true, signal: "SIGKILL" }]);
+    expect(kill).toHaveBeenCalledWith(PID, "SIGKILL");
   });
 
-  it("force-kills the child from the async stop path when taskkill runs and exits non-zero", async () => {
+  it("kills the root when taskkill runs and is denied", () => {
     setPlatform("win32");
-    const child = new FakeChild();
-    const killer = new EventEmitter();
-    // A denied taskkill spawns fine and exits 128, so it never emits 'error' and the exit code is the
-    // only report of the failure.
-    spawnMock.mockImplementation(() => {
-      setImmediate(() => killer.emit("exit", 128, null));
-      return killer as unknown as ReturnType<typeof spawn>;
-    });
-
-    const stopped = managerWith(child).stop(0);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-
-    expect(child.signals).toEqual(["SIGKILL"]);
-    await stopped;
-  });
-
-  it("force-kills from the synchronous disposal path when taskkill runs and is denied", () => {
-    setPlatform("win32");
-    const child = new FakeChild();
+    const child = new FakeChild(true);
+    const kill = vi.spyOn(process, "kill").mockReturnValue(true);
     // The measured shape on this host: taskkill spawns, prints "Access is denied." and exits 128, so
     // `error` stays undefined and only `status` reports the failure.
     spawnSyncMock.mockImplementationOnce(
@@ -139,70 +174,52 @@ describe("the voice sidecar child dies when taskkill cannot be spawned", () => {
 
     managerWith(child).killChildSync();
 
-    expect(child.signals).toEqual(["SIGKILL"]);
+    expect(kill).toHaveBeenCalledWith(PID, "SIGKILL");
   });
 
-  it("leaves the child alone when the graceful sweep fails, because child.kill on Windows is the force path", async () => {
+  it("leaves the root alone once taskkill killed the tree", () => {
     setPlatform("win32");
-    vi.useFakeTimers();
-    const child = new FakeChild();
-    const killer = new EventEmitter();
-    spawnMock.mockImplementation(() => {
-      setImmediate(() => killer.emit("error", enoent()));
-      return killer as unknown as ReturnType<typeof spawn>;
-    });
+    const child = new FakeChild(true);
+    const kill = vi.spyOn(process, "kill").mockReturnValue(true);
+    spawnSyncMock.mockImplementationOnce(() => ({ error: undefined, status: 0, stderr: "" }) as unknown as ReturnType<typeof spawnSync>);
 
-    const stopped = managerWith(child).stop(10_000);
-    // The graceful sweep runs at 1s and the force kill at 10s, so this window holds the graceful one alone.
-    await vi.advanceTimersByTimeAsync(1_500);
-    expect(child.signals).toEqual([]);
+    managerWith(child).killChildSync();
 
-    await vi.advanceTimersByTimeAsync(9_000);
-    expect(child.signals).toEqual(["SIGKILL"]);
-    await stopped;
+    expect(spawnSyncMock.mock.calls[0]![1]).toEqual(["/F", "/T", "/PID", String(PID)]);
+    expect(kill).not.toHaveBeenCalled();
   });
 });
 
-describe("the voice sidecar job object", () => {
-  it("puts the sidecar in its job in the statement right after spawn", () => {
-    const source = readFileSync(resolve(__dirname, "../spawn.ts"), "utf8");
-    const statements = source
-      .slice(source.indexOf("const child = spawn("))
-      .replace(/\/\/[^\n]*/g, "")
-      .split(";")
-      .map((s) => s.replace(/\s+/g, " ").trim())
-      .filter((s) => s.length > 0);
-
-    // A worker forked before the assignment is outside the job permanently, and python starts loading
-    // torch within milliseconds of the spawn.
-    expect(statements[0]).toContain("spawn(opts.pythonExe");
-    expect(statements[1]).toContain("createShellJob(child.pid, undefined)");
+describe("the voice sidecar's process group on POSIX", () => {
+  it.each([["linux", true], ["darwin", true], ["win32", false]] as const)("on %s starts the sidecar detached: %s", async (platform, detached) => {
+    setPlatform(platform);
+    await spawnSidecar({ pythonExe: "/venv/bin/python", pythonSourceDir: "/app/python", modelsDir: "/models", runtimeMode: "cpu", diagnostics: false, wakePhrase: null, ttsEnabled: true });
+    expect(launched[0]).toMatchObject({ file: "/venv/bin/python", detached });
   });
 
-  it("terminates the job instead of spawning taskkill, so the python workers die with the wrapper", () => {
-    setPlatform("win32");
-    const child = new FakeChild();
-    const manager = managerWith(child);
-    let terminated = 0;
-    const job: ShellJob = { terminate: () => void (terminated += 1), dispose: () => {} };
-    (manager as unknown as { childJob: ShellJob }).childJob = job;
+  it("kills the sidecar's whole group from the synchronous disposal kill", () => {
+    setPlatform("linux");
+    const child = new FakeChild(true);
+    const kill = vi.spyOn(process, "kill").mockReturnValue(true);
 
-    manager.killChildSync();
+    managerWith(child).killChildSync();
 
-    expect(terminated).toBe(1);
-    expect(spawnSyncMock).not.toHaveBeenCalled();
-    // TerminateJobObject reaches the root as well, so no signal is needed and none is sent.
-    expect(child.signals).toEqual([]);
+    expect(child.kills).toEqual([{ tree: true, signal: "SIGKILL" }]);
+    expect(kill).toHaveBeenCalledWith(-PID, "SIGKILL");
   });
 });
 
 describe("the voice sidecar manager settles its shutdown", () => {
-  it("listens for errors on the sidecar child, because an unhandled one takes the extension host down", () => {
+  it("counts a sidecar whose launcher worker died as exited", async () => {
     const child = new FakeChild();
-    attachExitHandler(managerWith(child), child);
+    const manager = managerWith(child);
+    const exits: unknown[] = [];
+    manager.on("exit", (exit) => exits.push(exit));
+    attachExitHandler(manager, child);
+    child.workerDied();
 
-    // EventEmitter rethrows an 'error' that has no listener, so this call throwing is the host dying.
-    expect(() => child.emit("error", new Error("kill EPERM"))).not.toThrow();
+    await vi.waitFor(() => expect(exits).toEqual([{ code: null, signal: null }]));
+    await expect(withTimeout(manager.stop(), 200)).resolves.toBeUndefined();
   });
 
   it("settles stop() for a sidecar that already crashed, so the lock handle is released", async () => {
@@ -210,9 +227,8 @@ describe("the voice sidecar manager settles its shutdown", () => {
     const child = new FakeChild();
     const manager = managerWith(child);
     attachExitHandler(manager, child);
-    child.emit("exit", 1, null);
+    child.exit(1, null);
 
-    // A stop that registers 'exit' on an already-exited child waits for an event that cannot fire again.
     await expect(withTimeout(manager.stop(), 200)).resolves.toBeUndefined();
   });
 

@@ -37,6 +37,8 @@ vi.mock("worker_threads", async (importOriginal) => {
       this.onMessage?.({ type: "response", id: message.id, ok: true, data: { state: "ready" } });
     }
     terminate(): void {}
+    ref(): void {}
+    unref(): void {}
   }
   return { ...actual, Worker: FakeWorker };
 });

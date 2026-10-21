@@ -1,44 +1,54 @@
-import { EventEmitter } from 'node:events';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as v8 from 'node:v8';
 import * as vm from 'node:vm';
-import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { OutputStream, ProcessExit } from '../../../core/process-launcher';
 import { getRipgrepSearchOptions, resolveRgPath } from '../../../core/chat-panel/ripgrep';
 import { MAX_SEARCH_RESULTS, type SearchQuery, type SearchRange } from '../../../shared/text-search';
 import type { SearchDone, SearchFileUpdate, SearchResultsBatch } from '../../preload/shell-channels';
-import { DEFAULT_FILES_EXCLUDE, DEFAULT_SEARCH_EXCLUDE } from '../desktop-configuration';
+import { DEFAULT_FILES_EXCLUDE, DEFAULT_SEARCH_EXCLUDE } from '../../local-services/desktop-configuration';
 import { excludeSettingGlobs } from '../search/rg-args';
 import { findBufferMatches, LIVE_UPDATE_MS, lstatMtime, MAX_RG_EVENT_BYTES, relativeResultPath, SearchService, type BufferDocument, type EditorRunResult, type RgProcess, type SearchServiceDeps, type SearchSettings } from '../search/search-service';
 
 const SEARCH_DEBOUNCE_MS = 300;
 
-class FakeRg extends EventEmitter {
-  readonly stdout = new PassThrough();
-  readonly stderr = new PassThrough();
+// A launched ripgrep as the search service reads it.
+class FakeRg implements RgProcess {
   killed = false;
   readonly args: readonly string[];
   readonly cwd: string;
+  readonly exited: Promise<ProcessExit>;
+  readonly closed: Promise<void>;
+  private readonly listeners: Record<OutputStream, Array<(chunk: Buffer) => void>> = { stdout: [], stderr: [] };
+  private ended = false;
+  private end!: (exit: ProcessExit) => void;
   constructor(args: readonly string[], cwd: string) {
-    super();
     this.args = args;
     this.cwd = cwd;
+    this.exited = new Promise((resolve) => (this.end = resolve));
+    this.closed = this.exited.then(() => undefined);
+  }
+  onData(stream: OutputStream, listener: (chunk: Buffer) => void): void {
+    this.listeners[stream].push(listener);
   }
   kill(): void {
     if (this.killed) return;
     this.killed = true;
     this.close(null);
   }
+  write(stream: OutputStream, text: string): void {
+    for (const listener of this.listeners[stream]) listener(Buffer.from(text, 'utf8'));
+  }
   // A killed ripgrep prints nothing more.
   emitJson(event: unknown): void {
-    if (!this.killed) this.stdout.write(`${JSON.stringify(event)}\n`);
+    if (!this.killed) this.write('stdout', `${JSON.stringify(event)}\n`);
   }
   close(code: number | null): void {
-    this.stdout.end();
-    this.stdout.once('close', () => this.emit('close', code));
-    this.stdout.resume();
+    if (this.ended) return;
+    this.ended = true;
+    setImmediate(() => this.end({ code, signal: null }));
   }
 }
 
@@ -68,7 +78,7 @@ function service(overrides: Partial<SearchServiceDeps> = {}): SearchService {
     spawnRg: (_rgPath, args, cwd) => {
       const rg = new FakeRg(args, cwd);
       spawned.push(rg);
-      return rg as unknown as RgProcess;
+      return rg;
     },
     ...overrides,
   });
@@ -225,7 +235,7 @@ describe('search service', () => {
     const search = service();
     search.start(1, query({ pattern: '(', isRegex: true }), true);
     await settle();
-    spawned[0]!.stderr.write('regex parse error:\n    (\n    ^\nerror: unclosed group\n');
+    spawned[0]!.write('stderr', 'regex parse error:\n    (\n    ^\nerror: unclosed group\n');
     spawned[0]!.close(2);
     await settle();
     expect(dones[0]).toMatchObject({ searchId: 1, resultCount: 0, error: expect.stringContaining('unclosed group') });

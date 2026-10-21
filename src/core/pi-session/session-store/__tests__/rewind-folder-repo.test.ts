@@ -204,7 +204,7 @@ describe('rewind history, file content and delete across legacy and folder check
     const legacyDir = getRepoDir(sm.getSessionFile()!);
     expect(folderRefs(`refs/damocles/sessions/${sm.getSessionId()}/`).length).toBeGreaterThan(0);
 
-    const { refsDeleted } = await deletePiSession(cwd, sm.getSessionId());
+    const { refsDeleted } = await deletePiSession(cwd, sm.getSessionId(), { forget: () => undefined });
     await refsDeleted;
 
     expect(folderRefs(`refs/damocles/sessions/${sm.getSessionId()}/`)).toEqual([]);
@@ -232,7 +232,7 @@ describe('rewind history, file content and delete across legacy and folder check
     });
     await held;
 
-    const { refsDeleted } = await deletePiSession(cwd, doomed.getSessionId());
+    const { refsDeleted } = await deletePiSession(cwd, doomed.getSessionId(), { forget: () => undefined });
     expect(fs.existsSync(file)).toBe(false);
     expect(folderRefs(prefix).length).toBeGreaterThan(0);
 

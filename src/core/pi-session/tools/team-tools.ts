@@ -12,7 +12,7 @@ import { checkReviewActionPrecondition, checkSynthesisReadGate } from '../../tea
 import { VERIFICATION_SECTION } from '../../team/scratchpad';
 import { execSafe } from '../checkpoints/exec';
 import { gitExecutable } from '../../git-executable';
-import { GIT_HARDENING_ARGS } from '../../compass/git';
+import { GIT_HARDENING_ARGS } from '../../git-hardening';
 
 /**
  * Native pi tools backing the multi-agent team system. Tool NAMES are snake_case (`create_team`,

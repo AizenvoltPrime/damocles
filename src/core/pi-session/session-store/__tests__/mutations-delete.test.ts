@@ -22,6 +22,8 @@ import { ensurePiSessionDir } from '../session-dir';
 import { getPiCodingAgent, initPiLoader } from '../../pi-loader';
 import { DAMOCLES_PLANS_DIR, planFileIdSuffix } from '../../../paths';
 
+const metaIndex = { forget: (): void => undefined };
+
 afterAll(() => {
   fs.rmSync(tmpHome, { recursive: true, force: true });
 });
@@ -80,7 +82,7 @@ describe('deletePiSession — agent data', () => {
     const doomed = await sessionWithAgentData();
     const sibling = await sessionWithAgentData();
 
-    await deletePiSession(cwd, doomed.id);
+    await deletePiSession(cwd, doomed.id, metaIndex);
 
     const dir = ensurePiSessionDir(cwd);
     expect(fs.existsSync(doomed.file)).toBe(false);
@@ -97,7 +99,7 @@ describe('deletePiSession — agent data', () => {
     write(plan);
     fs.rmSync(doomed.file);
 
-    await deletePiSession(cwd, doomed.id);
+    await deletePiSession(cwd, doomed.id, metaIndex);
 
     expect(fs.existsSync(path.join(ensurePiSessionDir(cwd), doomed.id))).toBe(false);
     expect(fs.existsSync(path.join(legacyRoot, doomed.id))).toBe(false);
@@ -112,7 +114,7 @@ describe('deletePiSession — agent data', () => {
     const unsafe = path.join(dir, '2026-01-01T00-00-00-000Z_...jsonl');
     fs.writeFileSync(unsafe, '');
 
-    await deletePiSession(cwd, '..');
+    await deletePiSession(cwd, '..', metaIndex);
 
     expect(fs.existsSync(unsafe)).toBe(false);
     expect(fs.existsSync(sibling.file)).toBe(true);

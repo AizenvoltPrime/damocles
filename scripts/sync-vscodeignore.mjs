@@ -622,6 +622,7 @@ export const DESKTOP_EXCLUDE_RULES = [
   '**/*.log',
   'dist/desktop/**',
   'dist/desktop-shell/**',
+  'dist/core-host.js',
   'dist/formatter-host.js',
   'dist/pty-host.js',
   'dist/quick-open-worker.js',

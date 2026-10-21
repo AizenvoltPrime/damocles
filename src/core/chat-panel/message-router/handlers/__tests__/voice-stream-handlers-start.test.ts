@@ -21,7 +21,6 @@ const models = vi.hoisted(() => ({
 
 vi.mock("../../../../voice/models", () => ({
   loadManifest: async () => ({ models: [PARAKEET] }),
-  compareInstalled: async () => ({ ok: models.missing.length === 0, missing: models.missing, outdated: [] }),
   cleanupOldVersions: async () => ({ removed: [], bytesFreed: 0 }),
   downloadModel: () => models.downloadModel(),
 }));
@@ -38,6 +37,8 @@ function failingVoiceService(reason: string) {
     attachClient: () => () => {},
     isReady: () => false,
     ensureStarted: vi.fn(async (_opts: { install: boolean; retry?: boolean }) => {}),
+    recordDownloadConsent: vi.fn(async () => {}),
+    missingModels: async () => models.missing,
     failureMessage: () => reason,
     ttsRequest: vi.fn(),
     getPaths: () => ({ rootDir: "/fake/voice", modelsDir: "/fake/voice/models", pythonExe: "/fake/python", venvDir: "/fake/venv" }),
@@ -59,7 +60,7 @@ function setup(reason: string) {
   return { handlers, voiceService, posted, ctx };
 }
 
-const REASON = "Need ~16.5 GB free, have 4.0 GB. Free disk or set damocles.voice.runtimePath to a different filesystem.";
+const REASON = "The voice runtime needs about 16.5 GB free on the disk holding /fake/voice, and 4.0 GB is free. Free disk space and try again.";
 
 describe("voice start failures reach the user", () => {
   beforeEach(() => {
@@ -99,6 +100,7 @@ describe("voice start failures reach the user", () => {
         throw new Error("HTTP 503");
       };
       await handlers.voiceAcceptFirstRunModal!({ type: "voiceAcceptFirstRunModal" }, ctx);
+      expect(voiceService.recordDownloadConsent).toHaveBeenCalledOnce();
       expect(voiceService.ensureStarted).not.toHaveBeenCalled();
     });
   });

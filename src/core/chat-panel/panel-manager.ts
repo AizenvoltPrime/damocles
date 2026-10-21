@@ -2,7 +2,7 @@ import * as path from "path";
 import type { Disposable } from "../../platform/disposable";
 import type { PlatformWithWorktrees } from "../worktrees/host";
 import type { PanelHost } from "../../platform/window-service";
-import { PermissionHandler } from "../permission-handler";
+import { PermissionHandler, type ChatPermissions } from "../permission-handler";
 import { IdeContextManager } from "./ide-context-manager";
 import { MAX_PENDING_TERMINAL_ATTACHMENT_CHARS, TerminalAttachmentManager } from "./terminal-attachment-manager";
 import type { ChatAttachmentInput } from "../../shared/types/chat-attachment";
@@ -18,7 +18,7 @@ import type { PromptTarget } from "./webview-prompts";
 import { claimStoredSession } from "./session-ownership";
 import { PanelWorktrees, type PanelWorktreeStateEvent, type WorktreeOptIn } from "./panel-worktrees";
 import { sessionLeaseBlocker } from "../pi-session/session-store/session-lease";
-import { folderContains } from "../worktrees/registry";
+import { folderContains } from "../worktrees/records";
 import type { ChatPlace, WorktreeAction, WorktreeFinishAction } from "../../shared/types/messages";
 import type { UserContentBlock } from "../../shared/types/content";
 import { settingsFolderOf, type FolderChange, type FolderTarget, type WorkspaceFolderRegistry } from "../workspace-folders/folder-registry";
@@ -33,12 +33,6 @@ export type FolderSwitchReason = "user" | "resume" | "restore" | "folderRemoved"
 
 /** Runs on the panel's instance inside the folder task, before queued webview messages are delivered and before a replacement session starts. */
 export type AfterFolderSwitch = (instance: HostInstance) => Promise<void>;
-
-/** The folder key the chat webview persisted; the panel manager accepts it only if that folder is open. */
-export function restoredWorkspaceFolderKey(state: unknown): string | undefined {
-  const raw = (state as { workspaceFolderKey?: unknown } | null)?.workspaceFolderKey;
-  return typeof raw === "string" ? raw : undefined;
-}
 
 /** Open from the moment a webview's HTML is built until its next `ready`. */
 const htmlToReadySpans = new WeakMap<PanelHost, PerfSpan>();
@@ -112,8 +106,10 @@ export interface PanelManagerConfig {
   inheritSettingsFromPanel: (sourcePanelId: string, newPanelId: string) => void;
   /** Full-session replay (pi fork resumes a pre-truncated branched session — US-013c). */
   loadHistory: (cwd: string, sessionId: string, host: PanelHost, session: ChatSession) => Promise<string[] | null>;
-  /** The stored sessions listed under the open project `projectKey` (a worktree's share count). */
+  /** The stored sessions listed under the open project `projectKey` so far (a worktree's share count). */
   storedSessionsOf: (projectKey: string) => Promise<readonly StoredSession[]>;
+  /** `storedSessionsOf` once none is still being parsed (removing deleted worktree records). */
+  completeStoredSessionsOf: (projectKey: string) => Promise<readonly StoredSession[]>;
 }
 
 /** How a host is set up: a fork of a panel, a folder the webview saved, or a new chat bound to a live chat worktree. */
@@ -122,6 +118,8 @@ interface HostSetUpOptions {
   sourcePanelId?: string;
   initialFolderKey?: string;
   worktree?: { readonly projectKey: string; readonly worktreeId: string };
+  // what the chat's ended core published (a desktop engine restart), in place of the folder's defaults
+  permissions?: ChatPermissions;
 }
 
 export class PanelManager {
@@ -160,6 +158,8 @@ export class PanelManager {
   /** At most one settings view per panel. */
   private readonly attachments = new Map<string, AttachedView>();
   private readonly attachmentListeners = new Set<(panelId: string) => void>();
+  private readonly restoreRetryListeners = new Set<(panelId: string) => void>();
+  private readonly permissionsListeners = new Set<(panelId: string) => void>();
   /** Opt-ins, held first prompts, hand-offs and owned working folders (slice 12a). */
   readonly worktrees: PanelWorktrees;
 
@@ -197,10 +197,23 @@ export class PanelManager {
         await Promise.all([...this.closingSessions]);
       },
       storedSessionsOf: config.storedSessionsOf,
+      completeStoredSessionsOf: config.completeStoredSessionsOf,
     });
     this.folderChangeSubscription = this.folderRegistry.onDidChange((change) => {
       this.onFoldersChanged(change).catch((err) => log("[PanelManager] workspace folder change failed: %O", err));
     });
+    // Activity reports every bind and stored session change; the retry's own open clears it once it settled.
+    this.activity.onActivity((panelId) => this.dropRestoreRetry(panelId));
+  }
+
+  /** A pending restore retry stands for the panel only while it holds no conversation of its own. */
+  private dropRestoreRetry(panelId: string): void {
+    const instance = this.panels.get(panelId);
+    if (instance?.restoreRetry === undefined) return;
+    const { session, restoreRetry } = instance;
+    if (!session.hasConversation() || session.holdsSession(restoreRetry)) return;
+    delete instance.restoreRetry;
+    this.restoreRetryChanged(panelId);
   }
 
   getPanels(): Map<string, HostInstance> {
@@ -274,6 +287,22 @@ export class PanelManager {
 
   hasConversation(panelId: string): boolean {
     return this.panels.get(panelId)?.session.hasConversation() ?? false;
+  }
+
+  /** A restore its lease refused scheduled its retry, or ran it (`HostInstance.restoreRetry`). */
+  onRestoreRetry(listener: (panelId: string) => void): Disposable {
+    this.restoreRetryListeners.add(listener);
+    return { dispose: (): void => { this.restoreRetryListeners.delete(listener); } };
+  }
+
+  restoreRetryChanged(panelId: string): void {
+    for (const listener of [...this.restoreRetryListeners]) listener(panelId);
+  }
+
+  /** A panel's permission mode or YOLO changed (`PermissionHandler.getPermissions`). */
+  onPermissionsChanged(listener: (panelId: string) => void): Disposable {
+    this.permissionsListeners.add(listener);
+    return { dispose: (): void => { this.permissionsListeners.delete(listener); } };
   }
 
   onAllPanelsClosed(callback: () => void): Disposable {
@@ -389,10 +418,13 @@ export class PanelManager {
     }
   }
 
-  async restorePanel(host: PanelHost, workspaceFolderKey: string | undefined): Promise<void> {
+  async restorePanel(host: PanelHost, workspaceFolderKey: string | undefined, permissions?: ChatPermissions): Promise<void> {
     host.setHtml(this.getHtmlContent(host));
     try {
-      await this.initializeHost(host, workspaceFolderKey !== undefined ? { initialFolderKey: workspaceFolderKey } : undefined);
+      await this.initializeHost(host, {
+        ...(workspaceFolderKey !== undefined ? { initialFolderKey: workspaceFolderKey } : {}),
+        ...(permissions ? { permissions } : {}),
+      });
     } catch (err) {
       log(`[PanelManager] Failed to restore panel: ${err}`);
       host.setHtml(this.getErrorHtml(host));
@@ -514,10 +546,15 @@ export class PanelManager {
 
     const permissionHandler = new PermissionHandler(this.platform, panelId, settingsFolderOf(folder));
     permissionHandler.setPostMessage((msg) => this.postMessage(host, msg));
-    if (source) {
-      permissionHandler.setPermissionMode(source.permissionHandler.getPermissionMode());
-      permissionHandler.setDangerouslySkipPermissions(source.permissionHandler.getDangerouslySkipPermissions());
+    // Before the session is created, which takes its tool set from the mode.
+    const inherited = source?.permissionHandler.getPermissions() ?? options?.permissions;
+    if (inherited) {
+      permissionHandler.setPermissionMode(inherited.permissionMode);
+      permissionHandler.setDangerouslySkipPermissions(inherited.dangerouslySkipPermissions);
     }
+    permissionHandler.setPermissionsListener(() => {
+      for (const listener of [...this.permissionsListeners]) listener(panelId);
+    });
 
     permissionHandler.setWorkspacePath(folder.projectScope ? folder.fsPath : null);
     permissionHandler.setCwd(folder.fsPath);
@@ -568,6 +605,7 @@ export class PanelManager {
       disposables,
       webviewReady,
       ...(options?.forkContext ? { forkContext: options.forkContext } : {}),
+      ...(options?.permissions ? { permissionsHandedBack: true } : {}),
     };
     if (closed) {
       // The host closed while the session was being created, before the panel was registered.
@@ -954,8 +992,9 @@ export class PanelManager {
     permissionHandler.setWorkspacePath(folder.projectScope ? folder.fsPath : null);
     permissionHandler.setCwd(folder.fsPath);
     this.bindSessionCallbacks(panelId, instance);
-    // A new conversation resets what clearing does; mode, model and reasoning stay.
-    permissionHandler.resetForNewConversation(settingsFolderOf(folder));
+    // A new conversation resets what clearing does; mode, model and reasoning stay. A restore moving a panel an engine restart
+    // reopened to its conversation's folder keeps the YOLO that restart handed it.
+    if (reason !== "restore" || instance.permissionsHandedBack !== true) permissionHandler.resetForNewConversation(settingsFolderOf(folder));
     await this.sendCurrentSettings(host, permissionHandler, folder);
     this.applyFolderTitle(instance);
     this.postWorkspaceFolderUpdate(instance, switched);
@@ -1149,27 +1188,21 @@ export class PanelManager {
   }
 
   postToActivePanel(message: ExtensionToWebviewMessage): boolean {
-    if (this.lastActivePanelId) {
-      const instance = this.panels.get(this.lastActivePanelId);
-      if (instance) {
-        this.postMessage(instance.host, message);
-        return true;
-      }
-    }
-    if (this.panels.size === 1) {
-      const first = this.panels.values().next();
-      if (!first.done) {
-        this.postMessage(first.value.host, message);
-        return true;
-      }
-    }
+    const host = this.activePanelHost();
+    if (host === undefined) return false;
+    this.postMessage(host, message);
+    return true;
+  }
+
+  /** The panel last active, else the only one, else a visible one; undefined when none qualifies. */
+  activePanelHost(): PanelHost | undefined {
+    const last = this.lastActivePanelId ? this.panels.get(this.lastActivePanelId) : undefined;
+    if (last) return last.host;
+    if (this.panels.size === 1) return this.panels.values().next().value?.host;
     for (const [, instance] of this.panels) {
-      if (instance.host.visible) {
-        this.postMessage(instance.host, message);
-        return true;
-      }
+      if (instance.host.visible) return instance.host;
     }
-    return false;
+    return undefined;
   }
 
   private findFallbackActivePanelId(): string | null {

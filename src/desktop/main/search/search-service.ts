@@ -1,8 +1,8 @@
-import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
-import type { Readable } from 'node:stream';
+import { StringDecoder } from 'node:string_decoder';
 import picomatch from 'picomatch';
+import { processLauncher, type LaunchedProcess } from '../../../core/process-launcher';
 import { isRelativeFilePath } from '../../../shared/relative-path';
 import {
   compareSearchFiles,
@@ -40,13 +40,7 @@ const MAX_STDERR_CHARS = 4096;
 // multi-line match's lines can be a whole file, which main would hold several times over while it decodes them.
 export const MAX_RG_EVENT_BYTES: number = 32 * 1024 * 1024;
 
-export interface RgProcess {
-  readonly stdout: Readable;
-  readonly stderr: Readable;
-  kill(): void;
-  on(event: 'close', listener: (code: number | null) => void): this;
-  on(event: 'error', listener: (err: Error) => void): this;
-}
+export type RgProcess = Pick<LaunchedProcess, 'onData' | 'exited' | 'closed' | 'kill'>;
 
 // The shown folder of the window's selected project: ripgrep's working directory and only path.
 export interface SearchFolder {
@@ -172,7 +166,7 @@ interface Run extends RecordedSearch {
 type RgText = { readonly text: string } | { readonly bytes: string };
 
 function spawnRipgrep(rgPath: string, args: readonly string[], cwd: string): RgProcess {
-  return spawn(rgPath, args, { cwd, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  return processLauncher().launch({ file: rgPath, args, cwd, stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
 /** A result file's modification time, or undefined when it cannot be read for any reason. */
@@ -184,8 +178,11 @@ export async function lstatMtime(fsPath: string): Promise<number | undefined> {
   }
 }
 
-/** Calls onLine with each line of stream, and onDropped instead for a line longer than maxBytes, which is never held whole. */
-function readLines(stream: Readable, maxBytes: number, onLine: (line: string) => void, onDropped: () => void): void {
+/**
+ * Calls onLine with each line of the chunks it is pushed, and onDropped instead for a line longer than maxBytes, which is never
+ * held whole; end() ends the last line.
+ */
+function lineReader(maxBytes: number, onLine: (line: string) => void, onDropped: () => void): { push(chunk: Buffer): void; end(): void } {
   let chunks: Buffer[] = [];
   let size = 0;
   let dropping = false;
@@ -207,16 +204,18 @@ function readLines(stream: Readable, maxBytes: number, onLine: (line: string) =>
     size = 0;
     dropping = false;
   };
-  stream.on('data', (chunk: Buffer) => {
-    let start = 0;
-    for (let index = chunk.indexOf(10); index !== -1; index = chunk.indexOf(10, start)) {
-      take(chunk.subarray(start, index));
-      endLine();
-      start = index + 1;
-    }
-    take(chunk.subarray(start));
-  });
-  stream.on('end', endLine);
+  return {
+    push: (chunk) => {
+      let start = 0;
+      for (let index = chunk.indexOf(10); index !== -1; index = chunk.indexOf(10, start)) {
+        take(chunk.subarray(start, index));
+        endLine();
+        start = index + 1;
+      }
+      take(chunk.subarray(start));
+    },
+    end: endLine,
+  };
 }
 
 function textOf(value: RgText): Buffer {
@@ -672,7 +671,7 @@ export class SearchService {
     if (run.done) return;
     const rg = (this.deps.spawnRg ?? spawnRipgrep)(rgPath, args, run.folder.fsPath);
     run.process = rg;
-    readLines(rg.stdout, MAX_RG_EVENT_BYTES, (line) => {
+    const lines = lineReader(MAX_RG_EVENT_BYTES, (line) => {
       if (run.done) return;
       let event: { type: string; data: Record<string, unknown> };
       try {
@@ -687,19 +686,20 @@ export class SearchService {
       run.dropped++;
       run.limitHit = true;
     });
-    rg.stderr.setEncoding('utf8');
-    rg.stderr.on('data', (chunk: string) => {
-      if (run.stderr.length < MAX_STDERR_CHARS) run.stderr += chunk.slice(0, MAX_STDERR_CHARS - run.stderr.length);
+    rg.onData('stdout', (chunk) => lines.push(chunk));
+    const stderr = new StringDecoder('utf8');
+    rg.onData('stderr', (chunk) => {
+      if (run.stderr.length < MAX_STDERR_CHARS) run.stderr += stderr.write(chunk).slice(0, MAX_STDERR_CHARS - run.stderr.length);
     });
-    rg.on('error', (err) => this.finish(run, err.message, false));
-    // After readline has every line: 'close' follows the end of stdout.
-    rg.on('close', (code) => {
+    // The close follows every chunk of output.
+    Promise.all([rg.exited, rg.closed]).then(([{ code }]) => {
+      lines.end();
       if (run.dropped > 0) this.deps.log(`[search] dropped ${run.dropped} ripgrep events over ${MAX_RG_EVENT_BYTES} bytes`);
       const stderr = run.stderr.trim();
       if (stderr !== '') this.deps.log(`[search] ripgrep: ${stderr.slice(0, 500)}`);
       // 1 is ripgrep's "nothing found"; 2 with results is an unreadable file among readable ones.
       this.finish(run, code === 0 || code === 1 ? undefined : rgErrorForDisplay(stderr), false);
-    });
+    }, (err: Error) => this.finish(run, err.message, false));
   }
 
   private onEvent(run: Run, event: { type: string; data: Record<string, unknown> }): void {

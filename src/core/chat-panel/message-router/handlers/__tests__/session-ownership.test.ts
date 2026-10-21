@@ -98,6 +98,7 @@ function harness(...panels: Panel[]) {
     getPanels,
     switchPanelFolder,
     postWorkspaceFolderState: vi.fn(),
+    restoreRetryChanged: vi.fn(),
     folderRegistry: { resolve: (key: string) => [FOLDER_A, FOLDER_B].find((f) => f.key === key), targets: () => [FOLDER_A, FOLDER_B] },
     postMessage: (host: unknown, message: ExtensionToWebviewMessage) => {
       sent.get(host)!.push(message);
@@ -241,6 +242,9 @@ describe("one panel per stored conversation: panel restore", () => {
     expect(empty[0]!.session.initializeEarly).toHaveBeenCalledTimes(1);
     expect(resumed[0]!.session.initializeEarly).toHaveBeenCalledTimes(1);
     expect(infos()).toContain(MESSAGE);
+    // Only the panel whose restore opened nothing is told to stop naming the conversation; the other's replay clears it named.
+    expect(h.sent.get(empty[0]!.host)!.filter((m) => m.type === "sessionCleared")).toEqual([{ type: "sessionCleared" }]);
+    expect(h.sent.get(resumed[0]!.host)!.filter((m) => m.type === "sessionCleared")).toEqual([]);
     // A restore never pulls focus to the other panel.
     expect(first.host.reveal).not.toHaveBeenCalled();
     expect(second.host.reveal).not.toHaveBeenCalled();
@@ -397,6 +401,8 @@ describe("a conversation another Damocles window holds", () => {
     expect(mine.target()).toBeNull();
     expect(h.loadSessionHistory).not.toHaveBeenCalled();
     expect(mine.session.initializeEarly).toHaveBeenCalledTimes(1);
+    // The webview named the saved conversation from mount; told it was not opened, its sends name none.
+    expect(h.sent.get(mine.host)!.filter((m) => m.type === "sessionCleared")).toEqual([{ type: "sessionCleared" }]);
   });
 
   it("rename and tag: refused, and the file is not written", async () => {
@@ -428,12 +434,17 @@ describe("a conversation another Damocles window holds", () => {
 
     expect(infos()).toEqual([expect.stringMatching(/^The Damocles window that had this conversation open stopped responding\. It opens here in about \d+ seconds\.$/)]);
     expect(h.loadSessionHistory).not.toHaveBeenCalled();
+    // the panel names the session its retry opens, so a host keeps it loaded meanwhile
+    expect(mine.instance.restoreRetry).toBe("sess-crashed");
+    expect(vi.mocked(h.deps.restoreRetryChanged).mock.calls).toEqual([["host-1"]]);
 
     // Time passes past the stale window, as it would for the timer.
     const stale = new Date(Date.now() - SESSION_LEASE_STALE_MS - 1_000);
     fs.utimesSync(sessionLeasePath("sess-crashed"), stale, stale);
     await vi.advanceTimersByTimeAsync(SESSION_LEASE_STALE_MS);
 
+    expect(mine.instance.restoreRetry).toBeUndefined();
+    expect(vi.mocked(h.deps.restoreRetryChanged).mock.calls).toEqual([["host-1"], ["host-1"]]);
     expect(mine.target()).toBe("sess-crashed");
     expect(h.order).toEqual(expect.arrayContaining(["resumeAccepted", "load:/a:sess-crashed", "sessionStarted"]));
   });
@@ -452,6 +463,8 @@ describe("a conversation another Damocles window holds", () => {
 
     expect(mine.target()).toBe("sess-started-here");
     expect(h.loadSessionHistory).not.toHaveBeenCalled();
+    expect(mine.instance.restoreRetry).toBeUndefined();
+    expect(vi.mocked(h.deps.restoreRetryChanged).mock.calls).toEqual([["host-1"], ["host-1"]]);
   });
 });
 

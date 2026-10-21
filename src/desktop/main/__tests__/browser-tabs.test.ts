@@ -103,7 +103,7 @@ function setup(width = 1200) {
   };
   const page = (owner: DesktopPanel, url?: string): DesktopPanel => {
     const created = views.create({ options: { kind: 'browser', title: 'page', localResourceRoots: [], owner } });
-    if (url !== undefined) void created.postMessage({ type: 'urlChanged', url });
+    if (url !== undefined) created.postJson('urlChanged', JSON.stringify({ type: 'urlChanged', url }));
     return created;
   };
   return { tabs, views, editor, chat, page, select: (target: DesktopPanel) => views.show(target.panelId, { focus: false }) };
@@ -170,13 +170,13 @@ describe('ownership', () => {
     const first = page(a, 'https://a.example/');
     const second = page(a, 'https://b.example/');
     const writes = vi.spyOn(states, 'setPages');
-    void second.postMessage({ type: 'navigationState', loading: true, canGoBack: true, canGoForward: false });
-    void second.postMessage({ type: 'pickingStateChanged', picking: true });
+    second.postJson('navigationState', JSON.stringify({ type: 'navigationState', loading: true, canGoBack: true, canGoForward: false }));
+    second.postJson('pickingStateChanged', JSON.stringify({ type: 'pickingStateChanged', picking: true }));
     second.setTitle('A page');
     second.setTitle('Another title');
     editor.set(second.panelId);
     expect(writes).not.toHaveBeenCalled();
-    void second.postMessage({ type: 'urlChanged', url: 'https://b.example/next' });
+    second.postJson('urlChanged', JSON.stringify({ type: 'urlChanged', url: 'https://b.example/next' }));
     editor.set(first.panelId);
     expect(writes).toHaveBeenCalledTimes(2);
     expect(states.get(a.panelId)?.browser).toEqual({ pages: ['https://a.example/', 'https://b.example/next'], activePage: 0 });
@@ -344,7 +344,7 @@ describe('focus', () => {
     tabs.setBounds(AREA);
     const a = chat();
     const shown = page(a, 'https://a.example/');
-    void shown.postMessage({ type: 'navigationState', loading: true, canGoBack: true, canGoForward: false });
+    shown.postJson('navigationState', JSON.stringify({ type: 'navigationState', loading: true, canGoBack: true, canGoForward: false }));
     shown.reveal();
     const b = chat();
     select(a);
@@ -438,7 +438,7 @@ describe('navigation bar and tab actions', () => {
     await tabs.action(shown.panelId, 'openExternal');
     expect(opened).toEqual([]);
     expect(openFailures).toBe(1);
-    void shown.postMessage({ type: 'urlChanged', url: 'https://a.example/x' });
+    shown.postJson('urlChanged', JSON.stringify({ type: 'urlChanged', url: 'https://a.example/x' }));
     await tabs.action(shown.panelId, 'openExternal');
     expect(openFailures).toBe(1);
     opens = false;
@@ -454,8 +454,8 @@ describe('navigation bar and tab actions', () => {
     const a = chat();
     const shown = page(a, 'https://a.example/');
     const before = editor.republished;
-    void shown.postMessage({ type: 'navigationState', loading: true, canGoBack: true, canGoForward: false });
-    void shown.postMessage({ type: 'pickingStateChanged', picking: true });
+    shown.postJson('navigationState', JSON.stringify({ type: 'navigationState', loading: true, canGoBack: true, canGoForward: false }));
+    shown.postJson('pickingStateChanged', JSON.stringify({ type: 'pickingStateChanged', picking: true }));
     shown.setTitle('A page');
     expect(editor.republished).toBe(before + 3);
     expect(tabs.tabs()[0]).toMatchObject({ title: 'A page', browser: { url: 'https://a.example/', loading: true, canGoBack: true, canGoForward: false, picking: true } });

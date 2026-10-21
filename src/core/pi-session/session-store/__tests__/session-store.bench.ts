@@ -1,4 +1,4 @@
-import { bench, describe } from 'vitest';
+import { bench, describe, inject } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -8,8 +8,9 @@ import { initPiLoader, type PiCodingAgentModule } from '../../pi-loader';
 import { subagentsDir } from '../../agent-records';
 import { ensurePiSessionDir } from '../session-dir';
 import { listPiSessions, extractPiPromptHistory, resolvePiSessionFile } from '../reading';
-import { flushSessionMetaCache, resetSessionMetaCacheMemory } from '../session-meta-cache';
 import { SESSION_META_CACHE_DIR } from '../../../paths';
+import type { SessionMetaIndex } from '../meta-index/client';
+import { inProcessIndex, listComplete } from '../meta-index/__tests__/in-process';
 import { loadPiSessionHistory } from '../history-loader';
 import { DAMOCLES_AGENT_INVOCATION_ENTRY, DAMOCLES_AGENT_LAUNCH_ENTRY, DAMOCLES_AGENT_STATUS_ENTRY } from '../constants';
 
@@ -111,7 +112,7 @@ function appendSubagentCall(pi: PiCodingAgentModule, dir: string, sm: SessionMan
 
 async function buildFixture(): Promise<Fixture> {
   const home = path.resolve(os.homedir()).toLowerCase();
-  if (!home.startsWith(path.resolve(os.tmpdir()).toLowerCase())) {
+  if (!home.startsWith(path.resolve(inject('testHomeRoot')).toLowerCase())) {
     throw new Error(`session-store bench needs the hermetic test home, got ${home}`);
   }
   const pi = await initPiLoader();
@@ -138,8 +139,8 @@ async function buildFixture(): Promise<Fixture> {
   const largeFile = writeSession(dir, large);
   sessionFiles.push(largeFile);
 
-  const sessions = await listPiSessions(CWD);
-  const prompts = await extractPiPromptHistory([CWD], sessions);
+  const sessions = await listComplete(index, CWD);
+  const prompts = await extractPiPromptHistory(index, [CWD], sessions);
   const posted: string[] = [];
   let hydratedAgents = 0;
   await loadPiSessionHistory(CWD, largeSessionId, (m) => {
@@ -155,44 +156,62 @@ async function buildFixture(): Promise<Fixture> {
   return { sessionFiles, sessions, largeSessionId };
 }
 
+// The worker runtime runs on the bench's own thread, so a cold list's parses count here as they would in the worker.
+let index: SessionMetaIndex = inProcessIndex().index;
+
 // The benchmark runner skips beforeAll hooks, so the fixture is built while the file is collected.
 const { sessions, largeSessionId } = await buildFixture();
 
-/** No metadata anywhere: the first run after an update, or ever. */
-function coldCache(): void {
-  resetSessionMetaCacheMemory();
+/** A new window: a new worker on the index file the last one committed and closed. */
+async function newWindow(): Promise<void> {
+  await index.close();
+  index = inProcessIndex().index;
+}
+
+/** No index file: the first run after a schema or pi update, or ever. */
+async function coldIndex(): Promise<void> {
+  await index.close();
   fs.rmSync(SESSION_META_CACHE_DIR, { recursive: true, force: true });
+  index = inProcessIndex().index;
 }
 
 // `throws` fails the run on an error; tinybench otherwise records it and reports NaN.
 describe('session store', () => {
-  bench('listPiSessions cold', async () => {
-    coldCache();
-    await listPiSessions(CWD);
+  // Until the first answer, which holds no rows: what the list waits for before it shows.
+  bench('listPiSessions cold, first answer', async () => {
+    await coldIndex();
+    await listPiSessions(index, CWD, () => undefined);
+  }, { iterations: 5, time: 0, throws: true });
+
+  // Until the last parsed batch: what the list waits for before it is complete.
+  bench('listPiSessions cold, complete', async () => {
+    await coldIndex();
+    await listComplete(index, CWD);
   }, { iterations: 5, time: 0, throws: true });
 
   bench('listPiSessions warm', async () => {
-    await listPiSessions(CWD);
-  }, { iterations: 20, time: 0, throws: true });
+    await listPiSessions(index, CWD, () => undefined);
+  }, { iterations: 20, time: 0, throws: true, setup: () => listComplete(index, CWD).then(() => undefined) });
 
-  // The in-memory layer is gone and the disk cache is warm, as in a reloaded or second window.
+  // Includes the close, which commits nothing here, and the new worker's index open.
   bench('listPiSessions new window', async () => {
-    resetSessionMetaCacheMemory();
-    await listPiSessions(CWD);
-  }, { iterations: 20, time: 0, throws: true, setup: () => flushSessionMetaCache() });
+    await newWindow();
+    await listPiSessions(index, CWD, () => undefined);
+  }, { iterations: 20, time: 0, throws: true, setup: () => listComplete(index, CWD).then(() => undefined) });
 
   bench('extractPiPromptHistory cold', async () => {
-    coldCache();
-    await extractPiPromptHistory([CWD], sessions);
+    await coldIndex();
+    await extractPiPromptHistory(index, [CWD], sessions);
   }, { iterations: 5, time: 0, throws: true });
 
   bench('extractPiPromptHistory warm', async () => {
-    await extractPiPromptHistory([CWD], sessions);
-  }, { iterations: 5, time: 0, throws: true, setup: () => extractPiPromptHistory([CWD], sessions).then(() => undefined) });
+    await extractPiPromptHistory(index, [CWD], sessions);
+  }, { iterations: 5, time: 0, throws: true, setup: () => extractPiPromptHistory(index, [CWD], sessions).then(() => undefined) });
 
+  // The list indexes the session files; listComplete first, so no parse runs on this thread meanwhile.
   bench('resolvePiSessionFile, large conversation', async () => {
     await resolvePiSessionFile(CWD, largeSessionId);
-  }, { iterations: 20, time: 0, throws: true, setup: () => listPiSessions(CWD).then(() => undefined) });
+  }, { iterations: 20, time: 0, throws: true, setup: () => listComplete(index, CWD).then(() => listPiSessions(index, CWD, () => undefined)).then(() => undefined) });
 
   bench('loadPiSessionHistory large conversation', async () => {
     await loadPiSessionHistory(CWD, largeSessionId, () => {});

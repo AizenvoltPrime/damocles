@@ -1,64 +1,93 @@
-import { EventEmitter } from 'node:events';
 import * as path from 'node:path';
-import { PassThrough } from 'node:stream';
-import type { ChildProcess, SpawnOptions } from 'node:child_process';
-import { describe, expect, it, vi } from 'vitest';
-import { createShellJob, type ShellSessionJob } from '../../pi-session/tools/process-tree';
-import { createGitRunner, gitAtLeast, gitEnv, GitError, GitOutputTooLargeError, GitQueueDisposedError, GitUntrustedError, isSafeRevision, parseGitVersion, redactUrls, RepoQueue, revision, type GitCall } from '../git-runner';
+import { describe, expect, it } from 'vitest';
+import type { KillOptions, Launcher, SpawnSpec } from '../../process-launcher';
+import { createGitRunner, gitAtLeast, gitEnv, GitOutputTooLargeError, GitQueueDisposedError, isSafeRevision, RepoQueue, revision, type GitCall } from '../git-runner';
+import { parseGitVersion } from '../git-version';
+import { GitError, GitUntrustedError, redactUrls } from '../errors';
 
-// Recorded rather than run: only a fake child with a pid reaches it, and the real one opens kernel handles.
-vi.mock('../../pi-session/tools/process-tree', () => ({ createShellJob: vi.fn(() => undefined), killProcessTree: vi.fn() }));
-
-interface Spawned {
-  readonly command: string;
-  readonly args: readonly string[];
-  readonly options: SpawnOptions;
+interface Launched {
+  readonly spec: SpawnSpec;
   readonly stdin: string[];
-  readonly kills: number[];
-  finish(code: number, stdout?: string, stderr?: string): void;
+  readonly kills: KillOptions[];
+  finish(code: number | null, stdout?: string | Buffer, stderr?: string | Buffer): void;
+  // the start failed: the pid and the exit reject at once
+  failStart(err: Error): void;
+  // the process started and its launcher worker died before it closed
+  die(err: Error): void;
 }
 
-function fakeSpawn(pid?: number): { spawned: Spawned[]; spawn: (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess } {
-  const spawned: Spawned[] = [];
-  const spawn = (command: string, args: readonly string[], options: SpawnOptions): ChildProcess => {
-    const child = new EventEmitter() as ChildProcess & EventEmitter;
-    const stdout = new PassThrough();
-    const stderr = new PassThrough();
-    const stdin = new PassThrough();
-    const written: string[] = [];
-    const kills: number[] = [];
-    stdin.on('data', (chunk: Buffer) => written.push(chunk.toString('utf8')));
-    // a killed process closes with no exit code, as a signalled one does
-    const kill = (): boolean => {
-      kills.push(1);
-      setImmediate(() => child.emit('close', null));
-      return true;
-    };
-    Object.assign(child, { stdout, stderr, stdin, kill, pid });
-    spawned.push({
-      command,
-      args,
-      options,
-      stdin: written,
-      kills,
-      finish: (code, out = '', err = '') => {
-        stdout.end(out);
-        stderr.end(err);
-        setImmediate(() => child.emit('close', code));
-      },
-    });
-    return child;
+// Recorded rather than run; a killed process closes with no exit code, as a signalled one does.
+function fakeLauncher(): { launched: Launched[]; launcher: Launcher } {
+  const launched: Launched[] = [];
+  const launcher: Launcher = {
+    launch(spec) {
+      const listeners: Record<'stdout' | 'stderr', Array<(chunk: Buffer) => void>> = { stdout: [], stderr: [] };
+      let exit: (value: { code: number | null; signal: null }) => void = () => undefined;
+      let failExit: (err: Error) => void = () => undefined;
+      let close: () => void = () => undefined;
+      let started: (pid: number) => void = () => undefined;
+      let failPid: (err: Error) => void = () => undefined;
+      const exited = new Promise<{ code: number | null; signal: null }>((resolve, reject) => {
+        exit = resolve;
+        failExit = reject;
+      });
+      const closed = new Promise<void>((resolve) => (close = resolve));
+      const pid = new Promise<number>((resolve, reject) => {
+        started = resolve;
+        failPid = reject;
+      });
+      const stdin: string[] = [];
+      const kills: KillOptions[] = [];
+      const finish = (code: number | null, out: string | Buffer = '', err: string | Buffer = ''): void => {
+        started(4242);
+        setImmediate(() => {
+          if (out.length > 0) for (const listener of listeners.stdout) listener(Buffer.from(out));
+          if (err.length > 0) for (const listener of listeners.stderr) listener(Buffer.from(err));
+          exit({ code, signal: null });
+          close();
+        });
+      };
+      const failStart = (err: Error): void => {
+        failPid(err);
+        failExit(err);
+      };
+      const die = (err: Error): void => {
+        started(4242);
+        failExit(err);
+      };
+      launched.push({ spec, stdin, kills, finish, failStart, die });
+      const text = (chunk: string | Uint8Array): string => (typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+      return {
+        pid,
+        onData: (stream, listener) => void listeners[stream].push(listener),
+        write: (chunk) => {
+          stdin.push(text(chunk));
+          return Promise.resolve();
+        },
+        end: (chunk) => {
+          if (chunk !== undefined) stdin.push(text(chunk));
+        },
+        exited,
+        closed,
+        kill: (options = {}) => {
+          kills.push(options);
+          finish(null);
+        },
+      };
+    },
+    createSessionJob: () => ({ id: 7, dispose: () => undefined }),
+    dispose: async () => undefined,
   };
-  return { spawned, spawn };
+  return { launched, launcher };
 }
 
 const GIT = { path: 'C:\\Program Files\\Git\\cmd\\git.exe', version: { major: 2, minor: 45, patch: 1 } };
 
-function runner(trusted = true, pid?: number) {
-  const fake = fakeSpawn(pid);
+function runner(trusted = true) {
+  const fake = fakeLauncher();
   const lines: string[] = [];
-  const instance = createGitRunner({ git: GIT, log: { appendLine: (line) => lines.push(line) }, isTrusted: () => trusted, spawn: fake.spawn, now: () => 0 });
-  return { ...fake, lines, instance };
+  const instance = createGitRunner({ git: GIT, log: { appendLine: (line) => lines.push(line) }, isTrusted: () => trusted, launcher: fake.launcher, now: () => 0 });
+  return { spawned: fake.launched, lines, instance };
 }
 
 const call = (overrides: Partial<GitCall> = {}): GitCall => ({ project: '/p', cwd: '/p', args: ['status'], kind: 'read', ...overrides });
@@ -72,9 +101,9 @@ describe('git runner', () => {
     const { spawned, instance } = runner();
     const done = instance.run(call({ args: ['status', '-z'] }));
     await settle();
-    expect(spawned[0]!.command).toBe(GIT.path);
-    expect(spawned[0]!.args).toEqual(['status', '-z']);
-    expect(spawned[0]!.options.shell).toBe(false);
+    expect(spawned[0]!.spec.file).toBe(GIT.path);
+    expect(spawned[0]!.spec.args).toEqual(['status', '-z']);
+    expect(spawned[0]!.spec.shell).toBe(false);
     spawned[0]!.finish(0);
     await done;
   });
@@ -84,7 +113,7 @@ describe('git runner', () => {
     void instance.run(call({ kind: 'mutation' }));
     void instance.run(call({ kind: 'status', parsed: true }));
     await settle();
-    const [mutation, status] = spawned.map((entry) => entry.options.env!);
+    const [mutation, status] = spawned.map((entry) => entry.spec.env!);
     for (const env of [mutation!, status!]) {
       expect(env['GIT_TERMINAL_PROMPT']).toBe('0');
       expect(env['GIT_EDITOR']).toBe('true');
@@ -101,8 +130,8 @@ describe('git runner', () => {
     void instance.run(call({ kind: 'mutation', args: ['add', '-A', '--', 'a*'], literalPathspecs: true }));
     void instance.run(call({ kind: 'mutation', args: ['commit', '--file', '-'] }));
     await settle();
-    expect(spawned[0]!.options.env!['GIT_LITERAL_PATHSPECS']).toBe('1');
-    expect(spawned[1]!.options.env!['GIT_LITERAL_PATHSPECS']).toBeUndefined();
+    expect(spawned[0]!.spec.env!['GIT_LITERAL_PATHSPECS']).toBe('1');
+    expect(spawned[1]!.spec.env!['GIT_LITERAL_PATHSPECS']).toBeUndefined();
   });
 
   it('drops an inherited pathspec mode, which would switch off pathspec magic, and sets only its own', () => {
@@ -124,7 +153,7 @@ describe('git runner', () => {
       const { spawned, instance } = runner();
       void instance.run(call());
       await settle();
-      expect(spawned[0]!.options.env!['GIT_DIR']).toBeUndefined();
+      expect(spawned[0]!.spec.env!['GIT_DIR']).toBeUndefined();
     } finally {
       delete process.env['GIT_DIR'];
     }
@@ -180,15 +209,27 @@ describe('git runner', () => {
     expect((error as GitError).message).toBe('git commit exited with 1');
   });
 
-  it('puts a cancellable call in its own job inside the session job, and never an index write', async () => {
-    const { spawned, instance } = runner(true, 4242);
-    const session: ShellSessionJob = { dispose: () => undefined };
-    vi.mocked(createShellJob).mockClear();
+  it('starts a cancellable call in the session job, and never an index write', async () => {
+    const { spawned, instance } = runner();
+    const session = { id: 7, dispose: () => undefined };
     void instance.run(call({ kind: 'status', signal: new AbortController().signal, session }));
     void instance.run(call({ kind: 'mutation', args: ['add', '--', 'a'], session }));
     await settle();
-    expect(vi.mocked(createShellJob).mock.calls).toEqual([[4242, session]]);
-    expect(spawned.map((entry) => entry.options.detached)).toEqual([process.platform !== 'win32', false]);
+    expect(spawned.map((entry) => entry.spec.job)).toEqual([7, undefined]);
+    expect(spawned.map((entry) => entry.spec.detached)).toEqual([process.platform !== 'win32', false]);
+  });
+
+  it("kills a cancelled call's whole tree, and never an uncancellable call past its bound", async () => {
+    const { spawned, instance } = runner();
+    const controller = new AbortController();
+    const cancelled = instance.run(call({ signal: controller.signal })).catch(() => undefined);
+    const bounded = instance.run(call({ args: ['diff'], maxOutputBytes: 1 })).catch(() => undefined);
+    await settle();
+    controller.abort(new GitQueueDisposedError());
+    spawned[1]!.finish(0, 'ab');
+    await Promise.all([cancelled, bounded]);
+    expect(spawned[0]!.kills).toEqual([{ tree: true }]);
+    expect(spawned[1]!.kills).toEqual([]);
   });
 
   it('adds the ceiling to an inherited one', () => {
@@ -229,6 +270,40 @@ describe('git runner', () => {
     expect(spawned).toHaveLength(1);
   });
 
+  it('logs a git that could not start apart from one whose launcher worker died, and a cancelled call as cancelled either way', async () => {
+    const { spawned, lines, instance } = runner();
+    const unstarted = instance.run(call());
+    await settle();
+    spawned[0]!.failStart(new Error('spawn EACCES'));
+    await expect(unstarted).rejects.toThrow('spawn EACCES');
+    const died = instance.run(call({ args: ['log'] }));
+    await settle();
+    spawned[1]!.die(new Error('the launcher worker died'));
+    await expect(died).rejects.toThrow('the launcher worker died');
+    const controller = new AbortController();
+    const cancelled = instance.run(call({ args: ['fetch'], signal: controller.signal }));
+    await settle();
+    controller.abort(new GitQueueDisposedError());
+    spawned[2]!.die(new Error('the launcher worker died'));
+    await expect(cancelled).rejects.toBeInstanceOf(GitQueueDisposedError);
+    expect(lines).toEqual(['> git status [failed to start: spawn EACCES]', '> git log [failed: the launcher worker died]', '> git fetch [0ms] cancelled']);
+  });
+
+  it('keeps a UTF-8 sequence that ends the output cut, as the decoder ends it', async () => {
+    const { spawned, instance } = runner();
+    const failed = instance.run(call());
+    await settle();
+    spawned[0]!.finish(1, '', Buffer.from([0x66, 0xe2, 0x82]));
+    const error = await failed.catch((err: unknown) => err);
+    expect((error as GitError).stderr).toBe('f\uFFFD');
+    const chunks: string[] = [];
+    const streamed = instance.run(call({ onData: (chunk) => void chunks.push(chunk) }));
+    await settle();
+    spawned[1]!.finish(0, Buffer.from([0x61, 0xc3]));
+    await streamed;
+    expect(chunks.join('')).toBe('a\uFFFD');
+  });
+
   it('never kills an index write whose output passes the bound, and rejects it as too large once it ends', async () => {
     const { spawned, lines, instance } = runner();
     const done = instance.run(call({ kind: 'mutation', args: ['commit'], maxOutputBytes: 3 }));
@@ -250,11 +325,11 @@ describe('git runner', () => {
   });
 
   it('bounds a call that names no bound by the runner\'s own', async () => {
-    const fake = fakeSpawn();
-    const instance = createGitRunner({ git: GIT, log: { appendLine: () => undefined }, isTrusted: () => true, spawn: fake.spawn, now: () => 0, maxOutputBytes: 4 });
+    const fake = fakeLauncher();
+    const instance = createGitRunner({ git: GIT, log: { appendLine: () => undefined }, isTrusted: () => true, launcher: fake.launcher, now: () => 0, maxOutputBytes: 4 });
     const done = instance.run(call());
     await settle();
-    fake.spawned[0]!.finish(0, 'abcdef');
+    fake.launched[0]!.finish(0, 'abcdef');
     await expect(done).rejects.toBeInstanceOf(GitOutputTooLargeError);
   });
 

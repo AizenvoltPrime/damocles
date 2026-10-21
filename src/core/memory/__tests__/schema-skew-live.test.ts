@@ -97,7 +97,7 @@ describe('MemoryWriteQueue schema guard', () => {
     const db = fakeDb();
     let ahead = false;
     const onAhead = vi.fn();
-    const queue = new MemoryWriteQueue(db, { isAhead: () => ahead, onAhead });
+    const queue = new MemoryWriteQueue(db, { isAhead: () => ahead, onAhead, isMoved: async () => false, onMoved: vi.fn() });
     const write = vi.fn(() => 'written');
 
     expect(await queue.run(write)).toBe('written');
@@ -114,7 +114,7 @@ describe('MemoryWriteQueue schema guard', () => {
 
   it('refuses a statement run outside a transaction once the store is ahead', async () => {
     const onAhead = vi.fn();
-    const queue = new MemoryWriteQueue(fakeDb(), { isAhead: () => true, onAhead });
+    const queue = new MemoryWriteQueue(fakeDb(), { isAhead: () => true, onAhead, isMoved: async () => false, onMoved: vi.fn() });
     const vacuum = vi.fn();
     await expect(queue.runOutsideTransaction(vacuum)).rejects.toBeInstanceOf(MemoryReadOnlyError);
     expect(vacuum).not.toHaveBeenCalled();
@@ -122,10 +122,28 @@ describe('MemoryWriteQueue schema guard', () => {
   });
 
   it('a queue built read only refuses every write without asking the guard', async () => {
-    const guard = { isAhead: vi.fn(() => true), onAhead: vi.fn() };
-    const queue = new MemoryWriteQueue(fakeDb(), guard, true);
+    const guard = { isAhead: vi.fn(() => true), onAhead: vi.fn(), isMoved: vi.fn(async () => true), onMoved: vi.fn() };
+    const queue = new MemoryWriteQueue(fakeDb(), guard, 'ahead');
     await expect(queue.run(() => 1)).rejects.toBeInstanceOf(MemoryReadOnlyError);
     expect(guard.isAhead).not.toHaveBeenCalled();
     expect(guard.onAhead).not.toHaveBeenCalled();
+    expect(guard.isMoved).not.toHaveBeenCalled();
+  });
+
+  it('refuses every write from the first that finds the file moved, without opening a transaction, and reports it once', async () => {
+    const db = fakeDb();
+    let moved = false;
+    const onMoved = vi.fn();
+    const queue = new MemoryWriteQueue(db, { isAhead: () => false, onAhead: vi.fn(), isMoved: async () => moved, onMoved });
+    const write = vi.fn(() => 'written');
+
+    expect(await queue.run(write)).toBe('written');
+    moved = true;
+    await expect(queue.run(write)).rejects.toThrow(/moved or replaced/);
+    await expect(queue.runOutsideTransaction(write)).rejects.toBeInstanceOf(MemoryReadOnlyError);
+
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(onMoved).toHaveBeenCalledTimes(1);
+    expect(db.transactions).toBe(1);
   });
 });

@@ -16,8 +16,7 @@ import { createHandlerRegistry } from "./handler-registry";
 import { MEMORY_MESSAGE_TYPES, MEMORY_MESSAGE_SOURCES } from "./handlers/memory-handlers";
 import { log } from "../../logger";
 import { visibleLines } from "../../../shared/visible-text";
-
-export const LANGUAGE_PREFERENCE_KEY = "userLanguagePreference";
+import { LANGUAGE_PREFERENCE_KEY } from "../../../shared/language-preference";
 
 export interface MessageRouterConfig {
   postMessage: (host: PanelHost, message: ExtensionToWebviewMessage) => void;
@@ -38,6 +37,7 @@ export interface MessageRouterConfig {
   folderRegistry: HandlerDependencies["folderRegistry"];
   switchPanelFolder: HandlerDependencies["switchPanelFolder"];
   postWorkspaceFolderState: HandlerDependencies["postWorkspaceFolderState"];
+  restoreRetryChanged: HandlerDependencies["restoreRetryChanged"];
   webviewPrompts: HandlerDependencies["webviewPrompts"];
   worktrees: HandlerDependencies["worktrees"];
 }
@@ -71,6 +71,7 @@ export class MessageRouter {
       folderRegistry: config.folderRegistry,
       switchPanelFolder: config.switchPanelFolder,
       postWorkspaceFolderState: config.postWorkspaceFolderState,
+      restoreRetryChanged: config.restoreRetryChanged,
       webviewPrompts: config.webviewPrompts,
       worktrees: config.worktrees,
     });

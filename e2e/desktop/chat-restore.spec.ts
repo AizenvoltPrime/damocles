@@ -161,26 +161,17 @@ test('a quit during a slowed trust write waits for it, so the next launch still 
   expect(project?.trusted).toBe(true);
 });
 
+type CoreRenameHooks = typeof globalThis & { __damoclesE2e: { slowCoreRenames(basename: string, delayMs: number): Promise<void>; slowedCoreRenames(basename: string): Promise<number> } };
+
 test('a quit during a slowed mcp.json write waits for it, so the next launch still has the server', async ({ home, launch }) => {
   test.setTimeout(120_000);
-  let desktop = await launch();
+  let desktop = await launch({ env: { DAMOCLES_E2E_HOOKS: '1' } });
   const chat = await activeChat(desktop.app);
   await expect(chatInput(chat)).toBeVisible();
-  await desktop.app.evaluate((_electron, delay) => {
-    const fs = process.getBuiltinModule('node:fs').promises;
-    const path = process.getBuiltinModule('node:path');
-    const rename = fs.rename.bind(fs);
-    const held = globalThis as { __e2eSlowedRenames?: number };
-    fs.rename = async (from, to) => {
-      if (path.basename(String(to)) === 'mcp.json') {
-        held.__e2eSlowedRenames = (held.__e2eSlowedRenames ?? 0) + 1;
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      }
-      return rename(from, to);
-    };
-  }, SLOW_RENAME_MS);
+  // core writes mcp.json, so the rename is slowed in core's process
+  await desktop.app.evaluate((_electron, delay) => (globalThis as CoreRenameHooks).__damoclesE2e.slowCoreRenames('mcp.json', delay), SLOW_RENAME_MS);
   await postFromWebview(chat, { type: 'mcpAddServer', requestId: 'e2e-quit', serverName: 'e2e-quit', config: { command: 'e2e-quit-server' } });
-  await expect.poll(() => desktop.app.evaluate(() => (globalThis as { __e2eSlowedRenames?: number }).__e2eSlowedRenames ?? 0)).toBe(1);
+  await expect.poll(() => desktop.app.evaluate(() => (globalThis as CoreRenameHooks).__damoclesE2e.slowedCoreRenames('mcp.json'))).toBe(1);
   await desktop.close();
   const mcpFile = path.join(home.damoclesDir, 'mcp.json');
   expect(fs.existsSync(mcpFile), 'the quit left mcp.json written').toBe(true);

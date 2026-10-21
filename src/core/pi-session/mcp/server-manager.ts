@@ -29,6 +29,7 @@ import {
 import { resolveMcpServerValues } from './config-value';
 import { hasScopeChallenge } from './mcp-auth-flow';
 import { failureForLog, McpServerConnectError } from './connect-failure';
+import { LauncherStdioTransport } from './launcher-transport';
 import { resolveNpxBinary } from './npx-resolver';
 import { stdioEnvironment } from './stdio-env';
 import { stripBidiControls, stripControlChars } from '../untrusted-text';
@@ -257,7 +258,7 @@ export class McpServerManager {
         if (errorInfo) connection.errorInfo = errorInfo;
         return connection;
       }
-      const stderrTail = transport instanceof this.bundle.mcp.StdioTransport ? sanitizeStderrTail(transport.stderr) : undefined;
+      const stderrTail = transport instanceof LauncherStdioTransport ? sanitizeStderrTail(transport.stderr) : undefined;
       const message = error instanceof Error ? error.message : String(error);
       throw new McpServerConnectError(message, { ...(stderrTail ? { stderrTail } : {}), logText: failureForLog(error) });
     }
@@ -295,12 +296,11 @@ export class McpServerManager {
 
     // The host resolved `cwd` to an absolute directory when it read the config (`McpManager` `serverSpec`).
     const cwd = definition.cwd;
-    return new this.bundle.mcp.StdioTransport({
+    return new LauncherStdioTransport(this.bundle.mcp, {
       command,
       args,
       // Only the allowlisted host variables plus the server's own env: never the host's provider keys.
       env: stdioEnvironment(definition.env),
-      inheritEnv: false,
       stderr: definition.debug ? 'inherit' : 'pipe',
       ...(cwd !== undefined ? { cwd } : {}),
     });

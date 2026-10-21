@@ -8,7 +8,7 @@ import SettingSwitch from '@/components/settings/controls/SettingSwitch.vue';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { formatClock, formatDateTime } from '@/utils/clock';
-import { UPDATE_CHECK_AUTOMATICALLY_SETTING } from '../../../main/desktop-configuration';
+import { UPDATE_CHECK_AUTOMATICALLY_SETTING } from '../../../local-services/desktop-configuration';
 import type { PopupAnswer } from '../../../preload/overlay-channels';
 import { canCheck, type UpdateSnapshot, type UpdateState, type VersionInfo } from '../../../preload/updates';
 import { answerOf, ran } from '../popup-answer';

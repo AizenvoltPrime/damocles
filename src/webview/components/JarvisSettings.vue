@@ -41,7 +41,8 @@ import {
 const { t } = useI18n();
 const page = useSettingsPage();
 const settingsStore = useSettingsStore();
-const { voiceConfig, voiceRuntimeUnsupported } = storeToRefs(settingsStore);
+const { voiceConfig, voiceRuntimeStatus } = storeToRefs(settingsStore);
+const runtimeUnsupported = computed(() => voiceRuntimeStatus.value.kind === "unsupported");
 const { voiceFilesBytes } = storeToRefs(useVoiceJarvisStore());
 const { postMessage } = usePlatformBridge();
 const write = useSettingWrite();
@@ -137,7 +138,7 @@ const removeAllLabel = computed(() => {
       @update:model-value="(voice) => update('damocles.voice.tts.voice', { type: 'setVoiceTtsVoice', voice }, { ttsVoice: voice })"
     />
     <SettingButton
-      v-if="!voiceRuntimeUnsupported"
+      v-if="!runtimeUnsupported"
       :disabled="!voiceConfig.ttsEnabled"
       data-testid="voice-test-voice"
       @click="postMessage({ type: 'voiceTestVoice' })"
@@ -200,7 +201,7 @@ const removeAllLabel = computed(() => {
     <template #expand>
       <div class="sm-field-row sm-row-block">
         <SettingButton
-          v-if="!voiceRuntimeUnsupported"
+          v-if="!runtimeUnsupported"
           data-testid="voice-redownload"
           @click="postMessage({ type: 'voiceRedownloadModels' })"
         >

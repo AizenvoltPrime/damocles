@@ -70,6 +70,7 @@ describe('Slice 8 C4 — runMaintenance wires sweepConflictChecks BEFORE maybeVa
       fallbackWorkspace: () => '/tmp/ws',
       openFolders: () => [],
       nonProjectFolders: () => [],
+      folderExists: async () => true,
       autoExtractEnabled: true,
       trigger: 'auto',
       onNoModel: () => {},

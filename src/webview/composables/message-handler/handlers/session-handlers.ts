@@ -103,7 +103,8 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
         sessionStore.setSelectedSession(null);
         bridge.setState({ ...bridge.getState<{ sessionId?: string; sessionName?: string }>(), sessionId: undefined, sessionName: undefined });
       }
-      sessionStore.setResumedSession(null);
+      // A replay names the conversation it shows next, which a send names until its session starts; unnamed, the panel shows none.
+      sessionStore.setResumedSession(msg.sessionId ?? null);
 
       // Another session's transcript starts at its bottom, wherever the reader left the last one.
       if (msg.pendingMessage) {

@@ -8,7 +8,8 @@ import { createWatcherFileFilter } from './detect';
 import { folderKey } from '../workspace-folders/folder-key';
 import { notifySchemaAhead } from '../schema-skew';
 import { t } from '../l10n';
-import type { WorkerEvent, WorkerProgressEvent } from './worker-protocol';
+import type { CompassWorkerData, WorkerEvent, WorkerProgressEvent } from './worker-protocol';
+import { releaseSpawnLockOnExit, spawnLock } from '../process-launcher/spawn-lock';
 import { LIGHT_REQUEST_TYPES, TIMEOUTS, TIMEOUTS_BY_TYPE } from './worker-protocol';
 import type { Disposable } from '../../platform/disposable';
 import type { SettingsStore } from '../../platform/settings-store';
@@ -40,7 +41,8 @@ export const MAX_CONSECUTIVE_WORKER_FAILURES = 3;
 export const WORKER_RETRY_BASE_DELAY_MS = 1_000;
 export const MAX_WATCHED_CHANGED_FILES = 500;
 
-const defaultWorkerFactory: CompassWorkerFactory = (workerPath) => new Worker(workerPath);
+const defaultWorkerFactory: CompassWorkerFactory = (workerPath) =>
+	releaseSpawnLockOnExit(new Worker(workerPath, { workerData: { spawnLock: spawnLock() } satisfies CompassWorkerData }));
 
 /** The host services a CompassService uses. */
 export interface CompassPlatform {

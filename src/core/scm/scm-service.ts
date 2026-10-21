@@ -2,7 +2,7 @@
 // Trust is asked about the project folder: a repository found in it takes its trust (TrustStore matches folders exactly),
 // except one inside another registered project that is not trusted, where no git runs whichever project found it (gate()).
 // An untrusted project starts no git process, discovery, watcher and check-ignore included.
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -13,14 +13,15 @@ import type { Memento } from '../../platform/key-value-state';
 import type { SettingsStore } from '../../platform/settings-store';
 import type { TrustService } from '../../platform/trust-service';
 import { followsLocalLinksOnly } from '../local-links';
-import { createShellSessionJob, type ShellSessionJob } from '../pi-session/tools/process-tree';
+import { processLauncher, type SessionJob } from '../process-launcher';
 import { folderKey } from '../workspace-folders/folder-key';
 import { commitHistory, recordCommitMessage } from './commit-history';
 import { discover, inspectFolder, isInside, samePath, type FoundRepository } from './discovery';
 import type { AskpassRegistration, AskpassServer } from './askpass/askpass-server';
 import { autofetchPeriodSeconds, Autofetcher, type AutofetchTarget } from './autofetch';
 import { cloneArgs, cloneFolderName, freeCloneTarget, removeCloneTarget } from './clone';
-import { GitError, GitQueueDisposedError, GitUntrustedError, logText, MAX_CLI_LENGTH, redactUrls, revision, gitAtLeast, subcommandIndex, type GitCall, type GitCloner, type GitResult, type GitRunner, type GitVersion, type RepoQueue } from './git-runner';
+import { GitQueueDisposedError, logText, MAX_CLI_LENGTH, revision, gitAtLeast, subcommandIndex, type GitCall, type GitCloner, type GitResult, type GitRunner, type GitVersion, type RepoQueue } from './git-runner';
+import { GitError, GitUntrustedError, gitErrorText, RemoteCancelledError, StashKeptError, SyncBranchChangedError, type StashKeptOutcome, type SyncBranch } from './errors';
 import type { Remote } from './remotes';
 import { diffRefs, diffStash, entryPatch, readArtifacts, type ArtifactGroup, type Artifacts, type CommitPairDiff, type CommitPairEntry } from './artifacts';
 import { checkout, createBranchArgs, deleteBranch, deleteRemoteRefArgs, failed, fastForwardArgs, integrate, renameBranchArgs, type CheckoutTarget } from './branches';
@@ -28,7 +29,7 @@ import { commitMessage, emptyTreeOf, isCommit, loadHistory, mergeBase, readCommi
 import { stashApply, stashClear, stashDrop, stashPush, type StashScope, type StashTarget } from './stash';
 import { readCommitAttachment } from './commit-attachment';
 import type { CommitAttachmentInput } from '../../shared/types/chat-attachment';
-import { visibleLines, visibleText } from '../../shared/visible-text';
+import { visibleText } from '../../shared/visible-text';
 import { createTagArgs, deleteTagArgs, parseRemoteTags, PUSH_TAGS_ARGS, remoteTagsArgs, type RemoteTag } from './tags';
 import { addWorktree, removeWorktree } from './worktrees';
 import { recordWorktreeRoot, worktreeRoot } from './worktree-roots';
@@ -190,48 +191,6 @@ export interface CloneState {
   readonly last: { readonly outcome: RemoteOutcomeKind; readonly seq: number } | null;
 }
 
-// The user cancelled a running fetch, pull, push, sync or clone: its process tree is dead and nothing tells the user.
-export class RemoteCancelledError extends Error {
-  constructor() {
-    super('The remote operation was cancelled');
-    this.name = 'RemoteCancelledError';
-  }
-}
-
-export type StashKeptOutcome = 'ok' | 'conflict' | 'failed' | 'cancelled';
-
-// Thrown instead of the operation's own outcome, so the user always learns the changes stay in the stash list.
-export class StashKeptError extends Error {
-  readonly outcome: StashKeptOutcome;
-  // undefined when refs/stash could not be read after the push
-  readonly stash: string | undefined;
-  constructor(message: string, outcome: StashKeptOutcome, stash: string | undefined, cause?: unknown) {
-    super(message, cause === undefined ? undefined : { cause });
-    this.name = 'StashKeptError';
-    this.outcome = outcome;
-    this.stash = stash;
-  }
-}
-
-export interface SyncBranch {
-  readonly branch: string;
-  readonly remote: string;
-  readonly upstreamBranch: string;
-}
-
-export class SyncBranchChangedError extends Error {
-  readonly stage: 'pull' | 'push';
-  readonly confirmed: SyncBranch;
-  readonly found: SyncBranch | null;
-  constructor(message: string, stage: 'pull' | 'push', confirmed: SyncBranch, found: SyncBranch | null) {
-    super(message);
-    this.name = 'SyncBranchChangedError';
-    this.stage = stage;
-    this.confirmed = confirmed;
-    this.found = found;
-  }
-}
-
 // A push: VS Code's push, push to and publish (pushTo with setUpstream) and the force and follow-tags variants.
 export interface PushRequest {
   readonly remote?: string;
@@ -361,13 +320,15 @@ export class ScmService implements Disposable {
   private readonly projects = new Map<string, ProjectEntry>();
   private readonly listeners = new Set<(event: ScmEvent) => void>();
   private readonly subscriptions: Disposable[];
+  // ids are unique across services, so an id held from a restarted core names no repository of this one
+  private readonly repoIdPrefix = `repo-${randomBytes(6).toString('hex')}-`;
   private nextRepoId = 0;
   // how often mayRunIn refused because a realpath was unknown; a discovery that saw one runs again
   private pendingRefusals = 0;
   private disposed = false;
   // The session job every cancellable git call of this service joins: closing it, on dispose or by the host's death, kills what
   // still runs. Index writes never join it.
-  private readonly sessionJob: ShellSessionJob | undefined;
+  private readonly sessionJob: SessionJob | undefined;
   private readonly gitRunner: GitRunner | undefined;
   private remoteSeq = 0;
   private cloning: { readonly name: string; readonly controller: AbortController } | undefined;
@@ -381,7 +342,7 @@ export class ScmService implements Disposable {
 
   constructor(deps: ScmServiceDeps) {
     this.deps = deps;
-    this.sessionJob = deps.runner ? createShellSessionJob() : undefined;
+    this.sessionJob = deps.runner ? processLauncher().createSessionJob() : undefined;
     this.gitRunner = deps.runner && this.gate(deps.runner, []);
     this.autofetcher = new Autofetcher({
       enabled: () => this.gitRunner !== undefined && this.flag(SCM_SETTING_KEYS.autofetch, true),
@@ -1291,7 +1252,10 @@ export class ScmService implements Disposable {
     await this.remoteOp(entry, 'sync', async (net) => {
       await this.runPull(entry, net, useRebase, undefined, confirmed);
       const fresh = await entry.repo.status(this.untrackedChanges());
-      if (this.isLive(entry)) entry.status = fresh;
+      if (this.isLive(entry)) {
+        entry.status = fresh;
+        entry.revision++;
+      }
       const found = syncBranchOf(fresh.head, fresh.upstream);
       if (!sameSyncBranch(found, confirmed)) throw this.syncBranchChanged('push', confirmed, found);
       if ((fresh.upstream?.ahead ?? 0) === 0) return;
@@ -2074,7 +2038,7 @@ export class ScmService implements Disposable {
     const gated = this.gate(this.deps.runner!, [found.gitDir, found.commonDir]);
     const runner: GitRunner = { git: gated.git, envFor: (call) => gated.envFor(call), run: (call) => gated.run(call).catch((err: unknown) => this.closeIfGone(entry, err)) };
     const repo = new Repository({ root: found.root, gitDir: found.gitDir, commonDir: found.commonDir, kind, project: project.path }, runner);
-    const entry: RepoEntry = { id: `repo-${++this.nextRepoId}`, projectKey: project.key, repo, kind, status: undefined, revision: 0, blames: new BlameCache(), timer: undefined, disposables: [], running: undefined, lastRemote: undefined, artifactGroups: new Set(), artifactTimer: undefined, refsDigest: undefined, refsReads: 0, refsLanded: 0 };
+    const entry: RepoEntry = { id: `${this.repoIdPrefix}${++this.nextRepoId}`, projectKey: project.key, repo, kind, status: undefined, revision: 0, blames: new BlameCache(), timer: undefined, disposables: [], running: undefined, lastRemote: undefined, artifactGroups: new Set(), artifactTimer: undefined, refsDigest: undefined, refsReads: 0, refsLanded: 0 };
     entry.disposables.push(repo.queue.onIdleChange(() => this.emit({ kind: 'repository', repoId: entry.id })));
     // a git dir outside the project folder (a linked worktree's, a parent's) gets its own watch; the project's watch covers the rest
     const projectReal = project.real!;
@@ -2507,16 +2471,5 @@ function order(kind: RepoKind): number {
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
-}
-
-// git's own words for a failed call, fit for a notice and a log line: its error and fatal lines, else its first stderr lines
-// (progress and hints come first), else the error's message; URL userinfo redacted, control and bidi characters as escapes
-export function gitErrorText(err: unknown): string {
-  if (err instanceof GitError) {
-    const lines = err.stderr.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
-    const errors = lines.filter((line) => /^(error|fatal):/.test(line));
-    if (lines.length > 0) return visibleLines(redactUrls((errors.length > 0 ? errors : lines).slice(0, 3).join(' ')));
-  }
-  return visibleLines(redactUrls(errorText(err)));
 }
 

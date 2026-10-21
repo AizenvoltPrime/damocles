@@ -5,7 +5,7 @@ import { __trustEmitter } from 'vscode';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { createVsCodeTrustService } from '../trust-service';
 import { createVsCodeLocalizationService } from '../localization-service';
-import { formatMessage } from '../../../desktop/main/platform/localization-service';
+import { formatMessage } from '../../../desktop/local-services/localization-service';
 import { VSCODE_HOST_CAPABILITIES } from '../../../shared/types/messages';
 
 // Tests of core code trust the fake to deliver what the VS Code host delivers.

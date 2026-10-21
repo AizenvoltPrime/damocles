@@ -1,7 +1,7 @@
 import { nativeTheme } from 'electron';
 import type { Disposable } from '../../platform/disposable';
 import type { PanelTheme, ThemeKind } from '../preload/panel-channels';
-import { FILE_ICON_THEME_SETTING, type FileIconTheme, parseFileIconTheme, REDUCE_MOTION_SETTING, THEME_PREFERENCES, THEME_SETTING, type ThemePreference } from './desktop-configuration';
+import { FILE_ICON_THEME_SETTING, type FileIconTheme, parseFileIconTheme, REDUCE_MOTION_SETTING, THEME_PREFERENCES, THEME_SETTING, type ThemePreference } from '../local-services/desktop-configuration';
 import { DESKTOP_FONT_FILES } from './desktop-fonts';
 import { APP_ORIGIN } from './protocol';
 

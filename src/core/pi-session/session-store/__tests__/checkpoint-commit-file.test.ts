@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { EDITOR_MAX_DOCUMENT_BYTES } from '../../../../shared/types/messages';
 import { gitExecutable } from '../../../git-executable';
 import { readDiskText } from '../../chat-review';
-import { checkpointCommitFile } from '../rewind';
+import { checkpointCommitFile } from '../../checkpoints/blob-reader';
 
 /** A checkpoint blob is read within the editor's bound, and is binary by git's test: a NUL among its first 8000 bytes. */
 

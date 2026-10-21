@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SCM_SETTING_KEYS } from '../../../core/scm/settings-keys';
-import { DESKTOP_CONFIGURATION, isDesktopSettingValue } from '../desktop-configuration';
+import { DESKTOP_CONFIGURATION, isDesktopSettingValue } from '../../local-services/desktop-configuration';
 
 describe('source control setting keys', () => {
   it('equal the damocles.desktop.git.* keys desktop-configuration.ts declares', () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { GitOutputTooLargeError, GitUntrustedError, type GitResult } from '../git-runner';
+import { GitOutputTooLargeError, type GitResult } from '../git-runner';
+import { GitUntrustedError } from '../errors';
 import { parseDecorations, parseHistory, parseShortStat, readHeadRefs, resolveBaseRef } from '../history';
 import type { Repository } from '../repository';
 

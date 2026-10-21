@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { acquireSidecarLock } from "../lockfile";
 import type { LockContents } from "../lockfile";
 
@@ -22,6 +22,7 @@ describe("acquireSidecarLock", () => {
     tmp = await mkdtemp(join(tmpdir(), "damocles-voice-lock-"));
   });
   afterEach(async () => {
+    vi.useRealTimers();
     await rm(tmp, { recursive: true, force: true });
   });
 
@@ -46,8 +47,66 @@ describe("acquireSidecarLock", () => {
     expect(second.kind).toBe("attached");
     if (second.kind === "attached") {
       expect(second.existing.port).toBe(12345);
+      second.detach();
     }
     await first.release();
+  });
+
+  it("attaches to a live sidecar however long ago it started, while its lock is kept fresh", async () => {
+    const lockDir = join(tmp, "sidecar.lock");
+    const first = await acquireSidecarLock(lockDir);
+    if (first.kind !== "owned") throw new Error("expected to own the lock");
+    await first.commit(makeContents({ port: 4321, startedAt: Date.now() - 30 * 60 * 1000 }));
+
+    const second = await acquireSidecarLock(lockDir);
+
+    expect(second).toMatchObject({ kind: "attached", existing: { port: 4321 } });
+    if (second.kind === "attached") second.detach();
+    await first.release();
+  });
+
+  it("evicts a lock nobody refreshed for two minutes, even when its pid now names a live process", async () => {
+    const lockDir = join(tmp, "sidecar.lock");
+    await mkdir(lockDir);
+    await writeFile(join(lockDir, "data.json"), JSON.stringify({ ...makeContents({ port: 1 }), owner: "gone", state: "ready" }));
+    const old = new Date(Date.now() - 3 * 60 * 1000);
+    await utimes(lockDir, old, old);
+
+    const result = await acquireSidecarLock(lockDir);
+
+    expect(result.kind).toBe("owned");
+    if (result.kind === "owned") await result.release();
+  });
+
+  it("keeps the lock fresh while it is held, from the owner and from an attached window", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const lockDir = join(tmp, "sidecar.lock");
+    const first = await acquireSidecarLock(lockDir);
+    if (first.kind !== "owned") throw new Error("expected to own the lock");
+    await first.commit(makeContents());
+    const second = await acquireSidecarLock(lockDir);
+    if (second.kind !== "attached") throw new Error("expected to attach");
+    await first.release();
+    await mkdir(lockDir);
+    const old = new Date(Date.now() - 60 * 60 * 1000);
+    await utimes(lockDir, old, old);
+
+    vi.advanceTimersByTime(20_000);
+
+    await vi.waitFor(async () => expect(Date.now() - (await stat(lockDir)).mtimeMs).toBeLessThan(60_000));
+    second.detach();
+  });
+
+  it("releases only its own lock, never one another window took over", async () => {
+    const lockDir = join(tmp, "sidecar.lock");
+    const first = await acquireSidecarLock(lockDir);
+    if (first.kind !== "owned") throw new Error("expected to own the lock");
+    await first.commit(makeContents());
+    await writeFile(join(lockDir, "data.json"), JSON.stringify({ ...makeContents({ port: 2 }), owner: "another window", state: "ready" }));
+
+    await first.release();
+
+    expect(await stat(join(lockDir, "data.json")).then(() => true, () => false)).toBe(true);
   });
 
   it("stale lock dir (older than 10 minutes) is reclaimed", async () => {
@@ -104,6 +163,7 @@ describe("acquireSidecarLock", () => {
     if (result.kind === "attached") {
       expect(result.existing.port).toBe(9876);
       expect(result.existing.token).toBe("ready-tok");
+      result.detach();
     }
   });
 });

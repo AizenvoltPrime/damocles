@@ -23,8 +23,10 @@ export type CatalogResult =
 
 /** The stored conversations of the open folders, and the only path that renames, tags or deletes one. */
 export interface SessionCatalog {
-  /** The open folder's sessions, newest first and complete; empty for a key that is not an open folder. */
+  /** The open folder's sessions, newest first; empty for a key that is not an open folder. Rows still being parsed arrive later, announced by `onDidChange`. */
   list(projectKey: string): Promise<readonly StoredSession[]>;
+  /** `list` once every row was parsed: for a decision a missing row would make wrong, never for display. */
+  listComplete(projectKey: string): Promise<readonly StoredSession[]>;
   /** `list` narrowed to titles and tags containing `query`, case-insensitively; a blank query is `list`. */
   search(projectKey: string, query: string): Promise<readonly StoredSession[]>;
   rename(sessionId: string, name: string): Promise<CatalogResult>;
@@ -36,7 +38,7 @@ export interface SessionCatalog {
 }
 
 export interface SessionCatalogDeps {
-  storage: Pick<StorageManager, "sessionsOf" | "folderOf" | "markSessionsChanged" | "updateSessionTag" | "onDidChangeSessions">;
+  storage: Pick<StorageManager, "sessionsOf" | "completeSessionsOf" | "indexSessionRow" | "folderOf" | "markSessionsChanged" | "updateSessionTag" | "onDidChangeSessions" | "metaIndex">;
   getPanels: () => Map<string, HostInstance>;
   notifications: NotificationService;
   memoryService?: Pick<MemoryService, "deleteSessionMemories">;
@@ -92,6 +94,8 @@ export function createSessionCatalog(deps: SessionCatalogDeps): SessionCatalog {
   return {
     list: (projectKey) => storage.sessionsOf(projectKey),
 
+    listComplete: (projectKey) => storage.completeSessionsOf(projectKey),
+
     search: async (projectKey, query) => {
       const sessions = await storage.sessionsOf(projectKey);
       const normalized = query.trim().toLowerCase();
@@ -111,7 +115,10 @@ export function createSessionCatalog(deps: SessionCatalogDeps): SessionCatalog {
           (cwd) => renamePiSession(cwd, sessionId, newName),
         );
         if (!result.ok) return result;
-        if (folderKey !== undefined) storage.markSessionsChanged(folderKey);
+        if (folderKey !== undefined) {
+          await storage.indexSessionRow(sessionId, folderKey);
+          storage.markSessionsChanged(folderKey);
+        }
         return OK;
       } catch (err) {
         return failed("rename", sessionId, err);
@@ -131,7 +138,10 @@ export function createSessionCatalog(deps: SessionCatalogDeps): SessionCatalog {
           (cwd) => tagPiSession(cwd, sessionId, newTag),
         );
         if (!result.ok) return result;
-        if (folderKey !== undefined) storage.updateSessionTag(sessionId, newTag, folderKey);
+        if (folderKey !== undefined) {
+          await storage.indexSessionRow(sessionId, folderKey);
+          storage.updateSessionTag(sessionId, newTag, folderKey);
+        }
         return OK;
       } catch (err) {
         return failed("tag", sessionId, err);
@@ -156,7 +166,7 @@ export function createSessionCatalog(deps: SessionCatalogDeps): SessionCatalog {
             if (instance.session.holdsSession(sessionId)) holders.add(instance.session);
           }
           await Promise.all([...holders].map((holder) => holder.detachFromDeletedSession()));
-          await deletePiSession(folder.fsPath, sessionId);
+          await deletePiSession(folder.fsPath, sessionId, storage.metaIndex);
         }, { joinPanels: true });
         if (!deleted) return LEASED;
         // The file is gone, which is the deletion; a memory cleanup failure leaves it deleted.

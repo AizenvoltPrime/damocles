@@ -2,7 +2,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { COMMIT_HISTORY_KEY } from '../commit-history';
-import { createGitRunner, GitError, parseGitVersion, type GitCloner, type GitRunner } from '../git-runner';
+import { createGitRunner, type GitCloner, type GitRunner } from '../git-runner';
+import { parseGitVersion } from '../git-version';
+import { GitError } from '../errors';
 import { SCM_SETTING_KEYS } from '../settings-keys';
 import { folder, freshStatus, git, GIT_PATH, harness, HAS_GIT, makeRepo, MapMemento, ready, sandbox, statusOf, useGitSandbox, waitFor, write, type Harness } from './git-harness';
 

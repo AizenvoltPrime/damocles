@@ -2,9 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { INPUT_VALIDATIONS, inputProblem } from '../../../shared/input-validation';
 import { autofetchPeriodSeconds, Autofetcher, type AutofetchTarget } from '../autofetch';
 import { cloneArgs, cloneFolderName, isCloneFolderName } from '../clone';
-import { GitError } from '../git-runner';
+import { GitError, gitErrorText } from '../errors';
 import { isRemoteName, isRemoteUrl, parseRemoteBranches, parseRemoteNames, parseRemotes, parseUpstream } from '../remotes';
-import { gitErrorText, keptStashOutcome } from '../scm-service';
+import { keptStashOutcome } from '../scm-service';
 import { fetchArgs, needsStashAroundPull, pullArgs, pullTarget, pushArgs } from '../sync';
 
 const V2_23 = { major: 2, minor: 23, patch: 0 };

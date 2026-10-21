@@ -10,7 +10,7 @@ import type { DamoclesTerminalApi } from './terminal-channels';
 import type { DamoclesScmApi, ScmChangesTab } from './scm-channels';
 import type { ChatReviewTab, DamoclesReviewApi } from './review-channels';
 import { MAX_ROOT_KEY_LENGTH, type FolderRoot } from './folder-root';
-import type { SEARCH_ACTIONS_POSITIONS, SEARCH_COLLAPSE_RESULTS, SEARCH_DEFAULT_VIEW_MODES, SEARCH_EDITOR_DOUBLE_CLICK, SEARCH_MODES } from '../main/desktop-configuration';
+import type { SEARCH_ACTIONS_POSITIONS, SEARCH_COLLAPSE_RESULTS, SEARCH_DEFAULT_VIEW_MODES, SEARCH_EDITOR_DOUBLE_CLICK, SEARCH_MODES } from '../local-services/desktop-configuration';
 
 export type { SearchFileKey, SearchFileResult, SearchMatch, SearchPreview, SearchQuery, SearchRange, SearchSortOrder } from '../../shared/text-search';
 
@@ -33,6 +33,8 @@ export const SHELL_CHANNELS = {
   overlayRequest: 'damocles:shell:overlay:request',
   appMenu: 'damocles:shell:window:app-menu',
   toggleTheme: 'damocles:shell:window:toggle-theme',
+  // Restart Engine, from the title bar's engine pill
+  restartEngine: 'damocles:shell:window:restart-engine',
   toggleSidebar: 'damocles:shell:window:toggle-sidebar',
   // shows a hidden sidebar and never hides it (Reveal in Files)
   showSidebar: 'damocles:shell:window:show-sidebar',
@@ -1253,6 +1255,8 @@ export interface ShellState {
     readonly editorMenu: Readonly<Record<EditorMenuShortcut, string>>;
   };
   readonly notifications: NotificationBell;
+  // the engine stopped after its fourth crash in 5 minutes and waits for Restart Engine
+  readonly engineHalted: boolean;
   readonly search: ShellSearchSettings;
   readonly sidebar: ShellSidebarSettings;
 }
@@ -1306,6 +1310,8 @@ export interface DamoclesShellApi {
   // pops the application menu up at a point in CSS px
   openAppMenu(anchor: { readonly x: number; readonly y: number }): Promise<void>;
   toggleTheme(): Promise<void>;
+  // a new engine replaces the halted or running one (the Restart Engine command)
+  restartEngine(): Promise<void>;
   toggleSidebar(): Promise<void>;
   // resolves once main showed the sidebar; the state that says so follows
   showSidebar(): Promise<void>;

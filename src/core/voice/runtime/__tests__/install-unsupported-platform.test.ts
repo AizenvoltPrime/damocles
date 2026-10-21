@@ -32,6 +32,11 @@ vi.mock("../python-installer", async (importOriginal) => ({
 const { VoiceRuntimeInstaller, getDefaultRuntimePaths } = await import("../index");
 const { UnsupportedPlatformError } = await import("../supported-platforms");
 
+const noExtractWorker = (): never => {
+  throw new Error("these tests never extract");
+};
+const noModelsMissing = { missing: async () => [], download: async () => undefined };
+
 function hostAs(platform: NodeJS.Platform, arch: string): () => void {
   const original = { platform: process.platform, arch: process.arch };
   Object.defineProperty(process, "platform", { value: platform, configurable: true });
@@ -76,7 +81,7 @@ describe("VoiceRuntimeInstaller.installAll platform gate", () => {
     ["win32", "arm64"],
     ["linux", "arm64"],
   ] as const)("refuses %s %s before any probe, disk write, download or pip run", async (platform, arch) => {
-    const installer = new VoiceRuntimeInstaller(getDefaultRuntimePaths(root));
+    const installer = new VoiceRuntimeInstaller(getDefaultRuntimePaths(root), noExtractWorker, noModelsMissing);
     const progress = vi.fn();
     restoreHost = hostAs(platform, arch);
     await expect(installer.installAll({ extensionRoot: tmp, onProgress: progress, allowInstall: true })).rejects.toBeInstanceOf(UnsupportedPlatformError);
@@ -88,7 +93,7 @@ describe("VoiceRuntimeInstaller.installAll platform gate", () => {
   });
 
   it("refuses a user-supplied runtimePath on an unsupported host without smoke-checking it", async () => {
-    const installer = new VoiceRuntimeInstaller(getDefaultRuntimePaths(root));
+    const installer = new VoiceRuntimeInstaller(getDefaultRuntimePaths(root), noExtractWorker, noModelsMissing);
     restoreHost = hostAs("win32", "arm64");
     await expect(installer.installAll({ userSpecifiedPython: "C:\\venv\\python.exe", extensionRoot: tmp, allowInstall: true })).rejects.toBeInstanceOf(UnsupportedPlatformError);
     restoreHost();
@@ -99,12 +104,12 @@ describe("VoiceRuntimeInstaller.installAll platform gate", () => {
 
   it("runs the probes on a supported host, so the mocks above observe the real install path", async () => {
     restoreHost = hostAs("win32", "x64");
-    const withPath = await new VoiceRuntimeInstaller(getDefaultRuntimePaths(root)).installAll({ userSpecifiedPython: "C:\\venv\\python.exe", extensionRoot: tmp, allowInstall: true });
+    const withPath = await new VoiceRuntimeInstaller(getDefaultRuntimePaths(root), noExtractWorker, noModelsMissing).installAll({ userSpecifiedPython: "C:\\venv\\python.exe", extensionRoot: tmp, allowInstall: true });
     expect(withPath.ok).toBe(true);
     expect(calls.detectGpu).toHaveBeenCalled();
     expect(calls.runImportSmokeCheck).toHaveBeenCalled();
 
-    await new VoiceRuntimeInstaller(getDefaultRuntimePaths(join(tmp, "fresh"))).installAll({ extensionRoot: tmp, allowInstall: true });
+    await new VoiceRuntimeInstaller(getDefaultRuntimePaths(join(tmp, "fresh")), noExtractWorker, noModelsMissing).installAll({ extensionRoot: tmp, allowInstall: true });
     expect(calls.ensureCxxToolchain).toHaveBeenCalled();
     expect(calls.checkDiskSpace).toHaveBeenCalled();
     expect(calls.downloadAndExtractPython).toHaveBeenCalled();
@@ -115,7 +120,7 @@ describe("VoiceRuntimeInstaller.installAll platform gate", () => {
 
     it("reports a missing runtime without installing it", async () => {
       restoreHost = hostAs("win32", "x64");
-      const result = await new VoiceRuntimeInstaller(getDefaultRuntimePaths(root)).installAll({ extensionRoot: tmp, allowInstall: false });
+      const result = await new VoiceRuntimeInstaller(getDefaultRuntimePaths(root), noExtractWorker, noModelsMissing).installAll({ extensionRoot: tmp, allowInstall: false });
       expect(result).toMatchObject({ ok: false, errorMessage: "The voice runtime is not installed." });
       for (const step of [...installSteps, "runImportSmokeCheck"] as const) expect(calls[step], step).not.toHaveBeenCalled();
     });
@@ -127,7 +132,7 @@ describe("VoiceRuntimeInstaller.installAll platform gate", () => {
       // An installed venv's python, which the real presence check finds; the mocked probes never run it.
       await writeFile(paths.pythonExe, "");
       calls.runImportSmokeCheck.mockResolvedValue({ ok: false, stderr: "ImportError: pyarrow requires NumPy 2.0 or newer", failedModule: "nemo.collections.asr" });
-      const result = await new VoiceRuntimeInstaller(paths).installAll({ extensionRoot: tmp, allowInstall: false });
+      const result = await new VoiceRuntimeInstaller(paths, noExtractWorker, noModelsMissing).installAll({ extensionRoot: tmp, allowInstall: false });
       expect(result.ok).toBe(false);
       expect(result.errorMessage).toContain("while importing `nemo.collections.asr`");
       expect(calls.detectInstalledTorchChannel).toHaveBeenCalledWith(paths.pythonExe);
@@ -146,7 +151,7 @@ describe("VoiceRuntimeInstaller.installAll platform gate", () => {
     it("installs for a caller that may, arriving while a run only verifies", async () => {
       restoreHost = hostAs("win32", "x64");
       const release = holdGpuDetection();
-      const installer = new VoiceRuntimeInstaller(getDefaultRuntimePaths(root));
+      const installer = new VoiceRuntimeInstaller(getDefaultRuntimePaths(root), noExtractWorker, noModelsMissing);
       const verify = installer.installAll({ extensionRoot: tmp, allowInstall: false });
       const install = installer.installAll({ extensionRoot: tmp, allowInstall: true });
       await vi.waitFor(() => expect(calls.detectGpu).toHaveBeenCalled());
@@ -160,7 +165,7 @@ describe("VoiceRuntimeInstaller.installAll platform gate", () => {
     it("lets a caller that only verifies join a run that installs", async () => {
       restoreHost = hostAs("win32", "x64");
       const release = holdGpuDetection();
-      const installer = new VoiceRuntimeInstaller(getDefaultRuntimePaths(root));
+      const installer = new VoiceRuntimeInstaller(getDefaultRuntimePaths(root), noExtractWorker, noModelsMissing);
       const install = installer.installAll({ extensionRoot: tmp, allowInstall: true });
       const verify = installer.installAll({ extensionRoot: tmp, allowInstall: false });
       await vi.waitFor(() => expect(calls.detectGpu).toHaveBeenCalled());

@@ -171,7 +171,7 @@ Adding a Developer ID is packaging configuration and CI only:
 2. Create a Developer ID Application certificate and an App Store Connect API key for notarization. Store the certificate (`CSC_LINK`, `CSC_KEY_PASSWORD`) and the API key (`APPLE_API_KEY`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`) as GitHub secrets for the macOS leg.
 3. In `electron-builder.yml`, replace `mac.identity: "-"` with the certificate identity, set `hardenedRuntime: true`, add an entitlements file with `com.apple.security.device.audio-input`, add `NSMicrophoneUsageDescription` through `mac.extendInfo`, and turn on notarization.
 4. Switch the macOS updater from notice to self update: in `src/desktop/main/updater.ts`, give darwin the Windows and Linux path (`autoDownload`, the restart toast, `autoInstallOnAppQuit`). The zip target and `latest-mac.yml` already exist, so no format change is needed.
-5. Show voice on macOS by lifting the capability gate in `src/desktop/main/platform/capabilities.ts`.
+5. Show voice on macOS by lifting the capability gate in `src/desktop/local-services/capabilities.ts`.
 6. Update the README, the release notes caveats and this document.
 
 Existing ad hoc installs cannot update themselves to the first signed build, because Squirrel.Mac applies only an update whose signature matches the installed app. Those users download the first signed build once by hand.

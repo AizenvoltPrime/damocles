@@ -43,6 +43,10 @@ export interface HostInstance {
   /** Resolves once the webview posts its first `ready` message; the fork replay awaits this so its
    *  extension-initiated push doesn't race the webview's listener registration. */
   webviewReady?: Promise<void>;
+  /** The stored session a restore its lease refused retries once the lease turns stale; set until that retry runs. */
+  restoreRetry?: string;
+  /** Set up with the permissions a desktop engine restart handed back, which no restore of its conversation resets. */
+  permissionsHandedBack?: true;
 }
 
 /** A settings view outside the chat page (the desktop overlay) attached to one chat panel. */

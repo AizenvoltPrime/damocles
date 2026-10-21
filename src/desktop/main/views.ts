@@ -4,10 +4,13 @@ import * as path from 'node:path';
 import { WebContentsView, type BrowserWindow, type IpcMainEvent, type Rectangle, type WebContents } from 'electron';
 import type { Disposable } from '../../platform/disposable';
 import type { PanelHost, PanelOptions } from '../../platform/window-service';
+import { restoredWorkspaceFolderKey } from '../../shared/restored-folder-key';
+import { CHAT_WORKER_SRC } from '../app-urls';
+import { PAGE_STATE_TYPES } from '../core-protocol';
 import { PANEL_CHANNELS, type PanelInit, type PanelTheme } from '../preload/panel-channels';
 import { onWindowActivated } from './activation-focus';
 import type { PanelStateStore } from './panel-state-store';
-import { APP_ORIGIN, panelPageUrl } from './protocol';
+import { APP_ORIGIN, isPanelId, panelPageUrl } from './protocol';
 import { loadAppPage, loggableUrl, registerPanelContents } from './security';
 import { currentTheme, currentThemeKind, THEME_BACKGROUND } from './theme';
 
@@ -56,8 +59,7 @@ export function isWebviewState(value: unknown): boolean {
 const MAX_CRASHES_IN_WINDOW = 3;
 const CRASH_WINDOW_MS = 60_000;
 
-// CSP worker-src of a chat: the directory the app:// handler serves the built webview assets from (protocol.ts SERVED_ROOTS).
-export const CHAT_WORKER_SRC: string = `${APP_ORIGIN}/webview/assets/`;
+export { CHAT_WORKER_SRC };
 
 // A favicon larger than this is not inlined into the editor state that is resent on every change.
 export const MAX_ICON_BYTES: number = 32 * 1024;
@@ -170,6 +172,8 @@ export interface CreatePanelRequest {
   readonly options: PanelOptions;
   // present when restoring a persisted panel
   readonly restore?: { readonly panelId: string; readonly state: unknown };
+  // the id core issued for a panel it created
+  readonly panelId?: string;
 }
 
 export class DesktopPanel implements PanelHost {
@@ -199,7 +203,7 @@ export class DesktopPanel implements PanelHost {
   constructor(owner: PanelViews, deps: PanelViewsDeps, request: CreatePanelRequest, chat: DesktopPanel | undefined) {
     this.owner = owner;
     this.deps = deps;
-    this.panelId = request.restore?.panelId ?? randomUUID();
+    this.panelId = request.restore?.panelId ?? request.panelId ?? randomUUID();
     this.kind = request.options.kind;
     this.title = request.options.title;
     this.state = request.restore?.state ?? null;
@@ -305,6 +309,20 @@ export class DesktopPanel implements PanelHost {
     return typeof sessionId === 'string' && sessionId !== '' ? sessionId : undefined;
   }
 
+  // A restore its lease refused waits to retry (ChatEntry.restoring) while the page shows an empty chat: the saved state names
+  // that session again, so the next core restores it if this one ends first.
+  keepRestoreTarget(sessionId: string): void {
+    if (this.kind !== 'chat' || this.disposed || this.savedSessionId === sessionId) return;
+    const base = typeof this.state === 'object' && this.state !== null && !Array.isArray(this.state) ? this.state : {};
+    this.state = { ...base, sessionId };
+    this.deps.states.set({ panelId: this.panelId, state: this.state });
+  }
+
+  // The folder key the chat's saved state names, which core restores it into.
+  get savedFolderKey(): string | undefined {
+    return restoredWorkspaceFolderKey(this.state);
+  }
+
   themeCssSource(): string {
     return currentTheme().css;
   }
@@ -314,14 +332,24 @@ export class DesktopPanel implements PanelHost {
     this.load();
   }
 
+  // A message holding binary (a browser page's frame), sent as a structured clone.
   postMessage(message: unknown): Promise<boolean> {
-    // A crashed renderer has no frame to receive it; the reload's ready replays what the page needs.
+    return Promise.resolve(this.send(message));
+  }
+
+  // A core message as JSON text, forwarded unparsed: the panel preload parses it.
+  postJson(type: string, json: string): void {
     // A folder update may move the chat to another project.
-    if (this.kind === 'chat' && (message as { type?: unknown } | null)?.type === 'workspaceFolderUpdate') this.owner.changed();
-    if (this.page && observePageMessage(this.page, message)) this.owner.pageChanged(this);
-    if (this.disposed || this.webContents.isDestroyed() || this.webContents.isCrashed()) return Promise.resolve(false);
-    this.webContents.send(PANEL_CHANNELS.message, message);
-    return Promise.resolve(true);
+    if (this.kind === 'chat' && type === 'workspaceFolderUpdate') this.owner.changed();
+    if (this.page && PAGE_STATE_TYPES.has(type) && observePageMessage(this.page, JSON.parse(json))) this.owner.pageChanged(this);
+    this.send(json);
+  }
+
+  // A crashed renderer has no frame to receive it; the reload's ready replays what the page needs.
+  private send(payload: unknown): boolean {
+    if (this.disposed || this.webContents.isDestroyed() || this.webContents.isCrashed()) return false;
+    this.webContents.send(PANEL_CHANNELS.message, payload);
+    return true;
   }
 
   // A browser tab action on this page, delivered to core as the webview message its own toolbar would post.
@@ -474,7 +502,10 @@ export class PanelViews {
   create(request: CreatePanelRequest): DesktopPanel {
     // A closing window, a quit or a core reload closes every chat with its state kept; nothing may open in between.
     if (this.retainStates) throw new Error('The chats are closing');
-    if (request.restore && this.panels.has(request.restore.panelId)) throw new Error(`Panel ${request.restore.panelId} is already open`);
+    // A restored id comes from panels.json, an issued one from core; either names the page URL and the panels map.
+    const named = request.restore?.panelId ?? request.panelId;
+    if (named !== undefined && !isPanelId(named)) throw new Error(`Panel id ${JSON.stringify(named.slice(0, 64))} has characters a page URL cannot carry`);
+    if (named !== undefined && this.panels.has(named)) throw new Error(`Panel ${named} is already open`);
     if (request.options.kind === 'browser') return this.createPage(request);
     const panel = new DesktopPanel(this, this.deps, request, undefined);
     this.panels.set(panel.panelId, panel);

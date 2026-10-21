@@ -1,4 +1,3 @@
-import { createHash } from 'crypto';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -28,19 +27,14 @@ import {
   lstatFiles,
   readSkippedManifest,
 } from '../checkpoints';
-import { exec, ExecOutputTooLargeError } from '../checkpoints/exec';
+import { checkpointCommitFile } from '../checkpoints/blob-reader';
 import { gitExecutable } from '../../git-executable';
-import { EDITOR_MAX_DOCUMENT_BYTES } from '../../../shared/types/messages';
 import { log } from '../../logger';
 import { resolvePiSessionFile } from './reading';
 import { extractOriginalInputs } from './original-input';
 import { extractTerminalAttachmentCounts } from './terminal-attachments';
 import { storedTypedText } from './prompt-context';
 import { promptTest } from './prompt-index';
-
-/** `git show <commit>:<path>` failure messages that genuinely mean "this path is absent from the
- *  commit" (the file was created that turn) — as opposed to a real fault (bad commit, corrupt repo). */
-const GIT_PATH_ABSENT = /does not exist in|exists on disk, but not in/i;
 
 /**
  * The TRUE set of files a rewind to each `beforeCommit` would change: the live diff between the
@@ -469,35 +463,6 @@ export async function getPiFileCheckpointContent(
     return read.kind === 'text' ? read.text : read.kind === 'absent' ? '' : null;
   } catch {
     return null;
-  }
-}
-
-// git's binary test (`buffer_is_binary`): a NUL among the first 8000 bytes.
-const BINARY_PROBE_LENGTH = 8000;
-
-/**
- * A file in a checkpoint commit: its text, absent from the commit, binary (a NUL among its first 8000 bytes; digest: sha1 of
- * its bytes), past EDITOR_MAX_DOCUMENT_BYTES, which neither the review nor the rewind diff shows, or unavailable (the commit
- * is gone or git failed).
- */
-export type CheckpointFileRead = { kind: 'text'; text: string } | { kind: 'absent' } | { kind: 'binary'; digest: string } | { kind: 'tooLarge' } | { kind: 'unavailable' };
-
-/**
- * `git show <commit>:<relativePath>` from a checkpoint repo; relativePath is '/' separated, relative to the folder the repo
- * snapshots. absent only when git says the path is not in the commit (the file did not exist then).
- */
-export async function checkpointCommitFile(repoDir: string, commit: string, relativePath: string): Promise<CheckpointFileRead> {
-  if (!isHexCommit(commit)) return { kind: 'unavailable' };
-  try {
-    const { bytes } = await exec(gitExecutable, [...PORTABLE_CONFIG, `--git-dir=${getGitDir(repoDir)}`, 'show', `${commit}:${relativePath}`], undefined, undefined, undefined, undefined, undefined, EDITOR_MAX_DOCUMENT_BYTES);
-    if (bytes.subarray(0, BINARY_PROBE_LENGTH).includes(0)) return { kind: 'binary', digest: createHash('sha1').update(bytes).digest('hex') };
-    return { kind: 'text', text: bytes.toString('utf8') };
-  } catch (err) {
-    if (err instanceof ExecOutputTooLargeError) return { kind: 'tooLarge' };
-    const message = err instanceof Error ? err.message : String(err);
-    if (GIT_PATH_ABSENT.test(message)) return { kind: 'absent' };
-    log('[session-store] reading %s from checkpoint %s failed: %s', relativePath, commit, message);
-    return { kind: 'unavailable' };
   }
 }
 

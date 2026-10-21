@@ -8,7 +8,7 @@ import type { ActiveEditorContext } from '../../../platform/editor-service';
 import type { ShellEditorState, ShellEditorTab } from '../../preload/shell-channels';
 import { rootKey } from '../../preload/folder-root';
 import type { BackupRecord } from '../documents/backups';
-import type { Project } from '../documents/confine';
+import type { Project } from '../../local-services/confine';
 import { DocumentService, type TextDocument } from '../documents/document-service';
 import { EditorPane, selectionText, settingLine, type BrowserTabSource, type PersistedEditor } from '../editor-pane';
 import type { MessageQuestion } from '../message-dialog';
@@ -314,6 +314,20 @@ describe('closing dirty tabs and quitting', () => {
     await view.close();
     expect(pane.state().tabs).toEqual([]);
     expect(fs.readFileSync(file, 'utf8')).toBe('disk');
+  });
+
+  it('settles a diff\'s closed once its tab is gone, closed by the user or with its root', async () => {
+    const file = write('src/app.ts', 'disk');
+    const settled = (view: { readonly closed: Promise<void> }): Promise<boolean> => Promise.race([view.closed.then(() => true), new Promise<boolean>((resolve) => setImmediate(() => resolve(false)))]);
+    const byUser = await pane.showDiff((name) => `${name} (At checkpoint ↔ Current)`, file, { name: 'x-app.ts', content: 'before' }, { path: file }, { focus: false });
+    const byRoot = await pane.showDiff((name) => `${name} (Working Tree)`, file, { name: 'y-app.ts', content: 'older' }, { path: file }, { focus: false });
+    expect(await settled(byUser)).toBe(false);
+    const [first] = pane.state().tabs.filter((tab) => tab.kind === 'diff');
+    await pane.tabAction('close', first!.id);
+    expect(await settled(byUser)).toBe(true);
+    expect(await settled(byRoot)).toBe(false);
+    expect(pane.closeRoot(project.key, new Map())).toBe(true);
+    expect(await settled(byRoot)).toBe(true);
   });
 
   it('with Reopen where I left off, takes the shell\'s last edits, keeps the backups and asks nothing', async () => {

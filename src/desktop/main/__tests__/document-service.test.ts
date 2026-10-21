@@ -9,7 +9,7 @@ import { settingsFileVersion } from '../../../core/config/settings-file';
 import type { SettingsFileSaveOutcome } from '../../../core/chat-panel/settings-file-editor';
 import { DEFAULT_SEARCH_EDITOR_CONFIG } from '../search/search-editor-format';
 import type { MessageQuestion } from '../message-dialog';
-import type { Project } from '../documents/confine';
+import type { Project } from '../../local-services/confine';
 import { DocumentService, isDocumentDirty, type Backups, type DocumentChange, type TextDocument } from '../documents/document-service';
 
 let root: string;

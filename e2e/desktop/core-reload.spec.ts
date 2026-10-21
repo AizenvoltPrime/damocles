@@ -21,23 +21,22 @@ interface DisposeHold {
 interface RestoreHold extends DisposeHold {
   fail(): void;
 }
-interface PageRestorer {
-  restoreChatPages(...args: unknown[]): Promise<void>;
-}
 type HoldGlobals = typeof globalThis & {
   __damoclesE2e?: {
     holdCoreDispose(): DisposeHold;
     holdStoreFlush(): DisposeHold;
     reloadCore(): Promise<void>;
     holdChatRestore(): RestoreHold;
-    browser(): PageRestorer;
+    countPageRestores(): { readonly count: number };
+    // settles once the launch's chat and page restores finished
+    launchTabsOpened(): Promise<void>;
     launchRestore?: RestoreHold;
   };
   __e2eCoreHold?: DisposeHold;
   __e2eFlushHold?: DisposeHold;
   __e2eRestoreHold?: RestoreHold;
   __e2eReload?: string;
-  __e2ePageRestores?: number;
+  __e2ePageRestores?: { readonly count: number };
 };
 type Settled = { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string };
 type RequestGlobals = typeof window & { __e2eRequests?: Record<string, Settled | 'pending'> };
@@ -314,24 +313,18 @@ test('a quit while the launch restores a chat with saved pages ends that restore
   // Counts the pages main asks the core to restore, and holds the quit after the core disposed so the restore can resume then.
   await app.evaluate(({ app: electronApp }) => {
     const globals = globalThis as HoldGlobals;
-    const browser = globals.__damoclesE2e!.browser();
-    const restoreChatPages = browser.restoreChatPages.bind(browser);
-    globals.__e2ePageRestores = 0;
-    browser.restoreChatPages = (...args: unknown[]) => {
-      globals.__e2ePageRestores = (globals.__e2ePageRestores ?? 0) + 1;
-      return restoreChatPages(...args);
-    };
+    globals.__e2ePageRestores = globals.__damoclesE2e!.countPageRestores();
     globals.__e2eFlushHold = globals.__damoclesE2e!.holdStoreFlush();
     setImmediate(() => electronApp.quit());
   });
   await expect.poll(() => app.evaluate(() => (globalThis as HoldGlobals).__e2eFlushHold!.reached), { timeout: QUIT_BUDGET_MS }).toBe(true);
-  await expect.poll(() => mainLog(home)).toContain('Damocles core disposed');
+  await expect.poll(() => mainLog(home)).toMatch(/\[core\] shut down in \d+ ms/);
 
   const pageRestores = await app.evaluate(async () => {
     const globals = globalThis as HoldGlobals;
     globals.__damoclesE2e!.launchRestore!.release();
-    for (let turn = 0; turn < 20; turn++) await new Promise((resolve) => setImmediate(resolve));
-    return globals.__e2ePageRestores;
+    await globals.__damoclesE2e!.launchTabsOpened();
+    return globals.__e2ePageRestores?.count;
   });
   await app.evaluate(() => (globalThis as HoldGlobals).__e2eFlushHold!.release());
   await expect.poll(() => proc.exitCode !== null || proc.signalCode !== null, { timeout: QUIT_BUDGET_MS, message: 'the app is still running' }).toBe(true);

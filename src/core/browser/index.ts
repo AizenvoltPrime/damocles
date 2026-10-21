@@ -820,6 +820,11 @@ export class BrowserService {
     }
   }
 
+  /** Whether a page the chat owns is open. */
+  holdsPages(chat: PanelHost): boolean {
+    return [...this.pages.values()].some((entry) => entry.chat === chat && !entry.closing);
+  }
+
   /** The human's "open browser" in a chat: reveals the page they watch there at its current address, or opens a
    *  blank page in the chat's human scope, the one its main agent drives, when there is none. */
   async showForChat(chat: PanelHost): Promise<void> {

@@ -7,6 +7,13 @@ import {
   MissingCxxToolchainError,
 } from "../compiler-check";
 
+/** A PATH holding every compiler name in /usr/bin, except the ones left out. */
+function findIn(...missing: string[]): (name: string) => Promise<string | undefined> {
+  return async (name) => (missing.includes(name) ? undefined : `/usr/bin/${name}`);
+}
+
+const find = findIn();
+
 describe("getCxxCandidates", () => {
   it("prefers g++ first on Linux (build-essential default)", () => {
     const candidates = getCxxCandidates("linux");
@@ -39,7 +46,7 @@ describe("getCxxInstallInstructions", () => {
 
 describe("cxxToolchainEnv", () => {
   it("emits CC and CXX env vars", () => {
-    expect(cxxToolchainEnv({ cc: "gcc", cxx: "g++" })).toEqual({ CC: "gcc", CXX: "g++" });
+    expect(cxxToolchainEnv({ cc: "/usr/bin/gcc", cxx: "/usr/bin/g++" })).toEqual({ CC: "/usr/bin/gcc", CXX: "/usr/bin/g++" });
   });
 });
 
@@ -48,34 +55,63 @@ describe("ensureCxxToolchain", () => {
     let probeCalls = 0;
     const result = await ensureCxxToolchain({
       platform: "win32",
+      find,
       probe: async () => { probeCalls++; return true; },
     });
     expect(result).toBeNull();
     expect(probeCalls).toBe(0);
   });
 
-  it("returns the first candidate that the probe accepts", async () => {
+  it("probes and returns the compilers by the absolute paths it found", async () => {
+    const probed: string[] = [];
     const result = await ensureCxxToolchain({
       platform: "linux",
-      probe: async (cxx) => cxx === "g++",
+      find,
+      probe: async (cxx) => { probed.push(cxx); return true; },
     });
-    expect(result).toEqual({ cc: "gcc", cxx: "g++" });
+    expect(result).toEqual({ cc: "/usr/bin/gcc", cxx: "/usr/bin/g++" });
+    expect(probed).toEqual(["/usr/bin/g++"]);
+  });
+
+  it("skips a candidate a PATH folder lacks either compiler of, without probing it", async () => {
+    const probed: string[] = [];
+    const result = await ensureCxxToolchain({
+      platform: "linux",
+      find: findIn("gcc"),
+      probe: async (cxx) => { probed.push(cxx); return true; },
+    });
+    expect(result).toEqual({ cc: "/usr/bin/clang", cxx: "/usr/bin/clang++" });
+    expect(probed).toEqual(["/usr/bin/clang++"]);
   });
 
   it("falls back to clang++ when g++ probe fails (WSL with clang only)", async () => {
     const tried: string[] = [];
     const result = await ensureCxxToolchain({
       platform: "linux",
-      probe: async (cxx) => { tried.push(cxx); return cxx === "clang++"; },
+      find,
+      probe: async (cxx) => { tried.push(cxx); return cxx === "/usr/bin/clang++"; },
     });
-    expect(result).toEqual({ cc: "clang", cxx: "clang++" });
-    expect(tried).toEqual(["g++", "clang++"]);
+    expect(result).toEqual({ cc: "/usr/bin/clang", cxx: "/usr/bin/clang++" });
+    expect(tried).toEqual(["/usr/bin/g++", "/usr/bin/clang++"]);
   });
 
-  it("throws MissingCxxToolchainError when no probe succeeds (bare WSL with no toolchain)", async () => {
+  it("throws MissingCxxToolchainError when no compiler is found (bare WSL with no toolchain)", async () => {
+    let probeCalls = 0;
     await expect(
       ensureCxxToolchain({
         platform: "linux",
+        find: async () => undefined,
+        probe: async () => { probeCalls++; return true; },
+      }),
+    ).rejects.toBeInstanceOf(MissingCxxToolchainError);
+    expect(probeCalls).toBe(0);
+  });
+
+  it("throws MissingCxxToolchainError when no probe succeeds", async () => {
+    await expect(
+      ensureCxxToolchain({
+        platform: "linux",
+        find,
         probe: async () => false,
       }),
     ).rejects.toBeInstanceOf(MissingCxxToolchainError);
@@ -85,6 +121,7 @@ describe("ensureCxxToolchain", () => {
     await expect(
       ensureCxxToolchain({
         platform: "linux",
+        find,
         probe: async () => false,
       }),
     ).rejects.toThrow(/build-essential/);
@@ -94,6 +131,7 @@ describe("ensureCxxToolchain", () => {
     await expect(
       ensureCxxToolchain({
         platform: "darwin",
+        find,
         probe: async () => false,
       }),
     ).rejects.toThrow(/xcode-select --install/);

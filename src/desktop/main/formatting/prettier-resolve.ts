@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
-import { isInsideRealRoot } from '../documents/confine';
+import { isInsideRealRoot } from '../../local-services/confine';
 
 export type PrettierResolution =
   // the nearest Prettier, its package and entry real paths inside the root

@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('electron', () => ({ WebContentsView: vi.fn(), nativeTheme: { shouldUseDarkColors: true, on: vi.fn(), off: vi.fn() }, protocol: {}, dialog: { showMessageBox: vi.fn() } }));
 
-import { createAskpassServer, PROMPT_CANCELLED, type AskpassServer } from '../../../core/scm/askpass/askpass-server';
+import { createAskpassServer, type AskpassServer } from '../../../core/scm/askpass/askpass-server';
+import { credentialPrompt } from '../../core-host/askpass-prompt';
 import type { OverlayAnswer, OverlayRequest } from '../../preload/overlay-channels';
 import { createAskpassBridge } from '../askpass-bridge';
 import { createMessageAsker, type AskMessage, type MessageOverlay } from '../message-dialog';
@@ -30,7 +31,7 @@ describe('the askpass prompt bridge', () => {
 
   it('asks a username in the plain box and any other secret in the masked one, with its signal', async () => {
     const fake = bridge({ input: 'ada' });
-    expect(await fake.prompt({ kind: 'username', text: "Username for 'https://example.com':" }, signal)).toBe('ada');
+    expect(await fake.prompt({ kind: 'username', text: "Username for 'https://example.com':" }, signal)).toEqual({ answer: 'ada', cancelled: false });
     await fake.prompt({ kind: 'password', text: "Password for 'https://example.com':" }, signal);
     await fake.prompt({ kind: 'passphrase', text: 'Enter passphrase for key:' }, signal);
     await fake.prompt({ kind: 'password', text: '' }, signal);
@@ -44,26 +45,26 @@ describe('the askpass prompt bridge', () => {
   });
 
   it('tells a box the user dismissed from one its call withdrew', async () => {
-    expect(await bridge({}).prompt({ kind: 'username', text: "Username for 'https://example.com':" }, signal)).toBe(PROMPT_CANCELLED);
-    expect(await bridge({}).prompt({ kind: 'password', text: "Password for 'https://example.com':" }, signal)).toBe(PROMPT_CANCELLED);
+    expect(await bridge({}).prompt({ kind: 'username', text: "Username for 'https://example.com':" }, signal)).toEqual({ cancelled: true });
+    expect(await bridge({}).prompt({ kind: 'password', text: "Password for 'https://example.com':" }, signal)).toEqual({ cancelled: true });
     const withdrawn = new AbortController();
     withdrawn.abort();
-    expect(await bridge({}).prompt({ kind: 'username', text: 'x' }, withdrawn.signal)).toBeUndefined();
+    expect(await bridge({}).prompt({ kind: 'username', text: 'x' }, withdrawn.signal)).toEqual({ cancelled: false });
   });
 
   it('asks an SSH yes/no question with No focused, and answers yes only on Yes', async () => {
     const yes = bridge({ message: 0 });
-    expect(await yes.prompt({ kind: 'confirm', text: 'Allow shared connection to example.com?' }, signal)).toBe('yes');
+    expect(await yes.prompt({ kind: 'confirm', text: 'Allow shared connection to example.com?' }, signal)).toEqual({ answer: 'yes', cancelled: false });
     expect(yes.questions).toEqual([{ question: { severity: 'danger', message: 'Are you sure you want to continue connecting?', detail: 'Allow shared connection to example.com?', actions: ['Yes'], cancelLabel: 'No' }, signal }]);
-    expect(await bridge({}).prompt({ kind: 'confirm', text: 'x' }, signal)).toBe(PROMPT_CANCELLED);
+    expect(await bridge({}).prompt({ kind: 'confirm', text: 'x' }, signal)).toEqual({ cancelled: true });
     const withdrawn = new AbortController();
     withdrawn.abort();
-    expect(await bridge({ message: 0 }).prompt({ kind: 'confirm', text: 'x' }, withdrawn.signal)).toBeUndefined();
+    expect(await bridge({ message: 0 }).prompt({ kind: 'confirm', text: 'x' }, withdrawn.signal)).toEqual({ cancelled: false });
   });
 
   it('shows ssh\'s notice as information that answers nothing', async () => {
     const fake = bridge({ message: 0 });
-    expect(await fake.prompt({ kind: 'notice', text: 'Confirm user presence for key ED25519-SK SHA256:abc' }, signal)).toBeUndefined();
+    expect(await fake.prompt({ kind: 'notice', text: 'Confirm user presence for key ED25519-SK SHA256:abc' }, signal)).toEqual({ cancelled: false });
     expect(fake.questions).toEqual([{ question: { severity: 'info', message: 'SSH is waiting for you.', detail: 'Confirm user presence for key ED25519-SK SHA256:abc', actions: ['OK'], defaultAction: 0 }, signal }]);
   });
 });
@@ -88,7 +89,7 @@ describe('a host-key question whose helper goes away', () => {
     const log: string[] = [];
     server = createAskpassServer({
       paths: { askpass: '/a.sh', sshAskpass: '/s.sh', node: '/node', main: '/main.js' },
-      prompt: createAskpassBridge({ ask, askInput, t }),
+      prompt: credentialPrompt(createAskpassBridge({ ask, askInput, t })),
       log: (line) => log.push(line),
     });
     const registration = await server.register('interactive', 'fetch');

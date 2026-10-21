@@ -1,5 +1,5 @@
 import { shallowRef } from 'vue';
-import { type FileIconTheme, parseFileIconTheme } from '../main/desktop-configuration';
+import { type FileIconTheme, parseFileIconTheme } from '../local-services/desktop-configuration';
 import type { ThemeKind } from '../preload/panel-channels';
 
 export interface HostAppearance {

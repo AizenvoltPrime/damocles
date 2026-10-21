@@ -18,12 +18,18 @@ import {
 } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join, dirname, extname, resolve, relative, isAbsolute, sep } from 'node:path';
-import spawn from 'cross-spawn';
+import { runProcess, type SpawnSpec } from '../../process-launcher';
+import { findOnAbsolutePathAsync } from '../../system-tools';
 import { MCP_NPX_CACHE_PATH } from './paths';
-import { killProcessTree } from './utils';
 
-/** The npm CLI binary; cross-spawn resolves `npm` → `npm.cmd` on Windows (bare Node spawn cannot). */
-const NPM_BIN = 'npm';
+// Windows: npm's own `npm.cmd` shim, which the launcher's cross-spawn start runs through cmd.exe, or a Volta-style `npm.exe`.
+const NPM_NAMES = process.platform === 'win32' ? ['npm.cmd', 'npm.exe'] : ['npm'];
+
+/** The npm CLI from an absolute PATH folder. */
+async function npmStart(args: string[]): Promise<SpawnSpec | undefined> {
+  const npm = await findOnAbsolutePathAsync(NPM_NAMES, process.platform, process.env);
+  return npm === undefined ? undefined : { file: npm, args, crossSpawn: true, windowsHide: true };
+}
 
 /**
  * A plain npm registry package spec: optional `@scope/`, a package name, and an optional `@version`
@@ -88,20 +94,20 @@ export async function resolveNpxBinary(command: string, args: string[]): Promise
   if (cached && Date.now() - cached.resolvedAt < CACHE_TTL_MS && existsSync(cached.resolvedBin)) {
     // Re-assert cache containment on the hit path too: a tampered cache file must not redirect
     // execution outside the npm cache (the fresh-resolve path enforces the same check).
-    const cacheDir = getNpmCacheDir();
+    const cacheDir = await getNpmCacheDir();
     if (cacheDir && isPathInside(cached.resolvedBin, cacheDir)) {
       return { binPath: cached.resolvedBin, extraArgs: parsed.extraArgs, isJs: cached.isJs };
     }
   }
 
-  const resolved = resolveFromNpmCache(parsed.packageSpec, parsed.binName);
+  const resolved = resolveFromNpmCache(await getNpmCacheDir(), parsed.packageSpec, parsed.binName);
   if (resolved) {
     saveCacheEntry(cacheKey, resolved);
     return { binPath: resolved.resolvedBin, extraArgs: parsed.extraArgs, isJs: resolved.isJs };
   }
 
   await forceNpxCache(parsed.packageSpec);
-  const resolvedAfterInstall = resolveFromNpmCache(parsed.packageSpec, parsed.binName);
+  const resolvedAfterInstall = resolveFromNpmCache(await getNpmCacheDir(), parsed.packageSpec, parsed.binName);
   if (resolvedAfterInstall) {
     saveCacheEntry(cacheKey, resolvedAfterInstall);
     return {
@@ -203,8 +209,7 @@ function parseNpmExecArgs(args: string[]): ParsedInvocation | null {
   return { packageSpec, binName, extraArgs };
 }
 
-function resolveFromNpmCache(packageSpec: string, binName?: string): NpxCacheEntry | null {
-  const cacheDir = getNpmCacheDir();
+function resolveFromNpmCache(cacheDir: string | null, packageSpec: string, binName?: string): NpxCacheEntry | null {
   if (!cacheDir) return null;
 
   const packageName = extractPackageName(packageSpec);
@@ -276,27 +281,11 @@ function resolveFromNpmCache(packageSpec: string, binName?: string): NpxCacheEnt
 const FORCE_CACHE_TIMEOUT_MS = 30_000;
 
 async function forceNpxCache(packageSpec: string): Promise<void> {
+  const start = await npmStart(['exec', '--yes', '--package', packageSpec, '--', 'node', '-e', '1']);
+  if (!start) return;
   try {
-    await new Promise<void>((resolveP, reject) => {
-      const proc = spawn(NPM_BIN, ['exec', '--yes', '--package', packageSpec, '--', 'node', '-e', '1'], {
-        stdio: 'ignore',
-      });
-      const timer = setTimeout(() => {
-        // Tree-kill: `npm exec` spawns the install + the probe `node` underneath it (L6/H1).
-        if (typeof proc.pid === 'number') void killProcessTree(proc.pid);
-        else proc.kill();
-        reject(new Error('timeout'));
-      }, FORCE_CACHE_TIMEOUT_MS);
-      timer.unref();
-      proc.on('close', () => {
-        clearTimeout(timer);
-        resolveP();
-      });
-      proc.on('error', (err) => {
-        clearTimeout(timer);
-        reject(err);
-      });
-    });
+    // A timeout kills the tree: `npm exec` runs the install and the probe `node` underneath it (L6/H1).
+    await runProcess({ ...start, stdio: ['ignore', 'ignore', 'ignore'] }, { timeoutMs: FORCE_CACHE_TIMEOUT_MS });
   } catch {
     // Ignore failures; resolution falls back to the original command.
   }
@@ -394,27 +383,30 @@ function detectJsBinary(binPath: string): boolean {
   }
 }
 
-let npmCacheDirCached: string | null | undefined;
+const NPM_CACHE_DIR_TIMEOUT_MS = 15_000;
 
-function getNpmCacheDir(): string | null {
-  if (npmCacheDirCached !== undefined) return npmCacheDirCached;
-  if (process.env['NPM_CONFIG_CACHE']) {
-    npmCacheDirCached = process.env['NPM_CONFIG_CACHE'];
-    return npmCacheDirCached;
-  }
+// undefined: npm did not answer in time, so the next connect asks again
+let npmCacheDir: Promise<string | null | undefined> | undefined;
+
+/** Asked of npm once per process, unless it did not answer in time. */
+async function getNpmCacheDir(): Promise<string | null> {
+  const asked = (npmCacheDir ??= readNpmCacheDir());
+  const dir = await asked;
+  if (dir === undefined && npmCacheDir === asked) npmCacheDir = undefined;
+  return dir ?? null;
+}
+
+async function readNpmCacheDir(): Promise<string | null | undefined> {
+  if (process.env['NPM_CONFIG_CACHE']) return process.env['NPM_CONFIG_CACHE'];
+  const start = await npmStart(['config', 'get', 'cache']);
+  if (!start) return null;
   try {
-    const result = spawn.sync(NPM_BIN, ['config', 'get', 'cache'], { encoding: 'utf-8' });
-    if (result.status === 0) {
-      const path = String(result.stdout).trim();
-      npmCacheDirCached = path || null;
-      return npmCacheDirCached;
-    }
+    const { exit, stdout } = await runProcess({ ...start, stdio: ['ignore', 'pipe', 'ignore'] }, { timeoutMs: NPM_CACHE_DIR_TIMEOUT_MS });
+    if (exit === null) return undefined;
+    return exit.code === 0 ? stdout.toString('utf8').trim() || null : null;
   } catch {
-    npmCacheDirCached = null;
     return null;
   }
-  npmCacheDirCached = null;
-  return null;
 }
 
 function loadCache(): NpxCache | null {

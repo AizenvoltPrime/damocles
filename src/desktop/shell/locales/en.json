@@ -810,6 +810,11 @@
     "releaseNotes": "Release notes",
     "showLog": "Show log"
   },
+  "engine": {
+    "stopped": "Engine stopped",
+    "stoppedTitle": "The Damocles engine stopped unexpectedly and was not restarted. Click to restart it.",
+    "restartLabel": "Engine stopped. Restart Engine"
+  },
   "grid": {
     "move": {
       "chat": "Move the chat pane",

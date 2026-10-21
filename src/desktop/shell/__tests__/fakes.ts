@@ -51,6 +51,7 @@ export const STATE: ShellState = {
   shortcuts: { newChat: 'Ctrl+N', newChatInWorktree: 'Shift+Alt+N', toggleSidebar: 'Ctrl+B', settings: 'Ctrl+,', quickOpen: 'Ctrl+P', toggleTerminal: 'Ctrl+`', newTerminal: 'Ctrl+Shift+`', splitTerminal: 'Ctrl+Shift+5', closeEditor: 'Ctrl+W', searchAgain: 'Ctrl+Shift+R', toggleQueryDetails: 'Ctrl+Shift+J', focusNextSearchResult: 'F4',
     editorMenu: { goToDefinition: 'F12', goToReferences: 'Shift+F12', renameSymbol: 'F2', changeAllOccurrences: 'Ctrl+F2', formatDocument: 'Shift+Alt+F', cut: 'Ctrl+X', copy: 'Ctrl+C', paste: 'Ctrl+V', commandPalette: 'Ctrl+Shift+P' } },
   notifications: { unseen: 0, doNotDisturb: false, popupsOff: false, attention: 0 },
+  engineHalted: false,
   search: SEARCH_SETTINGS,
   sidebar: { alwaysShowHeaderActions: false },
   shownFolders: {
@@ -299,6 +300,7 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
     }),
     openAppMenu: vi.fn(async () => {}),
     toggleTheme: vi.fn(async () => {}),
+    restartEngine: vi.fn(async () => {}),
     openSettings: vi.fn(async () => {}),
     toggleSidebar: vi.fn(async () => {}),
     showSidebar: vi.fn(async () => {}),

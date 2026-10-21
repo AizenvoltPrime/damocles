@@ -4,7 +4,7 @@
 
 import type { ChatsContinueWorktree, ChatsWorktreeOptions, DropZonesPointer, GridPane, GridSlot, NewChatWorktree, ShellGridLayout, ShellLocale, ShellPlatform } from './shell-channels';
 import type { SettingsAccountId, SettingsSectionId, SettingsTarget } from '../../shared/settings-sections';
-import type { DesktopLanguageSetting } from '../main/desktop-configuration';
+import type { DesktopLanguageSetting } from '../local-services/desktop-configuration';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../../shared/types/messages';
 import type { ChimeTone, NotificationBody, NotificationCenterState } from './notifications';
 import type { ReleaseIndex, ReleaseNotes, UpdateSnapshot, VersionInfo } from './updates';
@@ -631,6 +631,8 @@ export type OverlayAnswer =
   // the index of the chosen action; null is Cancel
   | { readonly kind: 'message'; readonly action: number | null }
   | { readonly kind: 'notifications'; readonly action: 'open'; readonly entryId: string }
+  // one of the actions of an entry awaiting its answer; main refuses any other
+  | { readonly kind: 'notifications'; readonly action: 'answer'; readonly entryId: string; readonly label: string }
   // null: Escape; mention: the query had the @ prefix
   | { readonly kind: 'quickOpen'; readonly pick: QuickOpenPick | null }
   // a PaletteCommand id; main runs it only when it is listed and enabled for the captured focus context
@@ -755,6 +757,8 @@ export interface OverlayToast {
   // life left when main sent it; main pauses it while the toast is held
   readonly remainingMs: number;
   readonly body: NotificationBody;
+  // main never times it out: it shows no life bar and stays until it is answered, dismissed or withdrawn
+  readonly sticky?: true;
 }
 
 export interface OverlayState {

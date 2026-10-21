@@ -1,8 +1,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createShellSessionJob } from '../../pi-session/tools/process-tree';
-import { createGitRunner, GitQueueDisposedError, parseGitVersion } from '../git-runner';
+import { processLauncher } from '../../process-launcher';
+import { createGitRunner, GitQueueDisposedError } from '../git-runner';
+import { parseGitVersion } from '../git-version';
 import { folder, git, GIT_PATH, harness, HAS_GIT, makeRepo, ready, sandbox, statusOf, useGitSandbox, waitFor, write } from './git-harness';
 
 /**
@@ -66,8 +67,7 @@ describe.skipIf(!HAS_GIT)('cancelling a repository\'s git', { timeout: 120_000 }
     const project = makeRepo(folder('session-status'));
     const pids = path.join(sandbox, `session-${Date.now()}`);
     hangingFsmonitor(project, pids);
-    const session = createShellSessionJob()!;
-    expect(session).toBeDefined();
+    const session = processLauncher().createSessionJob();
     const runner = createGitRunner({ git: { path: GIT_PATH!, version: parseGitVersion(git(['--version'], sandbox))! }, log: { appendLine: () => undefined }, isTrusted: () => true });
     const controller = new AbortController();
     let settled = false;

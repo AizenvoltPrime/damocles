@@ -31,7 +31,7 @@ import {
 } from '../platform/editor-document';
 import { isRelativeFilePath } from '../../../shared/relative-path';
 import { visibleText } from '../../../shared/visible-text';
-import { confineExisting, confineMissing, confineOrCreateFolder, followsLocalLinksOnly, projectOfPath, type Project } from './confine';
+import { confineExisting, confineMissing, confineOrCreateFolder, followsLocalLinksOnly, projectOfPath, type Project } from '../../local-services/confine';
 
 // Images preview from a data: URL of at most this many bytes; a larger one is not displayed.
 export const MAX_IMAGE_BYTES: number = 10 * 1024 * 1024;

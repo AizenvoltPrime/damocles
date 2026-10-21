@@ -16,7 +16,7 @@ vi.mock('electron', () => ({
 
 import { acceleratorLabel, CHAT_FEATURE_IDS, CommandPalette, desktopCommands, isEnabled, keyFires, MENU_IDS, newChatInWorktreeAccelerator, openChatForProjectId, terminalPassKeys } from '../commands';
 import { installApplicationMenu, type MenuActions, type MenuState } from '../menu';
-import { createDesktopLocalizationService } from '../platform/localization-service';
+import { createDesktopLocalizationService } from '../../local-services/localization-service';
 import { NO_SCM_MENU_STATE } from '../scm/scm-host';
 
 const calls: string[] = [];
@@ -119,6 +119,21 @@ describe('command registry', () => {
     const listed = palette(el).list(EDITOR).find((entry) => entry.id === MENU_IDS.formatDocument);
     expect(listed).toMatchObject({ label: 'Επεξεργασία: Μορφοποίηση εγγράφου', englishLabel: 'Edit: Format Document', accelerator: 'Shift+Alt+F', enabled: true });
     expect(palette().list(CHAT).find((entry) => entry.id === MENU_IDS.formatDocument)?.enabled).toBe(false);
+  });
+
+  it('puts Restart Engine in the Chat menu under Show Log and in the palette, enabled with no chat loaded, as the engine may be down', () => {
+    for (const platform of PLATFORMS) {
+      menuItems(platform);
+      const chat = (electron.template.find((menu) => menu.id === 'damocles.menu.chat')!.submenu as MenuItemConstructorOptions[]).map((item) => item.id);
+      expect(chat.slice(-2), platform).toEqual([MENU_IDS.showLog, MENU_IDS.restartEngine]);
+    }
+    const item = menuItems('win32').find((candidate) => candidate.id === MENU_IDS.restartEngine)!;
+    expect(item).toMatchObject({ label: 'Restart Engine', enabled: true });
+    (item.click as () => void)();
+    expect(calls).toEqual(['restartEngine']);
+    expect(palette(el).list(NONE).find((entry) => entry.id === MENU_IDS.restartEngine)).toMatchObject({ englishLabel: 'Chat: Restart Engine', enabled: true, accelerator: null });
+    expect(palette().run(MENU_IDS.restartEngine, NONE)).toBe(true);
+    expect(calls).toEqual(['restartEngine', 'restartEngine']);
   });
 
   it('adds Chat: New Chat in This Worktree under New Chat with VS Code\'s per-OS key, enabled only for a chat working in its worktree', () => {

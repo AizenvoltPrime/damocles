@@ -1,6 +1,7 @@
-import { parentPort } from 'worker_threads';
+import { parentPort, workerData } from 'worker_threads';
 import * as fs from 'fs';
-import type { WorkerRequest, WorkerEvent, WebviewValidationResponse } from './worker-protocol';
+import type { CompassWorkerData, WorkerRequest, WorkerEvent, WebviewValidationResponse } from './worker-protocol';
+import { adoptSpawnLock } from '../process-launcher/spawn-lock';
 import { LIGHT_REQUEST_TYPES, VALIDATION_BUSY_MESSAGE } from './worker-protocol';
 import type { IndexStatus, CompassConfig } from './types';
 import { setGrammarDir, clearParsers } from './parser-manager';
@@ -18,18 +19,15 @@ import {
 } from './mcp-handlers';
 import { mapWithConcurrency, compassIndexPath } from './util';
 import { createWorkerCore } from './worker-core';
-import { installLogSink } from '../logger';
+import { installWorkerLogRelay } from '../logger';
 
 if (!parentPort) throw new Error('compass-worker must run as a worker thread');
+adoptSpawnLock((workerData as CompassWorkerData).spawnLock);
 
 const port = parentPort;
 
 // Modules shared with the host log through logger.ts; in the worker those lines go to the host.
-installLogSink({
-	appendLine: line => port.postMessage({ type: 'log', message: line } satisfies WorkerEvent),
-	show: () => undefined,
-	dispose: () => undefined,
-});
+installWorkerLogRelay(message => port.postMessage({ type: 'log', message } satisfies WorkerEvent));
 
 let store: GraphStore | null = null;
 let workspacePath = '';

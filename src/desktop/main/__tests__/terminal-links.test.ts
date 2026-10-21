@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { MAX_TERMINAL_LINK_PATH_LENGTH } from '../../preload/terminal-channels';
-import type { Project } from '../documents/confine';
+import type { Project } from '../../local-services/confine';
 import {
   folderLinkAction,
   LINK_CACHE_TTL_MS,

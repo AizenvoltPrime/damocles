@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { mainLog } from './support/app';
+import { coreLog } from './support/app';
 import { createTestPki } from './support/certs';
 import { startConnectProxy } from './support/connect-proxy';
 import { activeChat, expect, test } from './support/fixtures';
@@ -25,7 +25,7 @@ test.describe('network configuration', () => {
       await expect(chatInput(tab)).toBeVisible();
       await sendAndAwaitEcho(tab, 'over tls with the test ca');
       expect(chatRequests(stub).length).toBeGreaterThan(0);
-      await expect.poll(() => mainLog(home)).toMatch(/\[network\] trusting \d+ CA certificates \(bundled \d+, system \d+, extra 1\)/);
+      await expect.poll(() => coreLog(home)).toMatch(/\[network\] trusting \d+ CA certificates \(bundled \d+, system \d+, extra 1\)/);
     } finally {
       await stub.close();
     }

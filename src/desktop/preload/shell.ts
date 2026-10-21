@@ -253,6 +253,7 @@ const api: DamoclesShellApi = {
   requestOverlay: (request) => ipcRenderer.invoke(SHELL_CHANNELS.overlayRequest, request) as Promise<OverlayAnswer>,
   openAppMenu: (anchor) => ipcRenderer.invoke(SHELL_CHANNELS.appMenu, { x: anchor.x, y: anchor.y }) as Promise<void>,
   toggleTheme: () => ipcRenderer.invoke(SHELL_CHANNELS.toggleTheme) as Promise<void>,
+  restartEngine: () => ipcRenderer.invoke(SHELL_CHANNELS.restartEngine) as Promise<void>,
   toggleSidebar: () => ipcRenderer.invoke(SHELL_CHANNELS.toggleSidebar) as Promise<void>,
   showSidebar: () => ipcRenderer.invoke(SHELL_CHANNELS.showSidebar) as Promise<void>,
   windowControl: (control) => ipcRenderer.invoke(SHELL_CHANNELS.windowControl, control) as Promise<void>,

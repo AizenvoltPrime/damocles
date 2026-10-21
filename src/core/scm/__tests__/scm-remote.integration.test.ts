@@ -7,8 +7,10 @@ import { build } from 'esbuild';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startGitHttpServer, type GitHttpServer } from './git-http-server';
 import { createAskpassServer, PROMPT_CANCELLED, type AskpassServer, type CredentialPrompt } from '../askpass/askpass-server';
-import { createGitRunner, GitError, GitQueueDisposedError, GitUntrustedError, parseGitVersion, type GitCall } from '../git-runner';
-import { gitErrorText, PLAIN_VARIANT, RemoteCancelledError, StashKeptError, SyncBranchChangedError } from '../scm-service';
+import { createGitRunner, GitQueueDisposedError, type GitCall } from '../git-runner';
+import { parseGitVersion } from '../git-version';
+import { GitError, gitErrorText, GitUntrustedError, RemoteCancelledError, StashKeptError, SyncBranchChangedError } from '../errors';
+import { PLAIN_VARIANT } from '../scm-service';
 import { SCM_SETTING_KEYS } from '../settings-keys';
 import { folder, freshStatus, git, GIT_PATH, harness, HAS_GIT, makeRepo, ready, sandbox, statusOf, unremovable, useGitSandbox, viewOf, waitFor, write, type Harness } from './git-harness';
 

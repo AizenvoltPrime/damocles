@@ -1,8 +1,13 @@
 import * as crypto from 'crypto';
+import * as fs from 'fs';
 import * as path from 'path';
+import { t } from '../l10n';
 import { log } from '../logger';
+import { perfSpan } from '../perf';
 import { homeDirectory } from '../workspace-folders/folder-registry';
-import { isSchemaAhead, openDatabaseAsync, updateSearchTermsIfUnchanged, getUnexpandedMemoryRows, type UnexpandedRow } from './database';
+import { isSchemaAhead, memoryDatabasePath, openDatabaseAsync, updateSearchTermsIfUnchanged, getUnexpandedMemoryRows, type UnexpandedRow } from './database';
+import { createMemoryIntegrity, MEMORY_WRITE_HOLD_MS, type IntegrityVerdict, type MemoryIntegrity, type RepairOutcome } from './integrity';
+import { repairMarkerPath } from './integrity-protocol';
 import { expandMemoryTerms, expandMemoryTermsWithStatus, clearExpansionCache } from './query-expansion';
 import { NoteManager } from './managers/note-manager';
 import { ObservationManager } from './managers/observation-manager';
@@ -11,7 +16,7 @@ import { InjectionManager, type BuildInjectionArgs, type InjectionBuildResult } 
 import { FileChangeTracker } from './managers/file-change-tracker';
 import { FactGraphManager } from './managers/fact-graph-manager';
 import { ProfileManager } from './managers/profile-manager';
-import { MemoryReadOnlyError, MemoryWriteQueue } from './write-queue';
+import { MemoryReadOnlyError, MemoryWriteQueue, type ReadOnlyReason } from './write-queue';
 import { createMemorySubCallRunner, describeMemorySubCallModel, type MemorySubCallRunner } from './subcall-runner';
 import {
   applyAuditDecisions,
@@ -33,7 +38,7 @@ import {
   type ConsolidationRunPass,
   type PendingConsolidationRequest,
 } from './consolidation';
-import { attributeFilesToWorkspace, listKnownWorkspaces } from './workspaces';
+import { attributeFilesToWorkspace, createFolderProbe, listKnownWorkspaces, workspaceContaining } from './workspaces';
 import type {
   ConsolidationResult,
   ConsolidationTrigger,
@@ -52,6 +57,7 @@ import { MAX_MEMORY_CONTENT_CHARS } from '@shared/types/memory';
 import type { SettingsStore } from '../../platform/settings-store';
 import type { NotificationService } from '../../platform/notification-service';
 import type { FileWatcherFactory } from '../../platform/file-watcher';
+import type { AppPaths } from '../../platform/app-paths';
 import { notifySchemaAhead } from '../schema-skew';
 import type {
   MemoryEntry,
@@ -101,10 +107,42 @@ function chainRoot(db: DatabaseInstance, id: string): string | null {
   return (db.prepare('SELECT COALESCE(root_id, id) AS root FROM memories WHERE id = ?').get(id) as { root: string } | undefined)?.root ?? null;
 }
 
+interface StoreFile {
+  readonly path: string;
+  readonly dev: bigint;
+  readonly ino: bigint;
+}
+
+/** The file the connection opened; null for an in-memory database, which nothing can move. */
+async function storeFileIdentity(db: DatabaseInstance): Promise<StoreFile | null> {
+  const main = (db.prepare('PRAGMA database_list').all() as Array<{ name: string; file: string }>).find((row) => row.name === 'main');
+  if (!main?.file) return null;
+  const stat = await fs.promises.stat(main.file, { bigint: true });
+  return { path: main.file, dev: stat.dev, ino: stat.ino };
+}
+
+async function sameFile(file: StoreFile): Promise<boolean> {
+  const now = await fs.promises.stat(file.path, { bigint: true }).catch((err: NodeJS.ErrnoException) => {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  });
+  return now !== null && now.dev === file.dev && now.ino === file.ino;
+}
+
+/** The promise's value, or undefined when it has not settled within `ms`. */
+function within<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), ms);
+  });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
 export interface MemoryServiceDeps {
   readonly settings: SettingsStore;
   readonly notifications: NotificationService;
   readonly fileWatchers: FileWatcherFactory;
+  readonly paths: AppPaths;
 }
 
 export class MemoryService {
@@ -144,10 +182,13 @@ export class MemoryService {
   /** This window's quality audit, from the moment it starts taking the lease until the run settles. */
   private audit: { abort: AbortController; done: Promise<void> } | null = null;
   private disposed = false;
+  /** The reads {@link whileOpen} runs, which dispose waits for before it closes the database. */
+  private readonly reads = new Set<Promise<unknown>>();
   /** Aborted by `dispose()`; cancels every sub-call the runner makes, so teardown never waits on a model. */
   private readonly lifetime = new AbortController();
   /** Folders whose observations the file-change tracker indexes. */
   private workspaceRoots: readonly string[] = [];
+  private readonly folderExists = createFolderProbe(1000, 5 * 60_000);
   private fallbackWorkspace: () => string = homeDirectory;
   /** Guards the stale-injection-DB sweep so repeated init calls don't re-sweep. */
   private staleSweepDone = false;
@@ -164,11 +205,13 @@ export class MemoryService {
   private readonly settings: SettingsStore;
   private readonly notifications: NotificationService;
   private readonly fileWatchers: FileWatcherFactory;
+  private readonly integrity: MemoryIntegrity;
 
   constructor(deps: MemoryServiceDeps) {
     this.settings = deps.settings;
     this.notifications = deps.notifications;
     this.fileWatchers = deps.fileWatchers;
+    this.integrity = createMemoryIntegrity(deps.paths.workerEntry('memoryIntegrity'));
   }
 
   /** The open folders' raw fsPaths; the file-change tracker rebuilds its index when they change. */
@@ -179,8 +222,8 @@ export class MemoryService {
   }
 
   /** Folders a project row may be filed under; the home-directory bucket of a folderless window is never one. */
-  private listKnownWorkspaces(db: DatabaseInstance): string[] {
-    return listKnownWorkspaces(db, this.workspaceRoots, [homeDirectory()]);
+  private listKnownWorkspaces(db: DatabaseInstance, wanted?: (folder: string) => boolean): Promise<string[]> {
+    return listKnownWorkspaces(db, this.workspaceRoots, [homeDirectory()], this.folderExists, wanted);
   }
 
   /** Where consolidation files legacy candidates stored without a folder: the window's default folder. */
@@ -328,14 +371,22 @@ export class MemoryService {
   }
 
   private async _doInit(): Promise<void> {
-    const opened = await openDatabaseAsync({
-      onPersistFailure: (n) => this.handlePersistFailure(n),
-    });
+    const dbPath = await memoryDatabasePath();
+    let damaged = await this.repairIfMarked(dbPath);
+    if (this.disposed) return;
+    let opened = await this.openStore(dbPath, damaged);
+    if (opened === 'corrupt' && !damaged && !this.disposed) {
+      // The worker salvages a store the open found damaged as it does a marked one, then the open runs again.
+      await this.writeRepairMarker(dbPath);
+      damaged = await this.repairIfMarked(dbPath);
+      if (!this.disposed) opened = await this.openStore(dbPath, damaged);
+    }
+    const file = opened && opened !== 'corrupt' && !opened.readOnly && !damaged ? await storeFileIdentity(opened.db) : null;
     if (this.disposed) {
-      opened?.db.close();
+      if (opened && opened !== 'corrupt') opened.db.close();
       return;
     }
-    if (!opened) {
+    if (!opened || opened === 'corrupt') {
       this._initFailed = true;
       log('[MemoryService] Database open failed — disabling memory system');
       void this.notifications.error('Damocles memory failed to initialize; memory features are disabled.');
@@ -343,22 +394,31 @@ export class MemoryService {
     }
 
     this.db = opened.db;
+    let readOnly: ReadOnlyReason | null = null;
     if (opened.readOnly) {
-      this.readOnly = true;
+      readOnly = 'ahead';
       notifySchemaAhead(this.notifications, { kind: 'memory' });
+    } else if (damaged) {
+      readOnly = 'damaged';
+      this.notifyDamaged();
     }
-    if (opened.quarantinedFrom) {
-      const salvaged = opened.salvagedMemories ?? 0;
-      void this.notifications.warn(
-        salvaged > 0
-          ? `Damocles memory database was corrupt; ${salvaged} memories were recovered into a rebuilt store (original set aside as ${path.basename(opened.quarantinedFrom)}).`
-          : `Damocles memory database was corrupt and has been set aside as ${path.basename(opened.quarantinedFrom)}. A fresh memory store was created.`,
-      );
-    }
+    this.readOnly = readOnly !== null;
 
     const db = opened.db;
-    const writeQueue = new MemoryWriteQueue(db, { isAhead: () => isSchemaAhead(db), onAhead: () => this.enterReadOnly() }, this.readOnly);
+    const writeQueue = new MemoryWriteQueue(
+      db,
+      {
+        isAhead: () => isSchemaAhead(db),
+        onAhead: () => this.enterReadOnly(),
+        isMoved: async () => file !== null && !(await sameFile(file)),
+        onMoved: () => this.storeMoved(),
+      },
+      readOnly,
+    );
     this.writeQueue = this.readOnly ? null : writeQueue;
+    if (!this.readOnly) {
+      void this.verifyIntegrity(dbPath, writeQueue).catch((err: unknown) => log('[MemoryService] Memory integrity check skipped: %O', err));
+    }
     this.runner = createMemorySubCallRunner(this.lifetime.signal);
     this.factGraph = new FactGraphManager(this.db, writeQueue, this.runner);
     this.profileManager = new ProfileManager(this.db, writeQueue, this.runner, this.settings);
@@ -368,6 +428,10 @@ export class MemoryService {
     this.retrievalManager = new RetrievalManager(this.db, this.settings, this.runner);
     this.injectionManager = new InjectionManager(this.db, this.profileManager, this.runner, this.settings, this.notifications);
     if (!this.readOnly) {
+      const observations = this.observationManager;
+      void writeQueue.run(() => observations.normalizeStoredFilePaths()).catch((err: unknown) =>
+        log('[MemoryService] Observation path normalization failed: %O', err),
+      );
       this.fileChangeTracker = new FileChangeTracker(this.db, writeQueue, this.workspaceRoots, this.fileWatchers);
       this.fileChangeTracker.initialize();
     }
@@ -412,9 +476,114 @@ export class MemoryService {
     }, 5_000 + Math.random() * 25_000);
   }
 
+  /** A store with a pending salvage may be missing; importing the legacy file there would bring back rows the salvage replaces. */
+  private async openStore(dbPath: string, damaged: boolean): Promise<Awaited<ReturnType<typeof openDatabaseAsync>>> {
+    const openSpan = perfSpan('memory.open');
+    const opened = await openDatabaseAsync(dbPath, { onPersistFailure: (n) => this.handlePersistFailure(n), importLegacy: !damaged });
+    openSpan.end({ failed: opened && opened !== 'corrupt' ? undefined : true });
+    return opened;
+  }
+
+  /**
+   * Repairs, on a worker, a store found damaged. True while the damage stays (the repair did not finish, or on
+   * Windows the file cannot be moved aside while another Damocles app holds it), so this run stays read only and
+   * the marker waits for a later start.
+   */
+  private async repairIfMarked(dbPath: string): Promise<boolean> {
+    if (!(await fs.promises.access(repairMarkerPath(dbPath)).then(() => true, () => false))) return false;
+    let outcome: RepairOutcome;
+    try {
+      outcome = await this.integrity.repair(dbPath);
+    } catch (err) {
+      log('[MemoryService] Memory database repair did not finish: %O', err);
+      return true;
+    }
+    log('[MemoryService] Memory database repair: %s', outcome.kind);
+    if (outcome.kind === 'salvaged') this.notifyQuarantined(outcome.quarantinedFrom, outcome.salvagedMemories);
+    // A newer schema is the newer app's to repair; this one opens it read only.
+    return outcome.kind === 'failed';
+  }
+
+  /** Never replaces a marker, which may name the quarantined file a stopped salvage still copies from. */
+  private async writeRepairMarker(dbPath: string): Promise<void> {
+    await fs.promises
+      .writeFile(repairMarkerPath(dbPath), JSON.stringify({ foundAt: new Date().toISOString() }), { flag: 'wx' })
+      .catch((err: NodeJS.ErrnoException) => {
+        if (err.code !== 'EEXIST') log('[MemoryService] Could not write the repair marker: %O', err);
+      });
+  }
+
+  /**
+   * Holds the write queue, as its first item, for the worker's check up to {@link MEMORY_WRITE_HOLD_MS}, and through
+   * the full-text rebuild, which takes the write lock. A slower check finishes while writes go ahead, and its verdict
+   * still applies. A worker error or timeout lets writes go ahead, since open and migrate succeeded.
+   */
+  private async verifyIntegrity(dbPath: string, writeQueue: MemoryWriteQueue): Promise<void> {
+    // Called inside the queue item, so no write queued behind the check reaches a damaged store.
+    const refuseIfCorrupt = (verdict: IntegrityVerdict): IntegrityVerdict => {
+      if (verdict === 'corrupt') writeQueue.markReadOnly('damaged');
+      return verdict;
+    };
+    let verdict: IntegrityVerdict;
+    try {
+      const held = await writeQueue.hold(async () => {
+        const checked = this.integrity.check(dbPath);
+        const answer = await within(checked, MEMORY_WRITE_HOLD_MS);
+        if (answer === undefined) return { late: checked };
+        return { verdict: refuseIfCorrupt(answer === 'fts' ? await this.rebuildIndex(dbPath) : answer) };
+      });
+      if ('late' in held) {
+        log('[MemoryService] The memory integrity check takes longer than %d ms; writes go ahead meanwhile', MEMORY_WRITE_HOLD_MS);
+        verdict = refuseIfCorrupt(await held.late);
+        if (verdict === 'fts') verdict = await writeQueue.hold(async () => refuseIfCorrupt(await this.rebuildIndex(dbPath)));
+      } else {
+        verdict = held.verdict;
+      }
+    } catch (err) {
+      log('[MemoryService] Memory integrity check did not finish; writes go ahead: %O', err);
+      return;
+    }
+    if (verdict !== 'corrupt' || this.disposed || this.readOnly) return;
+    this.stopWrites();
+    await this.writeRepairMarker(dbPath);
+    this.notifyDamaged();
+  }
+
+  private rebuildIndex(dbPath: string): Promise<IntegrityVerdict> {
+    log('[MemoryService] The memory search index is damaged; rebuilding it');
+    return this.integrity.rebuildFts(dbPath);
+  }
+
+  private notifyDamaged(): void {
+    void this.notifications.warn(t('Damocles found damage in the memory database. It is repaired the next time Damocles starts.'));
+  }
+
+  private notifyQuarantined(quarantinedFrom: string, salvaged: number): void {
+    const name = path.basename(quarantinedFrom);
+    void this.notifications.warn(
+      salvaged > 0
+        ? t('Damocles memory database was corrupt; {0} memories were recovered into a rebuilt store (original set aside as {1}).', salvaged, name)
+        : t('Damocles memory database was corrupt and has been set aside as {0}. A fresh memory store was created.', name),
+    );
+  }
+
+  /** Another app moved the store aside, most likely to repair it: stop every write path, keep serving reads. */
+  private storeMoved(): void {
+    if (this.readOnly) return;
+    this.stopWrites();
+    void this.notifications.warn(
+      t('The memory database was moved or replaced after Damocles opened it, for example by another Damocles app repairing it. Restart Damocles to save memory changes again.'),
+    );
+  }
+
   /** A newer Damocles migrated the store while this window held it: stop every write path, keep serving reads. */
   private enterReadOnly(): void {
     if (this.readOnly) return;
+    this.stopWrites();
+    notifySchemaAhead(this.notifications, { kind: 'memory' });
+  }
+
+  private stopWrites(): void {
     this.readOnly = true;
     this.writeQueue = null;
     this.pendingTurnCandidates = [];
@@ -430,7 +599,6 @@ export class MemoryService {
     }
     this.fileChangeTracker?.dispose();
     this.fileChangeTracker = null;
-    notifySchemaAhead(this.notifications, { kind: 'memory' });
   }
 
   /** Latch a single user-visible error at 3 consecutive write failures; re-arm on recovery (count 0). */
@@ -606,11 +774,13 @@ export class MemoryService {
     await this.ensureInitialized();
     const db = this.db, writeQueue = this.writeQueue, observationManager = this.observationManager;
     if (!db || !writeQueue || !observationManager) return null;
-    const workspace = attributeFilesToWorkspace(
-      [...(input.filesRead ?? []), ...(input.filesModified ?? [])],
+    const files = [...(input.filesRead ?? []), ...(input.filesModified ?? [])];
+    const workspace = (await attributeFilesToWorkspace(
+      files,
       panelWorkspace,
-      () => this.listKnownWorkspaces(db),
-    ) ?? panelWorkspace;
+      () => this.listKnownWorkspaces(db, folder => files.some(file => workspaceContaining(file, [folder]) !== null)),
+    )) ?? panelWorkspace;
+    if (this.disposed) return null;
     const result = await writeQueue.run(() => observationManager.addRichObservation(sessionId, workspace, input));
     if (result) {
       this.fileChangeTracker?.trackObservation(result.id, input.filesRead ?? [], input.filesModified ?? [], workspace);
@@ -625,7 +795,18 @@ export class MemoryService {
   }
 
   async searchMemories(query: SearchQuery): Promise<SearchResult[]> {
-    return (await this.retrievalManager?.search(query)) ?? [];
+    return this.whileOpen([], async () => (await this.retrievalManager?.search(query)) ?? []);
+  }
+
+  // A read that queries the database on both sides of an await; dispose closes it only once these settle, and a read
+  // started after dispose answers `closed` without touching it.
+  private whileOpen<T>(closed: T, read: () => Promise<T>): Promise<T> {
+    if (this.disposed) return Promise.resolve(closed);
+    const running = read();
+    this.reads.add(running);
+    const forget = (): void => void this.reads.delete(running);
+    running.then(forget, forget);
+    return running;
   }
 
   async getMemoryDetails(ids: string[]): Promise<MemoryEntry[]> {
@@ -827,15 +1008,17 @@ export class MemoryService {
   /** This prompt's injection as a delta against `args.live`; null when memory is unavailable. */
   async buildInjectionContext(args: BuildInjectionArgs): Promise<InjectionBuildResult | null> {
     await this.ensureInitialized();
-    const injectionManager = this.injectionManager;
-    if (!injectionManager) return null;
-    const result = await injectionManager.buildInjection(args);
-    if (result.mentionedIds.length > 0) {
-      void this.recordRetrievals(result.mentionedIds, args.workspace).catch(err =>
-        log('[MemoryService] Recording mentioned-id retrievals failed: %O', err),
-      );
-    }
-    return result;
+    return this.whileOpen(null, async () => {
+      const injectionManager = this.injectionManager;
+      if (!injectionManager) return null;
+      const result = await injectionManager.buildInjection(args);
+      if (result.mentionedIds.length > 0) {
+        void this.recordRetrievals(result.mentionedIds, args.workspace).catch(err =>
+          log('[MemoryService] Recording mentioned-id retrievals failed: %O', err),
+        );
+      }
+      return result;
+    });
   }
 
   async pinMemory(id: string): Promise<boolean> {
@@ -1103,6 +1286,7 @@ export class MemoryService {
           fallbackWorkspace: () => this.fallbackWorkspace(),
           openFolders: () => this.workspaceRoots,
           nonProjectFolders: () => [homeDirectory()],
+          folderExists: this.folderExists,
           autoExtractEnabled: manual || this.autoExtractEnabled,
           trigger,
           declinedInRun,
@@ -1172,10 +1356,12 @@ export class MemoryService {
   }
 
   /** The latest audit run, its proposals and a fresh estimate; null when memory is unavailable. */
-  getAuditState(): MemoryAuditStatePayload | null {
+  async getAuditState(): Promise<MemoryAuditStatePayload | null> {
     const db = this.db, profileManager = this.profileManager;
     if (!db || !profileManager) return null;
-    return getAuditState({ db, profileManager }, this.instanceId, describeMemorySubCallModel(), this.listKnownWorkspaces(db));
+    const knownWorkspaces = await this.listKnownWorkspaces(db);
+    if (this.disposed || this.db !== db) return null;
+    return getAuditState({ db, profileManager }, this.instanceId, describeMemorySubCallModel(), knownWorkspaces);
   }
 
   /** The memory panel's audit banner and run indicator; null when memory is unavailable. */
@@ -1200,7 +1386,8 @@ export class MemoryService {
       const db = this.db, writeQueue = this.writeQueue, runner = this.runner, profileManager = this.profileManager;
       if (!db || !writeQueue || !runner || !profileManager || this.disposed) return { started: false, reason: 'unavailable' };
       if (!describeMemorySubCallModel()) return { started: false, reason: 'no-model' };
-      const deps = { db, writeQueue, runner, profileManager, holder: this.instanceId, knownWorkspaces: this.listKnownWorkspaces(db) };
+      const knownWorkspaces = await this.listKnownWorkspaces(db);
+      const deps = { db, writeQueue, runner, profileManager, holder: this.instanceId, knownWorkspaces };
       const plan = await beginAuditRun(deps);
       if (!plan) return { started: false, reason: 'busy' };
       // A cancel or dispose that landed while the lease was taken has aborted the signal: the run grades
@@ -1214,11 +1401,11 @@ export class MemoryService {
           log('[MemoryService] Quality audit run failed: %O', err);
           this.broadcastAuditError('run-failed', `Quality audit failed: ${err instanceof Error ? err.message : String(err)}`);
         })
-        .finally(() => {
+        .finally(async () => {
           this.audit = null;
           settle();
           if (this.disposed) return;
-          const state = this.getAuditState();
+          const state = await this.getAuditState();
           if (state) this.consolidationBroadcast?.({ type: 'memoryAuditState', state });
           const summary = this.getAuditSummary();
           if (summary) this.consolidationBroadcast?.({ type: 'memoryAuditSummary', summary });
@@ -1278,6 +1465,8 @@ export class MemoryService {
   dispose(): Promise<void> {
     this.disposed = true;
     this.lifetime.abort();
+    // Fails a running check at once and a repair after its grace, which releases the write queue and init.
+    const integrityStopped = this.integrity.dispose();
     this.audit?.abort.abort();
     this.backfillAbort?.abort();
     this.backfillAbort = null;
@@ -1291,10 +1480,10 @@ export class MemoryService {
     }
     this.fileChangeTracker?.dispose();
     this.fileChangeTracker = null;
-    this.injectionManager?.closeInjectionDatabases();
     clearExpansionCache();
 
     const closeDb = (): void => {
+      this.injectionManager?.closeInjectionDatabases();
       if (!this.db) return;
       try {
         this.db.close();
@@ -1308,7 +1497,8 @@ export class MemoryService {
     const writeQueue = this.writeQueue;
     const inFlight = this.consolidationInFlight;
     const auditDone = this.audit?.done ?? Promise.resolve();
-    const settled = Promise.all([this._initPromise, inFlight ? inFlight.catch(() => undefined) : undefined, auditDone]);
+    const reads = [...this.reads].map((read) => read.catch(() => undefined));
+    const settled = Promise.all([this._initPromise, inFlight ? inFlight.catch(() => undefined) : undefined, auditDone, integrityStopped, ...reads]);
     const drained = writeQueue ? settled.then(() => writeQueue.drain()) : settled;
     this._initPromise = null;
     return drained.then(closeDb);

@@ -38,7 +38,7 @@ import {
   SEARCH_SORT_ORDERS,
   SEARCH_SORT_ORDER_SETTING,
   SEARCH_USE_REPLACE_PREVIEW_SETTING,
-} from '../../../main/desktop-configuration';
+} from '../../../local-services/desktop-configuration';
 import { useDesktopPrefs } from './desktop-prefs';
 import { integerSetting } from './integer-setting';
 import { EDIT_SETTINGS_FILE } from './settings-file-link';

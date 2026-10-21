@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -62,13 +62,13 @@ describe('exec', { timeout: SPAWN_TEST_TIMEOUT_MS }, () => {
     expect((err as ExecExitError).message).toMatch(/exited with code 1: warning: something$/);
   });
 
-  it('tracks the child from spawn until it has exited', async () => {
+  it('tracks the child from its start until it has exited', async () => {
     const events: string[] = [];
-    const out = exec(process.execPath, ['-e', 'setTimeout(() => {}, 100)'], undefined, undefined, undefined, undefined, (pid) => {
+    const out = exec(process.execPath, ['-e', 'setTimeout(() => {}, 300)'], undefined, undefined, undefined, undefined, (pid) => {
       events.push(`spawned ${typeof pid}`);
       return () => events.push('released');
     });
-    expect(events).toEqual(['spawned number']);
+    await vi.waitFor(() => expect(events).toEqual(['spawned number']));
     await out;
     expect(events).toEqual(['spawned number', 'released']);
   });

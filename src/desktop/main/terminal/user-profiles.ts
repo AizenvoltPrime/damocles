@@ -11,7 +11,7 @@ import {
   type TerminalProfileProblem,
   type TerminalProfileProblemReason,
 } from '../../preload/terminal-channels';
-import { followsLocalLinksOnly } from '../documents/confine';
+import { followsLocalLinksOnly } from '../../local-services/confine';
 import { executablePathForm, searchPathEntries } from '../../../core/executable-path';
 import type { TerminalProfile } from './profiles';
 import { sanitizeTitle } from './shell-integration';

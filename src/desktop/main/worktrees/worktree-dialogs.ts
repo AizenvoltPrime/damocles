@@ -10,10 +10,12 @@ import { visibleText } from '../../../shared/visible-text';
 export type WorktreeDialogOf<D extends WorktreeDialog['dialog']> = Extract<WorktreeDialog, { dialog: D }>;
 export type WorktreeAnswerOf<D extends WorktreeDialog['dialog']> = Extract<WorktreeDialogAnswer, { dialog: D }>;
 
-export type AskWorktreeDialog = <D extends WorktreeDialog['dialog']>(dialog: WorktreeDialogOf<D>) => Promise<WorktreeAnswerOf<D>>;
+export type AskWorktreeDialog = <D extends WorktreeDialog['dialog']>(dialog: WorktreeDialogOf<D>, signal?: AbortSignal) => Promise<WorktreeAnswerOf<D>>;
 
 export interface WorktreeDialogDeps {
-  readonly overlay: () => { request(request: OverlayRequest, returnFocus: WebContents | undefined): Promise<OverlayAnswer> } | undefined;
+  readonly overlay: () => {
+    request(request: OverlayRequest, returnFocus: WebContents | undefined, shown?: () => void, browse?: undefined, signal?: AbortSignal): Promise<OverlayAnswer>;
+  } | undefined;
   readonly focused: () => WebContents | undefined;
   readonly ask: AskMessage;
   // a notice, for a question no message dialog can ask
@@ -100,25 +102,25 @@ function asMessage(dialog: WorktreeDialog, t: WorktreeDialogDeps['t']): { readon
 }
 
 export function createWorktreeDialogAsker(deps: WorktreeDialogDeps): AskWorktreeDialog {
-  const fallback = async (dialog: WorktreeDialog): Promise<WorktreeDialogAnswer> => {
+  const fallback = async (dialog: WorktreeDialog, signal: AbortSignal | undefined): Promise<WorktreeDialogAnswer> => {
     const message = asMessage(dialog, deps.t);
     if (!message) {
       deps.log(`[worktrees] the ${dialog.dialog} dialog needs the overlay, which could not show it; it answers cancel`);
       deps.warn(deps.t('The merge needs its commit message dialog, which could not be shown, so nothing was merged.'));
       return cancelAnswer(dialog);
     }
-    const chosen = await deps.ask(message.question);
+    const chosen = await deps.ask(message.question, signal);
     return chosen === undefined ? cancelAnswer(dialog) : message.answers[chosen] ?? cancelAnswer(dialog);
   };
-  const ask = async (dialog: WorktreeDialog): Promise<WorktreeDialogAnswer> => {
+  const ask = async (dialog: WorktreeDialog, signal?: AbortSignal): Promise<WorktreeDialogAnswer> => {
     const overlay = deps.overlay();
-    if (!overlay) return fallback(dialog);
+    if (!overlay) return fallback(dialog, signal);
     let answer: OverlayAnswer;
     try {
-      answer = await overlay.request(boundWorktreeDialog(dialog), deps.focused());
+      answer = await overlay.request(boundWorktreeDialog(dialog), deps.focused(), undefined, undefined, signal);
     } catch (err) {
       deps.log(`[worktrees] the overlay could not ask the ${dialog.dialog} dialog (${err instanceof Error ? err.message : String(err)})`);
-      return fallback(dialog);
+      return fallback(dialog, signal);
     }
     if (answer.kind !== 'worktreeDialog') return cancelAnswer(dialog);
     const { kind: _kind, ...rest } = answer;

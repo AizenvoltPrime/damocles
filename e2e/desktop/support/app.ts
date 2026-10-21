@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { _electron as electron, type ElectronApplication, type TestInfo } from '@playwright/test';
+import { _electron as electron, expect, type ElectronApplication, type TestInfo } from '@playwright/test';
 import { hermeticEnv, REPO_ROOT, type HermeticHome } from './hermetic';
 import { launchPackaged, packagedAppPath, withoutMainProcess } from './packaged-app';
 
@@ -50,7 +50,7 @@ export async function windowsProcessTree(root: number): Promise<number[]> {
   return [...tree];
 }
 
-function isAlive(pid: number): boolean {
+export function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
@@ -180,6 +180,51 @@ export function quitLog(h: HermeticHome): string {
 export function logBeforeQuit(h: HermeticHome): string {
   const log = quitLog(h);
   return log.slice(0, log.lastIndexOf('[shutdown] quitting'));
+}
+
+/** Damocles Core's log: every core process the launch forked appends to it. Wait for a line as for mainLog. */
+export function coreLog(h: HermeticHome): string {
+  const file = path.join(h.userData, 'logs', 'Damocles_Core.log');
+  return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+}
+
+const CORE_DISPOSED = 'Damocles core disposed';
+
+/** coreLog once the last launch on `h` has quit cleanly: core's last line before it exits names its dispose. */
+export function coreQuitLog(h: HermeticHome): string {
+  const log = coreLog(h);
+  if (!log.trimEnd().endsWith(CORE_DISPOSED)) throw new Error(`the core log does not end with ${CORE_DISPOSED}, so core has not shut down and may still write lines`);
+  return log;
+}
+
+/** The pid of the running Damocles Core utility process, or undefined while none runs; it is listed a moment after its spawn. */
+export async function corePid(app: ElectronApplication): Promise<number | undefined> {
+  // fork's serviceName is the metric's name; the metric's serviceName is Chromium's ('node.mojom.NodeService').
+  return app.evaluate(({ app: electronApp }) => electronApp.getAppMetrics().find((metric) => metric.type === 'Utility' && metric.name === 'Damocles Core')?.pid);
+}
+
+/**
+ * The pid of the running Damocles Core once main logged it ready past `since`, an offset into main's log taken before the
+ * previous core ended: a pid alone cannot tell a new core from the one before it, which the OS may still list or reuse.
+ */
+export async function readyCorePid(app: ElectronApplication, h: HermeticHome, since = 0): Promise<number> {
+  let pid: number | undefined;
+  await expect.poll(async () => {
+    pid = await corePid(app);
+    return pid !== undefined && mainLog(h).slice(since).includes(`[core] ready (pid ${pid})`);
+  }, { timeout: 30_000, message: 'no Damocles Core is ready' }).toBe(true);
+  return pid!;
+}
+
+/** The pid main last logged ready for Damocles Core, once it has; needs no main-process access, so a packaged app has it too. */
+export async function loggedCorePid(h: HermeticHome): Promise<number> {
+  let pid: number | undefined;
+  await expect.poll(() => {
+    const ready = [...mainLog(h).matchAll(/\[core\] ready \(pid (\d+)\)/g)].at(-1);
+    pid = ready === undefined ? undefined : Number(ready[1]);
+    return pid;
+  }, { timeout: 30_000, message: 'main logged no Damocles Core ready' }).toBeDefined();
+  return pid!;
 }
 
 /** Every file under userData's logs, subfolders such as `stalls` included; read them only once the app has quit. */

@@ -1,7 +1,8 @@
-import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runProcess } from "../../process-launcher";
+import { findOnAbsolutePathAsync } from "../../system-tools";
 
 /**
  * texterrors (a transitive dep of nemo-toolkit[asr]) is source-only on Linux
@@ -16,8 +17,8 @@ import { join } from "node:path";
  *
  * `ensureCxxToolchain` runs a short pre-flight compile of `int main() {}`
  * against each candidate compiler in distro-preference order and returns the
- * first one that works as `{ cc, cxx }` env-var overrides for the pip
- * subprocess. On Windows, MSVC is auto-discovered by setuptools via the
+ * first one that works, as absolute paths from absolute PATH folders, for the
+ * `CC`/`CXX` overrides of the pip subprocess. On Windows, MSVC is auto-discovered by setuptools via the
  * registry and no override is needed. The Linux candidate ordering puts `g++`
  * first because `build-essential` (the standard) ships only g++; PBS Linux
  * dynamically links libstdc++, so g++-built extensions are ABI-compatible
@@ -74,7 +75,11 @@ export function cxxToolchainEnv(toolchain: CxxToolchain): Record<string, string>
   return { CC: toolchain.cc, CXX: toolchain.cxx };
 }
 
+/** Compiles and links a test program with the absolute compiler `cxx`; rejects when `signal` aborted. */
 export type CompilerProbe = (cxx: string, signal?: AbortSignal) => Promise<boolean>;
+
+/** The absolute path of a program found in an absolute PATH folder, or undefined. */
+export type ProgramFinder = (name: string) => Promise<string | undefined>;
 
 async function defaultCompilerProbe(cxx: string, signal?: AbortSignal): Promise<boolean> {
   // Full compile-AND-link (not `-c` compile-only). The link step exercises
@@ -88,19 +93,14 @@ async function defaultCompilerProbe(cxx: string, signal?: AbortSignal): Promise<
     const srcPath = join(dir, "test.cpp");
     const exePath = join(dir, "test.out");
     await writeFile(srcPath, TEST_PROGRAM);
-    return await new Promise<boolean>((resolve) => {
-      const child = spawn(
-        cxx,
-        ["-std=c++11", srcPath, "-o", exePath],
-        {
-          stdio: "ignore",
-          windowsHide: true,
-          ...(signal !== undefined ? { signal } : {}),
-        },
-      );
-      child.on("error", () => resolve(false));
-      child.on("exit", (code) => resolve(code === 0));
+    const run = await runProcess(
+      { file: cxx, args: ["-std=c++11", srcPath, "-o", exePath], stdio: ["ignore", "ignore", "ignore"] },
+      signal !== undefined ? { signal } : {},
+    ).catch((err: unknown) => {
+      if (signal?.aborted === true) throw err;
+      return undefined;
     });
+    return run?.exit?.code === 0;
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
@@ -110,8 +110,10 @@ export type EnsureCxxToolchainOptions = {
   platform?: NodeJS.Platform;
   signal?: AbortSignal;
   probe?: CompilerProbe;
+  find?: ProgramFinder;
 };
 
+/** The first candidate whose compilers are both in an absolute PATH folder and build a test program, as absolute paths. */
 export async function ensureCxxToolchain(
   opts: EnsureCxxToolchainOptions = {},
 ): Promise<CxxToolchain | null> {
@@ -119,9 +121,11 @@ export async function ensureCxxToolchain(
   if (platform === "win32") return null;
 
   const probe = opts.probe ?? defaultCompilerProbe;
-  const candidates = getCxxCandidates(platform);
-  for (const candidate of candidates) {
-    if (await probe(candidate.cxx, opts.signal)) return candidate;
+  const find = opts.find ?? ((name: string) => findOnAbsolutePathAsync(name, platform, process.env));
+  for (const names of getCxxCandidates(platform)) {
+    const [cc, cxx] = await Promise.all([find(names.cc), find(names.cxx)]);
+    if (cc === undefined || cxx === undefined) continue;
+    if (await probe(cxx, opts.signal)) return { cc, cxx };
   }
   throw new MissingCxxToolchainError(getCxxInstallInstructions(platform));
 }

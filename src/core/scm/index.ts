@@ -1,4 +1,6 @@
-export { createGitRunner, gitAtLeast, parseGitVersion, redactUrls, revision, isSafeRevision, type GitBinary, type GitLog, type GitRunner, type GitVersion } from './git-runner';
+export { redactUrls } from './errors';
+export { parseGitVersion } from './git-version';
+export { createGitRunner, gitAtLeast, revision, isSafeRevision, type GitBinary, type GitLog, type GitRunner, type GitVersion } from './git-runner';
 export { ScmService, WATCH_DEBOUNCE_MS, PLAIN_VARIANT, type CommitHooks, type CommitInput, type CommitVariant, type UndoOutcome, type Decoration, type ProjectView, type RepoSnapshot, type ScmAsk, type ScmEvent, type ScmProject, type ScmQuestion, type ScmServiceDeps, type OpenFolderOutcome } from './scm-service';
 export { STATUS_LIMIT, MAX_SHOW_BYTES, MAX_MESSAGE_CHARS, type Change, type ChangeGroup, type CommitFailure, type CommitOptions, type CommitOutcome, type HeadCommitSummary, type Repository, type RepositoryStatus } from './repository';
 export { generateCommitMessage, COMMIT_MESSAGE_DIFF_CHARS, type CommitMessageComplete, type CommitMessageResult } from './commit-message';

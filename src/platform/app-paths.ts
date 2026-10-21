@@ -1,4 +1,4 @@
-export type WorkerName = 'compass' | 'usageStats' | 'sentinel';
+export type WorkerName = 'compass' | 'usageStats' | 'sentinel' | 'processLauncher' | 'memoryIntegrity' | 'sessionMetaIndex' | 'voiceExtract';
 
 export interface AppPaths {
   readonly resourceRoot: string;

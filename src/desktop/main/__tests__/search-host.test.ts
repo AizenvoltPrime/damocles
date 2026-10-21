@@ -6,10 +6,10 @@ import { resolveRgPath } from '../../../core/chat-panel/ripgrep';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
 import type { SearchCommandMessage, SearchDone, SearchEditorHighlights, SearchFocus, SearchResultsBatch } from '../../preload/shell-channels';
-import type { Project } from '../documents/confine';
+import type { Project } from '../../local-services/confine';
 import { DocumentService, type TextDocument } from '../documents/document-service';
 import { EditorPane } from '../editor-pane';
-import { SEARCH_MODE_SETTING, SEARCH_EDITOR_CONTEXT_LINES_SETTING } from '../desktop-configuration';
+import { SEARCH_MODE_SETTING, SEARCH_EDITOR_CONTEXT_LINES_SETTING } from '../../local-services/desktop-configuration';
 import { SearchHost, searchBuffers } from '../search/search-host';
 
 let root: string;

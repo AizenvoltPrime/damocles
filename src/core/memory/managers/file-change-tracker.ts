@@ -21,6 +21,9 @@ export class FileChangeTracker {
   // deliberately preferred over never marking stale.
   private suffixIndexByFolder = new Map<string, Map<string, Set<string>>>();
   private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  // Observations to bump at the end of this event loop turn; see incrementStaleness.
+  private pendingStale = new Set<string>();
+  private staleFlush: ReturnType<typeof setImmediate> | null = null;
   private disposables: Disposable[] = [];
   private readonly fileWatchers: FileWatcherFactory;
 
@@ -68,6 +71,9 @@ export class FileChangeTracker {
       clearTimeout(timer);
     }
     this.debounceTimers.clear();
+    if (this.staleFlush) clearImmediate(this.staleFlush);
+    this.staleFlush = null;
+    this.pendingStale.clear();
   }
 
   /** `workspace` is the observation's own folder, which its relative stored paths resolve against. */
@@ -165,13 +171,13 @@ export class FileChangeTracker {
 
     this.debounceTimers.set(normalized, setTimeout(() => {
       this.debounceTimers.delete(normalized);
-      this.incrementStaleness([...observationIds]);
+      this.incrementStaleness(observationIds);
     }, CHANGE_DEBOUNCE_MS));
   }
 
   /**
-   * A delete or rename is definitive — bump immediately. Clear any pending debounce first so the
-   * immediate bump isn't followed by a redundant debounced one.
+   * A delete or rename is definitive, so it bumps without the debounce. Clear any pending debounce first so
+   * the bump isn't followed by a redundant debounced one.
    */
   private onFileDeletedOrRenamed(fsPath: string): void {
     const normalized = this.normalizePath(fsPath);
@@ -186,7 +192,7 @@ export class FileChangeTracker {
       this.debounceTimers.delete(normalized);
     }
 
-    this.incrementStaleness([...observationIds]);
+    this.incrementStaleness(observationIds);
   }
 
   /** Resolve an event path to observation ids, unioning full-path hits and suffix hits in its own folder. */
@@ -214,19 +220,26 @@ export class FileChangeTracker {
   }
 
   /**
-   * Batch-bump staleness for every touched observation in one queued IN-clause UPDATE. Routed
-   * fire-and-forget through the write queue so it can't interleave mid-consolidation nor block the caller.
+   * One bump per observation per event loop turn: a batch of watcher events and the per-path timers it armed, which
+   * expire together, count as one change. setImmediate because Node drains microtasks between timer callbacks.
+   * The queued UPDATE can't interleave mid-consolidation nor block the caller.
    */
-  private incrementStaleness(ids: string[]): void {
-    if (ids.length === 0) return;
-    const db = this.db;
-    void this.writeQueue.run(() => {
-      const placeholders = ids.map(() => '?').join(',');
-      db.prepare(
-        `UPDATE memories SET file_change_count = file_change_count + 1 WHERE id IN (${placeholders})`
-      ).run(...ids);
+  private incrementStaleness(ids: Iterable<string>): void {
+    for (const id of ids) this.pendingStale.add(id);
+    if (this.pendingStale.size === 0 || this.staleFlush) return;
+    this.staleFlush = setImmediate(() => {
+      this.staleFlush = null;
+      const batch = [...this.pendingStale];
+      this.pendingStale.clear();
+      const db = this.db;
+      void this.writeQueue.run(() => {
+        const placeholders = batch.map(() => '?').join(',');
+        db.prepare(
+          `UPDATE memories SET file_change_count = file_change_count + 1 WHERE id IN (${placeholders})`
+        ).run(...batch);
+      });
+      log('[FileChangeTracker] Incremented staleness for %d observations', batch.length);
     });
-    log('[FileChangeTracker] Incremented staleness for %d observations', ids.length);
   }
 
   /**

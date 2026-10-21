@@ -122,17 +122,17 @@ export function suggestNextTools(task?: string): string {
 	return 'Next: compass_search for entities, compass_blast_radius for impact';
 }
 
-export function handleContext(
+export async function handleContext(
 	store: GraphStore, workspace: string,
 	input: { task?: string | undefined; changed_files?: string[] | undefined; base?: string | undefined },
-): string {
+): Promise<string> {
 	const stats = store.getStats();
 	const lines: string[] = [
 		`Graph: ${stats.total_nodes} nodes, ${stats.total_edges} edges, ${store.getCommunityCount()} communities, ${store.getFlowCount()} flows`,
 	];
 
 	if (input.changed_files?.length) {
-		const analysis = analyzeChanges(store, input.changed_files, undefined, workspace, input.base);
+		const analysis = await analyzeChanges(store, input.changed_files, undefined, workspace, input.base);
 		const high = analysis.risks.filter(r => r.risk_level === 'HIGH').length;
 		const med = analysis.risks.filter(r => r.risk_level === 'MEDIUM').length;
 		lines.push(`Changes: ${input.changed_files.length} files → ${high} HIGH, ${med} MEDIUM risk`);
@@ -305,14 +305,14 @@ export function handleBlastRadius(
 	return lines.join('\n');
 }
 
-export function handleReviewContext(
+export async function handleReviewContext(
 	store: GraphStore, workspace: string,
 	input: { changed_files?: string[] | undefined; max_depth?: number | undefined; include_source?: boolean | undefined; base?: string | undefined },
-): string {
+): Promise<string> {
 	const files = (input.changed_files && input.changed_files.length > 0)
 		? input.changed_files
-		: getChangedFiles(workspace, input.base);
-	const analysis = analyzeChanges(store, files, undefined, workspace, input.base);
+		: await getChangedFiles(workspace, input.base);
+	const analysis = await analyzeChanges(store, files, undefined, workspace, input.base);
 	const impact = computeBlastRadius(store, files, input.max_depth, undefined, workspace);
 	const affected = getAffectedFlows(store, files);
 

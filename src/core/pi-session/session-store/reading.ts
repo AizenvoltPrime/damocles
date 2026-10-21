@@ -1,27 +1,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { StoredSession } from '@shared/types/session';
-import { initPiLoader, type PiCodingAgentModule } from '../pi-loader';
 import { log } from '../../logger';
 import { perfSpan } from '../../perf';
 import { ensurePiSessionDir, piSessionDir } from './session-dir';
 import { worktreeSessionFolders } from '../../worktrees/personal-config';
-import { PI_PROMPT_HISTORY_CAP, sessionFileMeta, type SessionFileMeta } from './metadata';
-import {
-  evictSessionMetaExcept,
-  forgetSessionMeta,
-  getSessionMeta,
-  metaCacheKey,
-  setSessionMeta,
-  type SessionMetaEntry,
-} from './session-meta-cache';
-
-/** Extract the pi session id from a `<timestamp>_<id>.jsonl` filename. */
-export function piSessionIdFromFile(filePath: string): string {
-  const base = path.basename(filePath).replace(/\.jsonl$/i, '');
-  const underscore = base.indexOf('_');
-  return underscore >= 0 ? base.slice(underscore + 1) : base;
-}
+import type { SessionFileMeta } from './metadata';
+import type { SessionMetaIndex } from './meta-index/client';
+import { metaCacheKey, piSessionIdFromFile } from './meta-index/protocol';
 
 /** Session id to the file last seen for it. An entry can outlive its file and belong to another folder's lookup, so a
  *  reader checks that the entry's dir is one of its lookup dirs and that the file exists before trusting it. */
@@ -31,97 +17,51 @@ function indexSessionFile(filePath: string): void {
   sessionFileIndex.set(piSessionIdFromFile(filePath), filePath);
 }
 
-/** The cached entry for a file, if it was read from the file as it is now. */
-function currentMeta(filePath: string, size: number, mtimeMs: number): SessionMetaEntry | undefined {
-  const cached = getSessionMeta(filePath);
-  return cached && cached.size === size && cached.mtimeMs === mtimeMs ? cached : undefined;
-}
-
-function readSessionFile(pi: PiCodingAgentModule, filePath: string, mtimeMs: number): SessionFileMeta {
-  // The session dir is the file's own parent, never recomputed from a workspace cwd.
-  return sessionFileMeta(pi.SessionManager.open(filePath, path.dirname(filePath)), mtimeMs);
+/** A list's first answer, and when the rows of the files it parses have all reached `onParsed`. */
+export interface PiSessionList {
+  /** Newest first. */
+  sessions: StoredSession[];
+  /** Resolves once no parsed row follows: true when every file the list found yielded its row, false when the list ended early or a parse could not finish (logged); never rejects. */
+  parsed: Promise<boolean>;
 }
 
 /**
- * List every pi session for a workspace as webview `StoredSession`s, newest first (FR-1). Each file is
- * opened and read through the full metadata path so in-tree custom entries (the rename marker and the
- * tag) survive reloads — pi's streaming `list()` cannot see custom entries. Files whose size and mtime
- * match the metadata cache (in memory, or on disk from an earlier window) are not re-parsed.
+ * List every pi session for a workspace as webview `StoredSession`s (FR-1) from the session metadata index: `sessions`
+ * holds the rows whose file's size and mtime still match. The worker parses the other files with pi's full metadata
+ * path, so in-tree custom entries (the rename marker and the tag) survive reloads, and hands their rows to `onParsed`
+ * in batches after this resolves.
  */
-export async function listPiSessions(cwd: string): Promise<StoredSession[]> {
+export async function listPiSessions(index: SessionMetaIndex, cwd: string, onParsed: (sessions: StoredSession[]) => void): Promise<PiSessionList> {
   const span = perfSpan('sessions.list');
-  const dir = ensurePiSessionDir(cwd);
-  let files: string[];
-  try {
-    files = (await fs.promises.readdir(dir)).filter((f) => f.endsWith('.jsonl'));
-  } catch {
-    span.end({ files: 0 });
-    return [];
-  }
-  // Stat every file at once: awaiting them one by one queues each behind whatever else holds the thread.
-  const stats = await Promise.all(files.map((file) => fs.promises.stat(path.join(dir, file)).catch(() => null)));
-  const sessions: StoredSession[] = [];
-  const seenKeys = new Set<string>();
-  let hits = 0;
-  let misses = 0;
-  let pi: PiCodingAgentModule | null | undefined;
-  for (const [i, file] of files.entries()) {
-    const stat = stats[i];
-    if (!stat) continue; // vanished between readdir and stat
-    const filePath = path.join(dir, file);
-    seenKeys.add(metaCacheKey(filePath));
-    indexSessionFile(filePath);
-    const { mtimeMs, size } = stat;
-    const cached = currentMeta(filePath, size, mtimeMs);
-    if (cached) {
-      hits++;
-      if (cached.stored) sessions.push(cached.stored);
-      continue;
-    }
-    misses++;
-    if (pi === undefined) pi = await initPiLoader();
-    if (!pi) continue;
-    // Each parse is synchronous, so yield between them.
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    try {
-      const meta = readSessionFile(pi, filePath, mtimeMs);
-      setSessionMeta(filePath, { size, mtimeMs, ...meta });
-      if (meta.stored) sessions.push(meta.stored);
-    } catch (err) {
-      setSessionMeta(filePath, { size, mtimeMs, stored: null, prompts: [] });
-      log('[session-store] listPiSessions: skipping %s: %O', file, err);
-    }
-  }
-  evictSessionMetaExcept(dir, seenKeys);
-  sessions.sort((a, b) => b.timestamp - a.timestamp);
-  span.end({ files: files.length, misses, hits });
-  return sessions;
+  const parseSpan = perfSpan('sessions.listParsed');
+  // Never created here: the worker lists a missing dir as empty, and a registry folder's dir is only ever created by its sessions (AD12).
+  const dir = piSessionDir(cwd);
+  let batches = 0;
+  let rows = 0;
+  let ended!: (complete: boolean) => void;
+  const parsed = new Promise<boolean>((resolve) => { ended = resolve; });
+  const listed = await index.list(dir, {
+    batch: (sessions) => {
+      batches++;
+      rows += sessions.length;
+      onParsed(sessions);
+    },
+    end: (complete) => {
+      parseSpan.end({ rows, batches, complete });
+      ended(complete);
+    },
+  });
+  for (const file of listed.files) indexSessionFile(file);
+  span.end({ files: listed.files.length, misses: listed.parsing, hits: listed.files.length - listed.parsing });
+  return { sessions: [...listed.sessions].sort((a, b) => b.timestamp - a.timestamp), parsed };
 }
 
 /** Precise metadata for one pi session file (used by the watcher; cheaper than re-listing). */
-export async function getPiSessionMetadataByFile(filePath: string): Promise<StoredSession | null> {
-  let mtimeMs: number;
-  let size: number;
+export async function getPiSessionMetadataByFile(index: SessionMetaIndex, filePath: string): Promise<StoredSession | null> {
   try {
-    ({ mtimeMs, size } = await fs.promises.stat(filePath));
-  } catch (err) {
-    // pi's `SessionManager.open` of a missing path starts a new session there.
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      forgetSessionMetadata(filePath);
-      return null;
-    }
-    mtimeMs = Date.now();
-    size = -1;
-  }
-  const pi = await initPiLoader();
-  if (!pi) return null;
-  try {
-    const meta = readSessionFile(pi, filePath, mtimeMs);
-    // Warms the list cache, so the rebuild this change triggers reuses this read. Negatives are cached
-    // too, so both readers agree on what an entry means.
-    setSessionMeta(filePath, { size, mtimeMs, ...meta });
-    indexSessionFile(filePath);
-    return meta.stored;
+    const stored = await index.meta(filePath);
+    if (stored) indexSessionFile(filePath);
+    return stored;
   } catch (err) {
     log('[session-store] getPiSessionMetadataByFile failed for %s: %O', filePath, err);
     return null;
@@ -137,13 +77,14 @@ export interface LiveSessionMetaSource {
 }
 
 /**
- * Metadata for `sessionId` from the live session holding it, recorded in the metadata cache against the
+ * Metadata for `sessionId` from the live session holding it, put into the session metadata index against the
  * file's current size and mtime. Undefined when `source` does not hold that session's file (or
  * `expectedFile`, when given), the file does not exist yet, or the snapshot threw; the caller then reads
  * the file. Null means the session yields no row.
  * Precondition: this window's live manager is the file's only writer.
  */
 export function readLiveSessionMetadata(
+  index: SessionMetaIndex,
   source: LiveSessionMetaSource,
   sessionId: string,
   expectedFile?: string,
@@ -154,6 +95,7 @@ export function readLiveSessionMetadata(
   // Synchronous from here on, so pi cannot append between the stat and the snapshot.
   let stat: fs.Stats;
   try {
+    // eslint-disable-next-line damocles/no-sync -- the stat and the snapshot run back to back (docs/invariants.md "Session store")
     stat = fs.statSync(file);
   } catch {
     return undefined;
@@ -166,27 +108,21 @@ export function readLiveSessionMetadata(
     return undefined;
   }
   if (!meta) return undefined;
-  setSessionMeta(file, { size: stat.size, mtimeMs: stat.mtimeMs, ...meta }, { schedule: false });
+  index.put(file, { size: stat.size, mtimeMs: stat.mtimeMs, ...meta });
   indexSessionFile(file);
   return meta.stored;
 }
 
-/** The cached row for a file whose size and mtime match the cached read (null: the file yields no row),
- *  or undefined when nothing was cached for the file as it is now. */
-export async function currentCachedRow(filePath: string): Promise<StoredSession | null | undefined> {
-  if (!getSessionMeta(filePath)) return undefined;
-  try {
-    const { mtimeMs, size } = await fs.promises.stat(filePath);
-    return currentMeta(filePath, size, mtimeMs)?.stored;
-  } catch {
-    return undefined;
-  }
+/** The indexed row for a file whose size and mtime match the indexed read (null: the file yields no row),
+ *  or undefined when nothing was indexed for the file as it is now. Never reads the file. */
+export function currentCachedRow(index: SessionMetaIndex, filePath: string): Promise<StoredSession | null | undefined> {
+  return index.cachedRow(filePath);
 }
 
-/** Drop a file's cached metadata, on disk too. Called on delete: the pre-delete metadata read re-warms
- *  the entry for a file that is about to vanish, and eviction otherwise waits for the next full list. */
-export function forgetSessionMetadata(filePath: string): void {
-  forgetSessionMeta(filePath);
+/** Drop a file's indexed metadata. Called on delete: the pre-delete metadata read re-warms the row for a
+ *  file that is about to vanish, and eviction otherwise waits for the next full list. */
+export function forgetSessionMetadata(index: Pick<SessionMetaIndex, 'forget'>, filePath: string): void {
+  index.forget(filePath);
   const id = piSessionIdFromFile(filePath);
   const indexed = sessionFileIndex.get(id);
   if (indexed !== undefined && metaCacheKey(indexed) === metaCacheKey(filePath)) sessionFileIndex.delete(id);
@@ -265,79 +201,21 @@ export function piSessionDirOf(cwd: string, sessionId: string): string {
 }
 
 /** Precise metadata for one pi session by id (marker-aware; used on rename/title/create upserts). */
-export async function getPiSessionMetadata(cwd: string, sessionId: string): Promise<StoredSession | null> {
+export async function getPiSessionMetadata(index: SessionMetaIndex, cwd: string, sessionId: string): Promise<StoredSession | null> {
   const filePath = await resolvePiSessionFile(cwd, sessionId);
   if (!filePath) return null;
-  return getPiSessionMetadataByFile(filePath);
+  return getPiSessionMetadataByFile(index, filePath);
 }
-
-const PROMPT_HISTORY_STAT_BATCH = 16;
 
 /**
  * Recent unique user prompts across the pi sessions of every folder in `cwds`, in the order of
  * `sessions` (newest first; the up-arrow prompt history). Reads only the pi tree (FR-1); the SDK
  * `extractPromptHistory` is never called on pi.
  */
-export async function extractPiPromptHistory(cwds: readonly string[], sessions: StoredSession[]): Promise<string[]> {
+export async function extractPiPromptHistory(index: SessionMetaIndex, cwds: readonly string[], sessions: StoredSession[]): Promise<string[]> {
   const span = perfSpan('promptHistory');
-  let opened = 0;
-
-  // One readdir per folder into an id→path map, so each session resolves in O(1). Resolving per session
-  // via `resolvePiSessionFile` would readdir the whole store once per session, O(files²) on the hot path.
-  const idToPath = new Map<string, string>();
-  for (const dir of [...new Set(cwds.flatMap((cwd) => sessionLookupDirs(cwd)))]) {
-    try {
-      const files = await fs.promises.readdir(dir);
-      for (const f of files) {
-        const id = piSessionIdFromFile(f);
-        if (f.endsWith('.jsonl') && !idToPath.has(id)) idToPath.set(id, path.join(dir, f));
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  const seen = new Set<string>();
-  const history: string[] = [];
-  const filePaths = sessions.map((session) => idToPath.get(session.id));
-  let pi: PiCodingAgentModule | null | undefined;
-
-  // Stat a batch at once (one by one queues each behind whatever else holds the thread), and only as many
-  // batches as it takes to reach the cap.
-  for (let start = 0; start < filePaths.length && history.length < PI_PROMPT_HISTORY_CAP; start += PROMPT_HISTORY_STAT_BATCH) {
-    const batch = filePaths.slice(start, start + PROMPT_HISTORY_STAT_BATCH);
-    const stats = await Promise.all(batch.map((filePath) => (filePath ? fs.promises.stat(filePath).catch(() => null) : null)));
-    for (const [i, filePath] of batch.entries()) {
-      if (history.length >= PI_PROMPT_HISTORY_CAP) break;
-      const stat = stats[i];
-      if (!filePath || !stat) continue; // no file, or it vanished
-      const { mtimeMs, size } = stat;
-      let prompts: string[];
-      const cached = currentMeta(filePath, size, mtimeMs);
-      if (cached) {
-        prompts = cached.prompts;
-      } else {
-        if (pi === undefined) pi = await initPiLoader();
-        if (!pi) continue;
-        // Each parse is synchronous, so yield between them.
-        await new Promise<void>((resolve) => setImmediate(resolve));
-        try {
-          const meta = readSessionFile(pi, filePath, mtimeMs);
-          opened++;
-          setSessionMeta(filePath, { size, mtimeMs, ...meta });
-          prompts = meta.prompts;
-        } catch {
-          continue; // an unreadable session file
-        }
-      }
-      for (const p of prompts) {
-        if (seen.has(p)) continue;
-        seen.add(p);
-        history.push(p);
-        if (history.length >= PI_PROMPT_HISTORY_CAP) break;
-      }
-    }
-  }
-  span.end({ files: opened, prompts: history.length });
-  return history;
+  const dirs = [...new Set(cwds.flatMap((cwd) => sessionLookupDirs(cwd)))];
+  const { prompts, opened } = await index.promptHistory(dirs, sessions.map((session) => session.id));
+  span.end({ files: opened, prompts: prompts.length });
+  return prompts;
 }

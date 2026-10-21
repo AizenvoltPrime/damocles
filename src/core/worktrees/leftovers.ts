@@ -8,7 +8,8 @@ import type { GitRunner } from '../scm/git-runner';
 import { findGitDir, GIT_FILE_READ_LIMIT, reachesAnotherHost, readBounded, readHead } from '../workspace-folders/git-head';
 import { folderKey } from '../workspace-folders/folder-key';
 import { projectGit } from './create';
-import { folderContains, REGISTRY_FILE, type ChatWorktreeRecord, type WorktreeRecord, type WorktreeRegistry } from './registry';
+import { REGISTRY_FILE, type ChatWorktreeRecord, type WorktreeRecord, type WorktreeRegistry } from './registry';
+import { folderContains } from './records';
 import { WORKTREE_ENTRY } from './hand-off';
 import { piSessionDir } from '../pi-session/session-store/session-dir';
 
@@ -124,7 +125,8 @@ export async function scanLeftovers(input: ScanInput): Promise<LeftoverFinding[]
   if (input.git) {
     const seen = new Set<string>();
     for (const project of input.projects) {
-      if (!input.isTrusted(project)) continue;
+      // A project whose folder is gone has no worktree list to read, and git cannot start in it.
+      if (!input.isTrusted(project) || !(await exists(project))) continue;
       const git = projectGit(input.git, project);
       const listed = await git.run(project, ['worktree', 'list', '--porcelain', '-z'], { allowFailure: true });
       if (listed.exitCode !== 0) continue;

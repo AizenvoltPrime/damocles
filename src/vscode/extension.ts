@@ -1,10 +1,11 @@
 import * as vscode from "vscode";
 import { ChatPanelProvider, flushCoreWrites } from "../core/chat-panel";
 import { SidebarViewProvider } from "./panels/sidebar-view-provider";
-import { restoredWorkspaceFolderKey } from "../core/chat-panel/panel-manager";
+import { restoredWorkspaceFolderKey } from "../shared/restored-folder-key";
 import { installLogSink, log, showLog } from "../core/logger";
 import { t } from "../core/l10n";
 import { installPlatform } from "../core/platform-host";
+import { createLauncherPool, installProcessLauncher, lockThreadSpawns } from "../core/process-launcher";
 import { createVsCodePlatform } from "./platform";
 import { wrapBrowserPanel, wrapChatPanel } from "./panels/webview-hosts";
 import { CompassViews } from "./compass/compass-views";
@@ -45,6 +46,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   markActivationStart();
   const platform = createVsCodePlatform(context);
   installPlatform(platform);
+  context.subscriptions.push({ dispose: lockThreadSpawns() });
+  installProcessLauncher(createLauncherPool({ workerPath: platform.paths.workerEntry("processLauncher"), sentinelPath: platform.paths.workerEntry("sentinel") }));
   const outputChannel = platform.logSinks.create("Damocles");
   installLogSink(outputChannel);
   context.subscriptions.push(outputChannel);

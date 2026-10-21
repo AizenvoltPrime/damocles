@@ -6,7 +6,11 @@ export const ASAR_UNPACK: readonly string[] = [
   'dist/compass-worker.js',
   'dist/usage-stats-worker.js',
   'dist/sentinel.js',
-  // A utility process loads its script as a real file.
+  'dist/process-launcher-worker.js',
+  'dist/memory-integrity-worker.js',
+  'dist/session-meta-index-worker.js',
+  'dist/voice-extract-worker.js',
+  // Main forks these from app.asar.unpacked, though a utility process can load its entry from app.asar (dist/core-host.js does).
   'dist/formatter-host.js',
   'dist/pty-host.js',
   'dist/quick-open-worker.js',
@@ -22,7 +26,9 @@ export const ASAR_UNPACK: readonly string[] = [
   'node_modules/web-tree-sitter/**',
   // child_process.spawn cannot execute a file inside app.asar.
   'node_modules/@vscode/ripgrep-*/**',
-  // Native Node-API prebuilds; the koffi and @parcel/watcher JS loaders stay inside the asar.
+  // The process launcher worker runs from app.asar.unpacked/dist, so koffi's loader resolves only from the unpacked node_modules.
+  'node_modules/koffi/**',
+  // Native Node-API prebuilds; the @parcel/watcher JS loader stays inside the asar.
   'node_modules/@koromix/koffi-*/**',
   WATCHER_UNPACK,
   // node-pty's JS stays inside the asar: loaded from there, its spawn-helper path rewrite to app.asar.unpacked is correct.

@@ -25,7 +25,7 @@ import { resolveRgPath } from '../../chat-panel/ripgrep';
 import { platform } from '../../platform-host';
 import { withPerCallCancel } from './cancellable-shell';
 import type { ShellCancelStore } from './shell-cancel-registry';
-import type { ShellSessionJob } from './process-tree';
+import type { SessionJob } from '../../process-launcher';
 import { createPowerShellTool } from './powershell-tool';
 import { createPlanModeTools } from './plan-mode-tools';
 import { createAskUserQuestionTool } from './ask-user-question-tool';
@@ -62,9 +62,9 @@ export interface CustomToolDeps {
   shellCancel: ShellCancelStore;
   /** Delivers a cancel note as a real user turn to the agent that ran the command; supplied per build context. */
   deliverUserNote: (text: string) => void;
-  /** The session-scoped job every shell command of this panel nests inside; `undefined` off win32. Nullable
+  /** The session-scoped job every shell command of this panel starts in. Nullable
    *  rather than optional, so a build site that omits it fails to compile instead of leaving a shell unscoped. */
-  shellJob: ShellSessionJob | undefined;
+  shellJob: SessionJob | undefined;
   /** Wired only when the panel's memory service is present (enabled-check is applied here). */
   memoryService?: MemoryService;
   /** Wired only when the panel's compass service is present. */

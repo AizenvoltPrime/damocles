@@ -6,6 +6,7 @@ import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-p
 import type { StoredSession } from '../../../shared/types/session';
 import type { FolderTarget } from '../../workspace-folders/folder-registry';
 import type { HostInstance } from '../types';
+import type { SessionMetaIndex } from '../../pi-session/session-store';
 
 const H = vi.hoisted(() => ({
   /** Session metadata per folder fsPath, as the folder's session dir holds it. */
@@ -38,15 +39,17 @@ vi.mock('../../pi-session/session-store', async () => {
       nodeFs.mkdirSync(dir, { recursive: true });
       return dir;
     },
-    listPiSessions: vi.fn(async (cwd: string) => [...(H.store.get(cwd) ?? [])].sort((a, b) => b.timestamp - a.timestamp)),
-    getPiSessionMetadata: vi.fn(async (cwd: string, id: string) => H.store.get(cwd)?.find((s) => s.id === id) ?? null),
-    getPiSessionMetadataByFile: vi.fn(async (file: string) => findByFile(file)),
-    currentCachedRow: vi.fn(async (): Promise<StoredSession | null | undefined> => undefined),
+    listPiSessions: vi.fn(async (_index: unknown, cwd: string, _onParsed: (rows: StoredSession[]) => void) => ({
+      sessions: [...(H.store.get(cwd) ?? [])].sort((a, b) => b.timestamp - a.timestamp),
+      parsed: Promise.resolve(true),
+    })),
+    getPiSessionMetadata: vi.fn(async (_index: unknown, cwd: string, id: string) => H.store.get(cwd)?.find((s) => s.id === id) ?? null),
+    getPiSessionMetadataByFile: vi.fn(async (_index: unknown, file: string) => findByFile(file)),
+    currentCachedRow: vi.fn(async (_index: unknown, _file: string): Promise<StoredSession | null | undefined> => undefined),
     readLiveSessionMetadata: vi.fn(() => undefined),
     forgetSessionMetadata: vi.fn(),
-    flushSessionMetaCache: vi.fn(),
     piSessionIdFromFile: idFromFile,
-    extractPiPromptHistory: vi.fn(async () => ['newest prompt']),
+    extractPiPromptHistory: vi.fn(async (_index: unknown, _cwds: readonly string[], _sessions: StoredSession[]) => ['newest prompt']),
     resolvePiSessionFile: vi.fn(async (cwd: string, id: string) =>
       H.store.get(cwd)?.some((s) => s.id === id) ? fileOf(cwd, id) : null),
     fileOf,
@@ -63,7 +66,8 @@ vi.mock('../../pi-session/checkpoints', async () => {
 });
 
 import { onListingChange, StorageManager } from '../storage-manager';
-import { worktreeFolderFor, WorktreeRegistry } from '../../worktrees/registry';
+import { WorktreeRegistry } from '../../worktrees/registry';
+import { worktreeFolderFor } from '../../worktrees/records';
 import * as store from '../../pi-session/session-store';
 import { log } from '../../logger';
 import { pruneOrphanCheckpointRepos } from '../../pi-session/checkpoints';
@@ -98,6 +102,7 @@ function harness(initial: FolderTarget[], multiRoot = initial.length >= 2) {
     getPanels: () => panels,
     liveSession: () => undefined,
     fileWatchers: platform.fileWatchers,
+    metaIndex: { close: async () => undefined } as unknown as SessionMetaIndex,
   });
   const lastList = (hostId: string) =>
     [...posted].reverse().find((p) => (p.host as { id: string }).id === hostId && p.message.type === 'storedSessions')?.message.sessions;
@@ -130,7 +135,7 @@ describe('StorageManager: one history over every open folder', () => {
     expect(sessions.find((s) => s.id === 'a-new')!.workspaceFolder).toEqual({ key: A.key, label: 'alpha' });
   });
 
-  it('never stamps the objects the session store hands out, which its metadata cache still holds', async () => {
+  it('never stamps the objects the session store hands out', async () => {
     const cached = session('a-1', 1);
     H.store.set(A.fsPath, [cached]);
     const { manager } = harness([A, B]);
@@ -147,7 +152,7 @@ describe('StorageManager: one history over every open folder', () => {
     const { sessions } = await manager.getStoredSessions();
 
     expect(sessions.map((s) => s.id)).toEqual(['a-2', 'a-3', 'a-1']);
-    expect(vi.mocked(store.listPiSessions).mock.calls).toEqual([[A.fsPath]]);
+    expect(vi.mocked(store.listPiSessions).mock.calls.map(([, cwd]) => cwd)).toEqual([A.fsPath]);
   });
 
   it('search matches the folder label with two or more folders open', async () => {
@@ -175,7 +180,7 @@ describe('StorageManager: one history over every open folder', () => {
     const { history } = await manager.getPromptHistory(0);
 
     expect(history).toEqual(['newest prompt']);
-    const [cwds, sessions] = vi.mocked(store.extractPiPromptHistory).mock.calls[0]!;
+    const [, cwds, sessions] = vi.mocked(store.extractPiPromptHistory).mock.calls[0]!;
     expect(cwds).toEqual([A.fsPath, B.fsPath]);
     expect(sessions.map((s) => s.id)).toEqual(['b-1', 'a-1']);
   });
@@ -317,7 +322,7 @@ describe('StorageManager: one list load at a time', () => {
 
     expect(first.sessions.map((s) => s.id)).toEqual(['b-1', 'a-1']);
     expect(second.sessions).toEqual(first.sessions);
-    expect(vi.mocked(store.listPiSessions).mock.calls).toEqual([[A.fsPath], [B.fsPath]]);
+    expect(vi.mocked(store.listPiSessions).mock.calls.map(([, cwd]) => cwd)).toEqual([A.fsPath, B.fsPath]);
   });
 
   it('watcher changes that land during the first load wait for it instead of starting their own', async () => {
@@ -326,9 +331,9 @@ describe('StorageManager: one list load at a time', () => {
     await manager.setupSessionWatcher();
     const watcher = platform.fileWatchers.watchers[0]!;
     let release!: () => void;
-    vi.mocked(store.listPiSessions).mockImplementationOnce(async (cwd: string) => {
+    vi.mocked(store.listPiSessions).mockImplementationOnce(async (_index, cwd: string) => {
       await new Promise<void>((resolve) => { release = resolve; });
-      return [...(H.store.get(cwd) ?? [])];
+      return { sessions: [...(H.store.get(cwd) ?? [])], parsed: Promise.resolve(true) };
     });
 
     const listing = manager.getStoredSessions();
@@ -347,10 +352,10 @@ describe('StorageManager: one list load at a time', () => {
     H.store.set(A.fsPath, [session('a-old', 100)]);
     const { manager } = harness([A]);
     let release!: () => void;
-    vi.mocked(store.listPiSessions).mockImplementationOnce(async (cwd: string) => {
+    vi.mocked(store.listPiSessions).mockImplementationOnce(async (_index, cwd: string) => {
       const snapshot = [...(H.store.get(cwd) ?? [])];
       await new Promise<void>((resolve) => { release = resolve; });
-      return snapshot;
+      return { sessions: snapshot, parsed: Promise.resolve(true) };
     });
 
     const stale = manager.getStoredSessions();
@@ -377,7 +382,7 @@ describe('StorageManager: one list load at a time', () => {
       platform.fileWatchers.watchers[0]!.fireChange(fileOf(A.fsPath, 'a-1'));
       await vi.runAllTimersAsync();
 
-      expect(store.currentCachedRow).toHaveBeenCalledWith(fileOf(A.fsPath, 'a-1'));
+      expect(store.currentCachedRow).toHaveBeenCalledWith(expect.anything(), fileOf(A.fsPath, 'a-1'));
       expect(store.getPiSessionMetadataByFile).not.toHaveBeenCalled();
       expect(posted.length).toBe(before);
     } finally {
@@ -419,7 +424,7 @@ describe('StorageManager: one list load at a time', () => {
     let fail: (() => void) | undefined;
     vi.mocked(store.listPiSessions).mockImplementationOnce(async () => {
       await new Promise<void>((_resolve, reject) => { fail = () => reject(new Error('EACCES')); });
-      return [];
+      return { sessions: [], parsed: Promise.resolve(true) };
     });
 
     const listing = manager.getStoredSessions();
@@ -442,14 +447,111 @@ describe('StorageManager: one list load at a time', () => {
   });
 });
 
+/** The next load answers with the store's rows and keeps its `onParsed` for the test to call, and `end` to end its parse. */
+function captureParsed(): (() => (rows: StoredSession[]) => void) & { end: (complete?: boolean) => void } {
+  let onParsed: ((rows: StoredSession[]) => void) | undefined;
+  let end!: (complete: boolean) => void;
+  const parsed = new Promise<boolean>((resolve) => { end = resolve; });
+  vi.mocked(store.listPiSessions).mockImplementationOnce(async (_index, cwd: string, onRows) => {
+    onParsed = onRows;
+    return { sessions: [...(H.store.get(cwd) ?? [])], parsed };
+  });
+  return Object.assign(() => onParsed!, { end: (complete = true) => end(complete) });
+}
+
+describe('StorageManager: rows the index parses after the list loaded', () => {
+  it('are upserted into the loaded list, with one push and one change event for batches that arrive together', async () => {
+    H.store.set(A.fsPath, [session('a-1', 100)]);
+    const parsed = captureParsed();
+    const { manager, posted, lastList } = harness([A]);
+    const changes: unknown[] = [];
+    manager.onDidChangeSessions((change) => changes.push(change));
+    expect((await manager.getStoredSessions()).sessions.map((s) => s.id)).toEqual(['a-1']);
+    const before = posted.length;
+
+    parsed()([session('a-2', 200)]);
+    parsed()([session('a-3', 50)]);
+
+    await vi.waitFor(() => expect(lastList('h1')?.map((s) => s.id)).toEqual(['a-2', 'a-1', 'a-3']));
+    // One first page to each of the two panels.
+    expect(posted.length - before).toBe(2);
+    expect(changes).toEqual([{ projectKey: A.key }]);
+    expect(lastList('h1')!.every((s) => s.workspaceFolder?.key === A.key)).toBe(true);
+  });
+
+  it('a list some file of which yielded no row is no basis for a decision, though the prompt history still reads it', async () => {
+    H.store.set(A.fsPath, [session('a-1', 100)]);
+    const parsed = captureParsed();
+    const { manager } = harness([A]);
+    await manager.sessionsOf(A.key);
+
+    parsed.end(false);
+
+    await expect(manager.completeSessionsOf(A.key)).rejects.toThrow(/incomplete/);
+    expect((await manager.getPromptHistory(0)).history).toEqual(['newest prompt']);
+  });
+
+  it('are all applied before a complete list or the prompt history answers', async () => {
+    H.store.set(A.fsPath, [session('a-1', 100)]);
+    const parsed = captureParsed();
+    const { manager } = harness([A]);
+    expect((await manager.sessionsOf(A.key)).map((s) => s.id)).toEqual(['a-1']);
+    let complete: string[] | undefined;
+    const completing = manager.completeSessionsOf(A.key).then((rows) => { complete = rows.map((s) => s.id); });
+    const history = manager.getPromptHistory(0);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(complete).toBeUndefined();
+    expect(store.extractPiPromptHistory).not.toHaveBeenCalled();
+
+    parsed()([session('a-2', 200)]);
+    parsed.end();
+    await Promise.all([completing, history]);
+
+    expect(complete).toEqual(['a-2', 'a-1']);
+    const [, , sessions] = vi.mocked(store.extractPiPromptHistory).mock.calls[0]!;
+    expect(sessions.map((s) => s.id)).toEqual(['a-2', 'a-1']);
+  });
+
+  it('never land on a list loaded after an invalidation', async () => {
+    H.store.set(A.fsPath, [session('a-1', 100)]);
+    const parsed = captureParsed();
+    const { manager } = harness([A]);
+    await manager.getStoredSessions();
+    manager.invalidateSessionsCache();
+    await manager.getStoredSessions();
+
+    parsed()([session('a-stale', 999)]);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect((await manager.getStoredSessions()).sessions.map((s) => s.id)).toEqual(['a-1']);
+  });
+
+  it('never replace a row read since the list loaded, nor bring back a deleted session', async () => {
+    H.store.set(A.fsPath, [session('a-1', 100, { customTitle: 'fresh' }), session('a-2', 50)]);
+    const parsed = captureParsed();
+    const { manager, lastList } = harness([A]);
+    await manager.getStoredSessions();
+    await manager.setupSessionWatcher();
+    const watcher = platform.fileWatchers.watchers[0]!;
+    watcher.fireChange(fileOf(A.fsPath, 'a-1'));
+    await vi.waitFor(() => expect(store.getPiSessionMetadataByFile).toHaveBeenCalled());
+    watcher.fireDelete(fileOf(A.fsPath, 'a-2'));
+
+    parsed()([session('a-1', 100, { customTitle: 'stale' }), session('a-2', 50)]);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(lastList('h1')!.map((s) => [s.id, s.customTitle])).toEqual([['a-1', 'fresh']]);
+  });
+});
+
 describe('StorageManager: changes that land during a list load', () => {
   /** Makes the next load snapshot the store as it is now, then wait for `release`. */
   function gateNextLoad(): { started: () => boolean; release: () => void } {
     let release: (() => void) | undefined;
-    vi.mocked(store.listPiSessions).mockImplementationOnce(async (cwd: string) => {
+    vi.mocked(store.listPiSessions).mockImplementationOnce(async (_index, cwd: string) => {
       const snapshot = [...(H.store.get(cwd) ?? [])];
       await new Promise<void>((resolve) => { release = resolve; });
-      return snapshot;
+      return { sessions: snapshot, parsed: Promise.resolve(true) };
     });
     return { started: () => release !== undefined, release: () => release!() };
   }
@@ -558,6 +660,18 @@ describe("StorageManager: a worktree chat's row (AD12 Listing)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("a row the project's own dir parses after the list replaces the row a registry folder listed for that session", async () => {
+    H.store.set(W, [session('dup', 100, { preview: 'listed from the worktree dir' })]);
+    // The project's own dir lists first, and its copy of the session is a miss the index parses later.
+    const parsed = captureParsed();
+    const { manager } = harness([A]);
+    expect((await manager.sessionsOf(A.key)).map((s) => [s.id, s.listedFrom])).toEqual([['dup', W]]);
+
+    parsed()([session('dup', 100, { preview: 'own' })]);
+
+    await vi.waitFor(async () => expect((await manager.sessionsOf(A.key)).map((s) => [s.preview, s.listedFrom])).toEqual([['own', undefined]]));
   });
 
   it('watches a registry folder\'s session dir without creating it, and stops once its record is gone', async () => {

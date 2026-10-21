@@ -419,6 +419,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <ToastLife
+          v-if="!toast.sticky"
           :life-ms="toast.lifeMs"
           :remaining-ms="remainingNow(toast)"
           :fill-class="TONE_CLASSES[shown.tone].lifeBar"

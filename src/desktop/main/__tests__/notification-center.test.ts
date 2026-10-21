@@ -602,6 +602,79 @@ describe('notification center: core notices', () => {
   });
 });
 
+describe('notification center: sticky notices', () => {
+  const outcome = async (answer: Promise<string | undefined>): Promise<string | undefined | 'pending'> => {
+    let settled: string | undefined | 'pending' = 'pending';
+    void answer.then((value) => {
+      settled = value;
+    });
+    await settle();
+    return settled;
+  };
+
+  it('never times out, keeps its Restart in its row once its toast is dismissed, and answers from the row', async () => {
+    const notifications = center();
+    const notice = notifications.stickyNotice('error', 'The engine stopped.', ['Restart']);
+    expect(shown).toEqual([expect.objectContaining({ sticky: true, body: { kind: 'notice', severity: 'error', message: 'The engine stopped.', actions: ['Restart'] } })]);
+    const id = shown[0]!.id;
+    vi.advanceTimersByTime(NOTICE_LIFE_MS.withActions * 10);
+    expect(dismissed).toEqual([]);
+    expect(notifications.pendingToasts()).toEqual([expect.objectContaining({ id, sticky: true })]);
+
+    notifications.resolveToast(id, undefined);
+    expect(notifications.pendingToasts()).toEqual([]);
+    expect(await outcome(notice.answer)).toBe('pending');
+    expect(notifications.state().entries).toEqual([expect.objectContaining({ id, awaitingAnswer: true })]);
+
+    notifications.answer(id, 'Delete everything');
+    expect(await outcome(notice.answer)).toBe('pending');
+    notifications.answer(id, 'Restart');
+    await expect(notice.answer).resolves.toBe('Restart');
+    expect(notifications.state().entries).toEqual([expect.objectContaining({ id, read: true })]);
+    expect(notifications.state().entries[0]).not.toHaveProperty('awaitingAnswer');
+  });
+
+  it('answers from its toast, which also stops its row offering the action', async () => {
+    const notifications = center();
+    const notice = notifications.stickyNotice('error', 'The engine stopped.', ['Restart']);
+    notifications.resolveToast(shown[0]!.id, 'Restart');
+    await expect(notice.answer).resolves.toBe('Restart');
+    expect(notifications.state().entries[0]).not.toHaveProperty('awaitingAnswer');
+    notifications.answer(shown[0]!.id, 'Restart');
+  });
+
+  it('withdraws: its toast goes, its entry stays without its actions, and its answer is undefined', async () => {
+    const notifications = center();
+    const notice = notifications.stickyNotice('error', 'The engine stopped.', ['Restart']);
+    const id = shown[0]!.id;
+    notice.withdraw();
+    await expect(notice.answer).resolves.toBeUndefined();
+    expect(dismissed).toEqual([id]);
+    expect(notifications.state().entries).toEqual([expect.objectContaining({ id })]);
+    expect(notifications.state().entries[0]).not.toHaveProperty('awaitingAnswer');
+  });
+
+  it('pops up under Do not disturb, and keeps its row through Clear all while it waits', async () => {
+    dnd = true;
+    const notifications = center();
+    notifications.notice('info', 'Saved', []);
+    const notice = notifications.stickyNotice('error', 'The engine stopped.', ['Restart']);
+    expect(shown).toHaveLength(2);
+    notifications.clear();
+    expect(notifications.state().entries).toEqual([expect.objectContaining({ id: shown[1]!.id, awaitingAnswer: true })]);
+    notice.withdraw();
+    notifications.clear();
+    expect(notifications.state().entries).toEqual([]);
+  });
+
+  it('answers undefined when the center is disposed', async () => {
+    const notifications = center();
+    const notice = notifications.stickyNotice('error', 'The engine stopped.', ['Restart']);
+    notifications.dispose();
+    await expect(notice.answer).resolves.toBeUndefined();
+  });
+});
+
 describe('notification center channels', () => {
   it('read the entries, clear them and set Do not disturb only while the center is open, and answer closed as a value otherwise', async () => {
     const handlers = new Map<string, (...args: unknown[]) => unknown>();

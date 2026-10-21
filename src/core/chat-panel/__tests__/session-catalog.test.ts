@@ -5,6 +5,7 @@ import * as lockfile from 'proper-lockfile';
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
 import { StorageManager, type StoredSessionsChange } from '../storage-manager';
+import { inProcessIndex, listComplete } from '../../pi-session/session-store/meta-index/__tests__/in-process';
 import { createSessionCatalog, MAX_SESSION_NAME_CHARS, MAX_SESSION_TAG_CHARS, type SessionCatalog } from '../session-catalog';
 import type { HostInstance } from '../types';
 import type { FolderTarget } from '../../workspace-folders/folder-registry';
@@ -26,9 +27,9 @@ vi.mock('../../pi-session/session-store', async (importOriginal) => {
     ...real,
     renamePiSession: vi.fn(real.renamePiSession),
     tagPiSession: vi.fn(real.tagPiSession),
-    deletePiSession: vi.fn(async (cwd: string, id: string) => {
+    deletePiSession: vi.fn(async (cwd: string, id: string, index: { forget(file: string): void }) => {
       H.order.push('rm');
-      return real.deletePiSession(cwd, id);
+      return real.deletePiSession(cwd, id, index);
     }),
   };
 });
@@ -106,7 +107,7 @@ let changes: StoredSessionsChange[];
 let oldFile: string;
 let newFile: string;
 
-beforeEach(() => {
+beforeEach(async () => {
   H.order.length = 0;
   H.mutators.clear();
   vi.mocked(renamePiSession).mockClear();
@@ -119,6 +120,9 @@ beforeEach(() => {
 
   platform = createFakePlatform();
   panels = new Map();
+  // Parsed up front, so the first list is complete rather than filling in.
+  const { index: metaIndex } = inProcessIndex();
+  for (const target of [ALPHA, BETA]) await listComplete(metaIndex, target.fsPath);
   storage = new StorageManager({
     folders: () => [ALPHA, BETA],
     isMultiRoot: () => true,
@@ -126,14 +130,15 @@ beforeEach(() => {
     getPanels: () => panels,
     liveSession: () => undefined,
     fileWatchers: platform.fileWatchers,
+    metaIndex,
   });
   catalog = createSessionCatalog({ storage, getPanels: () => panels, notifications: platform.notifications });
   changes = [];
   catalog.onDidChange((change) => changes.push(change));
 });
 
-afterEach(() => {
-  storage.dispose();
+afterEach(async () => {
+  await storage.dispose();
 });
 
 const row = async (id: string) => (await catalog.list(ALPHA.key)).find((s) => s.id === id);
@@ -161,8 +166,9 @@ describe('SessionCatalog rename and tag', () => {
 
     expect(renamePiSession).toHaveBeenCalledWith(ALPHA.fsPath, ID_OLD, 'Old work');
     expect(tagPiSession).toHaveBeenCalledWith(ALPHA.fsPath, ID_OLD, 'api');
-    expect(await row(ID_OLD)).toMatchObject({ customTitle: 'Old work', tag: 'api' });
     expect(changes).toEqual([{ projectKey: ALPHA.key }, { projectKey: ALPHA.key }]);
+    // Each write puts the file's row in the index first, so the reloaded list holds it at once.
+    expect((await catalog.list(ALPHA.key)).find((s) => s.id === ID_OLD)).toMatchObject({ customTitle: 'Old work', tag: 'api' });
   });
 
   // A second writer on a live conversation forks its branch, so the live chat writes and the file follows from it.
@@ -177,8 +183,8 @@ describe('SessionCatalog rename and tag', () => {
     const written = fs.readFileSync(newFile, 'utf8');
     expect(written).toContain('Live work');
     expect(written).toContain('"tag":"wip"');
-    expect(await row(ID_NEW)).toMatchObject({ customTitle: 'Live work', tag: 'wip' });
     expect(changes).toEqual([{ projectKey: ALPHA.key }, { projectKey: ALPHA.key }]);
+    expect(await row(ID_NEW)).toMatchObject({ customTitle: 'Live work', tag: 'wip' });
   });
 
   // A panel opening the conversation (a resume target not started yet, a switch in flight) holds its lease with no live session to write through.
@@ -206,6 +212,7 @@ describe('SessionCatalog rename and tag', () => {
     await catalog.tag(ID_OLD, 'api');
     expect(await catalog.tag(ID_OLD, null)).toEqual({ ok: true });
 
+    expect(await row(ID_OLD)).toMatchObject({ id: ID_OLD });
     expect((await row(ID_OLD))?.tag).toBeUndefined();
   });
 

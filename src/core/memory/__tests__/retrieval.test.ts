@@ -335,6 +335,32 @@ describe('MemoryService.getMemoryDetails — forgotten rows resolve on explicit 
   });
 });
 
+// A read awaits query expansion or a model call between its queries, and the database closes on dispose.
+describe('MemoryService.dispose with a read in flight', () => {
+  it('lets a running search finish on the open database, then closes it, and answers a later search with nothing', async () => {
+    dbHolder.path = createTestDbPath();
+    const service = new MemoryService(createFakePlatform());
+    await service.ensureInitialized();
+    seed(service.database!, { id: 'kept', scope: 'global', content: 'a note about the extension bundle' });
+    let expand!: (terms: string[]) => void;
+    mockedExpandQuery.mockReset();
+    mockedExpandQuery.mockImplementationOnce(() => new Promise<string[]>((resolve) => (expand = resolve)));
+
+    const search = service.searchMemories({ query: QUERY, allWorkspaces: true });
+    await vi.waitFor(() => expect(expand).toBeTypeOf('function'));
+    let closed = false;
+    const disposed = service.dispose().then(() => (closed = true));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(closed).toBe(false);
+    expand([]);
+
+    expect((await search).map((hit) => hit.id)).toContain('kept');
+    await disposed;
+    expect(service.database).toBeNull();
+    expect(await service.searchMemories({ query: QUERY, allWorkspaces: true })).toEqual([]);
+  });
+});
+
 // Explicit-id memory tools are real use of a memory, so each records a retrieval like GetMemoryDetails.
 describe('memory tools record retrievals on success', () => {
   let service: MemoryService;
@@ -370,7 +396,8 @@ describe('memory tools record retrievals on success', () => {
 
     await runTool('GetRelatedMemories', { id: 'a' });
 
-    expect(retrievalIds(db)).toContain('b');
+    // The recording write waits behind the startup integrity check.
+    await vi.waitFor(() => expect(retrievalIds(db)).toContain('b'));
   });
 
   it('GetMemoryHistory and UpdateMemory record the ids they return', async () => {
@@ -379,15 +406,16 @@ describe('memory tools record retrievals on success', () => {
     seed(db, { id: 'n1', kind: 'note', content: 'a note', workspace: '/ws' });
 
     await runTool('GetMemoryHistory', { id: 'n1' });
-    expect(retrievalIds(db).filter((id) => id === 'n1')).toHaveLength(1);
+    await vi.waitFor(() => expect(retrievalIds(db).filter((id) => id === 'n1')).toHaveLength(1));
     await runTool('UpdateMemory', { id: 'n1', content: 'an edited note' });
-    expect(retrievalIds(db).filter((id) => id === 'n1')).toHaveLength(2);
+    await vi.waitFor(() => expect(retrievalIds(db).filter((id) => id === 'n1')).toHaveLength(2));
   });
 
   it('records nothing when the tool finds nothing', async () => {
     await service.ensureInitialized();
     await runTool('GetRelatedMemories', { id: 'missing' });
     await runTool('UpdateMemory', { id: 'missing', content: 'x' });
+    await (service as unknown as { writeQueue: { drain(): Promise<void> } }).writeQueue.drain();
     expect(retrievalIds(service.database!)).toEqual([]);
   });
 });

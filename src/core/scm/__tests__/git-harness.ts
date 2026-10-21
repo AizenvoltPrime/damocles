@@ -11,7 +11,8 @@ import type { Memento } from '../../../platform/key-value-state';
 import type { SettingsChange, SettingsStore } from '../../../platform/settings-store';
 import type { TrustService } from '../../../platform/trust-service';
 import type { AskpassServer } from '../askpass/askpass-server';
-import { createGitRunner, parseGitVersion, type GitCloner, type GitRunner } from '../git-runner';
+import { createGitRunner, type GitCloner, type GitRunner } from '../git-runner';
+import { parseGitVersion } from '../git-version';
 import { ScmService, type ScmQuestion } from '../scm-service';
 
 // Real git in temp folders for the source control engine tests: the sandbox, fakes of the platform services and a harness.

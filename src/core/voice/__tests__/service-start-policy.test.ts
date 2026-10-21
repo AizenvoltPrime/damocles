@@ -3,7 +3,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { installFakePlatform } from "../../../__mocks__/fake-platform";
 import type { SidecarInbound, SidecarManagerStatus } from "../sidecar";
 
-type InstallResult = { ok: boolean; pythonExe: string; errorMessage?: string };
+type InstallResult = { ok: boolean; pythonExe: string; errorMessage?: string; missing?: "runtime" | "models" };
+
+const consent = vi.hoisted(() => ({ given: true }));
+
+vi.mock("../consent", () => ({
+  voiceDownloadConsentIn: () => ({
+    given: async () => consent.given,
+    record: async () => void (consent.given = true),
+  }),
+}));
 
 const runtime = vi.hoisted(() => ({
   calls: [] as { allowInstall: boolean }[],
@@ -116,6 +125,7 @@ const spoken = () => sidecars.all.flatMap((s) => s.sent).map((m) => (m as { text
 
 describe("VoiceService start policy", () => {
   beforeEach(() => {
+    consent.given = true;
     runtime.calls.length = 0;
     runtime.results.length = 0;
     runtime.gate = null;
@@ -190,6 +200,7 @@ describe("VoiceService start policy", () => {
       runtime.gate = verify.promise;
       const first = service.ensureStarted({ install: false });
       const waiting = service.ensureStarted({ install: false });
+      await vi.waitFor(() => expect(runtime.calls).toHaveLength(1));
       const restart = service.restart();
       verify.open();
       await Promise.all([first, waiting, restart]);
@@ -309,10 +320,12 @@ describe("VoiceService start policy", () => {
   });
 
   it("offers the first-run install only for a start that could have installed", async () => {
+    consent.given = false;
     const { service } = ttsService();
     const firstRuns: unknown[] = [];
     service.on("firstRunRequired", (info) => firstRuns.push(info));
-    runtime.results.push(failed("The voice runtime is not installed."), failed("pip install failed"));
+    const notInstalled = { ...failed("The voice runtime is not installed."), missing: "runtime" as const };
+    runtime.results.push(notInstalled, notInstalled);
     await service.ensureStarted({ install: false });
     expect(firstRuns).toEqual([]);
     await service.ensureStarted({ install: true });
@@ -324,12 +337,12 @@ describe("VoiceService start policy", () => {
       const { service } = ttsService();
       const verify = gate();
       runtime.gate = verify.promise;
-      const replies = [service.speakReply("first"), service.speakReply("second"), service.speakReply("third")];
+      const replies = [service.speakReply("first", "chat"), service.speakReply("second", "chat"), service.speakReply("third", "chat")];
       verify.open();
       await Promise.all(replies);
       expect(spoken()).toEqual(["third"]);
 
-      await service.speakReply("fourth");
+      await service.speakReply("fourth", "chat");
       expect(spoken()).toEqual(["third", "fourth"]);
       expect(runtime.calls).toEqual([{ allowInstall: false }]);
     });
@@ -337,7 +350,7 @@ describe("VoiceService start policy", () => {
     it("never installs the runtime", async () => {
       const { service } = ttsService();
       runtime.results.push(failed("The voice runtime is not installed."));
-      await service.speakReply("hello");
+      await service.speakReply("hello", "chat");
       expect(runtime.calls).toEqual([{ allowInstall: false }]);
       expect(spoken()).toEqual([]);
     });

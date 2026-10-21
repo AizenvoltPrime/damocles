@@ -1,5 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { describe, it, expect, vi } from 'vitest';
 import * as os from 'os';
+import { SPAWN_TEST_TIMEOUT_MS } from '../../../../__mocks__/spawn-budget';
 import { parseHookOutput, runHook, type RunHookContext } from '../runner';
 import type { HookEntry } from '../types';
 
@@ -135,6 +138,11 @@ describe('runHook (real spawn)', () => {
     expect(d.additionalContext).toBe('hello ctx');
   });
 
+  it('keeps a trailing partial UTF-8 character as U+FFFD rather than dropping it', async () => {
+    const d = await runHook(nodeEntry('process.stdout.write(Buffer.from([0x6f, 0x6b, 0xc3]))'), {}, ctx);
+    expect(d.additionalContext).toBe('ok\uFFFD');
+  });
+
   it('the native payload is delivered on stdin', async () => {
     const script = [
       'let d="";process.stdin.on("data",c=>d+=c);',
@@ -150,6 +158,61 @@ describe('runHook (real spawn)', () => {
     expect(d.failed).toBe(true);
     expect(d.block).toBe(false);
   });
+
+  it('a timeout kills the hook and the process it started', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dam-hook-timeout-'));
+    try {
+      const pids = path.join(dir, 'pids');
+      const holding = nodeEntry(
+        `const { spawn } = require('child_process'); const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' }); require('fs').writeFileSync(${JSON.stringify(pids)}, process.pid + ' ' + child.pid); setTimeout(() => {}, 30000);`,
+        SPAWN_TEST_TIMEOUT_MS / 3,
+      );
+
+      const d = await runHook(holding, {}, ctx);
+
+      expect(d.failed).toBe(true);
+      const [parent, grandchild] = fs.readFileSync(pids, 'utf8').split(' ').map(Number);
+      const alive = (pid: number): boolean => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      await vi.waitFor(() => expect([alive(parent!), alive(grandchild!)]).toEqual([false, false]), { timeout: SPAWN_TEST_TIMEOUT_MS });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, SPAWN_TEST_TIMEOUT_MS * 2);
+
+  it('a timeout kills what a hook left holding its output after the hook itself exited', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dam-hook-exited-'));
+    try {
+      const pids = path.join(dir, 'pids');
+      // Detached on Windows only: libuv's own job would kill it there with its parent, and on POSIX it must stay in the hook's group.
+      const leaving = nodeEntry(
+        `const { spawn } = require('child_process'); const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: ['ignore', 'inherit', 'inherit'], detached: process.platform === 'win32' }); child.unref(); require('fs').writeFileSync(${JSON.stringify(pids)}, String(child.pid));`,
+        SPAWN_TEST_TIMEOUT_MS / 3,
+      );
+
+      const d = await runHook(leaving, {}, ctx);
+
+      expect(d.failed).toBe(true);
+      const left = Number(fs.readFileSync(pids, 'utf8'));
+      const alive = (pid: number): boolean => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      await vi.waitFor(() => expect(alive(left)).toBe(false), { timeout: SPAWN_TEST_TIMEOUT_MS });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, SPAWN_TEST_TIMEOUT_MS * 2);
 
   it('a non-serializable payload → fail-soft failed, no orphaned child (M2)', async () => {
     const circular: Record<string, unknown> = {};

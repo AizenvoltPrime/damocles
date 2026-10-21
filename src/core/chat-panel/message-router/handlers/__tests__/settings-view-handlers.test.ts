@@ -32,7 +32,7 @@ describe('openAppSettings', () => {
     const platform = createFakePlatform({ capabilities: { settingsInPanel } });
     const posted: ExtensionToWebviewMessage[] = [];
     const handlers = createWorkspaceHandlers({ platform, postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => posted.push(message) } as unknown as HandlerDependencies);
-    const open = (message: WebviewToExtensionMessage): unknown => handlers.openAppSettings!(message, { host: {}, panelId: 'p1', folder } as unknown as HandlerContext);
+    const open = (message: WebviewToExtensionMessage): unknown => handlers.openAppSettings!(message, { host: { reveal: () => {} }, panelId: 'p1', folder } as unknown as HandlerContext);
     return { platform, posted, open };
   }
 
@@ -145,6 +145,15 @@ describe('requestSettingsState', () => {
       settingsManager.sendVoiceConfig,
     ]) expect(send).toHaveBeenCalledOnce();
     expect(postSettingsFileAvailability).toHaveBeenCalledOnce();
+  });
+
+  it('posts the voice runtime status before the slow reads, such as the models and the voice folder size', async () => {
+    const { posted, request, settingsManager } = await setup();
+    settingsManager.sendAvailableModels.mockReturnValue(new Promise<void>(() => undefined));
+    void request();
+    await tick();
+    expect(posted).toContainEqual({ type: 'voiceRuntimeStatus', status: { kind: 'not-needed' } });
+    expect(posted.map((message) => message.type)).not.toContain('voiceFilesSizeUpdate');
   });
 
   it('reposts nothing into a view for a request from the chat itself', async () => {

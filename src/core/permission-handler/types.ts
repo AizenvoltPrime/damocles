@@ -173,4 +173,10 @@ export interface PermissionRequiredInfo {
 
 export type PermissionRequiredNotifier = (info: PermissionRequiredInfo) => void;
 
+/** A chat's permission mode and YOLO, as its `PermissionHandler` holds them. */
+export interface ChatPermissions {
+  readonly permissionMode: PermissionMode;
+  readonly dangerouslySkipPermissions: boolean;
+}
+
 export type { PermissionMode };

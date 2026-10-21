@@ -9,6 +9,7 @@ import {
   listKnownWorkspaces,
   workspaceContaining,
   attributeFilesToWorkspace,
+  createFolderProbe,
 } from '../workspaces';
 
 const dbHolder = vi.hoisted(() => ({ path: '' }));
@@ -66,26 +67,76 @@ describe('listKnownWorkspaces', () => {
     ).run(id, id, workspace, forgotten, now, now);
   }
 
-  it('lists live stored workspaces that still exist, then open folders not already listed', () => {
+  it('lists live stored workspaces that still exist, then open folders not already listed', async () => {
     seed('a', 'c:\\GameDev\\damocles');
     seed('b', 'c:\\GameDev\\gone');
     seed('c', 'c:\\GameDev\\forgotten', 1);
     seed('d', null);
-    const exists = (p: string): boolean => p !== 'c:\\GameDev\\gone';
+    const exists = async (p: string): Promise<boolean> => p !== 'c:\\GameDev\\gone';
 
-    expect(listKnownWorkspaces(db, ['C:/GameDev/damocles', 'c:\\GameDev\\new'], [], 'win32', exists)).toEqual([
+    expect(await listKnownWorkspaces(db, ['C:/GameDev/damocles', 'c:\\GameDev\\new'], [], exists, undefined, 'win32')).toEqual([
       'c:\\GameDev\\damocles',
       'c:\\GameDev\\new',
     ]);
   });
 
-  it('leaves out a non-project folder, stored or open, without checking that it exists', () => {
+  it('leaves out a non-project folder, stored or open, without checking that it exists', async () => {
     seed('a', 'c:\\Users\\me');
     seed('b', 'c:\\GameDev\\damocles');
-    const exists = vi.fn((p: string): boolean => p.length > 0);
+    const exists = vi.fn(async (p: string): Promise<boolean> => p.length > 0);
 
-    expect(listKnownWorkspaces(db, ['C:/Users/me/'], ['C:/Users/me'], 'win32', exists)).toEqual(['c:\\GameDev\\damocles']);
+    expect(await listKnownWorkspaces(db, ['C:/Users/me/'], ['C:/Users/me'], exists, undefined, 'win32')).toEqual(['c:\\GameDev\\damocles']);
     expect(exists).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks only the stored folders the caller wants, and lists every open folder', async () => {
+    seed('a', 'c:\\GameDev\\damocles');
+    seed('b', 'Z:\\');
+    const exists = vi.fn(async () => true);
+
+    const known = await listKnownWorkspaces(db, ['c:\\GameDev\\open'], [], exists, folder => folder.startsWith('c:'), 'win32');
+    expect(known).toEqual(['c:\\GameDev\\damocles', 'c:\\GameDev\\open']);
+    expect(exists.mock.calls).toEqual([['c:\\GameDev\\damocles']]);
+  });
+});
+
+describe('createFolderProbe', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('answers false for a check still running after the timeout, then the settled answer from the cache', async () => {
+    vi.useFakeTimers();
+    let settle!: () => void;
+    const access = vi.fn(() => new Promise<void>((resolve) => (settle = resolve)));
+    const exists = createFolderProbe(1000, 60_000, access, () => Date.now());
+
+    const first = exists('Z:\\');
+    const concurrent = exists('Z:\\');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(await first).toBe(false);
+    expect(await concurrent).toBe(false);
+
+    settle();
+    expect(await exists('Z:\\')).toBe(true);
+    expect(access).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks a folder again once its answer is older than the TTL', async () => {
+    let now = 0;
+    const access = vi.fn(async (folder: string) => {
+      if (folder === 'gone') throw new Error('ENOENT');
+    });
+    const exists = createFolderProbe(1000, 60_000, access, () => now);
+
+    expect(await exists('here')).toBe(true);
+    expect(await exists('gone')).toBe(false);
+    now = 59_999;
+    await exists('here');
+    expect(access).toHaveBeenCalledTimes(2);
+    now = 60_000;
+    expect(await exists('here')).toBe(true);
+    expect(access).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -98,31 +149,33 @@ describe('workspace attribution by files', () => {
     expect(workspaceContaining('C:/GameDev/psychic_smashed/x.cs', known, 'win32')).toBeNull();
   });
 
-  it('files under exactly one other workspace attribute there', () => {
+  const listed = (folders: readonly string[]) => async (): Promise<readonly string[]> => folders;
+
+  it('files under exactly one other workspace attribute there', async () => {
     const files = ['C:/GameDev/psychic_smash/src/a.cs', 'c:\\GameDev\\psychic_smash\\src\\b.cs'];
-    expect(attributeFilesToWorkspace(files, 'c:\\GameDev\\damocles', () => known, 'win32')).toBe('c:\\GameDev\\psychic_smash');
+    expect(await attributeFilesToWorkspace(files, 'c:\\GameDev\\damocles', listed(known), 'win32')).toBe('c:\\GameDev\\psychic_smash');
   });
 
-  it('mixed, relative, unknown or current-workspace files keep the current workspace', () => {
+  it('mixed, relative, unknown or current-workspace files keep the current workspace', async () => {
     const current = 'c:\\GameDev\\damocles';
-    expect(attributeFilesToWorkspace(['C:/GameDev/psychic_smash/a.cs', 'C:/GameDev/damocles/b.ts'], current, () => known, 'win32')).toBeNull();
-    expect(attributeFilesToWorkspace(['C:/GameDev/psychic_smash/a.cs', 'src/b.ts'], current, () => known, 'win32')).toBeNull();
-    expect(attributeFilesToWorkspace(['D:/elsewhere/a.cs'], current, () => known, 'win32')).toBeNull();
-    expect(attributeFilesToWorkspace(['C:/GameDev/damocles/b.ts'], current, () => known, 'win32')).toBeNull();
-    expect(attributeFilesToWorkspace([], current, () => known, 'win32')).toBeNull();
+    expect(await attributeFilesToWorkspace(['C:/GameDev/psychic_smash/a.cs', 'C:/GameDev/damocles/b.ts'], current, listed(known), 'win32')).toBeNull();
+    expect(await attributeFilesToWorkspace(['C:/GameDev/psychic_smash/a.cs', 'src/b.ts'], current, listed(known), 'win32')).toBeNull();
+    expect(await attributeFilesToWorkspace(['D:/elsewhere/a.cs'], current, listed(known), 'win32')).toBeNull();
+    expect(await attributeFilesToWorkspace(['C:/GameDev/damocles/b.ts'], current, listed(known), 'win32')).toBeNull();
+    expect(await attributeFilesToWorkspace([], current, listed(known), 'win32')).toBeNull();
   });
 
-  it('keeps files under a nested known workspace in the current one, without listing the known set', () => {
-    const list = vi.fn(() => ['c:\\repo', 'c:\\repo\\packages\\a']);
-    expect(attributeFilesToWorkspace(['C:/repo/packages/a/src/x.ts'], 'c:\\repo', list, 'win32')).toBeNull();
-    expect(attributeFilesToWorkspace(['src/x.ts'], 'c:\\repo', list, 'win32')).toBeNull();
+  it('keeps files under a nested known workspace in the current one, without listing the known set', async () => {
+    const list = vi.fn(listed(['c:\\repo', 'c:\\repo\\packages\\a']));
+    expect(await attributeFilesToWorkspace(['C:/repo/packages/a/src/x.ts'], 'c:\\repo', list, 'win32')).toBeNull();
+    expect(await attributeFilesToWorkspace(['src/x.ts'], 'c:\\repo', list, 'win32')).toBeNull();
     expect(list).not.toHaveBeenCalled();
   });
 
-  it('moves files outside the current workspace to the parent workspace that holds them', () => {
+  it('moves files outside the current workspace to the parent workspace that holds them', async () => {
     const nested = ['c:\\repo', 'c:\\repo\\packages\\a'];
-    expect(attributeFilesToWorkspace(['C:/repo/packages/a/src/x.ts'], 'c:\\repo\\packages\\a', () => nested, 'win32')).toBeNull();
-    expect(attributeFilesToWorkspace(['C:/repo/tools/build.ts'], 'c:\\repo\\packages\\a', () => nested, 'win32')).toBe('c:\\repo');
+    expect(await attributeFilesToWorkspace(['C:/repo/packages/a/src/x.ts'], 'c:\\repo\\packages\\a', listed(nested), 'win32')).toBeNull();
+    expect(await attributeFilesToWorkspace(['C:/repo/tools/build.ts'], 'c:\\repo\\packages\\a', listed(nested), 'win32')).toBe('c:\\repo');
   });
 });
 

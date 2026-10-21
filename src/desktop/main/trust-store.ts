@@ -69,6 +69,11 @@ export class TrustStore {
     return project !== undefined && this.trusted.has(folderKey(project));
   }
 
+  /** The allowlist's folders, as granted. */
+  trustedFolders(): readonly string[] {
+    return [...this.trusted.values()];
+  }
+
   onDidGrant(listener: (folderPaths: readonly string[]) => void): Disposable {
     this.grantListeners.add(listener);
     return { dispose: () => { this.grantListeners.delete(listener); } };

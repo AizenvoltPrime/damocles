@@ -13,8 +13,8 @@ import { createHarness, folderEntry, type Harness } from '../../../core/chat-pan
 import type { FakePanelHost } from '../../../__mocks__/fake-platform';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { MAX_SETTINGS_MESSAGE_CHARS, OVERLAY_CHANNELS, type OverlayAnswer, type OverlayPrefs, type OverlayPrefWrite, type OverlayRequest, type PopupAnswer } from '../../preload/overlay-channels';
-import { DESKTOP_CONFIGURATION, LANGUAGE_SETTING, TERMINAL_PROFILES_SETTING } from '../desktop-configuration';
-import { OverlaySettings } from '../overlay-settings';
+import { DESKTOP_CONFIGURATION, LANGUAGE_SETTING, TERMINAL_PROFILES_SETTING } from '../../local-services/desktop-configuration';
+import { OverlaySettings, type SettingsViewHost } from '../overlay-settings';
 import { WebviewPrompts } from '../../../core/chat-panel/webview-prompts';
 import type { OverlayHost } from '../overlay';
 import { fakeHandleWhileOpen } from './fake-popup-channels';
@@ -79,21 +79,30 @@ async function setup() {
   const relaunch = vi.fn();
   const resetLayout = vi.fn();
   const harness = h;
+  // core's side of the settings modal, as core-service.ts serves it
+  const attached = new Map<number, string>();
+  const lines: string[] = [];
   const settings = new OverlaySettings({
     overlay: fake.overlay,
     settings: settingsPlatform.settings,
-    panelManager: () => harness.manager,
+    core: () => ({
+      attachSettingsView: async (panelId, attachment, view) => {
+        attached.set(attachment, panelId);
+        return harness.manager.attachView(panelId, view);
+      },
+      dispatchSettingsView: (attachment, message) => harness.manager.dispatchFromView(attached.get(attachment) ?? '', message),
+    }),
     targetPanel: async () => target,
     focused: () => undefined,
     relaunch,
     resetLayout,
     terminalProfiles: () => ({ profiles: [{ id: 'pwsh', name: 'PowerShell', path: 'C:\\pwsh.exe', args: [], source: 'detected', icon: 'powershell', customIcon: null, color: null, isDefault: true }], hidden: ['Command Prompt'], problems: [{ name: 'Evil', reason: 'pathNotAllowed', detail: '\\\\server\\x.exe' }] }) as const,
-    log: () => undefined,
+    log: (line) => lines.push(line),
     languageAtLaunch: 'el',
   });
   harness.routed.length = 0;
   return {
-    harness, fake, settings, first, second, settingsPlatform, relaunch, resetLayout,
+    harness, fake, settings, first, second, settingsPlatform, relaunch, resetLayout, lines, attached,
     select: (panelId: string) => { target = panelId; },
   };
 }
@@ -192,6 +201,85 @@ describe('OverlaySettings', () => {
       [OVERLAY_CHANNELS.settingsMessage, expect.objectContaining({ type: 'extensionUiRequest', title: 'Paste the code' })],
     ]);
     expect(harness.routed.map((r) => r.message.type)).not.toContain('requestSettingsState');
+  });
+
+  it('disposes an attachment core finishes after the modal closed', async () => {
+    const { harness, fake, settings, first, second, select } = await setup();
+    const core = (settings as unknown as { deps: { core: () => SettingsViewHost } }).deps;
+    const real = core.core();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    core.core = () => ({
+      ...real,
+      attachSettingsView: async (panelId, attachment, view) => {
+        if (panelId === second.panelId) await held;
+        return real.attachSettingsView(panelId, attachment, view);
+      },
+    });
+    const shown = settings.show({});
+    await tick();
+    expect(harness.manager.attachedView(first.panelId)).toBeDefined();
+    select(second.panelId);
+    settings.selectionChanged();
+    await tick();
+    fake.close();
+    await shown;
+    release();
+    await tick();
+    expect(harness.manager.attachedView(first.panelId)).toBeUndefined();
+    expect(harness.manager.attachedView(second.panelId)).toBeUndefined();
+  });
+
+  it('drops what the modal sends to a chat that detached while core attached it, and follows the selection again', async () => {
+    const { harness, fake, settings, first, lines } = await setup();
+    const core = (settings as unknown as { deps: { core: () => SettingsViewHost } }).deps;
+    const real = core.core();
+    let attaches = 0;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    core.core = () => ({
+      ...real,
+      attachSettingsView: async (panelId, attachment, view) => {
+        attaches++;
+        if (attaches === 2) await held;
+        const handle = await real.attachSettingsView(panelId, attachment, view);
+        if (attaches === 1) view.detached();
+        return handle;
+      },
+    });
+    void settings.show({});
+    await tick();
+    expect(attaches).toBe(2);
+    fake.fire(OVERLAY_CHANNELS.settingsSend, { generation: 1, message: { type: 'setBudgetLimit', budgetUsd: 5 } });
+    release();
+    await tick();
+    expect(lines).toContain('[settings] dropped a settings message: the chat or engine it was attached to is gone');
+    expect(fake.sent).toContainEqual({ channel: OVERLAY_CHANNELS.settingsAttached, payload: { generation: 2 } });
+    fake.fire(OVERLAY_CHANNELS.settingsSend, { generation: 2, message: { type: 'setBudgetLimit', budgetUsd: 6 } });
+    await tick();
+    expect(harness.routed.map((r) => [r.message, r.panelId])).toEqual([[{ type: 'setBudgetLimit', budgetUsd: 6 }, first.panelId]]);
+  });
+
+  it('drops what the modal sends once its core ended, logs it, and attaches to the next core', async () => {
+    const { harness, fake, settings, first, lines } = await setup();
+    const deps = (settings as unknown as { deps: { core: () => SettingsViewHost | undefined } }).deps;
+    const real = deps.core()!;
+    void settings.show({});
+    await tick();
+    deps.core = () => undefined;
+    settings.coreEnded();
+    fake.fire(OVERLAY_CHANNELS.settingsSend, { generation: 1, message: { type: 'setBudgetLimit', budgetUsd: 5 } });
+    await tick();
+    expect(harness.routed).toEqual([]);
+    expect(lines).toContain('[settings] dropped a settings message: the chat or engine it was attached to is gone');
+
+    deps.core = () => real;
+    settings.selectionChanged();
+    await tick();
+    expect(fake.sent).toContainEqual({ channel: OVERLAY_CHANNELS.settingsAttached, payload: { generation: 2 } });
+    fake.fire(OVERLAY_CHANNELS.settingsSend, { generation: 2, message: { type: 'setBudgetLimit', budgetUsd: 7 } });
+    await tick();
+    expect(harness.routed.map((r) => [r.message, r.panelId])).toEqual([[{ type: 'setBudgetLimit', budgetUsd: 7 }, first.panelId]]);
   });
 
   it('refuses a request type outside SETTINGS_VIEW_REQUESTS, a malformed envelope and an oversized one', async () => {

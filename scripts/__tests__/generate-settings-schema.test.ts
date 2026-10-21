@@ -5,7 +5,7 @@ import Ajv from 'ajv';
 // @ts-expect-error -- plain .mjs helper, no types
 import { renderSettingsSchemas, OUTPUT, PERMISSION_LISTS } from '../generate-settings-schema.mjs';
 import { readContributedConfiguration } from '../../src/core/config/contributed-configuration';
-import { DESKTOP_CONFIGURATION } from '../../src/desktop/main/desktop-configuration';
+import { DESKTOP_CONFIGURATION } from '../../src/desktop/local-services/desktop-configuration';
 import type { FilePermissions } from '../../src/core/permission-handler/permission-settings';
 
 const ROOT = join(__dirname, '..', '..');

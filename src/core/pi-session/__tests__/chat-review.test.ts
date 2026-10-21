@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -7,6 +8,10 @@ import { teamMembersDir } from '../agent-records';
 import { ChatReview, type ChatChangeTotals, type ChatReviewDeps, type ReviewSession } from '../chat-review';
 import { DAMOCLES_AGENT_INVOCATION_ENTRY, DAMOCLES_AGENT_LAUNCH_ENTRY } from '../session-store/constants';
 import { filePatch } from '../tools/file-patch';
+import { SPAWN_TEST_TIMEOUT_MS } from '../../../__mocks__/spawn-budget';
+import { gitExecutable } from '../../git-executable';
+import { installProcessLauncher, processLauncher, type Launcher } from '../../process-launcher';
+import { folderIdFor, getFolderRepoDir } from '../checkpoints';
 
 /** The review recomputes when a file the chat changed changes on disk, so a file back at its baseline drops out by itself. */
 
@@ -305,5 +310,72 @@ describe('records across a hand-off and a team', () => {
     const [changed] = (await chat.compute('chat')).files;
     expect(changed).toMatchObject({ path: 'a.txt', status: 'M', outsideEdits: false, diff: { kind: 'texts', before: 'a\n', after: 'c\n' } });
     chat.dispose();
+  });
+});
+
+describe('checkpoint baselines', () => {
+  const launchers: Array<Launcher | undefined> = [];
+  afterEach(() => {
+    for (const previous of launchers.splice(0)) if (previous) installProcessLauncher(previous);
+  });
+
+  it('reads a recompute\'s baselines through one git per checkpoint repo, ended before the recompute publishes', { timeout: SPAWN_TEST_TIMEOUT_MS * 2 }, async () => {
+    const cwd = tempFolder();
+    const folderId = folderIdFor(cwd);
+    const repoDir = getFolderRepoDir(folderId);
+    fs.mkdirSync(repoDir, { recursive: true });
+    dirs.push(repoDir);
+    const names = Array.from({ length: 50 }, (_, index) => `src/file-${index}.txt`);
+    for (const name of names) {
+      fs.mkdirSync(path.dirname(path.join(repoDir, name)), { recursive: true });
+      fs.writeFileSync(path.join(repoDir, name), `before ${name}\n`);
+      fs.mkdirSync(path.dirname(path.join(cwd, name)), { recursive: true });
+      fs.writeFileSync(path.join(cwd, name), `after ${name}\n`);
+    }
+    // no system, global or XDG config (a gpgsign, an init.templateDir with hooks) and no inherited GIT_DIR reaches the setup
+    const emptyConfig = path.join(tempFolder(), 'empty.gitconfig');
+    fs.writeFileSync(emptyConfig, '');
+    const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: emptyConfig };
+    const git = (...args: string[]): string => execFileSync(gitExecutable(), ['-c', 'core.autocrlf=false', '-c', 'commit.gpgsign=false', ...args], { cwd: repoDir, encoding: 'utf8', env });
+    git('init', '--quiet');
+    git('add', '.');
+    git('-c', 'user.name=t', '-c', 'user.email=t@t.invalid', 'commit', '--quiet', '-m', 'baseline');
+    const commit = git('rev-parse', 'HEAD').trim();
+    const checkpoint = {
+      type: 'custom',
+      id: 'cp',
+      parentId: null,
+      timestamp: new Date(0).toISOString(),
+      customType: 'damocles-checkpoint',
+      data: { v: 3, kind: 'checkpoint', turnId: 'turn', userEntryId: 't1', beforeCommit: commit, afterCommit: commit, prompt: 'edit', fileCount: 50, fileChanges: [], createdAt: new Date(0).toISOString(), repo: 'folder', folderId, skipped: { totalCount: 0, totalBytes: 0, byReason: {}, patterns: [], manifest: null } },
+    } as unknown as SessionEntry;
+    const branch = [user('t1'), checkpoint, ...names.flatMap((name, index) => edit(`c${index}`, path.join(cwd, name), `before ${name}\n`, `after ${name}\n`))];
+
+    const starts: Array<{ readonly args: readonly string[]; closed: boolean; output: string }> = [];
+    const inner = processLauncher();
+    launchers.push(installProcessLauncher({
+      launch: (spec, options) => {
+        const launched = inner.launch(spec, options);
+        const start = { args: spec.args, closed: false, output: '' };
+        starts.push(start);
+        launched.onData('stdout', (chunk) => (start.output += chunk.toString('utf8')));
+        void launched.closed.finally(() => (start.closed = true)).catch(() => undefined);
+        return launched;
+      },
+      createSessionJob: () => inner.createSessionJob(),
+      dispose: () => inner.dispose(),
+    }));
+
+    const published: ChatChangeTotals[] = [];
+    const chat = review(() => ({ branch, sessionId: 's', sessionFile: path.join(cwd, 's.jsonl'), sessionDir: cwd, cwd, fileCheckpoints: true }), {
+      publish: (totals) => published.push(totals),
+    });
+    chat.schedule();
+    await vi.waitFor(() => expect(published).toEqual([{ added: 50, removed: 50, files: 50 }]), { timeout: SPAWN_TEST_TIMEOUT_MS });
+    expect(starts.map((start) => start.args.slice(-2))).toEqual([['cat-file', '--batch']]);
+    expect(starts.every((start) => start.closed)).toBe(true);
+    // every baseline came from the checkpoint
+    expect(starts[0]!.output.split('\n').filter((line) => / blob \d+$/.test(line))).toHaveLength(50);
+    await chat.dispose();
   });
 });

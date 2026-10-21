@@ -7,7 +7,7 @@ import SettingSeg from '@/components/settings/controls/SettingSeg.vue';
 import SettingSwitch from '@/components/settings/controls/SettingSwitch.vue';
 import SettingButton from '@/components/settings/controls/SettingButton.vue';
 import { useSettingsPage } from '@/components/settings/settings-view';
-import { FILE_ICON_THEME_SETTING, type FileIconTheme, parseFileIconTheme, SIDEBAR_ALWAYS_SHOW_HEADER_ACTIONS_SETTING } from '../../../main/desktop-configuration';
+import { FILE_ICON_THEME_SETTING, type FileIconTheme, parseFileIconTheme, SIDEBAR_ALWAYS_SHOW_HEADER_ACTIONS_SETTING } from '../../../local-services/desktop-configuration';
 import { ran } from '../popup-answer';
 import { useDesktopPrefs } from './desktop-prefs';
 

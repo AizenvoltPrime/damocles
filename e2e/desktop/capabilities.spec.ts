@@ -17,8 +17,10 @@ function webviewCapabilities(tab: Page): Promise<Record<string, boolean>> {
 
 const micButton = (tab: Page) => tab.getByRole('button', { name: 'Set an API key in Settings to use voice input' });
 
+type PlatformHook = typeof globalThis & { __damoclesE2e: { setCorePlatform(platform: NodeJS.Platform | null): Promise<NodeJS.Platform> } };
+
 test('voice controls are absent when the host reports macOS', async ({ launch }) => {
-  const { app } = await launch();
+  const { app } = await launch({ env: { DAMOCLES_E2E_HOOKS: '1' } });
   const tab = await activeChat(app);
   await expect(chatInput(tab)).toBeVisible();
   await expect.poll(() => webviewCapabilities(tab)).toMatchObject({ hostSettingsEditor: false, diffReview: true, settingsSources: true, monaco: true, damoclesTheme: true, historyInPanel: false, folderPickerInPanel: false });
@@ -26,12 +28,9 @@ test('voice controls are absent when the host reports macOS', async ({ launch })
   const onMac = process.platform === 'darwin';
   await expect(micButton(tab)).toHaveCount(onMac ? 0 : 1);
 
-  // The desktop voice capability reads process.platform at each handshake, so a new tab sees the mocked value.
-  const realPlatform = await app.evaluate(() => {
-    const real = process.platform;
-    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
-    return real;
-  });
+  // Core's voice capability reads core's process.platform at each handshake, so a new tab sees the mocked value.
+  const realPlatform = await app.evaluate(() => (globalThis as PlatformHook).__damoclesE2e.setCorePlatform('darwin'));
+  expect(realPlatform).toBe(process.platform);
   try {
     const opened = nextChat(app, [tab]);
     await clickMenu(app, 'damocles.newChat');
@@ -44,9 +43,7 @@ test('voice controls are absent when the host reports macOS', async ({ launch })
     await expect(settingsNav(overlay, 'application')).toBeVisible();
     await expect(settingsNav(overlay, 'voice')).toHaveCount(0);
   } finally {
-    await app.evaluate((_electron, real) => {
-      Object.defineProperty(process, 'platform', { value: real, configurable: true });
-    }, realPlatform);
+    await app.evaluate(() => (globalThis as PlatformHook).__damoclesE2e.setCorePlatform(null));
   }
 });
 

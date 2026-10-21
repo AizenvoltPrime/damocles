@@ -25,6 +25,22 @@ describe('VS Code AppPaths resolves the paths the extension used before AppPaths
     expect(paths.workerEntry('usageStats')).toBe(path.join(EXT, 'dist', 'usage-stats-worker.js'));
   });
 
+  it('process launcher worker: dist/process-launcher-worker.js beside the extension bundle', () => {
+    expect(paths.workerEntry('processLauncher')).toBe(path.join(EXT, 'dist', 'process-launcher-worker.js'));
+  });
+
+  it('memory integrity worker: dist/memory-integrity-worker.js beside the extension bundle', () => {
+    expect(paths.workerEntry('memoryIntegrity')).toBe(path.join(EXT, 'dist', 'memory-integrity-worker.js'));
+  });
+
+  it('session meta index worker: dist/session-meta-index-worker.js beside the extension bundle', () => {
+    expect(paths.workerEntry('sessionMetaIndex')).toBe(path.join(EXT, 'dist', 'session-meta-index-worker.js'));
+  });
+
+  it('voice extract worker: dist/voice-extract-worker.js beside the extension bundle', () => {
+    expect(paths.workerEntry('voiceExtract')).toBe(path.join(EXT, 'dist', 'voice-extract-worker.js'));
+  });
+
   it('sentinel: the sibling of dist/extension.js when packaged, and <repo>/dist/sentinel.js from source', () => {
     const packagedDirname = path.join(EXT, 'dist');
     expect(paths.workerEntry('sentinel')).toBe(path.join(packagedDirname, 'sentinel.js'));
@@ -36,7 +52,7 @@ describe('VS Code AppPaths resolves the paths the extension used before AppPaths
 
   it('every worker entry is an outfile esbuild.config.mjs writes', () => {
     const outfiles = [...readFileSync(path.join(REPO_ROOT, 'esbuild.config.mjs'), 'utf8').matchAll(/outfile: '([^']+)'/g)].map((m) => m[1]);
-    for (const name of ['compass', 'usageStats', 'sentinel'] as const) {
+    for (const name of ['compass', 'usageStats', 'sentinel', 'processLauncher', 'memoryIntegrity', 'sessionMetaIndex', 'voiceExtract'] as const) {
       expect(outfiles).toContain(path.relative(EXT, paths.workerEntry(name)).split(path.sep).join('/'));
     }
   });
@@ -55,7 +71,7 @@ describe('VS Code AppPaths resolves the paths the extension used before AppPaths
 
   it('the fake platform resolves the same layout for the same root', () => {
     const fake = createFakePlatform({ appRoot: EXT }).paths;
-    for (const name of ['compass', 'usageStats', 'sentinel'] as const) {
+    for (const name of ['compass', 'usageStats', 'sentinel', 'processLauncher', 'memoryIntegrity', 'sessionMetaIndex', 'voiceExtract'] as const) {
       expect(fake.workerEntry(name)).toBe(paths.workerEntry(name));
     }
     expect([fake.resourceRoot, fake.unpackedRoot]).toEqual([paths.resourceRoot, paths.unpackedRoot]);

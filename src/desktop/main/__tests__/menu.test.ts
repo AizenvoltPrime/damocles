@@ -16,7 +16,7 @@ vi.mock('electron', () => ({
 
 import { GIT_COMMAND_IDS } from '../commands';
 import { installApplicationMenu, installedTerminalPassKeys, MENU_IDS, shellShortcutLabels, updateMenuState, type MenuActions, type MenuState } from '../menu';
-import { createDesktopLocalizationService } from '../platform/localization-service';
+import { createDesktopLocalizationService } from '../../local-services/localization-service';
 import { NO_SCM_MENU_STATE } from '../scm/scm-host';
 
 function flatten(items: readonly MenuItemConstructorOptions[]): MenuItemConstructorOptions[] {

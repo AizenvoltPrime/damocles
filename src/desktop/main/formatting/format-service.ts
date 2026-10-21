@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs';
 import { EDITOR_FORMAT_TIMEOUT_MS, type EditorFormatReason, type EditorFormatReply } from '../../preload/shell-channels';
-import { isInsideRealRoot, type Project } from '../documents/confine';
+import { isInsideRealRoot, type Project } from '../../local-services/confine';
 import type { HostOutcome, HostRoot } from './formatter-hosts';
 import { isPrettierConfigured, nearestPrettierConfig, resolvePrettier, supportedMajor } from './prettier-resolve';
 

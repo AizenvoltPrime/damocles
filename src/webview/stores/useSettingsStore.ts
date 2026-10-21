@@ -3,7 +3,7 @@ import { defineStore } from 'pinia';
 import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, AutoCompactConfig, CacheWarmingMode, ContextWarningLevel, PanelThinkingState, MemoryJudge, ClassifierProvider, ClassifierCredential, ImageGenerationSettings } from '@shared/types/settings';
 import { renamedRuleNoticeKey, type McpConfigError, type McpRenamedToolRuleNotice, type McpServerStatusInfo, type McpToolExposureScope, type McpWriteErrorInfo } from '@shared/types/mcp';
 import type { ToolsSnapshot } from '@shared/types/tools';
-import type { VoiceConfig } from '@shared/types/voice';
+import type { VoiceConfig, VoiceRuntimeStatus } from '@shared/types/voice';
 import type { WorkspaceFolderInfo } from '@shared/types/workspace-folders';
 import { VSCODE_HOST_CAPABILITIES, type ExtensionToWebviewMessage, type HostCapabilities, type SettingSource } from '@shared/types/messages';
 import {
@@ -138,8 +138,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const defaultThinkingModel = ref<string>("");
   const voiceConfig = ref<VoiceConfig>({ ...INITIAL_VOICE_CONFIG });
   const voiceHasApiKey = ref(false);
-  /** The host's localized refusal when the Jarvis runtime cannot install on its platform. */
-  const voiceRuntimeUnsupported = ref<string | null>(null);
+  const voiceRuntimeStatus = ref<VoiceRuntimeStatus>({ kind: 'not-needed' });
   const authStatus = ref<{ isAuthenticating: boolean; error?: string } | null>(null);
   const openaiAuthStatus = ref<OpenAIAuthStatusView>(signedOutOpenAIStatus());
   const openaiPreferApiKey = ref(false);
@@ -408,8 +407,8 @@ export const useSettingsStore = defineStore('settings', () => {
     voiceHasApiKey.value = hasApiKey;
   }
 
-  function setVoiceRuntimeUnsupported(message: string | null) {
-    voiceRuntimeUnsupported.value = message;
+  function setVoiceRuntimeStatus(status: VoiceRuntimeStatus) {
+    voiceRuntimeStatus.value = status;
   }
 
   function setExploreSettings(explore: ExtensionSettings['explore']) {
@@ -512,7 +511,7 @@ export const useSettingsStore = defineStore('settings', () => {
     defaultThinkingModel.value = "";
     voiceConfig.value = { ...INITIAL_VOICE_CONFIG };
     voiceHasApiKey.value = false;
-    voiceRuntimeUnsupported.value = null;
+    voiceRuntimeStatus.value = { kind: 'not-needed' };
     authStatus.value = null;
     openaiAuthStatus.value = signedOutOpenAIStatus();
     openaiPreferApiKey.value = false;
@@ -606,8 +605,8 @@ export const useSettingsStore = defineStore('settings', () => {
     voiceConfig,
     voiceHasApiKey,
     setVoiceConfig,
-    voiceRuntimeUnsupported,
-    setVoiceRuntimeUnsupported,
+    voiceRuntimeStatus,
+    setVoiceRuntimeStatus,
     setExploreSettings,
     authStatus,
     setAuthStatus,

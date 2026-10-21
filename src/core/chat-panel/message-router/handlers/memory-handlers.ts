@@ -66,8 +66,8 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
   }
 
   /** The audit state and summary to every panel, or an audit error to the asking one when memory is unavailable. */
-  function broadcastAuditState(ctx: HandlerContext): boolean {
-    const state = deps.memoryService.getAuditState();
+  async function broadcastAuditState(ctx: HandlerContext): Promise<boolean> {
+    const state = await deps.memoryService.getAuditState();
     const summary = deps.memoryService.getAuditSummary();
     if (!state || !summary) {
       postAuditError(ctx, "unavailable", UNAVAILABLE);
@@ -81,8 +81,8 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
   }
 
   /** After an apply or revert: the audit state, then each panel's memory list and profile, which the audit may have changed. */
-  function broadcastAfterAuditWrite(ctx: HandlerContext): void {
-    broadcastAuditState(ctx);
+  async function broadcastAfterAuditWrite(ctx: HandlerContext): Promise<void> {
+    await broadcastAuditState(ctx);
     const global = deps.memoryService.getProfile("global", "");
     for (const [, instance] of deps.getPanels()) {
       const panel = loadPanel(instance.session.memorySessionId, identityFolder(instance.folder.fsPath));
@@ -416,7 +416,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
         return;
       }
       await deps.memoryService.ensureInitialized();
-      const state = deps.memoryService.getAuditState();
+      const state = await deps.memoryService.getAuditState();
       if (state) postMessage(ctx.host, { type: "memoryAuditState", state });
       else postAuditError(ctx, "unavailable", UNAVAILABLE);
     },
@@ -448,7 +448,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
         postAuditError(ctx, result.reason, message);
         return;
       }
-      broadcastAuditState(ctx);
+      await broadcastAuditState(ctx);
     },
 
     cancelMemoryAudit: async (msg, ctx) => {
@@ -458,7 +458,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
         return;
       }
       const result = await deps.memoryService.cancelAudit();
-      if (broadcastAuditState(ctx)) postMessage(ctx.host, { type: "memoryAuditCancelResult", result });
+      if (await broadcastAuditState(ctx)) postMessage(ctx.host, { type: "memoryAuditCancelResult", result });
     },
 
     applyMemoryAudit: async (msg, ctx) => {
@@ -468,7 +468,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
         return;
       }
       const result = await deps.memoryService.applyAudit(msg.runId, msg.accept, msg.reject);
-      broadcastAfterAuditWrite(ctx);
+      await broadcastAfterAuditWrite(ctx);
       postMessage(ctx.host, { type: "memoryAuditResult", result: { action: "apply", ...result } });
     },
 
@@ -479,7 +479,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
         return;
       }
       const result = await deps.memoryService.revertAudit(msg.runId);
-      broadcastAfterAuditWrite(ctx);
+      await broadcastAfterAuditWrite(ctx);
       postMessage(ctx.host, { type: "memoryAuditResult", result: { action: "revert", ...result } });
     },
   };

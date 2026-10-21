@@ -6,10 +6,85 @@ import globals from 'globals';
 import betterTailwindcss from 'eslint-plugin-better-tailwindcss';
 import { getDefaultSelectors } from 'eslint-plugin-better-tailwindcss/defaults';
 
+// eslint-plugin-n's no-sync throws on a TypeScript file without typed linting (17.x and 18.x), so this is its untyped
+// form: a call to any *Sync function or method. Its own rule id keeps its own count in eslint-suppressions.json.
+// `this._with…Sync(op)` (pi-runtime.ts) chains `op` on an async synchronisation queue and blocks nothing.
+const ASYNC_QUEUE_HELPER = /^_with\w*Sync$/;
+const noSync = {
+  meta: { type: 'problem', messages: { noSync: "Unexpected sync method: '{{name}}'. It blocks the UI or every chat (docs/perf.md)." }, schema: [] },
+  create(context) {
+    const report = (node) => context.report({ node, messageId: 'noSync', data: { name: node.name } });
+    return {
+      'CallExpression > MemberExpression.callee > Identifier.property[name=/Sync$/]': (node) => {
+        if (node.parent.object.type !== 'ThisExpression' || !ASYNC_QUEUE_HELPER.test(node.name)) report(node);
+      },
+      'CallExpression > Identifier.callee[name=/Sync$/]': report,
+    };
+  },
+};
+const damoclesPlugin = { rules: { 'no-sync': noSync } };
+// Files only worker threads load, where a synchronous call blocks no UI or chat thread. Listed one by one, because a
+// folder can hold a file the host imports (compass/detect.ts); scripts/__tests__/no-sync-lint-scope.test.ts fails when
+// a host bundle includes one.
+export const WORKER_ONLY_FILES = [
+  'src/core/compass/communities.ts',
+  'src/core/compass/compass-worker.ts',
+  'src/core/compass/composer-resolver.ts',
+  'src/core/compass/context-savings.ts',
+  'src/core/compass/changes.ts',
+  'src/core/compass/database.ts',
+  'src/core/compass/db-wrapper.ts',
+  'src/core/compass/extractor-base.ts',
+  'src/core/compass/extractors/ast-helpers.ts',
+  'src/core/compass/extractors/index.ts',
+  'src/core/compass/extractors/lang-maps.ts',
+  'src/core/compass/extractors/vue.ts',
+  'src/core/compass/extractors/walker.ts',
+  'src/core/compass/flows.ts',
+  'src/core/compass/git.ts',
+  'src/core/compass/impact.ts',
+  'src/core/compass/import-resolver.ts',
+  'src/core/compass/incremental.ts',
+  'src/core/compass/java-resolver.ts',
+  'src/core/compass/known-externals.ts',
+  'src/core/compass/mcp-handlers.ts',
+  'src/core/compass/migrations.ts',
+  'src/core/compass/post-process.ts',
+  'src/core/compass/refactor.ts',
+  'src/core/compass/schema.ts',
+  'src/core/compass/search.ts',
+  'src/core/compass/tsconfig-resolver.ts',
+  'src/core/compass/validation.ts',
+  'src/core/compass/vite-alias-resolver.ts',
+  'src/core/compass/worker-core.ts',
+  'src/core/memory/integrity-worker.ts',
+  'src/core/pi-session/session-store/meta-index/store.ts',
+  'src/core/pi-session/tools/shell-sentinel.ts',
+  'src/core/usage-stats/database.ts',
+  'src/core/usage-stats/entry-parser.ts',
+  'src/core/usage-stats/indexer.ts',
+  'src/core/usage-stats/queries.ts',
+  'src/core/usage-stats/usage-stats-worker.ts',
+];
+// UI-thread and extension-host code, where a synchronous call freezes the window or every chat (docs/perf.md).
+export const NO_SYNC_FILES = [
+  'src/core/**/*.ts',
+  'src/desktop/main/**/*.ts',
+  'src/desktop/core-host/**/*.ts',
+  'src/desktop/core-protocol/**/*.ts',
+  'src/desktop/local-services/**/*.ts',
+  'src/platform/**/*.ts',
+  'src/shared/**/*.ts',
+  'src/vscode/**/*.ts',
+];
+
 const VSCODE_ONLY = 'Only src/vscode may import vscode; core code reaches the host through src/platform.';
 const NO_ELECTRON = 'Only src/desktop may import electron.';
 const NO_ELECTRON_SHELL = 'The shell renderer never imports electron; it reaches main only through window.damoclesShell.';
 const NO_ELECTRON_WORKER = 'The Quick Open and watch workers are plain Node worker threads and never import electron.';
+const NO_ELECTRON_CORE = 'Damocles Core reaches the host only through the core protocol (src/desktop/core-protocol), never electron.';
+const NO_MAIN_IN_CORE = 'Damocles Core never imports desktop main; it reaches main only through the core protocol.';
+const NO_CORE_HOST_IN_MAIN = 'Desktop main reaches Damocles Core only through the core protocol (core-client.ts); import a type.';
 
 // no-restricted-imports misses dynamic import(), typeof import() and vi.mock, so these selectors close the same boundary.
 function moduleSyntax(pattern, message) {
@@ -23,6 +98,13 @@ function moduleSyntax(pattern, message) {
   ];
 }
 const VSCODE_SYNTAX = moduleSyntax("'vscode'", VSCODE_ONLY);
+// The value forms no-restricted-imports misses, for a ban that allows type imports: `typeof import()` stays allowed.
+function valueImportSyntax(pattern, message) {
+  return [
+    { selector: `ImportExpression[source.value=${pattern}]`, message },
+    { selector: `CallExpression[callee.name='require'][arguments.0.value=${pattern}]`, message },
+  ];
+}
 
 // `electron` and every `electron/*` subpath. An esquery regex cannot contain a raw slash, hence \u002F.
 function electronBan(message) {
@@ -35,6 +117,106 @@ function electronBan(message) {
 const OUTSIDE_DESKTOP = electronBan(NO_ELECTRON);
 const IN_SHELL = electronBan(NO_ELECTRON_SHELL);
 const IN_WORKER = electronBan(NO_ELECTRON_WORKER);
+const IN_CORE_HOST = electronBan(NO_ELECTRON_CORE);
+// desktop main by any relative path; an esquery regex cannot contain a raw slash, hence \u002F
+const MAIN_FROM_CORE = {
+  pattern: { regex: '^(?:\\.\\./)+(?:desktop/)?main(?:/|$)', message: NO_MAIN_IN_CORE },
+  syntax: moduleSyntax('/^(?:\\.\\.\\u002F)+(?:desktop\\u002F)?main(\\u002F|$)/', NO_MAIN_IN_CORE),
+};
+// Damocles Core's own code from desktop main; type imports stay allowed
+const CORE_HOST_FROM_MAIN = {
+  pattern: { regex: '^(?:\\.\\./)+(?:desktop/)?core-host(?:/|$)', message: NO_CORE_HOST_IN_MAIN, allowTypeImports: true },
+  syntax: valueImportSyntax('/^(?:\\.\\.\\u002F)+(?:desktop\\u002F)?core-host(\\u002F|$)/', NO_CORE_HOST_IN_MAIN),
+};
+
+// Process starts go through src/core/process-launcher, whose workers keep a slow CreateProcessW off the UI and chat threads.
+const NO_PROCESS_START = 'Start processes through src/core/process-launcher (docs/perf.md "Process launcher"), never on this thread.';
+const PROCESS_START_MODULES = ['child_process', 'node:child_process', 'cross-spawn'];
+const PROCESS_BAN = {
+  // `import type { ChildProcess }` starts nothing
+  paths: PROCESS_START_MODULES.map((name) => ({ name, message: NO_PROCESS_START, allowTypeImports: true })),
+  syntax: [
+    { selector: 'ImportExpression[source.value=/^(?:node:)?child_process$|^cross-spawn$/]', message: NO_PROCESS_START },
+    { selector: "CallExpression[callee.name='require'][arguments.0.value=/^(?:node:)?child_process$|^cross-spawn$/]", message: NO_PROCESS_START },
+  ],
+};
+// Files that may start a process directly, each a separate thread or process where a start blocks no UI or chat thread, and
+// tests, which drive real processes. A later block's option list replaces an earlier one for the files it matches, so the
+// blocks that allow them restate their tree's electron and vscode bans; an `ignores` on the banning blocks would drop those.
+export const PROCESS_STARTERS_CORE = [
+  // the launcher's worker thread, where every other start runs
+  'src/core/process-launcher/worker.ts',
+  // loaded only by the launcher worker; its taskkill fallback runs there
+  'src/core/pi-session/tools/process-tree.ts',
+  // the launcher worker that owns a POSIX session job starts its sentinel
+  'src/core/pi-session/tools/shell-sentinel-client.ts',
+  // the sentinel process itself (dist/sentinel.js)
+  'src/core/pi-session/tools/shell-sentinel.ts',
+  // runs on the Compass worker thread
+  'src/core/compass/git.ts',
+];
+// Electron utility processes
+export const PROCESS_STARTERS_DESKTOP = ['src/desktop/formatter-host/**/*.ts', 'src/desktop/pty-host/**/*.ts'];
+const testsUnder = (root) => [`${root}/**/__tests__/**`, `${root}/**/*.test.ts`, `${root}/**/*.bench.ts`];
+const WORKER_ROOTS = ['src/desktop/quick-open-worker', 'src/desktop/watch-worker', 'src/desktop/askpass'];
+// Damocles Core, its protocol and the per-process services both main and Core load
+const CORE_HOST_ROOTS = ['src/desktop/core-host', 'src/desktop/core-protocol', 'src/desktop/local-services'];
+const WORKER_TREES = WORKER_ROOTS.map((root) => `${root}/**/*.ts`);
+const CORE_HOST_TREES = CORE_HOST_ROOTS.map((root) => `${root}/**/*.ts`);
+
+// Desktop main reaches the engine only through the core protocol (src/desktop/main/core-client.ts); type imports stay allowed.
+// A value import from src/core must name a module listed here; scripts/__tests__/main-core-imports-lint.test.ts checks it.
+export const MAIN_CORE_IMPORTS = [
+  // stateless helpers and constants, and per-process services main runs its own instance of (its log, launcher pool,
+  // config writes and platform accessor)
+  'browser/net-guard',
+  'chat-panel/ripgrep',
+  'chat-panel/settings-file-editor',
+  'config/contributed-configuration',
+  'config/json-config-write',
+  'config/legacy-settings-migrations',
+  'config/retired-secrets',
+  'config/settings-file',
+  'executable-path',
+  'git-executable',
+  'logger',
+  'paths',
+  'pi-session/chat-changes',
+  'pi-session/custom-providers',
+  'pi-session/explore-providers',
+  'pi-session/openai-auth',
+  'pi-session/usage-thresholds',
+  'platform-host',
+  'process-launcher',
+  'quick-open/fuzzy-match',
+  'scm/artifacts',
+  'scm/branches',
+  'scm/discovery',
+  'scm/remotes',
+  'scm/settings-keys',
+  'scm/stash',
+  'scm/worktrees',
+  'system-tools',
+  'volatile-secrets-notice',
+  'web-url',
+  'workspace-folders/folder-key',
+  'workspace-folders/folder-registry',
+  'worktrees/environment',
+  'worktrees/slug',
+  // the errors main rebuilds off the core protocol, git's version text and the worktree record rule main checks core's mirror by
+  'scm/errors',
+  'scm/git-version',
+  'worktrees/records',
+];
+const NO_CORE_IN_MAIN = 'Desktop main reaches the engine only through the core protocol (core-client.ts); import a type, or add a stateless helper to MAIN_CORE_IMPORTS.';
+const CORE_FROM_MAIN = (() => {
+  const regex = String.raw`^(?:\.\./)+core/(?!(?:${MAIN_CORE_IMPORTS.join('|')})$)`;
+  return {
+    pattern: { regex, message: NO_CORE_IN_MAIN, allowTypeImports: true },
+    // an esquery regex cannot contain a raw slash, hence \u002F
+    syntax: valueImportSyntax(`/${regex.replaceAll('/', String.raw`\u002F`)}/`, NO_CORE_IN_MAIN),
+  };
+})();
 
 // Renderer sizes are rem so they follow the host font (docs/invariants.md "Design tokens"). A px arbitrary value is banned in a
 // variant or a utility, except a border, ring or outline width up to 1.5px, a blur, or a shadow.
@@ -59,7 +241,7 @@ const OFFSET_MESSAGE = 'A popper offset is px; pass remPx(rem) from @/composable
 function remSizing(files, entryPoint, syntax) {
   return {
     files,
-    ignores: ['src/**/__tests__/**'],
+    ignores: testsUnder('src'),
     plugins: { 'better-tailwindcss': betterTailwindcss },
     settings: {
       'better-tailwindcss': {
@@ -182,6 +364,80 @@ export default [
     ignores: ['src/vscode/**', 'src/desktop/**'],
     rules: {
       '@typescript-eslint/no-restricted-imports': ['error', {
+        paths: [{ name: 'vscode', message: VSCODE_ONLY }, OUTSIDE_DESKTOP.path, ...PROCESS_BAN.paths],
+        patterns: [OUTSIDE_DESKTOP.pattern],
+      }],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...OUTSIDE_DESKTOP.syntax, ...PROCESS_BAN.syntax],
+    },
+  },
+  {
+    files: ['src/desktop/**/*.{ts,vue}'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': ['error', {
+        paths: [{ name: 'vscode', message: VSCODE_ONLY }, ...PROCESS_BAN.paths],
+      }],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...PROCESS_BAN.syntax],
+    },
+  },
+  {
+    files: ['src/desktop/main/**/*.ts'],
+    ignores: testsUnder('src/desktop/main'),
+    rules: {
+      '@typescript-eslint/no-restricted-imports': ['error', {
+        paths: [{ name: 'vscode', message: VSCODE_ONLY }, ...PROCESS_BAN.paths],
+        patterns: [CORE_FROM_MAIN.pattern, CORE_HOST_FROM_MAIN.pattern],
+      }],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...PROCESS_BAN.syntax, ...CORE_FROM_MAIN.syntax, ...CORE_HOST_FROM_MAIN.syntax],
+      // verbatimModuleSyntax keeps `import { type X } from 'm'` as `import 'm'`, which bundles m into main
+      '@typescript-eslint/no-import-type-side-effects': 'error',
+    },
+  },
+  {
+    files: WORKER_TREES,
+    rules: {
+      '@typescript-eslint/no-restricted-imports': ['error', {
+        paths: [{ name: 'vscode', message: VSCODE_ONLY }, IN_WORKER.path, ...PROCESS_BAN.paths],
+        patterns: [IN_WORKER.pattern],
+      }],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_WORKER.syntax, ...PROCESS_BAN.syntax],
+    },
+  },
+  {
+    // Damocles Core's platform, the protocol and the per-process services both sides share, which must run outside main
+    files: CORE_HOST_TREES,
+    rules: {
+      '@typescript-eslint/no-restricted-imports': ['error', {
+        paths: [{ name: 'vscode', message: VSCODE_ONLY }, IN_CORE_HOST.path, ...PROCESS_BAN.paths],
+        patterns: [IN_CORE_HOST.pattern, MAIN_FROM_CORE.pattern],
+      }],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_CORE_HOST.syntax, ...MAIN_FROM_CORE.syntax, ...PROCESS_BAN.syntax],
+    },
+  },
+  {
+    files: ['src/desktop/shell/**/*.{ts,vue}'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': ['error', {
+        paths: [{ name: 'vscode', message: VSCODE_ONLY }, IN_SHELL.path, ...PROCESS_BAN.paths],
+        patterns: [IN_SHELL.pattern],
+      }],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_SHELL.syntax, ...PROCESS_BAN.syntax],
+    },
+  },
+  {
+    files: ['src/vscode/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': ['error', {
+        paths: [OUTSIDE_DESKTOP.path, ...PROCESS_BAN.paths],
+        patterns: [OUTSIDE_DESKTOP.pattern],
+      }],
+      'no-restricted-syntax': ['error', ...OUTSIDE_DESKTOP.syntax, ...PROCESS_BAN.syntax],
+    },
+  },
+  {
+    files: [...PROCESS_STARTERS_CORE, ...testsUnder('src')],
+    ignores: ['src/vscode/**', 'src/desktop/**'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': ['error', {
         paths: [{ name: 'vscode', message: VSCODE_ONLY }, OUTSIDE_DESKTOP.path],
         patterns: [OUTSIDE_DESKTOP.pattern],
       }],
@@ -189,7 +445,9 @@ export default [
     },
   },
   {
-    files: ['src/desktop/**/*.{ts,vue}'],
+    files: [...PROCESS_STARTERS_DESKTOP, ...testsUnder('src/desktop')],
+    // the trees below keep their own electron and desktop-main bans
+    ignores: ['src/desktop/shell/**', ...WORKER_ROOTS.map((root) => `${root}/**`), ...CORE_HOST_ROOTS.map((root) => `${root}/**`)],
     rules: {
       '@typescript-eslint/no-restricted-imports': ['error', {
         paths: [{ name: 'vscode', message: VSCODE_ONLY }],
@@ -198,17 +456,7 @@ export default [
     },
   },
   {
-    files: ['src/desktop/quick-open-worker/**/*.ts', 'src/desktop/watch-worker/**/*.ts', 'src/desktop/askpass/**/*.ts'],
-    rules: {
-      '@typescript-eslint/no-restricted-imports': ['error', {
-        paths: [{ name: 'vscode', message: VSCODE_ONLY }, IN_WORKER.path],
-        patterns: [IN_WORKER.pattern],
-      }],
-      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_WORKER.syntax],
-    },
-  },
-  {
-    files: ['src/desktop/shell/**/*.{ts,vue}'],
+    files: testsUnder('src/desktop/shell'),
     rules: {
       '@typescript-eslint/no-restricted-imports': ['error', {
         paths: [{ name: 'vscode', message: VSCODE_ONLY }, IN_SHELL.path],
@@ -218,7 +466,27 @@ export default [
     },
   },
   {
-    files: ['src/vscode/**/*.ts'],
+    files: WORKER_ROOTS.flatMap(testsUnder),
+    rules: {
+      '@typescript-eslint/no-restricted-imports': ['error', {
+        paths: [{ name: 'vscode', message: VSCODE_ONLY }, IN_WORKER.path],
+        patterns: [IN_WORKER.pattern],
+      }],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_WORKER.syntax],
+    },
+  },
+  {
+    files: CORE_HOST_ROOTS.flatMap(testsUnder),
+    rules: {
+      '@typescript-eslint/no-restricted-imports': ['error', {
+        paths: [{ name: 'vscode', message: VSCODE_ONLY }, IN_CORE_HOST.path],
+        patterns: [IN_CORE_HOST.pattern, MAIN_FROM_CORE.pattern],
+      }],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_CORE_HOST.syntax, ...MAIN_FROM_CORE.syntax],
+    },
+  },
+  {
+    files: testsUnder('src/vscode'),
     rules: {
       '@typescript-eslint/no-restricted-imports': ['error', {
         paths: [OUTSIDE_DESKTOP.path],
@@ -227,7 +495,13 @@ export default [
       'no-restricted-syntax': ['error', ...OUTSIDE_DESKTOP.syntax],
     },
   },
-  remSizing(['src/webview/**/*.{ts,vue}'], 'src/webview/style.css', [...VSCODE_SYNTAX, ...OUTSIDE_DESKTOP.syntax]),
+  {
+    files: NO_SYNC_FILES,
+    ignores: [...testsUnder('src'), ...WORKER_ONLY_FILES],
+    plugins: { damocles: damoclesPlugin },
+    rules: { 'damocles/no-sync': 'error' },
+  },
+  remSizing(['src/webview/**/*.{ts,vue}'], 'src/webview/style.css', [...VSCODE_SYNTAX, ...OUTSIDE_DESKTOP.syntax, ...PROCESS_BAN.syntax]),
   // The shell, overlay and popup pages all import this stylesheet, which carries the webview theme.
-  remSizing(['src/desktop/shell/**/*.{ts,vue}'], 'src/desktop/shell/style.css', [...VSCODE_SYNTAX, ...IN_SHELL.syntax]),
+  remSizing(['src/desktop/shell/**/*.{ts,vue}'], 'src/desktop/shell/style.css', [...VSCODE_SYNTAX, ...IN_SHELL.syntax, ...PROCESS_BAN.syntax]),
 ];

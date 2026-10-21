@@ -12,7 +12,7 @@ const safeStorage = vi.hoisted(() => ({
 vi.mock('electron', () => ({ safeStorage }));
 
 import type { NotificationService } from '../../../platform/notification-service';
-import { formatMessage } from '../platform/localization-service';
+import { formatMessage } from '../../local-services/localization-service';
 import { SECRETS_FILE, createDesktopSecretsStore } from '../platform/secrets-store';
 import { flushAcrossHeldRename } from '../../../__mocks__/held-rename';
 

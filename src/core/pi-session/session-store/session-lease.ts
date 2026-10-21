@@ -319,7 +319,67 @@ export function sessionLeaseBlocker(sessionId: string): SessionLeaseBlocker | un
   const heldUntilMs = mtimeMs + SESSION_LEASE_STALE_MS;
   const now = Date.now();
   if (heldUntilMs < now) return undefined;
+  if (isEndedHoldersLock(sessionId, mtimeMs, now)) return undefined;
   return now - mtimeMs > SESSION_LEASE_HEARTBEAT_STOPPED_MS ? { kind: 'other-process', heldUntilMs } : { kind: 'other-process' };
+}
+
+/** A process of this host the host saw end, and when (epoch ms). */
+export interface EndedLeaseHolder {
+  readonly pid: number;
+  readonly endedAt: number;
+}
+
+// Desktop: the Damocles Core processes that crashed before this one started. VS Code names none.
+let endedHolders: ReadonlyMap<number, number> = new Map();
+
+/** The processes whose leases this process takes over at once, without waiting for them to turn stale. */
+export function setEndedLeaseHolders(holders: readonly EndedLeaseHolder[]): void {
+  endedHolders = new Map(holders.map((holder) => [holder.pid, holder.endedAt]));
+}
+
+// Closer to stale than this, any process may take the lease over by staleness, so this one leaves it to that.
+const ENDED_TAKEOVER_MARGIN_MS = 2 * SESSION_LEASE_UPDATE_MS;
+// proper-lockfile stamps a lock up to a second ahead of the clock: its mtime-precision probe and second-precision heartbeats round up.
+const LOCK_MTIME_AHEAD_MS = 1_010;
+
+/**
+ * Whether `sessionId`'s lock is still the one an ended process held: its owner record, of this host, names that process
+ * and was written before it ended, and the lock's heartbeat last moved before it ended. A later holder, a reused pid
+ * included, moves the heartbeat, and no other process takes a lock over before it turns stale.
+ */
+function isEndedHoldersLock(sessionId: string, lockMtimeMs: number, now: number): boolean {
+  if (endedHolders.size === 0 || lockMtimeMs + SESSION_LEASE_STALE_MS - now <= ENDED_TAKEOVER_MARGIN_MS) return false;
+  const owner = readSessionLeaseOwner(sessionId);
+  const endedAt = owner?.hostname === os.hostname() ? endedHolders.get(owner.pid) : undefined;
+  return endedAt !== undefined && owner!.acquiredAt <= endedAt && lockMtimeMs <= endedAt + LOCK_MTIME_AHEAD_MS;
+}
+
+/** Moves an ended process's lock out of the way, so the caller can take the lease; false when it is not one. */
+function clearEndedHoldersLock(sessionId: string, lockPath: string): boolean {
+  let mtimeMs: number;
+  try {
+    // eslint-disable-next-line damocles/no-sync -- part of a claim, which never waits
+    mtimeMs = fs.statSync(lockPath).mtimeMs;
+  } catch {
+    return false;
+  }
+  if (!isEndedHoldersLock(sessionId, mtimeMs, Date.now())) return false;
+  // A rename is atomic: the lock leaves its path whole, and the lock taken next is a new directory.
+  const cleared = `${lockPath}.${randomUUID()}.ended`;
+  try {
+    // eslint-disable-next-line damocles/no-sync -- part of a claim, which never waits
+    fs.renameSync(lockPath, cleared);
+  } catch {
+    return false;
+  }
+  try {
+    // eslint-disable-next-line damocles/no-sync -- part of a claim, which never waits
+    fs.rmSync(cleared, { recursive: true, force: true });
+  } catch (err) {
+    log('[session-lease] removing %s failed: %O', cleared, err);
+  }
+  log('[session-lease] took over session %s from an ended process', sessionId);
+  return true;
 }
 
 /**
@@ -390,18 +450,26 @@ export function acquireSessionLease(sessionId: string, holder: SessionLeaseHolde
     ownerWriteFailed: false,
     handingOver: false,
   };
+  // The lock is keyed by session id alone; realpath false because nothing exists at that path until the lock does.
+  // eslint-disable-next-line damocles/no-sync -- claimStoredSession relies on a claim never waiting
+  const lock = (): (() => void) => lockfile.lockSync(lockPath, {
+    lockfilePath: lockPath,
+    realpath: false,
+    stale: SESSION_LEASE_STALE_MS,
+    update: SESSION_LEASE_UPDATE_MS,
+    onCompromised: (err) => onCompromised(sessionId, lease, err),
+  });
   try {
-    // The lock is keyed by session id alone; realpath false because nothing exists at that path until the lock does.
-    lease.release = lockfile.lockSync(lockPath, {
-      lockfilePath: lockPath,
-      realpath: false,
-      stale: SESSION_LEASE_STALE_MS,
-      update: SESSION_LEASE_UPDATE_MS,
-      onCompromised: (err) => onCompromised(sessionId, lease, err),
-    });
+    lease.release = lock();
   } catch (err) {
-    if (isBusyError(err)) return false;
-    throw err;
+    if (!isBusyError(err)) throw err;
+    if (!clearEndedHoldersLock(sessionId, lockPath)) return false;
+    try {
+      lease.release = lock();
+    } catch (retryErr) {
+      if (isBusyError(retryErr)) return false;
+      throw retryErr;
+    }
   }
   // Nothing between the lock and the map may throw, or the lock would heartbeat with no lease to release it.
   leases.set(sessionId, lease);

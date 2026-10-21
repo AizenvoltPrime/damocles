@@ -176,6 +176,7 @@ package-lock.json
 # Desktop app: build output, packaging config, end-to-end suite, Windows icon, terminal shell-integration scripts, and the askpass helper and its scripts (DESKTOP_EXCLUDE_RULES in scripts/sync-vscodeignore.mjs)
 dist/desktop/**
 dist/desktop-shell/**
+dist/core-host.js
 dist/formatter-host.js
 dist/pty-host.js
 dist/quick-open-worker.js

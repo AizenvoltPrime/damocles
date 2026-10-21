@@ -2,6 +2,11 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { AutoCheckpointProducer } from '../../auto-checkpoint';
+import { installProcessLauncher } from '../../../../process-launcher';
+import { createInProcessLauncher } from '../../../../process-launcher/in-process';
+
+// A host installs its launcher before its first process start; this child is its own host.
+installProcessLauncher(createInProcessLauncher());
 
 const [cwd, sessionId, sessionFile, turnsArg, resultFile] = process.argv.slice(2);
 if (!cwd || !sessionId || !sessionFile || !turnsArg || !resultFile) {

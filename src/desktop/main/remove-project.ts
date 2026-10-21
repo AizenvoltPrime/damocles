@@ -22,8 +22,8 @@ type Translate = (message: string, ...args: string[]) => string;
 
 export interface RemoveProjectDeps {
   readonly project: (key: string) => { readonly name: string };
-  // D33's busy rule over the project's loaded chats, its worktrees' included
-  readonly busy: (key: string) => boolean;
+  // D33's busy rule over the project's loaded chats, its worktrees' included, which core decides
+  readonly busy: (key: string) => Promise<boolean>;
   readonly waitingChats: (key: string) => WaitingChat[];
   readonly terminals: {
     // the project's terminals and its worktrees'
@@ -50,12 +50,12 @@ const EXCERPT_LENGTH = 40;
 export async function removeProject(key: string, deps: RemoveProjectDeps): Promise<RemoveProjectResult> {
   const { name } = deps.project(key);
   const running = (): RemoveProjectResult => ({ ok: false, reason: deps.t('A conversation is running in {0}. Stop it or wait for it to finish, then remove the project.', name) });
-  if (deps.busy(key)) return running();
+  if (await deps.busy(key)) return running();
   let waiting = deps.waitingChats(key);
   for (;;) {
     if (!(await confirmRemoval(key, name, waiting, deps))) return { ok: true };
     // a turn may have started, or another chat held its first prompt, while the question was open
-    if (deps.busy(key)) return running();
+    if (await deps.busy(key)) return running();
     const asked = new Set(waiting.map((chat) => chat.corePanelId));
     waiting = deps.waitingChats(key);
     if (waiting.every((chat) => asked.has(chat.corePanelId))) break;

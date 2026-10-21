@@ -33,7 +33,7 @@ import {
   TERMINAL_SHELL_INTEGRATION_SETTING,
   type TerminalConfirmOnKill,
   type TerminalMultiLinePasteWarning,
-} from '../../../main/desktop-configuration';
+} from '../../../local-services/desktop-configuration';
 import { answerOf } from '../popup-answer';
 import { useDesktopPrefs } from './desktop-prefs';
 import { integerSetting } from './integer-setting';

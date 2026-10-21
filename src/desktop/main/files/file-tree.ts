@@ -7,15 +7,15 @@ import type { FileWatcher, FileWatcherFactory } from '../../../platform/file-wat
 import { isRelativeFilePath } from '../../../shared/relative-path';
 import { visibleText } from '../../../shared/visible-text';
 import { isValidFileName } from '../../preload/file-names';
-import {
-  type FileEntry,
-  type FilesChanged,
-  type FilesDeleteResult,
-  type FilesListResult,
-  type FilesMutationResult,
+import type {
+  FileEntry,
+  FilesChanged,
+  FilesDeleteResult,
+  FilesListResult,
+  FilesMutationResult,
 } from '../../preload/shell-channels';
 import type { AskMessage } from '../message-dialog';
-import { confineEntry, confineExisting, followsLocalLinksOnly, isRelativeOrRoot, type Project } from '../documents/confine';
+import { confineEntry, confineExisting, followsLocalLinksOnly, isRelativeOrRoot, type Project } from '../../local-services/confine';
 
 // Bursts of watcher events (a checkout, a build) reach the shell as one change per this window.
 const CHANGE_BATCH_MS = 100;

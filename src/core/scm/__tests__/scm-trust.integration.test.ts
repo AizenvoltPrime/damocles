@@ -1,7 +1,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createGitRunner, GitUntrustedError } from '../git-runner';
+import { createGitRunner } from '../git-runner';
+import { GitUntrustedError } from '../errors';
 import { PLAIN_COMMIT } from '../repository';
 import { SCM_SETTING_KEYS } from '../settings-keys';
 import { armFsmonitor, freshStatus, git, GIT_PATH, harness, HAS_GIT, makeRepo, ready, sandbox, statusOf, useGitSandbox, viewOf, waitFor, write } from './git-harness';

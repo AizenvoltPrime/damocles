@@ -8,7 +8,7 @@ export type ExecutablePathForm = { readonly kind: 'absolute'; readonly file: str
 
 /**
  * An executable path decided lexically, before any file system call: UNC, device, drive-relative, root-relative and `~`
- * paths, a relative path with a folder, and a Windows device name are refused, as documents/confine.ts and terminal links
+ * paths, a relative path with a folder, and a Windows device name are refused, as local-services/confine.ts and terminal links
  * refuse them; a bare name is for a PATH lookup.
  */
 export function executablePathForm(value: string, platform: NodeJS.Platform): ExecutablePathForm {

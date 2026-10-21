@@ -6,7 +6,7 @@ import { __config } from 'vscode';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { parseContributedConfiguration } from '../../../core/config/contributed-configuration';
 import type { SettingsScope, SettingsStore } from '../../../platform/settings-store';
-import { DesktopSettingsStore } from '../../../desktop/main/platform/settings-store';
+import { DesktopSettingsStore } from '../../../desktop/local-services/settings-store';
 import { VsCodeSettingsStore } from '../settings-store';
 
 type Layer = Readonly<Record<string, unknown>>;

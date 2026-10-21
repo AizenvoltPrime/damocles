@@ -1,8 +1,12 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { spawn } from 'node:child_process';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SPAWN_TEST_TIMEOUT_MS } from '../../../__mocks__/spawn-budget';
+import { installProcessLauncher, processLauncher } from '../../../core/process-launcher';
+import { createInProcessLauncher } from '../../../core/process-launcher/in-process';
 import { collectEnvDump, mergeLoginShellEnv, probeGit, type EnvDumpResult } from '../shell-env';
 
 let saved: NodeJS.ProcessEnv;
@@ -36,7 +40,7 @@ describe('collectEnvDump', () => {
   function collect(maxBytes = 1024 * 1024): { stdout: PassThrough; results: EnvDumpResult[] } {
     const stdout = new PassThrough();
     const results: EnvDumpResult[] = [];
-    collectEnvDump(stdout, MARKER, maxBytes, (result) => results.push(result));
+    stdout.on('data', collectEnvDump(MARKER, maxBytes, (result) => results.push(result)));
     return { stdout, results };
   }
   const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
@@ -81,7 +85,7 @@ describe('mergeLoginShellEnv', () => {
   it.skipIf(process.platform !== 'win32')('leaves the environment alone on Windows, whose GUI apps inherit it', async () => {
     process.env['SHELL'] = 'C:\\nonexistent\\shell.exe';
     const before = { ...process.env };
-    await mergeLoginShellEnv(log);
+    await mergeLoginShellEnv(processLauncher(), log);
     expect(process.env).toEqual(before);
   });
 
@@ -95,7 +99,7 @@ describe('mergeLoginShellEnv', () => {
         'eval "$4"',
         'echo "goodbye"',
       ].join('\n'));
-      await mergeLoginShellEnv(log);
+      await mergeLoginShellEnv(processLauncher(), log);
       expect(process.env['DAMOCLES_FROM_PROFILE']).toBe('yes');
       expect(process.env['PATH']!.split(path.delimiter)[0]).toBe(bin);
       expect(process.env['ELECTRON_RUN_AS_NODE']).toBe(saved['ELECTRON_RUN_AS_NODE']);
@@ -106,7 +110,7 @@ describe('mergeLoginShellEnv', () => {
       const hostile = `$(touch ${marker}); \`touch ${marker}\`; ' "`;
       process.env['DAMOCLES_HOSTILE'] = hostile;
       process.env['SHELL'] = fakeShell('eval "$4"');
-      await mergeLoginShellEnv(log);
+      await mergeLoginShellEnv(processLauncher(), log);
       expect(fs.existsSync(marker)).toBe(false);
       expect(process.env['DAMOCLES_HOSTILE']).toBe(hostile);
     });
@@ -114,7 +118,7 @@ describe('mergeLoginShellEnv', () => {
     it('merges the environment without waiting for a background job that holds stdout open', async () => {
       process.env['SHELL'] = fakeShell(['(sleep 30) &', 'export DAMOCLES_FROM_PROFILE=early', 'eval "$4"'].join('\n'));
       const started = Date.now();
-      await mergeLoginShellEnv(log, 5_000);
+      await mergeLoginShellEnv(processLauncher(), log, 5_000);
       expect(process.env['DAMOCLES_FROM_PROFILE']).toBe('early');
       expect(Date.now() - started).toBeLessThan(4_000);
     });
@@ -122,7 +126,7 @@ describe('mergeLoginShellEnv', () => {
     it('gives up on a profile that never prints the environment within the deadline', async () => {
       process.env['SHELL'] = fakeShell('sleep 30');
       const before = { ...process.env };
-      await mergeLoginShellEnv(log, 300);
+      await mergeLoginShellEnv(processLauncher(), log, 300);
       expect(process.env).toEqual(before);
       expect(lines.some((line) => line.includes('did not print its environment within 300 ms'))).toBe(true);
     });
@@ -130,7 +134,7 @@ describe('mergeLoginShellEnv', () => {
     it('logs and keeps the launch environment when the shell prints no environment', async () => {
       process.env['SHELL'] = fakeShell('echo "broken profile"; exit 3');
       const before = { ...process.env };
-      await mergeLoginShellEnv(log);
+      await mergeLoginShellEnv(processLauncher(), log);
       expect(process.env).toEqual(before);
       expect(lines.some((line) => line.includes('keeping the launch environment'))).toBe(true);
     });
@@ -172,4 +176,17 @@ describe('probeGit', () => {
     process.env['PATH'] = [relative, gitDir].join(path.delimiter);
     expect(await probeGit(log, (message) => message)).toMatchObject({ available: true, path: path.join(gitDir, gitName) });
   });
+
+  it('settles at its deadline though git hangs and a process it started keeps the output open', async () => {
+    process.env['PATH'] = realGitDir();
+    // as Git\cmd\git.exe runs the real git: a child holding the same stdout, which outlives a kill of the wrapper alone
+    const hang = "require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)'], { stdio: ['ignore', 'inherit', 'ignore'] }); setInterval(() => {}, 1000);";
+    const previous = installProcessLauncher(createInProcessLauncher({ spawn: (_file, _args, options) => spawn(process.execPath, ['-e', hang], options) }));
+    try {
+      const probe = await probeGit(log, (message, ...args) => message.replace('{0}', args[0] ?? ''), 500);
+      expect(probe).toEqual({ available: false, reason: 'Git could not run (no answer within 500 ms), so source control, checkpoints and rewind are turned off.' });
+    } finally {
+      installProcessLauncher(previous!);
+    }
+  }, SPAWN_TEST_TIMEOUT_MS);
 });

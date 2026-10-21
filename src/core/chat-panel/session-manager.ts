@@ -37,7 +37,7 @@ export interface SessionManagerConfig {
   getRawBrowserService: () => BrowserService;
   /** The folder's Compass service, or null for a folder with no project index. */
   getCompassService: (folderKey: string) => CompassService | null;
-  onAssistantTextFinal?: (text: string) => void;
+  onAssistantTextFinal?: (text: string, panelId: string) => void;
   platform: PlatformWithWorktrees;
 }
 
@@ -93,6 +93,7 @@ export class SessionManager {
     const piMemoryService = this.getMemoryService();
     const piCompassService = this.getCompassService(folder.key);
     const piBrowserService = this.getRawBrowserService();
+    const onAssistantTextFinal = this.onAssistantTextFinal;
 
     // Team service: its deps reference the about-to-be-created PiSession lazily (resolved at call time).
     // eslint-disable-next-line prefer-const -- forward reference: the teamService deps closures capture piSession before it's assigned.
@@ -158,7 +159,7 @@ export class SessionManager {
       teamService,
       ...(onSpawnFork !== undefined ? { onSpawnFork } : {}),
       ...(forkContext !== undefined ? { forkContext } : {}),
-      ...(this.onAssistantTextFinal !== undefined ? { onAssistantTextFinal: this.onAssistantTextFinal } : {}),
+      ...(onAssistantTextFinal !== undefined ? { onAssistantTextFinal: (text: string) => onAssistantTextFinal(text, panelId) } : {}),
     });
     return piSession;
   }

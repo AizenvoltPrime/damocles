@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
@@ -46,7 +47,10 @@ export interface FakePlatformInit {
   /** Defaults to true, matching the vscode mock's `workspace.isTrusted`. */
   readonly trusted?: boolean;
   readonly folders?: readonly OpenFolder[];
-  /** resourceRoot and unpackedRoot; workers resolve under `<appRoot>/dist` as on VS Code. */
+  /**
+   * resourceRoot and unpackedRoot, by default the repository; workers resolve under `<appRoot>/dist` as on VS Code.
+   * Without it workers resolve under a folder that does not exist, so no test runs whatever the repository's `dist/` holds.
+   */
   readonly appRoot?: string;
   readonly version?: string;
   /** Defaults to 'vscode'. */
@@ -161,6 +165,10 @@ export interface FakeDialogService extends DialogService {
 export interface FakeDiffView extends DiffView {
   readonly request: DiffRequest;
   readonly closeCalls: number;
+  // settles once the diff is gone, by close() or closedByUser(), as desktop main's does
+  readonly closed: Promise<void>;
+  // the user closed the diff's tab
+  closedByUser(): void;
 }
 
 export interface FakeOpenedFile {
@@ -184,6 +192,7 @@ export interface FakeEditorService extends EditorService {
   readonly untitled: readonly FakeUntitledDocument[];
   /** Every showDiff view, oldest first, each carrying the DiffRequest it was opened with. */
   readonly diffs: readonly FakeDiffView[];
+  showDiff(req: DiffRequest): Promise<FakeDiffView>;
   readonly markdownPreviews: readonly FakeMarkdownPreview[];
   readonly settingsQueries: readonly (string | undefined)[];
   readonly settingsFiles: ReadonlyArray<{ readonly scope: SettingsFileScope; readonly key?: string }>;
@@ -648,6 +657,8 @@ function createDialogs(): FakeDialogService {
 
 function createFakeDiffView(request: DiffRequest): FakeDiffView {
   let closeCalls = 0;
+  let settle!: () => void;
+  const closed = new Promise<void>((resolve) => (settle = resolve));
   return {
     request,
     get closeCalls() {
@@ -655,8 +666,11 @@ function createFakeDiffView(request: DiffRequest): FakeDiffView {
     },
     close: () => {
       closeCalls += 1;
+      settle();
       return Promise.resolve();
     },
+    closed,
+    closedByUser: () => settle(),
   };
 }
 
@@ -895,13 +909,20 @@ const WORKER_FILES: Readonly<Record<WorkerName, string>> = {
   compass: 'compass-worker.js',
   usageStats: 'usage-stats-worker.js',
   sentinel: 'sentinel.js',
+  processLauncher: 'process-launcher-worker.js',
+  memoryIntegrity: 'memory-integrity-worker.js',
+  sessionMetaIndex: 'session-meta-index-worker.js',
+  voiceExtract: 'voice-extract-worker.js',
 };
 
-function createAppPaths(root: string): AppPaths {
+const NO_WORKERS_ROOT = path.join(os.tmpdir(), `damocles-fake-platform-no-workers-${randomUUID()}`);
+
+function createAppPaths(root: string | undefined): AppPaths {
+  const resourceRoot = root ?? path.resolve(__dirname, '..', '..');
   return {
-    resourceRoot: root,
-    unpackedRoot: root,
-    workerEntry: (name) => path.join(root, 'dist', WORKER_FILES[name]),
+    resourceRoot,
+    unpackedRoot: resourceRoot,
+    workerEntry: (name) => path.join(root ?? NO_WORKERS_ROOT, 'dist', WORKER_FILES[name]),
   };
 }
 
@@ -921,7 +942,7 @@ export function createFakePlatform(init: FakePlatformInit = {}): FakePlatform {
     fileWatchers: createFileWatcherFactory(workspaceFolders),
     confinement: createVsCodeFileConfinement(),
     notifications: createNotificationService(),
-    paths: createAppPaths(init.appRoot ?? path.resolve(__dirname, '..', '..')),
+    paths: createAppPaths(init.appRoot),
     appInfo: { version: init.version ?? '0.0.0-test', host: init.host ?? 'vscode' },
     localization: createLocalization(init.language ?? 'en'),
     clipboard: createClipboard(),

@@ -6,15 +6,17 @@ import type { FileWatcher } from '../../../platform/file-watcher';
 import type { GitCall, GitCloner, GitRunner } from '../git-runner';
 import { ScmService, type ScmQuestion } from '../scm-service';
 
-const sessionJobs = vi.hoisted(() => ({ created: [] as Array<{ disposed: number; dispose: () => void }> }));
+const sessionJobs = vi.hoisted(() => ({ created: [] as Array<{ id: number; disposed: number; dispose: () => void }> }));
 
 // The real one is a kernel job or a sentinel process; this records which handle the service made and when it closed.
-vi.mock('../../pi-session/tools/process-tree', () => ({
-  createShellSessionJob: () => {
-    const job = { disposed: 0, dispose: () => void job.disposed++ };
-    sessionJobs.created.push(job);
-    return job;
-  },
+vi.mock('../../process-launcher', () => ({
+  processLauncher: () => ({
+    createSessionJob: () => {
+      const job = { id: sessionJobs.created.length + 1, disposed: 0, dispose: () => void job.disposed++ };
+      sessionJobs.created.push(job);
+      return job;
+    },
+  }),
 }));
 
 const sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dam-scm-service-')));

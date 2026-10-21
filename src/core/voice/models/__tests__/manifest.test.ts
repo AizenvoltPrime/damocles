@@ -150,14 +150,6 @@ describe("compareInstalled", () => {
     expect(result.outdated[0]?.installedVersion).toBe("1.5.0");
   });
 
-  it("honors pinned version override (CompareOptions.pinned)", async () => {
-    await mkdir(join(tmp, "parakeet", "v1.0.0"), { recursive: true });
-    await writeFile(join(tmp, "parakeet", "v1.0.0", "model.nemo"), "pinned");
-    const result = await compareInstalled(tmp, manifest, { pinned: { parakeet: "1.0.0" } });
-    expect(result.ok).toBe(true);
-    expect(result.outdated).toHaveLength(0);
-  });
-
   it("reports ok when current version + all files present", async () => {
     await mkdir(join(tmp, "parakeet", "v2.0.0"), { recursive: true });
     await writeFile(join(tmp, "parakeet", "v2.0.0", "model.nemo"), "new");
@@ -193,7 +185,7 @@ describe("cleanupOldVersions", () => {
     expect(result.bytesFreed).toBeGreaterThanOrEqual(1000);
   });
 
-  it("does not remove the pinned current version", async () => {
+  it("does not remove the manifest's current version", async () => {
     await mkdir(join(tmp, "parakeet", "v2.0.0"), { recursive: true });
     await writeFile(join(tmp, "parakeet", "v2.0.0", "model.nemo"), "current");
     const result = await cleanupOldVersions(tmp, manifest);

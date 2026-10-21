@@ -165,12 +165,6 @@ vi.mock('../pi-loader', async () => {
 
 vi.mock('../session-title', () => ({ generateSessionTitle: async () => null }));
 
-vi.mock('../tools/process-tree', () => ({
-  createShellSessionJob: () => ({ dispose: () => undefined }),
-  createShellJob: () => undefined,
-  killProcessTree: () => undefined,
-}));
-
 // Only the fs-touching seed is stubbed; `cacheWarmingSetting` stays real so the mode a test configures
 // travels the production path.
 vi.mock('../agent-dir', async (importOriginal) => ({

@@ -109,6 +109,27 @@ function programIndex(callee: ts.Expression, spawners: Spawners): number | undef
   return namespaced ? 0 : undefined;
 }
 
+const LAUNCH_CALLS = new Set(['launch', 'runProcess']);
+
+/** The `file` of a process launcher start, `launcher.launch({ file, ... })` or `runProcess({ file, ... })`, else undefined. */
+function launchedFile(node: ts.CallExpression): ts.Expression | undefined {
+  const callee = node.expression;
+  const name = ts.isIdentifier(callee) ? callee.text : ts.isPropertyAccessExpression(callee) ? callee.name.text : undefined;
+  const [spec] = node.arguments;
+  if (name === undefined || !LAUNCH_CALLS.has(name) || !spec || !ts.isObjectLiteralExpression(spec)) return undefined;
+  for (const property of spec.properties) {
+    if (ts.isPropertyAssignment(property) && ts.isIdentifier(property.name) && property.name.text === 'file') return property.initializer;
+    if (ts.isShorthandPropertyAssignment(property) && property.name.text === 'file') return property.name;
+  }
+  return undefined;
+}
+
+/** The expression naming the program a call starts, when it is a spawner or a launcher start. */
+function programOf(node: ts.CallExpression, spawners: Spawners): ts.Expression | undefined {
+  const index = programIndex(node.expression, spawners);
+  return index === undefined ? launchedFile(node) : node.arguments[index];
+}
+
 /**
  * Every spawner a file can call: child_process's (named, default, namespace and require imports), the checkpoints' exec
  * helpers, promisify() aliases of either, and local functions passing one of their parameters on as a spawner's program.
@@ -154,6 +175,9 @@ function fileSpawners(source: ts.SourceFile): Spawners {
     size = spawners.calls.size;
     for (const declaration of declarations) {
       const init = declaration.initializer;
+      // `const probe = opts.probe ?? defaultProbe` starts what the spawner it may hold starts
+      const aliased = ts.isIdentifier(declaration.name) && init ? calleeArms(init).find((arm) => spawners.calls.has(arm)) : undefined;
+      if (aliased !== undefined && ts.isIdentifier(declaration.name)) spawners.calls.set(declaration.name.text, spawners.calls.get(aliased)!);
       if (!ts.isIdentifier(declaration.name) || !init || !ts.isCallExpression(init) || !init.arguments[0]) continue;
       const callee = init.expression;
       const promisify = ts.isIdentifier(callee) ? callee.text === 'promisify' : ts.isPropertyAccessExpression(callee) && callee.name.text === 'promisify';
@@ -165,8 +189,7 @@ function fileSpawners(source: ts.SourceFile): Spawners {
       const params = fn.parameters.map((param) => (ts.isIdentifier(param.name) ? param.name.text : undefined));
       const visit = (node: ts.Node): void => {
         if (ts.isCallExpression(node)) {
-          const index = programIndex(node.expression, spawners);
-          const program = index === undefined ? undefined : node.arguments[index];
+          const program = programOf(node, spawners);
           const param = program && ts.isIdentifier(program) ? params.indexOf(program.text) : -1;
           if (param >= 0) spawners.calls.set(name, param);
         }
@@ -178,40 +201,134 @@ function fileSpawners(source: ts.SourceFile): Spawners {
   return spawners;
 }
 
+/** The identifiers an expression may call through: itself, or every arm of a choice or fallback. */
+function calleeArms(expr: ts.Expression): string[] {
+  const inner = unwrap(expr);
+  if (ts.isIdentifier(inner)) return [inner.text];
+  if (ts.isConditionalExpression(inner)) return [...calleeArms(inner.whenTrue), ...calleeArms(inner.whenFalse)];
+  if (ts.isBinaryExpression(inner) && (inner.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken || inner.operatorToken.kind === ts.SyntaxKind.BarBarToken)) {
+    return [...calleeArms(inner.left), ...calleeArms(inner.right)];
+  }
+  return [];
+}
+
 const isAbsoluteProgram = (text: string): boolean => path.posix.isAbsolute(text) || path.win32.isAbsolute(text);
 
-/** The bare program names an expression can evaluate to: literals, templates by their leading text, every arm of a choice or fallback, and file constants. */
-function barePrograms(expr: ts.Expression, constants: ReadonlyMap<string, ts.Expression>, depth = 0): string[] {
-  if (ts.isParenthesizedExpression(expr) || ts.isAsExpression(expr) || ts.isNonNullExpression(expr) || ts.isSatisfiesExpression(expr)) return barePrograms(expr.expression, constants, depth);
+// A file constant holds its initializer; a `for...of` loop variable, used inside its loop, holds the expression it iterates;
+// a call of a file function yields what its return statements do.
+interface Bindings {
+  readonly constants: ReadonlyMap<string, ts.Expression>;
+  readonly loops: ReadonlyMap<string, readonly ts.ForOfStatement[]>;
+  readonly functions: ReadonlyMap<string, FunctionLike>;
+}
+
+/** The expressions a function returns: its own return statements, nested functions excluded, or an arrow's expression body. */
+function returnedBy(fn: FunctionLike): ts.Expression[] {
+  if (fn.body === undefined) return [];
+  if (!ts.isBlock(fn.body)) return [fn.body];
+  const found: ts.Expression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (isFunctionLike(node)) return;
+    if (ts.isReturnStatement(node) && node.expression) found.push(node.expression);
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(fn.body, visit);
+  return found;
+}
+
+/** The object literals an expression can be: directly, through a file constant, or as an element a `for...of` variable takes. */
+function objectLiterals(expr: ts.Expression, bindings: Bindings, depth: number): ts.ObjectLiteralExpression[] {
+  const inner = unwrap(expr);
+  if (ts.isObjectLiteralExpression(inner)) return [inner];
+  if (!ts.isIdentifier(inner) || depth >= 8) return [];
+  const constant = bindings.constants.get(inner.text);
+  if (constant) return objectLiterals(constant, bindings, depth + 1);
+  const iterated = iteratedBy(inner, bindings);
+  return iterated ? iteratedElements(iterated, bindings, depth + 1).flatMap((element) => objectLiterals(element, bindings, depth + 1)) : [];
+}
+
+/** The value a named property has in an object literal, or undefined. */
+function propertyValue(object: ts.ObjectLiteralExpression, name: string): ts.Expression | undefined {
+  for (const property of object.properties) {
+    if (ts.isPropertyAssignment(property) && (ts.isIdentifier(property.name) || ts.isStringLiteralLike(property.name)) && property.name.text === name) return property.initializer;
+    if (ts.isShorthandPropertyAssignment(property) && property.name.text === name) return property.name;
+  }
+  return undefined;
+}
+
+function iteratedBy(use: ts.Identifier, bindings: Bindings): ts.Expression | undefined {
+  return bindings.loops.get(use.text)?.find((loop) => use.pos >= loop.statement.pos && use.end <= loop.statement.end)?.expression;
+}
+
+const unwrap = (expr: ts.Expression): ts.Expression =>
+  ts.isParenthesizedExpression(expr) || ts.isAsExpression(expr) || ts.isNonNullExpression(expr) || ts.isSatisfiesExpression(expr) ? unwrap(expr.expression) : expr;
+
+/**
+ * The elements an iterated expression can yield: an array literal's, spreads included, directly, through a file constant or
+ * as returned by a call of a file function.
+ */
+function iteratedElements(expr: ts.Expression, bindings: Bindings, depth: number): ts.Expression[] {
+  const inner = unwrap(expr);
+  if (ts.isArrayLiteralExpression(inner)) return inner.elements.flatMap((element) => (ts.isSpreadElement(element) ? iteratedElements(element.expression, bindings, depth) : [element]));
+  if (depth >= 8) return [];
+  const fn = ts.isCallExpression(inner) && ts.isIdentifier(inner.expression) ? bindings.functions.get(inner.expression.text) : undefined;
+  if (fn) return returnedBy(fn).flatMap((returned) => iteratedElements(returned, bindings, depth + 1));
+  const constant = ts.isIdentifier(inner) ? bindings.constants.get(inner.text) : undefined;
+  return constant ? iteratedElements(constant, bindings, depth + 1) : [];
+}
+
+/**
+ * The bare program names an expression can evaluate to: literals, templates by their leading text, every arm of a choice or
+ * fallback, file constants, each element a `for...of` loop variable takes from an array literal, and a property read off the
+ * object literals such an element or constant can be.
+ */
+function barePrograms(expr: ts.Expression, bindings: Bindings, depth = 0): string[] {
+  if (ts.isParenthesizedExpression(expr) || ts.isAsExpression(expr) || ts.isNonNullExpression(expr) || ts.isSatisfiesExpression(expr)) return barePrograms(expr.expression, bindings, depth);
+  if (ts.isPropertyAccessExpression(expr) && depth < 8) {
+    return objectLiterals(expr.expression, bindings, depth + 1).flatMap((object) => {
+      const value = propertyValue(object, expr.name.text);
+      return value ? barePrograms(value, bindings, depth + 1) : [];
+    });
+  }
   if (ts.isStringLiteralLike(expr)) return isAbsoluteProgram(expr.text) ? [] : [expr.text];
   // a template starting with a substitution is as absolute as that value, which the guard cannot know
   if (ts.isTemplateExpression(expr)) return expr.head.text === '' || isAbsoluteProgram(expr.head.text) ? [] : [`${expr.head.text}\${…}`];
-  if (ts.isConditionalExpression(expr)) return [...barePrograms(expr.whenTrue, constants, depth), ...barePrograms(expr.whenFalse, constants, depth)];
+  if (ts.isConditionalExpression(expr)) return [...barePrograms(expr.whenTrue, bindings, depth), ...barePrograms(expr.whenFalse, bindings, depth)];
   if (ts.isBinaryExpression(expr) && (expr.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken || expr.operatorToken.kind === ts.SyntaxKind.BarBarToken)) {
-    return [...barePrograms(expr.left, constants, depth), ...barePrograms(expr.right, constants, depth)];
+    return [...barePrograms(expr.left, bindings, depth), ...barePrograms(expr.right, bindings, depth)];
   }
-  const constant = ts.isIdentifier(expr) && depth < 8 ? constants.get(expr.text) : undefined;
-  return constant ? barePrograms(constant, constants, depth + 1) : [];
+  if (!ts.isIdentifier(expr) || depth >= 8) return [];
+  const constant = bindings.constants.get(expr.text);
+  if (constant) return barePrograms(constant, bindings, depth + 1);
+  const iterated = iteratedBy(expr, bindings);
+  return iterated ? iteratedElements(iterated, bindings, depth + 1).flatMap((element) => barePrograms(element, bindings, depth + 1)) : [];
 }
 
 /** Every spawner call in one source text whose program can be a name that is not an absolute path. */
 function bareNameSpawnsIn(file: string, text: string): string[] {
   // A file naming neither seed of `fileSpawners` has no spawner, so it is not parsed.
-  if (!/child_process|exec['"`]/.test(text)) return [];
+  if (!/child_process|exec['"`]|launch\(|runProcess\(/.test(text)) return [];
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
   const spawners = fileSpawners(source);
   const constants = new Map<string, ts.Expression>();
+  const loops = new Map<string, ts.ForOfStatement[]>();
+  const functions = new Map<string, FunctionLike>();
   const collect = (node: ts.Node): void => {
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && (ts.getCombinedNodeFlags(node) & ts.NodeFlags.Const) !== 0) constants.set(node.name.text, node.initializer);
+    if (ts.isFunctionDeclaration(node) && node.name) functions.set(node.name.text, node);
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && isFunctionLike(node.initializer)) functions.set(node.name.text, node.initializer);
+    if (ts.isForOfStatement(node) && ts.isVariableDeclarationList(node.initializer)) {
+      for (const declaration of node.initializer.declarations) if (ts.isIdentifier(declaration.name)) loops.set(declaration.name.text, [...(loops.get(declaration.name.text) ?? []), node]);
+    }
     ts.forEachChild(node, collect);
   };
   collect(source);
+  const bindings: Bindings = { constants, loops, functions };
   const found: string[] = [];
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
-      const index = programIndex(node.expression, spawners);
-      const program = index === undefined ? undefined : node.arguments[index];
-      for (const name of program ? barePrograms(program, constants) : []) found.push(`${file}:${source.getLineAndCharacterOfPosition(node.getStart()).line + 1}: ${name}`);
+      const program = programOf(node, spawners);
+      for (const name of program ? barePrograms(program, bindings) : []) found.push(`${file}:${source.getLineAndCharacterOfPosition(node.getStart()).line + 1}: ${name}`);
     }
     ts.forEachChild(node, visit);
   };
@@ -245,6 +362,18 @@ describe('process spawns', () => {
     ['either arm of a choice', "import { spawn } from 'child_process'; declare const win: boolean; spawn(win ? 'powershell.exe' : '/bin/bash');", 'powershell.exe'],
     ['a fallback', "import { spawn } from 'child_process'; declare const found: string | undefined; spawn(found ?? 'bash');", 'bash'],
     ['a checkpoint exec helper', "import { execSafe } from '../checkpoints/exec'; execSafe('git', ['status']);", 'git'],
+    ['a launcher start', "processLauncher().launch({ file: 'rg', args: [] });", 'rg'],
+    ['a collected launcher start', "const SMI = 'nvidia-smi'; runProcess({ file: SMI, args: [] });", 'nvidia-smi'],
+    ['a launcher start naming its file by shorthand', "const file = 'npm'; launcher.launch({ file, args: [] });", 'npm'],
+    ['a wrapper whose parameter is a launcher start\'s file', "function run(cmd: string) { return processLauncher().launch({ file: cmd, args: [] }); } run('ldconfig');", 'ldconfig'],
+    ['a for...of over a constant array', "const EXES = ['/bin/pwsh', 'pwsh'] as const; function run(exe: string) { return processLauncher().launch({ file: exe, args: [] }); } for (const exe of EXES) run(exe);", 'pwsh'],
+    ['a for...of over an array literal with a spread', "const MORE = ['powershell.exe']; for (const exe of ['/bin/sh', ...MORE]) runProcess({ file: exe, args: [] });", 'powershell.exe'],
+    [
+      'a property of the objects a file function returns, iterated and started through a fallback alias',
+      "function candidates(mac: boolean) { if (mac) return [{ cc: 'clang', cxx: '/usr/bin/clang++' }]; return [{ cc: 'gcc', cxx: 'g++' }]; } async function probeOne(cxx: string) { return runProcess({ file: cxx, args: [] }); } async function ensure(opts: { probe?: typeof probeOne }) { const probe = opts.probe ?? probeOne; const list = candidates(false); for (const candidate of list) await probe(candidate.cxx); }",
+      'g++',
+    ],
+    ['a property of a constant object', "const TOOL = { file: 'nvidia-smi' }; runProcess({ file: TOOL.file, args: [] });", 'nvidia-smi'],
   ])('sees a bare program through %s', (_case, text, program) => {
     expect(bareNameSpawnsIn('x.ts', text)).toEqual([`x.ts:1: ${program}`]);
   });

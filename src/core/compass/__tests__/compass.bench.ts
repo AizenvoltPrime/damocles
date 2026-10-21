@@ -143,8 +143,8 @@ describe('Compass benchmarks (1K nodes)', () => {
 		detectEntryPoints(store);
 	});
 
-	bench('analyzeChanges — single file', () => {
-		analyzeChanges(store, ['/src/module5/file50.ts']);
+	bench('analyzeChanges — single file', async () => {
+		await analyzeChanges(store, ['/src/module5/file50.ts']);
 	});
 
 	bench('getStats', () => {

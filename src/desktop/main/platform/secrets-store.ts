@@ -5,7 +5,7 @@ import type { LocalizationService } from '../../../platform/localization-service
 import type { NotificationService } from '../../../platform/notification-service';
 import type { SecretsStore } from '../../../platform/secrets-store';
 import { jsonConfigWritesSettled, writeJsonConfig } from '../../../core/config/json-config-write';
-import { Emitter } from './emitter';
+import { Emitter } from '../../local-services/emitter';
 
 const SCHEMA_VERSION = 1;
 export const SECRETS_FILE = 'secrets.json';

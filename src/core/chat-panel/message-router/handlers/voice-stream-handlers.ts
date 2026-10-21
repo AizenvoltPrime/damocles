@@ -2,7 +2,6 @@ import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
-import type { SettingsStore } from "../../../../platform/settings-store";
 import type { PanelHost } from "../../../../platform/window-service";
 import type { CpuFallbackEvent, IncomingTtsChunk, SidecarManagerStatus, SidecarOutbound, TtsUnloadedEvent } from "../../../voice/sidecar";
 import { log } from "../../../logger";
@@ -10,19 +9,13 @@ import { writeSetting } from "../setting-write";
 import { t } from "../../../l10n";
 import {
   cleanupOldVersions,
-  compareInstalled,
   downloadModel,
   loadManifest,
 } from "../../../voice/models";
 import type { VoiceModelManifest, ModelEntry, OutdatedModelEntry } from "../../../voice/models";
+import type { VoiceRuntimeStatus } from "../../../../shared/types/voice";
 import { parseWakePhrase, stripWakePrefix } from "../../../../shared/wake-phrase";
 import { unsupportedVoicePlatformMessage } from "../../../voice/runtime/supported-platforms";
-
-const VOICE_PINNED_VERSIONS_KEY = "damocles.voice.pinModelVersion";
-
-function getPinnedVersions(settings: SettingsStore): Record<string, string> {
-  return settings.get<Record<string, string>>(VOICE_PINNED_VERSIONS_KEY, {}) ?? {};
-}
 
 function totalBytes(entry: ModelEntry): number {
   return entry.files.reduce((acc, f) => acc + (f.bytes ?? 0), 0);
@@ -72,6 +65,11 @@ export async function postVoiceFilesSize(deps: Pick<HandlerDependencies, "postMe
     return;
   }
   await emitVoiceFilesSize(deps.postMessage, host, deps.voiceService.getPaths().rootDir);
+}
+
+/** The voice runtime's state, for a panel or settings view that just loaded. */
+export function postVoiceRuntimeStatus(deps: Pick<HandlerDependencies, "postMessage" | "voiceService">, host: PanelHost): void {
+  deps.postMessage(host, { type: "voiceRuntimeStatus", status: deps.voiceService?.runtimeStatus() ?? { kind: "not-needed" } });
 }
 
 function buildUpgradeNotification(outdated: OutdatedModelEntry[]): {
@@ -132,7 +130,10 @@ export function createVoiceStreamHandlers(
     }
   }
 
-  /** Whether every missing or outdated model is now in place. */
+  /**
+   * Downloads the models the sidecar needs under the current settings that are missing or outdated, with the download
+   * modal; whether every one is now in place. Only an action that showed the user the download calls it.
+   */
   async function downloadAllMissing(host: PanelHost): Promise<boolean> {
     if (voiceService === undefined) {
       postMessage(host, {
@@ -146,9 +147,9 @@ export function createVoiceStreamHandlers(
       return false;
     }
     const paths = voiceService.getPaths();
-    let manifest: VoiceModelManifest;
+    let targets: ModelEntry[];
     try {
-      manifest = await loadManifest(platform.paths.unpackedRoot);
+      targets = await voiceService.missingModels();
     } catch (err) {
       postMessage(host, {
         type: "voiceModelDownloadProgress",
@@ -160,19 +161,15 @@ export function createVoiceStreamHandlers(
       });
       return false;
     }
-    if (manifest.status === "placeholder-checksums") {
-      log("[VoiceStreamHandlers] Manifest declares placeholder-checksums; downloads will still SHA-256 verify against whatever is recorded.");
-    }
-    const compare = await compareInstalled(paths.modelsDir, manifest);
-    const targets: ModelEntry[] = [...compare.missing, ...compare.outdated];
     let complete = true;
     const session = await runDownloadSession(async (signal) => {
       for (const entry of targets) {
         try {
-          const result = await downloadModel({
+          // The first-run dialog states every license, and nothing listed is gated.
+          await downloadModel({
             entry,
             modelsRoot: paths.modelsDir,
-            acceptLicense: !entry.gated,
+            acceptLicense: true,
             signal,
             onProgress: (p) => {
               postMessage(host, {
@@ -185,17 +182,6 @@ export function createVoiceStreamHandlers(
               });
             },
           });
-          if (result.status === "license-required") {
-            complete = false;
-            postMessage(host, {
-              type: "voiceModelDownloadProgress",
-              modelId: result.modelId,
-              bytesReceived: 0,
-              bytesTotal: 0,
-              status: "error",
-              message: `License acceptance required: ${result.licenseUrl}`,
-            });
-          }
         } catch (err) {
           complete = false;
           if (signal.aborted) return;
@@ -367,8 +353,13 @@ export function createVoiceStreamHandlers(
     if (activeHost === null) return;
     postMessage(activeHost, { type: "voiceCpuFallbackActive", reason: event.reason });
   };
+  // Every panel's Settings > Voice shows the runtime, whichever panel turned voice on.
+  const onRuntimeStatus = (status: VoiceRuntimeStatus): void => {
+    for (const [, instance] of deps.getPanels()) postMessage(instance.host, { type: "voiceRuntimeStatus", status });
+  };
 
   if (voiceService !== undefined) {
+    voiceService.on("runtimeStatus", onRuntimeStatus);
     voiceService.on("status", onStatus);
     voiceService.on("message", onMessage);
     voiceService.on("ttsChunk", onTtsChunk);
@@ -377,6 +368,7 @@ export function createVoiceStreamHandlers(
     voiceService.on("ttsUnloaded", onTtsUnloaded);
     subscriptions.push({
       dispose: (): void => {
+        voiceService.off("runtimeStatus", onRuntimeStatus);
         voiceService.off("status", onStatus);
         voiceService.off("message", onMessage);
         voiceService.off("ttsChunk", onTtsChunk);
@@ -408,13 +400,14 @@ export function createVoiceStreamHandlers(
       // An upgrade notice would offer a model download the runtime can never use.
       if (unsupportedVoicePlatformMessage(process.platform, process.arch) !== null) return;
       try {
-        const paths = voiceService.getPaths();
-        const manifest = await loadManifest(platform.paths.unpackedRoot);
-        const compare = await compareInstalled(paths.modelsDir, manifest, { pinned: getPinnedVersions(platform.settings) });
-        if (compare.outdated.length > 0) {
+        // With consent the start downloads an outdated model itself, and without it the first-run dialog covers it, so
+        // this offers only what a start that stopped before its models left behind.
+        if (!(await voiceService.downloadConsentGiven())) return;
+        const outdated = (await voiceService.missingModels()).filter((entry): entry is OutdatedModelEntry => "installedVersion" in entry);
+        if (outdated.length > 0) {
           postMessage(ctx.host, {
             type: "voiceModelUpgradeAvailable",
-            upgrades: buildUpgradeNotification(compare.outdated),
+            upgrades: buildUpgradeNotification(outdated),
           });
         }
       } catch (err) {
@@ -431,10 +424,24 @@ export function createVoiceStreamHandlers(
     },
 
     voiceAcceptFirstRunModal: async (_msg, ctx) => {
-      // The user accepted the disclosure, so the start may install the runtime and retry one that failed.
-      if (voiceService === undefined || !(await downloadAllMissing(ctx.host))) return;
+      // The user accepted the disclosure: it stays recorded, so this and later starts may install and download.
+      if (voiceService === undefined) return;
+      await voiceService.recordDownloadConsent();
+      if (!(await downloadAllMissing(ctx.host))) return;
       await voiceService.ensureStarted({ install: true, retry: true });
       postStartFailure(ctx.host);
+    },
+
+    voiceRuntimeInstall: async (msg, ctx) => {
+      if (msg.type !== "voiceRuntimeInstall" || voiceService === undefined) return;
+      // Settings sends `consent` once the user accepted the first-run dialog it opened.
+      if (msg.consent === true) await voiceService.recordDownloadConsent();
+      await voiceService.install();
+      postStartFailure(ctx.host);
+    },
+
+    voiceRuntimeCancel: () => {
+      voiceService?.cancelStart();
     },
 
     voiceCancelFirstRunModal: async () => {

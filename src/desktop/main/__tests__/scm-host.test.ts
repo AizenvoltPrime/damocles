@@ -1,11 +1,12 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import type { StructuredCompletionRequest } from '../../../core/pi-session/structured-completion';
-import { RemoteCancelledError, StashKeptError, SyncBranchChangedError, type CommitHooks, type ProjectView, type ScmEvent, type ScmService } from '../../../core/scm/scm-service';
+import { type CommitHooks, type ProjectView, type ScmEvent, type ScmService } from '../../../core/scm/scm-service';
+import type { ScmServiceClient } from '../scm/scm-client';
+import { RemoteCancelledError, StashKeptError, SyncBranchChangedError } from '../../../core/scm/errors';
 import type { Change, Repository, RepositoryStatus } from '../../../core/scm/repository';
 import { SCM_SETTING_KEYS } from '../../../core/scm/settings-keys';
-import { GitError } from '../../../core/scm/git-runner';
+import { GitError } from '../../../core/scm/errors';
 import type { Artifacts, CommitPairDiff } from '../../../core/scm/artifacts';
 import { HISTORY_PAGE, MAX_DETAIL_FILES, MAX_HISTORY_TIPS } from '../../../core/scm/history';
 import { MAX_OVERLAY_LABEL_LENGTH, MAX_QUICK_PICK_ITEMS } from '../../preload/overlay-channels';
@@ -15,7 +16,7 @@ import type { AskInputRequest } from '../overlay';
 import type { EditorPane } from '../editor-pane';
 import type { DocumentService } from '../documents/document-service';
 import type { MessageQuestion } from '../message-dialog';
-import { backgroundCompletion, ScmHost, type ScmHostDeps, type SubCallRuntime } from '../scm/scm-host';
+import { ScmHost } from '../scm/scm-host';
 import { visibleText } from '../../../shared/visible-text';
 
 const projectPath = path.resolve('/work/project');
@@ -66,7 +67,7 @@ function fakeRepo(root: string, repoStatus: RepositoryStatus = status, show: Rep
 interface SetupOptions {
   commit?: ScmService['commit'];
   commitInput?: ScmService['commitInput'];
-  complete?: ScmHostDeps['complete'];
+  generate?: ScmServiceClient['generateMessage'];
   settings?: Record<string, unknown>;
   // the document service's unsaved files, by absolute path
   dirty?: readonly string[];
@@ -176,7 +177,7 @@ function setup(overrides: SetupOptions = {}) {
     deleteTag: vi.fn(async () => undefined),
     pushTags: vi.fn(async () => undefined),
     addWorktree: vi.fn(async () => undefined),
-    worktreeFolder: () => overrides.worktreeFolder,
+    worktreeFolder: async () => overrides.worktreeFolder,
     removeWorktree: vi.fn(async () => removals.shift() ?? 'ok'),
     discardAll: vi.fn(async () => true),
     autofetchNow: vi.fn(),
@@ -194,8 +195,9 @@ function setup(overrides: SetupOptions = {}) {
     commitDetails: vi.fn(async () => undefined),
     commitAttachment: vi.fn(async (_repoId: string, hash: string) => ({ kind: 'commit', hash, subject: 'Subject', author: 'A', authorDate: 0, text: `commit ${hash}`, omittedLines: 0 })),
     commitBlob: vi.fn(async () => Buffer.from('text\n')),
+    generateMessage: overrides.generate ?? (async () => ({ ok: false, reason: 'unreachable' })),
     worktreeDirty: vi.fn(async (_repoId: string, worktreePath: string) => (overrides.dirtyWorktrees ?? []).includes(worktreePath)),
-  } as unknown as ScmService;
+  } as unknown as ScmServiceClient;
   const sent = { views: [] as ScmView[], settings: 0, states: 0 };
   let menuChanges = 0;
   const settingValues = new Map(Object.entries(overrides.settings ?? {}));
@@ -206,7 +208,7 @@ function setup(overrides: SetupOptions = {}) {
   const inputs = [...(overrides.inputs ?? [])];
   const setInputs: ScmSetInput[] = [];
   const commands: ScmShellCommand[] = [];
-  const gitLog: string[] = [];
+  const mainLog: string[] = [];
   const saved = new Map<string, string>();
   const notices: Array<{ severity: string; message: string; actions: string[] }> = [];
   const copied: string[] = [];
@@ -304,7 +306,6 @@ function setup(overrides: SetupOptions = {}) {
     },
     mention: async () => undefined,
     addToChat: async (projectKey, attachment, prompt) => void chatAdds.push({ projectKey, attachment, prompt }),
-    complete: overrides.complete ?? (async () => ({ kind: 'unreachable' })),
     send: {
       view: (view) => void sent.views.push(view),
       state: () => void sent.states++,
@@ -317,8 +318,7 @@ function setup(overrides: SetupOptions = {}) {
       artifactsChanged: (changed) => void artifactsChanged.push(changed),
     },
     menuChanged: () => void menuChanges++,
-    log: () => undefined,
-    gitLog: (line) => void gitLog.push(line),
+    log: (line) => void mainLog.push(line),
     platform: overrides.platform ?? process.platform,
   });
   const emit = (event: ScmEvent): void => {
@@ -327,7 +327,7 @@ function setup(overrides: SetupOptions = {}) {
   const settingsChanged = (): void => {
     for (const listener of settingListeners) listener();
   };
-  return { host, saved, notices, copied, chatAdds, editorPane, service, questions, inputRequests, setInputs, commands, gitLog, repos, sent, emit, settingsChanged, menuChanges: () => menuChanges, folderRequests, added, selectedProjects, removedProjects, pickRequests, artifactsChanged, settingReads: () => settingReads };
+  return { host, saved, notices, copied, chatAdds, editorPane, service, questions, inputRequests, setInputs, commands, mainLog, repos, sent, emit, settingsChanged, menuChanges: () => menuChanges, folderRequests, added, selectedProjects, removedProjects, pickRequests, artifactsChanged, settingReads: () => settingReads };
 }
 
 const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
@@ -806,8 +806,7 @@ describe('source control host: sides, palette and pushes', () => {
   });
 
   it('names the reason a commit message could not be generated, and fills nothing', async () => {
-    const { host, notices, repos } = setup({ complete: async () => ({ kind: 'unreachable' }) });
-    Object.assign(repos.get('repo-1')!, { diffForMessage: async () => ({ diff: 'diff --git a/x b/x', truncated: false }), subjects: async () => [] });
+    const { host, notices } = setup({ generate: async () => ({ ok: false, reason: 'unreachable' }) });
     expect(await host.generateMessage({ repoId: 'repo-1' })).toEqual({ ok: false });
     expect(notices).toEqual([{ severity: 'warn', message: 'Couldn\'t generate a commit message. No model could be reached. Check the Background model in Settings.', actions: [] }]);
   });
@@ -899,46 +898,6 @@ describe('source control host: sides, palette and pushes', () => {
   });
 });
 
-describe('the Background model sub-call', () => {
-  const request: StructuredCompletionRequest = { systemPrompt: 's', userMessage: 'u', outputToolName: 'o', outputToolDescription: 'd', schema: {}, purpose: 'commit-message', attribution: { cwd: projectPath } };
-
-  function fakeRuntime(order: string[], folder: () => Promise<unknown> = async () => undefined): SubCallRuntime {
-    return {
-      folder: async (cwd) => {
-        order.push(`folder:${cwd}`);
-        return folder();
-      },
-      syncCustomProviders: async () => void order.push('sync'),
-      runStructuredCompletion: async () => {
-        order.push('run');
-        return { kind: 'answered', value: { message: 'Subject' } } as never;
-      },
-    };
-  }
-
-  it('creates the runtime and the project\'s folder runtime before any chat has, then runs', async () => {
-    const order: string[] = [];
-    let created = 0;
-    const complete = backgroundCompletion(() => {
-      created++;
-      return fakeRuntime(order);
-    }, async () => undefined, () => undefined);
-    expect(await complete(request)).toEqual({ kind: 'answered', value: { message: 'Subject' } });
-    expect(created).toBe(1);
-    expect(order).toEqual([`folder:${projectPath}`, 'sync', 'run']);
-  });
-
-  it('answers unreachable once the runtime is retired, or when it cannot start', async () => {
-    expect(await backgroundCompletion(() => null, async () => undefined, () => undefined)(request)).toEqual({ kind: 'unreachable' });
-    const lines: string[] = [];
-    const order: string[] = [];
-    const failing = backgroundCompletion(() => fakeRuntime(order, async () => { throw new Error('pi failed to load'); }), async () => undefined, (line) => lines.push(line));
-    expect(await failing(request)).toEqual({ kind: 'unreachable' });
-    expect(order).toEqual([`folder:${projectPath}`]);
-    expect(lines).toEqual(['[scm] the model runtime could not start: pi failed to load']);
-  });
-});
-
 describe('source control host: branches, stash, tags and worktrees', () => {
   const commit = (hash: string, subject: string) => ({ hash, subject, author: 'Ada', date: 1_700_000_000_000 });
   const branches = [
@@ -1022,7 +981,7 @@ describe('source control host: branches, stash, tags and worktrees', () => {
     // a refused fast-forward (outgoing commits) leaves the branch and the checkout goes on, as VS Code's does
     vi.mocked(on.service.fastForward).mockRejectedValueOnce(new Error('rejected non-fast-forward'));
     expect(await on.host.run({ op: 'checkout', repoId: 'repo-1', detached: false, ref: 'refs/heads/feat' })).toEqual({ ok: true });
-    expect(on.gitLog.at(-1)).toContain('was not fast-forwarded');
+    expect(on.mainLog.at(-1)).toContain('was not fast-forwarded');
     vi.mocked(on.service.fastForward).mockRejectedValueOnce(new RemoteCancelledError());
     expect(await on.host.run({ op: 'checkout', repoId: 'repo-1', detached: false, ref: 'refs/heads/feat' })).toEqual({ ok: false, reason: 'cancelled' });
     const off = setup({ artifacts: { ...artifacts, branches: behind } });

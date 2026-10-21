@@ -8,7 +8,7 @@ import type { ChatPlace, ExtensionToWebviewMessage, WorktreeFinishAction, Worktr
 import { folderKey } from '../workspace-folders/folder-key';
 import { log } from '../logger';
 import { worktreeEnvironment } from '../worktrees/environment';
-import { latestWorktreeEntry, worktreeEntryOf, type WorktreeEntryData } from '../worktrees/hand-off';
+import { latestWorktreeEntry, worktreeEntryOf, type WorktreeEntryData } from '../worktrees/worktree-entry';
 import type { SetupStep, WorktreeHostServices } from '../worktrees/host';
 import { aheadBehind, isRewritten, settlePendingBase, targetBranch } from '../worktrees/integrate';
 import type { ChatWorktreeRecord } from '../worktrees/registry';

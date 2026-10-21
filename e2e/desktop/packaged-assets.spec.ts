@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { asarFiles, readAsarHeader } from '../../scripts/asar-archive.mjs';
 import { DESKTOP_FONT_FILES, DESKTOP_FONT_LICENSES } from '../../src/desktop/main/desktop-fonts';
 import { MATERIAL_ICON_DIR, materialIconNames } from '../../src/desktop/shell/material-icons';
-import { logBeforeQuit, mainLog } from './support/app';
+import { coreQuitLog, logBeforeQuit, mainLog } from './support/app';
 import { filesRow, quickPick } from './support/editor';
 import { activeChat, expect, test } from './support/fixtures';
 import { REPO_ROOT, seedStubModel, writeUserSettings, type HermeticHome } from './support/hermetic';
@@ -16,7 +16,7 @@ import { readyOverlay } from './support/overlay';
 import { packagedAppPath } from './support/packaged-app';
 import { popupPage, popupToasts, shellPage } from './support/shell';
 import { activeTerminal, echoCommand, runInTerminal, terminalText, useTestProfile } from './support/terminal';
-import { chatInput, hostMessages, postFromWebview, recordHostMessages } from './support/ui';
+import { chatInput, hostMessages, listedSessionIds, postFromWebview, recordHostMessages } from './support/ui';
 
 // One file per bundled tree-sitter grammar whose extraction has no fallback, each defining a symbol named probe_<language>.
 const GRAMMAR_SAMPLES: Record<string, string> = {
@@ -120,7 +120,7 @@ function checkpointRepos(h: HermeticHome): string[] {
     .map((entry) => entry.parentPath);
 }
 
-test('bundled assets resolve: first window, overlay, fonts, pi chat, shell, ripgrep, git, compass grammars, usage stats worker, voice package, data home', async ({ home, launch }) => {
+test('bundled assets resolve: first window, overlay, fonts, pi chat, shell, ripgrep, git, compass grammars, usage stats, memory integrity and session index workers, voice package, data home', async ({ home, launch }) => {
   test.setTimeout(300_000);
   const stub = await startOpenAIStub();
   try {
@@ -207,6 +207,8 @@ test('bundled assets resolve: first window, overlay, fonts, pi chat, shell, ripg
 
     // Data lives in the shared ~/.damocles; userData holds only the desktop's own state beside Chromium's.
     expect(fs.readdirSync(path.join(home.damoclesDir, 'pi', 'agent', 'sessions')).length).toBeGreaterThan(0);
+    const sessionIds = await listedSessionIds(tab);
+    expect(sessionIds).toHaveLength(1);
     const damoclesEntries = new Set(fs.readdirSync(home.damoclesDir));
     const userDataEntries = fs.readdirSync(home.userData);
     expect(userDataEntries.filter((name) => damoclesEntries.has(name))).toEqual([]);
@@ -216,9 +218,22 @@ test('bundled assets resolve: first window, overlay, fonts, pi chat, shell, ripg
     expect(stateEntries.filter((name) => !USER_DATA_STATE.has(name))).toEqual([]);
     expect(fs.existsSync(path.join(home.userData, 'logs', 'Damocles.log'))).toBe(true);
     await desktop.close();
-    expect(logBeforeQuit(home)).not.toContain('[ShellSentinel] ERROR');
+    for (const log of [logBeforeQuit(home), coreQuitLog(home)]) expect(log).not.toContain('[ShellSentinel] ERROR');
     // The stall monitor's profiler starts and keeps running in the build.
-    expect(logBeforeQuit(home)).not.toMatch(/stall monitor (could not start|stopped)/);
+    for (const log of [logBeforeQuit(home), coreQuitLog(home)]) expect(log).not.toMatch(/stall monitor (could not start|stopped)/);
+    // The memory integrity worker runs from the unpacked tree and answers the check that opening the memory store makes.
+    expect(coreQuitLog(home)).toMatch(/\[perf\] memory\.integrity [\d.]+ms op=check result=ok/);
+
+    // With no cached rows and no restored chat holding the conversation live, only the session index worker's parse thread,
+    // which imports pi from app.asar, can list the stored session.
+    fs.rmSync(path.join(home.damoclesDir, 'cache', 'session-meta'), { recursive: true, force: true });
+    writeUserSettings(home, { 'damocles.desktop.restoreLayout': false });
+    const relaunched = await launch();
+    const fresh = await activeChat(relaunched.app);
+    await expect(chatInput(fresh)).toBeVisible();
+    await expect.poll(() => listedSessionIds(fresh), { timeout: 60_000 }).toEqual(sessionIds);
+    await relaunched.close();
+    expect(coreQuitLog(home)).not.toMatch(/\[session-meta-index\] (loading pi from .* failed|the parse thread (failed|stopped))/);
   } finally {
     await stub.close();
   }
@@ -281,7 +296,7 @@ test('the watch worker loads from the build and a file created under the project
     return probes.count();
   }, { timeout: 60_000, intervals: [1_000] }).toBeGreaterThan(0);
   await desktop.close();
-  expect(logBeforeQuit(home)).not.toContain('[watcher] the watch worker');
+  for (const log of [logBeforeQuit(home), coreQuitLog(home)]) expect(log).not.toContain('[watcher] the watch worker');
 });
 
 test('the pty host loads node-pty from the build and a shell echoes into the terminal', async ({ home, launch }) => {

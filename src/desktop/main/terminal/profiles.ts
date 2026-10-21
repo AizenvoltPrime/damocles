@@ -1,9 +1,8 @@
-import { execFile } from 'node:child_process';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { promisify } from 'node:util';
 import type { TerminalIcon } from '../../preload/terminal-channels';
+import { runProcess } from '../../../core/process-launcher';
 import { searchPathEntries } from '../../../core/executable-path';
 
 /** A detected shell; id is stable across runs, and damocles.desktop.terminal.defaultProfile names one. */
@@ -117,8 +116,7 @@ async function findWslDistros(probe: ProfileProbe, wsl: string): Promise<string[
   }
 }
 
-// wsl.exe writes its message in UTF-16LE, as it writes the list, and execFile's error message decodes it as UTF-8, NULs
-// and all, which would make the app log unreadable as text.
+// wsl.exe writes its message in UTF-16LE, as it writes the list; read as UTF-8, its NULs would make the app log unreadable as text.
 function wslFailureText(err: unknown): string {
   const failure = err as { code?: unknown; stdout?: unknown; stderr?: unknown };
   const message = [failure.stderr, failure.stdout]
@@ -218,12 +216,12 @@ async function readText(file: string): Promise<string | undefined> {
   }
 }
 
-// The promisified execFile, unlike the callback form, puts stdout and stderr on the error of a failed run.
-const execFileAsync = promisify(execFile);
-
+// A failed run's error carries its exit code and output, as execFile's does.
 async function run(file: string, args: readonly string[], env: Readonly<Record<string, string | undefined>>): Promise<Buffer> {
-  const { stdout } = await execFileAsync(file, [...args], { encoding: 'buffer', env, timeout: WSL_TIMEOUT_MS, windowsHide: true });
-  return stdout;
+  const { exit, stdout, stderr } = await runProcess({ file, args, env, stdio: ['ignore', 'pipe', 'pipe'] }, { timeoutMs: WSL_TIMEOUT_MS });
+  if (exit?.code === 0) return stdout;
+  const reason = exit === null ? `timed out after ${WSL_TIMEOUT_MS} ms` : `exited with ${exit.code ?? exit.signal}`;
+  throw Object.assign(new Error(`${file} ${reason}`), { code: exit?.code ?? undefined, stdout, stderr });
 }
 
 /** The Windows build in os.release() ("10.0.19045"), as VS Code's getWindowsBuildNumberFromOsRelease reads it; 0 elsewhere. */

@@ -43,6 +43,30 @@ describe('PanelManager activity', () => {
     expect((h.instance(panelId).session as unknown as FakeSession).activityListener).toBeTypeOf('function');
   });
 
+  // Main attributes a panel to the session its restore retry names, so the retry goes once the panel holds another conversation.
+  it("drops a pending restore retry once the panel holds a conversation other than the retry's, and keeps it for the retry's own", async () => {
+    h = createHarness([folderEntry(A)]);
+    const changed: string[] = [];
+    h.manager.onRestoreRetry((panelId) => changed.push(panelId));
+    const panelId = await h.manager.initializeHost(makeFakeHost());
+    const instance = h.instance(panelId);
+    const session = instance.session as unknown as FakeSession;
+    const report = () => session.activityListener!({ state: 'idle', pendingKinds: [], pendingPrompts: [], background: false });
+    instance.restoreRetry = 'sess-waiting';
+
+    report();
+    session.storedId = 'sess-waiting';
+    session.conversation = true;
+    report();
+    expect(instance.restoreRetry).toBe('sess-waiting');
+    expect(changed).toEqual([]);
+
+    session.storedId = 'sess-other';
+    report();
+    expect(instance.restoreRetry).toBeUndefined();
+    expect(changed).toEqual([panelId]);
+  });
+
   it('reports a usage threshold crossing to every listener, tied to no panel', () => {
     h = createHarness([folderEntry(A)]);
     const seen: UsageThresholdCrossing[] = [];

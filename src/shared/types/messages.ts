@@ -49,7 +49,7 @@ import type {
   MemoryAuditSummary,
 } from './memory-audit';
 
-import type { VoiceProvider, VoiceConfig, VoiceMode } from './voice';
+import type { VoiceProvider, VoiceConfig, VoiceMode, VoiceRuntimeStatus } from './voice';
 import type { CompassIndexStatus, CompassGraphData, CompassSearchResult, CompassBlastRadiusResult, CompassNodeKind, CompassValidationResult } from './compass';
 import type { ToolsSnapshot, ToolGroup } from './tools';
 import type { WorkspaceFolderInfo } from './workspace-folders';
@@ -267,6 +267,9 @@ export type WebviewToExtensionMessage =
   | { type: "voiceFreeDiskSpace" }
   | { type: "voiceRemoveAllFiles" }
   | { type: "voiceTestVoice" }
+  // `consent`: the user accepted the first-run dialog Settings opened for this install.
+  | { type: "voiceRuntimeInstall"; consent?: true }
+  | { type: "voiceRuntimeCancel" }
   | { type: "requestVoiceConfig" }
   | { type: "requestContextUsage" }
   | { type: "requestSubscriptionUsage" }
@@ -528,7 +531,8 @@ export type ExtensionToWebviewMessage =
   | { type: "resumeAccepted"; sessionId: string; continued?: true }
   | { type: "processing"; isProcessing: boolean }
   | { type: "storedSessions"; sessions: StoredSession[]; hasMore?: boolean; nextOffset?: number; isFirstPage?: boolean }
-  | { type: "sessionCleared"; pendingMessage?: { content: string; correlationId: string } }
+  /** `sessionId`: the stored conversation whose replay follows, which a send before its `sessionStarted` names; absent, the panel shows none. */
+  | { type: "sessionCleared"; pendingMessage?: { content: string; correlationId: string }; sessionId?: string }
   | { type: "conversationCleared" }
   | { type: "sessionRenamed"; sessionId: string; newName: string }
   | { type: "sessionDeleted"; sessionId: string }
@@ -771,8 +775,8 @@ export type ExtensionToWebviewMessage =
   | { type: "voiceRecordingStarted" }
   | { type: "transcriptionResult"; text: string }
   | { type: "transcriptionError"; message: string }
-  /** `localRuntimeUnsupported` is the host's localized refusal when the Jarvis runtime cannot install on its platform, else null. */
-  | { type: "voiceConfigUpdate"; config: VoiceConfig; hasApiKey: boolean; localRuntimeUnsupported: string | null }
+  | { type: "voiceConfigUpdate"; config: VoiceConfig; hasApiKey: boolean }
+  | { type: "voiceRuntimeStatus"; status: VoiceRuntimeStatus }
   | { type: "voiceSidecarStatus"; state: "stopped" | "loading" | "ready" | "error" | "restarting"; device?: "cuda" | "cpu"; vramMbFree?: number; modelsLoaded?: string[]; message?: string }
   | { type: "voiceWakeDetected"; confidence: number }
   | { type: "voiceWakeAborted"; reason: "no-speech" | "user-cancel" }

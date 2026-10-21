@@ -44,6 +44,11 @@ import { createTestDbPath } from './test-helpers';
 /** A Windows fsPath with a drive letter and backslashes, which must reach the DB unchanged. */
 const RAW_FS_PATH = String.raw`C:\Repos\App`;
 
+/** Candidate writes, the replayed ones included, queue behind the startup integrity check. */
+function writesSettled(s: MemoryService): Promise<void> {
+  return (s as unknown as { writeQueue: { drain(): Promise<void> } }).writeQueue.drain();
+}
+
 function countCandidates(db: DatabaseInstance): number {
   const row = db.prepare('SELECT COUNT(*) AS n FROM memory_candidates').get() as { n: number };
   return row.n;
@@ -87,7 +92,7 @@ describe('MemoryService pre-init turn-candidate buffering', () => {
 
     // Let init (kicked off by the first enqueue) complete, then drain the replays.
     await service.ensureInitialized();
-    await new Promise((r) => setTimeout(r, 50));
+    await writesSettled(service);
 
     const db = service.database!;
     expect(countCandidates(db)).toBe(3);
@@ -100,7 +105,7 @@ describe('MemoryService pre-init turn-candidate buffering', () => {
     for (let i = 0; i < 60; i++) service.enqueueTurnCandidate(makeTurn(i));
 
     await service.ensureInitialized();
-    await new Promise((r) => setTimeout(r, 50));
+    await writesSettled(service);
 
     const db = service.database!;
     // Cap 50: the 10 oldest (promptIndex 0..9) dropped, 50 survive.
@@ -115,7 +120,7 @@ describe('MemoryService pre-init turn-candidate buffering', () => {
   it('a turn enqueued after init lands directly without buffering', async () => {
     await service.ensureInitialized();
     service.enqueueTurnCandidate({ ...makeTurn(100), workspace: RAW_FS_PATH });
-    await new Promise((r) => setTimeout(r, 50));
+    await writesSettled(service);
 
     const db = service.database!;
     expect(countCandidates(db)).toBe(1);
@@ -127,7 +132,7 @@ describe('MemoryService pre-init turn-candidate buffering', () => {
   it('chain forget/unforget works for a legacy row with NULL root_id (deep nit)', async () => {
     service.enqueueTurnCandidate(makeTurn(0));
     await service.ensureInitialized();
-    await new Promise((r) => setTimeout(r, 50));
+    await writesSettled(service);
 
     const db = service.database!;
     // Legacy v1-era row: root_id was never back-filled, so it is NULL.
@@ -148,7 +153,7 @@ describe('MemoryService pre-init turn-candidate buffering', () => {
   it('deleteSessionMemories also purges the raw candidate buffer for that session (M2)', async () => {
     service.enqueueTurnCandidate(makeTurn(0));
     await service.ensureInitialized();
-    await new Promise((r) => setTimeout(r, 50));
+    await writesSettled(service);
 
     const db = service.database!;
     db.prepare(

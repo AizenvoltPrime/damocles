@@ -837,12 +837,6 @@
           "scope": "machine",
           "description": "Advanced: path to an existing CUDA-PyTorch Python venv to skip the bundled runtime. It must already hold the pinned voice stack; Damocles only smoke-checks it. Windows x64, Linux x64 and macOS arm64 only: other platforms are refused even with this set. Leave empty to use the default location (~/.damocles/voice/runtime/). Machine-scope only — a workspace setting must not redirect Python execution."
         },
-        "damocles.voice.pinModelVersion": {
-          "type": "object",
-          "default": {},
-          "scope": "machine",
-          "description": "Advanced: per-model version pin overriding the shipped MODEL_MANIFEST.json. Keys are model IDs; values are version strings. Machine-scope only — a workspace setting must not redirect model loads."
-        },
         "damocles.autoCompact": {
           "scope": "resource",
           "type": "object",

@@ -1,6 +1,7 @@
-import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { dirname } from "node:path";
+import { runProcess, type RunOutput } from "../../process-launcher";
+import { CancelledError } from "./python-installer";
 
 const SMOKE_MODULES = [
   "torch",
@@ -67,13 +68,15 @@ export type SmokeCheckResult =
 
 export type SmokeCheckOptions = {
   logPath?: string;
+  /** Aborting kills the check and rejects it with CancelledError. */
+  signal?: AbortSignal;
 };
 
 export async function runImportSmokeCheck(
   venvPython: string,
   opts: SmokeCheckOptions = {},
 ): Promise<SmokeCheckResult> {
-  const raw = await spawnSmoke(venvPython);
+  const raw = await spawnSmoke(venvPython, opts.signal);
   if (raw.exitCode === 0 && raw.stdout.trim() === "ok") return { ok: true };
 
   const failedModule = parseFailedModule(raw.stderr);
@@ -101,36 +104,22 @@ type RawSmokeOutput = {
   timedOut: boolean;
 };
 
-function spawnSmoke(venvPython: string): Promise<RawSmokeOutput> {
-  return new Promise((resolve) => {
-    const child = spawn(venvPython, ["-c", SMOKE_SCRIPT], {
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      child.kill("SIGKILL");
-      resolve({ stdout, stderr: stderr + "\n[smoke check timed out]", exitCode: null, timedOut: true });
-    }, SMOKE_TIMEOUT_MS);
-    child.stdout.on("data", (c: Buffer) => (stdout += c.toString("utf8")));
-    child.stderr.on("data", (c: Buffer) => (stderr += c.toString("utf8")));
-    child.on("exit", (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({ stdout, stderr, exitCode: code, timedOut: false });
-    });
-    child.on("error", (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({ stdout, stderr: stderr + err.message, exitCode: null, timedOut: false });
-    });
-  });
+async function spawnSmoke(venvPython: string, signal: AbortSignal | undefined): Promise<RawSmokeOutput> {
+  let run: RunOutput;
+  try {
+    run = await runProcess(
+      { file: venvPython, args: ["-c", SMOKE_SCRIPT], stdio: ["ignore", "pipe", "pipe"] },
+      { timeoutMs: SMOKE_TIMEOUT_MS, ...(signal !== undefined ? { signal } : {}) },
+    );
+  } catch (err) {
+    if (signal?.aborted === true) throw new CancelledError();
+    return { stdout: "", stderr: (err as Error).message, exitCode: null, timedOut: false };
+  }
+  if (signal?.aborted === true) throw new CancelledError();
+  const stdout = run.stdout.toString("utf8");
+  const stderr = run.stderr.toString("utf8");
+  if (run.exit === null) return { stdout, stderr: stderr + "\n[smoke check timed out]", exitCode: null, timedOut: true };
+  return { stdout, stderr, exitCode: run.exit.code, timedOut: false };
 }
 
 function parseFailedModule(stderr: string): string | undefined {

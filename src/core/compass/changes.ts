@@ -89,15 +89,15 @@ export function analyzeNodeRisk(store: GraphStore, node: StoredNode): RiskAnalys
 	return { score: rounded, factors, testCoverage: hasTest };
 }
 
-export function analyzeChanges(
+export async function analyzeChanges(
 	store: GraphStore,
 	changedFiles: string[],
 	changedRanges?: Map<string, Array<[number, number]>>,
 	workspaceRoot?: string,
 	base: string = 'HEAD~1',
-): ChangeAnalysis {
+): Promise<ChangeAnalysis> {
 	if (!changedRanges && workspaceRoot) {
-		changedRanges = parseGitDiffRanges(workspaceRoot, base);
+		changedRanges = await parseGitDiffRanges(workspaceRoot, base);
 	}
 
 	let changedNodes: StoredNode[];

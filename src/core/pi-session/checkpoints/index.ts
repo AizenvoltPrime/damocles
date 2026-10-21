@@ -45,7 +45,7 @@ export {
 
 export { exec, execSafe } from './exec';
 export { setCheckpointGitAvailability, checkpointGitAvailability, type GitAvailability } from './git-availability';
-export { withRepoLock, LockWaitAbortedError, type LockOptions } from './lock';
+export { heldRepoLocksReleased, withRepoLock, LockWaitAbortedError, type LockOptions } from './lock';
 export { parseDiffStats } from './diff-parser';
 export {
   getRepoDir,

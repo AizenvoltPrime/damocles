@@ -1,5 +1,6 @@
 // Rule 14's first half for a chat worktree: every question comes first, so a Cancel, or a chat that starts working before the
-// hold, leaves its tabs, buffers, terminals, chats and formatter as they were; only then does anything stop.
+// hold, leaves its tabs, buffers, terminals, chats and formatter as they were; only then does anything stop. A terminal
+// opened while the hold was taken is asked about after it, before anything stops.
 import type { RootCloseAnswers } from '../editor-pane';
 
 export interface CloseWorktreeDeps {
@@ -24,25 +25,37 @@ export interface CloseWorktreeDeps {
 }
 
 /**
- * Asks about the root's dirty tabs, then its terminals (again for a buffer edited or a terminal opened while a question was
- * open), then calls stop, which takes the delete's hold and closes the root, and stops what runs there. false: a question was
- * cancelled or stop refused, and nothing was stopped.
+ * 'closed': everything that ran in the root stopped. Otherwise nothing was stopped: 'cancelled', a question was cancelled;
+ * 'refused', stop refused; 'edited', a buffer was edited after its last answer, while stop took the hold.
  */
-export async function closeWorktreeRoot(deps: CloseWorktreeDeps, rootKey: string, stop: () => boolean): Promise<boolean> {
+export type CloseOutcome = 'closed' | 'cancelled' | 'refused' | 'edited';
+
+/**
+ * Asks about the root's dirty tabs, then its terminals (again for a buffer edited or a terminal opened while a question was
+ * open), then calls stop, which takes the delete's hold and closes the root, asks about a terminal opened meanwhile, and
+ * stops what runs there.
+ */
+export async function closeWorktreeRoot(deps: CloseWorktreeDeps, rootKey: string, stop: () => Promise<boolean>): Promise<CloseOutcome> {
   let answers = await deps.editor.confirmCloseRoot(rootKey);
-  if (!answers) return false;
+  if (!answers) return 'cancelled';
   const asked = new Set<string>();
-  for (let ids = deps.terminals.idsIn(rootKey); ids.length > 0; ids = deps.terminals.idsIn(rootKey).filter((id) => !asked.has(id))) {
-    if (!(await deps.terminals.confirmKill(ids))) return false;
+  const unasked = (): string[] => deps.terminals.idsIn(rootKey).filter((id) => !asked.has(id));
+  for (let ids = unasked(); ids.length > 0; ids = unasked()) {
+    if (!(await deps.terminals.confirmKill(ids))) return 'cancelled';
     for (const id of ids) asked.add(id);
     answers = await deps.editor.confirmCloseRoot(rootKey, answers);
-    if (!answers) return false;
+    if (!answers) return 'cancelled';
   }
-  // nothing awaits between the last answer and the close, so no buffer changes in between
-  if (!stop() || !deps.editor.closeRoot(rootKey, answers)) return false;
+  if (!(await stop())) return 'refused';
+  for (let ids = unasked(); ids.length > 0; ids = unasked()) {
+    if (!(await deps.terminals.confirmKill(ids))) return 'cancelled';
+    for (const id of ids) asked.add(id);
+  }
+  // nothing awaits from the last terminal check to the kills, so every terminal killed was asked about
+  if (!deps.editor.closeRoot(rootKey, answers)) return 'edited';
   deps.closeChats();
   for (const id of deps.terminals.idsIn(rootKey)) deps.terminals.kill(id);
   deps.rootsChanged();
   await Promise.all([deps.releaseFormatter(rootKey), deps.whenFolderReleased()]);
-  return true;
+  return 'closed';
 }

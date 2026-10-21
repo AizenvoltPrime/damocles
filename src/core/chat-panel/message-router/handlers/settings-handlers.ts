@@ -26,7 +26,7 @@ import { IMAGE_ENABLED_SETTING, IMAGE_MODEL_SETTING } from "../../../pi-session/
 import { writeSetting } from "../setting-write";
 import { t } from "../../../l10n";
 import { openaiAuthStatusMessage } from "./openai-handlers";
-import { postVoiceFilesSize } from "./voice-stream-handlers";
+import { postVoiceFilesSize, postVoiceRuntimeStatus } from "./voice-stream-handlers";
 import type { McpUserResourcePort } from "../../../pi-session/mcp/tool-source";
 import { READ_MCP_RESOURCE } from "../../../permission-handler/mcp-resource-rule";
 import { isBinaryMimeType, isDirectoryMimeType } from "../../../../shared/mcp-resource-mime";
@@ -237,6 +237,8 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       deps.postWorkspaceFolderState(ctx.panelId);
       // PiSession judges project scope by its working folder, which is the panel's folder.
       postMessage(ctx.host, { type: "projectTrust", trusted: platform.trust.isTrusted(ctx.folder.fsPath) });
+      // Before the awaits below: the voice folder's size walk alone can take many seconds.
+      postVoiceRuntimeStatus(deps, ctx.host);
       ctx.session.publishAccountInfo();
       // The view mounts after main attached it, so host prompts redirected to it before then are posted again.
       if (ctx.view) deps.webviewPrompts.repost(ctx.panelId, ctx.view);

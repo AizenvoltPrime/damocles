@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { Bell, BellOff, ChevronRight, Moon, PanelBottom, PanelLeft, PanelRight, Search, Settings, Sun } from 'lucide-vue-next';
 import type { DamoclesShellApi, ShellState } from '../../preload/shell-channels';
+import EnginePill from './EnginePill.vue';
 import ProjectAvatar from './ProjectAvatar.vue';
 import UpdatePill from './UpdatePill.vue';
 import WindowControls from './WindowControls.vue';
@@ -193,6 +194,10 @@ async function openCenter(): Promise<void> {
       <div
         aria-hidden="true"
         class="mx-1.5 h-4 w-px bg-(--d-border2)"
+      />
+      <EnginePill
+        :api="api"
+        :halted="state.engineHalted"
       />
       <UpdatePill
         :api="api"

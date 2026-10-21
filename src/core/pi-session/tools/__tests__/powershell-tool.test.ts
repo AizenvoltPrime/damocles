@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { constants as osConstants, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, isAbsolute, join, relative } from 'node:path';
 // The REAL pi shell definition, because every status string asserted below is pi's and a stub would
 // pin nothing but the stub. Test files may value-import the ESM pi package; extension source may not.
 import { createPowerShellToolDefinition } from '@earendil-works/pi-coding-agent';
@@ -9,6 +10,7 @@ import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { PiCodingAgentModule } from '../../pi-loader';
 import { createPowerShellTool, createTrackedPowerShellOperations } from '../powershell-tool';
 import { createShellJob, killProcessTree } from '../process-tree';
+import { windowsPowerShell } from '../../../system-tools';
 
 const jobState = vi.hoisted(() => ({ created: 0, terminated: 0, disposed: 0 }));
 
@@ -81,19 +83,25 @@ interface FakeChild extends EventEmitter {
   stderr: FakeStream;
 }
 
-/** `destroy` is required: the exit wait tears the pipes down itself once the shell has settled. */
+/** `destroy` is required: the launcher tears the pipes down once the exit grace passes. */
 function fakeStream(): FakeStream {
   const stream = new EventEmitter() as FakeStream;
   stream.destroy = (): void => undefined;
   return stream;
 }
 
-function fakeChild(pid: number | undefined = 4242): FakeChild {
+function fakeChild(pid: number | null = 4242): FakeChild {
   const child = new EventEmitter() as FakeChild;
-  child.pid = pid;
+  child.pid = pid ?? undefined;
   child.stdout = fakeStream();
   child.stderr = fakeStream();
   return child;
+}
+
+/** As a real child does: `exit` carries the status the launcher reports, then `close` follows. */
+function endShell(child: FakeChild, code: number | null, signal: NodeJS.Signals | null = null): void {
+  child.emit('exit', code, signal);
+  child.emit('close', code, signal);
 }
 
 function enoent(exe: string): NodeJS.ErrnoException {
@@ -152,12 +160,22 @@ function start(
   return pending;
 }
 
+const PWSH = process.platform === 'win32' ? 'pwsh.exe' : 'pwsh';
+/** The PATH folder holding the stand-in `pwsh` the fake-shell cases find; the fake spawn never runs it. */
+let pwshDir = '';
+const plantedPwsh = (): string => join(pwshDir, PWSH);
+
 /** Restores the module-level fakes the fake-shell describes install, so the Windows cases get the real ones back. */
 function useFakeShellEnvironment(): void {
   const realCreateShellJob = vi.mocked(createShellJob).getMockImplementation();
   const realKillProcessTree = vi.mocked(killProcessTree).getMockImplementation();
+  let savedPath: string | undefined;
 
   beforeEach(() => {
+    pwshDir = mkdtempSync(join(tmpdir(), 'damocles-pwsh-'));
+    writeFileSync(plantedPwsh(), '');
+    savedPath = process.env['PATH'];
+    process.env['PATH'] = [pwshDir, savedPath ?? ''].join(delimiter);
     spawnControl.calls = [];
     // The fake pid names no real process, so neither the job object nor the kill may run for real.
     vi.mocked(createShellJob).mockImplementation(() => undefined);
@@ -167,6 +185,8 @@ function useFakeShellEnvironment(): void {
   });
 
   afterEach(() => {
+    process.env['PATH'] = savedPath;
+    rmSync(pwshDir, { recursive: true, force: true });
     spawnControl.fake = null;
     if (realCreateShellJob) vi.mocked(createShellJob).mockImplementation(realCreateShellJob);
     if (realKillProcessTree) vi.mocked(killProcessTree).mockImplementation(realKillProcessTree);
@@ -187,7 +207,7 @@ describe('createTrackedPowerShellOperations', () => {
     const settled = ops.exec('Start-Sleep 30', CWD, { onData: () => undefined, env: process.env });
     await shell.spawned;
 
-    shell.child.emit('close', null, 'SIGKILL');
+    endShell(shell.child, null, 'SIGKILL');
 
     expect(osConstants.signals.SIGKILL).toBe(9);
     await expect(settled).resolves.toEqual({ exitCode: 128 + osConstants.signals.SIGKILL });
@@ -198,7 +218,7 @@ describe('createTrackedPowerShellOperations', () => {
     const settled = ops.exec('Write-Output ok', CWD, { onData: () => undefined, env: process.env });
     await shell.spawned;
 
-    shell.child.emit('close', null, null);
+    endShell(shell.child, null, null);
 
     // A null here is what makes pi report "Command terminated without an exit code", which this
     // implementation can therefore never produce.
@@ -209,41 +229,74 @@ describe('createTrackedPowerShellOperations', () => {
     const shell = armFakeShell();
     const settled = ops.exec('Get-ChildItem', CWD, { onData: () => undefined, env: process.env });
     await shell.spawned;
-    shell.child.emit('close', 0);
+    endShell(shell.child, 0);
     await settled;
 
     expect(spawnControl.calls[0]?.args).toEqual([...POWERSHELL_ARGS, `${UTF8_OUTPUT_PREFIX}Get-ChildItem`]);
   });
 
-  it('falls through to powershell.exe when spawning pwsh throws synchronously', async () => {
-    const child = fakeChild();
+  it('starts pwsh by its absolute path from PATH, then Windows PowerShell from System32, never by a bare name', async () => {
     spawnControl.fake = (exe) => {
-      if (exe === 'pwsh') throw enoent('pwsh');
-      setImmediate(() => child.emit('close', 0));
+      const child = fakeChild(null);
+      setImmediate(() => child.emit('error', enoent(exe)));
+      return child;
+    };
+
+    await messageOf(ops.exec('Write-Output ok', CWD, { onData: () => undefined, env: process.env }));
+
+    // A bare name searches the working folder first on Windows, where a repository could plant pwsh.exe.
+    const expected = [plantedPwsh(), ...(process.platform === 'win32' ? [windowsPowerShell()] : [])];
+    expect(spawnControl.calls.map((call) => call.exe)).toEqual(expected);
+    expect(expected.every((exe) => isAbsolute(exe))).toBe(true);
+  });
+
+  it('never takes pwsh from a relative PATH entry', async () => {
+    spawnControl.fake = (exe) => {
+      const child = fakeChild(null);
+      setImmediate(() => child.emit('error', enoent(exe)));
+      return child;
+    };
+    const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== 'PATH')), PATH: relative(process.cwd(), pwshDir) };
+    expect(isAbsolute(env.PATH)).toBe(false);
+
+    await messageOf(ops.exec('Write-Output ok', CWD, { onData: () => undefined, env }));
+
+    expect(spawnControl.calls.map((call) => call.exe)).toEqual(process.platform === 'win32' ? [windowsPowerShell()] : []);
+  });
+
+  it.runIf(process.platform === 'win32')('falls through to Windows PowerShell when starting pwsh throws synchronously, ENOENT or not', async () => {
+    for (const code of ['ENOENT', 'EINVAL']) {
+      spawnControl.calls = [];
+      const child = fakeChild();
+      spawnControl.fake = (exe) => {
+        if (exe === plantedPwsh()) throw Object.assign(new Error(`spawn ${exe} ${code}`), { code });
+        setImmediate(() => endShell(child, 0));
+        return child;
+      };
+
+      await expect(ops.exec('Write-Output ok', CWD, { onData: () => undefined, env: process.env })).resolves.toEqual({ exitCode: 0 });
+
+      expect(spawnControl.calls.map((call) => call.exe)).toEqual([plantedPwsh(), windowsPowerShell()]);
+    }
+  });
+
+  it.runIf(process.platform === 'win32')("falls through to Windows PowerShell when pwsh reports ENOENT on the child's error event", async () => {
+    spawnControl.fake = (exe) => {
+      // A start that failed has no pid, as Node reports one.
+      const child = fakeChild(exe === plantedPwsh() ? null : 4242);
+      if (exe === plantedPwsh()) setImmediate(() => child.emit('error', enoent(exe)));
+      else setImmediate(() => endShell(child, 0));
       return child;
     };
 
     await expect(ops.exec('Write-Output ok', CWD, { onData: () => undefined, env: process.env })).resolves.toEqual({ exitCode: 0 });
 
-    expect(spawnControl.calls.map((call) => call.exe)).toEqual(['pwsh', 'powershell.exe']);
+    expect(spawnControl.calls.map((call) => call.exe)).toEqual([plantedPwsh(), windowsPowerShell()]);
   });
 
-  it("falls through to powershell.exe when pwsh reports ENOENT on the child's error event", async () => {
+  it('throws naming what it looked for and why each candidate could not start', async () => {
     spawnControl.fake = (exe) => {
-      const child = fakeChild();
-      if (exe === 'pwsh') setImmediate(() => child.emit('error', enoent('pwsh')));
-      else setImmediate(() => child.emit('close', 0));
-      return child;
-    };
-
-    await expect(ops.exec('Write-Output ok', CWD, { onData: () => undefined, env: process.env })).resolves.toEqual({ exitCode: 0 });
-
-    expect(spawnControl.calls.map((call) => call.exe)).toEqual(['pwsh', 'powershell.exe']);
-  });
-
-  it('throws naming both candidates when neither executable exists', async () => {
-    spawnControl.fake = (exe) => {
-      const child = fakeChild();
+      const child = fakeChild(null);
       setImmediate(() => child.emit('error', enoent(exe)));
       return child;
     };
@@ -251,9 +304,9 @@ describe('createTrackedPowerShellOperations', () => {
     const message = await messageOf(ops.exec('Write-Output ok', CWD, { onData: () => undefined, env: process.env }));
 
     // Named candidates, because a bare "PowerShell not found" reads to a model as a command it may retry.
-    expect(message).toContain('pwsh');
-    expect(message).toContain('powershell.exe');
-    expect(spawnControl.calls.map((call) => call.exe)).toEqual(['pwsh', 'powershell.exe']);
+    expect(message).toContain(`${PWSH} on PATH`);
+    expect(message).toContain(`${plantedPwsh()}: spawn ${plantedPwsh()} ENOENT`);
+    if (process.platform === 'win32') expect(message).toContain('Windows PowerShell');
   });
 
   it('refuses to spawn a shell when no environment was supplied', async () => {
@@ -301,7 +354,7 @@ describe('the PowerShell tool result', () => {
     await shell.spawned;
 
     shell.child.stdout.emit('data', Buffer.from('ok\n'));
-    shell.child.emit('close', 0);
+    endShell(shell.child, 0);
 
     expect(textOf(await settled)).toContain('ok');
   });
@@ -312,7 +365,7 @@ describe('the PowerShell tool result', () => {
     await shell.spawned;
 
     shell.child.stdout.emit('data', Buffer.from('build failed\n'));
-    shell.child.emit('close', 42);
+    endShell(shell.child, 42);
 
     const message = await errorTextOf(settled);
     expect(message).toContain('build failed');
@@ -326,7 +379,7 @@ describe('the PowerShell tool result', () => {
     const settled = start({ command: 'Start-Sleep 30' });
     await shell.spawned;
 
-    shell.child.emit('close', null, 'SIGKILL');
+    endShell(shell.child, null, 'SIGKILL');
 
     const message = await errorTextOf(settled);
     // 128 + SIGKILL, the shell convention the operations layer reports in place of a null exit code.
@@ -339,7 +392,7 @@ describe('the PowerShell tool result', () => {
     const settled = start({ command: 'Write-Output ok' });
     await shell.spawned;
 
-    shell.child.emit('close', null, null);
+    endShell(shell.child, null, null);
 
     const message = await errorTextOf(settled);
     expect(message.endsWith('Command exited with code 1')).toBe(true);
@@ -360,9 +413,9 @@ describe('the PowerShell tool result', () => {
     expect(killProcessTree).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(1);
-    expect(killProcessTree).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(killProcessTree).toHaveBeenCalledTimes(1));
 
-    shell.child.emit('close', null, 'SIGKILL');
+    endShell(shell.child, null, 'SIGKILL');
 
     const message = await messageOf(settled);
     expect(message).toContain('Compiling 1 of 400');
@@ -378,9 +431,9 @@ describe('the PowerShell tool result', () => {
 
     shell.child.stdout.emit('data', Buffer.from('two lines in\n'));
     controller.abort();
-    expect(killProcessTree).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(killProcessTree).toHaveBeenCalledTimes(1));
 
-    shell.child.emit('close', null, 'SIGTERM');
+    endShell(shell.child, null, 'SIGTERM');
 
     const message = await messageOf(settled);
     expect(message).toContain('two lines in');
@@ -402,7 +455,7 @@ describe('the PowerShell tool result', () => {
     const settled = start({ command: 'Start-Sleep 30' }, { signal: controller.signal });
     await shell.spawned;
 
-    // The gap the latch closes: the child is reaped, but 'close' has not landed and the listeners are live.
+    // The gap `whileRunning` closes: the child is reaped, but 'close' has not landed and the listeners are live.
     shell.child.emit('exit', 0, null);
     controller.abort();
     shell.child.emit('close', 0);
@@ -415,7 +468,7 @@ describe('the PowerShell tool result', () => {
     const shell = armFakeShell();
     const settled = start({ command: 'Write-Output ok' });
     await shell.spawned;
-    shell.child.emit('close', 0);
+    endShell(shell.child, 0);
     await settled;
 
     expect(spawnControl.calls[0]?.options['windowsHide']).toBe(true);

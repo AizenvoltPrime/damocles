@@ -171,4 +171,21 @@ describe('the context menu', () => {
 
     expect(posted).toEqual([{ type: 'sendMessage', content: '/compact', sessionId: 'sess-shown' }]);
   });
+
+  it('before the session starts, names the stored conversation the panel shows, and none once it shows none', async () => {
+    const sessionStore = useSessionStore();
+    sessionStore.setResumedSession('sess-restored');
+    const wrapper = mountStrip(stats());
+    (await openContextMenu(wrapper)).querySelector<HTMLElement>('[data-action="compact"]')!.click();
+    await flush();
+
+    sessionStore.setResumedSession(null);
+    (await openContextMenu(wrapper)).querySelector<HTMLElement>('[data-action="compact"]')!.click();
+    await flush();
+
+    expect(posted).toEqual([
+      { type: 'sendMessage', content: '/compact', sessionId: 'sess-restored' },
+      { type: 'sendMessage', content: '/compact', sessionId: null },
+    ]);
+  });
 });

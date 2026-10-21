@@ -1,22 +1,21 @@
 import * as childProcess from 'child_process';
 import * as path from 'path';
 import { gitExecutable } from '../git-executable';
+import { GIT_HARDENING_ARGS } from '../git-hardening';
+import { withSpawnLock } from '../process-launcher/spawn-lock';
 
 export const GIT_TIMEOUT: number = 30_000;
 export const SAFE_GIT_REF: RegExp = /^(?!-)[A-Za-z0-9_.~^/@{}-]+$/;
 
-/**
- * Prefixed to every git invocation. Git reads the repository's own `.git/config` before anything
- * else, and `core.fsmonitor` there names a command git runs while refreshing the index.
- */
-export const GIT_HARDENING_ARGS: readonly string[] = ['-c', 'core.fsmonitor=false'];
-
-function runGit(args: string[], cwd: string): string {
-	// `execFileSync`, not `execSync`: no shell, so a ref or path that reaches argv is never re-parsed.
+function runGit(args: string[], cwd: string): Promise<string> {
+	// `execFile`, not `exec`: no shell, so a ref or path that reaches argv is never re-parsed.
 	// No `ExecEnv` either, since the checkpoint engine's overrides retarget git at its private bare repo.
 	// Every caller catches, so no git found reads as a git failure.
-	return childProcess.execFileSync(gitExecutable(), [...GIT_HARDENING_ARGS, ...args], {
-		cwd, encoding: 'utf8', timeout: GIT_TIMEOUT, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+	// Not execFileSync, which would hold the spawn lock, and with it every other start, for the whole run.
+	return new Promise((resolve, reject) => {
+		withSpawnLock(() => childProcess.execFile(gitExecutable(), [...GIT_HARDENING_ARGS, ...args], {
+			cwd, encoding: 'utf8', timeout: GIT_TIMEOUT, windowsHide: true,
+		}, (error, stdout) => (error ? reject(error) : resolve(stdout))));
 	});
 }
 
@@ -26,15 +25,15 @@ function toWorkspaceAbsolute(workspaceRoot: string, relativePath: string): strin
 	return path.resolve(workspaceRoot, relativePath).replace(/\\/g, '/');
 }
 
-export function getChangedFiles(workspaceRoot: string, base: string = 'HEAD~1'): string[] {
+export async function getChangedFiles(workspaceRoot: string, base: string = 'HEAD~1'): Promise<string[]> {
 	if (!SAFE_GIT_REF.test(base)) return [];
 
 	let stdout: string;
 	try {
-		stdout = runGit(['diff', '--name-only', '--relative', base, '--'], workspaceRoot);
+		stdout = await runGit(['diff', '--name-only', '--relative', base, '--'], workspaceRoot);
 	} catch {
 		try {
-			stdout = runGit(['diff', '--name-only', '--relative', '--cached'], workspaceRoot);
+			stdout = await runGit(['diff', '--name-only', '--relative', '--cached'], workspaceRoot);
 		} catch {
 			return [];
 		}
@@ -46,17 +45,17 @@ export function getChangedFiles(workspaceRoot: string, base: string = 'HEAD~1'):
 		.map(rel => toWorkspaceAbsolute(workspaceRoot, rel));
 }
 
-export function parseGitDiffRanges(
+export async function parseGitDiffRanges(
 	workspaceRoot: string,
 	base: string = 'HEAD~1',
-): Map<string, Array<[number, number]>> {
+): Promise<Map<string, Array<[number, number]>>> {
 	if (!SAFE_GIT_REF.test(base)) {
 		return new Map();
 	}
 
 	let stdout: string;
 	try {
-		stdout = runGit(['diff', '--unified=0', '--relative', base, '--'], workspaceRoot);
+		stdout = await runGit(['diff', '--unified=0', '--relative', base, '--'], workspaceRoot);
 	} catch {
 		return new Map();
 	}

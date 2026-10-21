@@ -74,6 +74,8 @@ function fakeSession(conversation = false, sessionId: string | null = null) {
 interface HarnessOptions {
   setupResult?: (onStep: (step: SetupStep) => void) => Promise<{ exitCode: number }>;
   stored?: StoredSession[];
+  // the rows once every session file is parsed; stored by default
+  complete?: StoredSession[];
   trusted?: boolean;
   repository?: boolean;
 }
@@ -156,6 +158,7 @@ function harness(name: string, options: HarnessOptions = {}) {
     releaseFolder,
     sessionsClosed: () => sessionsClosed,
     storedSessionsOf: async () => options.stored ?? [],
+    completeStoredSessionsOf: async () => options.complete ?? options.stored ?? [],
   });
   return {
     project, projectTarget, registry, host, worktrees, instance, session, panels, dispatched, posted, releaseFolder, warn, resumeInto, folderRegistry, moveTo, trust,
@@ -456,6 +459,16 @@ describe.skipIf(!HAS_GIT)('panel worktrees: a new chat in a worktree, sharing an
     } finally {
       fs.rmSync(listedDir, { recursive: true, force: true });
     }
+  });
+
+  it('keeps a deleted record a stored chat names while that chat\'s file is still being parsed', async () => {
+    const complete: StoredSession[] = [];
+    const h = harness('tombstones-parsing', { stored: [], complete });
+    const named = await chatRecord(h);
+    await h.registry.markDeleted(named.id);
+    complete.push({ id: 's-named', worktree: { worktreeId: named.id, projectPath: h.project, place: 'worktree' } } as unknown as StoredSession);
+    await h.worktrees.storedSessionsChanged();
+    expect(h.registry.records().map((r) => r.id)).toEqual([named.id]);
   });
 
   it('holds a worktree for a finish action only while its chats are idle, and its chats see the action', async () => {

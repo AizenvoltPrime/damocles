@@ -140,14 +140,12 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
       ctx.stores.streamingStore.removeAssistantMessage(msg.messageId);
     },
 
+    // The conversation shown is set by sessionStarted, resumeAccepted and a replay's sessionCleared, never by a done: a replay that read nothing still ends with one.
     done: (msg, ctx) => {
-      const { streamingStore, sessionStore } = ctx.stores;
+      const { streamingStore } = ctx.stores;
       const resultData = msg.data;
       streamingStore.finalizeStreamingMessage();
       streamingStore.setLastStopReason(resultData.stop_reason ?? null);
-      if (resultData.session_id) {
-        sessionStore.setResumedSession(resultData.session_id);
-      }
       if (resultData.stop_reason === "max_tokens") {
         import("vue-sonner").then(({ toast }) => toast.warning(t("toast.responseTruncated")));
       }

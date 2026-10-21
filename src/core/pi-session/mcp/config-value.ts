@@ -1,8 +1,7 @@
-import { spawn } from 'node:child_process';
 import type { McpServerConfig, McpServerErrorInfo } from '../../../shared/types/mcp';
 import { initPiLoader } from '../pi-loader';
-import { log } from '../../logger';
-import { interpolateEnvVars, killProcessTree } from './utils';
+import { processLauncher } from '../../process-launcher';
+import { interpolateEnvVars } from './utils';
 
 /** pi runs config commands with a 10 s timeout (`resolve-config-value.ts`). */
 export const CONFIG_COMMAND_TIMEOUT_MS = 10_000;
@@ -85,22 +84,8 @@ function envValue(name: string): string | undefined {
   return process.env[name] || undefined;
 }
 
-function killTree(pid: number | undefined): void {
-  if (pid === undefined) return;
-  if (process.platform === 'win32') {
-    void killProcessTree(pid);
-    return;
-  }
-  try {
-    process.kill(-pid, 'SIGKILL');
-  } catch (error) {
-    // ESRCH: the group already exited. This runs from a timer, so a throw would be uncaught.
-    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') log('[McpConfigValue] Could not kill a config command: %s', (error as Error).message);
-  }
-}
-
 interface CaptureResult {
-  /** False when the shell itself could not be started (ENOENT, or a synchronous spawn throw), so another shell may be tried. */
+  /** False when the shell itself could not be started, so another shell may be tried. */
   started: boolean;
   value: string | undefined;
 }
@@ -116,20 +101,15 @@ function capture(
       resolve({ started: true, value: undefined });
       return;
     }
-    let child: ReturnType<typeof spawn>;
-    try {
-      child = spawn(file, args, {
-        shell: options.shell,
-        // POSIX gets its own process group so a timeout can kill the command's children too.
-        detached: process.platform !== 'win32',
-        stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'ignore'],
-        windowsHide: true,
-      });
-    } catch {
-      // Windows throws EINVAL here for a .cmd or .bat shell with shell: false; the error's spawnargs hold the command.
-      resolve({ started: false, value: undefined });
-      return;
-    }
+    const child = processLauncher().launch({
+      file,
+      args,
+      shell: options.shell,
+      // POSIX gets its own process group so a timeout can kill the command's children too.
+      detached: process.platform !== 'win32',
+      stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'ignore'],
+      windowsHide: true,
+    });
     const chunks: Buffer[] = [];
     let bytes = 0;
     let settled = false;
@@ -140,18 +120,17 @@ function capture(
       options.signal?.removeEventListener('abort', onAbort);
       resolve(result);
     };
-    // A grandchild holding the stdout pipe delays 'close' until it exits, so a kill settles at once.
+    // A grandchild holding the stdout pipe delays the close until it exits, so a kill settles at once.
     const kill = (): void => {
       if (settled) return;
       finish({ started: true, value: undefined });
-      child.stdout?.destroy();
-      killTree(child.pid);
+      child.kill({ tree: true, signal: 'SIGKILL' });
     };
     const onAbort = (): void => kill();
     const timer = setTimeout(kill, options.timeoutMs);
     options.signal?.addEventListener('abort', onAbort, { once: true });
 
-    child.stdout?.on('data', (chunk: Buffer) => {
+    child.onData('stdout', (chunk) => {
       bytes += chunk.length;
       if (bytes > MAX_COMMAND_OUTPUT_BYTES) {
         kill();
@@ -159,22 +138,17 @@ function capture(
       }
       chunks.push(chunk);
     });
-    if (options.input !== undefined) {
-      // A shell that exits before reading its script closes this pipe; an unlistened stream error is fatal.
-      child.stdin?.on('error', () => {});
-      child.stdin?.end(options.input);
-    }
-    child.once('error', (error: NodeJS.ErrnoException) => {
-      finish({ started: error.code !== 'ENOENT', value: undefined });
-    });
-    child.once('close', (code) => {
+    if (options.input !== undefined) child.end(options.input);
+    // Windows refuses a .cmd or .bat shell with shell: false (EINVAL), and a missing one is ENOENT: both are a shell that cannot start.
+    child.pid.catch(() => finish({ started: false, value: undefined }));
+    Promise.all([child.exited, child.closed]).then(([{ code }]) => {
       if (code !== 0) {
         finish({ started: true, value: undefined });
         return;
       }
       const value = Buffer.concat(chunks).toString('utf-8').trim();
       finish({ started: true, value: value || undefined });
-    });
+    }, () => finish({ started: true, value: undefined }));
   });
 }
 

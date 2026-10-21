@@ -36,7 +36,7 @@ import {
   type ScmViewOptions,
 } from '../preload/shell-channels';
 import { MAX_CONTEXT_LINES, MAX_REPLACEMENT_LENGTH, MAX_SEARCH_GLOBS_LENGTH, MAX_SEARCH_HISTORY, MAX_SEARCH_PATTERN_LENGTH } from '../../shared/text-search';
-import { SEARCH_DEFAULT_VIEW_MODES } from './desktop-configuration';
+import { SEARCH_DEFAULT_VIEW_MODES } from '../local-services/desktop-configuration';
 import { isRelativeFilePath } from '../../shared/relative-path';
 import { MAX_RECENT_FILES, type PersistedEditor, type PersistedTab } from './editor-pane';
 import {

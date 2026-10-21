@@ -68,11 +68,13 @@
   isolation: isolate;
 }
 
-.update-pill-enter-active {
+.update-pill-enter-active,
+.engine-pill-enter-active {
   animation: d-scale-in 0.32s var(--ease-spring) both;
 }
 
-.update-pill-leave-active {
+.update-pill-leave-active,
+.engine-pill-leave-active {
   pointer-events: none;
   animation: d-scale-out 0.16s ease-in both;
 }

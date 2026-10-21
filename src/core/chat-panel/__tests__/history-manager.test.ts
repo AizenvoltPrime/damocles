@@ -8,7 +8,7 @@ vi.mock('../../logger', () => ({ log: vi.fn() }));
 /** The replay contract as the pi loader posts it: transcript and usage, and no panel state. */
 const H = vi.hoisted(() => ({
   replay: [
-    { type: 'sessionCleared' },
+    { type: 'sessionCleared', sessionId: 's1' },
     { type: 'userReplay', content: 'hi', isSynthetic: false, sdkMessageId: 'u1' },
     { type: 'assistantReplay', content: 'hello', contentBlocks: [] },
     { type: 'tokenUsageUpdate', inputTokens: 10, outputTokens: 5 },

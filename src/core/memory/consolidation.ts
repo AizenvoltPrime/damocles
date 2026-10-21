@@ -120,6 +120,8 @@ export interface ConsolidationCtx {
   openFolders: () => readonly string[];
   /** Folders that are never a project, such as the home-directory bucket of a window with no folder open. */
   nonProjectFolders: () => readonly string[];
+  /** Whether a stored workspace's folder still exists; see `createFolderProbe`. */
+  folderExists: (folder: string) => Promise<boolean>;
   /** When false, the pass runs maintenance but extracts nothing. */
   autoExtractEnabled: boolean;
   /** Whether this pass was user-initiated ('manual') or background ('auto'). */
@@ -655,10 +657,14 @@ function extractedDisplay(
  * known workspaces holding a file a claimed turn touched. A wider list lets the model file a fact under
  * a repository the turns never touched.
  */
-function extractionWorkspaces(ctx: ConsolidationCtx, workspace: string, candidates: readonly ClaimedCandidate[]): string[] {
+async function extractionWorkspaces(ctx: ConsolidationCtx, workspace: string, candidates: readonly ClaimedCandidate[]): Promise<string[]> {
   const open = ctx.openFolders();
   const files = candidates.flatMap(c => c.files);
-  const offered = listKnownWorkspaces(ctx.db, open, ctx.nonProjectFolders()).filter(
+  const offered = await listKnownWorkspaces(
+    ctx.db,
+    open,
+    ctx.nonProjectFolders(),
+    ctx.folderExists,
     w => matchKnownWorkspace(w, open) !== null || files.some(f => workspaceContaining(f, [w]) !== null),
   );
   return [workspace, ...offered.filter(w => !sameWorkspace(w, workspace))];
@@ -758,7 +764,7 @@ async function extractInHalves(
     }
     const part = queue.shift()!;
     const batch = part.batch;
-    const pass: ClaimedPassCtx = { ...ctx, workspace, knownWorkspaces: extractionWorkspaces(ctx, workspace, batch) };
+    const pass: ClaimedPassCtx = { ...ctx, workspace, knownWorkspaces: await extractionWorkspaces(ctx, workspace, batch) };
     const prompt = buildExtractionPrompt(pass, batch, loadExistingMemoriesForExtraction(pass, batch));
     let extraction: MemorySubCallResult<ExtractionResult>;
     try {

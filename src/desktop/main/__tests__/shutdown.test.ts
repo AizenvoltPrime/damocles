@@ -22,7 +22,6 @@ function steps(overrides: Partial<ShutdownSteps> = {}): { steps: ShutdownSteps; 
       flushStores: step('flushStores'),
       disposeTerminals: step('disposeTerminals'),
       closeWatchers: step('closeWatchers'),
-      closeServers: step('closeServers'),
       closeTimeoutMs: 3_000,
       timeoutMs: 10_000,
       log: (line) => lines.push(line),
@@ -53,7 +52,7 @@ describe('shutDown', () => {
     closed.resolve();
     await done;
     expect(order.slice(0, 2)).toEqual(['closeWindows', 'windowsClosed']);
-    expect(order.slice(2).sort()).toEqual(['closeServers', 'closeWatchers', 'disposeCore', 'disposeTerminals', 'flushStores']);
+    expect(order.slice(2).sort()).toEqual(['closeWatchers', 'disposeCore', 'disposeTerminals', 'flushStores']);
   });
 
   it('flushes the stores only once the core has disposed, which can still write them', async () => {
@@ -100,22 +99,6 @@ describe('shutDown', () => {
     expect(settled).toBe(true);
   });
 
-  it('settles only once the IPC servers have closed, so the askpass socket folder is removed before the quit', async () => {
-    const servers = deferred();
-    const { steps: run } = steps({ closeServers: () => servers.promise });
-
-    let settled = false;
-    const done = shutDown(run).then(() => {
-      settled = true;
-    });
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(settled).toBe(false);
-
-    servers.resolve();
-    await done;
-    expect(settled).toBe(true);
-  });
-
   it('disposes the core, the terminals and the watchers and flushes the stores once the window\'s requests outlast their bound', async () => {
     vi.useFakeTimers();
     const { steps: run, order, lines } = steps({ closeWindows: () => new Promise<void>(() => undefined), closeTimeoutMs: 30, timeoutMs: 100 });
@@ -125,7 +108,7 @@ describe('shutDown', () => {
     expect(order).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
     await done;
-    expect(order.sort()).toEqual(['closeServers', 'closeWatchers', 'disposeCore', 'disposeTerminals', 'flushStores']);
+    expect(order.sort()).toEqual(['closeWatchers', 'disposeCore', 'disposeTerminals', 'flushStores']);
     expect(lines).toEqual(['[shutdown] the window\'s requests did not settle within 30 ms; disposing anyway']);
   });
 

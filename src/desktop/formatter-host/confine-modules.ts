@@ -1,7 +1,7 @@
 import { realpathSync } from 'node:fs';
 import { isBuiltin, registerHooks } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { isInsideRealRoot } from '../main/documents/confine';
+import { isInsideRealRoot } from '../local-services/confine';
 
 export const OUTSIDE_ROOT_CODE = 'ERR_DAMOCLES_OUTSIDE_ROOT';
 

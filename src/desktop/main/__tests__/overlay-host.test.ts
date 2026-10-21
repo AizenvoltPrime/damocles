@@ -1103,6 +1103,9 @@ describe('message and notification request validation', () => {
     expect(parseOverlayAnswer({ kind: 'notifications', action: 'preview' }, center!)).toBeUndefined();
     expect(parseOverlayAnswer({ kind: 'notifications', action: 'open' }, center!)).toBeUndefined();
     expect(parseOverlayAnswer({ kind: 'notifications', action: 'clear' }, center!)).toBeUndefined();
+    expect(parseOverlayAnswer({ kind: 'notifications', action: 'answer', entryId: 'e1', label: 'Restart', extra: 1 }, center!)).toEqual({ kind: 'notifications', action: 'answer', entryId: 'e1', label: 'Restart' });
+    expect(parseOverlayAnswer({ kind: 'notifications', action: 'answer', entryId: 'e1' }, center!)).toBeUndefined();
+    expect(parseOverlayAnswer({ kind: 'notifications', action: 'answer', entryId: 'e1', label: 'x'.repeat(201) }, center!)).toBeUndefined();
     expect(parseOverlayAnswer({ kind: 'message', action: 0 }, center!)).toBeUndefined();
   });
 

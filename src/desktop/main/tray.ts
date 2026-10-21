@@ -1,5 +1,5 @@
 import { Menu, Tray, type NativeImage } from 'electron';
-import type { DesktopLocalizationService } from './platform/localization-service';
+import type { DesktopLocalizationService } from '../local-services/localization-service';
 
 export const TRAY_IDS = {
   toggleWindow: 'damocles.tray.toggleWindow',

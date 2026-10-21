@@ -139,6 +139,52 @@ describe('resumeAccepted', () => {
   });
 });
 
+/** Core refuses a send that names a conversation the panel did not open (docs/invariants.md "A send names its conversation"). */
+describe('the conversation a send names before its session starts', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  /** A restored panel names its saved conversation from mount. */
+  function restoring(): HandlerContext {
+    const ctx = context();
+    ctx.stores.sessionStore.setSelectedSession('s-saved', 'Saved');
+    ctx.stores.sessionStore.setResumedSession('s-saved');
+    ctx.bridge.setState({ sessionId: 's-saved', sessionName: 'Saved' });
+    return ctx;
+  }
+
+  it('stays the replayed conversation from the replay clearing the panel through its done', () => {
+    const ctx = restoring();
+
+    dispatch({ type: 'sessionCleared', sessionId: 's-saved' }, ctx);
+    expect(ctx.stores.sessionStore.sendTargetSessionId).toBe('s-saved');
+    dispatch({ type: 'done', data: { type: 'result', session_id: 's-saved', is_done: true } }, ctx);
+
+    expect(ctx.stores.sessionStore.sendTargetSessionId).toBe('s-saved');
+    expect(ctx.stores.sessionStore.selectedSessionId).toBe('s-saved');
+    expect(ctx.bridge.getState()).toMatchObject({ sessionId: 's-saved' });
+  });
+
+  it('is none once a replay read nothing, its done included', () => {
+    const ctx = restoring();
+
+    dispatch({ type: 'sessionCleared', sessionId: 's-saved' }, ctx);
+    dispatch({ type: 'sessionCleared' }, ctx);
+    dispatch({ type: 'errorReplay', content: "This conversation's file could not be found." }, ctx);
+    dispatch({ type: 'done', data: { type: 'result', session_id: 's-saved', is_done: true } }, ctx);
+
+    expect(ctx.stores.sessionStore.sendTargetSessionId).toBeNull();
+  });
+
+  it('is none once core says it opened nothing, the saved conversation kept for the next restore', () => {
+    const ctx = restoring();
+
+    dispatch({ type: 'sessionCleared' }, ctx);
+
+    expect(ctx.stores.sessionStore.sendTargetSessionId).toBeNull();
+    expect(ctx.bridge.getState()).toMatchObject({ sessionId: 's-saved' });
+  });
+});
+
 /** The persisted id is what a reload or restart asks the host to replay, and pi writes no file before the first prompt. */
 describe('sessionStarted persists only a stored conversation', () => {
   beforeEach(() => setActivePinia(createPinia()));

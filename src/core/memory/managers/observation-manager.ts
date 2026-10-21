@@ -21,7 +21,6 @@ export class ObservationManager {
 
   constructor(db: DatabaseInstance) {
     this.db = db;
-    this.normalizeStoredFilePaths();
   }
 
   addRichObservation(sessionId: string, workspace: string, input: ObservationInput): MemoryEntry {
@@ -59,8 +58,9 @@ export class ObservationManager {
    * forward slashes. The `GLOB '*\*'` guard (backslash is literal in GLOB) selects only rows that
    * contain one, so once clean this is a pure no-op — safe at every init. Runs in one transaction; a
    * row whose JSON fails to parse is logged and skipped so one bad row can't abort the sweep.
+   * A write: the caller runs it on the write queue.
    */
-  private normalizeStoredFilePaths(): void {
+  normalizeStoredFilePaths(): void {
     const rows = this.db.prepare(
       "SELECT id, files_read, files_modified FROM memories WHERE files_read GLOB '*\\*' OR files_modified GLOB '*\\*'"
     ).all() as Pick<MemoryRow, 'id' | 'files_read' | 'files_modified'>[];

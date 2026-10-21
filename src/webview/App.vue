@@ -444,7 +444,7 @@ function tryInterceptLocalCommand(content: string | UserContentBlock[]): boolean
 function handleSendMessage(content: string | UserContentBlock[], includeIdeContext: boolean, terminalAttachmentIds: string[]) {
   if (tryInterceptLocalCommand(content)) return;
 
-  postMessage({ type: "sendMessage", content, sessionId: sessionStore.currentSessionId, includeIdeContext, ...(terminalAttachmentIds.length > 0 ? { terminalAttachmentIds } : {}) });
+  postMessage({ type: "sendMessage", content, sessionId: sessionStore.sendTargetSessionId, includeIdeContext, ...(terminalAttachmentIds.length > 0 ? { terminalAttachmentIds } : {}) });
   followTranscript();
   uiStore.setProcessing(true);
 }

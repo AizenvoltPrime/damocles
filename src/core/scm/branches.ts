@@ -1,7 +1,8 @@
 // Checkout, branch, merge and rebase argv and outcomes (VS Code's extensions/git/src/git.ts checkout, branch, deleteBranch,
 // renameBranch, merge and rebase; repository.ts fastForwardBranch). Every short name passes revision(), so it never reads as
 // an option. checkout parses --end-of-options as a path before git 2.44, so its revision follows `-q` and precedes `--`.
-import { endOfOptions, GitError, revision, type GitResult, type GitVersion } from './git-runner';
+import { endOfOptions, revision, type GitResult, type GitVersion } from './git-runner';
+import { GitError } from './errors';
 import type { Repository, SlotGit, StashedOutcome, StashMode } from './repository';
 import { remoteArg } from './sync';
 

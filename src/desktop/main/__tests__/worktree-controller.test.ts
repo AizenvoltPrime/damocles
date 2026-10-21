@@ -34,6 +34,11 @@ import { lineChangesSinceBase, mergeInto, targetBranch, updateFrom } from '../..
 import { rootKey } from '../../preload/folder-root';
 import { WorktreeRoots } from '../worktrees/roots';
 import { mostRecentlyUsed, WorktreeController, type WorktreeControllerDeps } from '../worktrees/worktree-controller';
+import { finishHold, worktreeEngine } from '../worktrees/engine';
+import type { WorktreeRecordReader } from '../worktrees/records';
+import { createFinishHolds, worktreeCalls, type FinishHolds } from '../../core-host/worktrees';
+import { createCoreEndpoint, createLoopback, createMainEndpoint, type WorktreeCall } from '../../core-protocol';
+import { CoreClient } from '../core-client';
 import type { AskWorktreeDialog } from '../worktrees/worktree-dialogs';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { DocumentService, type TextDocument } from '../documents/document-service';
@@ -61,12 +66,25 @@ let tasks: Array<Parameters<WorktreeControllerDeps['runTask']>[0]>;
 let gitOutput: Record<string, string>;
 const fakeGit = { git: { path: 'git', version: { major: 2, minor: 45, patch: 0 } }, run: async (call: { args: readonly string[] }) => ({ stdout: Buffer.from(gitOutput[call.args[0]!] ?? ''), stderr: '', exitCode: 0 }) } as unknown as GitRunner;
 
-function controller(overrides: Partial<WorktreeControllerDeps> = {}): WorktreeController {
-  const registry = {
-    get: (id: string) => (id === record.id ? record : undefined),
-    liveChatRecords: () => (record.deletedAt === undefined ? [record] : []),
-    records: () => [record],
-  } as unknown as WorktreeRegistry;
+// worktrees.call as core serves it over its own registry and finish holds
+function coreCalls(registry: WorktreeRegistry, holds: FinishHolds): (method: WorktreeCall, args: readonly unknown[]) => Promise<unknown> {
+  const calls = worktreeCalls({ registry, git: () => fakeGit, isTrusted: () => true, holds, log: () => undefined });
+  return (method, args) => (calls[method] as (...callArgs: readonly unknown[]) => Promise<unknown>)(...args);
+}
+
+const recordRegistry = (): WorktreeRegistry => ({
+  get: (id: string) => (id === record.id ? record : undefined),
+  liveChatRecords: () => (record.deletedAt === undefined ? [record] : []),
+  records: () => [record],
+} as unknown as WorktreeRegistry);
+
+// The registry as core holds it and main reads it; the git and registry work goes through core's worktree calls.
+function controller(overrides: Partial<WorktreeControllerDeps> & { readonly registry?: WorktreeRegistry } = {}): WorktreeController {
+  const { registry: overriddenRegistry, ...rest } = overrides;
+  const registry = overriddenRegistry ?? recordRegistry();
+  const holds = createFinishHolds();
+  const call = coreCalls(registry, holds);
+  const engine = worktreeEngine(call);
   roots = new WorktreeRoots({ projects: () => [{ key: KEY, fsPath: PROJECT, name: 'alpha' }], registry: () => registry });
   const askDialog = (async (dialog: unknown) => {
     dialogs.push(dialog);
@@ -78,9 +96,10 @@ function controller(overrides: Partial<WorktreeControllerDeps> = {}): WorktreeCo
     return undefined;
   };
   return new WorktreeController({
-    registry,
+    records: registry as unknown as WorktreeRecordReader,
+    engine,
     roots,
-    git: () => fakeGit,
+    gitFound: true,
     branchPrefix: () => '',
     isTrusted: () => true,
     askDialog,
@@ -94,28 +113,25 @@ function controller(overrides: Partial<WorktreeControllerDeps> = {}): WorktreeCo
     worktreeEnv: () => ({}),
     chatsUsing: () => [{ panelId: 'p1', busy }],
     sessionsUsing: async () => ['s1', 's2'],
-    leasedElsewhere: (sessionId) => leased && sessionId === 's2',
+    leasedElsewhere: async (sessionId) => leased && sessionId === 's2',
     closeWorktree: async (worktreeId, key, stop) => {
       H.trail.push(`close:${worktreeId}:${key === rootKey({ projectKey: KEY, worktreeId })}`);
       H.trail.push(`root while asking:${roots.resolve(key) === undefined ? 'refused' : 'open'}`);
-      if (!closeAnswer || !stop()) return false;
+      if (!closeAnswer) return 'cancelled';
+      if (!(await stop())) return 'refused';
       H.trail.push(`root once stopping:${roots.resolve(key) === undefined ? 'refused' : 'open'}`);
-      return true;
+      return 'closed';
     },
     afterClose: (_id, removed) => H.trail.push(`afterClose:${removed}`),
     showProjectFolder: () => H.trail.push('showProjectFolder'),
-    newChatInProject: () => undefined,
-    newChatInWorktree: () => undefined,
-    beginFinish: (worktreeId, action) => {
+    beginFinish: async (worktreeId, action) => {
       if (busyAtHold) return undefined;
       H.trail.push(`hold:${worktreeId}:${action}`);
-      return { dispose: () => H.trail.push('release') };
+      const hold = holds.add(worktreeId, { dispose: () => H.trail.push('release') });
+      return finishHold({ call, stopped: () => false, worktreeId, hold, release: () => holds.release(hold) });
     },
     showTask: () => true,
     stopTask: (key) => H.trail.push(`stopTask:${key}`),
-    onDidChangeRefs: () => ({ dispose: () => undefined }),
-    onDidChangeProjectRepository: () => ({ dispose: () => undefined }),
-    projectRepository: () => PROJECT,
     projectRepositoryWhenReady: async () => PROJECT,
     worktreeChats: async () => new Map(),
     openConflicts: async (folder, files, branch) => {
@@ -126,7 +142,7 @@ function controller(overrides: Partial<WorktreeControllerDeps> = {}): WorktreeCo
     generateMessage: async () => 'generated',
     changed: () => undefined,
     reveal: async () => undefined,
-    ...overrides,
+    ...rest,
   });
 }
 
@@ -289,7 +305,7 @@ describe('WorktreeController', () => {
   });
 
   it('refuses to run setup again in a project that is no longer trusted', async () => {
-    const host = controller({ isTrusted: () => false, setupShell: () => ({ file: '/bin/bash', kind: 'posix' }) }).hostServices();
+    const host = controller({ isTrusted: () => false, setupShell: () => ({ file: '/bin/bash', kind: 'posix' }) }).ui();
     expect(await host.runSetup({ worktreeId: record.id, cwd: record.workingFolder, commands: ['npm ci'], env: {} }, () => undefined)).toEqual({ exitCode: 1 });
     expect(tasks).toEqual([]);
     expect(notices.at(-1)).toMatchObject({ severity: 'error', message: 'Trust this folder to use worktrees' });
@@ -393,13 +409,66 @@ describe('WorktreeController', () => {
     expect(notices.at(-1)?.message).toBe('A chat using this worktree is working. Try again once it is idle.');
   });
 
+  it.each([
+    ['Apply', 'apply' as const, []],
+    ['Delete', 'delete' as const, [{ dialog: 'delete', choice: 'delete', deleteBranch: false }]],
+  ])('fails %s visibly when the core holding the worktree stops before the action, and the next core refuses that hold', async (_name, action, answers) => {
+    dialogAnswers = [...answers];
+    // a core over the loopback, as main reaches it; its channel closes as a crash or reload closes it
+    const holds = createFinishHolds();
+    const { main, core } = createLoopback();
+    const mainEndpoint = createMainEndpoint(main, () => undefined);
+    const client = new CoreClient(mainEndpoint, (_view, attach) => attach());
+    const endpoint = createCoreEndpoint(core, () => undefined);
+    const call = coreCalls(recordRegistry(), holds);
+    let given: string | undefined;
+    endpoint.serve('worktree.beginFinish', ({ worktreeId }) => (given = holds.add(worktreeId, { dispose: () => H.trail.push('release') })));
+    endpoint.serve('worktree.endFinish', ({ hold }) => holds.release(hold));
+    endpoint.serve('worktrees.call', ({ method, args }) => call(method, args));
+    let stopped = false;
+    await controller({
+      beginFinish: async (worktreeId, finishAction) => {
+        const held = await client.beginWorktreeFinish(worktreeId, finishAction, () => stopped);
+        H.trail.push(`hold:${worktreeId}:${finishAction}`);
+        stopped = true;
+        mainEndpoint.close('Damocles Core stopped');
+        return held;
+      },
+    }).finish(record.id, action);
+    expect(H.trail.some((step) => step === 'apply' || step.startsWith('remove:'))).toBe(false);
+    expect(notices.at(-1)).toMatchObject({ severity: 'error', message: 'The Damocles engine stopped during the worktree action, so it may not have finished. Check the worktree and the project folder, then try again.' });
+    const next = coreCalls(recordRegistry(), createFinishHolds());
+    await expect(next(action === 'apply' ? 'apply' : 'removeWorktree', [record.id, given, { deleteBranch: false, force: false }])).rejects.toThrow('no longer holds the worktree');
+    expect(H.trail.some((step) => step === 'apply' || step.startsWith('remove:'))).toBe(false);
+  });
+
+  it('runs no finish action in core without a hold core gave out for that worktree', async () => {
+    const holds = createFinishHolds();
+    const call = coreCalls(recordRegistry(), holds);
+    const other = holds.add('zzzz9999', { dispose: () => undefined });
+    await expect(call('apply', [record.id, other])).rejects.toThrow('no longer holds the worktree');
+    const hold = holds.add(record.id, { dispose: () => undefined });
+    holds.release(hold);
+    await expect(call('updateFrom', [record.id, hold])).rejects.toThrow('no longer holds the worktree');
+    expect(H.trail).toEqual([]);
+  });
+
+  it('tells the user when a buffer edited while the hold was taken stops the delete, and stops nothing', async () => {
+    dialogAnswers = [{ dialog: 'delete', choice: 'delete', deleteBranch: false }];
+    await controller({
+      closeWorktree: async (_worktreeId, _key, stop) => ((await stop()) ? 'edited' : 'refused'),
+    }).finish(record.id, 'delete');
+    expect(H.trail).toEqual(['dialog:delete', 'hold:abcd1234:delete', 'release', 'afterClose:false']);
+    expect(notices.at(-1)).toEqual({ severity: 'warn', message: 'A file of the worktree was edited while Damocles was deleting it, so the worktree was not deleted. Try again.', actions: [] });
+  });
+
   it('offers no worktree without a repository source control opened for the project (D9, D30)', async () => {
     expect(await controller({ projectRepositoryWhenReady: async () => undefined }).options({ fsPath: PROJECT, name: 'alpha' })).toEqual({ available: false, reason: 'notGit' });
   });
 
   it('reports each setup command as it starts, from the Setup tab\'s command marks', async () => {
     const steps: unknown[] = [];
-    const host = controller({ setupShell: () => ({ file: '/bin/bash', kind: 'posix' }) }).hostServices();
+    const host = controller({ setupShell: () => ({ file: '/bin/bash', kind: 'posix' }) }).ui();
     const running = host.runSetup({ worktreeId: record.id, cwd: record.workingFolder, commands: ['npm ci', 'npm run build'], env: {} }, (step) => steps.push(step));
     const task = tasks[0]!;
     task.onCommandStart?.();
@@ -410,12 +479,12 @@ describe('WorktreeController', () => {
   });
 
   it('stops the Setup tab of the worktree it runs in, and tells a hand-off\'s conflicts as Apply tells them', async () => {
-    const host = controller({ setupShell: () => ({ file: '/bin/bash', kind: 'posix' }) }).hostServices();
+    const host = controller({ setupShell: () => ({ file: '/bin/bash', kind: 'posix' }) }).ui();
     void host.runSetup({ worktreeId: record.id, cwd: record.workingFolder, commands: ['npm ci'], env: {} }, () => undefined);
     host.stopSetup(record.id);
     expect(H.trail).toEqual([`stopTask:${tasks[0]!.key}`]);
     H.trail.length = 0;
-    await host.showApplyConflicts(record, ['a.ts']);
+    await host.showApplyConflicts(record.id, ['a.ts']);
     expect(H.trail).toEqual(['conflicts:true:a.ts:damocles/fix']);
     expect(notices.at(-1)).toMatchObject({ severity: 'warn', message: 'There are merge conflicts. Please resolve them before committing your changes.' });
   });
@@ -448,7 +517,7 @@ describe('WorktreeController', () => {
 });
 
 describe('closing a worktree root', () => {
-  function closer(answers: { tabs?: boolean; terminals?: boolean; terminalsOpened?: string[] | undefined }) {
+  function closer(answers: { tabs?: boolean; terminals?: boolean; terminalsOpened?: string[] | undefined; openedWhileStopping?: string; lateTerminal?: boolean; editedWhileStopping?: boolean }) {
     const trail: string[] = [];
     let terminals = ['t1'];
     let formatterExited!: () => void;
@@ -459,8 +528,8 @@ describe('closing a worktree root', () => {
           return answers.tabs === false ? undefined : new Map([['d1', 'unsaved']]);
         },
         closeRoot: () => {
-          trail.push('close tabs');
-          return true;
+          trail.push(answers.editedWhileStopping ? 'tabs refused' : 'close tabs');
+          return !answers.editedWhileStopping;
         },
       },
       terminals: {
@@ -471,7 +540,7 @@ describe('closing a worktree root', () => {
             terminals = [...terminals, ...answers.terminalsOpened];
             answers.terminalsOpened = undefined;
           }
-          return answers.terminals !== false;
+          return ids.includes(answers.openedWhileStopping ?? '') ? answers.lateTerminal !== false : answers.terminals !== false;
         },
         kill: (id) => trail.push(`kill:${id}`),
       },
@@ -482,8 +551,9 @@ describe('closing a worktree root', () => {
         trail.push('folder released');
       },
     };
-    const stop = (): boolean => {
+    const stop = async (): Promise<boolean> => {
       trail.push('stop');
+      if (answers.openedWhileStopping !== undefined) terminals = [...terminals, answers.openedWhileStopping];
       return true;
     };
     return { trail, deps, stop, formatterExited: () => formatterExited() };
@@ -491,24 +561,42 @@ describe('closing a worktree root', () => {
 
   it('asks every question before anything stops, so a Cancel at the terminal question leaves everything running', async () => {
     const cancelled = closer({ terminals: false });
-    expect(await closeWorktreeRoot(cancelled.deps, 'k', cancelled.stop)).toBe(false);
+    expect(await closeWorktreeRoot(cancelled.deps, 'k', cancelled.stop)).toBe('cancelled');
     expect(cancelled.trail).toEqual(['tabs', 'terminals:t1']);
     const tabs = closer({ tabs: false });
-    expect(await closeWorktreeRoot(tabs.deps, 'k', tabs.stop)).toBe(false);
+    expect(await closeWorktreeRoot(tabs.deps, 'k', tabs.stop)).toBe('cancelled');
     expect(tabs.trail).toEqual(['tabs']);
   });
 
   it('stops what runs there once every answer is in, and settles only after the formatter host exited', async () => {
     const run = closer({ terminalsOpened: ['t2'] });
-    let done = false;
+    let done: string | undefined;
     const closing = closeWorktreeRoot(run.deps, 'k', run.stop).then((closed) => (done = closed));
     await vi.waitFor(() => expect(run.trail).toContain('folder released'));
     // a terminal opened while the question was open is asked about too
     expect(run.trail).toEqual(['tabs', 'terminals:t1', 'tabs again', 'terminals:t2', 'tabs again', 'stop', 'close tabs', 'close chats', 'kill:t1', 'kill:t2', 'roots changed', 'folder released']);
-    expect(done).toBe(false);
+    expect(done).toBeUndefined();
     run.formatterExited();
     await closing;
-    expect(done).toBe(true);
+    expect(done).toBe('closed');
+  });
+
+  it('asks about a terminal opened while the hold was taken before it kills it, and a Cancel there stops nothing', async () => {
+    const kept = closer({ openedWhileStopping: 't3', lateTerminal: false });
+    expect(await closeWorktreeRoot(kept.deps, 'k', kept.stop)).toBe('cancelled');
+    expect(kept.trail).toEqual(['tabs', 'terminals:t1', 'tabs again', 'stop', 'terminals:t3']);
+    const killed = closer({ openedWhileStopping: 't3' });
+    const closing = closeWorktreeRoot(killed.deps, 'k', killed.stop);
+    await vi.waitFor(() => expect(killed.trail).toContain('folder released'));
+    killed.formatterExited();
+    expect(await closing).toBe('closed');
+    expect(killed.trail).toEqual(['tabs', 'terminals:t1', 'tabs again', 'stop', 'terminals:t3', 'close tabs', 'close chats', 'kill:t1', 'kill:t3', 'roots changed', 'folder released']);
+  });
+
+  it('reports a buffer edited while the hold was taken, and stops nothing', async () => {
+    const edited = closer({ editedWhileStopping: true });
+    expect(await closeWorktreeRoot(edited.deps, 'k', edited.stop)).toBe('edited');
+    expect(edited.trail).toEqual(['tabs', 'terminals:t1', 'tabs again', 'stop', 'tabs refused']);
   });
 });
 

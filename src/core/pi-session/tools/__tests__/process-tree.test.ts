@@ -264,6 +264,37 @@ describe('platform dispatch', () => {
     expect(kill).toHaveBeenCalledWith(4242);
   });
 
+  it('leaves the root alone when taskkill exits 0, since the tree is already gone and the pid is free to be reused', async () => {
+    setPlatform('win32');
+    const killer = new EventEmitter();
+    spawnMock.mockImplementationOnce(() => {
+      setImmediate(() => killer.emit('exit', 0, null));
+      return killer as unknown as ReturnType<typeof spawn>;
+    });
+    const kill = vi.spyOn(process, 'kill').mockReturnValue(true);
+
+    killProcessTree(4242, undefined);
+    await settle(0);
+
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it('kills the root when taskkill was itself killed, which reports a null exit code', async () => {
+    setPlatform('win32');
+    const killer = new EventEmitter();
+    spawnMock.mockImplementationOnce(() => {
+      setImmediate(() => killer.emit('exit', null, 'SIGTERM'));
+      return killer as unknown as ReturnType<typeof spawn>;
+    });
+    const kill = vi.spyOn(process, 'kill').mockReturnValue(true);
+
+    killProcessTree(4242, undefined);
+    await settle(0);
+
+    expect(kill).toHaveBeenCalledTimes(1);
+    expect(kill).toHaveBeenCalledWith(4242);
+  });
+
   it('kills the root once when a failed taskkill reports both an error and an exit', async () => {
     setPlatform('win32');
     const enoent: NodeJS.ErrnoException = new Error('spawn taskkill ENOENT');

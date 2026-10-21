@@ -7,7 +7,7 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { MAX_INPUT_VALUE_LENGTH } from '../../../shared/input-validation';
-import { redactUrls } from '../git-runner';
+import { redactUrls } from '../errors';
 
 // notice: ssh's information-only message (SSH_ASKPASS_PROMPT=none, a security key's touch request), which ssh ends by
 // killing the helper; it takes no answer.
@@ -85,6 +85,8 @@ const NONCE_HEX = /^[0-9a-f]{64}$/;
 const SHORT_POSIX_TMP = '/tmp';
 const SOCKET_FOLDER_PREFIX = 'damocles-askpass-';
 const SOCKET_NAME = 'askpass.sock';
+// A server makes its socket and listens moments after its folder, so a younger folder may belong to one starting up.
+export const ABANDONED_SOCKET_FOLDER_AGE_MS = 60_000;
 // sun_path's size less its NUL: 108 bytes on Linux, 104 on macOS and the BSDs
 const MAX_LINUX_SOCKET_PATH_BYTES = 107;
 const MAX_BSD_SOCKET_PATH_BYTES = 103;
@@ -158,6 +160,72 @@ interface Listening {
   readonly server: net.Server;
   readonly handle: string;
   readonly dir?: string;
+}
+
+// The folders a POSIX socket folder may be made in, preferred first; /tmp last, for a TMPDIR too deep for a socket path.
+function socketBases(deps: Pick<AskpassServerDeps, 'tmpdir' | 'runtimeDir'>): string[] {
+  const runtimeDir = (deps.runtimeDir ?? (() => process.env['XDG_RUNTIME_DIR']))();
+  return [...new Set([...(runtimeDir !== undefined && path.posix.isAbsolute(runtimeDir) ? [runtimeDir] : []), (deps.tmpdir ?? os.tmpdir)(), SHORT_POSIX_TMP])];
+}
+
+// 'missing': no socket file; 'unknown': any other failure, which may be a live server's (a full backlog)
+export type SocketState = 'listening' | 'refused' | 'missing' | 'unknown';
+
+// Connects and lets go at once; a live server drops the connection without a log line.
+function probeSocket(socketPath: string): Promise<SocketState> {
+  return new Promise((resolve) => {
+    const socket = net.connect(socketPath);
+    socket.once('connect', () => {
+      socket.destroy();
+      resolve('listening');
+    });
+    socket.once('error', (err: NodeJS.ErrnoException) => {
+      socket.destroy();
+      resolve(err.code === 'ECONNREFUSED' ? 'refused' : err.code === 'ENOENT' ? 'missing' : 'unknown');
+    });
+  });
+}
+
+export interface AbandonedSocketSweep extends Pick<AskpassServerDeps, 'tmpdir' | 'runtimeDir'> {
+  readonly now: number;
+  readonly log: (line: string) => void;
+  readonly probe?: (socketPath: string) => Promise<SocketState>;
+}
+
+/**
+ * POSIX: removes the socket folders askpass servers left when their process ended without disposing them (a crash, a kill).
+ * A folder goes only when it is this user's, holds nothing but its socket, was last changed ABANDONED_SOCKET_FOLDER_AGE_MS
+ * ago, and its socket refuses a connection or is missing. A server that still listens, in any process, answers and keeps its
+ * folder, so neither another running app nor a reused pid can lose one.
+ */
+export async function removeAbandonedSocketFolders(sweep: AbandonedSocketSweep): Promise<void> {
+  const probe = sweep.probe ?? probeSocket;
+  for (const base of socketBases(sweep)) {
+    let names: string[];
+    try {
+      names = await fs.readdir(base);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') sweep.log(`[askpass] could not look for abandoned socket folders in ${base}: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
+    for (const name of names) {
+      if (!name.startsWith(SOCKET_FOLDER_PREFIX)) continue;
+      const dir = path.join(base, name);
+      try {
+        const stat = await fs.lstat(dir);
+        if (!stat.isDirectory() || (process.getuid !== undefined && stat.uid !== process.getuid())) continue;
+        if (sweep.now - stat.mtimeMs < ABANDONED_SOCKET_FOLDER_AGE_MS) continue;
+        const entries = await fs.readdir(dir);
+        if (entries.some((entry) => entry !== SOCKET_NAME)) continue;
+        const state = entries.length === 0 ? 'missing' : await probe(path.join(dir, SOCKET_NAME));
+        if (state !== 'refused' && state !== 'missing') continue;
+        await fs.rm(dir, { recursive: true, force: true });
+        sweep.log(`[askpass] removed the socket folder of a server that no longer runs: ${dir}`);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') sweep.log(`[askpass] could not remove the abandoned socket folder ${dir}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
 }
 
 export function createAskpassServer(deps: AskpassServerDeps): AskpassServer {
@@ -371,11 +439,8 @@ export function createAskpassServer(deps: AskpassServerDeps): AskpassServer {
         }
       }
     }
-    const runtimeDir = (deps.runtimeDir ?? (() => process.env['XDG_RUNTIME_DIR']))();
-    // /tmp last, for a TMPDIR too deep for a socket path
-    const bases = [...new Set([...(runtimeDir !== undefined && path.posix.isAbsolute(runtimeDir) ? [runtimeDir] : []), (deps.tmpdir ?? os.tmpdir)(), SHORT_POSIX_TMP])];
     let failure: unknown;
-    for (const base of bases) {
+    for (const base of socketBases(deps)) {
       try {
         return await listenInPrivateFolder(server, base);
       } catch (err) {

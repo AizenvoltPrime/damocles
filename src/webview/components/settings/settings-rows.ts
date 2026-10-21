@@ -107,6 +107,7 @@ export const SETTINGS_ROWS: readonly SettingsRowMeta[] = [
   row('voice', 'damocles.voice.provider', 'voiceProvider', ['damocles.voice.provider']),
   row('voice', 'voice-api-key', 'voiceApiKey'),
   row('voice', 'damocles.voice.language', 'voiceLanguage', ['damocles.voice.language']),
+  row('voice', 'voice-runtime', 'voiceRuntime'),
   row('voice', 'damocles.voice.wakeWord', 'wakePhrase', ['damocles.voice.wakeWord']),
   row('voice', 'damocles.voice.wakeWordSensitivity', 'wakeSensitivity', ['damocles.voice.wakeWordSensitivity']),
   row('voice', 'damocles.voice.tts.enabled', 'ttsEnabled', ['damocles.voice.tts.enabled']),

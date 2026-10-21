@@ -17,9 +17,12 @@ import {
 import { visibleText } from '../../shared/visible-text';
 import type { EditorPane } from './editor-pane';
 
+// A loaded chat's review reads (D60), which core answers.
+export type ReviewSession = Pick<ChatSession, 'chatReviewSnapshot' | 'chatReviewFileDiff' | 'chatReviewAnchor' | 'chatReviewStale' | 'submitReview'>;
+
 export interface ChatReviewHostDeps {
-  // the loaded chat's session, by core panel id
-  readonly session: (panelId: string) => ChatSession | undefined;
+  // the loaded chat's review reads, by core panel id
+  readonly session: (panelId: string) => ReviewSession | undefined;
   // the chat's stored session id, which its drafts are kept under; undefined before its first message
   readonly sessionId: (panelId: string) => string | undefined;
   // the chat's title, '' for a new chat
@@ -53,7 +56,7 @@ interface Draft {
   failed: boolean;
 }
 
-function draftOf(session: ChatSession | undefined, comment: ChatReviewComment): Draft {
+function draftOf(session: ReviewSession | undefined, comment: ChatReviewComment): Draft {
   const draft: Draft = { comment, anchor: session ? session.chatReviewAnchor(comment) : Promise.resolve(undefined), failed: false };
   // a failed read rejects the send that awaits it, and the next draft list reads the anchor again
   void draft.anchor.catch(() => {
@@ -301,7 +304,7 @@ export class ChatReviewHost {
   }
 
   // Reads the review's scope and puts it in its tab, unless the review closed, its scope moved or a later read landed first.
-  private async read(reviewId: string, review: Review, session: ChatSession, opts: { readonly focus: boolean; readonly fresh: boolean }): Promise<void> {
+  private async read(reviewId: string, review: Review, session: ReviewSession, opts: { readonly focus: boolean; readonly fresh: boolean }): Promise<void> {
     const serial = ++review.serial;
     const scope = review.scope;
     const snapshot = await session.chatReviewSnapshot(scope, { fresh: opts.fresh });

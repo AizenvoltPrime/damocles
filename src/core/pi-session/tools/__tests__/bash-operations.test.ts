@@ -52,8 +52,8 @@ vi.mock('../process-tree', async (importOriginal) => {
 });
 
 /**
- * `createTrackedBashOperations` replaces pi's local bash backend so the spawned shell's pid is visible
- * to the process-lifetime code. Everything else about it must stay pi's, because pi's `bash.ts` matches on
+ * `createTrackedBashOperations` replaces pi's local bash backend so the shell starts on the process
+ * launcher, where the process-lifetime code runs. Everything else about it must stay pi's, because pi's `bash.ts` matches on
  * the thrown messages and renders whatever streams through `onData`. Every case below runs both
  * implementations against the same command and compares.
  */

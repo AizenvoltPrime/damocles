@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import type { SearchQuery, SearchRange } from '../../../shared/text-search';
-import type { Project } from '../documents/confine';
+import type { Project } from '../../local-services/confine';
 import { DocumentService } from '../documents/document-service';
 import { createReplacer, keepMatchText, MAX_KEPT_MATCH_CHARS, planReplacements, planWithin, type ReplaceDeps } from '../search/replace';
 import { searchRegExp } from '../../../shared/text-search';

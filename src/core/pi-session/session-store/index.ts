@@ -16,11 +16,12 @@ export {
   forgetSessionMetadata,
   resolvePiSessionFile,
   piSessionDirOf,
-  piSessionIdFromFile,
   extractPiPromptHistory,
   type LiveSessionMetaSource,
+  type PiSessionList,
 } from './reading';
-export { setSessionMetaCacheVersion, flushSessionMetaCache } from './session-meta-cache';
+export { piSessionIdFromFile } from './meta-index/protocol';
+export { SessionMetaIndex } from './meta-index/client';
 export { loadPiSessionHistory } from './history-loader';
 export { storedTypedText } from './prompt-context';
 export { extractTerminalAttachmentCounts } from './terminal-attachments';

@@ -119,6 +119,16 @@ describe('PanelViews teardown', () => {
     tabs.create({ options: CHAT, restore: { panelId: 'alpha', state: null } });
     expect(() => tabs.create({ options: CHAT, restore: { panelId: 'alpha', state: null } })).toThrow('already open');
   });
+
+  it('refuses an id core issued that is already open or that its page URL cannot carry, and keeps one entry per chat', () => {
+    const tabs = views();
+    const chat = tabs.create({ options: CHAT, panelId: 'core-1' });
+    expect(() => tabs.create({ options: CHAT, panelId: 'core-1' })).toThrow('already open');
+    expect(() => tabs.create({ options: pageOptions(chat), panelId: 'core-1' })).toThrow('already open');
+    for (const panelId of ['../x', 'a/b', 'a b', 'é']) expect(() => tabs.create({ options: CHAT, panelId })).toThrow('cannot carry');
+    expect(tabs.panelIds()).toEqual(['core-1']);
+    expect(tabs.panel('core-1')).toBe(chat);
+  });
 });
 
 describe('PanelViews chats', () => {
@@ -391,8 +401,8 @@ describe('browser pages of a chat', () => {
     const chat = open(tabs);
     pageEvents.length = 0;
     const page = tabs.create({ options: pageOptions(chat) });
-    void page.postMessage({ type: 'urlChanged', url: 'https://a.example/' });
-    void page.postMessage({ type: 'urlChanged', url: 'https://a.example/' });
+    page.postJson('urlChanged', JSON.stringify({ type: 'urlChanged', url: 'https://a.example/' }));
+    page.postJson('urlChanged', JSON.stringify({ type: 'urlChanged', url: 'https://a.example/' }));
     page.setTitle('A page');
     page.reveal();
     page.close();
@@ -400,6 +410,23 @@ describe('browser pages of a chat', () => {
     expect(pageEvents).toEqual([`added:${id}`, `changed:${id}`, `changed:${id}`, `revealed:${id}`, `removed:${id}`]);
     expect(page.page?.url).toBe('https://a.example/');
     expect(revealed).toEqual([]);
+  });
+
+  it('forwards core\'s JSON text to the page unparsed, parsing only the page-state types it persists, and a frame as a clone', () => {
+    const tabs = views();
+    const chat = open(tabs);
+    const page = tabs.create({ options: pageOptions(chat) });
+    const parse = vi.spyOn(JSON, 'parse');
+    const history = JSON.stringify({ type: 'assistantReplay', content: 'x'.repeat(1000) });
+    chat.postJson('assistantReplay', history);
+    expect(parse).not.toHaveBeenCalled();
+    page.postJson('urlChanged', JSON.stringify({ type: 'urlChanged', url: 'https://a.example/' }));
+    expect(parse).toHaveBeenCalledTimes(1);
+    parse.mockRestore();
+    const frame = { type: 'frame', frameId: 1, width: 1, height: 1, bytes: new Uint8Array([7]).buffer };
+    void page.postMessage(frame);
+    expect(contentsOf(chat).send).toHaveBeenLastCalledWith(PANEL_CHANNELS.message, history);
+    expect(vi.mocked(contentsOf(page).send).mock.calls.map((call) => call[1])).toEqual([JSON.stringify({ type: 'urlChanged', url: 'https://a.example/' }), frame]);
   });
 
   it('closes every page of a chat that closes, after telling the browser tabs, and forgets them', () => {

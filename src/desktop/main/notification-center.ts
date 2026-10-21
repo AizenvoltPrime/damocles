@@ -106,6 +106,14 @@ function sameChat(ref: ChatRef, chat: ChatKey): boolean {
   return ref.panelId === chat.panelId || (ref.sessionId !== undefined && ref.sessionId === chat.sessionId);
 }
 
+/** A notice that stays until it is answered: its toast never times out, and its center row offers its actions meanwhile. */
+export interface StickyNotice {
+  // one of its actions; undefined once withdrawn, or when the center is disposed
+  readonly answer: Promise<string | undefined>;
+  // it no longer applies: its toast goes, its entry stays without its actions, and answer settles undefined
+  withdraw(): void;
+}
+
 // A toast shows one entry and shares its id.
 interface LiveToast {
   readonly id: string;
@@ -115,6 +123,8 @@ interface LiveToast {
   readonly action: EntryAction;
   // a core notice's caller, answered with an action label or undefined
   readonly answer: ((action: string | undefined) => void) | undefined;
+  // a sticky notice's toast: no countdown, and dismissing it leaves the notice to its center row
+  readonly sticky: boolean;
   remaining: number;
   // when the running countdown leg started; undefined while it waits for the popup page or is held
   started: number | undefined;
@@ -247,6 +257,8 @@ export class NotificationCenter {
   private readonly notifiedPrompts = new Map<string, Set<string>>();
   // entries that flashed the taskbar button and still wait on the user
   private readonly flashing = new Set<string>();
+  // each sticky notice waiting for its answer, by entry id
+  private readonly sticky = new Map<string, (action: string | undefined) => void>();
   private attention = 0;
 
   constructor(deps: NotificationCenterDeps) {
@@ -323,9 +335,17 @@ export class NotificationCenter {
     });
   }
 
+  /** A main notice that waits for its answer, popped up whatever silences popups, until answered or withdrawn. */
+  stickyNotice(severity: NoticeSeverity, message: string, actions: readonly string[]): StickyNotice {
+    const id = randomUUID();
+    const answer = new Promise<string | undefined>((resolve) => this.sticky.set(id, resolve));
+    this.raise({ kind: 'notice', severity, message, actions: [...actions] }, { kind: 'none' }, { id, sticky: true });
+    return { answer, withdraw: () => this.settleSticky(id, undefined) };
+  }
+
   /**
    * An answer to a toast from the popup window, which has dropped it: one of a notice's actions, TOAST_OPEN_ACTION for a
-   * kind's action, or undefined.
+   * kind's action, or undefined. Dismissing a sticky notice's toast leaves it waiting in its center row.
    */
   resolveToast(id: string, action: string | undefined): void {
     const live = this.toasts.get(id);
@@ -337,7 +357,18 @@ export class NotificationCenter {
       return;
     }
     this.finish(live, action);
+    if (live.sticky && action !== undefined) this.settleSticky(id, action);
     if (action === TOAST_OPEN_ACTION) this.choose(live.id, live.action);
+  }
+
+  /** A center row's action for a sticky notice that still waits. */
+  answer(entryId: string, action: string): void {
+    const entry = this.entries.find((candidate) => candidate.id === entryId);
+    if (!this.sticky.has(entryId) || entry?.body.kind !== 'notice' || !entry.body.actions.includes(action)) {
+      this.deps.log(`[notifications] ignored an answer for entry ${entryId}, which waits for none or offers no such action`);
+      return;
+    }
+    this.settleSticky(entryId, action);
   }
 
   holdToast(id: string, held: boolean): void {
@@ -400,9 +431,11 @@ export class NotificationCenter {
     this.deps.changed();
   }
 
+  // A sticky notice still waiting keeps its row.
   clear(): void {
-    if (this.entries.length === 0) return;
-    this.entries = [];
+    const kept = this.entries.filter((entry) => this.sticky.has(entry.id));
+    if (kept.length === this.entries.length) return;
+    this.entries = kept;
     this.deps.changed();
   }
 
@@ -429,7 +462,13 @@ export class NotificationCenter {
 
   state(): NotificationCenterState {
     return {
-      entries: this.entries.map((entry): NotificationEntry => ({ id: entry.id, at: entry.at, read: entry.read, body: entry.body })),
+      entries: this.entries.map((entry): NotificationEntry => ({
+        id: entry.id,
+        at: entry.at,
+        read: entry.read,
+        body: entry.body,
+        ...(this.sticky.has(entry.id) ? { awaitingAnswer: true } : {}),
+      })),
       doNotDisturb: this.deps.doNotDisturb(),
       popupsOff: !this.deps.popupsEnabled(),
     };
@@ -446,11 +485,13 @@ export class NotificationCenter {
 
   dispose(): void {
     for (const live of [...this.toasts.values()]) this.finish(live, undefined);
+    for (const settle of this.sticky.values()) settle(undefined);
+    this.sticky.clear();
   }
 
   // Notices always pop up; the seven kinds pop up, and anything rings or flashes, only while Do not disturb is off and
   // pop-ups are on. An entry about the chat the user is looking at arrives read.
-  private raise(body: NotificationBody, action: EntryAction, options: { readonly id?: string; readonly quiet?: boolean; readonly answer?: (action: string | undefined) => void } = {}): void {
+  private raise(body: NotificationBody, action: EntryAction, options: { readonly id?: string; readonly quiet?: boolean; readonly answer?: (action: string | undefined) => void; readonly sticky?: true } = {}): void {
     const viewed = this.deps.viewedChat();
     const chat = chatOfAction(action);
     const read = viewed !== undefined && chat !== undefined && sameChat(chat, viewed);
@@ -469,6 +510,7 @@ export class NotificationCenter {
         body,
         action,
         answer: options.answer,
+        sticky: options.sticky === true,
         remaining: lifeMs,
         started: undefined,
         timer: undefined,
@@ -516,7 +558,7 @@ export class NotificationCenter {
   }
 
   private countDown(live: LiveToast): void {
-    if (live.timer !== undefined) return;
+    if (live.sticky || live.timer !== undefined) return;
     live.started = this.now();
     live.timer = setTimeout(() => {
       this.finish(live, undefined);
@@ -534,7 +576,27 @@ export class NotificationCenter {
 
   private snapshot(live: LiveToast): OverlayToast {
     const elapsed = live.started === undefined ? 0 : this.now() - live.started;
-    return { id: live.id, at: live.at, lifeMs: live.lifeMs, remainingMs: Math.max(0, live.remaining - elapsed), body: live.body };
+    return { id: live.id, at: live.at, lifeMs: live.lifeMs, remainingMs: Math.max(0, live.remaining - elapsed), body: live.body, ...(live.sticky ? { sticky: true } : {}) };
+  }
+
+  // The sticky notice's toast goes (the popup page may have dropped it already) and its row stops offering its actions.
+  private settleSticky(entryId: string, action: string | undefined): void {
+    const settle = this.sticky.get(entryId);
+    if (!settle) return;
+    this.sticky.delete(entryId);
+    const live = this.toasts.get(entryId);
+    if (live) {
+      this.finish(live, undefined);
+      this.hide(live);
+    }
+    const entry = this.entries.find((candidate) => candidate.id === entryId);
+    if (entry && action !== undefined) {
+      entry.read = true;
+      entry.seen = true;
+    }
+    this.stopFlash(entryId);
+    this.deps.changed();
+    settle(action);
   }
 
   private finish(live: LiveToast, action: string | undefined): void {

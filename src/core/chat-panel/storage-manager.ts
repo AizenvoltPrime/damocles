@@ -12,11 +12,11 @@ import {
   currentCachedRow,
   readLiveSessionMetadata,
   forgetSessionMetadata,
-  flushSessionMetaCache,
   piSessionIdFromFile,
   extractPiPromptHistory,
   resolvePiSessionFile,
   type LiveSessionMetaSource,
+  type SessionMetaIndex,
 } from "../pi-session/session-store";
 import { pruneOrphanCheckpointRepos, getCheckpointsBaseDir, getWorkspaceCheckpointDir } from "../pi-session/checkpoints";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
@@ -30,6 +30,7 @@ import { worktreeSessionFolders } from "../worktrees/personal-config";
 import type { WorktreeRegistry } from "../worktrees/registry";
 
 const CHANGE_DEBOUNCE_MS = 300;
+const PARSED_ROWS_PUSH_MS = 250;
 /** Upserts run after every write during a turn, so only the slow ones log. */
 const UPSERT_LOG_MIN_MS = 20;
 
@@ -51,6 +52,8 @@ export interface StorageManagerConfig {
   /** The live session holding `sessionId` in this window, or undefined; must never start pi to answer. */
   liveSession: (sessionId: string) => LiveSessionMetaSource | undefined;
   fileWatchers: FileWatcherFactory;
+  /** Owned: closed by `dispose`. */
+  metaIndex: SessionMetaIndex;
 }
 
 const newestFirst = (a: StoredSession, b: StoredSession): number => b.timestamp - a.timestamp;
@@ -116,12 +119,19 @@ export class StorageManager {
   private readonly prunedFolders = new Set<string>();
   /** Session id to the key of the folder whose session dir holds it. */
   private sessionFolder = new Map<string, string>();
+  /** Sessions read or deleted since the list loaded; a row the list parsed earlier never replaces theirs. */
+  private readonly readSinceList = new Set<string>();
+  /** Parsed rows applied to the list and not yet pushed or announced, with the projects whose listing they changed. */
+  private parsedRowsPush: { readonly timer: NodeJS.Timeout; readonly changed: Set<string> } | null = null;
+  /** Resolves once every row the index parsed for the load of `generation` was applied, or dropped: true when every file yielded its row. */
+  private sessionsParsed: { readonly generation: number; readonly done: Promise<boolean> } | null = null;
   private readonly folders: StorageManagerConfig["folders"];
   private readonly isMultiRoot: StorageManagerConfig["isMultiRoot"];
   private readonly postMessage: StorageManagerConfig["postMessage"];
   private readonly getPanels: StorageManagerConfig["getPanels"];
   private readonly liveSession: StorageManagerConfig["liveSession"];
   private readonly fileWatchers: FileWatcherFactory;
+  readonly metaIndex: SessionMetaIndex;
   private readonly changeListeners = new Set<(change: StoredSessionsChange) => void>();
 
   constructor(config: StorageManagerConfig) {
@@ -131,6 +141,7 @@ export class StorageManager {
     this.getPanels = config.getPanels;
     this.liveSession = config.liveSession;
     this.fileWatchers = config.fileWatchers;
+    this.metaIndex = config.metaIndex;
   }
 
   /** Fires when a session is added or removed, or a field a list shows changes; not for timestamp-only writes. */
@@ -155,33 +166,77 @@ export class StorageManager {
     this.emitChange({ projectKey: folderKey });
   }
 
-  /** One open folder's stored sessions, newest first and complete; empty for a key that is not open. */
+  /** One open folder's stored sessions, newest first; empty for a key that is not open. Rows still being parsed arrive later, announced by `onDidChangeSessions`. */
   async sessionsOf(folderKey: string): Promise<StoredSession[]> {
     const all = await this.ensureSessionsLoaded();
     return all.filter((s) => s.workspaceFolder?.key === folderKey);
+  }
+
+  /** `sessionsOf` once the index parsed every file of the list: for a decision a missing row would make wrong, so it rejects when a file yielded no row. */
+  async completeSessionsOf(folderKey: string): Promise<StoredSession[]> {
+    const { sessions, complete } = await this.completeSessions();
+    if (!complete) throw new Error("the session list is incomplete: a session file could not be parsed");
+    return sessions.filter((s) => s.workspaceFolder?.key === folderKey);
+  }
+
+  /** Puts the session file's current row in the index, so a list loaded after a write finds it valid instead of parsing it. */
+  async indexSessionRow(sessionId: string, folderKey: string): Promise<void> {
+    const folder = this.openFolder(folderKey);
+    if (!folder || this.liveMetadata(sessionId) !== undefined) return;
+    await getPiSessionMetadata(this.metaIndex, folder.fsPath, sessionId);
+  }
+
+  /** The loaded list once every parsed row of its load was applied, and whether every file yielded one; a load an invalidation overtook is waited out again. */
+  private async completeSessions(): Promise<{ sessions: StoredSession[]; complete: boolean }> {
+    for (;;) {
+      await this.ensureSessionsLoaded();
+      const generation = this.sessionsGeneration;
+      const parsed = this.sessionsParsed;
+      const complete = parsed?.generation === generation ? await parsed.done : true;
+      if (generation === this.sessionsGeneration && this.allSessionsCache) return { sessions: this.allSessionsCache, complete };
+    }
   }
 
   private openFolder(key: string): FolderTarget | undefined {
     return this.folders().find((t) => t.key === key);
   }
 
-  /** A copy, because `listPiSessions` hands out objects its metadata cache still holds. */
   private stamp(session: StoredSession, folder: FolderTarget): StoredSession {
     return { ...session, workspaceFolder: { key: folder.key, label: folder.label } };
   }
 
-  /** Every open folder's stored sessions, newest first, each listed once under its project (AD12 Listing). */
+  /**
+   * Every open folder's stored sessions, newest first, each listed once under its project (AD12 Listing). Resolves with
+   * the rows the index still holds; rows of the files the index parses are upserted as they arrive, under this load's
+   * generation, so none lands on a list loaded after an invalidation.
+   */
   private async loadAllSessions(): Promise<StoredSession[]> {
+    const generation = this.sessionsGeneration;
+    const parsed: Promise<boolean>[] = [];
+    const list = async (folder: FolderTarget, listedFrom?: string): Promise<StoredSession[]> => {
+      const applied: Promise<unknown>[] = [];
+      const { sessions, parsed: listParsed } = await listPiSessions(this.metaIndex, listedFrom ?? folder.fsPath, (rows) => {
+        applied.push(this.upsertSessionsInCache(rows, folder.key, generation, { fromList: { listedFrom } })
+          .catch((err) => log("[StorageManager] applying parsed session rows failed for %s: %O", folder.fsPath, err)));
+      });
+      // Every batch arrives before the list ends, so `applied` is complete by then.
+      parsed.push(listParsed.then(async (complete) => {
+        await Promise.all(applied);
+        return complete;
+      }));
+      return sessions.map((s) => (listedFrom !== undefined ? { ...this.stamp(s, folder), listedFrom } : this.stamp(s, folder)));
+    };
     const perFolder = await Promise.all(this.folders().map(async (folder) => {
       void this.pruneOrphanCheckpointReposOnce(folder);
-      const own = (await listPiSessions(folder.fsPath)).map((s) => this.stamp(s, folder));
+      const own = await list(folder);
       const extras = this.registryFoldersOf(folder);
       if (extras.length === 0) return own;
-      const listed = await Promise.all(extras.map(async (extra) => (await listPiSessions(extra)).map((s) => ({ ...this.stamp(s, folder), listedFrom: extra }))));
+      const listed = await Promise.all(extras.map((extra) => list(folder, extra)));
       const unique = new Map<string, StoredSession>();
       for (const session of [...own, ...listed.flat()]) if (!unique.has(session.id)) unique.set(session.id, session);
       return [...unique.values()];
     }));
+    if (generation === this.sessionsGeneration) this.sessionsParsed = { generation, done: Promise.all(parsed).then((lists) => lists.every(Boolean)) };
     return perFolder.flat().sort(newestFirst);
   }
 
@@ -356,6 +411,7 @@ export class StorageManager {
     this.sessionsLoad = null;
     this.sessionsGeneration++;
     this.promptHistoryCache = null;
+    this.readSinceList.clear();
   }
 
   /** A list not loaded yet reads the tag from the file, so only a loaded one is updated; the change is announced either way. */
@@ -379,18 +435,19 @@ export class StorageManager {
     const generation = this.sessionsGeneration;
     const live = this.liveMetadata(sessionId);
     const source = live !== undefined ? "live" : "file";
-    const metadata = live !== undefined ? live : await getPiSessionMetadata(folder.fsPath, sessionId);
-    const applied = metadata ? await this.upsertSessionInCache(metadata, folderKey, generation) : false;
+    const metadata = live !== undefined ? live : await getPiSessionMetadata(this.metaIndex, folder.fsPath, sessionId);
+    const applied = metadata ? await this.upsertSessionsInCache([metadata], folderKey, generation) : false;
     span.end({ source, applied });
   }
 
   async getPromptHistory(
     offset: number = 0
   ): Promise<{ history: string[]; hasMore: boolean }> {
-    const all = await this.ensureSessionsLoaded();
+    // Complete, since nothing rebuilds the history when parsed rows arrive. A file that yielded no row only misses its prompts, so an incomplete list still serves.
+    const { sessions: all } = await this.completeSessions();
 
     if (!this.promptHistoryCache) {
-      const allHistory = await extractPiPromptHistory(this.folders().map((t) => t.fsPath), all);
+      const allHistory = await extractPiPromptHistory(this.metaIndex, this.folders().map((t) => t.fsPath), all);
       const diskSet = new Set(allHistory);
       const uniquePending = this.pendingPromptEntries.filter((e) => !diskSet.has(e));
       this.promptHistoryCache = [...uniquePending, ...allHistory];
@@ -480,7 +537,7 @@ export class StorageManager {
     }
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     for (const watcher of this.sessionWatchers.values()) watcher.dispose();
     this.sessionWatchers.clear();
     for (const entry of this.registryWatchers.values()) entry.watcher.dispose();
@@ -489,7 +546,9 @@ export class StorageManager {
       clearTimeout(timer);
     }
     this.pendingChangeTimers.clear();
-    flushSessionMetaCache();
+    if (this.parsedRowsPush) clearTimeout(this.parsedRowsPush.timer);
+    this.parsedRowsPush = null;
+    await this.metaIndex.close();
   }
 
   private async handleSessionFileCreated(filePath: string, folderKey: string): Promise<void> {
@@ -503,40 +562,76 @@ export class StorageManager {
   /** A live session's metadata from its in-memory manager, or undefined when no live session here holds the file. */
   private liveMetadata(sessionId: string, filePath?: string): StoredSession | null | undefined {
     const source = this.liveSession(sessionId);
-    return source ? readLiveSessionMetadata(source, sessionId, filePath) : undefined;
+    return source ? readLiveSessionMetadata(this.metaIndex, source, sessionId, filePath) : undefined;
   }
 
   /**
    * Applied after the load too, because a shared load may have read the file before this change. Dropped
    * when the list was invalidated after `generation` (the list loaded since then read the file after the
-   * metadata was) or the folder closed. Returns whether the row was applied.
+   * metadata was) or the folder closed. `fromList` marks rows the list parsed after it loaded, read when it
+   * listed: one never replaces a row read since, nor one listed from another dir (`listedFrom`, a registry
+   * folder's session dir). Returns whether any row was applied.
    */
-  private async upsertSessionInCache(
-    metadata: StoredSession,
+  private async upsertSessionsInCache(
+    rows: readonly StoredSession[],
     folderKey: string,
     generation: number,
-    options?: { ifChanged?: boolean },
+    options?: { ifChanged?: boolean; fromList?: { listedFrom: string | undefined } },
   ): Promise<boolean> {
-    if (generation !== this.sessionsGeneration || !this.openFolder(folderKey)) return false;
+    if (rows.length === 0 || generation !== this.sessionsGeneration || !this.openFolder(folderKey)) return false;
     const all = await this.ensureSessionsLoaded();
     const folder = this.openFolder(folderKey);
     if (generation !== this.sessionsGeneration || !folder) return false;
-    this.sessionFolder.set(metadata.id, folder.key);
-    const existingIndex = all.findIndex((s) => s.id === metadata.id);
-    const existing = existingIndex >= 0 ? all[existingIndex]! : undefined;
-    // A file stays in the session dir the list found it in, which its metadata does not name.
-    const stamped = this.stamp(metadata, folder);
-    const row = existing?.listedFrom !== undefined ? { ...stamped, listedFrom: existing.listedFrom } : stamped;
-    if (existing) {
-      if (options?.ifChanged && sameRow(existing, row)) return false;
-      all[existingIndex] = row;
-    } else {
-      all.push(row);
+    let applied = false;
+    let changed = false;
+    for (const metadata of rows) {
+      const existingIndex = all.findIndex((s) => s.id === metadata.id);
+      const existing = existingIndex >= 0 ? all[existingIndex]! : undefined;
+      const fromList = options?.fromList;
+      if (fromList) {
+        // The project's own dir wins over a registry folder's, as in `loadAllSessions`; between registry folders the first listed wins.
+        if (this.readSinceList.has(metadata.id) || (existing && existing.listedFrom !== fromList.listedFrom && fromList.listedFrom !== undefined)) continue;
+      } else {
+        this.readSinceList.add(metadata.id);
+      }
+      // A file stays in the session dir the list found it in, which its metadata does not name.
+      const stamped = this.stamp(metadata, folder);
+      const listedFrom = fromList ? fromList.listedFrom : existing?.listedFrom;
+      const row = listedFrom !== undefined ? { ...stamped, listedFrom } : stamped;
+      this.sessionFolder.set(metadata.id, folder.key);
+      if (existing) {
+        if (options?.ifChanged && sameRow(existing, row)) continue;
+        all[existingIndex] = row;
+      } else {
+        all.push(row);
+      }
+      applied = true;
+      if (!existing || !sameListing(existing, row)) changed = true;
     }
+    if (!applied) return false;
     all.sort(newestFirst);
+    if (options?.fromList) {
+      this.announceParsedRows(changed ? folder.key : undefined);
+      return true;
+    }
     this.pushSessionsToAllPanels();
-    if (!existing || !sameListing(existing, row)) this.emitChange({ projectKey: folder.key });
+    if (changed) this.emitChange({ projectKey: folder.key });
     return true;
+  }
+
+  /** A cold list delivers its parsed rows in many batches, so their pushes and change events go out once per `PARSED_ROWS_PUSH_MS`. */
+  private announceParsedRows(changedProject: string | undefined): void {
+    this.parsedRowsPush ??= {
+      changed: new Set(),
+      timer: setTimeout(() => {
+        const pending = this.parsedRowsPush;
+        this.parsedRowsPush = null;
+        if (!pending) return;
+        this.pushSessionsToAllPanels();
+        for (const projectKey of pending.changed) this.emitChange({ projectKey });
+      }, PARSED_ROWS_PUSH_MS),
+    };
+    if (changedProject !== undefined) this.parsedRowsPush.changed.add(changedProject);
   }
 
   private handleSessionFileDeleted(filePath: string): void {
@@ -561,16 +656,16 @@ export class StorageManager {
    */
   private async upsertFromFile(filePath: string, folderKey: string): Promise<void> {
     const generation = this.sessionsGeneration;
-    const cached = await currentCachedRow(filePath);
+    const cached = await currentCachedRow(this.metaIndex, filePath);
     if (cached !== undefined) {
-      if (cached) await this.upsertSessionInCache(cached, folderKey, generation, { ifChanged: true });
+      if (cached) await this.upsertSessionsInCache([cached], folderKey, generation, { ifChanged: true });
       return;
     }
     const span = perfSpan("sessions.upsert", { minMs: UPSERT_LOG_MIN_MS });
     const live = this.liveMetadata(piSessionIdFromFile(filePath), filePath);
     const source = live !== undefined ? "live" : "file";
-    const metadata = live !== undefined ? live : await getPiSessionMetadataByFile(filePath);
-    const applied = metadata ? await this.upsertSessionInCache(metadata, folderKey, generation) : false;
+    const metadata = live !== undefined ? live : await getPiSessionMetadataByFile(this.metaIndex, filePath);
+    const applied = metadata ? await this.upsertSessionsInCache([metadata], folderKey, generation) : false;
     span.end({ source, applied });
   }
 
@@ -594,9 +689,10 @@ export class StorageManager {
       clearTimeout(existingTimer);
       this.pendingChangeTimers.delete(key);
     }
-    // Another window's delete, too, leaves the disk cache.
-    forgetSessionMetadata(filePath);
+    // Another window's delete, too, leaves the index.
+    forgetSessionMetadata(this.metaIndex, filePath);
     const sessionId = piSessionIdFromFile(filePath);
+    this.readSinceList.add(sessionId);
     const folderKey = this.sessionFolder.get(sessionId);
     this.sessionFolder.delete(sessionId);
     if (this.allSessionsCache) {

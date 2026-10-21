@@ -34,6 +34,10 @@ const CUDA_525: GpuDetection = {
   torchWheelChannel: "cu118",
   smiPath: "/usr/lib/wsl/lib/nvidia-smi",
 };
+const noExtractWorker = (): never => {
+  throw new Error("these tests never extract");
+};
+const noModelsMissing = { missing: async () => [], download: async () => undefined };
 const CPU_NO_SMI: GpuDetection = { kind: "cpu", reason: "no-smi" };
 const CPU_OLD: GpuDetection = { kind: "cpu", reason: "driver-too-old" };
 
@@ -70,7 +74,7 @@ describe("VoiceRuntimeInstaller — smoke-check error path", () => {
   });
 
   it("surfaces ImportError text from a failing user-supplied Python", async () => {
-    const installer = new VoiceRuntimeInstaller(getDefaultRuntimePaths(tmp));
+    const installer = new VoiceRuntimeInstaller(getDefaultRuntimePaths(tmp), noExtractWorker, noModelsMissing);
     const events: string[] = [];
     const result = await installer.installAll({
       allowInstall: true,
@@ -82,7 +86,7 @@ describe("VoiceRuntimeInstaller — smoke-check error path", () => {
   });
 
   it("reports ok=false when installed runtime missing and full-install path fails", async () => {
-    const installer = new VoiceRuntimeInstaller(getDefaultRuntimePaths(tmp));
+    const installer = new VoiceRuntimeInstaller(getDefaultRuntimePaths(tmp), noExtractWorker, noModelsMissing);
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(
       new Error("network blocked in unit test"),
     );
@@ -169,7 +173,7 @@ describe("VoiceRuntimeInstaller — runtime-mode compatibility gate", () => {
   it("fails fast (no Python download) when localGpu=cuda but no GPU detected", async () => {
     const tmp = await mkdtemp(join(tmpdir(), "damocles-rtm-"));
     try {
-      const installer = new VoiceRuntimeInstaller(getDefaultRuntimePaths(tmp));
+      const installer = new VoiceRuntimeInstaller(getDefaultRuntimePaths(tmp), noExtractWorker, noModelsMissing);
       vi.spyOn(installer, "detectDevice").mockResolvedValue(CPU_NO_SMI);
       const events: { stage: string; message: string }[] = [];
       const result = await installer.installAll({

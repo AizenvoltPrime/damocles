@@ -316,7 +316,7 @@ describe('analyzeChanges', () => {
 	let store: GraphStore;
 	afterEach(() => store?.close());
 
-	it('produces risk-scored analysis', () => {
+	it('produces risk-scored analysis', async () => {
 		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'File', name: 'a.ts', file_path: '/src/a.ts', line_start: 1, line_end: 50 }));
 		store.upsertNode(makeNode({ name: 'doAuth', file_path: '/src/a.ts', line_start: 5, line_end: 15 }));
@@ -326,22 +326,22 @@ describe('analyzeChanges', () => {
 			['/src/a.ts', [[5, 30]]],
 		]);
 
-		const result = analyzeChanges(store, ['/src/a.ts'], ranges);
+		const result = await analyzeChanges(store, ['/src/a.ts'], ranges);
 		expect(result.changed_files).toEqual(['/src/a.ts']);
 		expect(result.risks.length).toBeGreaterThan(0);
 		expect(result.risks[0]!.risk_score).toBeGreaterThanOrEqual(0);
 	});
 
-	it('identifies test gaps', () => {
+	it('identifies test gaps', async () => {
 		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'untestedFunc', file_path: '/src/a.ts' }));
 		store.upsertNode(makeNode({ kind: 'File', name: 'a.ts', file_path: '/src/a.ts', line_start: 1, line_end: 50 }));
 
-		const result = analyzeChanges(store, ['/src/a.ts']);
+		const result = await analyzeChanges(store, ['/src/a.ts']);
 		expect(result.test_gaps.some(n => n.name === 'untestedFunc')).toBe(true);
 	});
 
-	it('excludes a function covered by a derived TESTED_BY edge from test gaps (US-002)', () => {
+	it('excludes a function covered by a derived TESTED_BY edge from test gaps (US-002)', async () => {
 		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'File', name: 'a.ts', file_path: '/src/a.ts', line_start: 1, line_end: 50 }));
 		store.upsertNode(makeNode({ name: 'doThing', file_path: '/src/a.ts', line_start: 5, line_end: 15 }));
@@ -349,11 +349,11 @@ describe('analyzeChanges', () => {
 		store.upsertEdge(makeEdge({ source: '/test/a.test.ts::test_doThing', target: '/src/a.ts::doThing', file_path: '/test/a.test.ts', line: 3 }));
 		store.buildTestedByEdges();
 
-		const result = analyzeChanges(store, ['/src/a.ts']);
+		const result = await analyzeChanges(store, ['/src/a.ts']);
 		expect(result.test_gaps.some(n => n.name === 'doThing')).toBe(false);
 	});
 
-	it('sorts risks by score descending', () => {
+	it('sorts risks by score descending', async () => {
 		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'highRiskAuth', file_path: '/src/a.ts', line_start: 1, line_end: 10 }));
 		store.upsertNode(makeNode({ name: 'lowRisk', file_path: '/src/a.ts', line_start: 15, line_end: 25 }));
@@ -363,21 +363,21 @@ describe('analyzeChanges', () => {
 			['/src/a.ts', [[1, 25]]],
 		]);
 
-		const result = analyzeChanges(store, ['/src/a.ts'], ranges);
+		const result = await analyzeChanges(store, ['/src/a.ts'], ranges);
 		expect(result.risks.length).toBeGreaterThanOrEqual(2);
 		expect(result.risks[0]!.risk_score).toBeGreaterThanOrEqual(result.risks[1]!.risk_score);
 	});
 
-	it('falls back to all-file nodes when no ranges provided', () => {
+	it('falls back to all-file nodes when no ranges provided', async () => {
 		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'File', name: 'a.ts', file_path: '/src/a.ts', line_start: 1, line_end: 50 }));
 		store.upsertNode(makeNode({ name: 'func', file_path: '/src/a.ts', line_start: 5, line_end: 15 }));
 
-		const result = analyzeChanges(store, ['/src/a.ts']);
+		const result = await analyzeChanges(store, ['/src/a.ts']);
 		expect(result.risks.length).toBe(1);
 	});
 
-	it('reuses the analyzeNodeRisk edge fetch for test gaps instead of re-querying (US-012)', () => {
+	it('reuses the analyzeNodeRisk edge fetch for test gaps instead of re-querying (US-012)', async () => {
 		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'File', name: 'a.ts', file_path: '/src/a.ts', line_start: 1, line_end: 100 }));
 		for (let i = 0; i < 5; i++) {
@@ -388,7 +388,7 @@ describe('analyzeChanges', () => {
 		let byTargetCalls = 0;
 		store.getEdgesByTarget = (qn: string) => { byTargetCalls++; return originalGetEdgesByTarget(qn); };
 
-		const result = analyzeChanges(store, ['/src/a.ts']);
+		const result = await analyzeChanges(store, ['/src/a.ts']);
 		expect(result.risks).toHaveLength(5);
 		expect(result.test_gaps).toHaveLength(5);
 		expect(byTargetCalls).toBe(5);
@@ -408,21 +408,21 @@ describe('analyzeChanges cap (US-012)', () => {
 		}
 	}
 
-	it('caps analyzed functions at 500 and sets truncated', () => {
+	it('caps analyzed functions at 500 and sets truncated', async () => {
 		seedManyFuncs(510);
 
-		const result = analyzeChanges(store, ['/src/big.ts']);
+		const result = await analyzeChanges(store, ['/src/big.ts']);
 		expect(result.risks).toHaveLength(500);
 		expect(result.truncated).toBe(true);
 		expect(result.total_changed_funcs).toBe(510);
 		expect(result.test_gaps).toHaveLength(500);
 	});
 
-	it('keeps a deterministic qualified-name order when slicing', () => {
+	it('keeps a deterministic qualified-name order when slicing', async () => {
 		seedManyFuncs(510);
 
-		const first = analyzeChanges(store, ['/src/big.ts']);
-		const second = analyzeChanges(store, ['/src/big.ts']);
+		const first = await analyzeChanges(store, ['/src/big.ts']);
+		const second = await analyzeChanges(store, ['/src/big.ts']);
 
 		const firstNames = new Set(first.risks.map(r => r.node.name));
 		expect(firstNames.has('func000')).toBe(true);
@@ -431,10 +431,10 @@ describe('analyzeChanges cap (US-012)', () => {
 		expect(second.risks.map(r => r.node.qualified_name)).toEqual(first.risks.map(r => r.node.qualified_name));
 	});
 
-	it('analyzes everything below the cap without truncation', () => {
+	it('analyzes everything below the cap without truncation', async () => {
 		seedManyFuncs(3);
 
-		const result = analyzeChanges(store, ['/src/big.ts']);
+		const result = await analyzeChanges(store, ['/src/big.ts']);
 		expect(result.risks).toHaveLength(3);
 		expect(result.truncated).toBe(false);
 		expect(result.total_changed_funcs).toBe(3);

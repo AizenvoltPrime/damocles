@@ -1,10 +1,9 @@
-import { spawn, type ChildProcess, type ChildProcessByStdio } from 'node:child_process';
-import { EventEmitter, once } from 'node:events';
+import { EventEmitter } from 'node:events';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { Readable } from 'node:stream';
 import { Worker } from 'node:worker_threads';
+import { processLauncher, type LaunchedProcess } from '../../../core/process-launcher';
 import { rgPath } from '@vscode/ripgrep';
 import { build } from 'esbuild';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -13,7 +12,7 @@ import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { OVERLAY_CHANNELS, type OverlayAnswer, type OverlayRequest, type PopupAnswer } from '../../preload/overlay-channels';
 import { createQuickOpenFileSearch } from '../../quick-open-worker/file-search';
 import { ripgrepFileArgs, type WorkerReply, type WorkerRequest } from '../../quick-open-worker/protocol';
-import type { Project } from '../documents/confine';
+import type { Project } from '../../local-services/confine';
 import type { MenuState } from '../menu';
 import { QUICK_OPEN_WORKER_SILENCE_MS, QuickOpenIndex, QuickOpenPicker, type QuickOpenDeps, type QuickOpenWorker } from '../quick-open';
 import { fakeHandleWhileOpen } from './fake-popup-channels';
@@ -124,11 +123,13 @@ function index(startWorker: () => QuickOpenWorker = () => new InProcessWorker(),
 }
 
 /** A ripgrep stuck on a hung file system: a real process that prints nothing and never exits. */
-function hangingRg(): ChildProcessByStdio<null, Readable, Readable> {
-  return spawn(process.execPath, ['-e', 'setInterval(() => undefined, 1 << 30)'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+function hangingRg(): LaunchedProcess {
+  return launch(process.execPath, ['-e', 'setInterval(() => undefined, 1 << 30)']);
 }
 
-const ended = (child: ChildProcess): boolean => child.exitCode !== null || child.signalCode !== null;
+function launch(file: string, args: readonly string[]): LaunchedProcess {
+  return processLauncher().launch({ file, args, stdio: ['ignore', 'pipe', 'pipe'] });
+}
 
 /** A worker double that asks main to list alpha as each query arrives, then goes silent. */
 class ListingWorker extends ScriptedWorker {
@@ -357,7 +358,7 @@ describe('ripgrep listings main runs for the worker', () => {
     const spawned: Array<{ rgPath: string; args: readonly string[] }> = [];
     const quickOpen = index(() => worker, (path, args) => {
       spawned.push({ rgPath: path, args });
-      return spawn(path, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+      return launch(path, args);
     });
     void quickOpen.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: quickOpen.open(), generation: 0 });
     await turnsUntil(() => worker.queries.length === 1);
@@ -410,22 +411,23 @@ describe('ripgrep listings main runs for the worker', () => {
   it('kills no ripgrep that already finished when the worker stops', async () => {
     touch(alpha, 'a.ts');
     const worker = new ScriptedWorker();
-    const kills: number[] = [];
+    let kills = 0;
     const quickOpen = index(() => worker, (path, args) => {
-      const rg = spawn(path, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-      const kill = rg.kill.bind(rg);
-      rg.kill = (signal) => {
-        kills.push(rg.pid!);
-        return kill(signal);
+      const rg = launch(path, args);
+      return {
+        ...rg,
+        kill: (options) => {
+          kills++;
+          rg.kill(options);
+        },
       };
-      return rg;
     });
     void quickOpen.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: quickOpen.open(), generation: 0 });
     await turnsUntil(() => worker.queries.length === 1);
     worker.emit('message', { kind: 'list', listing: 0, projectKey: alpha.key });
     await vi.waitFor(() => expect(worker.received.at(-1)).toEqual({ kind: 'listEnd', listing: 0 }));
     quickOpen.dispose();
-    expect(kills).toEqual([]);
+    expect(kills).toBe(0);
   });
 
   it('refuses a listing of a folder that is not a project, running nothing', async () => {
@@ -443,7 +445,7 @@ describe('ripgrep listings main runs for the worker', () => {
 
   it('kills the ripgrep a silent worker asked for when it replaces the worker', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-    const rgs: ChildProcess[] = [];
+    const rgs: LaunchedProcess[] = [];
     try {
       const quickOpen = index(() => new ListingWorker(), () => {
         const rg = hangingRg();
@@ -452,11 +454,9 @@ describe('ripgrep listings main runs for the worker', () => {
       });
       const answer = quickOpen.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: quickOpen.open(), generation: 0 });
       await turnsUntil(() => rgs.length === 1);
-      const exited = once(rgs[0]!, 'exit');
       vi.advanceTimersByTime(QUICK_OPEN_WORKER_SILENCE_MS);
       expect(await answer).toEqual({ currentProjectKey: alpha.key, mention: false, results: [], failed: true });
-      await exited;
-      expect(ended(rgs[0]!)).toBe(true);
+      await rgs[0]!.exited;
       quickOpen.dispose();
     } finally {
       vi.useRealTimers();
@@ -465,7 +465,7 @@ describe('ripgrep listings main runs for the worker', () => {
   });
 
   it('kills the ripgrep of a worker that fails, and of the running worker when Quick Open is disposed at quit', async () => {
-    const rgs: ChildProcess[] = [];
+    const rgs: LaunchedProcess[] = [];
     const workers = [new ListingWorker(), new ListingWorker()];
     try {
       const quickOpen = index(() => workers.shift()!, () => {
@@ -478,16 +478,13 @@ describe('ripgrep listings main runs for the worker', () => {
       const failing = workers[0]!;
       void quickOpen.query('a', context, { id: search, generation: 0 });
       await turnsUntil(() => rgs.length === 1);
-      const first = once(rgs[0]!, 'exit');
       failing.emit('error', new Error('out of memory'));
-      await first;
+      await rgs[0]!.exited;
 
       void quickOpen.query('a', context, { id: search, generation: 1 });
       await turnsUntil(() => rgs.length === 2);
-      const second = once(rgs[1]!, 'exit');
       quickOpen.dispose();
-      await second;
-      expect(rgs.every(ended)).toBe(true);
+      await rgs[1]!.exited;
     } finally {
       for (const rg of rgs) rg.kill();
     }

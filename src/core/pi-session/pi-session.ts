@@ -70,7 +70,7 @@ import {
 import type { OpenAIAuthStatus } from "./openai-auth";
 import { buildCustomTools } from "./tools";
 import { ShellCancelStore } from "./tools/shell-cancel-registry";
-import { createShellSessionJob } from "./tools/process-tree";
+import { processLauncher } from "../process-launcher";
 import { UnpersistedToolImages } from "./unpersisted-tool-images";
 import { sessionNoteDelivery, subagentNoteDelivery, teamAgentNoteDelivery } from "./note-delivery";
 import type { ShellOptions } from "./tools/bash-tool";
@@ -609,7 +609,7 @@ export class PiSession implements ChatSession {
   private readonly shellCancel = new ShellCancelStore();
   // Panel-scoped, not conversation-scoped: reset() and clear() swap the pi session but keep this instance, so a
   // process the user deliberately backgrounded survives a /clear and dies only when the panel is disposed.
-  private readonly shellJob = createShellSessionJob();
+  private readonly shellJob = processLauncher().createSessionJob();
   private readonly unpersistedImages = new UnpersistedToolImages();
 
   /** True when the turn must not be EXTENDED — ESC (`_aborting`) or the budget limit. For the
@@ -2854,10 +2854,10 @@ export class PiSession implements ChatSession {
     // Before any await, so no queued switch binds a session on the runtime this tears down.
     for (const queued of this.queuedSwitches) queued.cancelled = true;
     this.resumeRequest?.settle(RESUME_CANCELLED);
-    // Closing the handle is what kills whatever this panel's shells left running: the job object's
+    // Closing the session job is what kills whatever this panel's shells left running: the job object's
     // kill-on-close on Windows, the EOF the sentinel is waiting for on POSIX.
-    this.shellJob?.dispose();
-    // After the job, so a still-registered call has already had its process killed; a tool whose promise
+    this.shellJob.dispose();
+    // After the job, so a still-registered call's process is already on its way to being killed; a tool whose promise
     // never settles would otherwise leave this session reachable through the entry's delivery closure.
     this.shellCancel.clear();
     this.unsubscribe?.();

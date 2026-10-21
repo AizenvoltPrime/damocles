@@ -5,10 +5,9 @@ import * as path from 'node:path';
 import type { ArtifactCommit, BranchArtifact, RemoteBranchArtifact, StashArtifact, TagArtifact, WorktreeArtifact } from '../../../core/scm/artifacts';
 import { sanitizeBranchName, type CheckoutTarget } from '../../../core/scm/branches';
 import { isInside, samePath } from '../../../core/scm/discovery';
-import { redactUrls } from '../../../core/scm/git-runner';
+import { gitErrorText, redactUrls, RemoteCancelledError } from '../../../core/scm/errors';
 import { isRemoteName, type Remote } from '../../../core/scm/remotes';
-import type { Repository } from '../../../core/scm/repository';
-import { gitErrorText, RemoteCancelledError } from '../../../core/scm/scm-service';
+import type { ScmRepository } from './scm-client';
 import { SCM_SETTING_KEYS, type PromptToSaveFilesBeforeStash } from '../../../core/scm/settings-keys';
 import { canStashStaged, type StashScope } from '../../../core/scm/stash';
 import { defaultWorktreePath, worktreeName } from '../../../core/scm/worktrees';
@@ -17,7 +16,7 @@ import { inputProblem } from '../../../shared/input-validation';
 import { visibleLines, visibleText } from '../../../shared/visible-text';
 import { fitsQuickPick, MAX_QUICK_PICK_BYTES, MAX_QUICK_PICK_ITEMS, quickPickItemBytes, type OverlayQuickPickIcon } from '../../preload/overlay-channels';
 import { isWorktreePath, type ScmRunRequest, type ScmRunResult, type ScmStashChoice, type ScmStashTarget } from '../../preload/scm-channels';
-import type { Project } from '../documents/confine';
+import type { Project } from '../../local-services/confine';
 import { parseRootKey } from '../../preload/folder-root';
 import type { ScmHostDeps, ScmQuickPickItem } from './scm-host';
 
@@ -54,7 +53,7 @@ export async function pickEntry<T>(quickPick: ScmHostDeps['quickPick'], placehol
 // What the flows need of ScmHost.
 export interface RefFlowHost {
   readonly deps: ScmHostDeps;
-  repo(repoId: string): Repository;
+  repo(repoId: string): ScmRepository;
   setting<T>(key: string, fallback: T): T;
   // the stash's View Stash tabs, now that it left the stash list
   closeStashTabs(repoId: string, hash: string): Promise<void>;
@@ -273,7 +272,7 @@ export class RefFlows {
       return OK;
     } catch (err) {
       if (err instanceof RemoteCancelledError) return CANCELLED;
-      this.deps.gitLog(`[scm] ${branch} was not fast-forwarded before the checkout: ${err instanceof Error ? err.message : String(err)}`);
+      this.deps.log(`[scm] ${branch} was not fast-forwarded before the checkout: ${err instanceof Error ? err.message : String(err)}`);
       return OK;
     }
   }
@@ -810,7 +809,7 @@ export class RefFlows {
     }
     const repo = this.host.repo(repoId);
     const name = worktreeName(branch ?? label, this.host.setting(SCM_SETTING_KEYS.branchPrefix, ''));
-    const remembered = this.deps.service.worktreeFolder(repoId);
+    const remembered = await this.deps.service.worktreeFolder(repoId);
     const suggested = remembered !== undefined ? path.join(remembered, name) : defaultWorktreePath(repo.root, name, !samePath(repo.info.gitDir, repo.info.commonDir));
     const nameSelected = (value: string): readonly [number, number] => [value.length - name.length, value.length];
     // VS Code's getWorktreePath folder button: the OS folder picker, at the remembered folder or the repository's parent

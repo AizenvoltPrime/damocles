@@ -6,6 +6,7 @@ import { deleteSessionCheckpointRefs, folderIdsInSessionFile, getRepoDir } from 
 import { DAMOCLES_HOME_DIR, findSessionPlanFiles } from '../../paths';
 import { agentDataRoot, isSafeAgentPathId, subagentsDir, teamsDir } from '../agent-records';
 import { resolvePiSessionFile, forgetSessionMetadata } from './reading';
+import type { SessionMetaIndex } from './meta-index/client';
 import { piSessionDir } from './session-dir';
 import { DAMOCLES_USER_RENAMED_ENTRY, DAMOCLES_TAG_ENTRY } from './constants';
 import { writeUnderSessionLease } from './session-lease';
@@ -126,7 +127,7 @@ async function deleteAgentData(cwd: string, sessionDir: string, sessionId: strin
  * ~/.claude is never touched (FR-1). Best-effort + idempotent. Resolves once the file and data are gone;
  * `refsDeleted` settles when the refs are too, and never rejects.
  */
-export async function deletePiSession(cwd: string, sessionId: string): Promise<{ refsDeleted: Promise<void> }> {
+export async function deletePiSession(cwd: string, sessionId: string, index: Pick<SessionMetaIndex, 'forget'>): Promise<{ refsDeleted: Promise<void> }> {
   const filePath = await resolvePiSessionFile(cwd, sessionId);
   // Read before the rm: the file names the folder repos holding the session's refs.
   const folderIds = filePath
@@ -139,7 +140,7 @@ export async function deletePiSession(cwd: string, sessionId: string): Promise<{
   if (filePath) {
     const repoDir = getRepoDir(filePath);
     await fs.promises.rm(filePath, { force: true }).catch((err) => log('[session-store] delete session file failed: %O', err));
-    forgetSessionMetadata(filePath);
+    forgetSessionMetadata(index, filePath);
     await fs.promises.rm(repoDir, { recursive: true, force: true }).catch((err) => log('[session-store] delete checkpoint repo failed: %O', err));
   }
   // Match by the session's stable plan-id suffix (not a slug recompute) so every plan file it wrote is

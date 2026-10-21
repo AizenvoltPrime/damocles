@@ -467,7 +467,8 @@ export async function loadPiSessionHistory(
   // A superseding replay already aborted us — leave the panel to the newer load, don't blank it.
   if (signal?.aborted) return null;
   const totalSpan = perfSpan('replay.total');
-  post({ type: 'sessionCleared' });
+  // Named, so a send made while the replay runs still names the conversation it replays.
+  post({ type: 'sessionCleared', sessionId });
 
   // Resolve the webview's replaying state on EVERY terminal path. Without a `done`, a failed/empty
   // load leaves a blank, permanently-spinning panel — the "silent failure that masks the issue" the
@@ -476,6 +477,8 @@ export async function loadPiSessionHistory(
   const fail = (reason: string): void => {
     // Checked here because every call follows an await, during which a newer replay may have taken the panel.
     if (signal?.aborted) return;
+    // Every failure comes before any replayed message: the panel shows none of the conversation, so sends stop naming it.
+    post({ type: 'sessionCleared' });
     post({ type: 'errorReplay', content: reason });
     finish();
   };

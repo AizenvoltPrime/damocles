@@ -4,7 +4,8 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FileWatcherFactory } from '../../../platform/file-watcher';
 import { branchBaseName, branchSlug } from '../slug';
-import { newWorktreeId, worktreeFolderFor, WorktreeRegistry, type ChatWorktreeRecord } from '../registry';
+import { newWorktreeId, WorktreeRegistry, type ChatWorktreeRecord } from '../registry';
+import { worktreeFolderFor } from '../records';
 import { scanLeftovers } from '../leftovers';
 
 // The bytes newWorktreeId draws, when a test sets them.
@@ -133,6 +134,36 @@ describe('WorktreeRegistry', () => {
     const fresh = registry();
     expect(fresh.records()).toEqual([]);
     expect(fresh.unreadable()).toMatch(/not valid JSON/);
+  });
+
+  it('serves the records an earlier instance last read while registry.json does not parse, checked by the rule, and refuses writes', async () => {
+    const before = registry();
+    await before.addChat(chat('aaaaaaaa'));
+    const file = path.join(root, 'registry.json');
+    fs.writeFileSync(file, '{ "version": 1, "records": [');
+    before.reload();
+    const outside = path.parse(base).root;
+    const tampered = { ...chat('bbbbbbbb'), index: 2, worktreeRoot: outside, workingFolder: outside };
+    const next = new WorktreeRegistry({ rootDir: root, watcherFactory: watchers, log: () => undefined, lastRecords: [...before.records(), tampered] });
+    open.push(next);
+    expect(next.records().map((rec) => rec.id)).toEqual(['aaaaaaaa']);
+    expect(next.projectOf(before.records()[0]!.workingFolder)).toBe(project);
+    expect(next.unreadable()).toMatch(/not valid JSON/);
+    await expect(next.markUsed('aaaaaaaa')).rejects.toThrow(/not valid JSON/);
+    fs.writeFileSync(file, JSON.stringify({ version: 1, records: [] }));
+    next.reload();
+    expect(next.records()).toEqual([]);
+    expect(next.unreadable()).toBeUndefined();
+  });
+
+  it('reads registry.json over the records an earlier instance passes while the file parses', async () => {
+    const before = registry();
+    await before.addChat(chat('aaaaaaaa'));
+    const kept = before.records();
+    await before.markDeleted('aaaaaaaa');
+    const next = new WorktreeRegistry({ rootDir: root, watcherFactory: watchers, log: () => undefined, lastRecords: kept });
+    open.push(next);
+    expect(next.get('aaaaaaaa')?.deletedAt).toBeDefined();
   });
 
   it('removes only the named records that are still deleted, and refuses while registry.json does not parse', async () => {

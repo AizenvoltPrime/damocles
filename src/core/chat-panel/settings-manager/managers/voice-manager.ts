@@ -12,7 +12,6 @@ import type { PanelHost } from "../../../../platform/window-service";
 import type { PostMessageFn } from "../types";
 import { updateConfigAtEffectiveScope, type SettingWrite } from "../utils";
 import { log } from "../../../logger";
-import { unsupportedVoicePlatformMessage } from "../../../voice/runtime/supported-platforms";
 
 const SECRET_PREFIX = "damocles.voice.apiKey:";
 
@@ -166,7 +165,6 @@ export class VoiceManager {
       type: "voiceConfigUpdate",
       config,
       hasApiKey: hasKey,
-      localRuntimeUnsupported: unsupportedVoicePlatformMessage(process.platform, process.arch),
     });
   }
 }

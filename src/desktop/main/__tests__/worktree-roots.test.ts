@@ -7,7 +7,7 @@ import { folderKey } from '../../../core/workspace-folders/folder-key';
 import type { WorktreeStateData } from '../../../shared/types/messages';
 import { isFolderRoot, parseRootKey, rootKey } from '../../preload/folder-root';
 import type { ShownFolder } from '../../preload/shell-channels';
-import { confineExisting } from '../documents/confine';
+import { confineExisting } from '../../local-services/confine';
 import { chatRowWorktree } from '../worktrees/chat-rows';
 import { RootSet, WorktreeRoots } from '../worktrees/roots';
 import { setupArgs, setupShell } from '../worktrees/setup-terminal';

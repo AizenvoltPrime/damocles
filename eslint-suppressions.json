@@ -1,0 +1,287 @@
+{
+  "src/core/browser/launcher.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/core/canonical-path.ts": {
+    "damocles/no-sync": {
+      "count": 3
+    }
+  },
+  "src/core/chat-panel/panel-worktrees.ts": {
+    "damocles/no-sync": {
+      "count": 3
+    }
+  },
+  "src/core/chat-panel/settings-manager/managers/mcp-config-write.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/core/chat-panel/storage-manager.ts": {
+    "damocles/no-sync": {
+      "count": 2
+    }
+  },
+  "src/core/compass/detect.ts": {
+    "damocles/no-sync": {
+      "count": 6
+    }
+  },
+  "src/core/compass/parser-manager.ts": {
+    "damocles/no-sync": {
+      "count": 3
+    }
+  },
+  "src/core/config/contributed-configuration.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/core/memory/database.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/core/paths.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/core/permission-handler/managers/evaluator-manager.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/core/pi-session/agent-dir.ts": {
+    "damocles/no-sync": {
+      "count": 5
+    }
+  },
+  "src/core/pi-session/auth-file.ts": {
+    "damocles/no-sync": {
+      "count": 2
+    }
+  },
+  "src/core/pi-session/checkpoints/auto-checkpoint.ts": {
+    "damocles/no-sync": {
+      "count": 2
+    }
+  },
+  "src/core/pi-session/checkpoints/folder-repo.ts": {
+    "damocles/no-sync": {
+      "count": 6
+    }
+  },
+  "src/core/pi-session/checkpoints/maintenance.ts": {
+    "damocles/no-sync": {
+      "count": 5
+    }
+  },
+  "src/core/pi-session/checkpoints/repo-manager.ts": {
+    "damocles/no-sync": {
+      "count": 11
+    }
+  },
+  "src/core/pi-session/context-files.ts": {
+    "damocles/no-sync": {
+      "count": 2
+    }
+  },
+  "src/core/pi-session/folder-runtime.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/core/pi-session/hooks/config.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/core/pi-session/mcp/mcp-auth.ts": {
+    "damocles/no-sync": {
+      "count": 5
+    }
+  },
+  "src/core/pi-session/mcp/metadata-cache.ts": {
+    "damocles/no-sync": {
+      "count": 6
+    }
+  },
+  "src/core/pi-session/mcp/npx-resolver.ts": {
+    "damocles/no-sync": {
+      "count": 20
+    }
+  },
+  "src/core/pi-session/openai-key-migration.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/core/pi-session/pi-runtime.ts": {
+    "damocles/no-sync": {
+      "count": 2
+    }
+  },
+  "src/core/pi-session/pi-session.ts": {
+    "damocles/no-sync": {
+      "count": 4
+    }
+  },
+  "src/core/pi-session/session-store/mutations.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/core/pi-session/session-store/reading.ts": {
+    "damocles/no-sync": {
+      "count": 2
+    }
+  },
+  "src/core/pi-session/session-store/rewind.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/core/pi-session/session-store/session-dir.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/core/pi-session/session-store/session-lease.ts": {
+    "damocles/no-sync": {
+      "count": 10
+    }
+  },
+  "src/core/pi-session/slash-invocation.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/core/pi-session/subagents/custom-agents.ts": {
+    "damocles/no-sync": {
+      "count": 2
+    }
+  },
+  "src/core/pi-session/subagents/enabled-models.ts": {
+    "damocles/no-sync": {
+      "count": 2
+    }
+  },
+  "src/core/pi-session/subagents/env.ts": {
+    "damocles/no-sync": {
+      "count": 3
+    }
+  },
+  "src/core/pi-session/subagents/fs-safety.ts": {
+    "damocles/no-sync": {
+      "count": 3
+    }
+  },
+  "src/core/pi-session/subagents/skill-loader.ts": {
+    "damocles/no-sync": {
+      "count": 3
+    }
+  },
+  "src/core/pi-session/subscription.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/core/system-tools.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/core/team/persistence.ts": {
+    "damocles/no-sync": {
+      "count": 3
+    }
+  },
+  "src/core/usage-stats/subcall-ledger.ts": {
+    "damocles/no-sync": {
+      "count": 2
+    }
+  },
+  "src/core/voice/recorder.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/core/worktrees/registry.ts": {
+    "damocles/no-sync": {
+      "count": 6
+    }
+  },
+  "src/desktop/local-services/file-watcher-factory.ts": {
+    "damocles/no-sync": {
+      "count": 12
+    }
+  },
+  "src/desktop/local-services/localization-service.ts": {
+    "damocles/no-sync": {
+      "count": 2
+    }
+  },
+  "src/desktop/local-services/settings-store.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/desktop/local-services/watch-worker-host.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/desktop/main/index.ts": {
+    "damocles/no-sync": {
+      "count": 2
+    }
+  },
+  "src/desktop/main/panel-state-store.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/desktop/main/platform/app-info.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/desktop/main/platform/key-value-state.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/desktop/main/platform/secrets-store.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/desktop/main/projects.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/desktop/main/trust-store.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/desktop/main/usage-warning-store.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/desktop/main/window-layout-store.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  },
+  "src/desktop/main/worktrees/chat-rows.ts": {
+    "damocles/no-sync": {
+      "count": 1
+    }
+  }
+}

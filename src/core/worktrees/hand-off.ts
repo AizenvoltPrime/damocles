@@ -1,15 +1,16 @@
-// The session's worktree entry (AD12 Sessions) and D61's file move between a project folder and its chat worktree.
+// Reading the session's worktree entry from its file (AD12 Sessions) and D61's file move between a project folder and its chat worktree.
 import { createReadStream, promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { createInterface } from 'node:readline';
 import { MAX_CLI_LENGTH, revision, splitInChunks, type GitRunner } from '../scm/git-runner';
 import type { FileText, WorktreeGit } from '../pi-session/chat-changes';
-import { isWorktreeId } from '../../shared/worktree-id';
 import { DAMOCLES_WORKTREE_ENTRY } from '../pi-session/session-store/constants';
-import { EDITOR_MAX_DOCUMENT_BYTES, type ChatPlace } from '../../shared/types/messages';
-import { folderContains, type ChatWorktreeRecord } from './registry';
+import { EDITOR_MAX_DOCUMENT_BYTES } from '../../shared/types/messages';
+import type { ChatWorktreeRecord } from './registry';
+import { folderContains } from './records';
 import { confinedTarget, copyLink, gitMessage, nulList, projectGit, repositoryOf, repositoryPathKey, uncommittedFiles, type WorktreeFile } from './create';
 import type { ChangeLetter } from '../scm/repository';
+import { worktreeEntryOf, type WorktreeEntryData } from './worktree-entry';
 
 export const WORKTREE_ENTRY: string = DAMOCLES_WORKTREE_ENTRY;
 // A session file larger than this is not scanned for its entry; the chat then reads as a project-folder chat.
@@ -17,34 +18,6 @@ const MAX_ENTRY_SCAN_BYTES = 256 * 1024 * 1024;
 const BINARY_PROBE_LENGTH = 8000;
 // Room for `cat-file --batch`'s header line: an object id, the type and the size.
 const BATCH_HEADER_BYTES = 128;
-
-export interface WorktreeEntryData {
-  readonly worktreeId: string;
-  readonly projectPath: string;
-  readonly place: ChatPlace;
-}
-
-export function isWorktreeEntryData(value: unknown): value is WorktreeEntryData {
-  if (typeof value !== 'object' || value === null) return false;
-  const v = value as Record<string, unknown>;
-  return isWorktreeId(v['worktreeId']) && typeof v['projectPath'] === 'string' && path.isAbsolute(v['projectPath']) && (v['place'] === 'worktree' || v['place'] === 'project');
-}
-
-/** The entry's data when `entry` is a worktree entry. Takes untrusted parsed entries. */
-export function worktreeEntryOf(entry: unknown): WorktreeEntryData | undefined {
-  if (typeof entry !== 'object' || entry === null) return undefined;
-  const e = entry as { type?: unknown; customType?: unknown; data?: unknown };
-  return e.type === 'custom' && e.customType === WORKTREE_ENTRY && isWorktreeEntryData(e.data) ? e.data : undefined;
-}
-
-/** The last worktree entry in file order, which decides where the chat works (AD12). */
-export function latestWorktreeEntry(entries: readonly unknown[]): WorktreeEntryData | undefined {
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const data = worktreeEntryOf(entries[i]);
-    if (data) return data;
-  }
-  return undefined;
-}
 
 /** The latest worktree entry of a session file, read line by line without parsing lines that cannot hold one. */
 export async function readLatestWorktreeEntry(sessionFile: string): Promise<WorktreeEntryData | undefined> {

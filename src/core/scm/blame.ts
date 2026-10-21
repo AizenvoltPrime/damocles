@@ -1,7 +1,7 @@
 // HEAD's blame of a file, from `git blame --porcelain` (VS Code's extensions/git/src/blame.ts reads the same fields through
 // --incremental). Only HEAD is blamed; the shell maps editor lines onto HEAD's through the quick diff's changes, so an edited
 // line reads "Not Committed Yet".
-import { GitError } from './git-runner';
+import { GitError } from './errors';
 import { checkRepoPath, MAX_SHOW_BYTES, type Repository } from './repository';
 import { detectCodec, headPathOf, isBinary, readBlob, TREE_BLOB } from './staging';
 

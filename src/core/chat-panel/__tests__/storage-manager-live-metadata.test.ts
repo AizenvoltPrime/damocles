@@ -26,9 +26,9 @@ vi.mock('../../pi-session/checkpoints', () => ({
 
 import { StorageManager } from '../storage-manager';
 import * as store from '../../pi-session/session-store';
-import { initPiLoader } from '../../pi-session/pi-loader';
+import { inProcessIndex, workerPi } from '../../pi-session/session-store/meta-index/__tests__/in-process';
 
-const pi = (await initPiLoader())!;
+const pi = await workerPi();
 const folderPath = path.join(os.homedir(), 'live-metadata-workspace');
 const A: FolderTarget = { key: folderPath.toLowerCase(), fsPath: folderPath, name: 'live', label: 'live', projectScope: true };
 
@@ -67,6 +67,7 @@ function harness(liveSession: (id: string) => ReturnType<typeof liveSessionOnDis
     getPanels: () => panels,
     liveSession,
     fileWatchers: platform.fileWatchers,
+    metaIndex: inProcessIndex().index,
   });
   return { manager, lastList: () => posted.at(-1) };
 }
@@ -77,6 +78,8 @@ describe('StorageManager: a live session\'s own file', () => {
     const id = live.getSessionId();
     const { manager, lastList } = harness((sessionId) => (sessionId === id ? source : undefined));
     await manager.getStoredSessions();
+    // The cold list parses the file in the background; its row arrives as a list upsert.
+    await vi.waitFor(() => expect(lastList()?.some((s) => s.id === id)).toBe(true));
     await manager.setupSessionWatcher();
     const watcher = platform.fileWatchers.watchers.at(-1)!;
     const open = vi.spyOn(pi.SessionManager, 'open');
@@ -97,7 +100,7 @@ describe('StorageManager: a live session\'s own file', () => {
       expect(store.getPiSessionMetadata).not.toHaveBeenCalled();
     } finally {
       open.mockRestore();
-      manager.dispose();
+      await manager.dispose();
     }
   });
 
@@ -110,9 +113,9 @@ describe('StorageManager: a live session\'s own file', () => {
       live.appendMessage(user('written elsewhere'));
       platform.fileWatchers.watchers.at(-1)!.fireChange(file);
       await vi.waitFor(() => expect(lastList()?.find((s) => s.id === live.getSessionId())?.messageCount).toBe(3), { timeout: 3000 });
-      expect(store.getPiSessionMetadataByFile).toHaveBeenCalledWith(file);
+      expect(store.getPiSessionMetadataByFile).toHaveBeenCalledWith(manager.metaIndex, file);
     } finally {
-      manager.dispose();
+      await manager.dispose();
     }
   });
 
@@ -127,9 +130,9 @@ describe('StorageManager: a live session\'s own file', () => {
       await manager.addOrUpdateSession(id, A.key);
 
       expect(lastList()?.find((s) => s.id === id)?.aiTitle).toBe('Renamed on disk');
-      expect(store.getPiSessionMetadata).toHaveBeenCalledWith(folderPath, id);
+      expect(store.getPiSessionMetadata).toHaveBeenCalledWith(manager.metaIndex, folderPath, id);
     } finally {
-      manager.dispose();
+      await manager.dispose();
     }
   });
 });

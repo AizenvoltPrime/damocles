@@ -556,11 +556,6 @@
         "default": "",
         "description": "Advanced: path to an existing CUDA-PyTorch Python venv to skip the bundled runtime. It must already hold the pinned voice stack; Damocles only smoke-checks it. Windows x64, Linux x64 and macOS arm64 only: other platforms are refused even with this set. Leave empty to use the default location (~/.damocles/voice/runtime/). Machine-scope only — a workspace setting must not redirect Python execution."
       },
-      "damocles.voice.pinModelVersion": {
-        "type": "object",
-        "default": {},
-        "description": "Advanced: per-model version pin overriding the shipped MODEL_MANIFEST.json. Keys are model IDs; values are version strings. Machine-scope only — a workspace setting must not redirect model loads."
-      },
       "damocles.autoCompact": {
         "type": "object",
         "default": {
@@ -2105,12 +2100,6 @@
         "errorMessage": "damocles.voice.runtimePath applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
         "doNotSuggest": true,
         "description": "damocles.voice.runtimePath applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nAdvanced: path to an existing CUDA-PyTorch Python venv to skip the bundled runtime. It must already hold the pinned voice stack; Damocles only smoke-checks it. Windows x64, Linux x64 and macOS arm64 only: other platforms are refused even with this set. Leave empty to use the default location (~/.damocles/voice/runtime/). Machine-scope only — a workspace setting must not redirect Python execution."
-      },
-      "damocles.voice.pinModelVersion": {
-        "not": {},
-        "errorMessage": "damocles.voice.pinModelVersion applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
-        "doNotSuggest": true,
-        "description": "damocles.voice.pinModelVersion applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nAdvanced: per-model version pin overriding the shipped MODEL_MANIFEST.json. Keys are model IDs; values are version strings. Machine-scope only — a workspace setting must not redirect model loads."
       },
       "damocles.autoCompact": {
         "type": "object",

@@ -80,6 +80,8 @@ export interface HandlerDependencies {
     afterSwitch?: AfterFolderSwitch,
   ) => Promise<HostInstance | undefined>;
   postWorkspaceFolderState: (panelId: string) => void;
+  /** A panel's `restoreRetry` was set or cleared. */
+  restoreRetryChanged: (panelId: string) => void;
   webviewPrompts: WebviewPrompts;
   /** The panels' worktree work (slice 12a), read when a handler runs. */
   worktrees: () => PanelWorktrees;

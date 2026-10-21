@@ -152,6 +152,16 @@ describe('desktop notifications', () => {
     await expect(dismissed).resolves.toBeUndefined();
   });
 
+  it('withdraws a modal notification when its signal aborts, answering undefined', async () => {
+    loaded();
+    const controller = new AbortController();
+    const answer = service().warn('Switch?', { modal: true, signal: controller.signal }, 'Start new conversation');
+    expect(sentRequest()?.request).toMatchObject({ kind: 'message', message: 'Switch?' });
+    controller.abort();
+    await expect(answer).resolves.toBeUndefined();
+    expect(H.showMessageBox).not.toHaveBeenCalled();
+  });
+
   it('falls back to the OS message box, parented to the window, when the overlay page has not loaded', async () => {
     H.showMessageBox.mockResolvedValue({ response: 0 });
     await expect(service().warn('Switch?', { modal: true }, 'Start new conversation')).resolves.toBe('Start new conversation');

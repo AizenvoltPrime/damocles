@@ -14,7 +14,7 @@ import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { PermissionMode } from '../../shared/types/settings';
 import type { PermissionUpdate, PromptApprover, PromptOwner } from '../../shared/types/permissions';
 import { log } from '../logger';
-import type { PermissionResult, CanUseToolContext, SettledApproval, McpToolIdentity } from './types';
+import type { PermissionResult, CanUseToolContext, SettledApproval, McpToolIdentity, ChatPermissions } from './types';
 import { buildUnaskedDenyResult } from './utils';
 import type { McpResourceRuleFilter } from './mcp-resource-rule';
 import { IMAGE_MODEL_SETTING } from '../pi-session/tools/image-tool-specs';
@@ -22,7 +22,7 @@ import type { FormValues } from '../../shared/types/forms';
 import type { RaisedPrompt } from '../pi-session/session-state';
 import { TOOL_EXIT_PLAN_MODE, TOOL_ASK_USER_QUESTION, TOOL_BROWSER_REQUEST_INPUT, TOOL_EDIT, TOOL_WRITE, TOOL_GENERATE_IMAGE, TOOL_SKILL, isShellTool } from '../../shared/tool-names';
 
-export type { PermissionResult, CanUseToolContext };
+export type { PermissionResult, CanUseToolContext, ChatPermissions };
 
 export class PermissionHandler {
   private state: PermissionState;
@@ -36,6 +36,7 @@ export class PermissionHandler {
   private elicitationManager: ElicitationManager;
   private readonly platform: Platform;
   private onPlanModeActivated: (() => Promise<void>) | null = null;
+  private onPermissionsChanged: (() => void) | null = null;
 
   // panelId is the chat panel this handler belongs to; proposal diffs are shown there on hosts that render editors in the panel.
   /** `settingsFolder` is the chat's folder, whose permission-mode and YOLO defaults seed this handler. */
@@ -75,6 +76,7 @@ export class PermissionHandler {
   /** Every mode change goes through here, so open prompts the new mode would not ask about are approved. */
   setPermissionMode(mode: PermissionMode): void {
     this.state.permissionMode = mode;
+    this.onPermissionsChanged?.();
     this.approveUnaskedPrompts();
   }
 
@@ -84,7 +86,17 @@ export class PermissionHandler {
 
   setDangerouslySkipPermissions(enabled: boolean): void {
     this.state.dangerouslySkipPermissions = enabled;
+    this.onPermissionsChanged?.();
     this.approveUnaskedPrompts();
+  }
+
+  getPermissions(): ChatPermissions {
+    return { permissionMode: this.state.permissionMode, dangerouslySkipPermissions: this.state.dangerouslySkipPermissions };
+  }
+
+  /** Called after every change of the mode or YOLO, including a new conversation's YOLO reset. */
+  setPermissionsListener(fn: (() => void) | null): void {
+    this.onPermissionsChanged = fn;
   }
 
   /**
@@ -94,6 +106,7 @@ export class PermissionHandler {
   resetForNewConversation(settingsFolder: SettingsFolder | undefined): void {
     // Open prompts belong to the conversation being replaced, so this YOLO change never approves them.
     this.state.dangerouslySkipPermissions = this.platform.settings.get<boolean>('damocles.dangerouslySkipPermissions', false, settingsFolder);
+    this.onPermissionsChanged?.();
     this.state.autoApprovedSkills.clear();
   }
 

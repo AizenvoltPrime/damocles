@@ -17,7 +17,8 @@ vi.mock('os', async (importOriginal) => {
   return { ...actual, homedir: () => tmpHome };
 });
 
-import { deletePiSession, listPiSessions, renamePiSession, tagPiSession } from '..';
+import { deletePiSession, renamePiSession, tagPiSession } from '..';
+import { inProcessIndex, listComplete } from '../meta-index/__tests__/in-process';
 import { ensurePiSessionDir } from '../session-dir';
 import { getPiCodingAgent, initPiLoader } from '../../pi-loader';
 import { whileSessionLeased } from '../../../chat-panel/session-ownership';
@@ -46,22 +47,27 @@ async function promptOnlySession(): Promise<{ id: string; file: string }> {
 describe('a conversation whose first turn failed before any reply', () => {
   it('has a file holding its prompt, which the session list shows and leased rename, tag and delete act on', async () => {
     const { notifications } = createFakePlatform();
-    const { id, file } = await promptOnlySession();
-    expect(fs.existsSync(file)).toBe(true);
+    const { index } = inProcessIndex();
+    try {
+      const { id, file } = await promptOnlySession();
+      expect(fs.existsSync(file)).toBe(true);
 
-    const listed = (await listPiSessions(cwd)).find((s) => s.id === id);
-    expect(listed).toMatchObject({ id, preview: 'fix the parser' });
+      const listed = (await listComplete(index, cwd)).find((s) => s.id === id);
+      expect(listed).toMatchObject({ id, preview: 'fix the parser' });
 
-    expect(await whileSessionLeased(notifications, id, () => renamePiSession(cwd, id, 'Parser fix'))).toBe(true);
-    expect(await whileSessionLeased(notifications, id, () => tagPiSession(cwd, id, 'bug'))).toBe(true);
-    expect((await listPiSessions(cwd)).find((s) => s.id === id)).toMatchObject({ customTitle: 'Parser fix', tag: 'bug' });
+      expect(await whileSessionLeased(notifications, id, () => renamePiSession(cwd, id, 'Parser fix'))).toBe(true);
+      expect(await whileSessionLeased(notifications, id, () => tagPiSession(cwd, id, 'bug'))).toBe(true);
+      expect((await listComplete(index, cwd)).find((s) => s.id === id)).toMatchObject({ customTitle: 'Parser fix', tag: 'bug' });
 
-    let refsDeleted: Promise<void> | undefined;
-    expect(await whileSessionLeased(notifications, id, async () => {
-      ({ refsDeleted } = await deletePiSession(cwd, id));
-    })).toBe(true);
-    await refsDeleted;
-    expect(fs.existsSync(file)).toBe(false);
-    expect((await listPiSessions(cwd)).some((s) => s.id === id)).toBe(false);
+      let refsDeleted: Promise<void> | undefined;
+      expect(await whileSessionLeased(notifications, id, async () => {
+        ({ refsDeleted } = await deletePiSession(cwd, id, index));
+      })).toBe(true);
+      await refsDeleted;
+      expect(fs.existsSync(file)).toBe(false);
+      expect((await listComplete(index, cwd)).some((s) => s.id === id)).toBe(false);
+    } finally {
+      await index.close();
+    }
   });
 });

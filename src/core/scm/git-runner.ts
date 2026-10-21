@@ -1,9 +1,9 @@
 // Every git process the source control engine starts (plan AD4, "Process model"; docs/invariants.md "Source control").
-import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import * as path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { childEnv } from '../pi-session/checkpoints/exec';
-import { createShellJob, killProcessTree, type ShellJob, type ShellSessionJob } from '../pi-session/tools/process-tree';
+import { processLauncher, type Launcher, type SessionJob } from '../process-launcher';
+import { GitError, GitUntrustedError, redactUrls } from './errors';
 
 export interface GitVersion {
   readonly major: number;
@@ -17,12 +17,6 @@ export interface GitBinary {
   readonly version: GitVersion;
 }
 
-/** `git version 2.45.1.windows.1` → 2.45.1; undefined when the text names no version. */
-export function parseGitVersion(text: string): GitVersion | undefined {
-  const match = /^git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(text.trim());
-  return match ? { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3] ?? 0) } : undefined;
-}
-
 export function gitAtLeast(version: GitVersion, major: number, minor: number): boolean {
   return version.major > major || (version.major === major && version.minor >= minor);
 }
@@ -30,13 +24,6 @@ export function gitAtLeast(version: GitVersion, major: number, minor: number): b
 // Never for checkout or reset, which git 2.43 parses wrongly with it.
 export function endOfOptions(version: GitVersion): string[] {
   return gitAtLeast(version, 2, 24) ? ['--end-of-options'] : [];
-}
-
-// Any scheme://userinfo@ loses its userinfo: tokens and passwords ride in remote URLs.
-const URL_USERINFO = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@]*@/gi;
-
-export function redactUrls(text: string): string {
-  return text.replace(URL_USERINFO, '$1');
 }
 
 // Characters that could break or reorder a log line: control and line-separator characters and bidi controls.
@@ -101,28 +88,6 @@ export function* splitInChunks(values: readonly string[], maxChunkLength: number
   if (current.length > 0) yield current;
 }
 
-export class GitError extends Error {
-  readonly exitCode: number | null;
-  readonly stderr: string;
-  readonly stdout: string;
-
-  constructor(message: string, exitCode: number | null, stdout: string, stderr: string) {
-    super(message);
-    this.name = 'GitError';
-    this.exitCode = exitCode;
-    this.stdout = stdout;
-    this.stderr = stderr;
-  }
-}
-
-// The engine runs no git for a project that is not trusted (D8); the runner refuses as the last line.
-export class GitUntrustedError extends Error {
-  constructor() {
-    super('Source control runs no git in an untrusted project');
-    this.name = 'GitUntrustedError';
-  }
-}
-
 export class GitOutputTooLargeError extends Error {
   readonly maxBytes: number;
 
@@ -162,7 +127,7 @@ export interface GitCall {
   readonly signal?: AbortSignal;
   // The owner's session job, which a cancellable call's process tree also joins, so the owner's dispose or the host's death
   // kills it. A call without signal never joins it, so an engine write that is no remote operation is never killed.
-  readonly session?: ShellSessionJob;
+  readonly session?: SessionJob;
   // GIT_CEILING_DIRECTORIES: git never searches up into one, but still checks the call's own folder when it is one
   readonly ceilingDirectories?: readonly string[];
   // git may reach no remote: GIT_ALLOW_PROTOCOL names a protocol that does not exist, which overrides every protocol.*.allow
@@ -183,7 +148,7 @@ export interface GitCloneCall {
   readonly cwd: string;
   readonly args: readonly string[];
   readonly signal: AbortSignal;
-  readonly session?: ShellSessionJob;
+  readonly session?: SessionJob;
   readonly askpassEnv?: Readonly<Record<string, string>>;
 }
 
@@ -203,7 +168,8 @@ export interface GitRunnerDeps {
   readonly git: GitBinary;
   readonly log: GitLog;
   readonly isTrusted: (project: string) => boolean;
-  readonly spawn?: (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
+  // the process-wide launcher when left out
+  readonly launcher?: Launcher;
   readonly now?: () => number;
   // the stdout bound of a call that names none
   readonly maxOutputBytes?: number;
@@ -271,7 +237,7 @@ export function subcommandIndex(args: readonly string[]): number {
 }
 
 export function createGitRunner(deps: GitRunnerDeps): GitRunner & GitCloner {
-  const spawn = deps.spawn ?? ((command, args, options) => nodeSpawn(command, [...args], options));
+  const launcher = deps.launcher ?? processLauncher();
   const now = deps.now ?? (() => Date.now());
   const defaultMaxOutput = deps.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
   const execute = (call: Omit<GitCall, 'project'>): Promise<GitResult> =>
@@ -284,23 +250,24 @@ export function createGitRunner(deps: GitRunnerDeps): GitRunner & GitCloner {
       const started = now();
       const argv = args.map((arg) => logArg(redactUrls(arg))).join(' ');
       const cancellable = call.signal !== undefined;
-      let child: ChildProcess;
-      let job: ShellJob | undefined;
-      try {
-        // detached on POSIX: its own process group, which a kill signals as a whole
-        child = spawn(deps.git.path, args, { cwd: call.cwd, env: gitEnv(call), windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'], detached: cancellable && process.platform !== 'win32' });
-        // The first statement after spawn: a hook git starts before the assignment would stay outside the job.
-        job = cancellable && child.pid !== undefined ? createShellJob(child.pid, call.session) : undefined;
-      } catch (err) {
-        deps.log.appendLine(`> git ${argv} [failed to start: ${logText(err instanceof Error ? err.message : String(err))}]`);
-        reject(err);
-        return;
-      }
+      // Detached on POSIX: its own process group, which a kill signals as a whole. A cancellable call's process tree also
+      // joins the owner's session job, which the launcher's worker assigns right after the start.
+      const child = launcher.launch({
+        file: deps.git.path,
+        args,
+        cwd: call.cwd,
+        env: gitEnv(call),
+        windowsHide: true,
+        shell: false,
+        detached: cancellable && process.platform !== 'win32',
+        ...(cancellable && call.session ? { job: call.session.id } : {}),
+      });
       let settled = false;
+      let spawned = false;
       // Never after the call settled: the pid may name another process by then.
       const end = (): void => {
         if (settled) return;
-        if (cancellable && child.pid !== undefined) killProcessTree(child.pid, job);
+        if (cancellable) child.kill({ tree: true });
         else child.kill();
       };
       let cancelled = false;
@@ -309,18 +276,15 @@ export function createGitRunner(deps: GitRunnerDeps): GitRunner & GitCloner {
         end();
       };
       call.signal?.addEventListener('abort', onAbort, { once: true });
-      const release = (): void => {
-        call.signal?.removeEventListener('abort', onAbort);
-        job?.dispose();
-      };
       const out: Buffer[] = [];
       let outBytes = 0;
       let stderr = '';
+      const stderrDecoder = new StringDecoder('utf8');
       let tooLarge = false;
       let stopped = false;
       const decoder = call.onData ? new StringDecoder('utf8') : undefined;
       const max = call.maxOutputBytes ?? defaultMaxOutput;
-      child.stdout!.on('data', (chunk: Buffer) => {
+      child.onData('stdout', (chunk) => {
         if (tooLarge || stopped) return;
         if (decoder) {
           // a streamed call's stdout goes to onData alone; it bounds what it keeps itself
@@ -340,47 +304,60 @@ export function createGitRunner(deps: GitRunnerDeps): GitRunner & GitCloner {
         }
         out.push(chunk);
       });
-      child.stderr!.setEncoding('utf8');
-      child.stderr!.on('data', (chunk: string) => {
-        if (stderr.length < 1_000_000) stderr += chunk;
+      child.onData('stderr', (chunk) => {
+        if (stderr.length < 1_000_000) stderr += stderrDecoder.write(chunk);
       });
-      child.stdin!.on('error', () => undefined);
-      child.stdin!.end(call.input ?? '');
-      child.on('error', (err) => {
-        if (settled) return;
-        settled = true;
-        release();
-        deps.log.appendLine(`> git ${argv} [failed to start: ${logText(err.message)}]`);
-        reject(err);
-      });
-      child.on('close', (code) => {
-        if (settled) return;
-        settled = true;
-        release();
-        const ms = now() - started;
-        if (cancelled) {
-          deps.log.appendLine(`> git ${argv} [${ms}ms] cancelled`);
-          reject(call.signal!.reason);
-          return;
-        }
-        if (tooLarge && !call.preview) {
-          const failed = !cancellable && code !== 0;
-          deps.log.appendLine(`> git ${argv} [${ms}ms]${failed ? ` exit ${code ?? -1}` : ''}, output over ${max} bytes`);
-          if (failed && stderr.trim() !== '') deps.log.appendLine(logText(stderr.trim().slice(0, MAX_LOGGED_STDERR_CHARS)));
-          reject(new GitOutputTooLargeError(max));
-          return;
-        }
-        const exitCode = stopped ? 0 : (code ?? -1);
-        const outcome = stopped ? ' stopped' : exitCode === 0 ? '' : ` exit ${exitCode}`;
-        deps.log.appendLine(`> git ${argv} [${ms}ms]${outcome}${tooLarge ? `, output past ${max} bytes not kept` : ''}`);
-        if (exitCode !== 0 && stderr.trim() !== '') deps.log.appendLine(logText(stderr.trim().slice(0, MAX_LOGGED_STDERR_CHARS)));
-        const stdout = Buffer.concat(out);
-        if (exitCode !== 0 && !call.allowFailure) {
-          reject(new GitError(`git ${args[subcommandIndex(args)] ?? ''} exited with ${exitCode}`, code, stdout.toString('utf8'), stderr));
-          return;
-        }
-        resolve({ exitCode, stdout, stderr, ...(tooLarge ? { truncated: true as const } : {}) });
-      });
+      child.end(call.input ?? '');
+      child.pid.then(() => {
+        spawned = true;
+      }, () => undefined);
+      Promise.all([child.exited, child.closed]).then(
+        ([{ code }]) => {
+          settled = true;
+          call.signal?.removeEventListener('abort', onAbort);
+          const ms = now() - started;
+          if (cancelled) {
+            deps.log.appendLine(`> git ${argv} [${ms}ms] cancelled`);
+            reject(call.signal!.reason);
+            return;
+          }
+          // a sequence split across the last chunks completes only at the end
+          if (stderr.length < 1_000_000) stderr += stderrDecoder.end();
+          if (decoder && !stopped) {
+            const rest = decoder.end();
+            if (rest !== '') call.onData!(rest);
+          }
+          if (tooLarge && !call.preview) {
+            const failed = !cancellable && code !== 0;
+            deps.log.appendLine(`> git ${argv} [${ms}ms]${failed ? ` exit ${code ?? -1}` : ''}, output over ${max} bytes`);
+            if (failed && stderr.trim() !== '') deps.log.appendLine(logText(stderr.trim().slice(0, MAX_LOGGED_STDERR_CHARS)));
+            reject(new GitOutputTooLargeError(max));
+            return;
+          }
+          const exitCode = stopped ? 0 : (code ?? -1);
+          const outcome = stopped ? ' stopped' : exitCode === 0 ? '' : ` exit ${exitCode}`;
+          deps.log.appendLine(`> git ${argv} [${ms}ms]${outcome}${tooLarge ? `, output past ${max} bytes not kept` : ''}`);
+          if (exitCode !== 0 && stderr.trim() !== '') deps.log.appendLine(logText(stderr.trim().slice(0, MAX_LOGGED_STDERR_CHARS)));
+          const stdout = Buffer.concat(out);
+          if (exitCode !== 0 && !call.allowFailure) {
+            reject(new GitError(`git ${args[subcommandIndex(args)] ?? ''} exited with ${exitCode}`, code, stdout.toString('utf8'), stderr));
+            return;
+          }
+          resolve({ exitCode, stdout, stderr, ...(tooLarge ? { truncated: true as const } : {}) });
+        },
+        (err: unknown) => {
+          settled = true;
+          call.signal?.removeEventListener('abort', onAbort);
+          if (cancelled) {
+            deps.log.appendLine(`> git ${argv} [${now() - started}ms] cancelled`);
+            reject(call.signal!.reason);
+            return;
+          }
+          const message = err instanceof Error ? err.message : String(err);
+          deps.log.appendLine(`> git ${argv} [${spawned ? `failed: ${logText(message)}` : `failed to start: ${logText(message)}`}]`);
+          reject(err);
+        },
+      );
     });
   return {
     git: deps.git,

@@ -1,5 +1,6 @@
 import { spawn } from 'child_process';
 import { log } from '../../logger';
+import { withSpawnLock } from '../../process-launcher/spawn-lock';
 import { windowsSystemTool } from '../../system-tools';
 import { startShellSentinel, type ShellSentinel } from './shell-sentinel-client';
 
@@ -42,7 +43,13 @@ interface SentinelSessionJob extends SessionJobInternals {
   shellExited(pid: number): void;
 }
 
-type Handle = unknown;
+/** The win32 arm; its handle is process-wide, so a launcher worker may hand it to another. */
+interface WindowsSessionJob extends SessionJobInternals {
+  readonly handle: Handle;
+}
+
+// koffi 3 represents a pointer, and so a HANDLE, as a BigInt.
+type Handle = bigint;
 
 /** Win32 `BOOL` is a 4-byte int, so these are bound as `int` and compared against zero, never as `bool`. */
 interface JobObjectApi {
@@ -119,13 +126,13 @@ function openShell(api: JobObjectApi, pid: number): Handle | null {
  * cooperation from a dying process: closing the last write end of a pipe gives its reader EOF. Registration
  * and liveness share that one pipe, so panel close and a killed host are indistinguishable to the sentinel.
  */
-function createSentinelSessionJob(): SentinelSessionJob {
+function createSentinelSessionJob(sentinelPath: string | undefined): SentinelSessionJob {
   // Nothing needs cleaning up before the first command, so the helper process is not started until then.
   let sentinel: ShellSentinel | undefined;
   return {
     // The shell is spawned detached, so its pid is also the id of the group the sentinel must kill.
     assign: (pid: number): void => {
-      sentinel ??= startShellSentinel();
+      sentinel ??= startShellSentinel(sentinelPath);
       sentinel.register(pid);
     },
     shellExited: (pid: number): void => sentinel?.shellExited(pid),
@@ -140,8 +147,8 @@ function createSentinelSessionJob(): SentinelSessionJob {
  * a sentinel beside a kernel-owned job. There must be no module-level instance: one panel is one session
  * object, so a host-wide job would kill another panel's commands on dispose.
  */
-export function createShellSessionJob(): ShellSessionJob | undefined {
-  if (process.platform !== 'win32') return createSentinelSessionJob();
+export function createShellSessionJob(sentinelPath?: string): ShellSessionJob | undefined {
+  if (process.platform !== 'win32') return createSentinelSessionJob(sentinelPath);
   const api = loadJobObjectApi();
   if (api === null) return undefined;
 
@@ -158,8 +165,13 @@ export function createShellSessionJob(): ShellSessionJob | undefined {
     return undefined;
   }
 
+  return windowsSessionJob(api, job);
+}
+
+function windowsSessionJob(api: JobObjectApi, job: Handle): WindowsSessionJob {
   let open = true;
-  const handle: SessionJobInternals = {
+  return {
+    handle: job,
     assign: (pid: number): void => {
       if (!open) return;
       const target = openShell(api, pid);
@@ -174,7 +186,33 @@ export function createShellSessionJob(): ShellSessionJob | undefined {
       api.closeHandle(job);
     },
   };
-  return handle;
+}
+
+/** A Windows session job's raw handle value, which any thread of this process may use; undefined on POSIX. */
+export function sessionJobHandle(session: ShellSessionJob | undefined): bigint | undefined {
+  return (session as Partial<WindowsSessionJob> | undefined)?.handle;
+}
+
+/**
+ * The session job behind a raw handle value another thread created. Its dispose closes that handle, so only the job's one
+ * closer may call it.
+ */
+export function adoptShellSessionJob(handle: bigint): ShellSessionJob | undefined {
+  const api = loadJobObjectApi();
+  return api === null ? undefined : windowsSessionJob(api, handle);
+}
+
+/** A call job's raw handle value (Windows). */
+export function shellJobHandle(job: ShellJob | undefined): bigint | undefined {
+  return (job as { readonly handle?: bigint } | undefined)?.handle;
+}
+
+/** Kill every process in the job behind a raw handle value, and close the handle. */
+export function terminateJobHandle(handle: bigint): void {
+  const api = loadJobObjectApi();
+  if (api === null) return;
+  if (api.terminateJobObject(handle, 1) === 0) log('[ProcessTree] ERROR: TerminateJobObject failed for a job left by a dead launcher worker');
+  api.closeHandle(handle);
 }
 
 /**
@@ -202,7 +240,7 @@ export function createShellJob(pid: number, session: ShellSessionJob | undefined
     return {
       // `killProcessTree` signals the process group directly on POSIX and never consults this handle.
       terminate: (): void => {},
-      // The PowerShell tool's cleanup runs from both 'error' and 'close', so one call has to be idempotent.
+      // One x record per shell exit, however often the owner disposes.
       dispose: (): void => {
         if (reported) return;
         reported = true;
@@ -234,7 +272,8 @@ export function createShellJob(pid: number, session: ShellSessionJob | undefined
   }
 
   let open = true;
-  return {
+  const callJob: ShellJob & { readonly handle: Handle } = {
+    handle: job,
     terminate: (): void => {
       if (open) api.terminateJobObject(job, 1);
     },
@@ -244,6 +283,7 @@ export function createShellJob(pid: number, session: ShellSessionJob | undefined
       api.closeHandle(job);
     },
   };
+  return callJob;
 }
 
 /**
@@ -263,7 +303,7 @@ export function killProcessTree(pid: number, job?: ShellJob): void {
       job.terminate();
       return;
     }
-    const killer = spawn(windowsSystemTool('taskkill'), ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore', detached: true, windowsHide: true });
+    const killer = withSpawnLock(() => spawn(windowsSystemTool('taskkill'), ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore', detached: true, windowsHide: true }));
     // One flag for both listeners, because a spawn failure reports an 'error' and an 'exit'.
     let fellBack = false;
     const killRoot = (): void => {

@@ -16,6 +16,7 @@ import { mentionInChat } from "../../mention-resolver";
 import { parseFileDragTarget } from "../../../../shared/file-drag";
 import { WORKTREE_ACTIONS } from "../../../../shared/types/messages";
 import { isSettingsAccountId, isSettingsSectionId } from "../../../../shared/settings-sections";
+import { openAppSettingsFor } from "../../open-app-settings";
 
 function hasPathTraversal(slug: string): boolean {
   return slug.includes("..") || slug.includes("/") || slug.includes("\\");
@@ -93,15 +94,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       if (msg.type !== "openAppSettings") return;
       if (msg.section !== undefined && !isSettingsSectionId(msg.section)) throw new Error("Unknown settings section");
       if (msg.account !== undefined && !isSettingsAccountId(msg.account)) throw new Error("Unknown settings account");
-      if (platform.capabilities.settingsInPanel) {
-        postMessage(ctx.host, {
-          type: "openSettingsPanel",
-          ...(msg.section !== undefined ? { section: msg.section } : {}),
-          ...(msg.account !== undefined ? { account: msg.account } : {}),
-        });
-      } else {
-        platform.window.openAppSettings(msg.section, msg.account);
-      }
+      openAppSettingsFor(platform, postMessage, ctx.host, msg.section, msg.account);
     },
 
     toggleTerminal: () => {

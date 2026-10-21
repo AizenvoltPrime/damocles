@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication } from '@playwright/test';
-import { mainLog } from './support/app';
+import { isAlive, mainLog, readyCorePid } from './support/app';
 import { activeTab, DOCUMENT_END, editorShows, filesRow, openInEditor } from './support/editor';
 import { activeChat, expect, test } from './support/fixtures';
 import { writeUserSettings } from './support/hermetic';
@@ -11,13 +11,17 @@ import { chatInput } from './support/ui';
 
 // A quit takes about a second; its teardown is bounded at 10 s.
 const QUIT_BUDGET_MS = 15_000;
+// CLOSE_TIMEOUT_MS in src/desktop/main/index.ts: how long main waits for core.shutdown's reply before it kills core.
+const CORE_SHUTDOWN_BOUND_MS = 3_000;
+// The OS removes a killed process a moment after main exits.
+const CORE_EXIT_MS = 5_000;
 
 interface FlushHold {
   readonly reached: boolean;
   release(): void;
 }
 type HoldGlobals = typeof globalThis & {
-  __damoclesE2e?: { holdStoreFlush(): FlushHold };
+  __damoclesE2e?: { holdStoreFlush(): FlushHold; holdCoreShutdown(): Promise<void> };
   __e2eFlushHold?: FlushHold;
 };
 
@@ -26,6 +30,7 @@ test('a quit closes every page before the core disposes, so no request can reach
   const { app } = await launch({ env: { DAMOCLES_E2E_HOOKS: '1' } });
   await expect(chatInput(await activeChat(app))).toBeVisible();
   const proc = app.process();
+  const core = await readyCorePid(app, home);
   await app.evaluate(() => {
     const globals = globalThis as HoldGlobals;
     globals.__e2eFlushHold = globals.__damoclesE2e!.holdStoreFlush();
@@ -41,10 +46,11 @@ test('a quit closes every page before the core disposes, so no request can reach
   const log = mainLog(home);
   const shutdown = log.slice(log.indexOf('[shutdown] quitting'));
   expect(shutdown.indexOf('[window] closed')).toBeGreaterThan(0);
-  expect(shutdown.indexOf('[window] closed')).toBeLessThan(shutdown.indexOf('Damocles core disposed'));
+  expect(shutdown.indexOf('[window] closed')).toBeLessThan(shutdown.search(new RegExp(`\\[core\\] shut down in \\d+ ms \\(pid ${core}\\)`)));
   // window-all-closed during a quit means Electron no longer counted it as quitting.
   expect(shutdown).not.toContain('[window] all windows closed');
   expect(shutdown).toContain('[shutdown] will-quit');
+  await expect.poll(() => isAlive(core), { timeout: CORE_EXIT_MS, message: `Damocles Core (pid ${core}) outlived the app` }).toBe(false);
 });
 
 const windowVisible = (app: ElectronApplication): Promise<boolean> => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.isVisible());
@@ -109,7 +115,30 @@ test('a quit while a page waits on a question dismisses it once the window close
   const log = mainLog(home);
   const shutdown = log.slice(log.indexOf('[shutdown] quitting'));
   expect(shutdown).toContain('[dialog] the window closed for a quit; the question is dismissed');
-  expect(shutdown).toContain('Damocles core disposed');
+  expect(shutdown).toContain('[core] shut down in ');
   expect(shutdown).not.toContain('teardown did not finish');
   expect(fs.existsSync(path.join(home.project, 'src', 'kept.ts'))).toBe(true);
+});
+
+test('a quit whose engine dispose hangs kills Damocles Core at the bound and still exits cleanly', async ({ home, launch }) => {
+  const desktop = await launch({ env: { DAMOCLES_E2E_HOOKS: '1' } });
+  await expect(chatInput(await activeChat(desktop.app))).toBeVisible();
+  const proc = desktop.app.process();
+  const core = await readyCorePid(desktop.app, home);
+  await desktop.app.evaluate(() => (globalThis as HoldGlobals).__damoclesE2e!.holdCoreShutdown());
+  await desktop.app.evaluate(({ app: electronApp }) => {
+    setImmediate(() => electronApp.quit());
+  });
+  await expect.poll(() => proc.exitCode !== null || proc.signalCode !== null, { timeout: QUIT_BUDGET_MS, message: 'the app is still running' }).toBe(true);
+  expect(proc.exitCode).toBe(0);
+  const log = mainLog(home);
+  const shutdown = log.slice(log.indexOf('[shutdown] quitting'));
+  expect(shutdown).toContain(`[core] shutdown did not finish within ${CORE_SHUTDOWN_BOUND_MS} ms; killing Damocles Core (pid ${core})`);
+  expect(shutdown).toContain(`[core] exited (pid ${core},`);
+  expect(shutdown).not.toContain('[core] shut down in');
+  // A kill main asked for is no crash: nothing restarts during the quit.
+  expect(shutdown).not.toContain('[core] stopped unexpectedly');
+  expect(shutdown).not.toContain('[core] started');
+  expect(shutdown).toContain('[shutdown] will-quit');
+  await expect.poll(() => isAlive(core), { timeout: CORE_EXIT_MS, message: `Damocles Core (pid ${core}) outlived the app` }).toBe(false);
 });

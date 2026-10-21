@@ -168,7 +168,7 @@ describe('MemoryService quality audit lifecycle', () => {
     subcall.run = async () => ({ value: { grades: [{ id, verdict: 'rescope', targetScope: 'global', reason: 'machine fact' }] } });
     await service.startAudit();
     await vi.waitFor(() => expect(runs()[0]?.status).toBe('completed'));
-    const state = service.getAuditState()!;
+    const state = (await service.getAuditState())!;
     await service.applyAudit(state.run!.id, [state.proposals[0]!.id], []);
 
     await service.deleteSessionMemories('sess-1');

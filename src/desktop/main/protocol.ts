@@ -1,18 +1,10 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { protocol } from 'electron';
+import { APP_HOST, APP_ORIGIN, APP_SCHEME, isInside, SERVED_FILES, SERVED_ROOTS } from '../app-urls';
 import { NOTIFIER_PAGE_PATH } from '../preload/page-paths';
 
-export const APP_SCHEME = 'app';
-export const APP_HOST = 'damocles';
-export const APP_ORIGIN: string = `${APP_SCHEME}://${APP_HOST}`;
-
-// URL path prefix → directory under resourceRoot; nothing outside these directories is ever served. A Map, so a prefix
-// such as __proto__ or constructor finds nothing.
-const SERVED_ROOTS: ReadonlyMap<string, readonly string[]> = new Map([
-  ['webview', ['dist', 'webview']],
-  ['desktop-shell', ['dist', 'desktop-shell']],
-]);
+export { APP_HOST, APP_ORIGIN, APP_SCHEME, appResourceUri } from '../app-urls';
 
 // Every page is generated in memory under its CSP; the built index.html files carry none, so they are never served.
 const BUILT_PAGE = /\.html?$/i;
@@ -22,12 +14,9 @@ const SCRIPT_CSP = `default-src 'none'; script-src ${APP_ORIGIN}`;
 // An SVG is a document when opened directly, and third-party icons are served same-origin; as an <img> it never runs script.
 const SVG_CSP = "default-src 'none'; style-src 'unsafe-inline'";
 
-// Single files outside the served roots, matched by exact URL path.
-const SERVED_FILES: Readonly<Record<string, readonly string[]>> = {
-  '/resources/icon.png': ['resources', 'icon.png'],
-};
-
+// A panel id is one URL path segment of this alphabet, so panelPageUrl serves it.
 const PANEL_PAGE = /^\/panel\/([A-Za-z0-9-]+)\/index\.html$/;
+const PANEL_ID = /^[A-Za-z0-9-]+$/;
 const SHELL_PAGE = '/shell/index.html';
 const OVERLAY_PAGE = '/overlay/index.html';
 
@@ -73,17 +62,16 @@ export interface AppPages {
   notifier(): string;
 }
 
+export function isPanelId(panelId: string): boolean {
+  return PANEL_ID.test(panelId);
+}
+
 export function panelPageUrl(panelId: string): string {
   return `${APP_ORIGIN}/panel/${panelId}/index.html`;
 }
 
 export function mimeTypeFor(filePath: string): string {
   return MIME_TYPES[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream';
-}
-
-function isInside(root: string, candidate: string): boolean {
-  const relative = path.relative(root, candidate);
-  return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
 }
 
 /** Maps an app:// URL to what it may serve; undefined for anything outside the served set. */
@@ -109,7 +97,7 @@ export function resolveAppRequest(url: string, resourceRoot: string): AppRequest
   if (pathname === OVERLAY_PAGE) return { kind: 'overlay' };
   if (pathname === NOTIFIER_PAGE_PATH) return { kind: 'notifier' };
 
-  const file = SERVED_FILES[pathname];
+  const file = SERVED_FILES.get(pathname);
   if (file) return { kind: 'file', root: resourceRoot, filePath: path.join(resourceRoot, ...file) };
 
   const [, prefix, ...rest] = pathname.split('/');
@@ -172,19 +160,4 @@ export function handleAppProtocol(resourceRoot: string, pages: AppPages): void {
     }
     return serveFile(target.root, target.filePath);
   });
-}
-
-/** The app:// URL serving an absolute path; throws for a path the protocol handler would refuse. */
-export function appResourceUri(resourceRoot: string, absolutePath: string): string {
-  const resolved = path.resolve(absolutePath);
-  for (const [urlPath, parts] of Object.entries(SERVED_FILES)) {
-    if (resolved === path.join(resourceRoot, ...parts)) return `${APP_ORIGIN}${urlPath}`;
-  }
-  for (const [prefix, parts] of SERVED_ROOTS) {
-    const root = path.join(resourceRoot, ...parts);
-    if (!isInside(root, resolved)) continue;
-    const relative = path.relative(root, resolved).split(path.sep).map(encodeURIComponent).join('/');
-    return `${APP_ORIGIN}/${prefix}/${relative}`;
-  }
-  throw new Error(`${absolutePath} is outside the paths app:// serves`);
 }

@@ -23,8 +23,9 @@ export interface ShellSentinel {
  * `process.execPath` is the VS Code binary in a desktop extension host, so `ELECTRON_RUN_AS_NODE` is what
  * makes it run a plain script; in a remote or WSL host it is already node and the variable is inert.
  */
-export function startShellSentinel(): ShellSentinel {
-  const child = spawn(process.execPath, [platform().paths.workerEntry('sentinel')], {
+export function startShellSentinel(entry?: string): ShellSentinel {
+  // A launcher worker passes the path, since platform() is the host thread's.
+  const child = spawn(process.execPath, [entry ?? platform().paths.workerEntry('sentinel')], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
     // Detached and unref'd, because the whole point is that it outlives this process.
     detached: true,

@@ -166,7 +166,7 @@ export async function incrementalUpdate(
 	changedFileList?: string[],
 	onProgress?: (current: number, total: number) => Promise<void>,
 ): Promise<IncrementalResult> {
-	const changed = changedFileList ?? getChangedFiles(workspaceRoot, base);
+	const changed = changedFileList ?? await getChangedFiles(workspaceRoot, base);
 
 	if (changed.length === 0) {
 		return {

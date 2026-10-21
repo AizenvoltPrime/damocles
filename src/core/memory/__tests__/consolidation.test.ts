@@ -99,6 +99,7 @@ function makeCtx(
     fallbackWorkspace: () => WORKSPACE,
     openFolders: () => [],
     nonProjectFolders: () => [],
+    folderExists: async () => true,
     autoExtractEnabled: true,
     trigger: 'auto',
     onNoModel: () => {},
@@ -1168,11 +1169,14 @@ describe('runConsolidation — workspace attribution', () => {
     }
     seedWithFiles([path.join(touched, 'src', 'a.ts'), path.join(home, '.claude', 'CLAUDE.md')]);
     const { runner, run } = makeRunner({ memories: [] });
-    await runConsolidation(makeCtx(db, runner, { openFolders: () => [OTHER], nonProjectFolders: () => [home] }));
+    const folderExists = vi.fn(async () => true);
+    await runConsolidation(makeCtx(db, runner, { openFolders: () => [OTHER], nonProjectFolders: () => [home], folderExists }));
 
     const req = run.mock.calls.find(([r]) => (r as MemorySubCallRequest).purpose === 'extract')![0] as MemorySubCallRequest;
     const props = schemaNode(req.schema.properties as Record<string, unknown>, 'memories');
     expect(schemaNode(schemaNode(props, 'items'), 'properties').workspace).toEqual({ enum: [WORKSPACE, touched, OTHER] });
+    // An unreachable drive among the stored folders cannot stall a pass whose turns never touched it.
+    expect(folderExists.mock.calls).toEqual([[touched]]);
     for (const dir of [touched, untouched, home]) fs.rmSync(dir, { recursive: true, force: true });
   });
 

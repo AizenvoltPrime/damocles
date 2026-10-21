@@ -102,7 +102,7 @@ import {
   TERMINAL_SCROLLBACK_SETTING,
   TERMINAL_SHELL_INTEGRATION_SETTING,
   UPDATE_CHECK_AUTOMATICALLY_SETTING,
-} from '../../../main/desktop-configuration';
+} from '../../../local-services/desktop-configuration';
 
 const props = defineProps<{
   api: DamoclesOverlayApi;

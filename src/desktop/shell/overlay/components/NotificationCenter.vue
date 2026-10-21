@@ -68,6 +68,15 @@ function open(entry: NotificationEntry): void {
   emit('answer', { kind: 'notifications', action: 'open', entryId: entry.id });
 }
 
+function answer(entry: NotificationEntry, label: string): void {
+  emit('answer', { kind: 'notifications', action: 'answer', entryId: entry.id, label });
+}
+
+// A notice main keeps until it is answered offers its actions under its row.
+function actionsOf(entry: NotificationEntry): readonly string[] {
+  return entry.awaitingAnswer && entry.body.kind === 'notice' ? entry.body.actions : [];
+}
+
 // The center shows only the state main pushes, so a failed action leaves main's state on screen; this says it failed.
 const failedAction = ref<string | null>(null);
 
@@ -298,6 +307,26 @@ onBeforeUnmount(() => {
                 >{{ t('notifications.unread') }}</span>
               </span>
             </button>
+            <!-- The toast's tinted action pills, which no Button variant draws; one row of them under the entry. -->
+            <div
+              v-if="actionsOf(entry).length > 0"
+              data-testid="notification-row-actions"
+              class="flex flex-wrap gap-1.5 pr-3 pb-2.25 pl-14"
+            >
+              <button
+                v-for="(label, actionIndex) in actionsOf(entry)"
+                :key="actionIndex"
+                type="button"
+                data-testid="notification-row-action"
+                class="d-press flex h-7 items-center rounded-lg px-2.75 text-xs whitespace-nowrap"
+                :class="actionIndex === 0
+                  ? [TONE_CLASSES[view.tone].pill, TONE_CLASSES[view.tone].pillText, 'font-semibold hover:brightness-115']
+                  : 'border border-(--d-border2) text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text)'"
+                @click="answer(entry, label)"
+              >
+                {{ label }}
+              </button>
+            </div>
           </li>
         </ul>
         <div

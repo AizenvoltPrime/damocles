@@ -145,26 +145,14 @@ export type CompareResult = {
   outdated: OutdatedModelEntry[];
 };
 
-export type CompareOptions = {
-  pinned?: Record<string, string>;
-};
-
-export function pickEffectiveEntry(entry: ModelEntry, pinned?: Record<string, string>): ModelEntry {
-  const pin = pinned?.[entry.id];
-  if (pin === undefined || pin === entry.version) return entry;
-  return { ...entry, version: pin };
-}
-
 export async function compareInstalled(
   installedDir: string,
   manifest: VoiceModelManifest,
-  options: CompareOptions = {},
 ): Promise<CompareResult> {
   const missing: ModelEntry[] = [];
   const outdated: OutdatedModelEntry[] = [];
 
-  for (const rawEntry of manifest.models) {
-    const entry = pickEffectiveEntry(rawEntry, options.pinned);
+  for (const entry of manifest.models) {
     const versionDir = join(installedDir, entry.id, `v${entry.version}`);
     let allFilesPresent = true;
     try {

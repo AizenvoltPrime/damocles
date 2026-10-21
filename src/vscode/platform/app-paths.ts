@@ -5,6 +5,10 @@ const WORKER_BUNDLES: Readonly<Record<WorkerName, string>> = {
   compass: 'compass-worker.js',
   usageStats: 'usage-stats-worker.js',
   sentinel: 'sentinel.js',
+  processLauncher: 'process-launcher-worker.js',
+  memoryIntegrity: 'memory-integrity-worker.js',
+  sessionMetaIndex: 'session-meta-index-worker.js',
+  voiceExtract: 'voice-extract-worker.js',
 };
 
 // Worker bundle names must match the esbuild.config.mjs outfiles under dist/.

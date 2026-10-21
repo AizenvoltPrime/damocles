@@ -1,10 +1,10 @@
-import * as childProcess from "child_process";
 import * as path from "path";
-import * as readline from "readline";
+import { StringDecoder } from "string_decoder";
 import type { AppPaths } from "../../platform/app-paths";
 import type { Platform } from "../../platform/platform";
 import type { SettingsStore } from "../../platform/settings-store";
 import { log } from "../logger";
+import { processLauncher } from "../process-launcher";
 
 type RipgrepModule = typeof import("@vscode/ripgrep");
 let ripgrepModulePromise: Promise<RipgrepModule> | null = null;
@@ -84,43 +84,17 @@ export async function listWorkspaceFiles(
   ];
 
   return new Promise((resolve, reject) => {
-    const rgProcess = childProcess.spawn(rgPath, args);
-    const rl = readline.createInterface({ input: rgProcess.stdout, crlfDelay: Infinity });
+    const rgProcess = processLauncher().launch({ file: rgPath, args, stdio: ["ignore", "pipe", "pipe"] });
 
     const fileResults: FileResult[] = [];
     const dirSet = new Set<string>();
     let count = 0;
-
-    rl.on("line", (line) => {
-      if (count < effectiveLimit) {
-        try {
-          const relativePath = path.relative(workspacePath, line).replace(/\\/g, "/");
-
-          fileResults.push({ relativePath, isDirectory: false });
-
-          let dirPath = path.dirname(relativePath);
-          while (dirPath && dirPath !== "." && dirPath !== "/") {
-            dirSet.add(dirPath);
-            dirPath = path.dirname(dirPath);
-          }
-
-          count++;
-        } catch {
-          // Silently ignore errors processing individual paths
-        }
-      } else {
-        rl.close();
-        rgProcess.kill();
-      }
-    });
-
+    let settled = false;
     let errorOutput = "";
 
-    rgProcess.stderr.on("data", (data) => {
-      errorOutput += data.toString();
-    });
-
-    rl.on("close", () => {
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
       const stderr = errorOutput.trim();
       if (stderr && fileResults.length === 0) {
         log(`[ripgrep] enumeration returned 0 files; stderr: ${stderr}`);
@@ -150,9 +124,51 @@ export async function listWorkspaceFiles(
         }
         resolve(allResults);
       }
+    };
+
+    const onLine = (line: string): void => {
+      if (settled) return;
+      if (count < effectiveLimit) {
+        try {
+          const relativePath = path.relative(workspacePath, line).replace(/\\/g, "/");
+
+          fileResults.push({ relativePath, isDirectory: false });
+
+          let dirPath = path.dirname(relativePath);
+          while (dirPath && dirPath !== "." && dirPath !== "/") {
+            dirSet.add(dirPath);
+            dirPath = path.dirname(dirPath);
+          }
+
+          count++;
+        } catch {
+          // Silently ignore errors processing individual paths
+        }
+      } else {
+        finish();
+        rgProcess.kill();
+      }
+    };
+
+    const decoder = new StringDecoder("utf8");
+    let pending = "";
+    rgProcess.onData("stdout", (chunk) => {
+      const lines = (pending + decoder.write(chunk)).split(/\r?\n/);
+      pending = lines.pop() ?? "";
+      for (const line of lines) onLine(line);
     });
 
-    rgProcess.on("error", (error) => {
+    rgProcess.onData("stderr", (data) => {
+      errorOutput += data.toString();
+    });
+
+    Promise.all([rgProcess.exited, rgProcess.closed]).then(() => {
+      const last = pending + decoder.end();
+      if (last) onLine(last);
+      finish();
+    }, (error: Error) => {
+      if (settled) return;
+      settled = true;
       reject(new Error(`ripgrep process error: ${error.message}`));
     });
   });

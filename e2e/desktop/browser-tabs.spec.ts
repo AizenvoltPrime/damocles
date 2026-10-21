@@ -233,6 +233,11 @@ test('Open in system browser that the system cannot open says so in one toast', 
   await expect(popupToasts(popup)).toContainText('Damocles could not open the page in the system browser.');
 });
 
+// The e2e hooks' browser route: the active page's requests matching pattern load from toHost instead; routed lists them.
+interface BrowserRouteGlobals {
+  __damoclesE2e: { browser: { route(pattern: string, toHost: string): Promise<void>; routed(): Promise<string[]> } };
+}
+
 test('an address typed without a scheme tries https first, falls back to http on a TLS failure and says the page is not secure', async ({ home, launch }) => {
   enableBrowser(home);
   const desktop = await launchWithBrowser(launch, { DAMOCLES_E2E_HOOKS: '1' });
@@ -244,15 +249,9 @@ test('an address typed without a scheme tries https first, falls back to http on
 
   // The name resolves nowhere, so both of its loads go to the http-only site: https fails its TLS handshake there.
   const requested = await app.evaluate(async (_electron, origin) => {
-    const hooks = (globalThis as unknown as { __damoclesE2e: { browser(): { getActivePage(): import('patchright').Page } } }).__damoclesE2e;
-    const seen: string[] = [];
-    (globalThis as unknown as { __e2eFallbackRequests: string[] }).__e2eFallbackRequests = seen;
-    await hooks.browser().getActivePage().context().route(/^https?:\/\/fallback\.damocles-e2e\.com\//, (route) => {
-      const url = new URL(route.request().url());
-      seen.push(url.href);
-      return route.continue({ url: `${url.protocol}//${new URL(origin).host}${url.pathname}` });
-    });
-    return seen;
+    const hooks = (globalThis as unknown as BrowserRouteGlobals).__damoclesE2e;
+    await hooks.browser.route('^https?://fallback\\.damocles-e2e\\.com/', new URL(origin).host);
+    return hooks.browser.routed();
   }, site.url);
   expect(requested).toEqual([]);
 
@@ -261,7 +260,7 @@ test('an address typed without a scheme tries https first, falls back to http on
   await expect.poll(async () => (await activePageTab(app))?.title, { timeout: PAGE_TIMEOUT }).toBe('Page fell-back');
   expect((await activePageTab(app))?.browser.url).toBe('http://fallback.damocles-e2e.com/fell-back');
   // Chromium may retry the TLS handshake before it gives up, so https can be asked more than once before the one http load.
-  const requests = await app.evaluate(() => (globalThis as unknown as { __e2eFallbackRequests: string[] }).__e2eFallbackRequests);
+  const requests = await app.evaluate(() => (globalThis as unknown as BrowserRouteGlobals).__damoclesE2e.browser.routed());
   expect(requests[0]).toBe('https://fallback.damocles-e2e.com/fell-back');
   expect(requests.slice(requests.indexOf('http://fallback.damocles-e2e.com/fell-back'))).toEqual(['http://fallback.damocles-e2e.com/fell-back']);
   expect(new Set(requests.slice(0, -1))).toEqual(new Set(['https://fallback.damocles-e2e.com/fell-back']));

@@ -50,7 +50,7 @@ import {
   GIT_SUGGEST_SMART_COMMIT_SETTING,
   GIT_UNTRACKED_CHANGES,
   GIT_UNTRACKED_CHANGES_SETTING,
-} from '../../../main/desktop-configuration';
+} from '../../../local-services/desktop-configuration';
 import { useDesktopPrefs } from './desktop-prefs';
 import { integerSetting } from './integer-setting';
 import { gitRowName } from './git-row-name';

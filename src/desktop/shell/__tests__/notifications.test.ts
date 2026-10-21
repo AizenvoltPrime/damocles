@@ -126,6 +126,16 @@ describe('notification toasts', () => {
     expect(api.holdToast).toHaveBeenLastCalledWith('d1', false);
   });
 
+  it('shows no life bar on a toast main never times out', async () => {
+    const wrapper = mountNotifier();
+    await flushPromises();
+    api.toast({ ...toast('s1', { kind: 'notice', severity: 'error', message: 'The engine stopped.', actions: ['Restart'] }), sticky: true });
+    api.toast(toast('i1', { kind: 'notice', severity: 'info', message: 'Saved.', actions: [] }));
+    await flushPromises();
+    expect(wrapper.find('[data-toast-id="s1"] [data-testid="overlay-toast-life"]').exists()).toBe(false);
+    expect(wrapper.find('[data-toast-id="i1"] [data-testid="overlay-toast-life"]').exists()).toBe(true);
+  });
+
   it('dismisses with the close button, never opening, and opens from a click on the card', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date(2026, 0, 2, 9, 0));
@@ -551,6 +561,25 @@ describe('notification center', () => {
     expect(wrapper.findAll('[data-testid="notification-row"]')[0]!.text()).not.toContain('Resets');
   });
 
+  it('offers the actions of a notice awaiting its answer under its row, and answers with the chosen one', async () => {
+    const halted: NotificationBody = { kind: 'notice', severity: 'error', message: 'The Damocles engine stopped unexpectedly 4 times in 5 minutes, so it was not restarted.', actions: ['Restart'] };
+    api.center.state = {
+      entries: [{ ...entry('n2', halted), awaitingAnswer: true }, entry('n1', { kind: 'notice', severity: 'info', message: 'Done', actions: ['Open'] })],
+      doNotDisturb: false,
+      popupsOff: false,
+    };
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'c1', CENTER);
+    await flushPromises();
+
+    const actions = wrapper.findAll('[data-testid="notification-row-action"]');
+    expect(actions.map((action) => action.text())).toEqual(['Restart']);
+    expect(actions[0]!.classes()).toEqual(expect.arrayContaining(['bg-(--d-danger)/16', 'text-(--d-danger-text)']));
+    await actions[0]!.trigger('click');
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('c1', { kind: 'notifications', action: 'answer', entryId: 'n2', label: 'Restart' }));
+  });
+
   it('virtualizes a log past 200 entries', async () => {
     api.center.state = {
       entries: Array.from({ length: 250 }, (_, index) => entry(`n${index}`, { kind: 'done', chat: CHAT })),
@@ -597,6 +626,27 @@ describe('title bar bell', () => {
     vi.spyOn(bell.element, 'getBoundingClientRect').mockReturnValue(new DOMRect(912, 6, 30, 28));
     await bell.trigger('click');
     expect(shell.overlayRequests).toEqual([{ kind: 'notifications', anchor: { x: 912, y: 6, width: 30, height: 28 } }]);
+  });
+
+  it('shows the engine pill only while the engine is halted, and its click restarts the engine', async () => {
+    const shell = fakeShellApi();
+    const wrapper = mount(TitleBar, { props: { api: shell, state: STATE }, global: { plugins: [shellI18n] }, attachTo: document.body });
+    mounted.push(wrapper);
+    expect(wrapper.find('[data-testid="engine-pill"]').exists()).toBe(false);
+
+    await wrapper.setProps({ state: { ...STATE, engineHalted: true } });
+    const pill = wrapper.get('[data-testid="engine-pill"]');
+    expect(pill.text()).toBe('Engine stopped');
+    expect(pill.attributes('aria-label')).toBe('Engine stopped. Restart Engine');
+    expect(pill.attributes('title')).toBe('The Damocles engine stopped unexpectedly and was not restarted. Click to restart it.');
+    await pill.trigger('click');
+    expect(shell.restartEngine).toHaveBeenCalledOnce();
+
+    shellI18n.global.locale.value = 'el';
+    await flushPromises();
+    expect(wrapper.get('[data-testid="engine-pill"]').text()).toBe('Η μηχανή σταμάτησε');
+    await wrapper.setProps({ state: { ...STATE, engineHalted: false } });
+    expect(wrapper.find('[data-testid="engine-pill"]').exists()).toBe(false);
   });
 
   it('counts new entries in Greek in the singular and the plural', async () => {

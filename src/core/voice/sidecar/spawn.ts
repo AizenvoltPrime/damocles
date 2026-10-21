@@ -1,8 +1,7 @@
-import { spawn, ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { delimiter } from "node:path";
-import { createShellJob, type ShellJob } from "../../pi-session/tools/process-tree";
+import { processLauncher, type LaunchedProcess } from "../../process-launcher";
 
 const SDK_STRIPPED_ENV_KEYS: readonly string[] = [
   "CLAUDE_CODE_OAUTH_TOKEN",
@@ -21,11 +20,10 @@ export type SpawnOptions = {
 };
 
 export type SpawnResult = {
-  child: ChildProcess;
+  child: LaunchedProcess;
+  pid: number;
   port: number;
   token: string;
-  /** The Windows job holding the sidecar and its workers. Absent off win32 and when koffi is unusable. */
-  job: ShellJob | undefined;
 };
 
 export async function pickEphemeralPort(): Promise<number> {
@@ -84,14 +82,14 @@ export async function spawnSidecar(opts: SpawnOptions): Promise<SpawnResult> {
   const port = await pickEphemeralPort();
   const token = randomBytes(32).toString("hex");
   const args = buildSidecarArgs(opts, port);
-
-  const child = spawn(opts.pythonExe, args, {
+  // A tree kill reaches the sidecar's python workers: on Windows through the job object the launcher starts it in, on
+  // POSIX through the process group a detached start makes it lead.
+  const child = processLauncher().launch({
+    file: opts.pythonExe,
+    args,
     env: buildSidecarEnv(token, opts.pythonSourceDir),
     stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
+    detached: process.platform !== "win32",
   });
-  // Must stay the first statement after spawn: a worker forked before the assignment is outside the
-  // job permanently, and python starts loading torch immediately.
-  const job = child.pid === undefined ? undefined : createShellJob(child.pid, undefined);
-  return { child, port, token, job };
+  return { child, pid: await child.pid, port, token };
 }

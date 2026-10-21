@@ -14,9 +14,9 @@ vi.mock("../runtime", () => ({
     modelsDir: `${rootDir}/models`,
   }),
   VoiceRuntimeInstaller: class {
-    async installAll(): Promise<{ ok: false; pythonExe: string; errorMessage: string }> {
+    async installAll(): Promise<{ ok: false; pythonExe: string; errorMessage: string; missing: "runtime" }> {
       counts.installs++;
-      return { ok: false, pythonExe: "/fake/voice/python", errorMessage: "install failed" };
+      return { ok: false, pythonExe: "/fake/voice/python", errorMessage: "The voice runtime is not installed.", missing: "runtime" };
     }
   },
 }));
@@ -78,7 +78,7 @@ describe("VoiceService on an unsupported platform", () => {
     expect(counts.managers).toBe(0);
   });
 
-  it("still offers the first-run install when the install fails on a supported platform", async () => {
+  it("still offers the first-run install for a missing runtime on a supported platform", async () => {
     const { service, statuses, firstRuns } = setup({ "damocles.voice.mode": "wake-word" });
     hostAs("win32", "x64");
     await service.ensureStarted({ install: true });

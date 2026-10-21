@@ -1,20 +1,20 @@
-import type { PanelHost, PanelOptions, WindowService } from '../../../platform/window-service';
-import type { PanelViews } from '../views';
+import type { WindowService } from '../../../platform/window-service';
 
-// Every chat panel is a chat of the one window, so a panel's "own column" is simply a new chat, which the owner creates
-// and selects; a browser page opens as an editor tab of its owning chat (PanelOptions.owner).
+const overProtocol = (): never => {
+  throw new Error('Damocles Core creates its panels over the core protocol');
+};
+
+// Every chat panel is a chat of the one window, created when Damocles Core asks over the core protocol
+// (core-services/host-services.ts), so main's own platform creates none.
 export function createDesktopWindowService(
-  views: () => PanelViews,
-  openChat: (options: PanelOptions) => PanelHost,
   openAppSettings: WindowService['openAppSettings'],
   toggleTerminal: WindowService['toggleTerminal'],
   terminalToggle: WindowService['terminalToggle'],
 ): WindowService {
-  const create = (options: PanelOptions): PanelHost => (options.kind === 'chat' ? openChat(options) : views().create({ options }));
   return {
     chatBrowserPane: true,
-    createPanel: create,
-    createPanelInOwnColumn: async (options) => create(options),
+    createPanel: overProtocol,
+    createPanelInOwnColumn: async () => overProtocol(),
     openAppSettings,
     toggleTerminal,
     terminalToggle,
