@@ -72,6 +72,7 @@ import * as store from '../../pi-session/session-store';
 import { log } from '../../logger';
 import { pruneOrphanCheckpointRepos } from '../../pi-session/checkpoints';
 import { installWorktreeProjectLookup } from '../../worktrees/personal-config';
+import { folderKey } from '../../workspace-folders/folder-key';
 
 H.tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-storage-multi-root-'));
 afterAll(() => fs.rmSync(H.tmpRoot, { recursive: true, force: true }));
@@ -660,6 +661,19 @@ describe("StorageManager: a worktree chat's row (AD12 Listing)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // A chat working in its worktree announces its session under the worktree's folder, which no open project is.
+  it('a session a chat in a registry folder announces is listed under the project at once, with where its file is, and its dir is watched', async () => {
+    const { manager } = harness([A]);
+    expect(await manager.sessionsOf(A.key)).toEqual([]);
+    H.store.set(W, [session('w-new', 200, { worktree: WORKTREE })]);
+
+    await manager.addOrUpdateSession('w-new', folderKey(W));
+    await manager.setupSessionWatcher(folderKey(W));
+
+    expect((await manager.sessionsOf(A.key)).map((s) => [s.id, s.preview, s.listedFrom, s.worktree])).toEqual([['w-new', 'preview w-new', W, WORKTREE]]);
+    expect(platform.fileWatchers.watcher(store.ensurePiSessionDir(W), '*.jsonl').disposed).toBe(false);
   });
 
   it("a row the project's own dir parses after the list replaces the row a registry folder listed for that session", async () => {

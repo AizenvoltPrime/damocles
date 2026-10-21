@@ -201,6 +201,17 @@ export class StorageManager {
     return this.folders().find((t) => t.key === key);
   }
 
+  /** The open project `key`'s sessions list under: the folder itself, or the project of a registry folder (a chat worktree). */
+  private listingOf(key: string): { folder: FolderTarget; listedFrom?: string } | undefined {
+    const own = this.openFolder(key);
+    if (own) return { folder: own };
+    for (const folder of this.folders()) {
+      const extra = this.registryFoldersOf(folder).find((candidate) => folderKey(candidate) === key);
+      if (extra !== undefined) return { folder, listedFrom: extra };
+    }
+    return undefined;
+  }
+
   private stamp(session: StoredSession, folder: FolderTarget): StoredSession {
     return { ...session, workspaceFolder: { key: folder.key, label: folder.label } };
   }
@@ -429,14 +440,14 @@ export class StorageManager {
   }
 
   async addOrUpdateSession(sessionId: string, folderKey: string): Promise<void> {
-    const folder = this.openFolder(folderKey);
-    if (!folder) return;
+    const listing = this.listingOf(folderKey);
+    if (!listing) return;
     const span = perfSpan("sessions.upsert", { minMs: UPSERT_LOG_MIN_MS });
     const generation = this.sessionsGeneration;
     const live = this.liveMetadata(sessionId);
     const source = live !== undefined ? "live" : "file";
-    const metadata = live !== undefined ? live : await getPiSessionMetadata(this.metaIndex, folder.fsPath, sessionId);
-    const applied = metadata ? await this.upsertSessionsInCache([metadata], folderKey, generation) : false;
+    const metadata = live !== undefined ? live : await getPiSessionMetadata(this.metaIndex, listing.listedFrom ?? listing.folder.fsPath, sessionId);
+    const applied = metadata ? await this.upsertSessionsInCache([metadata], listing.folder.key, generation, listing.listedFrom !== undefined ? { listedFrom: listing.listedFrom } : undefined) : false;
     span.end({ source, applied });
   }
 
@@ -461,9 +472,10 @@ export class StorageManager {
     return { history: pageItems, hasMore };
   }
 
-  /** Watch `folderKey`'s session dir, or every open folder's when omitted. Idempotent per folder. */
+  /** Watch `folderKey`'s session dir (its project's, for a registry folder), or every open folder's when omitted. Idempotent per folder. */
   async setupSessionWatcher(folderKey?: string): Promise<void> {
-    const targets = folderKey !== undefined ? this.folders().filter((t) => t.key === folderKey) : this.folders();
+    const listed = folderKey !== undefined ? this.listingOf(folderKey)?.folder : undefined;
+    const targets = folderKey !== undefined ? (listed ? [listed] : []) : this.folders();
     for (const folder of targets) await this.watchFolder(folder);
   }
 
@@ -576,7 +588,7 @@ export class StorageManager {
     rows: readonly StoredSession[],
     folderKey: string,
     generation: number,
-    options?: { ifChanged?: boolean; fromList?: { listedFrom: string | undefined } },
+    options?: { ifChanged?: boolean; fromList?: { listedFrom: string | undefined }; listedFrom?: string },
   ): Promise<boolean> {
     if (rows.length === 0 || generation !== this.sessionsGeneration || !this.openFolder(folderKey)) return false;
     const all = await this.ensureSessionsLoaded();
@@ -596,7 +608,7 @@ export class StorageManager {
       }
       // A file stays in the session dir the list found it in, which its metadata does not name.
       const stamped = this.stamp(metadata, folder);
-      const listedFrom = fromList ? fromList.listedFrom : existing?.listedFrom;
+      const listedFrom = fromList ? fromList.listedFrom : (options?.listedFrom ?? existing?.listedFrom);
       const row = listedFrom !== undefined ? { ...stamped, listedFrom } : stamped;
       this.sessionFolder.set(metadata.id, folder.key);
       if (existing) {
