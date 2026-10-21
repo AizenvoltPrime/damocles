@@ -83,7 +83,9 @@ export const test = base.extend<DesktopFixtures>({
       await desktop.stopTracing(failed ? testInfo.outputPath(`trace-${i}.zip`) : undefined).catch(record);
       await desktop.close().catch((error: unknown) => record(new Error(`launch ${i}: ${error instanceof Error ? error.message : String(error)}`)));
       closedApps[i]!();
-      // After close, so the attached log also covers the shutdown.
+    }
+    for (const [i, desktop] of launched.entries()) {
+      // Once every launch closed: the launches share userData's logs, which a live one is still writing and renaming in.
       await attachDiagnostics(testInfo, `launch-${i}`, desktop, home).catch(record);
       const handlerErrors = desktop.output().split('\n').filter((line) => line.includes(IPC_HANDLER_ERROR) && !refusedOnPurpose.some((channel) => line.includes(channel)));
       if (handlerErrors.length > 0) record(new Error(`launch ${i}: main threw in an IPC handler:\n${handlerErrors.join('\n')}`));

@@ -95,30 +95,51 @@ test('a launch focuses the selected chat\'s composer once its page is ready, and
   expect(await shellFocused(app)).toBe(false);
 });
 
-const mainWindowFocused = (app: ElectronApplication): Promise<boolean> =>
-  app.evaluate(({ BrowserWindow }, url) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL() === url)!.isFocused(), SHELL_URL);
+interface WindowSwitch {
+  __e2eOther: Electron.BrowserWindow;
+  __e2eMainEvent: 'focus' | 'blur' | undefined;
+}
+
+// On macOS isFocused() reads key status while 'focus' and 'blur' report main status, which AppKit can report later, and
+// main's activation focus runs on the events; a switch is done once both agree.
+const mainWindowSwitched = (app: ElectronApplication, event: 'focus' | 'blur'): Promise<boolean> =>
+  app.evaluate(({ BrowserWindow }, [url, expected]) => {
+    const main = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL() === url)!;
+    return (globalThis as unknown as WindowSwitch).__e2eMainEvent === expected && main.isFocused() === (expected === 'focus');
+  }, [SHELL_URL, event] as const);
 
 /** Activates another window of the app, as Alt+Tab away does. */
 async function switchAway(app: ElectronApplication): Promise<void> {
-  await app.evaluate(({ BrowserWindow }) => {
+  await app.evaluate(({ BrowserWindow }, url) => {
+    const g = globalThis as unknown as WindowSwitch;
+    g.__e2eMainEvent = undefined;
+    BrowserWindow.getAllWindows().find((w) => w.webContents.getURL() === url)!.once('blur', () => {
+      g.__e2eMainEvent = 'blur';
+    });
     const other = new BrowserWindow({ width: 320, height: 240, show: false });
-    (globalThis as unknown as { __e2eOther: Electron.BrowserWindow }).__e2eOther = other;
+    g.__e2eOther = other;
     other.show();
     other.focus();
-  });
-  await expect.poll(() => mainWindowFocused(app)).toBe(false);
+  }, SHELL_URL);
+  await expect.poll(() => mainWindowSwitched(app, 'blur')).toBe(true);
 }
 
 /** Activates the main window again after switchAway, as Alt+Tab back does. */
 async function switchBack(app: ElectronApplication): Promise<void> {
   await app.evaluate(({ BrowserWindow }, url) => {
-    BrowserWindow.getAllWindows().find((w) => w.webContents.getURL() === url)!.focus();
+    const g = globalThis as unknown as WindowSwitch;
+    const main = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL() === url)!;
+    g.__e2eMainEvent = undefined;
+    main.once('focus', () => {
+      g.__e2eMainEvent = 'focus';
+    });
+    main.focus();
   }, SHELL_URL);
-  await expect.poll(() => mainWindowFocused(app)).toBe(true);
+  await expect.poll(() => mainWindowSwitched(app, 'focus')).toBe(true);
   // Never destroy(): the inspector can run an evaluate inside that window's compositor frame, and destroying it there fails
   // Chromium's CHECK(!inside_main_frame_) in ~LayerTreeHost (crbug.com/895883, Electron 44); close() destroys it in a later task.
   await app.evaluate(() => new Promise<void>((resolve) => {
-    const other = (globalThis as unknown as { __e2eOther: Electron.BrowserWindow }).__e2eOther;
+    const other = (globalThis as unknown as WindowSwitch).__e2eOther;
     other.once('closed', () => resolve());
     other.close();
   }));
@@ -127,6 +148,11 @@ async function switchBack(app: ElectronApplication): Promise<void> {
 async function switchAwayAndBack(app: ElectronApplication): Promise<void> {
   await switchAway(app);
   await switchBack(app);
+}
+
+/** Waits for the sidebar to list the selected chat; until it does, F6 lands on the project row (Sidebar.vue focusCurrentRow). */
+async function selectedChatListed(shell: Page): Promise<void> {
+  await expect(chatList(shell).getByRole('option', { selected: true })).toBeVisible();
 }
 
 test('switching to another window and back returns keyboard focus to the part the user left', async ({ foreground: _foreground, launch }) => {
@@ -142,6 +168,7 @@ test('switching to another window and back returns keyboard focus to the part th
   await expect(chatInput(chat)).toBeFocused();
 
   // A part of the window's own page keeps focus too.
+  await selectedChatListed(shell);
   await pressKeys(app, urlOf(chat), 'F6');
   await expect(chatList(shell)).toBeFocused();
   await switchAwayAndBack(app);
@@ -158,6 +185,7 @@ test('a question answered while the window is inactive leaves keyboard focus whe
   const shell = await readyShell(app);
   const chat = await activeChat(app);
   await expect.poll(() => viewFocused(app, chat)).toBe(true);
+  await selectedChatListed(shell);
   await pressKeys(app, urlOf(chat), 'F6');
   await expect(chatList(shell)).toBeFocused();
   await app.evaluate(({ BrowserWindow }, url) => {

@@ -247,7 +247,10 @@ test('the Source control title reads whole beside its actions at the default wid
   const badge = scmSection(shell).getByTestId('scm-count');
   await expect(badge).toHaveText('12');
   const header = scmSection(shell).getByTestId('sidebar-section-header');
-  const measure = (): Promise<{ whole: boolean; badge: string; clear: boolean }> => header.evaluate((element) => {
+  // Boxes include transforms, so the actions' slide-in and the badge's pop finish first; the claim is about the layout.
+  const measure = (): Promise<{ whole: boolean; badge: string; clear: boolean }> => header.evaluate(async (element) => {
+    const finite = element.getAnimations({ subtree: true }).filter((animation) => animation.effect?.getComputedTiming().endTime !== Infinity);
+    await Promise.all(finite.map((animation) => animation.finished.catch(() => undefined)));
     const box = (testId: string): DOMRect | undefined => element.querySelector(`[data-testid="${testId}"]`)?.getBoundingClientRect();
     const title = element.querySelector<HTMLElement>('[data-testid="sidebar-section-title"]')!;
     const line = box('sidebar-section-title-line')!;

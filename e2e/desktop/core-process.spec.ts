@@ -1,7 +1,7 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ElectronApplication, Page } from '@playwright/test';
-import { corePid, mainLog, readyCorePid, windowsProcessTree } from './support/app';
+import { corePid, mainLog, readyCorePid } from './support/app';
 import { SHELL_CHANNELS } from '../../src/desktop/preload/shell-channels';
 import { activeChat, expect, IPC_HANDLER_ERROR_ANNOTATION, nextChat, test } from './support/fixtures';
 import { seedStubModel, writeUserSettings, type HermeticHome } from './support/hermetic';
@@ -14,6 +14,8 @@ const RESTARTED = 'The Damocles engine stopped unexpectedly and was restarted.';
 const NOT_RESTARTED = 'The Damocles engine stopped unexpectedly 4 times in 5 minutes, so it was not restarted.';
 // The next core takes over the killed core's session leases at once, so a chat reopens well inside the 20 s lease staleness.
 const REOPEN_TIMEOUT_MS = 15_000;
+// CORE_SERVICE_NAME in src/desktop/main/core-process.ts, which imports electron
+const CORE_SERVICE_NAME = 'Damocles Core';
 
 type Marked = typeof window & { __e2eBeforeKill?: boolean };
 
@@ -41,10 +43,16 @@ const restartNotices = async (app: ElectronApplication): Promise<number> => (awa
 
 interface SavedChat {
   readonly sessionId: string;
-  readonly text: string;
+  // the chat's latest reply: the message list renders only the rows near the bottom it scrolls to after a replay
+  text: string;
 }
 
-// The page of each chat once it is a document loaded since markChats, saved under its session and showing its text.
+async function echoIn(page: Page, chat: SavedChat, text: string): Promise<void> {
+  await sendAndAwaitEcho(page, text);
+  chat.text = `Echo: ${text}`;
+}
+
+// The page of each chat once it is a document loaded since markChats, saved under its session and showing its latest reply.
 async function reopened(app: ElectronApplication, chats: readonly SavedChat[]): Promise<Page[]> {
   const found = new Map<string, Page>();
   const missing = async (): Promise<string[]> => {
@@ -123,6 +131,7 @@ test('a chat keeps its permission mode and YOLO through an engine crash, with an
     await expect(prompt).toContainText('echo after-the-crash');
     await prompt.getByRole('option', { name: 'Yes', exact: true }).click();
     await expect(askingAfterCrash!.getByText('Command done')).toBeVisible();
+    chats[1]!.text = 'Command done';
 
     // Restart Engine replaces the running engine; the chats come back as the user left them again.
     await markChats(app);
@@ -154,13 +163,16 @@ test('Damocles Core is its own process; a killed core restarts with a notice and
     const second = await opened;
     await expect(chatInput(second)).toBeVisible();
     await sendAndAwaitEcho(second, 'second chat');
-    const chats = [{ sessionId: firstId, text: 'Echo: first chat' }, { sessionId: await storedChatId(app), text: 'Echo: second chat' }];
+    const chats: SavedChat[] = [{ sessionId: firstId, text: 'Echo: first chat' }, { sessionId: await storedChatId(app), text: 'Echo: second chat' }];
+    const echoInSecond = async (text: string): Promise<void> => echoIn((await reopened(app, chats))[1]!, chats[1]!, text);
 
     // Each core is told from the one before it by its ready line after the crash, never by its pid, which the OS may reuse.
-    const mainPid = app.process().pid!;
     let pid = await readyCorePid(app, home);
-    expect(pid).not.toBe(mainPid);
-    if (process.platform === 'win32') expect(await windowsProcessTree(mainPid)).toContain(pid);
+    expect(pid).not.toBe(app.process().pid);
+    const utilities = await app.evaluate(({ app: electronApp }) =>
+      electronApp.getAppMetrics().filter((metric) => metric.type === 'Utility').map((metric) => ({ pid: metric.pid, name: metric.name })),
+    );
+    expect(utilities).toContainEqual({ pid, name: CORE_SERVICE_NAME });
     await recordToasts(app);
 
     // Crashes 1 to 3: the engine restarts and both chats reopen with their conversations, on the new engine.
@@ -169,7 +181,7 @@ test('Damocles Core is its own process; a killed core restarts with a notice and
       const since = await killCore(home, pid, `restarting (${crash} of 3 in 5 minutes)`);
       await expect.poll(() => restartNotices(app)).toBe(crash);
       pid = await readyCorePid(app, home, since);
-      await sendAndAwaitEcho((await reopened(app, chats))[1]!, `after crash ${crash}`);
+      await echoInSecond(`after crash ${crash}`);
     }
 
     // Crash 4 inside the window: no restart, an error notice with Restart, and a request that needs the engine is refused.
@@ -200,15 +212,16 @@ test('Damocles Core is its own process; a killed core restarts with a notice and
     const restarted = mainLog(home).length;
     await pill.click();
     pid = await readyCorePid(app, home, restarted);
-    await sendAndAwaitEcho((await reopened(app, chats))[1]!, 'after Restart');
+    await echoInSecond('after Restart');
     expect(await dismissedToasts(app)).toContain(restartId);
     expect((await shellState(app)).engineHalted).toBe(false);
     await expect(pill).toBeHidden();
 
     // Restart Engine cleared the crash history: the next kill restarts again as the first of three.
+    await markChats(app);
     const since = await killCore(home, pid, 'restarting (1 of 3 in 5 minutes)');
     pid = await readyCorePid(app, home, since);
-    await sendAndAwaitEcho((await reopened(app, chats))[1]!, 'after the next crash');
+    await echoInSecond('after the next crash');
 
     // Restart Engine from the menu replaces a running engine too.
     await markChats(app);
@@ -216,7 +229,7 @@ test('Damocles Core is its own process; a killed core restarts with a notice and
     await clickMenu(app, 'damocles.restartEngine');
     const next = await readyCorePid(app, home, reloaded);
     expect(next).not.toBe(pid);
-    await sendAndAwaitEcho((await reopened(app, chats))[1]!, 'after Restart Engine');
+    await echoInSecond('after Restart Engine');
   } finally {
     await stub.close();
   }
