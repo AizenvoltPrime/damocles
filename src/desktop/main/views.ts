@@ -8,7 +8,7 @@ import { restoredWorkspaceFolderKey } from '../../shared/restored-folder-key';
 import { CHAT_WORKER_SRC } from '../app-urls';
 import { PAGE_STATE_TYPES } from '../core-protocol';
 import { PANEL_CHANNELS, type PanelInit, type PanelTheme } from '../preload/panel-channels';
-import { onWindowActivated } from './activation-focus';
+import { onWindowActivated, onWindowDeactivated } from './activation-focus';
 import type { PanelStateStore } from './panel-state-store';
 import { APP_ORIGIN, isPanelId, panelPageUrl } from './protocol';
 import { loadAppPage, loggableUrl, registerPanelContents } from './security';
@@ -473,9 +473,11 @@ export class PanelViews {
   // loaded chats in load order; browser pages belong to their chat
   private order: string[] = [];
   private selectedId: string | undefined;
-  // A chat asked to take keyboard focus before its page committed, whose renderer would drop it: it takes focus on commit,
-  // unless focus went anywhere else first.
-  private focusOnCommit: DesktopPanel | undefined;
+  // A chat asked to take keyboard focus before its page committed, whose renderer would drop it: it takes focus once committed
+  // in a focused window, unless focus went anywhere else first; the window's own page taking focus as the window activates
+  // does not count.
+  private focusOnCommit: { readonly panel: DesktopPanel; committed: boolean } | undefined;
+  private windowActive = false;
   // The chat a launch shows, which takes keyboard focus once. Only the user's input, another selection or focus main gives
   // drops it, never a focus change: the window's activation focuses the window's own page.
   private launchFocus: { readonly panel: DesktopPanel; ready: boolean } | undefined;
@@ -492,7 +494,14 @@ export class PanelViews {
     this.resourceUriFor = resourceUri;
     const window = deps.window;
     window.on('resize', () => this.layout());
-    onWindowActivated(window, () => this.takeLaunchFocus());
+    onWindowActivated(window, () => {
+      this.windowActive = true;
+      this.takeLaunchFocus();
+      this.takeCommitFocus();
+    });
+    onWindowDeactivated(window, () => {
+      this.windowActive = false;
+    });
     window.on('focus', () => this.selected()?.fireViewState());
     window.on('blur', () => this.selected()?.fireViewState());
   }
@@ -604,8 +613,11 @@ export class PanelViews {
     if (selected) this.focus(selected);
   }
 
+  // Electron focuses the window's own page before it reports the window's 'focus' (activation-focus.ts).
   focused(contents: WebContents): void {
-    if (this.focusOnCommit && this.focusOnCommit.webContents !== contents) this.focusOnCommit = undefined;
+    if (!this.focusOnCommit || this.focusOnCommit.panel.webContents === contents) return;
+    if (contents === this.deps.window.webContents && !this.windowActive) return;
+    this.focusOnCommit = undefined;
   }
 
   // A key pressed or a button pressed in any of the app's pages, as main observed it.
@@ -620,9 +632,17 @@ export class PanelViews {
   }
 
   committed(panel: DesktopPanel): void {
-    if (this.focusOnCommit !== panel) return;
+    if (this.focusOnCommit?.panel !== panel) return;
+    this.focusOnCommit.committed = true;
+    this.takeCommitFocus();
+  }
+
+  // X11 activates a window only after the focus that asked for it, and the activation focuses the window's own page.
+  private takeCommitFocus(): void {
+    const pending = this.focusOnCommit;
+    if (!pending?.committed || !this.deps.window.isFocused() || this.deps.window.isMinimized()) return;
     this.focusOnCommit = undefined;
-    if (this.selected() === panel) panel.webContents.focus();
+    if (this.selected() === pending.panel) pending.panel.webContents.focus();
   }
 
   // A popup open meanwhile keeps focus, and returns it where it was when it closes.
@@ -636,7 +656,7 @@ export class PanelViews {
   private focus(panel: DesktopPanel): void {
     this.launchFocus = undefined;
     this.focusOnCommit = undefined;
-    if (panel.webContents.getURL() === '') this.focusOnCommit = panel;
+    if (panel.webContents.getURL() === '') this.focusOnCommit = { panel, committed: false };
     else panel.webContents.focus();
   }
 

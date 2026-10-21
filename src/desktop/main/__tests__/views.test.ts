@@ -174,6 +174,46 @@ describe('PanelViews chats', () => {
     expect(tabs.selected()).toBe(first);
   });
 
+  // Electron focuses the window's own page as the window activates, before it reports the window's 'focus'.
+  it('keeps a chat\'s focus on commit through the window activating, but not through the window\'s own page taking focus later', () => {
+    const tabs = views();
+    const activating = tabs.create({ options: CHAT });
+    tabs.show(activating.panelId, { focus: true });
+    tabs.focused(window.webContents as never);
+    window.emit('focus');
+    activating.setHtml('<html></html>');
+    expect(contentsOf(activating).focus).toHaveBeenCalledTimes(1);
+
+    const left = tabs.create({ options: CHAT });
+    tabs.show(left.panelId, { focus: true });
+    tabs.focused(window.webContents as never);
+    left.setHtml('<html></html>');
+    expect(contentsOf(left).focus).not.toHaveBeenCalled();
+
+    window.emit('blur');
+    const reactivating = tabs.create({ options: CHAT });
+    tabs.show(reactivating.panelId, { focus: true });
+    tabs.focused(window.webContents as never);
+    window.emit('focus');
+    reactivating.setHtml('<html></html>');
+    expect(contentsOf(reactivating).focus).toHaveBeenCalledTimes(1);
+  });
+
+  // X11 activates a window only after the focus that asked for it, and the activation focuses the window's own page.
+  it('holds a chat\'s focus on commit while the window is unfocused, until the window is focused', () => {
+    const tabs = views();
+    window.isFocused = () => false;
+    const chat = tabs.create({ options: CHAT });
+    tabs.show(chat.panelId, { focus: true });
+    chat.setHtml('<html></html>');
+    expect(contentsOf(chat).focus).not.toHaveBeenCalled();
+
+    window.isFocused = () => true;
+    tabs.focused(window.webContents as never);
+    window.emit('focus');
+    expect(contentsOf(chat).focus).toHaveBeenCalledTimes(1);
+  });
+
   // The window's activation focuses the window's own page, so only the user's input or main's own focus drops a launch's.
   it('focuses a chat a launch shows once, when its page is ready in a focused window, whatever focus did meanwhile', () => {
     const tabs = views();

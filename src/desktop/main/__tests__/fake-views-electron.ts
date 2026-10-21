@@ -114,6 +114,7 @@ export function fakeWindow(width = 1200) {
         if (at >= 0) children.splice(at, 1);
       }),
     },
+    webContents: new EventEmitter(),
     isDestroyed: () => false,
     isFocused: (): boolean => true,
     isMinimized: (): boolean => false,
