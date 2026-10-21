@@ -22,6 +22,7 @@ import { commandStatus } from './terminal-commands';
 import { createTerminalMarks, type TerminalMarks, type XtermCommand } from './terminal-marks';
 import { isFontList, liveOptions } from './terminal-options';
 import { createPtyResize } from './pty-resize';
+import { GRID_CONTEXT } from '../layout/grid-context';
 import { terminalTheme, watchHostTheme } from './terminal-theme';
 import TerminalFind from './TerminalFind.vue';
 import TerminalLinkHover, { type LinkHover } from './TerminalLinkHover.vue';
@@ -45,6 +46,7 @@ const props = defineProps<{
 const emit = defineEmits<{ resizePane: [direction: 'left' | 'right', cellPx: number] }>();
 const { t } = useI18n();
 const store = inject(TERMINAL_STORE)!;
+const grid = inject(GRID_CONTEXT, undefined);
 
 const host = ref<HTMLElement | null>(null);
 const term = shallowRef<Terminal | null>(null);
@@ -98,6 +100,8 @@ function refit(): void {
   const xterm = term.value;
   if (!xterm || !fit || !props.shown || !screenVisible || !fit.proposeDimensions()) return;
   fit.fit();
+  // A glide's frames can be further apart than the settle time on a busy renderer, which would send a size it passes through.
+  if (grid?.tracksGliding.value) return;
   ptyResize.request({ cols: Math.min(xterm.cols, MAX_TERMINAL_COLS), rows: Math.min(xterm.rows, MAX_TERMINAL_ROWS) });
 }
 
@@ -617,6 +621,10 @@ watch(() => props.settings.decorationsEnabled, (enabled) => {
   void nextTick(refit);
 });
 useResizeObserver(host, refit);
+// The glide's last frame may already have been observed, so the size it settled at is sent from here.
+watch(() => grid?.tracksGliding.value, (gliding) => {
+  if (gliding === false) refit();
+});
 
 watch(() => props.screenReader, (enabled) => {
   if (term.value) term.value.options.screenReaderMode = enabled;

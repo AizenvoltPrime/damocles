@@ -66,6 +66,16 @@ const gridStyle = computed(() => {
   };
 });
 
+// The grid-template transitions running on the grid itself; a transition a pane's own content runs bubbles here too.
+const glidingTracks = new Set<string>();
+const tracksGliding = ref(false);
+function onTrackTransition(event: TransitionEvent, running: boolean): void {
+  if (event.target !== root.value || !event.propertyName.startsWith('grid-template-')) return;
+  if (running) glidingTracks.add(event.propertyName);
+  else glidingTracks.delete(event.propertyName);
+  tracksGliding.value = glidingTracks.size > 0;
+}
+
 function onSashStart(): void {
   sashDragging.value = true;
 }
@@ -227,7 +237,7 @@ function takeClick(): boolean {
   return take;
 }
 
-const context: GridContext = { dragging, press, takeClick, openMoveMenu };
+const context: GridContext = { dragging, press, takeClick, openMoveMenu, tracksGliding };
 provide(GRID_CONTEXT, context);
 onBeforeUnmount(() => release?.());
 
@@ -240,6 +250,9 @@ defineExpose({ chatSlot, root });
     data-testid="layout-grid"
     class="layout-grid relative grid min-h-0 min-w-0 flex-1"
     :style="gridStyle"
+    @transitionrun="onTrackTransition($event, true)"
+    @transitionend="onTrackTransition($event, false)"
+    @transitioncancel="onTrackTransition($event, false)"
   >
     <Sash
       v-if="areas.sideSash"

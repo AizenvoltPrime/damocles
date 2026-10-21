@@ -1,8 +1,10 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
-import { shallowRef } from 'vue';
+import { ref, shallowRef } from 'vue';
 import type { TerminalInfo } from '../../preload/terminal-channels';
+import { GRID_CONTEXT, type GridContext } from '../layout/grid-context';
+import { PTY_RESIZE_SETTLE_MS } from '../terminal/pty-resize';
 import TerminalView from '../terminal/TerminalView.vue';
 import { TERMINAL_STORE, type TerminalStore } from '../terminal/terminal-store';
 import { shellI18n } from '../i18n';
@@ -107,6 +109,25 @@ describe('terminal view pty size', () => {
     expect(api.terminal.resize).toHaveBeenCalledWith({ id: 'term-1', cols: 80, rows: 24 });
     expect(vi.mocked(api.terminal.resize).mock.invocationCallOrder[0]!).toBeLessThan(vi.mocked(api.terminal.input).mock.invocationCallOrder[0]!);
     typed.send('c');
+    expect(api.terminal.resize).toHaveBeenCalledTimes(1);
+  });
+
+  // A pane opening glides from no height, and on a busy renderer two frames can be further apart than the settle time.
+  it('sends no size while the grid tracks glide, and the size it settles at once they stop', async () => {
+    const api = fakeShellApi();
+    const store = { state: shallowRef(TERMINAL_STATE), focusRequest: shallowRef(null), pasteRequest: shallowRef(null), actionRequest: shallowRef(null), attach: () => () => undefined } as unknown as TerminalStore;
+    const tracksGliding = ref(true);
+    const grid = { dragging: ref(null), press: () => undefined, takeClick: () => true, openMoveMenu: async () => undefined, tracksGliding } satisfies GridContext;
+    wrapper = mount(TerminalView, {
+      props: { api, terminal: info, shown: true, settings: TERMINAL_STATE.settings, passKeys: [], platform: 'linux', splitShortcut: 'Ctrl+Shift+5', screenReader: false, windowsBuild: 0 },
+      global: { plugins: [shellI18n], provide: { [TERMINAL_STORE as symbol]: store, [GRID_CONTEXT as symbol]: grid } },
+    });
+    await flushPromises();
+    await new Promise((resolve) => setTimeout(resolve, PTY_RESIZE_SETTLE_MS * 2));
+    expect(api.terminal.resize).not.toHaveBeenCalled();
+
+    tracksGliding.value = false;
+    await vi.waitFor(() => expect(api.terminal.resize).toHaveBeenCalledWith({ id: 'term-1', cols: 80, rows: 24 }));
     expect(api.terminal.resize).toHaveBeenCalledTimes(1);
   });
 });

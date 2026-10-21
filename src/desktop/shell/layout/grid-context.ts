@@ -10,6 +10,8 @@ export interface GridContext {
   // whether the click that follows a press should open the menu, false after a drag
   takeClick(): boolean;
   openMoveMenu(pane: GridPane, anchor: HTMLElement): Promise<void>;
+  // true while the grid's tracks glide to a new size, through which a pane's content takes every size in between
+  readonly tracksGliding: Readonly<Ref<boolean>>;
 }
 
 export const GRID_CONTEXT: InjectionKey<GridContext> = Symbol('grid-context');
