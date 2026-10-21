@@ -65,6 +65,7 @@ import { CORE_READY_TIMEOUT_MS, restartDecision, RESTART_LIMIT } from './core-pr
 import type { CoreClient } from './core-client';
 import { BrowserTabs } from './browser-tabs';
 import { chatsToUnload, ChatWorkQueue } from './chat-pool';
+import { chatProjectKey } from './chat-project';
 import { isActiveActivity } from '../../shared/chat-retention';
 import { storedTitle } from './chat-title';
 import { parseUserDataDir } from './cli';
@@ -1823,13 +1824,11 @@ class DesktopApp {
     return this.sessionIdOf(panel) ?? `${NEW_CHAT_ID_PREFIX}${panel.panelId}`;
   }
 
-  // A chat whose folder left the project list is the default target's: core sets it up or moves it there (PanelManager.setUpHost, movePanelOffRemovedFolders).
   private projectOf(panel: DesktopPanel): string | undefined {
     const client = this.client();
     const key = client?.chatOfView(panel.panelId)?.folder.key ?? this.openedInProject.get(panel);
     if (key === undefined || !client) return key;
-    // a chat working in its worktree belongs to the worktree's project (AD12)
-    return client.projectOf(key)?.key ?? client.defaultTarget()?.key;
+    return chatProjectKey(key, client, (candidate) => this.projects.folders().some((folder) => folderKey(folder.fsPath) === candidate));
   }
 
   private loadedChat(chatId: string): DesktopPanel | undefined {
