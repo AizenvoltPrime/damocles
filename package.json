@@ -1238,7 +1238,7 @@
     "d3-zoom": "^3.0.0",
     "diff": "^8.0.2",
     "dompurify": "~3.3.2",
-    "electron": "44.7.0",
+    "electron": "44.9.0",
     "electron-builder": "26.15.7",
     "esbuild": "^0.24.0",
     "eslint": "^9.39.4",
