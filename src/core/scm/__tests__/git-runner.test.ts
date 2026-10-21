@@ -232,6 +232,28 @@ describe('git runner', () => {
     expect(spawned[1]!.kills).toEqual([]);
   });
 
+  it('turns on core.longpaths for every call, ahead of the call\'s own config pairs', () => {
+    expect(gitEnv({ kind: 'read' })).toMatchObject({ GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.longpaths', GIT_CONFIG_VALUE_0: 'true' });
+    expect(gitEnv({ kind: 'mutation', config: [['submodule.a=b.ignore', 'all']] })).toMatchObject({
+      GIT_CONFIG_COUNT: '2',
+      GIT_CONFIG_KEY_0: 'core.longpaths',
+      GIT_CONFIG_KEY_1: 'submodule.a=b.ignore',
+      GIT_CONFIG_VALUE_1: 'all',
+    });
+  });
+
+  it('passes core.longpaths as a -c option to git before 2.31, which ignores GIT_CONFIG_COUNT', async () => {
+    const fake = fakeLauncher();
+    const instance = createGitRunner({ git: { ...GIT, version: { major: 2, minor: 30, patch: 2 } }, log: { appendLine: () => undefined }, isTrusted: () => true, launcher: fake.launcher, now: () => 0 });
+    void instance.run(call({ args: ['worktree', 'add', '/wt'] }));
+    void instance.clone({ cwd: '/p', args: ['clone', 'https://example.com/r.git', 'r'], signal: new AbortController().signal });
+    await settle();
+    expect(fake.launched.map((entry) => entry.spec.args)).toEqual([
+      ['-c', 'core.longpaths=true', 'worktree', 'add', '/wt'],
+      ['-c', 'core.longpaths=true', 'clone', 'https://example.com/r.git', 'r'],
+    ]);
+  });
+
   it('adds the ceiling to an inherited one', () => {
     process.env['GIT_CEILING_DIRECTORIES'] = '/inherited';
     try {

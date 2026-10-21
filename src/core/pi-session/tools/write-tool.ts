@@ -1,12 +1,11 @@
 import { mkdir, readFile, stat, writeFile } from 'fs/promises';
 import type { ToolDefinition, WriteToolInput } from '@earendil-works/pi-coding-agent';
+import type { AnyToolDefinition } from './any-tool-definition';
 import type { PiCodingAgentModule } from '../pi-loader';
 import type { WriteDetails } from '../../../shared/types/file-patch';
 import { log } from '../../logger';
 import { FILE_PATCH_MAX_BYTES, filePatch } from './file-patch';
 
-/** pi's definitions carry their own schema and render types; only the erased shape is assignable both ways. */
-type AnyToolDefinition = ToolDefinition<any, any, any>;
 
 function isMissing(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';

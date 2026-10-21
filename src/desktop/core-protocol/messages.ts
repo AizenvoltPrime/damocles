@@ -256,6 +256,9 @@ export interface MainRequests {
   'e2e.slowedRenames': Call<{ readonly basename: string }, number>;
   // core's next core.shutdown never settles
   'e2e.holdShutdown': Call<object, void>;
+  // the first call starts core's recursive watch of folder; every call returns the paths it reported created
+  'e2e.watchProbe': Call<{ readonly folder: string }, readonly string[]>;
+  'e2e.stopWatchProbe': Call<{ readonly folder: string }, void>;
 }
 
 export type MentionTargetData = { readonly projectKey: string; readonly relativePath: string } | { readonly path: string };
@@ -727,6 +730,8 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'e2e.slowRenames': method(obj({ basename: filePath, delayMs: int(0, 60_000) }), done),
   'e2e.slowedRenames': method(obj({ basename: filePath }), int(0, Number.MAX_SAFE_INTEGER)),
   'e2e.holdShutdown': method(nothing, done),
+  'e2e.watchProbe': method(obj({ folder: filePath }), arr(filePath, MAX_ITEMS)),
+  'e2e.stopWatchProbe': method(obj({ folder: filePath }), done),
 };
 
 export const CORE_TO_MAIN: Tables<CoreToMain> = {

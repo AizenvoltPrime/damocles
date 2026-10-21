@@ -419,6 +419,14 @@ export class CoreClient implements Disposable {
     return this.request('e2e.holdShutdown', {});
   }
 
+  e2eWatchProbe(folder: string): Promise<readonly string[]> {
+    return this.request('e2e.watchProbe', { folder });
+  }
+
+  e2eStopWatchProbe(folder: string): Promise<void> {
+    return this.request('e2e.stopWatchProbe', { folder });
+  }
+
   private request<M extends keyof MainRequests>(method: M, params: Params<M>): Promise<Result<M>> {
     return this.endpoint.request(method, params as never) as Promise<Result<M>>;
   }

@@ -1,3 +1,5 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { expect, type ElectronApplication, type Locator, type Page } from '@playwright/test';
 import type { EditorOpenRequest, EditorOpenResult, ShellEditorState, ShellEditorTab } from '../../../src/desktop/preload/shell-channels';
 import { overlayPage, PRIMARY, pressKeys, SHELL_URL, shellPage } from './shell';
@@ -9,8 +11,55 @@ export const codeEditor = (shell: Page): Locator => shell.getByTestId('code-edit
 export const diffEditor = (shell: Page): Locator => shell.getByTestId('diff-editor');
 export const conflictBar = (shell: Page): Locator => shell.getByTestId('conflict-bar');
 export const filesTree = (shell: Page): Locator => shell.getByTestId('files-tree');
-export const filesRow = (shell: Page, path: string): Locator => shell.locator(`[data-testid="files-row"][data-tree-path="${path}"]`);
+export const filesRow = (shell: Page, treePath: string): Locator => shell.locator(`[data-testid="files-row"][data-tree-path="${treePath}"]`);
 export const quickPick = (overlay: Page): Locator => overlay.getByTestId('quick-pick');
+
+let watchProbeRuns = 0;
+
+/**
+ * Writes a fresh file in `folder`, the root of a Files tree, until Files lists one, then deletes them: a watcher that
+ * reported a later file has handled every change before it. A watcher's first scan records what it lists without reporting it.
+ */
+export async function untilWatchLive(shell: Page, folder: string): Promise<void> {
+  const prefix = `watch-probe-${process.pid}-${++watchProbeRuns}-`;
+  const probes = shell.locator(`[data-testid="files-row"][data-tree-path^="${prefix}"]`);
+  const written: string[] = [];
+  await expect.poll(async () => {
+    const file = path.join(folder, `${prefix}${written.length}.txt`);
+    fs.writeFileSync(file, 'x');
+    written.push(file);
+    return probes.count();
+  }, { timeout: 60_000, intervals: [1_000] }).toBeGreaterThan(0);
+  for (const file of written) fs.rmSync(file);
+  await expect(probes).toHaveCount(0);
+}
+
+type CoreWatchHooks = typeof globalThis & {
+  __damoclesE2e: { watchCoreProbe(folder: string): Promise<readonly string[]>; stopCoreWatchProbe(folder: string): Promise<void> };
+};
+
+/**
+ * Writes a fresh file in `folder` until Damocles Core's recursive watch of it reports one, then deletes them and stops the
+ * watch: core's watch of that root reported a later file, so it has handled every change before it. Needs DAMOCLES_E2E_HOOKS=1.
+ */
+export async function untilCoreWatchLive(app: ElectronApplication, folder: string): Promise<void> {
+  // Shares core's watch where core already watches this root; else its own subscription scans the folder, which must open no file either.
+  const prefix = `core-watch-probe-${process.pid}-${++watchProbeRuns}-`;
+  const reported = (): Promise<readonly string[]> => app.evaluate((_electron, f) => (globalThis as CoreWatchHooks).__damoclesE2e.watchCoreProbe(f), folder);
+  const written: string[] = [];
+  try {
+    await reported();
+    await expect.poll(async () => {
+      const file = path.join(folder, `${prefix}${written.length}.txt`);
+      fs.writeFileSync(file, 'x');
+      written.push(file);
+      return (await reported()).some((created) => path.basename(created).startsWith(prefix));
+    }, { timeout: 60_000, intervals: [1_000] }).toBe(true);
+  } finally {
+    for (const file of written) fs.rmSync(file, { force: true });
+    await app.evaluate((_electron, f) => (globalThis as CoreWatchHooks).__damoclesE2e.stopCoreWatchProbe(f), folder);
+  }
+}
 
 /** Main's editor tabs and active tab, read through the shell's own preload. */
 export async function editorState(app: ElectronApplication): Promise<ShellEditorState> {

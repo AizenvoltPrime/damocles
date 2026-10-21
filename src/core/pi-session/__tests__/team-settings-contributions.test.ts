@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_MODELS, TEAM_EFFORT_LEVELS } from '../../../shared/types/constants';
-import { readContributedConfiguration } from '../../config/contributed-configuration';
+import { readContributedConfiguration } from '../../config/read-contributed-configuration';
 import { MEMORY_JUDGE_CLASSIFIERS } from '../../../shared/memory-judge';
 
 /**

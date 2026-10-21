@@ -6,7 +6,8 @@ import { createFakePlatform, type FakeFileWatcherFactory, type FakeNotificationS
 import type { Disposable } from '../../../platform/disposable';
 import type { TrustService } from '../../../platform/trust-service';
 import type { SettingsFolder } from '../../../platform/settings-store';
-import { parseContributedConfiguration, readContributedConfiguration } from '../../../core/config/contributed-configuration';
+import { parseContributedConfiguration } from '../../../core/config/contributed-configuration';
+import { readContributedConfiguration } from '../../../core/config/read-contributed-configuration';
 import { updateConfigAtEffectiveScope } from '../../../core/chat-panel/settings-manager/utils';
 import { DesktopSettingsStore, EMPTY_SETTINGS_RETRY_MS } from '../settings-store';
 import { DESKTOP_CONFIGURATION, RESTORE_LAYOUT_SETTING, TERMINAL_PROFILES_SETTING, THEME_SETTING } from '../desktop-configuration';

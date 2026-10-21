@@ -88,7 +88,8 @@ test('text typed while Ctrl+S is being written keeps the tab dirty, and the next
   const shell = await shellPage(app);
   // Main's in-place write of held.ts waits at its open until the test releases it, and reports when its handle closed.
   await app.evaluate((_electron, target) => {
-    const fs = process.getBuiltinModule('node:fs').promises;
+    // Main's bundled code reads through original-fs (scripts/esbuild-original-fs.mjs).
+    const fs = (process.getBuiltinModule('original-fs') as typeof import('node:fs')).promises;
     const path = process.getBuiltinModule('node:path');
     const open = fs.open.bind(fs);
     const hold = globalThis as { __e2eHeld?: boolean; __e2eRelease?: () => void; __e2eClosed?: boolean };

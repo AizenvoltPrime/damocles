@@ -915,6 +915,28 @@ describe.skipIf(!HAS_GIT)('worktree chats against real git', { timeout: 120_000 
     await expect(removeWorktree(record, run, registry, { deleteBranch: false, force: false })).rejects.toThrow(record.worktreeRoot);
     expect(registry.get(record.id)?.deletedAt).toBeUndefined();
   });
+
+  // Windows' 260-character limit: a path that fits in the project passes it in the deeper worktree. Fails without
+  // core.longpaths on Windows only; elsewhere it is a deep-path smoke test, and git-runner.test.ts covers the environment.
+  it('creates, reads and removes a worktree whose paths pass 260 characters only there', async () => {
+    const project = makeRepo(folder('longpaths'));
+    const registry = new WorktreeRegistry({ rootDir: path.join(folder('longpaths-wt'), 'w'.repeat(60)), watcherFactory: watchers, log: () => undefined });
+    registries.push(registry);
+    const run = runner();
+    const tracked = `${'d'.repeat(240 - project.length - 1)}/f.txt`;
+    write(path.join(project, tracked), 'x\n');
+    write(path.join(project, '.gitignore'), 'deep/\n');
+    commitAll(project, 'deep file');
+    const record = await create(project, registry, run);
+    expect(path.join(record.worktreeRoot, tracked).length).toBeGreaterThan(260);
+    expect(fs.readFileSync(path.join(record.worktreeRoot, tracked), 'utf8')).toBe('x\n');
+    const status = await run.run({ project, cwd: record.worktreeRoot, args: ['status', '--porcelain'], kind: 'status' });
+    expect(status.stdout.toString('utf8')).toBe('');
+    write(path.join(record.worktreeRoot, 'deep', 'e'.repeat(120), 'f'.repeat(120), 'g.bin'), 'x');
+    await removeWorktree(record, run, registry, { deleteBranch: true, force: true });
+    expect(fs.existsSync(record.worktreeRoot)).toBe(false);
+    expect(registry.get(record.id)?.deletedAt).toBeTypeOf('number');
+  });
 });
 
 describe('setup commands (D32)', () => {

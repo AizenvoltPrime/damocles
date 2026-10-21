@@ -12,7 +12,7 @@ import { BACKGROUND_EFFORT_SETTING, BACKGROUND_MODEL_SETTING } from "../../../pi
 import { MEMORY_JUDGE_EFFORT_SETTING, MEMORY_JUDGE_SETTING, isKnownMemoryJudgeChoice } from "../../../../shared/memory-judge";
 import { readExploreSetting } from "../../../pi-session/subagents/cheap-model";
 import type { SettingSource } from "../../../../shared/types/messages";
-import { readContributedConfiguration } from "../../../config/contributed-configuration";
+import { readContributedConfiguration } from "../../../config/read-contributed-configuration";
 import { CHAT_SETTING_KEYS } from "../../../config/chat-settings";
 import { t } from "../../../l10n";
 

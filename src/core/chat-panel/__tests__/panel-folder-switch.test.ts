@@ -389,6 +389,28 @@ describe('permission resets on a confirmed switch', () => {
   });
 });
 
+// A hand-off or a worktree chat's first send continues the chat's conversation in another folder.
+describe('the permissions a chat move keeps', () => {
+  it.each([
+    ['off, under a YOLO default', true, false],
+    ['on, under a no-YOLO default', false, true],
+  ])('keeps YOLO the user turned %s, and the mode, and drops the session skill approvals of the folder it left', async (_name, defaultYolo, chosen) => {
+    h = createHarness([folderEntry(A), folderEntry(B)]);
+    await h.platform.settings.update('damocles.dangerouslySkipPermissions', defaultYolo, 'user');
+    const { panelId } = await openPanel();
+    const handler = h.instance(panelId).permissionHandler;
+    expect(handler.getDangerouslySkipPermissions()).toBe(defaultYolo);
+    handler.setPermissionMode('default');
+    handler.setDangerouslySkipPermissions(chosen);
+    handler.preApproveSkill('deploy');
+
+    await h.manager.switchPanelFolder(panelId, folderKey(B), 'chatMove');
+
+    expect(handler.getPermissions()).toEqual({ permissionMode: 'default', dangerouslySkipPermissions: chosen });
+    expect((handler as unknown as { state: { autoApprovedSkills: Set<string> } }).state.autoApprovedSkills.size).toBe(0);
+  });
+});
+
 // A desktop engine restart reopens each chat with what its ended core published; the user's defaults here would grant more.
 describe('the permissions a host restart hands a restored panel', () => {
   const ASK_NO_YOLO = { permissionMode: 'default', dangerouslySkipPermissions: false } as const;

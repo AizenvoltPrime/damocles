@@ -264,6 +264,7 @@ const H = vi.hoisted(() => {
     createGrepToolDefinition: vi.fn(() => ({ name: 'grep', label: 'grep', description: 'pi grep', parameters: {}, execute: vi.fn() })),
     createFindToolDefinition: vi.fn(() => ({ name: 'find', label: 'find', description: 'pi find', parameters: {}, execute: vi.fn() })),
     createWriteToolDefinition: vi.fn(() => ({ name: 'write', label: 'write', description: 'pi write', parameters: {}, execute: vi.fn() })),
+    createLsToolDefinition: vi.fn(() => ({ name: 'ls', label: 'ls', description: 'pi ls', parameters: {}, execute: vi.fn() })),
   };
 
   return {
@@ -5503,6 +5504,7 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
       for (const name of OVERRIDE_TOOL_NAMES) expect(names, `${label} ${name}`).toContain(name);
     }
     expect(OVERRIDE_TOOL_NAMES).toContain('write');
+    expect(OVERRIDE_TOOL_NAMES).toContain('ls');
     expect(main.excludeTools).toEqual([...PI_EXCLUDED_TOOLS]);
     for (const name of OVERRIDE_TOOL_NAMES) expect(PI_EXCLUDED_TOOLS).not.toContain(name);
 

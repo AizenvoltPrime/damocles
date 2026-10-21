@@ -1,9 +1,15 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Page } from '@playwright/test';
+import { writeAsar } from '../../scripts/asar-archive.mjs';
+import { appHolders } from './support/app';
+import { ARCHIVE } from './support/asar';
+import { filesRow, untilCoreWatchLive, untilWatchLive } from './support/editor';
 import { activeChat, expect, nextChat, test } from './support/fixtures';
 import { seedStubModel } from './support/hermetic';
-import { chatRequests, startOpenAIStub, type OpenAIStub } from './support/openai-stub';
+import { chatRequests, lastToolResultRequest, startOpenAIStub, type OpenAIStub } from './support/openai-stub';
+import { openProjectChat } from './support/screenshots';
+import { shellPage } from './support/shell';
 import { addProject, chatInput, hostMessages, postFromWebview, recordHostMessages, sendAndAwaitEcho } from './support/ui';
 
 const MCP_SERVER = path.join(__dirname, 'support', 'mcp-stdio-server.cjs');
@@ -35,14 +41,6 @@ async function untilRequestContains(tab: Page, stub: OpenAIStub, label: string, 
     await expect.poll(turnsDone).toBe(before + 1);
     return requestFor(stub, prompt).includes(marker);
   }, { timeout: 60_000, intervals: [0] }).toBe(true);
-}
-
-// The request that carried a tool result back to the model; title generation and other sub-calls carry none.
-function lastToolResultRequest(stub: OpenAIStub): string {
-  const bodies = chatRequests(stub).map((r) => JSON.stringify(r.body)).filter((body) => body.includes('"role":"tool"'));
-  const last = bodies.at(-1);
-  if (last === undefined) throw new Error('no chat request carried a tool result');
-  return last;
 }
 
 async function hostMessageNames(tab: Page, type: string, list: 'servers' | 'agents' | 'commands'): Promise<string[]> {
@@ -125,4 +123,25 @@ test('watchers: a permission rule written to a trusted project applies to the ne
   } finally {
     await stub.close();
   }
+});
+
+test('watchers: an .asar archive in an open project is a file, the app holds no handle to it, and it deletes while the app runs', async ({ home, launch }) => {
+  fs.writeFileSync(path.join(home.project, 'present.txt'), 'x');
+  const { app } = await launch({ env: { DAMOCLES_E2E_HOOKS: '1' } });
+  await openProjectChat(app, home.project);
+  const shell = await shellPage(app);
+  await expect(filesRow(shell, 'present.txt')).toBeVisible({ timeout: 30_000 });
+  await untilWatchLive(shell, home.project);
+
+  const archive = path.join(home.project, 'app.asar');
+  writeAsar(archive, ARCHIVE);
+  await expect(filesRow(shell, 'app.asar')).toBeVisible();
+  await expect(filesRow(shell, 'app.asar')).not.toHaveAttribute('aria-expanded');
+  // A later file reported proves the watch handled the archive's creation: core's watch of this root, then main's Files watcher.
+  // Neither proves work a listener defers past the event, such as source control's debounced refresh.
+  await untilCoreWatchLive(app, home.project);
+  await untilWatchLive(shell, home.project);
+  expect(await appHolders(app, [archive])).toEqual([]);
+  fs.rmSync(archive);
+  await expect(filesRow(shell, 'app.asar')).toHaveCount(0);
 });

@@ -1,13 +1,11 @@
 // scripts/generate-settings-schema.mjs imports this file through Node's type stripping: erasable TypeScript and node: imports only.
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 
 interface PropertySchema {
   readonly default?: unknown;
   readonly scope?: string;
 }
 
-interface Manifest {
+export interface Manifest {
   readonly capabilities?: { readonly untrustedWorkspaces?: { readonly restrictedConfigurations?: readonly string[] } };
   readonly contributes?: {
     readonly configuration?: { readonly properties?: Record<string, PropertySchema> } | ReadonlyArray<{ readonly properties?: Record<string, PropertySchema> }>;
@@ -39,16 +37,4 @@ export function parseContributedConfiguration(manifest: Manifest): ContributedCo
     }
   }
   return { keys, defaults, userOnlyKeys };
-}
-
-const cache = new Map<string, ContributedConfiguration>();
-
-/** The settings package.json under resourceRoot contributes; read once per root. */
-export function readContributedConfiguration(resourceRoot: string): ContributedConfiguration {
-  const cached = cache.get(resourceRoot);
-  if (cached) return cached;
-  const manifest = JSON.parse(fs.readFileSync(path.join(resourceRoot, 'package.json'), 'utf8')) as Manifest;
-  const parsed = parseContributedConfiguration(manifest);
-  cache.set(resourceRoot, parsed);
-  return parsed;
 }

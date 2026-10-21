@@ -113,7 +113,8 @@ test('a quit right after a reply waits for the chat\'s saved state, so the next 
     const chat = await activeChat(desktop.app);
     await expect(chatInput(chat)).toBeVisible();
     await desktop.app.evaluate((_electron, delay) => {
-      const fs = process.getBuiltinModule('node:fs').promises;
+      // Main's bundled code reads through original-fs (scripts/esbuild-original-fs.mjs).
+      const fs = (process.getBuiltinModule('original-fs') as typeof import('node:fs')).promises;
       const rename = fs.rename.bind(fs);
       fs.rename = async (from, to) => {
         if (String(to).endsWith('panels.json')) await new Promise((resolve) => setTimeout(resolve, delay));
@@ -138,7 +139,8 @@ test('a quit during a slowed trust write waits for it, so the next launch still 
   let desktop = await launch();
   await expect(chatInput(await activeChat(desktop.app))).toBeVisible();
   await desktop.app.evaluate((_electron, delay) => {
-    const fs = process.getBuiltinModule('node:fs').promises;
+    // Main's bundled code reads through original-fs (scripts/esbuild-original-fs.mjs).
+    const fs = (process.getBuiltinModule('original-fs') as typeof import('node:fs')).promises;
     const rename = fs.rename.bind(fs);
     const held = globalThis as { __e2eSlowedRenames?: number };
     fs.rename = async (from, to) => {

@@ -34,7 +34,7 @@
       "count": 3
     }
   },
-  "src/core/config/contributed-configuration.ts": {
+  "src/core/config/read-contributed-configuration.ts": {
     "damocles/no-sync": {
       "count": 1
     }

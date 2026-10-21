@@ -153,3 +153,11 @@ export async function startOpenAIStub(options: { tls?: { cert: string; key: stri
 export function chatRequests(stub: OpenAIStub): RecordedRequest[] {
   return stub.requests.filter((r) => r.method === 'POST' && r.url.endsWith('/chat/completions'));
 }
+
+/** The last request that carried a tool result back to the model; title generation and other sub-calls carry none. */
+export function lastToolResultRequest(stub: OpenAIStub): string {
+  const bodies = chatRequests(stub).map((r) => JSON.stringify(r.body)).filter((body) => body.includes('"role":"tool"'));
+  const last = bodies.at(-1);
+  if (last === undefined) throw new Error('no chat request carried a tool result');
+  return last;
+}

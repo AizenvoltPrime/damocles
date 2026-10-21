@@ -74,7 +74,10 @@ const ICON_MIME_TYPES: Readonly<Record<string, string>> = {
   '.jpeg': 'image/jpeg',
 };
 
-/** The data: URL of an icon file, or undefined for an unknown type or a file over MAX_ICON_BYTES. */
+/**
+ * The data: URL of an icon file, or undefined for an unknown type or a file over MAX_ICON_BYTES. Reads through original-fs, so
+ * a file packed in app.asar needs resource-fs.ts instead.
+ */
 export async function iconDataUrl(iconPath: string): Promise<string | undefined> {
   const mime = ICON_MIME_TYPES[path.extname(iconPath).toLowerCase()];
   if (mime === undefined) return undefined;

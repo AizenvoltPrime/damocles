@@ -4,7 +4,7 @@ import type { BrowserWindow } from 'electron';
 import type { LogSinkFactory } from '../../../platform/log-sink';
 import type { NotificationService } from '../../../platform/notification-service';
 import type { WindowService } from '../../../platform/window-service';
-import { readContributedConfiguration } from '../../../core/config/contributed-configuration';
+import { readContributedConfiguration } from '../../../core/config/read-contributed-configuration';
 import { DAMOCLES_HOME_DIR } from '../../../core/paths';
 import { withVolatileSecretsNotice } from '../../../core/volatile-secrets-notice';
 import { defaultProjectPath, DEFAULT_WORKSPACE_FOLDER_STATE_KEY } from '../../../core/workspace-folders/folder-registry';

@@ -1,13 +1,17 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Locator, Page } from '@playwright/test';
+import { writeAsar } from '../../scripts/asar-archive.mjs';
+import { appHolders } from './support/app';
+import { ARCHIVE } from './support/asar';
+import { describeLeftovers } from './support/file-holders';
 import { activeChat, expect, nextChat, panelIdOf, selectChatPage, test } from './support/fixtures';
 import { git } from './support/git';
 import { chatRequests } from './support/openai-stub';
 import { menuItem, readyOverlay } from './support/overlay';
 import { answerToast, overlayPage, popupPage, popupToasts, pressKeys, PRIMARY, recordedToasts, recordToasts, shellPage, shellState } from './support/shell';
 import { openProjectChat } from './support/screenshots';
-import { editorTab, openInEditor, quickPick } from './support/editor';
+import { editorTab, filesRow, openInEditor, quickPick, untilCoreWatchLive, untilWatchLive } from './support/editor';
 import { setContentSize } from './support/settings';
 import { scmSection, setSection } from './support/scm';
 import { activeTerminal, openTerminal, runInTerminal } from './support/terminal';
@@ -19,7 +23,8 @@ import { submenuItem } from './support/scm';
 
 // Worktree chats past the first send (plan slice 12a): MCP in a worktree chat, the held prompt, Delete
 // with a running terminal, Compare with Workspace, a restart, removing and re-adding the project, removing it while a first
-// message waits, the palette's hand-off commands, the leftover report, and a worktree removed in a terminal.
+// message waits, the palette's hand-off commands, the leftover report, a worktree removed in a terminal, Delete of a leftover
+// or a watched worktree holding .asar archives, and the .asar files a new worktree gets.
 
 const MCP_SERVER = path.join(__dirname, 'support', 'mcp-stdio-server.cjs');
 const windows = process.platform === 'win32';
@@ -198,6 +203,96 @@ test('Delete of a worktree a process outside Damocles holds open keeps it regist
     } finally {
       await holder.release();
     }
+  });
+});
+
+test('Delete of a leftover worktree holding .asar archives removes it (D33)', async ({ foreground: _foreground, home, launch }) => {
+  const repo = await worktreeRepo(home, path.join(home.root, 'acme'));
+  await withStub(home, SKIP_PERMISSIONS, async (stub) => {
+    stub.replies.push({ chunks: ['Worktree ready'] });
+    const { app } = await launch();
+    await openProjectChat(app, repo.project);
+    const tab = await optIn(app);
+    await turn(tab, 'Leftover with archives', 'Worktree ready');
+    // The turn's checkpoint runs git in the worktree after the reply shows.
+    await expect(tab.getByTestId('user-message-rewind').first()).toBeVisible();
+    const [record] = liveRecords(home);
+    const wt = record!.worktreeRoot;
+    fs.mkdirSync(path.join(wt, 'node_modules', 'electron', 'dist', 'resources'), { recursive: true });
+    writeAsar(path.join(wt, 'app.asar'), ARCHIVE);
+    writeAsar(path.join(wt, 'node_modules', 'electron', 'dist', 'resources', 'default_app.asar'), ARCHIVE);
+    fs.rmSync(path.join(wt, '.git'));
+
+    const shell = await shellPage(app);
+    const overlay = await openRowWorktreeMenu(app, chatRow(shell, 'Leftover with archives'));
+    await submenuItem(overlay, 'worktree:delete').click();
+    await expect(messageDialog(overlay)).toContainText(`The folder of the worktree "${wt}" is no longer a git worktree. Delete it and everything in it?`);
+    await messageDialog(overlay).getByTestId('overlay-message-action-0').click();
+    await expect.poll(() => fs.existsSync(wt), { timeout: 60_000 }).toBe(false);
+    await expect.poll(() => liveRecords(home)).toEqual([]);
+    await expect(chatRow(shell, 'Leftover with archives').getByTestId('chat-worktree-line')).toHaveText('Worktree deleted', { timeout: 30_000 });
+  });
+});
+
+test('Delete of a worktree whose folder holds an .asar the app watched removes it on the first try (D33)', async ({ foreground: _foreground, home, launch }) => {
+  const repo = await worktreeRepo(home, path.join(home.root, 'acme'), { files: { 'a.ts': 'export const a = 1;\n', '.gitignore': '*.asar\n' } });
+  await withStub(home, SKIP_PERMISSIONS, async (stub) => {
+    stub.replies.push({ chunks: ['Worktree ready'] });
+    const { app } = await launch({ env: { DAMOCLES_E2E_HOOKS: '1' } });
+    await openProjectChat(app, repo.project);
+    const tab = await optIn(app);
+    await turn(tab, 'Watched archive', 'Worktree ready');
+    await expect(tab.getByTestId('user-message-rewind').first()).toBeVisible();
+    const [record] = liveRecords(home);
+    const wt = record!.worktreeRoot;
+    const shell = await shellPage(app);
+    await expect(filesChip(shell)).toHaveAttribute('data-shown', 'worktree');
+    await expect(filesRow(shell, 'a.ts')).toBeVisible();
+    await untilWatchLive(shell, record!.workingFolder);
+    const archive = path.join(record!.workingFolder, 'app.asar');
+    writeAsar(archive, ARCHIVE);
+    await expect(filesRow(shell, 'app.asar')).toBeVisible();
+    // A later file reported proves the watch handled the archive's creation: core's watch of this root, then main's Files watcher.
+    // Neither proves work a listener defers past the event, such as source control's debounced refresh.
+    await untilCoreWatchLive(app, record!.workingFolder);
+    await untilWatchLive(shell, record!.workingFolder);
+    expect(await appHolders(app, [archive])).toEqual([]);
+
+    await recordToasts(app);
+    const overlay = await openRowWorktreeMenu(app, chatRow(shell, 'Watched archive'));
+    await submenuItem(overlay, 'worktree:delete').click();
+    await overlay.locator('[data-dialog="delete"] [data-testid="worktree-dialog"]').getByTestId('worktree-dialog-delete').click();
+    let failure: string | undefined;
+    await expect.poll(async () => {
+      failure = (await recordedToasts(app)).find((toast) => toast.message.includes(wt))?.message;
+      return failure !== undefined || !fs.existsSync(wt);
+    }, { timeout: 60_000 }).toBe(true);
+    if (failure !== undefined) throw new Error(`${failure}\n${describeLeftovers(wt)}`);
+    await expect.poll(() => liveRecords(home)).toEqual([]);
+    expect(registryRecords(home).find((each) => each.id === record!.id)?.deletedAt).toBeDefined();
+  });
+});
+
+test('A new worktree gets the .asar files .worktreeinclude names and the untracked ones it brings, byte for byte (D32, D63)', async ({ foreground: _foreground, home, launch }) => {
+  const repo = await worktreeRepo(home, path.join(home.root, 'acme'), { worktreeInclude: 'vendor/**\n', ignored: { 'vendor/app.asar': 'replaced below' } });
+  const included = path.join(repo.root, 'vendor', 'app.asar');
+  const untracked = path.join(repo.root, 'inbox', 'new.asar');
+  writeAsar(included, { ...ARCHIVE, 'included.txt': 'included' });
+  fs.mkdirSync(path.dirname(untracked), { recursive: true });
+  writeAsar(untracked, { ...ARCHIVE, 'untracked.txt': 'untracked' });
+  await withStub(home, SKIP_PERMISSIONS, async (stub) => {
+    stub.replies.push({ chunks: ['Worktree ready'] });
+    const { app } = await launch();
+    await openProjectChat(app, repo.project);
+    const tab = await optIn(app, { bring: true });
+    await turn(tab, 'Bring the archives', 'Worktree ready');
+    const [record] = liveRecords(home);
+    const copies = [path.join(record!.worktreeRoot, 'vendor', 'app.asar'), path.join(record!.worktreeRoot, 'inbox', 'new.asar')];
+    for (const [copy, source] of [[copies[0]!, included], [copies[1]!, untracked]] as const) {
+      expect(fs.statSync(copy, { throwIfNoEntry: false })?.isFile(), copy).toBe(true);
+      expect(fs.readFileSync(copy).equals(fs.readFileSync(source)), copy).toBe(true);
+    }
+    expect(await appHolders(app, [included, untracked, ...copies])).toEqual([]);
   });
 });
 

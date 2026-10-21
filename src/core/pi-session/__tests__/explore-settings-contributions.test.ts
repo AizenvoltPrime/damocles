@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_MODELS, TEAM_EFFORT_LEVELS } from '../../../shared/types/constants';
-import { readContributedConfiguration } from '../../config/contributed-configuration';
+import { readContributedConfiguration } from '../../config/read-contributed-configuration';
 
 /** Static-JSON drift guard: the `damocles.explore.*` enums must track `DEFAULT_MODELS` and the effort levels. */
 const packageJsonUrl = new URL('../../../../package.json', import.meta.url);

@@ -3,6 +3,7 @@ import { access } from 'node:fs/promises';
 import { constants as osConstants } from 'node:os';
 import { Type } from 'typebox';
 import type { BashOperations, ToolDefinition } from '@earendil-works/pi-coding-agent';
+import type { AnyToolDefinition } from './any-tool-definition';
 import type { PiCodingAgentModule } from '../pi-loader';
 import { processLauncher, type LaunchedProcess, type SessionJob } from '../../process-launcher';
 import { findBash } from '../../system-tools';
@@ -21,8 +22,6 @@ export interface ShellOptions {
   env?: Readonly<Record<string, string>>;
 }
 
-/** pi's bash definition carries its own schema and render types; only the erased shape is assignable both ways. */
-type AnyToolDefinition = ToolDefinition<any, any, any>;
 
 export interface BashToolDeps {
   /** Read per call, so a settings edit takes effect without reloading the window. */

@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { isMainThread, parentPort, workerData } from 'node:worker_threads';
 import type { StoredSession } from '@shared/types/session';
 import { installWorkerLogRelay, log } from '../../../logger';
+import { readFile } from '../../../resource-fs';
 import { isCorruption } from '../../../usage-stats/database';
 import { PI_PROMPT_HISTORY_CAP } from '../metadata';
 import { createInlineParser, createThreadParser, isParseWorkerData, serveParser, type SessionFileParser } from './parser';
@@ -97,7 +98,7 @@ export function createMetaIndexRuntime(send: (event: MetaIndexEvent) => void, op
 
   // pi's package.json is read, never pi itself: a warm list never loads pi.
   const ready: Promise<void> = (async () => {
-    const pkg = JSON.parse(await fsp.readFile(path.join(options.piPackageDir, 'package.json'), 'utf8')) as { version: string };
+    const pkg = JSON.parse(await readFile(path.join(options.piPackageDir, 'package.json'), 'utf8')) as { version: string };
     piVersion = pkg.version;
     store = openMetaStore(options.cacheDir, piVersion);
     void pruneCacheDir(options.cacheDir, indexFileName(piVersion));

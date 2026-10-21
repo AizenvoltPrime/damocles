@@ -140,6 +140,14 @@ const PROCESS_BAN = {
     { selector: "CallExpression[callee.name='require'][arguments.0.value=/^(?:node:)?child_process$|^cross-spawn$/]", message: NO_PROCESS_START },
   ],
 };
+// The build maps every bundled fs import to original-fs under Electron (scripts/esbuild-original-fs.mjs); a runtime lookup
+// bypasses it. An esquery regex cannot contain a raw slash, hence \u002F.
+const NO_FS_BUILTIN = 'Import fs; the build maps it to original-fs under Electron (scripts/esbuild-original-fs.mjs, docs/invariants.md "Desktop packaging and updates").';
+const FS_MODULE = '/^(?:node:)?(?:fs(?:\\u002Fpromises)?|original-fs)$/';
+const FS_BUILTIN_BAN = [
+  { selector: `CallExpression[callee.property.name='getBuiltinModule'][arguments.0.value=${FS_MODULE}]`, message: NO_FS_BUILTIN },
+  { selector: `CallExpression[callee.callee.name='createRequire'][arguments.0.value=${FS_MODULE}]`, message: NO_FS_BUILTIN },
+];
 // Files that may start a process directly, each a separate thread or process where a start blocks no UI or chat thread, and
 // tests, which drive real processes. A later block's option list replaces an earlier one for the files it matches, so the
 // blocks that allow them restate their tree's electron and vscode bans; an `ignores` on the banning blocks would drop those.
@@ -172,9 +180,9 @@ export const MAIN_CORE_IMPORTS = [
   'browser/net-guard',
   'chat-panel/ripgrep',
   'chat-panel/settings-file-editor',
-  'config/contributed-configuration',
   'config/json-config-write',
   'config/legacy-settings-migrations',
+  'config/read-contributed-configuration',
   'config/retired-secrets',
   'config/settings-file',
   'executable-path',
@@ -189,6 +197,7 @@ export const MAIN_CORE_IMPORTS = [
   'platform-host',
   'process-launcher',
   'quick-open/fuzzy-match',
+  'resource-fs',
   'scm/artifacts',
   'scm/branches',
   'scm/discovery',
@@ -367,7 +376,7 @@ export default [
         paths: [{ name: 'vscode', message: VSCODE_ONLY }, OUTSIDE_DESKTOP.path, ...PROCESS_BAN.paths],
         patterns: [OUTSIDE_DESKTOP.pattern],
       }],
-      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...OUTSIDE_DESKTOP.syntax, ...PROCESS_BAN.syntax],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...OUTSIDE_DESKTOP.syntax, ...PROCESS_BAN.syntax, ...FS_BUILTIN_BAN],
     },
   },
   {
@@ -376,7 +385,7 @@ export default [
       '@typescript-eslint/no-restricted-imports': ['error', {
         paths: [{ name: 'vscode', message: VSCODE_ONLY }, ...PROCESS_BAN.paths],
       }],
-      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...PROCESS_BAN.syntax],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...PROCESS_BAN.syntax, ...FS_BUILTIN_BAN],
     },
   },
   {
@@ -387,7 +396,7 @@ export default [
         paths: [{ name: 'vscode', message: VSCODE_ONLY }, ...PROCESS_BAN.paths],
         patterns: [CORE_FROM_MAIN.pattern, CORE_HOST_FROM_MAIN.pattern],
       }],
-      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...PROCESS_BAN.syntax, ...CORE_FROM_MAIN.syntax, ...CORE_HOST_FROM_MAIN.syntax],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...PROCESS_BAN.syntax, ...CORE_FROM_MAIN.syntax, ...CORE_HOST_FROM_MAIN.syntax, ...FS_BUILTIN_BAN],
       // verbatimModuleSyntax keeps `import { type X } from 'm'` as `import 'm'`, which bundles m into main
       '@typescript-eslint/no-import-type-side-effects': 'error',
     },
@@ -399,7 +408,7 @@ export default [
         paths: [{ name: 'vscode', message: VSCODE_ONLY }, IN_WORKER.path, ...PROCESS_BAN.paths],
         patterns: [IN_WORKER.pattern],
       }],
-      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_WORKER.syntax, ...PROCESS_BAN.syntax],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_WORKER.syntax, ...PROCESS_BAN.syntax, ...FS_BUILTIN_BAN],
     },
   },
   {
@@ -410,7 +419,7 @@ export default [
         paths: [{ name: 'vscode', message: VSCODE_ONLY }, IN_CORE_HOST.path, ...PROCESS_BAN.paths],
         patterns: [IN_CORE_HOST.pattern, MAIN_FROM_CORE.pattern],
       }],
-      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_CORE_HOST.syntax, ...MAIN_FROM_CORE.syntax, ...PROCESS_BAN.syntax],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_CORE_HOST.syntax, ...MAIN_FROM_CORE.syntax, ...PROCESS_BAN.syntax, ...FS_BUILTIN_BAN],
     },
   },
   {
@@ -430,7 +439,7 @@ export default [
         paths: [OUTSIDE_DESKTOP.path, ...PROCESS_BAN.paths],
         patterns: [OUTSIDE_DESKTOP.pattern],
       }],
-      'no-restricted-syntax': ['error', ...OUTSIDE_DESKTOP.syntax, ...PROCESS_BAN.syntax],
+      'no-restricted-syntax': ['error', ...OUTSIDE_DESKTOP.syntax, ...PROCESS_BAN.syntax, ...FS_BUILTIN_BAN],
     },
   },
   {
@@ -441,7 +450,7 @@ export default [
         paths: [{ name: 'vscode', message: VSCODE_ONLY }, OUTSIDE_DESKTOP.path],
         patterns: [OUTSIDE_DESKTOP.pattern],
       }],
-      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...OUTSIDE_DESKTOP.syntax],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...OUTSIDE_DESKTOP.syntax, ...FS_BUILTIN_BAN],
     },
   },
   {
@@ -452,7 +461,7 @@ export default [
       '@typescript-eslint/no-restricted-imports': ['error', {
         paths: [{ name: 'vscode', message: VSCODE_ONLY }],
       }],
-      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...FS_BUILTIN_BAN],
     },
   },
   {
@@ -472,7 +481,7 @@ export default [
         paths: [{ name: 'vscode', message: VSCODE_ONLY }, IN_WORKER.path],
         patterns: [IN_WORKER.pattern],
       }],
-      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_WORKER.syntax],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_WORKER.syntax, ...FS_BUILTIN_BAN],
     },
   },
   {
@@ -482,7 +491,7 @@ export default [
         paths: [{ name: 'vscode', message: VSCODE_ONLY }, IN_CORE_HOST.path],
         patterns: [IN_CORE_HOST.pattern, MAIN_FROM_CORE.pattern],
       }],
-      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_CORE_HOST.syntax, ...MAIN_FROM_CORE.syntax],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_CORE_HOST.syntax, ...MAIN_FROM_CORE.syntax, ...FS_BUILTIN_BAN],
     },
   },
   {
@@ -492,7 +501,7 @@ export default [
         paths: [OUTSIDE_DESKTOP.path],
         patterns: [OUTSIDE_DESKTOP.pattern],
       }],
-      'no-restricted-syntax': ['error', ...OUTSIDE_DESKTOP.syntax],
+      'no-restricted-syntax': ['error', ...OUTSIDE_DESKTOP.syntax, ...FS_BUILTIN_BAN],
     },
   },
   {

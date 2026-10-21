@@ -5,6 +5,7 @@ import type { LocalizationService } from '../../platform/localization-service';
 import { Emitter } from './emitter';
 import { LANGUAGE_SETTING, parseDesktopLanguage, type DesktopLanguageSetting } from './desktop-configuration';
 import { parseSettingsText } from '../../core/config/settings-file';
+import { readFileSync } from '../../core/resource-fs';
 
 export type DesktopLanguage = 'en' | 'el';
 
@@ -62,7 +63,7 @@ export function formatMessage(template: string, args: ReadonlyArray<string | num
 
 // A Map, so a message such as 'constructor' never resolves to an Object.prototype member.
 function readStringTable(filePath: string): ReadonlyMap<string, string> {
-  const parsed: unknown = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  const parsed: unknown = JSON.parse(readFileSync(filePath, 'utf8'));
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error(`${filePath} is not a string table`);
   const table = new Map<string, string>();
   for (const [key, value] of Object.entries(parsed)) {

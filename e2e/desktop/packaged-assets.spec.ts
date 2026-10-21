@@ -8,13 +8,14 @@ import { asarFiles, readAsarHeader } from '../../scripts/asar-archive.mjs';
 import { DESKTOP_FONT_FILES, DESKTOP_FONT_LICENSES } from '../../src/desktop/main/desktop-fonts';
 import { MATERIAL_ICON_DIR, materialIconNames } from '../../src/desktop/shell/material-icons';
 import { coreQuitLog, logBeforeQuit, mainLog } from './support/app';
-import { filesRow, quickPick } from './support/editor';
+import { filesRow, quickPick, untilWatchLive } from './support/editor';
 import { activeChat, expect, test } from './support/fixtures';
 import { REPO_ROOT, seedStubModel, writeUserSettings, type HermeticHome } from './support/hermetic';
 import { chatRequests, startOpenAIStub } from './support/openai-stub';
 import { readyOverlay } from './support/overlay';
 import { packagedAppPath } from './support/packaged-app';
-import { popupPage, popupToasts, shellPage } from './support/shell';
+import { closeSettingsModal } from './support/settings';
+import { overlayPage, popupPage, popupToasts, shellPage } from './support/shell';
 import { activeTerminal, echoCommand, runInTerminal, terminalText, useTestProfile } from './support/terminal';
 import { chatInput, hostMessages, listedSessionIds, postFromWebview, recordHostMessages } from './support/ui';
 
@@ -217,6 +218,14 @@ test('bundled assets resolve: first window, overlay, fonts, pi chat, shell, ripg
     const stateEntries = fs.existsSync(stateDir) ? fs.readdirSync(stateDir) : [];
     expect(stateEntries.filter((name) => !USER_DATA_STATE.has(name))).toEqual([]);
     expect(fs.existsSync(path.join(home.userData, 'logs', 'Damocles.log'))).toBe(true);
+
+    // What's new reads CHANGELOG.md from inside app.asar through src/core/resource-fs.ts.
+    const newest = /^## \[(\d+\.\d+\.\d+)\]/m.exec(fs.readFileSync(path.join(REPO_ROOT, 'CHANGELOG.md'), 'utf8'))![1]!;
+    await (await shellPage(app)).evaluate(() => window.damoclesShell!.openSettings('about'));
+    const settings = await overlayPage(app);
+    await expect(settings.locator(`[data-version-row="${newest}"]`)).toBeVisible({ timeout: 30_000 });
+    expect(mainLog(home)).not.toContain('[release-notes] could not read');
+    await closeSettingsModal(settings);
     await desktop.close();
     for (const log of [logBeforeQuit(home), coreQuitLog(home)]) expect(log).not.toContain('[ShellSentinel] ERROR');
     // The stall monitor's profiler starts and keeps running in the build.
@@ -288,13 +297,7 @@ test('the watch worker loads from the build and a file created under the project
   const desktop = await launch();
   const shell = await shellPage(desktop.app);
   await expect(filesRow(shell, 'present.txt')).toBeVisible({ timeout: 30_000 });
-  // The worker's first scan records without reporting whatever it lists, so a fresh name is written until one is reported.
-  const probes = shell.locator('[data-testid="files-row"][data-tree-path^="watch-probe-"]');
-  let attempt = 0;
-  await expect.poll(async () => {
-    fs.writeFileSync(path.join(home.project, `watch-probe-${attempt++}.txt`), 'x');
-    return probes.count();
-  }, { timeout: 60_000, intervals: [1_000] }).toBeGreaterThan(0);
+  await untilWatchLive(shell, home.project);
   await desktop.close();
   for (const log of [logBeforeQuit(home), coreQuitLog(home)]) expect(log).not.toContain('[watcher] the watch worker');
 });

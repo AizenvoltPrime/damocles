@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile } from '../../core/resource-fs';
 import type { Memento } from '../../platform/key-value-state';
 import type { NotificationService } from '../../platform/notification-service';
 import { MAX_RELEASE_VERSION_LENGTH, type ReleaseIndex, type ReleaseIndexEntry, type ReleaseNotes } from '../preload/updates';

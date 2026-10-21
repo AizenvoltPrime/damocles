@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import { Worker } from 'node:worker_threads';
-import { readContributedConfiguration } from '../../core/config/contributed-configuration';
+import { readContributedConfiguration } from '../../core/config/read-contributed-configuration';
 import { DAMOCLES_HOME_DIR } from '../../core/paths';
 import { defaultProjectPath, DEFAULT_WORKSPACE_FOLDER_STATE_KEY } from '../../core/workspace-folders/folder-registry';
 import type { AppPaths } from '../../platform/app-paths';

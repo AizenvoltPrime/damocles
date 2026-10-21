@@ -107,6 +107,11 @@ export class PermissionHandler {
     // Open prompts belong to the conversation being replaced, so this YOLO change never approves them.
     this.state.dangerouslySkipPermissions = this.platform.settings.get<boolean>('damocles.dangerouslySkipPermissions', false, settingsFolder);
     this.onPermissionsChanged?.();
+    this.dropSessionApprovals();
+  }
+
+  /** Drop every session-scoped approval, which belongs to the folder it was granted in; the mode and YOLO stay. */
+  dropSessionApprovals(): void {
     this.state.autoApprovedSkills.clear();
   }
 

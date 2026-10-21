@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
 import type { ImageApi, ImageModel } from "@earendil-works/pi-ai";
-import { readContributedConfiguration } from "../../../config/contributed-configuration";
+import { readContributedConfiguration } from "../../../config/read-contributed-configuration";
 
 const runtime = vi.hoisted(() => ({ current: null as unknown }));
 vi.mock("../../../pi-session/pi-runtime", () => ({

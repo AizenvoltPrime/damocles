@@ -992,9 +992,10 @@ export class PanelManager {
     permissionHandler.setWorkspacePath(folder.projectScope ? folder.fsPath : null);
     permissionHandler.setCwd(folder.fsPath);
     this.bindSessionCallbacks(panelId, instance);
-    // A new conversation resets what clearing does; mode, model and reasoning stay. A restore moving a panel an engine restart
-    // reopened to its conversation's folder keeps the YOLO that restart handed it.
-    if (reason !== "restore" || instance.permissionsHandedBack !== true) permissionHandler.resetForNewConversation(settingsFolderOf(folder));
+    // A new conversation resets what clearing does; mode, model and reasoning stay. A chatMove continues the conversation, so the
+    // chat keeps its YOLO too, and a restore moving a panel an engine restart reopened keeps the YOLO that restart handed it.
+    if (reason === "chatMove") permissionHandler.dropSessionApprovals();
+    else if (reason !== "restore" || instance.permissionsHandedBack !== true) permissionHandler.resetForNewConversation(settingsFolderOf(folder));
     await this.sendCurrentSettings(host, permissionHandler, folder);
     this.applyFolderTitle(instance);
     this.postWorkspaceFolderUpdate(instance, switched);

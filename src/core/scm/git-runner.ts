@@ -190,6 +190,9 @@ export interface GitCloner {
 const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 const MAX_LOGGED_STDERR_CHARS = 2000;
 const INHERITED_PATHSPEC_MODES: ReadonlySet<string> = new Set(['GIT_LITERAL_PATHSPECS', 'GIT_GLOB_PATHSPECS', 'GIT_NOGLOB_PATHSPECS', 'GIT_ICASE_PATHSPECS']);
+// A chat worktree sits deeper than its project, so a path that fits there can pass Windows' 260 characters in the worktree;
+// Git for Windows reaches such a path only with core.longpaths, which other platforms ignore.
+const ENGINE_CONFIG: ReadonlyArray<readonly [string, string]> = [['core.longpaths', 'true']];
 
 /** The environment every engine git call runs with: no prompt and no editor; literal pathspecs where it names paths. */
 export function gitEnv(call: Pick<GitCall, 'kind' | 'parsed' | 'literalPathspecs' | 'ceilingDirectories' | 'localOnly' | 'askpassEnv' | 'config' | 'indexFile'>): NodeJS.ProcessEnv {
@@ -209,7 +212,7 @@ export function gitEnv(call: Pick<GitCall, 'kind' | 'parsed' | 'literalPathspecs
     ...(call.literalPathspecs ? { GIT_LITERAL_PATHSPECS: '1' } : {}),
     ...(call.indexFile !== undefined ? { GIT_INDEX_FILE: call.indexFile } : {}),
     ...(call.localOnly ? { GIT_ALLOW_PROTOCOL: 'none' } : {}),
-    ...configPairs(call.config ?? []),
+    ...configPairs([...ENGINE_CONFIG, ...(call.config ?? [])]),
     ...(call.parsed ? { LC_ALL: 'C' } : {}),
     ...(ceilings.length > 0 ? { GIT_CEILING_DIRECTORIES: ceilings.join(path.delimiter) } : {}),
     // Status takes no optional lock, so it never holds the index lock another tool needs. A working-tree diff refreshes the
@@ -220,7 +223,6 @@ export function gitEnv(call: Pick<GitCall, 'kind' | 'parsed' | 'literalPathspecs
 
 // childEnv() drops any inherited GIT_CONFIG_COUNT, KEY and VALUE, so these are the only pairs
 function configPairs(config: ReadonlyArray<readonly [string, string]>): Record<string, string> {
-  if (config.length === 0) return {};
   const pairs: Record<string, string> = { GIT_CONFIG_COUNT: String(config.length) };
   config.forEach(([key, value], index) => {
     pairs[`GIT_CONFIG_KEY_${index}`] = key;
@@ -246,7 +248,8 @@ export function createGitRunner(deps: GitRunnerDeps): GitRunner & GitCloner {
         reject(call.signal.reason);
         return;
       }
-      const args = call.args;
+      // git before 2.31 ignores GIT_CONFIG_COUNT, so it gets the engine's config as -c options
+      const args = gitAtLeast(deps.git.version, 2, 31) ? call.args : [...ENGINE_CONFIG.flatMap(([key, value]) => ['-c', `${key}=${value}`]), ...call.args];
       const started = now();
       const argv = args.map((arg) => logArg(redactUrls(arg))).join(' ');
       const cancellable = call.signal !== undefined;

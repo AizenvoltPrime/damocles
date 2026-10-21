@@ -159,9 +159,10 @@ describe.skipIf(!HAS_GIT)('remote operations against bare repositories', { timeo
     expect(fs.readFileSync(path.join(work, 'a.txt'), 'utf8')).toBe('local edit\n');
     expect(fs.existsSync(path.join(work, 'z.txt'))).toBe(true);
     expect(git(['stash', 'list'], work)).toBe('');
-    expect(oldLog.some((line) => line.includes('> git stash push --include-untracked'))).toBe(true);
+    // git before 2.31 gets the runner's config as -c options
+    expect(oldLog.some((line) => line.includes('> git -c core.longpaths=true stash push --include-untracked'))).toBe(true);
     expect(oldLog.some((line) => / stash apply --index --quiet (--end-of-options )?[0-9a-f]{40,64} \[/.test(line))).toBe(true);
-    expect(oldLog.some((line) => line.includes('> git stash drop --quiet "stash@{0}"'))).toBe(true);
+    expect(oldLog.some((line) => line.includes('> git -c core.longpaths=true stash drop --quiet "stash@{0}"'))).toBe(true);
     expect(oldLog.some((line) => line.includes('--autostash') || line.includes('stash pop'))).toBe(false);
     h.service.dispose();
   });

@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { _electron as electron, expect, type ElectronApplication, type TestInfo } from '@playwright/test';
+import { fileHolders } from './file-holders';
 import { hermeticEnv, REPO_ROOT, type HermeticHome } from './hermetic';
 import { launchPackaged, packagedAppPath, withoutMainProcess } from './packaged-app';
 
@@ -201,6 +202,60 @@ export function coreQuitLog(h: HermeticHome): string {
 export async function corePid(app: ElectronApplication): Promise<number | undefined> {
   // fork's serviceName is the metric's name; the metric's serviceName is Chromium's ('node.mojom.NodeService').
   return app.evaluate(({ app: electronApp }) => electronApp.getAppMetrics().find((metric) => metric.type === 'Utility' && metric.name === 'Damocles Core')?.pid);
+}
+
+export interface AppHolder {
+  readonly pid: number;
+  /** The process kind getAppMetrics names, and its service name for a utility process. */
+  readonly process: string;
+}
+
+async function posixHolderPids(files: readonly string[], pids: ReadonlySet<number>): Promise<number[]> {
+  if (process.platform === 'darwin') {
+    const listed = await run('/usr/sbin/lsof', ['-w', '-Fpn', '--', ...files]);
+    // lsof exits 1 when any named file is not open, after listing the holders of the others; -w keeps warnings off stderr.
+    if ((listed.code !== 0 && listed.code !== 1) || listed.stderr.trim() !== '') throw new Error(`lsof exited with code ${listed.code}: ${listed.stderr.trim()}`);
+    return listed.stdout.split('\n').filter((line) => line.startsWith('p')).map((line) => Number(line.slice(1))).filter((pid) => pids.has(pid));
+  }
+  const wanted = new Set(files.map((file) => fs.realpathSync(file)));
+  const holders: number[] = [];
+  for (const pid of pids) {
+    let fds: string[];
+    try {
+      fds = fs.readdirSync(`/proc/${pid}/fd`);
+    } catch (err) {
+      // A process that exited after getAppMetrics listed it.
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw err;
+    }
+    const holds = fds.some((fd) => {
+      try {
+        return wanted.has(fs.readlinkSync(`/proc/${pid}/fd/${fd}`));
+      } catch {
+        // The descriptor closed between the listing and the read.
+        return false;
+      }
+    });
+    if (holds) holders.push(pid);
+  }
+  return holders;
+}
+
+/**
+ * The app's processes that run Node's fs (main and every utilityProcess.fork child: Damocles Core, the pty and formatter hosts)
+ * that hold any of `files` open: Restart Manager on Windows, lsof on macOS, /proc/<pid>/fd on Linux. Only those can open a
+ * user's archive through Electron's fs patch; renderers are all sandboxed, and under the setuid sandbox their /proc/<pid>/fd
+ * is unreadable. On POSIX an open file still deletes, so this is the only way to see a handle there.
+ */
+export async function appHolders(app: ElectronApplication, files: readonly string[]): Promise<AppHolder[]> {
+  const metrics = await app.evaluate(({ app: electronApp }) => electronApp.getAppMetrics()
+    .filter((metric) => metric.type === 'Browser' || (metric.type === 'Utility' && metric.serviceName === 'node.mojom.NodeService'))
+    .map((metric) => ({ pid: metric.pid, process: metric.name === undefined ? metric.type : `${metric.type} ${metric.name}` })));
+  const byPid = new Map(metrics.map((metric) => [metric.pid, metric.process]));
+  const pids = process.platform === 'win32'
+    ? fileHolders(files).map((holder) => holder.pid).filter((pid) => byPid.has(pid))
+    : await posixHolderPids(files, new Set(byPid.keys()));
+  return [...new Set(pids)].map((pid) => ({ pid, process: byPid.get(pid)! }));
 }
 
 /**

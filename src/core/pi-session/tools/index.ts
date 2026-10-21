@@ -21,6 +21,7 @@ import { createEditTool } from './edit-tool';
 import { createBashTool, type ShellOptions } from './bash-tool';
 import { createFindTool, createGrepTool } from './search-tools';
 import { createWriteTool } from './write-tool';
+import { createLsTool } from './ls-tool';
 import { resolveRgPath } from '../../chat-panel/ripgrep';
 import { platform } from '../../platform-host';
 import { withPerCallCancel } from './cancellable-shell';
@@ -132,7 +133,7 @@ export interface ModuleToolNameDeps {
  * `CUSTOM_TOOL_NAMES` because `PI_NATIVE_ACTIVE_TOOLS` already carries them, and listing an override
  * in both makes `fullActiveToolNames` name it twice.
  */
-export const OVERRIDE_TOOL_NAMES: readonly string[] = ['bash', 'grep', 'find', 'write'];
+export const OVERRIDE_TOOL_NAMES: readonly string[] = ['bash', 'grep', 'find', 'write', 'ls'];
 
 /**
  * Names of the Damocles custom tools, in active-set order. Every name MUST also be passed in the
@@ -151,10 +152,11 @@ export const CUSTOM_TOOL_NAMES: readonly string[] = [
 
 /**
  * Build the per-session Damocles custom tool definitions, each closing over this panel's `cwd` and
- * `permissionHandler`. Replaces the CC tools pi lacks (Edit, PowerShell, plan, question). The native `read/ls` come from pi directly. `bash` is pi's own tool, re-registered
+ * `permissionHandler`. Replaces the CC tools pi lacks (Edit, PowerShell, plan, question). The native `read` comes from pi directly. `bash` is pi's own tool, re-registered
  * here under the same name so the panel owns a per-call abort controller for it; `grep` and `find`
  * are re-registered so they run the bundled ripgrep instead of pi's download of rg and fd; `write` is
- * re-registered so a write that replaces a file records its patch.
+ * re-registered so a write that replaces a file records its patch; `ls` is re-registered with file
+ * operations from Damocles' bundle, which treat an `.asar` as a file.
  */
 export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
   const { pi, cwd, permissionHandler, getShellOptions, shellCancel, deliverUserNote, shellJob, memoryService, compassService, browserService, browserScopeId, browserChat, getSessionId, getPlanFilePath, subagentManager, teamService, imageGeneration, isTeamEnabled, mcpResources } = deps;
@@ -171,6 +173,7 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
     createGrepTool(pi, cwd, rgPath, readRuleFilter),
     createFindTool(pi, cwd, rgPath, readRuleFilter),
     createWriteTool(pi, cwd),
+    createLsTool(pi, cwd),
     createEditTool(pi, cwd),
     createPowerShellTool(pi, cwd, shellJob, () => getShellOptions().env),
     enterPlan,

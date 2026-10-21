@@ -2767,6 +2767,9 @@ class DesktopApp {
         slowedCoreRenames: (basename: string) => this.core.run('e2e', (core) => core.client.e2eSlowedRenames(basename)),
         // core's next core.shutdown never answers, so the quit's bound kills core
         holdCoreShutdown: () => this.core.run('e2e', (core) => core.client.e2eHoldShutdown()),
+        // the paths core's recursive watch of folder reported created, starting it on the first call
+        watchCoreProbe: (folder: string) => this.core.run('e2e', (core) => core.client.e2eWatchProbe(folder)),
+        stopCoreWatchProbe: (folder: string) => this.core.run('e2e', (core) => core.client.e2eStopWatchProbe(folder)),
         notifications: platform.notifications,
         secrets: platform.secrets,
         // requests of the active page's browser context whose URL matches pattern load from toHost instead; routed lists them

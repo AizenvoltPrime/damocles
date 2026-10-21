@@ -1,6 +1,6 @@
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { protocol } from 'electron';
+import { readFile, realpath, stat as statFile } from '../../core/resource-fs';
 import { APP_HOST, APP_ORIGIN, APP_SCHEME, isInside, SERVED_FILES, SERVED_ROOTS } from '../app-urls';
 import { NOTIFIER_PAGE_PATH } from '../preload/page-paths';
 
@@ -116,15 +116,15 @@ async function serveFile(root: string, filePath: string): Promise<Response> {
   let real: string;
   let realRoot: string;
   try {
-    [real, realRoot] = await Promise.all([fs.promises.realpath(filePath), fs.promises.realpath(root)]);
+    [real, realRoot] = await Promise.all([realpath(filePath), realpath(root)]);
   } catch {
     return notFound();
   }
   // A symlink or junction inside a served root must not lead out of it.
   if (!isInside(realRoot, real)) return notFound();
-  const stat = await fs.promises.stat(real);
+  const stat = await statFile(real);
   if (!stat.isFile()) return notFound();
-  const body = await fs.promises.readFile(real);
+  const body = await readFile(real);
   const contentType = mimeTypeFor(real);
   return new Response(body, {
     status: 200,

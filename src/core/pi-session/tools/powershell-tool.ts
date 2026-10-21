@@ -2,6 +2,7 @@ import { constants } from 'node:fs';
 import { access } from 'node:fs/promises';
 import { constants as osConstants } from 'node:os';
 import type { PowerShellOperations, ToolDefinition } from '@earendil-works/pi-coding-agent';
+import type { AnyToolDefinition } from './any-tool-definition';
 import type { PiCodingAgentModule } from '../pi-loader';
 import { TOOL_POWERSHELL } from '../../../shared/tool-names';
 import { resolveTimeoutMs, SHELL_EXIT_OUTPUT_GRACE_MS, waitForShellExit, withCommandDescription, type ShellExit } from './bash-tool';
@@ -33,8 +34,6 @@ const POWERSHELL_ARGS = [
   '-Command',
 ];
 
-/** pi's shell definition carries its own schema and render types; only the erased shape is assignable both ways. */
-type AnyToolDefinition = ToolDefinition<any, any, any>;
 
 interface ExecOnceOptions {
   onData: (data: Buffer) => void;

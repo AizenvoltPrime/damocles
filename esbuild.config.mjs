@@ -2,6 +2,7 @@ import * as esbuild from 'esbuild';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { EXTENSION_EXTERNALS } from './scripts/extension-externals.mjs';
 import { DESKTOP_EXTERNALS } from './scripts/desktop-externals.mjs';
+import { originalFs } from './scripts/esbuild-original-fs.mjs';
 
 const isWatch = process.argv.includes('--watch');
 // --desktop builds the Electron main and preload plus the workers they spawn, and never the extension bundle.
@@ -24,6 +25,9 @@ const assertOutfileWritten = {
   },
 };
 
+// Every Node bundle; the sandboxed preloads have no fs.
+const nodePlugins = [assertOutfileWritten, originalFs];
+
 /** @type {esbuild.BuildOptions} */
 const extensionOptions = {
   entryPoints: ['src/vscode/extension.ts'],
@@ -39,7 +43,7 @@ const extensionOptions = {
   sourcemap: isWatch,
   minify: !isWatch,
   logLevel: 'info',
-  plugins: [assertOutfileWritten],
+  plugins: nodePlugins,
 };
 
 /** @type {esbuild.BuildOptions} */
@@ -58,7 +62,7 @@ const workerOptions = {
   sourcemap: isWatch,
   minify: !isWatch,
   logLevel: 'info',
-  plugins: [assertOutfileWritten],
+  plugins: nodePlugins,
 };
 
 /** @type {esbuild.BuildOptions} */
@@ -74,7 +78,7 @@ const usageStatsWorkerOptions = {
   sourcemap: isWatch,
   minify: !isWatch,
   logLevel: 'info',
-  plugins: [assertOutfileWritten],
+  plugins: nodePlugins,
 };
 
 /** @type {esbuild.BuildOptions} */
@@ -114,7 +118,7 @@ const processLauncherWorkerOptions = {
   sourcemap: isWatch,
   minify: !isWatch,
   logLevel: 'info',
-  plugins: [assertOutfileWritten],
+  plugins: nodePlugins,
 };
 
 /** @type {esbuild.BuildOptions} */
@@ -130,7 +134,7 @@ const sentinelOptions = {
   sourcemap: isWatch,
   minify: !isWatch,
   logLevel: 'info',
-  plugins: [assertOutfileWritten],
+  plugins: nodePlugins,
 };
 
 /** @type {esbuild.BuildOptions} */
@@ -145,7 +149,7 @@ const desktopMainOptions = {
   sourcemap: true,
   minify: false,
   logLevel: 'info',
-  plugins: [assertOutfileWritten],
+  plugins: nodePlugins,
 };
 
 /** @type {esbuild.BuildOptions} */
@@ -199,7 +203,7 @@ const formatterHostOptions = {
   sourcemap: false,
   minify: false,
   logLevel: 'info',
-  plugins: [assertOutfileWritten],
+  plugins: nodePlugins,
 };
 
 /** @type {esbuild.BuildOptions} */

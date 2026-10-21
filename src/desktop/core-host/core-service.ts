@@ -387,5 +387,22 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
       });
     });
     endpoint.serve('e2e.routedRequests', () => [...routed]);
+    // through core's own factory, so it shares the per-root watch core's watchers of that folder use
+    const watchProbes = new Map<string, { readonly watcher: Disposable; readonly created: string[] }>();
+    endpoint.serve('e2e.watchProbe', ({ folder }) => {
+      let probe = watchProbes.get(folder);
+      if (!probe) {
+        const created: string[] = [];
+        const watcher = platform.fileWatchers.watch(folder, '**/*');
+        watcher.onDidCreate((fsPath) => created.push(fsPath));
+        probe = { watcher, created };
+        watchProbes.set(folder, probe);
+      }
+      return [...probe.created];
+    });
+    endpoint.serve('e2e.stopWatchProbe', ({ folder }) => {
+      watchProbes.get(folder)?.watcher.dispose();
+      watchProbes.delete(folder);
+    });
   }
 }

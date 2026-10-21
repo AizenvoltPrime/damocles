@@ -2,7 +2,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication } from '@playwright/test';
 import { expect, test } from './support/fixtures';
-import { overlayPage, popupPage, popupToasts, selectedProjectKey, shellPage, shellState } from './support/shell';
+import { writeAsar } from '../../scripts/asar-archive.mjs';
+import { ARCHIVE } from './support/asar';
+import { overlayPage, popupPage, popupToasts, recordedToasts, recordToasts, selectedProjectKey, shellPage, shellState } from './support/shell';
 import { chooseMenuItem, menuItem, overlayMenu } from './support/overlay';
 import { openProjectChat } from './support/screenshots';
 import { chatInput } from './support/ui';
@@ -356,6 +358,35 @@ test('a failed move to the trash offers Delete Permanently after a confirmation,
   await expect(dialog).toContainText("Are you sure you want to delete 'kept.ts'?");
   await dialog.getByRole('button', { name: 'Cancel' }).click();
   await expect(toast).toHaveCount(1);
+});
+
+test('Delete Permanently removes a folder holding an .asar archive, and a lone archive', async ({ home, launch }) => {
+  const bundle = path.join(home.project, 'bundle');
+  fs.mkdirSync(path.join(bundle, 'resources'), { recursive: true });
+  writeAsar(path.join(bundle, 'app.asar'), ARCHIVE);
+  writeAsar(path.join(bundle, 'resources', 'default_app.asar'), ARCHIVE);
+  const lone = path.join(home.project, 'x.asar');
+  writeAsar(lone, ARCHIVE);
+  const { app } = await launch(HOOKS);
+  await recordToasts(app);
+  await openProjectChat(app, home.project);
+  const shell = await shellPage(app);
+  const dialog = (await overlayPage(app)).getByRole('alertdialog');
+  await failFiles(app, { trash: 'The Recycle Bin is not available' });
+
+  for (const [row, target] of [['bundle', bundle], ['x.asar', lone]] as const) {
+    await filesRow(shell, row).focus();
+    await shell.keyboard.press('Delete');
+    await dialog.getByRole('button', { name: 'Move to Trash' }).click();
+    await dialog.getByRole('button', { name: 'Delete Permanently' }).click();
+    // The failure toast, when there is one, names why the entry is still there.
+    await expect.poll(async () => {
+      if (!fs.existsSync(target)) return 'gone';
+      return (await recordedToasts(app)).find((toast) => toast.message.includes('could not delete'))?.message ?? 'present';
+    }, { timeout: 15_000 }).toBe('gone');
+    await expect(filesRow(shell, row)).toHaveCount(0);
+  }
+  expect((await recordedToasts(app)).find((toast) => toast.message.includes('could not delete'))).toBeUndefined();
 });
 
 test('New file in a folder that cannot be listed opens no name box, is one toast naming the folder, and the tree takes keys again', async ({ foreground: _foreground, home, launch }) => {

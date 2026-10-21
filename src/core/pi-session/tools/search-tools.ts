@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import picomatch from 'picomatch';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { FindOperations, FindToolDetails, GrepToolDetails, ToolDefinition } from '@earendil-works/pi-coding-agent';
+import type { AnyToolDefinition } from './any-tool-definition';
 import { processLauncher, type LaunchedProcess } from '../../process-launcher';
 import type { PiCodingAgentModule } from '../pi-loader';
 
@@ -16,8 +17,6 @@ import type { PiCodingAgentModule } from '../pi-loader';
  */
 export type ResolveRgPath = () => Promise<string>;
 
-/** pi's definitions carry their own schema and render types; only the erased shape is assignable both ways. */
-type AnyToolDefinition = ToolDefinition<any, any, any>;
 
 /**
  * Per call, whether a `Read` deny or ask rule covers a file (`PermissionHandler.readRuleFilter`). The gate
