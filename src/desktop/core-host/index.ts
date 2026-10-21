@@ -99,8 +99,8 @@ async function start(port: ParentPort): Promise<void> {
       for (const disposable of owned.reverse()) disposable.dispose();
       coreLocal.dispose();
     },
-    // main kills core once core.shutdown answers, so nothing written after this would land
-    flushLogs: () => logSinks.flushed(),
+    // main kills core once core.shutdown answers, so a line logged after this is written before its log call returns
+    flushLogs: () => logSinks.endAsyncWrites(),
   });
   // Every request main sent meanwhile is answered from here on, by the services just registered.
   transport.open();

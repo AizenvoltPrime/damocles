@@ -247,6 +247,42 @@ describe('desktop log sink', () => {
       sink.dispose();
       await factory.flushed();
     });
+
+    it('ends async writes only once it lands, after which a quit\'s last lines are on disk in order as they are logged', async () => {
+      const file = path.join(dir, 'Damocles.log');
+      const factory = createDesktopLogSinkFactory(dir, false);
+      const sink = factory.create('Damocles');
+      sink.appendLine('teardown');
+      await nextTurn();
+      await expect.poll(() => writes).toEqual(['teardown\n']);
+      sink.appendLine('behind it');
+      let ended = false;
+      const ending = factory.endAsyncWrites().then(() => (ended = true));
+      await nextTurn();
+      expect(ended).toBe(false);
+
+      release();
+      await ending;
+      expect(fs.readFileSync(file, 'utf8')).toBe('teardown\nbehind it\n');
+      // the quit's own lines, then will-quit's dispose and the exit, with no turn of the event loop between them
+      sink.appendLine('disposed; quitting');
+      sink.appendLine('will-quit');
+      sink.dispose();
+      writeUnstartedLogLines();
+      expect(fs.readFileSync(file, 'utf8')).toBe('teardown\nbehind it\ndisposed; quitting\nwill-quit\n');
+      await factory.flushed();
+      expect(fs.readFileSync(file, 'utf8')).toBe('teardown\nbehind it\ndisposed; quitting\nwill-quit\n');
+    });
+  });
+
+  it('writes each line at once in a sink created after async writes ended', async () => {
+    const factory = createDesktopLogSinkFactory(dir, false);
+    await factory.endAsyncWrites();
+    const sink = factory.create('Format');
+    sink.appendLine('late');
+    expect(fs.readFileSync(path.join(dir, 'Format.log'), 'utf8')).toBe('late\n');
+    sink.dispose();
+    await factory.flushed();
   });
 
   it('writes at exit only the lines no write was started for', async () => {

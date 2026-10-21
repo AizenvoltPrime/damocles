@@ -39,6 +39,11 @@ export type OpenLogFile = (filePath: string, preserveFocus: boolean) => void;
 export interface DesktopLogSinkFactory extends LogSinkFactory {
   /** Settles once every line logged so far, in every sink, has been written or dropped. */
   flushed(): Promise<void>;
+  /**
+   * For a process about to exit: settles once no sink has a write in flight, and from then on every sink writes each
+   * line synchronously, so the last lines land and land in order.
+   */
+  endAsyncWrites(): Promise<void>;
 }
 
 const liveSinks = new Set<RotatingFileSink>();
@@ -50,8 +55,10 @@ export function writeUnstartedLogLines(): void {
 }
 
 // Lines are written in order through one promise chain per sink, which holds at most one write step: lines logged while it
-// writes wait in pending and go out together when it is done. A native crash loses at most one event-loop turn of lines,
-// and the 'exit' hook writes the lines no write was started for.
+// writes wait in pending and go out together when it is done. A synchronous write made while an async one is in flight can
+// land before it, and the async one is lost if the process exits first, so a quit ends async writes (endAsyncWrites)
+// before its last lines. Otherwise a native crash loses at most one event-loop turn of lines, and the 'exit' hook writes
+// the lines no write was started for.
 class RotatingFileSink implements LogSink {
   private readonly filePath: string;
   private readonly echo: boolean;
@@ -64,6 +71,8 @@ class RotatingFileSink implements LogSink {
   private dropped = 0;
   private flushScheduled = false;
   private disposed = false;
+  // set by endAsyncWrites once no write is in flight: each line is then appended synchronously as it is logged
+  private synchronous = false;
   private chain: Promise<void> = Promise.resolve();
   // steps queued on the chain and not yet finished
   private queued = 0;
@@ -88,6 +97,10 @@ class RotatingFileSink implements LogSink {
     }
     this.pending.push(text);
     this.pendingBytes += size;
+    if (this.synchronous) {
+      this.writeUnstarted();
+      return;
+    }
     if (this.flushScheduled) return;
     this.flushScheduled = true;
     setImmediate(() => this.flush());
@@ -96,6 +109,17 @@ class RotatingFileSink implements LogSink {
   flushed(): Promise<void> {
     this.flush();
     return this.chain;
+  }
+
+  async endAsyncWrites(): Promise<void> {
+    // a line logged while a step runs queues another behind it
+    while (this.queued > 0) await this.chain;
+    if (this.synchronous) return;
+    this.synchronous = true;
+    this.writeUnstarted();
+    const handle = this.handle;
+    this.handle = undefined;
+    await handle?.close().catch(() => undefined);
   }
 
   show(preserveFocus?: boolean): void {
@@ -133,7 +157,7 @@ class RotatingFileSink implements LogSink {
   // After dispose, the closing step writes what is pending; while a write runs, it takes what is pending when it is done.
   private flush(): void {
     this.flushScheduled = false;
-    if (this.disposed || this.queued > 0 || (this.pending.length === 0 && this.dropped === 0)) return;
+    if (this.disposed || this.synchronous || this.queued > 0 || (this.pending.length === 0 && this.dropped === 0)) return;
     this.enqueue(() => this.writePending());
   }
 
@@ -209,14 +233,21 @@ export function createDesktopLogSinkFactory(logsDir: string, echo: boolean, open
     process.on('exit', writeUnstartedLogLines);
   }
   const sinks: RotatingFileSink[] = [];
+  let asyncWritesEnded = false;
   return {
     create: (name) => {
       const sink = new RotatingFileSink(path.join(logsDir, logFileName(name)), echo, open);
       sinks.push(sink);
+      // a new sink has nothing in flight, so this switches it at once
+      if (asyncWritesEnded) void sink.endAsyncWrites();
       return sink;
     },
     flushed: async () => {
       await Promise.all(sinks.map((sink) => sink.flushed()));
+    },
+    endAsyncWrites: async () => {
+      asyncWritesEnded = true;
+      await Promise.all(sinks.map((sink) => sink.endAsyncWrites()));
     },
   };
 }

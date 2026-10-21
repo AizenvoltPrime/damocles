@@ -4073,7 +4073,8 @@ class DesktopApp {
       this.state.flush(),
       this.platform?.flush(),
       allJsonConfigWritesSettled(),
-      this.logSinks.flushed(),
+      // the quit's last lines, will-quit included, then land in order
+      this.logSinks.endAsyncWrites(),
     ]);
   }
 }
