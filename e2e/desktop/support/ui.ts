@@ -189,7 +189,10 @@ export async function clickMenu(app: ElectronApplication, id: string): Promise<v
 export async function addProject(app: ElectronApplication, dir: string, trust: boolean): Promise<void> {
   await answerOpenDialog(app, dir);
   await answerDialogs(app, { [TRUST_PROMPT]: trust ? 'Trust Folder' : "Don't Trust" });
-  const before = (await shellState(app)).selected.chatId;
+  // The launch's chat, which main selects once core is ready: an empty one in the default folder counts as the first project's
+  // until main unloads it, so the new chat is told apart from it only once it is selected.
+  let before: string | undefined;
+  await expect.poll(async () => (before = (await shellState(app)).selected.chatId), { timeout: 30_000 }).toBeDefined();
   await clickMenu(app, 'damocles.addProject');
   await expect.poll(async () => {
     const state = await shellState(app);

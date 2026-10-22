@@ -879,6 +879,8 @@ class DesktopApp {
     }, localization);
     this.launchTabs = this.openTabsAtLaunch(launched);
     await this.launchTabs;
+    // A quit past its last question tears down the core and the updater, and a version announced now would lose its notice.
+    if (this.lifecycle.phase === 'disposing' || this.lifecycle.phase === 'done') return;
     await this.adoptOpenWorktrees().catch(this.report('Recording adopted worktrees'));
     this.requireWorktrees().scanAtStartup(this.desktopProjects().map((project) => project.fsPath)).catch(this.report('Scanning for leftover worktrees'));
 
@@ -895,11 +897,12 @@ class DesktopApp {
   }
 
   // The launch's chats reopen into the first core once it is ready. A quit that began meanwhile opens nothing, and a core that
-  // ended before it was ready took the crash path, whose reload reopens them into the next core.
+  // ended before it was ready took the crash path, whose reload reopens them into the next core. A chat that fails to open is
+  // no failed start: the quit or a crash can end the core under it.
   private async openTabsAtLaunch(launched: DesktopCore): Promise<void> {
     const ready = await launched.ready.then(() => true, () => false);
     if (!ready || this.lifecycle.phase === 'disposing' || this.lifecycle.phase === 'done' || this.core.started() !== launched) return;
-    await this.core.openTabs();
+    await this.core.openTabs().catch(this.report('Reopening chats'));
   }
 
   // The webview normalizes what it stores.

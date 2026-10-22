@@ -338,3 +338,34 @@ test('a quit while the launch restores a chat with saved pages ends that restore
   expect(log).not.toContain('[main] uncaught exception');
   expect(log).toContain('[shutdown] will-quit');
 });
+
+test('a quit whose teardown fails the new chat a launch with no saved chats opens is no failed start, and the app exits', async ({ home, launch }) => {
+  const { app } = await launch({ env: { DAMOCLES_E2E_HOOKS: '1', DAMOCLES_E2E_HOLD_CHAT_RESTORE: '1' } });
+  await expect.poll(() => app.evaluate(() => (globalThis as HoldGlobals).__damoclesE2e?.launchRestore?.reached ?? false)).toBe(true);
+  const proc = app.process();
+
+  await app.evaluate(({ app: electronApp }) => {
+    const globals = globalThis as HoldGlobals;
+    globals.__e2eFlushHold = globals.__damoclesE2e!.holdStoreFlush();
+    setImmediate(() => electronApp.quit());
+  });
+  await expect.poll(() => app.evaluate(() => (globalThis as HoldGlobals).__e2eFlushHold!.reached), { timeout: QUIT_BUDGET_MS }).toBe(true);
+  await expect.poll(() => mainLog(home)).toMatch(/\[core\] shut down in \d+ ms/);
+
+  // The new chat's setup rejects as its request to the stopped core does.
+  await app.evaluate(async () => {
+    const globals = globalThis as HoldGlobals;
+    globals.__damoclesE2e!.launchRestore!.fail();
+    await globals.__damoclesE2e!.launchTabsOpened();
+  });
+  await app.evaluate(() => (globalThis as HoldGlobals).__e2eFlushHold!.release());
+  await expect.poll(() => proc.exitCode !== null || proc.signalCode !== null, { timeout: QUIT_BUDGET_MS, message: 'the app is still running' }).toBe(true);
+
+  expect(proc.exitCode).toBe(0);
+  const log = mainLog(home);
+  expect(log).toContain('[desktop] Reopening chats failed: Error: the e2e hooks failed the chat restore');
+  expect(log).not.toContain('[startup] failed');
+  // the rest of the launch does not run into the stopped core
+  expect(log).not.toContain('Core services are stopped for the quit');
+  expect(log).toContain('[shutdown] will-quit');
+});
