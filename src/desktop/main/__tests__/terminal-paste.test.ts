@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { MAX_MESSAGE_PREVIEW_LINES, MAX_OVERLAY_LABEL_LENGTH } from '../../preload/overlay-channels';
 import { MAX_TERMINAL_INPUT_CHARS } from '../../preload/terminal-channels';
 import type { MessageQuestion } from '../message-dialog';
@@ -13,6 +13,8 @@ import {
   PREVIEW_LINES,
   PREVIEW_WIDTH,
 } from '../terminal/terminal-paste';
+
+vi.mock('electron', () => ({}));
 
 describe('paste decision', () => {
   it('never asks for one plain line, and never with the setting off', () => {

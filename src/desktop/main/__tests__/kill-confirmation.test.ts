@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { MAX_MESSAGE_PREVIEW_LINES, MAX_OVERLAY_LABEL_LENGTH } from '../../preload/overlay-channels';
 import { killQuestion, terminalsToConfirm, type KillCandidate } from '../terminal/kill-confirmation';
 import { parseMessageRequest } from '../overlay';
+
+vi.mock('electron', () => ({}));
 
 const t = (message: string, ...args: string[]): string => message.replace(/\{(\d+)\}/g, (_match, index: string) => args[Number(index)] ?? '');
 

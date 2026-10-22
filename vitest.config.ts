@@ -66,11 +66,16 @@ export default defineConfig({
         },
       },
       {
-        resolve: { alias: sharedAlias },
+        resolve: {
+          alias: {
+            ...sharedAlias,
+            'electron': path.resolve(__dirname, 'src/__mocks__/electron-unmocked.ts'),
+          },
+        },
         test: {
           ...sharedTest,
           name: 'desktop',
-          // Each suite mocks electron with vi.mock; the package export outside Electron is only the binary path.
+          // Each suite mocks electron with vi.mock; without one, the alias above fails the suite.
           include: ['src/desktop/**/__tests__/**/*.test.ts'],
           // The shell is a Vue app; its tests run in the webview project.
           exclude: ['src/desktop/shell/**'],
