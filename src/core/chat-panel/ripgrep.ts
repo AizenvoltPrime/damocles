@@ -70,6 +70,7 @@ export async function listWorkspaceFiles(
   }
 
   const args = [
+    "--no-config",
     "--files",
     "--follow",
     "--hidden",

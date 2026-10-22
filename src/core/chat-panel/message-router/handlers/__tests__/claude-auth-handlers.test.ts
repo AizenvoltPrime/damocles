@@ -34,7 +34,7 @@ vi.mock("../../../../pi-session/pi-runtime", () => ({
 }));
 
 vi.mock("../../../../pi-session/agent-dir", () => ({
-  ensurePiAgentDir: (dir: string) => dir,
+  ensurePiAgentDir: () => undefined,
   PI_AGENT_DIR: "/fake/agent",
 }));
 

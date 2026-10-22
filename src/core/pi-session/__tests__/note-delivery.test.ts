@@ -53,7 +53,7 @@ function piQueue() {
     steer: vi.fn(async () => undefined),
     followUp: vi.fn(async () => undefined),
     clearQueue: vi.fn(() => ({ steering: steering.splice(0), followUp: followUp.splice(0) })),
-    // pi-agent-core 1.3.0 agent.js:184 and :209-212: the steering queue when it holds any, else the follow-ups.
+    // pi-agent-core 1.4.0 agent.js:187 and :212-215: the steering queue when it holds any, else the follow-ups.
     agent: {
       steer: vi.fn(),
       peekQueuedMessages: () => (steering.length > 0 ? steering : followUp).map((text) => ({ role: 'user', content: [{ type: 'text', text }] })),

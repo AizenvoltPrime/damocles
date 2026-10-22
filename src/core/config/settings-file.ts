@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { stripBom } from './bom';
 
 export type SettingsObject = Record<string, unknown>;
 
@@ -8,7 +9,7 @@ export type SettingsObject = Record<string, unknown>;
  * file editor, the permission rule writer and the permission rule reader all use it.
  */
 export function parseSettingsText(text: string, filePath: string): SettingsObject {
-  const body = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  const body = stripBom(text);
   if (body.trim() === '') return {};
   const parsed: unknown = JSON.parse(body);
   if (!isPlainObject(parsed)) throw new Error(`${filePath} does not hold a JSON object`);

@@ -8,29 +8,17 @@ import { Eye, EyeOff, Trash2 } from "lucide-vue-next";
 import SettingButton from "@/components/settings/controls/SettingButton.vue";
 import { useMemoryJudgeNames } from "@/components/settings/memory-judge-names";
 import type { ExtensionToWebviewMessage } from "@shared/types/messages";
+import type { KeyProviderId } from "@shared/settings-sections";
 
-// Single key-field auth panel shared by the custom (non-first-party) providers. The provider id doubles
-// as the i18n section key (`stepfun.*` / `deepseek.*` / `typesafe.*` / `openrouter.*`) and selects the store ref + message variants.
-const props = defineProps<{ provider: "stepfun" | "deepseek" | "typesafe" | "openrouter" }>();
-
-const ACK_TYPES = {
-  stepfun: { set: "setStepfunApiKeyAck", clear: "clearStepfunApiKeyAck" },
-  deepseek: { set: "setDeepseekApiKeyAck", clear: "clearDeepseekApiKeyAck" },
-  typesafe: { set: "setTypesafeApiKeyAck", clear: "clearTypesafeApiKeyAck" },
-  openrouter: { set: "setOpenrouterApiKeyAck", clear: "clearOpenrouterApiKeyAck" },
-} as const;
+// Single key-field auth panel shared by the key providers. The provider id doubles as the i18n section key.
+const props = defineProps<{ provider: KeyProviderId }>();
 
 const { t } = useI18n();
 const settingsStore = useSettingsStore();
-const { stepfunConfigured, deepseekConfigured, typesafeConfigured, openrouterConfigured, memoryJudge } = storeToRefs(settingsStore);
+const { keyProviderConfigured, memoryJudge } = storeToRefs(settingsStore);
 const { postMessage, onMessage } = usePlatformBridge();
 
-const configured = computed(() => ({
-  stepfun: stepfunConfigured.value,
-  deepseek: deepseekConfigured.value,
-  typesafe: typesafeConfigured.value,
-  openrouter: openrouterConfigured.value,
-})[props.provider]);
+const configured = computed(() => keyProviderConfigured.value[props.provider]);
 
 const { classifierName, judgeText } = useMemoryJudgeNames();
 
@@ -63,24 +51,6 @@ function makeRequestId(): string {
   return `${props.provider}-auth-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function postSet(key: string, requestId: string) {
-  switch (props.provider) {
-    case "stepfun": postMessage({ type: "setStepfunApiKey", key, requestId }); break;
-    case "deepseek": postMessage({ type: "setDeepseekApiKey", key, requestId }); break;
-    case "typesafe": postMessage({ type: "setTypesafeApiKey", key, requestId }); break;
-    case "openrouter": postMessage({ type: "setOpenrouterApiKey", key, requestId }); break;
-  }
-}
-
-function postClear(requestId: string) {
-  switch (props.provider) {
-    case "stepfun": postMessage({ type: "clearStepfunApiKey", requestId }); break;
-    case "deepseek": postMessage({ type: "clearDeepseekApiKey", requestId }); break;
-    case "typesafe": postMessage({ type: "clearTypesafeApiKey", requestId }); break;
-    case "openrouter": postMessage({ type: "clearOpenrouterApiKey", requestId }); break;
-  }
-}
-
 function handleSave() {
   const key = apiKeyInput.value.trim();
   if (!key || saving.value) return;
@@ -88,7 +58,7 @@ function handleSave() {
   pendingRequestId.value = requestId;
   saving.value = true;
   inlineMessage.value = null;
-  postSet(key, requestId);
+  postMessage({ type: "setProviderApiKey", provider: props.provider, key, requestId });
 }
 
 function handleClear() {
@@ -97,13 +67,12 @@ function handleClear() {
   pendingRequestId.value = requestId;
   saving.value = true;
   inlineMessage.value = null;
-  postClear(requestId);
+  postMessage({ type: "clearProviderApiKey", provider: props.provider, requestId });
 }
 
 function handleAck(msg: ExtensionToWebviewMessage) {
-  const { set: setAck, clear: clearAck } = ACK_TYPES[props.provider];
-  if (msg.type === setAck) {
-    if (msg.requestId !== pendingRequestId.value) return;
+  if (msg.type === "setProviderApiKeyAck") {
+    if (msg.provider !== props.provider || msg.requestId !== pendingRequestId.value) return;
     pendingRequestId.value = null;
     saving.value = false;
     if (msg.ok) {
@@ -113,8 +82,8 @@ function handleAck(msg: ExtensionToWebviewMessage) {
     } else {
       inlineMessage.value = { kind: "error", text: msg.error ?? tk("apiKey.saveFailed") };
     }
-  } else if (msg.type === clearAck) {
-    if (msg.requestId !== pendingRequestId.value) return;
+  } else if (msg.type === "clearProviderApiKeyAck") {
+    if (msg.provider !== props.provider || msg.requestId !== pendingRequestId.value) return;
     pendingRequestId.value = null;
     saving.value = false;
     if (msg.ok) {

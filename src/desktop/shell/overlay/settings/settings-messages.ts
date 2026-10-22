@@ -1,9 +1,10 @@
 import webviewEn from '@/i18n/locales/en.json';
 import webviewEl from '@/i18n/locales/el.json';
 import { shellI18n } from '../../i18n';
+import { KEY_PROVIDER_IDS } from '@shared/settings-sections';
 
 /** The webview namespaces the settings components the overlay mounts read; none of them is a shell namespace. */
-const NAMESPACES = ['settingsModal', 'settings', 'common', 'claudeAuth', 'openai', 'stepfun', 'deepseek', 'typesafe', 'openrouter', 'jarvisSettings', 'voiceFirstRun', 'extensionUi'] as const;
+const NAMESPACES = ['settingsModal', 'settings', 'common', 'claudeAuth', 'openai', ...KEY_PROVIDER_IDS, 'jarvisSettings', 'voiceFirstRun', 'extensionUi'] as const;
 
 function pick(bundle: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(NAMESPACES.map((name) => [name, bundle[name]]));

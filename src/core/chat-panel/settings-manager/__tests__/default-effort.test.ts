@@ -23,6 +23,8 @@ const PI_CATALOG: Record<string, [file: string, api: string]> = {
   'gpt-6-luna': ['openai.json', 'openai-responses'],
   'deepseek-v4-pro': ['deepseek.json', 'openai-completions'],
   'deepseek-flash': ['deepseek.json', 'openai-completions'],
+  'MiniMax-M3.1-Flash': ['minimax.json', 'anthropic-messages'],
+  'grok-4.7': ['xai.json', 'openai-responses'],
 };
 
 // The composer labels a chat with no stored effort by this value, so it must be the level pi runs: an unset effort is sent as medium.

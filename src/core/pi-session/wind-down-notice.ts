@@ -12,12 +12,12 @@ export interface WindDownNotice {
   end(): void;
   /**
    * Resolves once pi has finished the run it had open when `stop` fired: at its `agent_settled`, which pi publishes after
-   * the handlers and before it runs the actions they deferred (agent-session.js:690-700), or at once when none was open.
+   * the handlers and before it runs the actions they deferred (agent-session.js:689-699), or at once when none was open.
    */
   readonly runSettled: Promise<void>;
 }
 
-// `builtin:<name>` and `<inline:...>` name no file (`source-info.js:14-16` in pi-coding-agent 1.3.0).
+// `builtin:<name>` and `<inline:...>` name no file (`source-info.js:14-16` in pi-coding-agent 1.4.0).
 const loadedFromFile = (extensionPath: string): boolean => !extensionPath.startsWith('builtin:') && !extensionPath.startsWith('<');
 
 function windDownOf(run: RunLifecycle, skipsBeforeSettle: boolean): AgentWindDown {
@@ -74,7 +74,7 @@ export function noticeWindDown(run: RunLifecycle, stop: AbortSignal, publish: (w
     else show();
   });
   const onStop = (): void => {
-    // A run aborted before it ended skips its `agent_before_settle` handlers (agent-session.js:1419, :1426).
+    // A run aborted before it ended skips its `agent_before_settle` handlers (agent-session.js:1450, :1457).
     skipsBeforeSettle = run.phase !== 'settle';
     const runEnds = run.untilRunEnds();
     if (runEnds) void runEnds.then(settleRun);

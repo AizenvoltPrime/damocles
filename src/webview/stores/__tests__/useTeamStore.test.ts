@@ -718,7 +718,7 @@ describe('useTeamStore failed model calls', () => {
     ]);
   });
 
-  // A failed call's tool calls never ran (pi's agent-loop.js:143-152), and the host marks their blocks so.
+  // A failed call's tool calls never ran (pi's agent-loop.js:148-157), and the host marks their blocks so.
   it('shows the tool calls of a failed call as not executed, live and reloaded, as one message', () => {
     const store = useTeamStore();
     const failedTurn: TeamAgentContentBlock[] = [{ type: 'text', text: 'Now I will' }, { type: 'tool_use', id: 'tc-failed', name: 'Read', input: { file_path: '/a.ts' }, abandoned: 'failed' }];

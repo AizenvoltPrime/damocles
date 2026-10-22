@@ -5,8 +5,8 @@
  * SecretStorage entries and are applied to the live `ModelRuntime` as
  * in-memory runtime API keys (`setRuntimeApiKey`) — never `process.env`. StepFun is registered fresh
  * against its step-plan SUBSCRIPTION endpoint
- * (`api.stepfun.ai/step_plan`, Anthropic-shaped, Bearer auth, model `step-5-preview`); DeepSeek, OpenRouter
- * and TypeSafe are existing pi providers that only need their key.
+ * (`api.stepfun.ai/step_plan`, Anthropic-shaped, Bearer auth, model `step-5-preview`); DeepSeek, MiniMax, xAI,
+ * OpenRouter and TypeSafe are existing pi providers that only need their key.
  *
  * This module owns the provider table and the cheap-model lookup (provider-matched Explore default, §4.9).
  *
@@ -31,6 +31,7 @@ import { log } from '../logger';
 import { describeAuthError, isCredentialSyncError } from './describe-error';
 import type { ModelLookup } from './pi-models';
 import { PROVIDER_SECRET_KEYS } from './explore-providers';
+import type { KeyProviderId } from '../../shared/settings-sections';
 
 /** pi's `registerProvider` config shape (`ProviderConfigInput` is not re-exported from the package root). */
 type ProviderConfigInput = Parameters<ModelRuntime['registerProvider']>[1];
@@ -38,7 +39,7 @@ type ProviderConfigInput = Parameters<ModelRuntime['registerProvider']>[1];
 /** A custom provider Damocles can register/authenticate from a stored secret. */
 export interface CustomProviderDef {
   /** pi provider name. */
-  provider: string;
+  provider: KeyProviderId;
   /** SecretStorage key holding the API key. */
   secretKey: string;
   /** Whether pi already ships this provider (only auth needed) or it must be registered fresh. */
@@ -48,6 +49,9 @@ export interface CustomProviderDef {
   cheapModelId?: string;
   /** Full `registerProvider` config for `mode: 'register'` providers (StepFun). */
   registerConfig?: ProviderConfigInput;
+  /** Whether a key bills a flat subscription rather than per token. A pure prefix test that never logs,
+   *  applied only to the key Damocles stored, never to an environment or `auth.json` credential. */
+  flatFeeKey?: (key: string) => boolean;
 }
 
 /**
@@ -62,10 +66,10 @@ export const TYPESAFE_SECRET_KEY = 'damocles.typesafe.apiKey';
 /**
  * The key-backed providers, registered/authenticated only when their secret is present. StepFun is
  * registered fresh (pi has no first-party StepFun provider); the others are pi providers that only need
- * their key set.
+ * their key set. Key order is the sync order and Automatic's background-model priority (`AUTOMATIC_BACKGROUND_MODELS`).
  */
-export const CUSTOM_PROVIDER_DEFS: readonly CustomProviderDef[] = [
-  {
+const KEY_PROVIDER_DEFS: { readonly [P in KeyProviderId]: CustomProviderDef & { readonly provider: P } } = {
+  stepfun: {
     provider: 'stepfun',
     secretKey: PROVIDER_SECRET_KEYS.stepfun,
     mode: 'register',
@@ -97,7 +101,7 @@ export const CUSTOM_PROVIDER_DEFS: readonly CustomProviderDef[] = [
       ],
     },
   },
-  {
+  deepseek: {
     // DeepSeek is a pi BUILT-IN provider (api.deepseek.com, openai-completions). It only needs its key
     // applied as a runtime override; `registry.getModel('deepseek', …)` always resolves. Its key lives
     // in its own SecretStorage entry.
@@ -106,23 +110,44 @@ export const CUSTOM_PROVIDER_DEFS: readonly CustomProviderDef[] = [
     mode: 'authenticate',
     cheapModelId: 'deepseek-flash',
   },
-  {
+  minimax: {
+    // pi built-in (api.minimax.io, the international platform). `sk-cp-` is a Token Plan subscription key;
+    // MiniMax charges the account balance only for a pay-as-you-go key.
+    provider: 'minimax',
+    secretKey: 'damocles.minimax.apiKey',
+    mode: 'authenticate',
+    cheapModelId: 'MiniMax-M3.1-Flash',
+    flatFeeKey: (key) => key.startsWith('sk-cp-'),
+  },
+  xai: {
+    provider: 'xai',
+    secretKey: 'damocles.xai.apiKey',
+    mode: 'authenticate',
+    cheapModelId: 'grok-4.7',
+  },
+  openrouter: {
     // Image generation, Jev on OpenRouter and template `model:` pins; no cheap model, so the Explore default never picks it.
     provider: 'openrouter',
     secretKey: PROVIDER_SECRET_KEYS.openrouter,
     mode: 'authenticate',
   },
-  {
+  typesafe: {
     // Classifier-only (Jev) for the memory judges.
     provider: 'typesafe',
     secretKey: TYPESAFE_SECRET_KEY,
     mode: 'authenticate',
   },
-];
+};
 
-/** Find the custom-provider def for a pi provider name. */
-export function customProviderDef(provider: string): CustomProviderDef | undefined {
-  return CUSTOM_PROVIDER_DEFS.find((d) => d.provider === provider);
+export const CUSTOM_PROVIDER_DEFS: readonly CustomProviderDef[] = Object.values(KEY_PROVIDER_DEFS);
+
+export function customProviderDef(provider: KeyProviderId): CustomProviderDef {
+  return KEY_PROVIDER_DEFS[provider];
+}
+
+/** The key provider whose key is stored under `secretKey`, if any. */
+export function keyProviderOfSecret(secretKey: string): KeyProviderId | undefined {
+  return CUSTOM_PROVIDER_DEFS.find((d) => d.secretKey === secretKey)?.provider;
 }
 
 /** Resolves a provider's secret value, or undefined when unset. PromiseLike so VS Code's
@@ -156,9 +181,22 @@ export interface SyncCustomProvidersResult {
  * refreshes the whole runtime under 0.85, but still enqueues a credential operation taking the
  * cross-process `auth.json` lock and re-probing availability — so the cache still earns its place, and
  * must NOT be deleted on the grounds that "the refresh is gone now". Keyed by runtime (WeakMap) so a
- * recreated runtime re-syncs from scratch.
+ * recreated runtime re-syncs from scratch. Also the billing source of `flatFeeKeyProviders`: an entry
+ * changes only once pi took the key, so billing follows the credential pi sends.
  */
 const syncedKeys = new WeakMap<ModelRuntime, Map<string, string>>();
+
+/** The key providers whose applied key bills a flat subscription (`CustomProviderDef.flatFeeKey`). Only ids leave this module, never a key. */
+export function flatFeeKeyProviders(runtime: ModelRuntime): ReadonlySet<KeyProviderId> {
+  const cache = syncedKeys.get(runtime);
+  const flat = new Set<KeyProviderId>();
+  if (!cache) return flat;
+  for (const def of CUSTOM_PROVIDER_DEFS) {
+    const key = cache.get(def.provider);
+    if (key !== undefined && def.flatFeeKey?.(key)) flat.add(def.provider);
+  }
+  return flat;
+}
 
 /**
  * Deauthenticate a custom provider whose secret is absent. Scoped strictly to what Damocles itself
@@ -316,23 +354,23 @@ export async function syncCustomProviders(deps: SyncCustomProvidersDeps): Promis
       wired.push(def.provider);
       changed.push(def.provider);
     } catch (err) {
-      // Abort first: a cancelled operation is not a provider failure, and its key must NOT be cached
-      // because it may never have been applied.
-      if (deps.signal?.aborted) {
-        cutShortAt = i;
-        break;
-      }
-      // pi commits the runtime key BEFORE the snapshot sync that failed, so the provider IS usable —
-      // cache it and report it wired; rolling back would leave a live key with no record of it. Apply
-      // path only: the same error from `deauthCustomProvider` means the credential was removed.
-      if (key && isCredentialSyncError(err)) {
+      // pi commits the runtime key, or its removal, before the snapshot sync, and wraps every failure of that
+      // sync, an abort included, as this error (model-runtime.js:404-437). So the key is live even when the
+      // signal fired: it must be cached, or billing would follow a key pi no longer sends.
+      const committed = isCredentialSyncError(err);
+      if (committed && key) {
         cache.set(def.provider, key);
         wired.push(def.provider);
-        changed.push(def.provider);
         log('[custom-providers] %s is wired, but pi could not resynchronize its local model snapshot (it may be stale): %s', def.provider, describeAuthError(err));
-        continue;
       }
-      if (!key && isCredentialSyncError(err)) changed.push(def.provider);
+      if (committed) changed.push(def.provider);
+      // An uncommitted operation cancelled is not a provider failure, and its key must not be cached: pi never took it.
+      if (deps.signal?.aborted) {
+        // A wired provider is past the cut, so it is never also reported not wired.
+        cutShortAt = committed && key ? i + 1 : i;
+        break;
+      }
+      if (committed && key) continue;
       notWired.push(def.provider);
       log('[custom-providers] failed to wire %s: %s', def.provider, describeAuthError(err));
     }

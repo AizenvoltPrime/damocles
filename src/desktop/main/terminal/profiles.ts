@@ -3,7 +3,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { TerminalIcon } from '../../preload/terminal-channels';
 import { runProcess } from '../../../core/process-launcher';
-import { searchPathEntries } from '../../../core/executable-path';
+import { executablePathForm, searchPathEntries } from '../../../core/executable-path';
+import { isFileOrAppAlias } from '../../../core/system-tools';
 
 /** A detected shell; id is stable across runs, and damocles.desktop.terminal.defaultProfile names one. */
 export interface TerminalProfile {
@@ -62,9 +63,14 @@ async function firstFile(probe: ProfileProbe, candidates: readonly string[]): Pr
   return undefined;
 }
 
+// A relative or UNC root would resolve against the working folder or reach another machine.
+function localRoot(value: string | undefined): string | undefined {
+  return value !== undefined && executablePathForm(value, 'win32').kind === 'absolute' ? value : undefined;
+}
+
 // PowerShell 7 where VS Code looks: Program Files\PowerShell\<highest major>, the other bitness's, the Store's alias, the .NET
-// global tool and Scoop.
-async function findPwsh(probe: ProfileProbe): Promise<string | undefined> {
+// global tool and Scoop. The PowerShell tool's findPwsh follows pi's order instead, since it runs the pwsh pi would.
+async function detectTerminalPwsh(probe: ProfileProbe): Promise<string | undefined> {
   const win = path.win32;
   const installed = async (programFiles: string | undefined): Promise<string | undefined> => {
     if (!programFiles) return undefined;
@@ -73,14 +79,14 @@ async function findPwsh(probe: ProfileProbe): Promise<string | undefined> {
     return firstFile(probe, majors.map((major) => win.join(base, major, 'pwsh.exe')));
   };
   const store = async (): Promise<string | undefined> => {
-    const localAppData = probe.env['LOCALAPPDATA'];
+    const localAppData = localRoot(probe.env['LOCALAPPDATA']);
     if (!localAppData) return undefined;
     const apps = win.join(localAppData, 'Microsoft', 'WindowsApps');
     const dir = (await listDir(probe, apps)).find((name) => /^Microsoft\.PowerShell_/.test(name));
     return dir === undefined ? undefined : firstFile(probe, [win.join(apps, dir, 'pwsh.exe')]);
   };
-  return (await installed(probe.env['ProgramFiles']))
-    ?? (await installed(probe.env['ProgramFiles(x86)']))
+  return (await installed(localRoot(probe.env['ProgramFiles'])))
+    ?? (await installed(localRoot(probe.env['ProgramFiles(x86)'])))
     ?? (await store())
     ?? (await firstFile(probe, [win.join(probe.homedir, '.dotnet', 'tools', 'pwsh.exe'), win.join(probe.homedir, 'scoop', 'apps', 'pwsh', 'current', 'pwsh.exe')]));
 }
@@ -137,7 +143,7 @@ async function windowsProfiles(probe: ProfileProbe): Promise<TerminalProfile[]> 
   const windowsPowerShell = win.join(system32, 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const cmd = win.join(system32, 'cmd.exe');
   const [pwsh, gitBash, hasWindowsPowerShell, hasCmd, distros] = await Promise.all([
-    findPwsh(probe),
+    detectTerminalPwsh(probe),
     findGitBash(probe),
     fileExists(probe, windowsPowerShell),
     fileExists(probe, cmd),
@@ -181,23 +187,6 @@ export function detectProfiles(probe: ProfileProbe): Promise<TerminalProfile[]> 
   return probe.platform === 'win32' ? windowsProfiles(probe) : posixProfiles(probe);
 }
 
-// An app execution alias (the Store's pwsh.exe) is a reparse point whose target a stat cannot always open; it still runs.
-async function isFile(file: string): Promise<boolean> {
-  let link: import('node:fs').Stats;
-  try {
-    link = await fs.lstat(file);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT' || (err as NodeJS.ErrnoException).code === 'ENOTDIR') return false;
-    throw err;
-  }
-  if (!link.isSymbolicLink()) return link.isFile();
-  try {
-    return (await fs.stat(file)).isFile();
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code !== 'ENOENT';
-  }
-}
-
 async function readDir(dir: string): Promise<string[]> {
   try {
     return await fs.readdir(dir);
@@ -232,5 +221,5 @@ export function windowsBuildNumber(release: string = os.release(), platform: Nod
 
 /** The probe over this machine's file system and environment. */
 export function systemProfileProbe(env: Readonly<Record<string, string | undefined>>, log: (line: string) => void): ProfileProbe {
-  return { platform: process.platform, env, homedir: os.homedir(), windowsBuild: windowsBuildNumber(), isFile, readDir, readText, run, log };
+  return { platform: process.platform, env, homedir: os.homedir(), windowsBuild: windowsBuildNumber(), isFile: isFileOrAppAlias, readDir, readText, run, log };
 }

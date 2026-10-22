@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n';
 import { Eye, Gauge, LoaderCircle, RotateCcw } from 'lucide-vue-next';
 import OverlayShell from './OverlayShell.vue';
 import OverlayHeaderAction from './OverlayHeaderAction.vue';
-import { providerLogoSvg } from '@/components/icons/provider-logos';
+import ProviderLogo from '@/components/icons/ProviderLogo.vue';
 import { useSubscriptionUsageStore } from '@/stores/useSubscriptionUsageStore';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { formatResetTime } from '@/utils/clock';
@@ -107,8 +107,8 @@ const providers = computed(() => {
   const data = store.data;
   if (!data) return [];
   return [
-    { id: 'claude' as const, name: t('usage.sectionClaude'), logo: providerLogoSvg('anthropic'), plan: null, usage: data.claude, notConnected: t('usage.claudeNotConnected'), label: (bar: UsageWindowBar) => barLabel(bar.id) },
-    { id: 'gpt' as const, name: t('usage.sectionGpt'), logo: providerLogoSvg('openai'), plan: data.gpt.status === 'ok' ? data.gpt.planType ?? null : null, usage: data.gpt, notConnected: t('usage.gptNotConnected'), label: windowLabel },
+    { id: 'claude' as const, name: t('usage.sectionClaude'), logoProvider: 'anthropic', plan: null, usage: data.claude, notConnected: t('usage.claudeNotConnected'), label: (bar: UsageWindowBar) => barLabel(bar.id) },
+    { id: 'gpt' as const, name: t('usage.sectionGpt'), logoProvider: 'openai', plan: data.gpt.status === 'ok' ? data.gpt.planType ?? null : null, usage: data.gpt, notConnected: t('usage.gptNotConnected'), label: windowLabel },
   ];
 });
 
@@ -226,14 +226,10 @@ function refresh(): void {
         :data-testid="`usage-${provider.id}`"
       >
         <div class="flex items-center gap-2">
-          <!-- eslint-disable vue/no-v-html -- a vendored static logo constant (provider-logos.ts) -->
-          <span
-            v-if="provider.logo"
-            class="flex size-3.25 flex-none [&>svg]:size-full"
-            aria-hidden="true"
-            v-html="provider.logo"
+          <ProviderLogo
+            :provider="provider.logoProvider"
+            class="flex size-3.25 flex-none"
           />
-          <!-- eslint-enable vue/no-v-html -->
           <h3 class="text-11 font-semibold tracking-[.06em] text-(--d-muted) uppercase">
             {{ provider.name }}
           </h3>

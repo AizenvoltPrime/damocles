@@ -8,7 +8,7 @@ const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 /**
  * A fake session that lets the test drive turn_end events and observe steer/abort. A prompt holds the session busy
  * until `finishPrompt`, which ends a run whose `agent_start` the test emitted as pi does: `agent_end`, then
- * `agent_settled` once the busy flag dropped, before `prompt()` resolves (`agent-session.js:684-707`, `:1392-1442` in pi 1.3.0).
+ * `agent_settled` once the busy flag dropped, before `prompt()` resolves (`agent-session.js:683-706`, `:1423-1473` in pi 1.4.0).
  */
 function makeSession() {
   const cbs: ((e: unknown) => void)[] = [];

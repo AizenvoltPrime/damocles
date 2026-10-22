@@ -56,6 +56,8 @@ export interface TeamModelDeps {
   claudeAuthMode: string;
   /** The curated model catalog — `piSupportedModels()`. Source of `supportedEffortLevels` per model. */
   supportedModels: readonly ModelInfo[];
+  /** Key providers whose applied key bills a flat subscription (`PiRuntime.flatFeeKeyProviders()`). */
+  flatFeeKeyProviders: ReadonlySet<string>;
   /** The user's per-role model/effort settings (read fresh from vscode config by the caller). */
   roleSettings: Record<TeamRole, TeamRoleSetting>;
 }

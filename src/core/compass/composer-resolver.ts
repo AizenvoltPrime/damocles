@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { stripBom } from '../config/bom';
 
 interface ComposerPsr4 {
 	prefixes: Array<{ namespace: string; dirs: string[] }>;
@@ -79,7 +80,7 @@ export class ComposerPsr4Resolver {
 
 		let parsed: unknown;
 		try {
-			parsed = JSON.parse(raw);
+			parsed = JSON.parse(stripBom(raw));
 		} catch {
 			return null;
 		}

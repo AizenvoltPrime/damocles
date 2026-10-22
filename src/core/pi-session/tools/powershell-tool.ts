@@ -7,19 +7,17 @@ import type { PiCodingAgentModule } from '../pi-loader';
 import { TOOL_POWERSHELL } from '../../../shared/tool-names';
 import { resolveTimeoutMs, SHELL_EXIT_OUTPUT_GRACE_MS, waitForShellExit, withCommandDescription, type ShellExit } from './bash-tool';
 import { processLauncher, type SessionJob } from '../../process-launcher';
-import { findOnAbsolutePathAsync, windowsPowerShell } from '../../system-tools';
+import { findPwsh, windowsPowerShell } from '../../system-tools';
 
 /** Without it PowerShell writes the console codepage and any non-ASCII output decodes as mojibake. */
 const UTF8_OUTPUT_PREFIX = 'try { [Console]::OutputEncoding=[System.Text.Encoding]::UTF8 } catch {}\n';
-
-const PWSH = process.platform === 'win32' ? 'pwsh.exe' : 'pwsh';
 
 /**
  * Absolute paths only: a bare name would search the working folder (a repository) first on Windows. `pwsh` leads so
  * PowerShell 7 wins where both exist, and it is the only one off Windows.
  */
 async function powerShellExecutables(env: NodeJS.ProcessEnv): Promise<string[]> {
-  const pwsh = await findOnAbsolutePathAsync(PWSH, process.platform, env);
+  const pwsh = await findPwsh(env);
   return [...(pwsh !== undefined ? [pwsh] : []), ...(process.platform === 'win32' ? [windowsPowerShell()] : [])];
 }
 
@@ -140,7 +138,7 @@ export function createTrackedPowerShellOperations(shellJob: SessionJob | undefin
         if (!('startError' in result)) return result;
         failures.push(`${exe}: ${result.startError.message}`);
       }
-      const tried = process.platform === 'win32' ? `${PWSH} on PATH and Windows PowerShell` : `${PWSH} on PATH`;
+      const tried = process.platform === 'win32' ? 'pwsh.exe on PATH or in %ProgramFiles%\\PowerShell\\7, then Windows PowerShell' : 'pwsh on PATH';
       throw new Error(`No PowerShell executable could start (looked for ${tried}${failures.length > 0 ? `; ${failures.join('; ')}` : ''}).`);
     },
   };

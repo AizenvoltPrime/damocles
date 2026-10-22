@@ -1046,7 +1046,7 @@ describe('AgentRunner tool count', () => {
     type: 'tool_execution_end', toolCallId: id, toolName: 'read', result: { content: [{ type: 'text', text }], details: {} }, isError,
   });
 
-  // pi emits `tool_execution_start` (agent-loop.js:378, :414 in pi-agent-core 1.3.0) before `beforeToolCall`, where the gate blocks a call (:493).
+  // pi emits `tool_execution_start` (agent-loop.js:384, :420 in pi-agent-core 1.4.0) before `beforeToolCall`, where the gate blocks a call (:499).
   it('counts each call as pi starts it, a blocked call included', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
     const counts: Array<[string, number]> = [];
@@ -1083,7 +1083,7 @@ describe('AgentRunner tool count', () => {
     ]);
   });
 
-  // pi starts no call after the one an abort lands in (agent-loop.js:402-404, :429-431, :449-451 in pi-agent-core 1.3.0).
+  // pi starts no call after the one an abort lands in (agent-loop.js:408-410, :435-437, :455-457 in pi-agent-core 1.4.0).
   it('counts no call a batch cut short by an abort skipped', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
     const onToolCall = vi.fn();
@@ -1349,7 +1349,7 @@ async function withStopHook(body: (hook: StopHook, fake: FakeSession) => Promise
 
 /**
  * A completed assistant message carrying one tool call per name, each paired with the successful result
- * pi builds for it (`createToolResultMessage`, `agent-loop.js:656-670` in pi-agent-core 1.3.0, keys the result to the call id and carries `isError`).
+ * pi builds for it (`createToolResultMessage`, `agent-loop.js:662-676` in pi-agent-core 1.4.0, keys the result to the call id and carries `isError`).
  */
 function turnWith(...names: string[]): AgentTurnContext {
   return {
@@ -1369,7 +1369,7 @@ describe('AgentRunner terminal-tool turn stop', () => {
 
   it('does not stop the turn while the session has a queued message', async () => {
     // pi polls its steering queue only after this check, so stopping here would make it end the loop and
-    // start another for the message (`agent-session.js:1500-1536` in pi 1.3.0): an extra request.
+    // start another for the message (`agent-session.js:1531-1565` in pi 1.4.0): an extra request.
     await withStopHook(async (hook, fake) => {
       fake.queueSteer('[Message from Lead]: one more thing');
       expect(await hook(turnWith('team_standby'))).toBe(false);
@@ -1930,7 +1930,7 @@ describe('AgentRunner image steers', () => {
   });
 });
 
-/** A call that streams `text` and answers with it, from its `message_start` to its `message_end` (`agent-loop.js:286-319`). */
+/** A call that streams `text` and answers with it, from its `message_start` to its `message_end` (`agent-loop.js:292-325`). */
 function emitAnsweredCall(s: FakeSession, text: string): void {
   s.emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
   s.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: text } });
@@ -2036,7 +2036,7 @@ describe('AgentRunner provider failures', () => {
     expect(sent.some((m) => m.type === 'error')).toBe(false);
     expect(failedMessageId).not.toBe('');
     expect(sent.filter((m) => m.type === 'assistantRetracted')).toEqual([{ type: 'assistantRetracted', messageId: failedMessageId, parentToolUseId: 'a1' }]);
-    // The failed attempt's tool call never ran: pi ends an errored turn before executing tools (`agent-loop.js:143`).
+    // The failed attempt's tool call never ran: pi ends an errored turn before executing tools (`agent-loop.js:148`).
     expect(onToolCall).not.toHaveBeenCalled();
     expect(sent.some((m) => m.type === 'teamAgentToolCall')).toBe(false);
     // The wait ends when the retried call starts, before anything it streams.
@@ -2114,7 +2114,7 @@ describe('AgentRunner provider failures', () => {
 
 /**
  * The nested extension's wind-down record: at an error stop's `turn_end` boundary under an aborted signal it names the
- * stop's entry, and pi commits the draft before listeners get that `turn_end` (`agent-session.js:515`, `:636-641`).
+ * stop's entry, and pi commits the draft before listeners get that `turn_end` (`agent-session.js:514`, `:635-640`).
  */
 function recordWindDown(s: FakeSession, message: unknown): void {
   const persisted = s.branch.find((e) => (e as { message?: unknown }).message === message) as { id: string };
@@ -2143,7 +2143,7 @@ describe('AgentRunner reloaded transcript of a failed call', () => {
     ]);
   });
 
-  // pi returns from the turn before executing any tool of an errored message (agent-loop.js:143-152).
+  // pi returns from the turn before executing any tool of an errored message (agent-loop.js:148-157).
   it('marks the tool calls of a failed call as not executed, with the same blocks the live card was sent', async () => {
     const withTool = { ...failed, content: [{ type: 'text', text: 'Now I will' }, { type: 'toolCall', id: 'tc-failed', name: 'read', arguments: { path: '/a.ts' } }] } as unknown as PersistedAgentMessage;
     const fake = new FakeSession({ maxRetries: 0, onModelCall: (_c, s) => s.failCall('529 overloaded_error', { partial: 'Now I will', toolCall: true }) });
@@ -2159,7 +2159,7 @@ describe('AgentRunner reloaded transcript of a failed call', () => {
     expect(live).toEqual([reloaded!.content]);
   });
 
-  // pi returns before executing any tool of an aborted message too (agent-loop.js:143).
+  // pi returns before executing any tool of an aborted message too (agent-loop.js:148).
   it('marks the tool calls of an aborted call as stopped, with the same blocks the live card was sent', async () => {
     const aborted = { role: 'assistant', content: [{ type: 'toolCall', id: 'tc-aborted', name: 'read', arguments: { path: '/a.ts' } }], stopReason: 'aborted', errorMessage: 'Request was aborted' };
     const cancel = new AbortController();
@@ -2183,9 +2183,9 @@ describe('AgentRunner reloaded transcript of a failed call', () => {
     expect(sent.some((m) => m.type === 'teamAgentToolCall')).toBe(false);
   });
 
-  // pi finalizes the call it was running and starts none after it (agent-loop.js:402-404, :429-431, :449-451 in
-  // pi-agent-core 1.3.0), drains steers (:186) and makes the next request under the aborted signal (:141), whose
-  // setup rejects it, so it ends on an error stop (`model-runtime.js:515-518`, pi-ai `lazy.js:36-46`) the nested
+  // pi finalizes the call it was running and starts none after it (agent-loop.js:408-410, :435-437, :455-457 in
+  // pi-agent-core 1.4.0), drains steers (:191) and makes the next request under the aborted signal (:146), whose
+  // setup rejects it, so it ends on an error stop (`model-runtime.js:518-521`, pi-ai `lazy.js:45-65`) the nested
   // extension records as the run's wind-down.
   it('re-seals a batch an abort cut short with its skipped calls stopped, the blocks its reload builds', async () => {
     const call = (id: string) => ({ type: 'toolCall', id, name: 'read', arguments: { path: `/${id}.ts` } });
@@ -2224,9 +2224,9 @@ describe('AgentRunner reloaded transcript of a failed call', () => {
     expect(JSON.stringify(sealed[1]!.content)).toBe(JSON.stringify(reloaded!.content));
   });
 
-  // The nested extension records a call the abort settled at the gate (agent-loop.js:500-504 in pi-agent-core 1.3.0)
+  // The nested extension records a call the abort settled at the gate (agent-loop.js:506-510 in pi-agent-core 1.4.0)
   // and pi emits the entry inside the extension pass, before listeners get that call's tool_execution_end
-  // (agent-session.js:753, :2754-2759 in pi 1.3.0).
+  // (agent-session.js:752, :2783-2788 in pi 1.4.0).
   it('re-seals a call the turn-stopped record names as stopped, sends no result for it, and matches its reload', async () => {
     const call = (id: string) => ({ type: 'toolCall', id, name: 'bash', arguments: { command: `run ${id}` } });
     const batch = { role: 'assistant', content: [call('tc-gated'), call('tc-skipped')], stopReason: 'toolUse' };
@@ -2316,12 +2316,12 @@ describe('AgentRunner reloaded transcript of a failed call', () => {
 });
 
 /**
- * A team cancel while a member runs a tool, in pi 1.3.0's order: the runner's abort listener aborts the session,
- * pi records the killed call with its `durationMs` (`agent-loop.js:584-592` in pi-agent-core 1.3.0), and the loop's
- * next request, made under the aborted signal (`:141`), ends on an error stop because its setup rejects first
- * (`model-runtime.js:515-518`, `lazy.js:36-46` in pi-ai 1.3.0). The nested extension names its entry at its
+ * A team cancel while a member runs a tool, in pi 1.4.0's order: the runner's abort listener aborts the session,
+ * pi records the killed call with its `durationMs` (`agent-loop.js:590-598` in pi-agent-core 1.4.0), and the loop's
+ * next request, made under the aborted signal (`:146`), ends on an error stop because its setup rejects first
+ * (`model-runtime.js:518-521`, `lazy.js:45-65` in pi-ai 1.4.0). The nested extension names its entry at its
  * `turn_end` boundary (`registerWindDownErrorRecord`), which pi commits before the listeners get that `turn_end`
- * (`agent-session.js:515`, `:636-641`).
+ * (`agent-session.js:514`, `:635-640`).
  */
 describe('AgentRunner wind-down error of a cancelled run', () => {
   const call = (id: string) => ({ type: 'toolCall', id, name: 'bash', arguments: { command: 'sleep 20' } });

@@ -42,7 +42,7 @@ export interface SubagentGateContext extends GatePermissionContext {
   hooks?: DispatchDeps;
   /**
    * Aborted by a Stop of this agent. The PostToolUse and SubagentStop hooks take it, because pi awaits them in the
-   * stopped run's wind-down and gives an `agent_settled` handler no signal (`agent.js:214-216` in pi-agent-core 1.3.0).
+   * stopped run's wind-down and gives an `agent_settled` handler no signal (`agent.js:217-219` in pi-agent-core 1.4.0).
    */
   stopSignal: AbortSignal;
   /** This agent's deferrable universe: the names ToolSearch may activate. Empty ⇒ nothing deferred. */

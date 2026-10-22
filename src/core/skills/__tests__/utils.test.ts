@@ -154,6 +154,13 @@ describe('loadSkillDescription', () => {
     await expect(loadSkillDescription('demo', ws)).resolves.toBeUndefined();
   });
 
+  it('resolves the description of a SKILL.md that starts with a BOM', async () => {
+    const dir = path.join(ws, '.damocles/skills', 'demo');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'SKILL.md'), '\uFEFF---\nname: demo\ndescription: with bom\n---\n\nbody\n', 'utf8');
+    await expect(loadSkillDescription('demo', ws)).resolves.toBe('with bom');
+  });
+
   // The approval prompt shows no description for a name this reader rejects, so it has to accept every
   // name the scanner can list.
   it('resolves a description for a dotted skill name', async () => {

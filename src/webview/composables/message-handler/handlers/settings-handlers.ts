@@ -117,26 +117,14 @@ export const settingsViewHandlers: SettingsViewHandlers = {
   claudeSignInWaiting: (msg, ctx) => {
     ctx.stores.settingsStore.setClaudeSignInWaiting(msg.waiting);
   },
-  stepfunAuthStatusChanged: (msg, ctx) => {
-    ctx.stores.settingsStore.setStepfunConfigured(msg.configured);
+  providerAuthStatusChanged: (msg, ctx) => {
+    ctx.stores.settingsStore.setKeyProviderConfigured(msg.provider, msg.configured, msg.external);
   },
-  setStepfunApiKeyAck: acknowledgedByPanel,
-  clearStepfunApiKeyAck: acknowledgedByPanel,
-  deepseekAuthStatusChanged: (msg, ctx) => {
-    ctx.stores.settingsStore.setDeepseekConfigured(msg.configured);
+  setProviderApiKeyAck: acknowledgedByPanel,
+  clearProviderApiKeyAck: acknowledgedByPanel,
+  memoryJudgeStatus: (msg, ctx) => {
+    ctx.stores.settingsStore.setMemoryJudgeStatus(msg.memoryJudge, msg.classifierCredentials);
   },
-  setDeepseekApiKeyAck: acknowledgedByPanel,
-  clearDeepseekApiKeyAck: acknowledgedByPanel,
-  typesafeAuthStatusChanged: (msg, ctx) => {
-    ctx.stores.settingsStore.setTypesafeStatus(msg.configured, msg.memoryJudge, msg.classifierCredentials);
-  },
-  setTypesafeApiKeyAck: acknowledgedByPanel,
-  clearTypesafeApiKeyAck: acknowledgedByPanel,
-  openrouterAuthStatusChanged: (msg, ctx) => {
-    ctx.stores.settingsStore.setOpenrouterConfigured(msg.configured);
-  },
-  setOpenrouterApiKeyAck: acknowledgedByPanel,
-  clearOpenrouterApiKeyAck: acknowledgedByPanel,
   extensionUiRequest: (msg, ctx) => {
     ctx.stores.extensionUiStore.setRequest({
       requestId: msg.requestId,

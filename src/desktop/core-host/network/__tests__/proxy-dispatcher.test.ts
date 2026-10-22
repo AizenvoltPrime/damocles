@@ -1,7 +1,18 @@
+import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as net from 'node:net';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { installProxyDispatcher, parseProxyList, type ProxySource } from '../proxy-dispatcher';
+
+const agentDir = vi.hoisted(() => ({ path: '' }));
+vi.mock('../../../../core/pi-session/agent-dir', () => ({
+  get PI_AGENT_DIR() {
+    return agentDir.path;
+  },
+}));
+
+import { httpIdleTimeoutMs, installProxyDispatcher, parseProxyList, type ProxySource } from '../proxy-dispatcher';
 
 const IDLE_TIMEOUT_MS = 300_000;
 
@@ -93,6 +104,41 @@ describe('parseProxyList', () => {
       skipped: ['SOCKS'],
     });
     expect(parseProxyList('QUIC q.corp:443')).toEqual({ route: { kind: 'direct' }, skipped: ['QUIC'] });
+  });
+});
+
+describe('httpIdleTimeoutMs', () => {
+  it('reads a pi settings.json that starts with a BOM', async () => {
+    agentDir.path = fs.mkdtempSync(path.join(os.tmpdir(), 'dam-idle-'));
+    try {
+      fs.writeFileSync(path.join(agentDir.path, 'settings.json'), `\uFEFF${JSON.stringify({ httpIdleTimeoutMs: 1234 })}`);
+      expect(await httpIdleTimeoutMs(log)).toBe(1234);
+      expect(lines).toEqual([]);
+    } finally {
+      fs.rmSync(agentDir.path, { recursive: true, force: true });
+    }
+  });
+
+  it('takes the default silently from an empty file, which pi reads as no settings', async () => {
+    agentDir.path = fs.mkdtempSync(path.join(os.tmpdir(), 'dam-idle-'));
+    try {
+      fs.writeFileSync(path.join(agentDir.path, 'settings.json'), '');
+      expect(await httpIdleTimeoutMs(log)).toBe(IDLE_TIMEOUT_MS);
+      expect(lines).toEqual([]);
+    } finally {
+      fs.rmSync(agentDir.path, { recursive: true, force: true });
+    }
+  });
+
+  it('takes the default from a file that does not parse, logging the error by name and never the file text', async () => {
+    agentDir.path = fs.mkdtempSync(path.join(os.tmpdir(), 'dam-idle-'));
+    try {
+      fs.writeFileSync(path.join(agentDir.path, 'settings.json'), '{"token":"sk-file-text"}}');
+      expect(await httpIdleTimeoutMs(log)).toBe(IDLE_TIMEOUT_MS);
+      expect(lines).toEqual([`[network] ${path.join(agentDir.path, 'settings.json')} unreadable, using the default idle timeout: SyntaxError`]);
+    } finally {
+      fs.rmSync(agentDir.path, { recursive: true, force: true });
+    }
   });
 });
 

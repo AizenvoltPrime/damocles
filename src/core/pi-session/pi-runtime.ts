@@ -4,6 +4,7 @@ import { existsSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { log } from '../logger';
+import { t } from '../l10n';
 import { serializeSettingWrite } from '../settings-write-chain';
 import { timed } from '../perf';
 import { initPiLoader, getPiCodingAgent, loadPiAi, loadedPiAi, type PiCodingAgentModule } from './pi-loader';
@@ -19,7 +20,7 @@ import type { AdditionMemory, NoticeMemory, PersonalToolLists, RenamedRuleNotice
 import { inertToolListEntry } from '../permission-handler/mcp-resource-rule';
 import { piSupportedModels } from './pi-models';
 import { piModelDollarBilled } from './account-billing';
-import { CUSTOM_PROVIDER_DEFS, syncCustomProviders, type SecretResolver } from './custom-providers';
+import { flatFeeKeyProviders, keyProviderOfSecret, syncCustomProviders, type SecretResolver } from './custom-providers';
 import {
   resolveAutomaticModel,
   resolveBackgroundModel,
@@ -74,7 +75,8 @@ import { OPENAI_KEY_MOVED_MARKER_PATH } from '../paths';
 import { FolderRuntime, type ExtensionLoadError } from './folder-runtime';
 import { MCP_RESOURCE_EXPOSURE_SETTING, MCP_TOOL_EXPOSURE_SETTING, renamedRuleNoticeKey, type McpRenamedToolRuleLocation } from '../../shared/types/mcp';
 import { folderKey } from '../workspace-folders/folder-key';
-import { withQueuePolicy } from './queue-policy';
+import type { ExternalKeySource } from '../../shared/settings-sections';
+import { withSettingsPolicy } from './settings-policy';
 import { platform } from '../platform-host';
 import type { Platform } from '../../platform/platform';
 import type { Disposable } from '../../platform/disposable';
@@ -103,8 +105,19 @@ const AUTH_REPUBLISH_DEBOUNCE_MS = 150;
 /** Module-level so subscribing never creates the singleton: activation must leave `PiRuntime.exists` false. */
 const memoryJudgeListeners = new Set<() => void>();
 function notifyMemoryJudgeListeners(): void {
-  for (const listener of memoryJudgeListeners) listener();
+  for (const listener of [...memoryJudgeListeners]) {
+    try {
+      listener();
+    } catch (err) {
+      log('[PiRuntime] memory judge listener failed: %O', err);
+    }
+  }
 }
+/** `accountChanged`: the sync may have changed an account input, so every panel's account state is stale. */
+export interface CustomProvidersSynced {
+  accountChanged: boolean;
+}
+const customProvidersSyncedListeners = new Set<(sync: CustomProvidersSynced) => void>();
 const authFileListeners = new Set<() => void>();
 function notifyAuthFileListeners(): void {
   for (const listener of [...authFileListeners]) listener();
@@ -240,6 +253,19 @@ function isInsideDir(file: string, dir: string): boolean {
   return !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
+type PiSettingsError = ReturnType<SettingsManager['drainErrors']>[number];
+
+/** A settings error's code or name, never its message, which for a parse error can quote the file's text. */
+function settingsErrorName(error: Error): string {
+  return (error as NodeJS.ErrnoException).code ?? error.name;
+}
+
+/** Logs the load errors pi recorded and returns the user settings file's (its global scope). */
+function userSettingsLoadError(errors: readonly PiSettingsError[]): PiSettingsError | null {
+  for (const err of errors) log('[PiRuntime] pi could not load the %s settings file %s (%s)', err.scope, err.path ?? '', settingsErrorName(err.error));
+  return errors.find((e) => e.scope === 'global') ?? null;
+}
+
 /**
  * The live rename/tag surface a panel registers for its open session, so a mutation initiated from any
  * panel routes to the owning panel's live SessionManager rather than a second file-writer that would
@@ -291,6 +317,8 @@ export class PiRuntime {
   private readonly _modelRuntimeWaiters = new Set<(models: ModelRuntime) => void>();
   /** User-scope settings for package operations; the subscription plugin is only ever listed there. */
   private _userSettings: SettingsManager | null = null;
+  /** The error pi recorded at its latest load of the user settings file, which it writes nothing to while set. */
+  private _userSettingsLoadError: PiSettingsError | null = null;
   /** Creation promises by folder key, so concurrent `folder()` calls share one creation. */
   private readonly _folderPromises = new Map<string, Promise<FolderRuntime>>();
   /** Folder runtimes whose creation (including its subscription check) has finished. */
@@ -475,6 +503,14 @@ export class PiRuntime {
     memoryJudgeListeners.add(listener);
     return () => {
       memoryJudgeListeners.delete(listener);
+    };
+  }
+
+  /** Fires after every key-provider sync, failed ones included, once the folders' tools reflect it. Subscribing does not create the singleton. */
+  static onCustomProvidersSynced(listener: (sync: CustomProvidersSynced) => void): () => void {
+    customProvidersSyncedListeners.add(listener);
+    return () => {
+      customProvidersSyncedListeners.delete(listener);
     };
   }
 
@@ -745,7 +781,13 @@ export class PiRuntime {
   }
 
   private _publishAccountInfoToSessions(): void {
-    for (const session of new Set(this._sessionMutators.values())) session.publishAccountInfo();
+    for (const session of new Set(this._sessionMutators.values())) {
+      try {
+        session.publishAccountInfo();
+      } catch (err) {
+        log('[PiRuntime] publishing a session\'s account state failed: %O', err);
+      }
+    }
     notifyMemoryJudgeListeners();
   }
 
@@ -775,13 +817,21 @@ export class PiRuntime {
     });
     for (const resolve of this._modelRuntimeWaiters) resolve(this._modelRuntime);
     this._modelRuntimeWaiters.clear();
-    this._userSettings = withQueuePolicy(pi.SettingsManager.create(this._agentDir, this._agentDir));
+    const userSettings = withSettingsPolicy(pi.SettingsManager.create(this._agentDir, this._agentDir));
+    this._userSettings = userSettings;
+    // A new manager has written nothing, so every error it holds is from its load.
+    this._userSettingsLoadError = userSettingsLoadError(userSettings.drainErrors());
+    if (this._userSettingsLoadError) {
+      void this._platform.notifications.warn(
+        t('Damocles could not read {0}, so pi runs without the settings and packages it holds. Fix or delete the file; Damocles reads it again the next time it starts.', this._userSettingsPath(this._userSettingsLoadError)),
+      );
+    }
     // Before the first sync, so a change between its secret read and init's end is not missed; the resync awaits init.
     this._secretsListener?.dispose();
     // Fires for a key changed in another window too, so that window's change reaches this runtime and its breakers.
     this._secretsListener = this._platform.secrets.onDidChange((key) => {
       if (key === OPENAI_API_KEY_SECRET) void this._resyncOpenAIAndRepublish('a key secret change', true);
-      else if (CUSTOM_PROVIDER_DEFS.some((def) => def.secretKey === key)) void this.syncCustomProviders((k) => this._platform.secrets.get(k));
+      else if (keyProviderOfSecret(key)) void this.syncCustomProviders((k) => this._platform.secrets.get(k));
     });
     // Before the auth.json watcher and before init resolves, which every OpenAI sign-in awaits.
     await this._withOpenAICredentialSync(async () => {
@@ -916,7 +966,7 @@ export class PiRuntime {
   }
 
   /**
-   * Register/authenticate the key-backed providers (StepFun/DeepSeek/OpenRouter/TypeSafe) on the shared registry
+   * Register/authenticate the key-backed providers (`CUSTOM_PROVIDER_DEFS`) on the shared registry
    * from each one's `CUSTOM_PROVIDER_DEFS` secret (Phase 5, US-018.8). Idempotent and fail-soft: called on
    * session start and on secret change so subagents can reach those models by explicit id (no loopback
    * proxy). No-op when the runtime is not yet initialized.
@@ -929,6 +979,9 @@ export class PiRuntime {
    */
   async syncCustomProviders(getSecret: SecretResolver): Promise<{ wired: string[]; notWired: string[]; timedOut: boolean }> {
     if (this._disposed || !this._modelRuntime) return { wired: [], notWired: [], timedOut: false };
+    // A changed credential can change a key kind's billing (`flatFeeKeyProviders`), and a failed sync may have changed one unreported.
+    let republishAccount = true;
+    const flatFeeBefore = this.flatFeeKeyProviders();
     try {
       const { wired, aborted, notWired, changed } = await syncCustomProviders({
         modelRuntime: this._modelRuntime,
@@ -938,6 +991,7 @@ export class PiRuntime {
           if (provider === 'openrouter') this._openRouterCatalogAbort?.abort();
         },
       });
+      republishAccount = changed.length > 0;
       for (const provider of changed) this._classifierBreakers.reset(provider);
       if (changed.includes('openrouter') && wired.includes('openrouter')) this._refreshOpenRouterCatalog();
       if (wired.length > 0) log('[PiRuntime] custom providers wired: %s', wired.join(', '));
@@ -956,7 +1010,19 @@ export class PiRuntime {
       // GenerateImage's eligibility reads `hasConfiguredAuth('openrouter')`, which only now reflects the secret.
       for (const folder of this.folders()) folder.refreshActiveTools();
       this._customProvidersSynced = true;
-      notifyMemoryJudgeListeners();
+      // A removal drops its cache entry before pi takes it, so a failure there changes billing without a `changed` entry.
+      const flatFeeAfter = this.flatFeeKeyProviders();
+      const accountChanged = republishAccount || flatFeeAfter.size !== flatFeeBefore.size || [...flatFeeAfter].some((p) => !flatFeeBefore.has(p));
+      if (accountChanged) this._publishAccountInfoToSessions();
+      else notifyMemoryJudgeListeners();
+      // Isolated: a throw in this `finally` would replace the sync's result and skip the listeners after it.
+      for (const listener of [...customProvidersSyncedListeners]) {
+        try {
+          listener({ accountChanged });
+        } catch (err) {
+          log('[PiRuntime] custom provider sync listener failed: %O', err);
+        }
+      }
     }
   }
 
@@ -1374,7 +1440,7 @@ export class PiRuntime {
       await this._acquireSubscriptionPlugin(pm);
     } catch (err) {
       await this._withProviderSync(async () => {
-        await this._settings().reload();
+        await this._reloadSettings();
         await this._unlistMissingClone(pm, this.folders());
       });
       throw err;
@@ -1384,7 +1450,7 @@ export class PiRuntime {
 
   /** Runs on `_providerSync`. `acquired`: the pinned clone was just downloaded and is not listed yet. */
   private async _applyPluginInstalled(pi: PiCodingAgentModule, installed: boolean, acquired: boolean): Promise<void> {
-    await this._settings().reload();
+    await this._reloadSettings();
     const folders = this.folders();
     const pm = this._packageManager(pi);
     const kinds = listedSubscriptionKinds(this._userPackages());
@@ -1418,15 +1484,37 @@ export class PiRuntime {
     return this._userPackages().map(packageSourceString);
   }
 
-  // pi queues settings writes and reports failures through drainErrors, never by throwing. A step must
-  // not reload or delete on top of a write that never reached disk, because reload re-reads the disk.
-  private async _flushSettings(): Promise<void> {
+  /** The agent `settings.json`, which the user-scope manager loads as its global scope. */
+  private _userSettingsPath(err: PiSettingsError): string {
+    return err.path ?? path.join(this._agentDir, 'settings.json');
+  }
+
+  // pi records a load error only when it loads (at creation and in reload), so each load's outcome is kept
+  // here. Queued writes settle first, so what pi records during the reload is its load's. Every Damocles write
+  // drains its own errors, so one left now is another writer's (a ChatGPT sign-in's device id) and only logged.
+  private async _reloadSettings(): Promise<void> {
     const settings = this._settings();
     await settings.flush();
+    for (const err of settings.drainErrors()) log('[PiRuntime] settings write failed (%s): %s', err.scope, settingsErrorName(err.error));
+    await settings.reload();
+    this._userSettingsLoadError = userSettingsLoadError(settings.drainErrors());
+  }
+
+  // pi reports a failed write only through drainErrors and drops every write while its last load failed
+  // (settings-manager.js:474-478), so this refuses first: no step may change, reload or delete on top of a dropped write.
+  private async _writeUserSettings(write: () => void): Promise<void> {
+    if (this._userSettingsLoadError) {
+      throw new Error(
+        t('Damocles could not read {0}, so pi cannot save this change to it. Fix or delete the file, then try again.', this._userSettingsPath(this._userSettingsLoadError)),
+      );
+    }
+    const settings = this._settings();
+    write();
+    await settings.flush();
     const errors = settings.drainErrors();
-    for (const err of errors) log('[PiRuntime] settings write failed (%s): %s', err.scope, err.error.message);
+    for (const err of errors) log('[PiRuntime] settings write failed (%s): %s', err.scope, settingsErrorName(err.error));
     const userErrors = errors.filter((e) => e.scope === 'global');
-    if (userErrors.length > 0) throw new Error(`settings write failed: ${userErrors.map((e) => e.error.message).join('; ')}`);
+    if (userErrors.length > 0) throw new Error(`settings write failed (${userErrors.map((e) => settingsErrorName(e.error)).join('; ')})`);
   }
 
   /**
@@ -1465,8 +1553,7 @@ export class PiRuntime {
   // A listed entry whose clone is gone loads nothing; a stale clone that is still intact keeps working.
   private async _unlistMissingClone(pm: PackageManager, folders: readonly FolderRuntime[]): Promise<void> {
     if (!this._listedSources().some(namesCurrentRepo) || this._isCurrentCloneIntact(pm)) return;
-    pm.removeSourceFromSettings(SUBSCRIPTION_SOURCE);
-    await this._flushSettings();
+    await this._writeUserSettings(() => pm.removeSourceFromSettings(SUBSCRIPTION_SOURCE));
     await this._reloadAfterUnlist(folders);
   }
 
@@ -1530,9 +1617,10 @@ export class PiRuntime {
     }
 
     const legacyEntries = this._userPackages().filter((p) => classifySubscriptionSource(packageSourceString(p)) === 'legacy');
-    pm.addSourceToSettings(SUBSCRIPTION_SOURCE);
-    for (const repo of LEGACY_SUBSCRIPTION_REPOS) pm.removeSourceFromSettings(repo);
-    await this._flushSettings();
+    await this._writeUserSettings(() => {
+      pm.addSourceToSettings(SUBSCRIPTION_SOURCE);
+      for (const repo of LEGACY_SUBSCRIPTION_REPOS) pm.removeSourceFromSettings(repo);
+    });
 
     let failure: string;
     try {
@@ -1554,11 +1642,12 @@ export class PiRuntime {
       failure = err instanceof Error ? err.message : String(err);
     }
 
-    pm.removeSourceFromSettings(SUBSCRIPTION_SOURCE);
-    // Another window may have deleted a legacy clone meanwhile; relisting it would make pi re-clone it.
-    const restorable = legacyEntries.filter((e) => pm.getInstalledPath(packageSourceString(e), 'user') !== undefined);
-    if (restorable.length > 0) this._settings().setPackages([...this._userPackages(), ...restorable]);
-    await this._flushSettings();
+    await this._writeUserSettings(() => {
+      pm.removeSourceFromSettings(SUBSCRIPTION_SOURCE);
+      // Another window may have deleted a legacy clone meanwhile; relisting it would make pi re-clone it.
+      const restorable = legacyEntries.filter((e) => pm.getInstalledPath(packageSourceString(e), 'user') !== undefined);
+      if (restorable.length > 0) this._settings().setPackages([...this._userPackages(), ...restorable]);
+    });
     await this._reloadAfterUnlist(folders);
     throw new Error(`subscription plugin failed to load: ${failure}`);
   }
@@ -1577,8 +1666,7 @@ export class PiRuntime {
     if (loadErrors.length === 0 && !unregistered) return false;
     for (const e of loadErrors) log('[PiRuntime] subscription plugin failed to load, switching to extra usage (%s): %s', e.path, e.error);
     if (unregistered) log('[PiRuntime] subscription plugin registered no anthropic provider, switching to extra usage');
-    pm.removeSourceFromSettings(SUBSCRIPTION_SOURCE);
-    await this._flushSettings();
+    await this._writeUserSettings(() => pm.removeSourceFromSettings(SUBSCRIPTION_SOURCE));
     await this._reloadAfterUnlist(folders);
     return true;
   }
@@ -1590,7 +1678,7 @@ export class PiRuntime {
    */
   private async _reconcileSubscriptionPin(pi: PiCodingAgentModule, folders: readonly FolderRuntime[], created: FolderRuntime): Promise<void> {
     try {
-      await this._settings().reload();
+      await this._reloadSettings();
       if (await this._unlistBrokenPlugin(pi, folders, created)) return;
       const pm = this._packageManager(pi);
       const kinds = listedSubscriptionKinds(this._userPackages());
@@ -1610,7 +1698,7 @@ export class PiRuntime {
   /** A later folder's loader may fail to load the plugin the first one loaded; the same unlist applies. */
   private async _unlistFailedPluginLoad(pi: PiCodingAgentModule, folders: readonly FolderRuntime[], created: FolderRuntime): Promise<void> {
     try {
-      await this._settings().reload();
+      await this._reloadSettings();
       await this._unlistBrokenPlugin(pi, folders, created);
     } catch (err) {
       log('[PiRuntime] subscription load check failed (%s): %O', created.cwd, err);
@@ -1624,9 +1712,10 @@ export class PiRuntime {
    */
   private async _removeSubscriptionPlugin(pi: PiCodingAgentModule, folders: readonly FolderRuntime[]): Promise<void> {
     const pm = this._packageManager(pi);
-    pm.removeSourceFromSettings(SUBSCRIPTION_SOURCE);
-    for (const repo of LEGACY_SUBSCRIPTION_REPOS) pm.removeSourceFromSettings(repo);
-    await this._flushSettings();
+    await this._writeUserSettings(() => {
+      pm.removeSourceFromSettings(SUBSCRIPTION_SOURCE);
+      for (const repo of LEGACY_SUBSCRIPTION_REPOS) pm.removeSourceFromSettings(repo);
+    });
     try {
       const cloneDir = pm.getInstalledPath(SUBSCRIPTION_SOURCE, 'user');
       if (cloneDir) {
@@ -1666,6 +1755,21 @@ export class PiRuntime {
     return this.subCallModelFor(purpose) !== null;
   }
 
+  /** Key providers whose applied key bills a flat subscription; empty before the model runtime exists. */
+  flatFeeKeyProviders(): ReadonlySet<string> {
+    return this._modelRuntime ? flatFeeKeyProviders(this._modelRuntime) : new Set();
+  }
+
+  /**
+   * Where the credential pi sends `provider` comes from when Damocles did not apply it, or null. pi reports Damocles'
+   * runtime key ahead of any other, and a models.json key naming an environment variable as `environment` (model-runtime.js:441-450).
+   */
+  externalKeySource(provider: string): ExternalKeySource | null {
+    const status = this._modelRuntime?.getProviderAuthStatus(provider);
+    if (!status?.configured || status.source === 'runtime') return null;
+    return status.source === 'environment' ? 'environment' : 'piConfig';
+  }
+
   /**
    * The model a memory audit sub-call would use now, with its API rates in USD per million tokens,
    * whether its credential bills dollars, and the level it thinks at (unclamped until pi-ai has loaded).
@@ -1685,6 +1789,7 @@ export class PiRuntime {
       openai: this.getOpenAIAuthStatus(),
       preferApiKey: this.preferOpenAIApiKey(),
       registry: this._modelRuntime ?? undefined,
+      flatFeeKeyProviders: this.flatFeeKeyProviders(),
     });
     return { provider: model.provider, id: model.id, inputPerMTok: model.cost.input, outputPerMTok: model.cost.output, dollarBilled, effort };
   }
@@ -1837,7 +1942,7 @@ export class PiRuntime {
   }
 
   /** The user saved `provider`'s key again: a 402 can clear with the same key, so the refusal no longer stands. */
-  resetClassifierBreaker(provider: ClassifierProvider): void {
+  resetClassifierBreaker(provider: string): void {
     this._classifierBreakers.reset(provider);
   }
 

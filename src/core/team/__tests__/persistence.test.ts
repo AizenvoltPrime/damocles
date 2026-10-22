@@ -227,7 +227,7 @@ describe('member card history from the member pi session file', () => {
     const sm = SessionManager.create(cwd, dir, { id: teamMemberSessionId(AGENT_ID, 0) });
     sm.appendCustomEntry(DAMOCLES_AGENT_LAUNCH_ENTRY, launch(0, 'fix the parser'));
     const task = sm.appendMessage(userMessage('fix the parser'));
-    // `_prepareRetry` omits the attempt it re-runs (`agent-session.js:3048`).
+    // `_prepareRetry` omits the attempt it re-runs (`agent-session.js:3110`).
     sm.appendContextEdit(sm.appendMessage(failed('Let me', '529 overloaded_error')), null);
     const final = sm.appendMessage(failed('Now I will', '400 invalid_request_error'));
 
@@ -240,7 +240,7 @@ describe('member card history from the member pi session file', () => {
     ]);
   });
 
-  // The nested extension records a call the abort settled at the gate (agent-loop.js:500-504), whose result has no durationMs.
+  // The nested extension records a call the abort settled at the gate (agent-loop.js:506-510), whose result has no durationMs.
   it('reloads a call its aborted run settled before it ran as stopped, without the result pi wrote', async () => {
     const cwd = join(DAMOCLES_HOME_DIR, 'stopped-calls');
     const dir = teamMembersDir(ensurePiSessionDir(cwd), SESSION_ID, TEAM_ID);

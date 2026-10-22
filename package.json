@@ -537,7 +537,9 @@
             "gpt-6-luna",
             "step-5-preview",
             "deepseek-v4-pro",
-            "deepseek-flash"
+            "deepseek-flash",
+            "MiniMax-M3.1-Flash",
+            "grok-4.7"
           ],
           "enumItemLabels": [
             "%configuration.team.modelDefault%",
@@ -550,7 +552,9 @@
             "GPT-6 Luna",
             "Step 5 Preview",
             "DeepSeek V4 Pro",
-            "DeepSeek V4.1 Flash"
+            "DeepSeek V4.1 Flash",
+            "MiniMax M3.1 Flash",
+            "Grok 4.7"
           ],
           "default": "",
           "description": "%configuration.team.leadModel.description%"
@@ -593,7 +597,9 @@
             "gpt-6-luna",
             "step-5-preview",
             "deepseek-v4-pro",
-            "deepseek-flash"
+            "deepseek-flash",
+            "MiniMax-M3.1-Flash",
+            "grok-4.7"
           ],
           "enumItemLabels": [
             "%configuration.team.modelDefault%",
@@ -606,7 +612,9 @@
             "GPT-6 Luna",
             "Step 5 Preview",
             "DeepSeek V4 Pro",
-            "DeepSeek V4.1 Flash"
+            "DeepSeek V4.1 Flash",
+            "MiniMax M3.1 Flash",
+            "Grok 4.7"
           ],
           "default": "",
           "description": "%configuration.team.implementorModel.description%"
@@ -649,7 +657,9 @@
             "gpt-6-luna",
             "step-5-preview",
             "deepseek-v4-pro",
-            "deepseek-flash"
+            "deepseek-flash",
+            "MiniMax-M3.1-Flash",
+            "grok-4.7"
           ],
           "enumItemLabels": [
             "%configuration.team.modelDefault%",
@@ -662,7 +672,9 @@
             "GPT-6 Luna",
             "Step 5 Preview",
             "DeepSeek V4 Pro",
-            "DeepSeek V4.1 Flash"
+            "DeepSeek V4.1 Flash",
+            "MiniMax M3.1 Flash",
+            "Grok 4.7"
           ],
           "default": "",
           "description": "%configuration.team.reviewerModel.description%"
@@ -955,7 +967,9 @@
             "gpt-6-luna",
             "step-5-preview",
             "deepseek-v4-pro",
-            "deepseek-flash"
+            "deepseek-flash",
+            "MiniMax-M3.1-Flash",
+            "grok-4.7"
           ],
           "enumItemLabels": [
             "%configuration.explore.modelDefault%",
@@ -968,7 +982,9 @@
             "GPT-6 Luna",
             "Step 5 Preview",
             "DeepSeek V4 Pro",
-            "DeepSeek V4.1 Flash"
+            "DeepSeek V4.1 Flash",
+            "MiniMax M3.1 Flash",
+            "Grok 4.7"
           ],
           "default": "",
           "description": "%configuration.explore.model.description%"
@@ -1011,7 +1027,9 @@
             "gpt-6-luna",
             "step-5-preview",
             "deepseek-v4-pro",
-            "deepseek-flash"
+            "deepseek-flash",
+            "MiniMax-M3.1-Flash",
+            "grok-4.7"
           ],
           "enumItemLabels": [
             "%configuration.background.modelAutomatic%",
@@ -1024,7 +1042,9 @@
             "GPT-6 Luna",
             "Step 5 Preview",
             "DeepSeek V4 Pro",
-            "DeepSeek V4.1 Flash"
+            "DeepSeek V4.1 Flash",
+            "MiniMax M3.1 Flash",
+            "Grok 4.7"
           ],
           "default": "",
           "description": "%configuration.background.model.description%"
@@ -1070,7 +1090,9 @@
             "gpt-6-luna",
             "step-5-preview",
             "deepseek-v4-pro",
-            "deepseek-flash"
+            "deepseek-flash",
+            "MiniMax-M3.1-Flash",
+            "grok-4.7"
           ],
           "enumItemLabels": [
             "%configuration.background.modelAutomatic%",
@@ -1086,7 +1108,9 @@
             "GPT-6 Luna",
             "Step 5 Preview",
             "DeepSeek V4 Pro",
-            "DeepSeek V4.1 Flash"
+            "DeepSeek V4.1 Flash",
+            "MiniMax M3.1 Flash",
+            "Grok 4.7"
           ],
           "default": "",
           "description": "%configuration.memory.judge.description%"
@@ -1160,11 +1184,11 @@
     "sync:profiles": "node scripts/sync-agent-profiles.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "1.3.0",
-    "@earendil-works/pi-ai": "1.3.0",
-    "@earendil-works/pi-coding-agent": "1.3.0",
-    "@earendil-works/pi-mcp": "1.3.0",
-    "@earendil-works/pi-tui": "1.3.0",
+    "@earendil-works/pi-agent-core": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@earendil-works/pi-mcp": "1.4.0",
+    "@earendil-works/pi-tui": "1.4.0",
     "@parcel/watcher": "^2.6.0",
     "@vscode/ripgrep": "^1.18.0",
     "electron-updater": "6.8.9",

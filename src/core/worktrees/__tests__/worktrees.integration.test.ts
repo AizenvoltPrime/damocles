@@ -665,6 +665,18 @@ describe.skipIf(!HAS_GIT)('worktree chats against real git', { timeout: 120_000 
     expect(fs.existsSync(path.join(record.workingFolder, 'node_modules'))).toBe(false);
   });
 
+  it('copies an anchored pattern of a subfolder project whose .worktreeinclude starts with a BOM', async () => {
+    const { project: repo, registry, run } = setup('include-sub-bom');
+    const project = path.join(repo, 'app');
+    write(path.join(project, 'keep.txt'), 'keep\n');
+    write(path.join(repo, '.gitignore'), 'local.env\n');
+    commitAll(repo, 'app');
+    write(path.join(project, 'config', 'local.env'), 'A=1\n');
+    write(path.join(project, '.worktreeinclude'), '\uFEFF/config/local.env\n');
+    const record = await create(project, registry, run);
+    expect(fs.readFileSync(path.join(record.workingFolder, 'config', 'local.env'), 'utf8')).toBe('A=1\n');
+  });
+
   it('skips a link the OS refuses to create and names it, and the creation succeeds', async (ctx) => {
     const { project, registry, run } = setup('link-eperm');
     write(path.join(project, '.gitignore'), 'link.env\n');
@@ -955,6 +967,17 @@ describe('setup commands (D32)', () => {
     fs.writeFileSync(path.join(project, '.damocles', 'worktree.json'), JSON.stringify({ setup: ['ok', 3] }));
     await expect(readSetupCommands(project, 'linux')).rejects.toThrow('non-empty commands');
     fs.rmSync(project, { recursive: true, force: true });
+  });
+
+  it('reads a worktree.json that starts with a BOM', async () => {
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), 'dam-setup-'));
+    try {
+      fs.mkdirSync(path.join(project, '.damocles'));
+      fs.writeFileSync(path.join(project, '.damocles', 'worktree.json'), `\uFEFF${JSON.stringify({ setup: ['npm ci'] })}`);
+      expect(await readSetupCommands(project, 'linux')).toEqual(['npm ci']);
+    } finally {
+      fs.rmSync(project, { recursive: true, force: true });
+    }
   });
 
   it('refuses a command spanning lines and commands too long for one shell command line', async () => {

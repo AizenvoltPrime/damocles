@@ -197,7 +197,7 @@ describe('Memory judge setters', () => {
 });
 
 describe('Explore model setters', () => {
-  const explore = (platform: ReturnType<typeof setup>['platform']) => new ExploreManager(() => {}, platform);
+  const explore = (platform: ReturnType<typeof setup>['platform']) => new ExploreManager(platform);
 
   it('saves a picked model and its effort in user settings', async () => {
     const { platform } = setup();
@@ -274,7 +274,7 @@ describe('settingWriteResult', () => {
     const { platform, posted } = setup();
     await platform.settings.update('damocles.explore.model', 'step-5-preview', 'user');
     await platform.settings.update('damocles.explore.effort', 'high', 'user');
-    const explore = new ExploreManager((_host, message) => posted.push(message), platform);
+    const explore = new ExploreManager(platform);
     const deps = { platform, postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => posted.push(message) };
     const saved = await writeSetting(deps, ctx(targetA), 'damocles.explore.effort', (d) => d, () => explore.setEffort(null));
     expect(saved).toBe(true);
@@ -292,7 +292,7 @@ describe('settingWriteResult', () => {
 
   it('settles an invalid value as a failed write instead of throwing', async () => {
     const { platform, posted } = setup();
-    const explore = new ExploreManager((_host, message) => posted.push(message), platform);
+    const explore = new ExploreManager(platform);
     const deps = { platform, postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => posted.push(message) };
     await expect(writeSetting(deps, ctx(targetA), 'damocles.explore.model', (d) => d, () => explore.setModel('nowhere'))).resolves.toBe(false);
     expect(posted.filter((m) => m.type === 'settingWriteResult')).toStrictEqual([

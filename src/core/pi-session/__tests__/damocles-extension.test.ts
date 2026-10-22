@@ -458,7 +458,7 @@ describe('context image pruning registration', () => {
     expect(pi.handlersFor('context')).toHaveLength(0);
   });
 
-  // A request setup the aborted run signal rejects ends on an error stop (pi-ai lazy.js:41-44), whatever aborted the run.
+  // A request setup the aborted run signal rejects ends on an error stop (pi-ai lazy.js:57-62), whatever aborted the run.
   it('records a wind-down error at turn_end for any session, keeping the pruning drafts', async () => {
     const pi = fakePiOrdered();
     createDamoclesExtensionFactory(reader(), noCheckpoints())(pi.pi as never);

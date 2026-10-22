@@ -14,6 +14,7 @@ import {
   setGlobalDispatcher,
 } from 'undici';
 import type { Disposable } from '../../../platform/disposable';
+import { stripBom } from '../../../core/config/bom';
 import { PI_AGENT_DIR } from '../../../core/pi-session/agent-dir';
 
 type StartupLog = (line: string) => void;
@@ -51,11 +52,22 @@ function createOriginDispatcher(origin: URL | string, options: object): Dispatch
 /** pi's `httpIdleTimeoutMs` setting, read the way pi's SettingsManager parses it. */
 export async function httpIdleTimeoutMs(log: StartupLog): Promise<number> {
   const file = path.join(PI_AGENT_DIR, 'settings.json');
+  let text: string;
+  try {
+    text = await fs.readFile(file, 'utf8');
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') log(`[network] ${file} unreadable, using the default idle timeout: ${code ?? (err as Error).name}`);
+    return DEFAULT_HTTP_IDLE_TIMEOUT_MS;
+  }
+  // pi reads empty text as no settings (settings-manager.js:266).
+  if (text === '') return DEFAULT_HTTP_IDLE_TIMEOUT_MS;
   let raw: unknown;
   try {
-    raw = (JSON.parse(await fs.readFile(file, 'utf8')) as { httpIdleTimeoutMs?: unknown }).httpIdleTimeoutMs;
+    raw = (JSON.parse(stripBom(text)) as { httpIdleTimeoutMs?: unknown }).httpIdleTimeoutMs;
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') log(`[network] ${file} unreadable, using the default idle timeout: ${String(err)}`);
+    // The name only: a parse error's message can quote the file's text.
+    log(`[network] ${file} unreadable, using the default idle timeout: ${(err as Error).name}`);
     return DEFAULT_HTTP_IDLE_TIMEOUT_MS;
   }
   if (typeof raw === 'string' && raw.trim().toLowerCase() === 'disabled') return 0;

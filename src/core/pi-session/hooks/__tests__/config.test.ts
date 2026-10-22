@@ -79,6 +79,12 @@ describe('parseHooksFile', () => {
     expect(result['tool_call']![0]!.command).toBe('echo ok');
     expect(result['input']).toBeUndefined();
   });
+
+  it('parses a JSONC file that starts with a BOM', () => {
+    const p = path.join(workspaceRoot, 'bom.json');
+    fs.writeFileSync(p, '\uFEFF// comment\n{ "hooks": { "tool_call": [{ "command": "echo ok" }] } }', 'utf-8');
+    expect(parseHooksFile(p)['tool_call']![0]!.command).toBe('echo ok');
+  });
 });
 
 describe('HooksConfigService', () => {

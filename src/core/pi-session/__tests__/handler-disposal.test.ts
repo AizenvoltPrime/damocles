@@ -10,7 +10,7 @@ type Handler = (event: unknown, ctx: unknown) => unknown;
 
 /**
  * A pi stub faithful to three properties of `ExtensionRunner` that this file is about: `on` returns the
- * unsubscribe (`extensions/loader.js:213-229` in pi 1.3.0), a dispatch runs against a `.slice()` snapshot taken
+ * unsubscribe (`extensions/loader.js:216-232` in pi 1.4.0), a dispatch runs against a `.slice()` snapshot taken
  * before the first handler (`extensions/runner.ts`, `snapshotEventHandlers`), and a `tool_call` is
  * skipped outright when the handler list is empty (`agent-session.ts`, `beforeToolCall` consults
  * `hasHandlers('tool_call')` and treats a miss as proceed). That last one is why an emptied handler map
@@ -122,7 +122,7 @@ const PAYLOADS: Record<string, unknown> = {
     systemPromptOptions: { selectedTools: ['read', 'bash', 'edit', 'write'], sections: {} },
   },
   agent_end: { type: 'agent_end', messages: [] },
-  // pi's turn_end boundary always carries the turn's assistant message and its persisted entry id (agent-session.js:506-514).
+  // pi's turn_end boundary always carries the turn's assistant message and its persisted entry id (agent-session.js:505-513).
   turn_end: { type: 'turn_end', message: { role: 'assistant', content: [], stopReason: 'stop' }, toolResults: [], messageEntryId: 'a1', toolResultEntryIds: [], entries: [], continue: false, turnIndex: 0, outcome: 'completed' },
   agent_before_settle: { type: 'agent_before_settle', entries: [], continue: false },
   message_start: { type: 'message_start', message: { role: 'assistant', content: [] } },

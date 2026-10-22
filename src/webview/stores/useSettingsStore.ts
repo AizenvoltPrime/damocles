@@ -14,6 +14,7 @@ import {
 } from '@shared/types/voice';
 import { DEFAULT_WAKE_PHRASE } from '@shared/wake-phrase';
 import { DEFAULT_MODELS, DEFAULT_CACHE_WARMING } from '@shared/types/constants';
+import { KEY_PROVIDER_IDS, type ExternalKeySource, type KeyProviderId } from '@shared/settings-sections';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 
 /**
@@ -90,6 +91,14 @@ function signedOutOpenAIStatus(): OpenAIAuthStatusView {
   return { chatgpt: { signedIn: false }, codex: { signedIn: false }, apikey: { configured: false } };
 }
 
+function noKeyProviderConfigured(): Record<KeyProviderId, boolean> {
+  return Object.fromEntries(KEY_PROVIDER_IDS.map((provider) => [provider, false])) as Record<KeyProviderId, boolean>;
+}
+
+function noExternalKeySources(): Record<KeyProviderId, ExternalKeySource | null> {
+  return Object.fromEntries(KEY_PROVIDER_IDS.map((provider) => [provider, null])) as Record<KeyProviderId, ExternalKeySource | null>;
+}
+
 export const useSettingsStore = defineStore('settings', () => {
   const { postMessage } = usePlatformBridge();
   const currentSettings = ref<ExtensionSettings>({ ...DEFAULT_SETTINGS });
@@ -148,12 +157,11 @@ export const useSettingsStore = defineStore('settings', () => {
   const claudeAuthBusy = ref(false);
   const claudeAuthError = ref<string | null>(null);
   const claudeSignInWaiting = ref(false);
-  const stepfunConfigured = ref(false);
-  const deepseekConfigured = ref(false);
-  const typesafeConfigured = ref(false);
-  const openrouterConfigured = ref(false);
+  const keyProviderConfigured = ref(noKeyProviderConfigured());
+  // Where pi's credential for the provider comes from when Damocles did not apply it.
+  const keyProviderExternal = ref(noExternalKeySources());
   const memoryJudge = ref<MemoryJudge | null>(null);
-  // Null until the host's first `typesafeAuthStatusChanged`.
+  // Null until the host's first `memoryJudgeStatus`.
   const classifierCredentials = ref<Record<ClassifierProvider, ClassifierCredential> | null>(null);
   // Null until the host's first `imageGenerationSettings`, which waits for the pi runtime.
   const imageGeneration = ref<ImageGenerationSettings | null>(null);
@@ -450,22 +458,14 @@ export const useSettingsStore = defineStore('settings', () => {
     claudeSignInWaiting.value = value;
   }
 
-  function setStepfunConfigured(configured: boolean) {
-    stepfunConfigured.value = configured;
+  function setKeyProviderConfigured(provider: KeyProviderId, configured: boolean, external: ExternalKeySource | null) {
+    keyProviderConfigured.value[provider] = configured;
+    keyProviderExternal.value[provider] = external;
   }
 
-  function setDeepseekConfigured(configured: boolean) {
-    deepseekConfigured.value = configured;
-  }
-
-  function setTypesafeStatus(configured: boolean, judge: MemoryJudge, credentials: Record<ClassifierProvider, ClassifierCredential>) {
-    typesafeConfigured.value = configured;
+  function setMemoryJudgeStatus(judge: MemoryJudge, credentials: Record<ClassifierProvider, ClassifierCredential>) {
     memoryJudge.value = judge;
     classifierCredentials.value = credentials;
-  }
-
-  function setOpenrouterConfigured(configured: boolean) {
-    openrouterConfigured.value = configured;
   }
 
   function setImageGeneration(settings: ImageGenerationSettings) {
@@ -521,10 +521,8 @@ export const useSettingsStore = defineStore('settings', () => {
     claudeAuthBusy.value = false;
     claudeAuthError.value = null;
     claudeSignInWaiting.value = false;
-    stepfunConfigured.value = false;
-    deepseekConfigured.value = false;
-    typesafeConfigured.value = false;
-    openrouterConfigured.value = false;
+    keyProviderConfigured.value = noKeyProviderConfigured();
+    keyProviderExternal.value = noExternalKeySources();
     memoryJudge.value = null;
     classifierCredentials.value = null;
     imageGeneration.value = null;
@@ -618,16 +616,12 @@ export const useSettingsStore = defineStore('settings', () => {
     claudeAuthBusy,
     claudeAuthError,
     claudeSignInWaiting,
-    stepfunConfigured,
-    deepseekConfigured,
-    setStepfunConfigured,
-    setDeepseekConfigured,
-    typesafeConfigured,
+    keyProviderConfigured,
+    keyProviderExternal,
+    setKeyProviderConfigured,
     memoryJudge,
     classifierCredentials,
-    setTypesafeStatus,
-    openrouterConfigured,
-    setOpenrouterConfigured,
+    setMemoryJudgeStatus,
     imageGeneration,
     setImageGeneration,
     setOpenAIAuthStatus,

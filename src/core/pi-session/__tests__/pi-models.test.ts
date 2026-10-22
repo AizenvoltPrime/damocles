@@ -206,6 +206,20 @@ describe('resolvePiModel — piProvider routing (StepFun/DeepSeek)', () => {
     expect(res.authRequired).toBeUndefined();
   });
 
+  it.each([
+    ['MiniMax-M3.1-Flash', 'minimax', 'anthropic-messages'],
+    ['grok-4.7', 'xai', 'openai-responses'],
+  ] as const)('routes %s to the %s provider, signed in only with its key', (value, provider, api) => {
+    const models = [model(provider, value, api)];
+    const lookup = (authed: boolean): ModelLookup => ({
+      getModel: (p, id) => models.find((m) => m.provider === p && m.id === id),
+      hasConfiguredAuth: (p) => authed && p === provider,
+    });
+    const none = { apiKey: false, chatgpt: false, codex: false };
+    expect(resolvePiModel(value, lookup(true), none)).toEqual({ model: expect.objectContaining({ provider, id: value }), authed: true });
+    expect(resolvePiModel(value, lookup(false), none)).toMatchObject({ model: { provider }, authed: false });
+  });
+
   it('returns {} for a piProvider value missing from the registry (StepFun pre-key)', () => {
     const reg = registry([]);
     expect(resolvePiModel('step-5-preview', reg, { apiKey: false, chatgpt: false, codex: false })).toEqual({});
@@ -249,6 +263,26 @@ describe('DEFAULT_MODELS: deepseek-flash effort catalog agrees with the installe
     const info = DEFAULT_MODELS.find((m) => m.value === 'deepseek-flash');
     expect(info?.displayName).toBe('DeepSeek V4.1 Flash');
     expect(info?.supportedEffortLevels).toEqual(getSupportedThinkingLevels(flash!).filter((level) => level !== 'off'));
+  });
+});
+
+describe.each([
+  ['MiniMax-M3.1-Flash', 'MiniMax M3.1 Flash', 'minimax.json', 'anthropic-messages'],
+  ['grok-4.7', 'Grok 4.7', 'xai.json', 'openai-responses'],
+])('DEFAULT_MODELS: %s agrees with the installed pi catalog', (value, displayName, file, api) => {
+  const url = new URL(`../../../../node_modules/@earendil-works/pi-ai/dist/providers/data/${file}`, import.meta.url);
+  const entry = readChatCatalog<unknown>(fileURLToPath(url))[api]?.[value] as Model<Api> | undefined;
+  const info = DEFAULT_MODELS.find((m) => m.value === value);
+
+  it('offers every level pi supports except off, at pi\'s context window', () => {
+    expect(entry).toBeDefined();
+    expect(info?.displayName).toBe(displayName);
+    expect(info?.supportedEffortLevels).toEqual(getSupportedThinkingLevels(entry!).filter((level) => level !== 'off'));
+    expect(info?.contextWindow).toBe(entry!.contextWindow);
+  });
+
+  it('carries thinkingAlwaysOn exactly when pi cannot turn thinking off', () => {
+    expect(info?.thinkingAlwaysOn === true).toBe(entry!.thinkingLevelMap?.off === null);
   });
 });
 
@@ -475,6 +509,8 @@ describe('providerDisplayName', () => {
     expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'gpt-6.1-sol'))).toBe('OpenAI');
     expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'step-5-preview'))).toBe('StepFun');
     expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'deepseek-v4-pro'))).toBe('DeepSeek');
+    expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'MiniMax-M3.1-Flash'))).toBe('MiniMax');
+    expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'grok-4.7'))).toBe('xAI');
     expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'claude-opus-5-5'))).toBe('Anthropic');
     expect(providerDisplayName(undefined)).toBe('Anthropic');
   });
@@ -491,6 +527,12 @@ describe('isDollarBilled', () => {
 
   it('treats flat-fee StepFun as NOT dollar-billed', () => {
     expect(isDollarBilled(find('step-5-preview'), 'stepfun')).toBe(false);
+  });
+
+  // A MiniMax Token Plan key is decided by `account-billing.ts` from the applied key, never by the catalog.
+  it('treats MiniMax and xAI as dollar-billed from the catalog', () => {
+    expect(isDollarBilled(find('MiniMax-M3.1-Flash'), 'minimax')).toBe(true);
+    expect(isDollarBilled(find('grok-4.7'), 'xai')).toBe(true);
   });
 
   it('classifies first-party credentials by their source label', () => {

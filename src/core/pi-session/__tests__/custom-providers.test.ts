@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import { getEventListeners } from 'node:events';
 import { installLogSink } from '../../logger';
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { CUSTOM_PROVIDER_DEFS, providerKeyStored, syncCustomProviders } from '../custom-providers';
+import type { AuthOperationOptions } from '@earendil-works/pi-ai';
+import { CUSTOM_PROVIDER_DEFS, customProviderDef, flatFeeKeyProviders, keyProviderOfSecret, providerKeyStored, syncCustomProviders } from '../custom-providers';
+import { DEFAULT_MODELS } from '../../../shared/types/constants';
 
 /**
  * Guards the StepFun wire behavior (Slice 2): step_plan takes reasoning effort as adaptive
@@ -36,17 +38,41 @@ describe('CUSTOM_PROVIDER_DEFS — StepFun adaptive-thinking compat', () => {
   it('names DeepSeek V4.1 Flash as the DeepSeek cheap model', () => {
     expect(CUSTOM_PROVIDER_DEFS.find((d) => d.provider === 'deepseek')?.cheapModelId).toBe('deepseek-flash');
   });
+
+  // Explore and Background Automatic resolve a cheap model through the catalog; one outside it, or on another provider, never runs.
+  it('names a curated model of its own provider as every cheap model', () => {
+    for (const def of CUSTOM_PROVIDER_DEFS) {
+      if (def.cheapModelId === undefined) continue;
+      expect(DEFAULT_MODELS.find((m) => m.value === def.cheapModelId)?.piProvider, def.provider).toBe(def.provider);
+    }
+    expect(Object.fromEntries(CUSTOM_PROVIDER_DEFS.map((d) => [d.provider, d.cheapModelId]))).toMatchObject({
+      minimax: 'MiniMax-M3.1-Flash',
+      xai: 'grok-4.7',
+    });
+  });
 });
 
 describe('CUSTOM_PROVIDER_DEFS: the OpenRouter and StepFun keys', () => {
+  // The order is Background Automatic's order after the first-party small models.
   it('registers no Gemini provider, so a stored Gemini key wires nothing', () => {
-    expect(CUSTOM_PROVIDER_DEFS.map((d) => d.provider)).toEqual(['stepfun', 'deepseek', 'openrouter', 'typesafe']);
+    expect(CUSTOM_PROVIDER_DEFS.map((d) => d.provider)).toEqual(['stepfun', 'deepseek', 'minimax', 'xai', 'openrouter', 'typesafe']);
   });
 
   // The stored names predate the keys' current uses; renaming one would drop every user's saved key.
-  it('reads the OpenRouter and StepFun keys from their stored names', () => {
-    expect(CUSTOM_PROVIDER_DEFS.find((d) => d.provider === 'openrouter')?.secretKey).toBe('damocles.explore.apiKey.openrouter');
-    expect(CUSTOM_PROVIDER_DEFS.find((d) => d.provider === 'stepfun')?.secretKey).toBe('damocles.explore.apiKey.stepfun');
+  it('reads every key from its stored name, and maps each name back to its provider', () => {
+    expect(Object.fromEntries(CUSTOM_PROVIDER_DEFS.map((d) => [d.provider, d.secretKey]))).toEqual({
+      stepfun: 'damocles.explore.apiKey.stepfun',
+      deepseek: 'damocles.deepseek.apiKey',
+      minimax: 'damocles.minimax.apiKey',
+      xai: 'damocles.xai.apiKey',
+      openrouter: 'damocles.explore.apiKey.openrouter',
+      typesafe: 'damocles.typesafe.apiKey',
+    });
+    for (const def of CUSTOM_PROVIDER_DEFS) {
+      expect(keyProviderOfSecret(def.secretKey)).toBe(def.provider);
+      expect(customProviderDef(def.provider)).toBe(def);
+    }
+    expect(keyProviderOfSecret('damocles.openai.apiKey')).toBeUndefined();
   });
 
   it('gives OpenRouter no cheap model, so the Explore default never runs on it', () => {
@@ -75,13 +101,33 @@ function makeRuntime(authStatus: Partial<Record<string, AuthStatus>> = {}) {
   const runtime = {
     registerProvider: vi.fn(),
     unregisterProvider: vi.fn(),
-    setRuntimeApiKey: vi.fn(async () => {}),
-    removeRuntimeApiKey: vi.fn(async () => {}),
+    setRuntimeApiKey: vi.fn(async (_providerId: string, _apiKey: string, _options?: AuthOperationOptions) => {}),
+    removeRuntimeApiKey: vi.fn(async (_providerId: string, _options?: AuthOperationOptions) => {}),
     logout: vi.fn(async () => {}),
     getProviderAuthStatus: vi.fn((providerId: string): AuthStatus => authStatus[providerId] ?? { configured: false }),
   };
   // Each makeRuntime call is a distinct object, so the module-level WeakMap cache starts empty per test.
   return { runtime, asModelRuntime: runtime as unknown as ModelRuntime };
+}
+
+/**
+ * pi 1.4.0's runtime key operations (model-runtime.js:384-437): one the signal stops before it starts throws the abort
+ * and commits nothing; once started it commits the key or its removal, then its snapshot sync wraps every failure, an
+ * abort included, as a CredentialSynchronizationError. `onCommit` runs between the two steps.
+ */
+function committingRuntime(onCommit: (provider: string) => void) {
+  const { runtime, asModelRuntime } = makeRuntime();
+  const runtimeKeys = new Map<string, string>();
+  const operation = async (provider: string, options: AuthOperationOptions | undefined, commit: () => void): Promise<void> => {
+    options?.signal?.throwIfAborted();
+    commit();
+    onCommit(provider);
+    if (options?.signal?.aborted) throw credentialSyncError();
+  };
+  runtime.setRuntimeApiKey.mockImplementation((provider, key, options) => operation(provider, options, () => void runtimeKeys.set(provider, key)));
+  runtime.removeRuntimeApiKey.mockImplementation((provider, options) => operation(provider, options, () => void runtimeKeys.delete(provider)));
+  runtime.getProviderAuthStatus.mockImplementation((provider) => (runtimeKeys.has(provider) ? { configured: true, source: 'runtime' } : { configured: false }));
+  return { runtime, asModelRuntime, runtimeKeys };
 }
 
 function secrets(map: Record<string, string | undefined>) {
@@ -90,6 +136,8 @@ function secrets(map: Record<string, string | undefined>) {
 
 const STEPFUN_SECRET = 'damocles.explore.apiKey.stepfun';
 const DEEPSEEK_SECRET = 'damocles.deepseek.apiKey';
+const MINIMAX_SECRET = 'damocles.minimax.apiKey';
+const XAI_SECRET = 'damocles.xai.apiKey';
 
 /**
  * Capture what `logger.ts` ACTUALLY writes, not the format-string arguments. The leak this guards was
@@ -304,27 +352,65 @@ describe('syncCustomProviders', () => {
     expect(result.changed).toEqual(['deepseek']);
   });
 
-  it('classifies an abort ahead of CredentialSynchronizationError', async () => {
-    const { runtime, asModelRuntime } = makeRuntime();
+  it('caches nothing for a key the signal stopped before pi started applying it', async () => {
+    const { runtime, asModelRuntime, runtimeKeys } = committingRuntime(() => {});
     const controller = new AbortController();
-    runtime.setRuntimeApiKey.mockImplementationOnce(async () => {
-      controller.abort();
-      throw credentialSyncError();
-    });
 
     const result = await syncCustomProviders({
       modelRuntime: asModelRuntime,
       getSecret: secrets({ [DEEPSEEK_SECRET]: 'ds-key' }),
       signal: controller.signal,
+      beforeCredentialChange: () => controller.abort(),
     });
 
     // deepseek's secret WAS read this sync, so it is known-configured even though it never applied;
     // openrouter/typesafe were never read and have no key, so they stay out of both lists.
+    expect(runtimeKeys.size).toBe(0);
     expect(result).toEqual({ wired: [], aborted: true, notWired: ['deepseek'], changed: [] });
     // …and the key was NOT cached, so an un-aborted resync re-applies it.
     const retry = await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret: secrets({ [DEEPSEEK_SECRET]: 'ds-key' }) });
     expect(retry.wired).toEqual(['deepseek']);
     expect(runtime.setRuntimeApiKey).toHaveBeenCalledTimes(2);
+  });
+
+  it('caches a key pi committed before the signal stopped its snapshot sync, so billing follows the key pi sends', async () => {
+    const controller = new AbortController();
+    const abort: { at?: string } = {};
+    const { runtime, asModelRuntime, runtimeKeys } = committingRuntime((provider) => {
+      if (provider === abort.at) controller.abort();
+    });
+    await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret: secrets({ [MINIMAX_SECRET]: 'sk-cp-plan', [XAI_SECRET]: 'xai-key' }) });
+    expect([...flatFeeKeyProviders(asModelRuntime)]).toEqual(['minimax']);
+
+    abort.at = 'minimax';
+    const result = await syncCustomProviders({
+      modelRuntime: asModelRuntime,
+      getSecret: secrets({ [MINIMAX_SECRET]: 'sk-api-metered', [XAI_SECRET]: 'xai-key' }),
+      signal: controller.signal,
+    });
+
+    expect(runtimeKeys.get('minimax')).toBe('sk-api-metered');
+    // The cut falls past MiniMax, so only the provider it never reached is not wired.
+    expect(result).toEqual({ wired: ['minimax'], aborted: true, notWired: ['xai'], changed: ['minimax'] });
+    expect(flatFeeKeyProviders(asModelRuntime)).toEqual(new Set());
+    await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret: secrets({ [MINIMAX_SECRET]: 'sk-api-metered', [XAI_SECRET]: 'xai-key' }) });
+    expect(runtime.setRuntimeApiKey.mock.calls.filter(([provider]) => provider === 'minimax')).toHaveLength(2);
+  });
+
+  it('reports a removal pi committed before the signal stopped its snapshot sync as changed', async () => {
+    const controller = new AbortController();
+    const abort: { at?: string } = {};
+    const { asModelRuntime, runtimeKeys } = committingRuntime((provider) => {
+      if (provider === abort.at) controller.abort();
+    });
+    await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret: secrets({ [MINIMAX_SECRET]: 'sk-cp-plan' }) });
+
+    abort.at = 'minimax';
+    const result = await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret: secrets({}), signal: controller.signal });
+
+    expect(runtimeKeys.has('minimax')).toBe(false);
+    expect(result).toEqual({ wired: [], aborted: true, notWired: [], changed: ['minimax'] });
+    expect(flatFeeKeyProviders(asModelRuntime)).toEqual(new Set());
   });
 });
 
@@ -444,6 +530,58 @@ describe('syncCustomProviders — a failed secret read never deauthenticates (A3
     expect(output).toContain('deauthenticated typesafe (secret absent)');
     expect(runtime.logout).toHaveBeenCalledWith('typesafe', {});
     expect(runtime.logout).not.toHaveBeenCalledWith('deepseek', expect.anything());
+  });
+});
+
+describe('flatFeeKeyProviders', () => {
+  async function flatAfter(key: string | undefined) {
+    const { asModelRuntime } = makeRuntime();
+    await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret: secrets({ [MINIMAX_SECRET]: key }) });
+    return flatFeeKeyProviders(asModelRuntime);
+  }
+
+  it('names MiniMax only while its applied key is a Token Plan key', async () => {
+    expect([...(await flatAfter('sk-cp-x'))]).toEqual(['minimax']);
+    for (const key of ['sk-api-x', 'sk-cpx', 'SK-CP-x', undefined]) expect(await flatAfter(key), String(key)).toEqual(new Set());
+  });
+
+  it('is empty for a runtime that never synced', () => {
+    expect(flatFeeKeyProviders(makeRuntime().asModelRuntime)).toEqual(new Set());
+  });
+
+  it('drops MiniMax once its secret is removed', async () => {
+    const { asModelRuntime } = makeRuntime();
+    await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret: secrets({ [MINIMAX_SECRET]: 'sk-cp-x' }) });
+    await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret: secrets({}) });
+    expect(flatFeeKeyProviders(asModelRuntime)).toEqual(new Set());
+  });
+
+  // Only a key Damocles stored is read; an environment key's kind is unknown, so it bills per token.
+  it('ignores a MiniMax key pi takes from the environment', async () => {
+    const { asModelRuntime } = makeRuntime({ minimax: { configured: true, source: 'environment' } });
+    await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret: secrets({}) });
+    expect(flatFeeKeyProviders(asModelRuntime)).toEqual(new Set());
+  });
+
+  // A failed read leaves pi on the key it already holds, so its billing stays.
+  it('keeps MiniMax after a failed secret read', async () => {
+    const { asModelRuntime } = makeRuntime();
+    await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret: secrets({ [MINIMAX_SECRET]: 'sk-cp-x' }) });
+    const getSecret = (key: string): PromiseLike<string | undefined> =>
+      key === MINIMAX_SECRET ? Promise.reject(new Error('keyring is locked')) : Promise.resolve(undefined);
+    await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret });
+    expect([...flatFeeKeyProviders(asModelRuntime)]).toEqual(['minimax']);
+  });
+
+  it('follows a key pi has not applied only once it applies', async () => {
+    const { runtime, asModelRuntime } = makeRuntime();
+    runtime.setRuntimeApiKey.mockImplementationOnce(async () => {
+      throw new Error('provider rejected the key');
+    });
+    await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret: secrets({ [MINIMAX_SECRET]: 'sk-cp-x' }) });
+    expect(flatFeeKeyProviders(asModelRuntime)).toEqual(new Set());
+    await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret: secrets({ [MINIMAX_SECRET]: 'sk-cp-x' }) });
+    expect([...flatFeeKeyProviders(asModelRuntime)]).toEqual(['minimax']);
   });
 });
 

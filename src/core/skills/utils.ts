@@ -3,6 +3,7 @@ import * as path from "path";
 import * as os from "os";
 import { ASSET_SEGMENT_RE } from "../../shared/asset-names";
 import { assetSourceDirs } from "../asset-sources";
+import { stripBom } from "../config/bom";
 import { platform } from "../platform-host";
 
 function isValidSkillName(skillName: string): boolean {
@@ -30,7 +31,7 @@ export async function loadSkillDescription(skillName: string, workspacePath: str
 
   for (const skillPath of skillPaths) {
     try {
-      const text = await fs.readFile(skillPath, "utf8");
+      const text = stripBom(await fs.readFile(skillPath, "utf8"));
       const match = text.match(/^---\s*\n([\s\S]*?)\n---/);
       if (match && match[1]) {
         // Horizontal space only: `\s` spans the line break, so a blank `description:` would take the

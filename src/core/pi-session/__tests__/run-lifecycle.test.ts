@@ -5,9 +5,9 @@ import { runLifecycleOf, trackRunLifecycle, type RunLifecycle } from '../run-lif
 import { heldSettleSessions } from './held-settle-fixture';
 
 /**
- * The run lifecycle read against a real pi 1.3.0 session, whose user extension holds each window open: the
+ * The run lifecycle read against a real pi 1.4.0 session, whose user extension holds each window open: the
  * `agent_before_settle` handlers (pi still streams), the `agent_settled` handlers (pi is idle but defers a prompt,
- * agent-session.js:686-690, :1603-1605), and the run pi opens after a settle from a prompt it deferred into it (:696-704).
+ * agent-session.js:685-689, :1632-1634), and the run pi opens after a settle from a prompt it deferred into it (:695-703).
  */
 
 const sessions = heldSettleSessions();

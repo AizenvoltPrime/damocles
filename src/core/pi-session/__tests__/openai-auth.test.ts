@@ -7,7 +7,7 @@ const H = vi.hoisted(() => {
   const fakePi = {
     createAgentSessionServices: vi.fn(),
     ModelRuntime: { create: vi.fn() },
-    SettingsManager: { create: vi.fn(() => ({ getOrCreateDeviceId: () => '0b9c2f2e-6a0c-4c5e-9d41-3f1f0e6c2a11' })) },
+    SettingsManager: { create: vi.fn(() => ({ getOrCreateDeviceId: () => '0b9c2f2e-6a0c-4c5e-9d41-3f1f0e6c2a11', drainErrors: () => [] })) },
     DefaultPackageManager: class {
       getInstalledPath(): string | undefined {
         return undefined;
@@ -28,7 +28,7 @@ vi.mock('../pi-loader', () => ({
 // travels the production path.
 vi.mock('../agent-dir', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../agent-dir')>()),
-  ensurePiAgentDir: (dir: string) => dir,
+  ensurePiAgentDir: () => undefined,
   PI_AGENT_DIR: '/fake/agent',
 }));
 

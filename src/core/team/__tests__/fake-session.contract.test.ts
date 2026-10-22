@@ -16,7 +16,7 @@ import {
 import type { Agent } from '@earendil-works/pi-agent-core';
 import { createFauxCore, fauxAssistantMessage, fauxToolCall, type AssistantMessage, type FauxResponseFactory } from '@earendil-works/pi-ai';
 import { Type } from 'typebox';
-import { withQueuePolicy } from '../../pi-session/queue-policy';
+import { withSettingsPolicy } from '../../pi-session/settings-policy';
 import { installTurnDecider } from '../../pi-session/finish-turn';
 import { abortRunAtStart } from '../../pi-session/abort-run-at-start';
 import { createSubagentExtensionFactory } from '../../pi-session/subagents/subagent-extension-factory';
@@ -29,7 +29,7 @@ import { teamPlanModeStatement } from '../prompts';
 import { BUSY_PROMPT_ERROR, FakeSession } from './fake-session';
 
 /**
- * Holds `FakeSession` to pi 1.3.0: each scenario runs against a real `AgentSession` on pi-ai's faux provider and
+ * Holds `FakeSession` to pi 1.4.0: each scenario runs against a real `AgentSession` on pi-ai's faux provider and
  * against the fake, and the two must report the same events, busy state and resolutions. The real session is built
  * the way `FolderRuntime.createSubagentSession` builds a team specialist's (steering drained whole, compaction off),
  * loading the extension `PiSession.buildTeamEngine` hands it: `createSubagentExtensionFactory` with hooks dispatch
@@ -234,7 +234,7 @@ async function realSubject(options: SubjectOptions): Promise<Subject> {
     }
     if (options.beforeSettle) pi.on('agent_before_settle', async () => { await beforeSettleHolds.take(BEFORE_SETTLE); });
   };
-  const settingsManager = withQueuePolicy(SettingsManager.inMemory(
+  const settingsManager = withSettingsPolicy(SettingsManager.inMemory(
     { compaction: { enabled: false }, retry: { enabled: true, maxRetries: MAX_RETRIES, baseDelayMs: 1 }, cacheWarming: 'off' },
     { projectTrusted: true },
   ));
@@ -428,7 +428,7 @@ async function contract(scenario: Scenario, options: SubjectOptions = {}): Promi
 const steer = { streamingBehavior: 'steer' } as const;
 const followUp = { streamingBehavior: 'followUp' } as const;
 
-describe('FakeSession matches pi 1.3.0', () => {
+describe('FakeSession matches pi 1.4.0', () => {
   it('runs an idle prompt busy from its start until agent_settled, and resolves prompt() after agent_settled', async () => {
     const log = await contract(async ({ subject, s, mark }) => {
       let resolved = false;

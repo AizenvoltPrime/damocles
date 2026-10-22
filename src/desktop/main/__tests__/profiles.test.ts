@@ -84,6 +84,18 @@ describe('Windows profiles', () => {
     expect(await find([])).toBeUndefined();
   });
 
+  it('never looks for pwsh under a relative or UNC Program Files or LOCALAPPDATA', async () => {
+    for (const root of ['Program Files', '.\\Program Files', '\\\\server\\share\\Program Files', 'C:relative']) {
+      const store = `${root}\\Microsoft\\WindowsApps`;
+      const env = { ...WINDOWS_ENV, ProgramFiles: root, 'ProgramFiles(x86)': root, LOCALAPPDATA: root };
+      const machine = probe('win32', env, {
+        dirs: { [`${root}\\PowerShell`]: ['7'], [store]: ['Microsoft.PowerShell_8wekyb3d8bbwe'] },
+        files: [`${root}\\PowerShell\\7\\pwsh.exe`, `${store}\\Microsoft.PowerShell_8wekyb3d8bbwe\\pwsh.exe`],
+      });
+      expect((await detectProfiles(machine)).find((profile) => profile.id === 'pwsh')).toBeUndefined();
+    }
+  });
+
   it('finds Git Bash beside git.exe in cmd, bin or mingw64\\bin, and none without git on PATH', async () => {
     const gitBash = async (gitExe: string | undefined) => {
       const env = { ...WINDOWS_ENV, Path: gitExe ? gitExe.slice(0, gitExe.lastIndexOf('\\')) : 'C:\\tools' };

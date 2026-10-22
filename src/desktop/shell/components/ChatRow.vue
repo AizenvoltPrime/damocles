@@ -2,7 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { Check, CircleAlert, LoaderCircle, MessageSquare, MessageSquareCode, Pencil, Plus, Tag, Trash2, X } from 'lucide-vue-next';
-import { providerLogoSvg } from '@/components/icons/provider-logos';
+import ProviderLogo from '@/components/icons/ProviderLogo.vue';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { formatClock } from '@/utils/clock';
@@ -38,7 +38,6 @@ const ROW_ACTION = 'size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) 
 
 const title = computed(() => props.chat.title || t('chats.newChat'));
 const saved = computed(() => hasSavedConversation(props.chat));
-const logo = computed(() => (props.chat.model ? providerLogoSvg(props.chat.model.provider) : undefined));
 const model = computed(() => (props.chat.model ? modelLabel(props.chat.model) : undefined));
 const when = computed(() => {
   const date = new Date(props.chat.timestamp);
@@ -231,14 +230,11 @@ function onRenameKeydown(event: KeyboardEvent): void {
                 aria-hidden="true"
                 class="shrink-0"
               >·</span>
-              <!-- eslint-disable vue/no-v-html -- a static vendored SVG chosen by provider id, never session text -->
-              <span
-                v-if="logo"
-                aria-hidden="true"
-                class="provider-logo size-2.75 shrink-0"
-                v-html="logo"
+              <ProviderLogo
+                v-if="chat.model"
+                :provider="chat.model.provider"
+                class="size-2.75"
               />
-              <!-- eslint-enable vue/no-v-html -->
               <span class="min-w-6 shrink truncate">{{ model }}</span>
             </template>
           </span>

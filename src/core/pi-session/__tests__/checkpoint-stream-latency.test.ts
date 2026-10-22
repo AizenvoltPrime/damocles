@@ -17,7 +17,7 @@ import { CheckpointService } from '../checkpoint-service';
 import { folderRepoFor, withRepoLock, type StoredCheckpointRecord } from '../checkpoints';
 import { createDamoclesExtensionFactory } from '../damocles-extension';
 import { watchPromptEntry } from '../prompt-entry';
-import { withQueuePolicy } from '../queue-policy';
+import { withSettingsPolicy } from '../settings-policy';
 import { bindPanel, panelSession } from './real-pi-fixtures';
 
 /**
@@ -111,7 +111,7 @@ describe('the first checkpoint of a large folder', () => {
       pi.registerProvider('anthropic', { baseUrl: 'https://api.anthropic.com', api: 'anthropic-messages', streamSimple: faux.streamSimple } as never);
       damocles(pi);
     };
-    const settingsManager = withQueuePolicy(SettingsManager.create(cwd, agentDir, { projectTrusted: true }));
+    const settingsManager = withSettingsPolicy(SettingsManager.create(cwd, agentDir, { projectTrusted: true }));
     const modelRuntime = await ModelRuntime.create({
       authPath: path.join(agentDir, 'auth.json'),
       modelsPath: path.join(agentDir, 'models.json'),

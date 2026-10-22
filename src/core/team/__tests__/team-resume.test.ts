@@ -811,7 +811,7 @@ describe('TeamRunner restore rebuilds the scratchpad and bus from the event log'
 
 /**
  * A's opening turn is mid-tool when cancelled: still streaming, with every steer left in pi's queue. An abort that
- * lands in a tool lets pi deliver its queue on the way out (`agent-loop.js:186` in pi-agent-core 1.3.0).
+ * lands in a tool lets pi deliver its queue on the way out (`agent-loop.js:191` in pi-agent-core 1.4.0).
  */
 function midToolTeam(label: string): Harness {
   return makeTeam({

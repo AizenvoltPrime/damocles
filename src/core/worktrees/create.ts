@@ -6,6 +6,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import ignore from 'ignore';
 import type { Memento } from '../../platform/key-value-state';
+import { stripBom } from '../config/bom';
 import { endOfOptions, revision, type GitResult, type GitRunner } from '../scm/git-runner';
 import { GitError } from '../scm/errors';
 import { addWorktreeArgs } from '../scm/worktrees';
@@ -395,7 +396,7 @@ export async function copyWorktreeInclude(runner: GitRunner, projectPath: string
       log(`[worktrees] ${file} is not a regular file under ${MAX_INCLUDE_FILE_BYTES} bytes, so nothing was copied`);
       return none;
     }
-    text = await fs.readFile(file, 'utf8');
+    text = stripBom(await fs.readFile(file, 'utf8'));
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return none;
     throw err;
@@ -521,7 +522,7 @@ export async function readSetupCommands(projectPath: string, platform: NodeJS.Pl
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text);
+    parsed = JSON.parse(stripBom(text));
   } catch (err) {
     throw new Error(`${file} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
   }

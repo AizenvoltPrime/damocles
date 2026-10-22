@@ -136,6 +136,27 @@ describe("writeDamoclesMcpServers — file round-trip", () => {
     expect(readConfigFile()).toEqual({ mcpServers: { docs: stdio } });
   });
 
+  it("adds to a file that starts with a BOM and writes it back without one", async () => {
+    writeConfigFile(`\uFEFF${JSON.stringify({ $schema: "x", mcpServers: { existing: { command: "old" } } })}`);
+
+    await addDamoclesMcpServer("docs", stdio, NO_SHADOWING_NAMES);
+
+    expect(fs.readFileSync(MCP_PATH, "utf-8").startsWith("{")).toBe(true);
+    expect(readConfigFile()).toEqual({ $schema: "x", mcpServers: { existing: { command: "old" }, docs: stdio } });
+  });
+
+  it("edits and deletes in a file that starts with a BOM", async () => {
+    writeConfigFile(`\uFEFF${JSON.stringify({ mcpServers: { docs: { command: "old" }, other: { command: "keep" } } })}`);
+    await updateDamoclesMcpServer("docs", "docs", { command: "new" }, NO_SHADOWING_NAMES);
+    expect(fs.readFileSync(MCP_PATH, "utf-8").startsWith("{")).toBe(true);
+    expect(readServers()).toEqual({ docs: { command: "new" }, other: { command: "keep" } });
+
+    writeConfigFile(`\uFEFF${JSON.stringify({ mcpServers: { docs: { command: "old" }, other: { command: "keep" } } })}`);
+    await deleteDamoclesMcpServer("docs");
+    expect(fs.readFileSync(MCP_PATH, "utf-8").startsWith("{")).toBe(true);
+    expect(readServers()).toEqual({ other: { command: "keep" } });
+  });
+
   it("writes atomically, leaving no temp file behind", async () => {
     await addDamoclesMcpServer("docs", stdio, NO_SHADOWING_NAMES);
 

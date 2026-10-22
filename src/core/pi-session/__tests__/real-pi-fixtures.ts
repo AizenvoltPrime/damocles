@@ -17,7 +17,7 @@ import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { PermissionHandler } from '../../permission-handler';
 import type { SessionOptions } from '../../session-types';
 import { PiSession } from '../pi-session';
-import { withQueuePolicy } from '../queue-policy';
+import { withSettingsPolicy } from '../settings-policy';
 import { trackRunLifecycle } from '../run-lifecycle';
 import { withPerCallCancel } from '../tools/cancellable-shell';
 import { ShellCancelStore } from '../tools/shell-cancel-registry';
@@ -144,7 +144,7 @@ export function realPiSessions(): {
       extend?.(pi);
     };
     // Built as FolderRuntime builds the folder's services, since pi's queue behaviour depends on it.
-    const settingsManager = withQueuePolicy(SettingsManager.create(cwd, agentDir, { projectTrusted: true }));
+    const settingsManager = withSettingsPolicy(SettingsManager.create(cwd, agentDir, { projectTrusted: true }));
     const modelRuntime = await ModelRuntime.create({
       authPath: path.join(agentDir, 'auth.json'),
       modelsPath: path.join(agentDir, 'models.json'),

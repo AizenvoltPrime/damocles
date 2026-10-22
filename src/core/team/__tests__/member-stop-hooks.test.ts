@@ -17,7 +17,7 @@ import { Type } from 'typebox';
 import { AgentRunner } from '../agent-runner';
 import { MessageBus } from '../message-bus';
 import type { AgentResult, AgentRunConfig } from '../types';
-import { withQueuePolicy } from '../../pi-session/queue-policy';
+import { withSettingsPolicy } from '../../pi-session/settings-policy';
 import { createSubagentExtensionFactory } from '../../pi-session/subagents/subagent-extension-factory';
 import { ShellCancelStore } from '../../pi-session/tools/shell-cancel-registry';
 import type { GatePermissionContext } from '../../pi-session/permission-gate';
@@ -82,7 +82,7 @@ function recordingHook(dir: string): { entry: HookEntry; ran: () => boolean } {
   return { entry: { command: [process.execPath, '-e', script] }, ran: () => fs.existsSync(ranFile) };
 }
 
-// Sequential (`agent-loop.js:366-410` in pi-agent-core 1.3.0), so an abort after the first call leaves the second unstarted.
+// Sequential (`agent-loop.js:372-416` in pi-agent-core 1.4.0), so an abort after the first call leaves the second unstarted.
 const sequentialTool = (name: string): ToolDefinition => ({
   name,
   label: name,
@@ -121,7 +121,7 @@ async function memberSession(hooks: Record<string, HookEntry[]>, stopSignal: Abo
     },
     stopSignal,
   });
-  const settingsManager = withQueuePolicy(SettingsManager.inMemory({ compaction: { enabled: false }, cacheWarming: 'off' }, { projectTrusted: true }));
+  const settingsManager = withSettingsPolicy(SettingsManager.inMemory({ compaction: { enabled: false }, cacheWarming: 'off' }, { projectTrusted: true }));
   const modelRuntime = await ModelRuntime.create({
     authPath: path.join(agentDir, 'auth.json'),
     modelsPath: path.join(agentDir, 'models.json'),

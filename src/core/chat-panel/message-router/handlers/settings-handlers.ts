@@ -12,14 +12,9 @@ import {
   toolExposureLayers,
   toolExposureMapForScope,
 } from "../../../pi-session/mcp/exposure";
-import {
-  deleteOpenrouterApiKey,
-  deleteTypesafeApiKey,
-  openrouterAuthStatus,
-  storeOpenrouterApiKey,
-  storeTypesafeApiKey,
-  typesafeAuthStatus,
-} from "../../settings-manager/managers/explore-manager";
+import { deleteProviderKey, providerAuthStatus, storeProviderKey } from "../../settings-manager/managers/provider-keys";
+import { memoryJudgeStatus } from "../../settings-manager/managers/memory-judge-status";
+import { isKeyProviderId, KEY_PROVIDER_IDS } from "../../../../shared/settings-sections";
 import { log } from "../../../logger";
 import { isSwitchableToolGroup, TOOL_GROUP_SETTINGS } from "../../../../shared/types/tools";
 import { IMAGE_ENABLED_SETTING, IMAGE_MODEL_SETTING } from "../../../pi-session/tools/image-tool-specs";
@@ -67,33 +62,16 @@ function requireUserResources(ctx: HandlerContext): McpUserResourcePort {
   return port;
 }
 
+/** The image settings and OpenRouter auth are process-wide, so every panel's section and Tools panel change together. */
+export function broadcastImageGenerationState({ getPanels, settingsManager, postMessage }: Pick<HandlerDependencies, "getPanels" | "settingsManager" | "postMessage">): void {
+  for (const [, instance] of getPanels()) {
+    settingsManager.sendImageGenerationSettings(instance.host);
+    postMessage(instance.host, { type: "toolStatus", data: instance.session.getToolStatus() });
+  }
+}
+
 export function createSettingsHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { postMessage, settingsManager, getPanels, platform } = deps;
-
-  /** Broadcast to every open panel — auth-status changes must propagate cross-panel. */
-  function broadcast(message: ExtensionToWebviewMessage): void {
-    for (const [, instance] of getPanels()) {
-      postMessage(instance.host, message);
-    }
-  }
-
-  async function broadcastStepfunStatus(): Promise<void> {
-    for (const [, instance] of getPanels()) await settingsManager.sendStepfunAuthStatus(instance.host);
-  }
-
-  /** The OpenRouter key decides image generation. */
-  async function broadcastOpenrouterStatus(): Promise<void> {
-    broadcast(await openrouterAuthStatus(platform));
-    broadcastImageGenerationState();
-  }
-
-  /** The image settings and OpenRouter auth are process-wide, so every panel's section and Tools panel change together. */
-  function broadcastImageGenerationState(): void {
-    for (const [, instance] of getPanels()) {
-      settingsManager.sendImageGenerationSettings(instance.host);
-      postMessage(instance.host, { type: "toolStatus", data: instance.session.getToolStatus() });
-    }
-  }
 
   /**
    * Feed every panel its own folder's MCP scope. Every panel, not the acting one: a user-scope toggle,
@@ -245,10 +223,16 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       deps.postSettingsFileAvailability?.(ctx);
       deps.postClaudeAuthState?.(ctx.host);
       postMessage(ctx.host, await openaiAuthStatusMessage(platform));
-      await settingsManager.sendStepfunAuthStatus(ctx.host);
-      await settingsManager.sendDeepseekAuthStatus(ctx.host);
-      postMessage(ctx.host, await typesafeAuthStatus(platform));
-      postMessage(ctx.host, await openrouterAuthStatus(platform));
+      // Read together, each bounded, so one secret store read cannot hold the rest of the reply; posted in order, the judge last.
+      const [keyStatuses, judgeStatus] = await Promise.all([
+        Promise.all(KEY_PROVIDER_IDS.map((provider) => providerAuthStatus(platform, provider))),
+        memoryJudgeStatus(platform).catch((err: unknown) => {
+          log("[SettingsHandlers] reading the memory judge status failed: %s", err instanceof Error ? err.message : String(err));
+          return undefined;
+        }),
+      ]);
+      for (const status of keyStatuses) if (status) postMessage(ctx.host, status);
+      if (judgeStatus) postMessage(ctx.host, judgeStatus);
       postMessage(ctx.host, { type: "toolStatus", data: ctx.session.getToolStatus() });
       settingsManager.sendImageGenerationSettings(ctx.host);
       await settingsManager.sendVoiceConfig(ctx.host);
@@ -729,7 +713,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       const saved = await writeSetting(deps, ctx, TOOL_GROUP_SETTINGS[group], (detail) => t("Failed to save tool group setting: {0}", detail), () =>
         settingsManager.setToolGroupEnabled(group, msg.enabled));
       if (saved) ctx.session.refreshActiveTools();
-      if (msg.group === "image") broadcastImageGenerationState();
+      if (msg.group === "image") broadcastImageGenerationState(deps);
       else postMessage(ctx.host, { type: "toolStatus", data: ctx.session.getToolStatus() });
     },
 
@@ -741,14 +725,14 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       if (msg.type !== "setImageGenerationEnabled") return;
       await writeSetting(deps, ctx, IMAGE_ENABLED_SETTING, (detail) => t("Failed to save image generation setting: {0}", detail), () =>
         settingsManager.setImageGenerationEnabled(msg.enabled));
-      broadcastImageGenerationState();
+      broadcastImageGenerationState(deps);
     },
 
     setImageGenerationModel: async (msg, ctx) => {
       if (msg.type !== "setImageGenerationModel") return;
       await writeSetting(deps, ctx, IMAGE_MODEL_SETTING, (detail) => t("Failed to save image generation setting: {0}", detail), () =>
         settingsManager.setImageGenerationModel(msg.model));
-      broadcastImageGenerationState();
+      broadcastImageGenerationState(deps);
     },
 
     setProjectTrusted: async (_msg, ctx) => {
@@ -776,120 +760,37 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
-    setStepfunApiKey: async (msg, ctx) => {
-      if (msg.type !== "setStepfunApiKey") return;
+    setProviderApiKey: async (msg, ctx) => {
+      if (msg.type !== "setProviderApiKey") return;
+      const { provider, requestId } = msg;
+      if (!isKeyProviderId(provider)) throw new Error("Unknown key provider");
+      if (typeof msg.key !== "string") throw new Error("Malformed API key");
       const key = msg.key.trim();
       if (!key) {
-        postMessage(ctx.host, { type: "setStepfunApiKeyAck", requestId: msg.requestId, ok: false, error: t("API key cannot be empty") });
+        postMessage(ctx.host, { type: "setProviderApiKeyAck", provider, requestId, ok: false, error: t("API key cannot be empty") });
         return;
       }
       try {
-        await settingsManager.storeStepfunApiKey(key);
-        postMessage(ctx.host, { type: "setStepfunApiKeyAck", requestId: msg.requestId, ok: true });
-        await broadcastStepfunStatus();
+        await storeProviderKey(platform, provider, key);
+        postMessage(ctx.host, { type: "setProviderApiKeyAck", provider, requestId, ok: true });
       } catch (err) {
-        log("[SettingsHandlers] Failed to store StepFun key:", err);
-        postMessage(ctx.host, { type: "setStepfunApiKeyAck", requestId: msg.requestId, ok: false, error: err instanceof Error ? err.message : "Failed to store API key" });
+        log("[SettingsHandlers] Failed to store the %s key:", provider, err);
+        // The store's error text is not localized and can name a keyring path, so only the log carries it.
+        postMessage(ctx.host, { type: "setProviderApiKeyAck", provider, requestId, ok: false, error: t("Failed to store API key") });
       }
     },
 
-    clearStepfunApiKey: async (msg, ctx) => {
-      if (msg.type !== "clearStepfunApiKey") return;
+    clearProviderApiKey: async (msg, ctx) => {
+      if (msg.type !== "clearProviderApiKey") return;
+      const { provider, requestId } = msg;
+      if (!isKeyProviderId(provider)) throw new Error("Unknown key provider");
       try {
-        await settingsManager.deleteStepfunApiKey();
-        postMessage(ctx.host, { type: "clearStepfunApiKeyAck", requestId: msg.requestId, ok: true });
-        await broadcastStepfunStatus();
+        await deleteProviderKey(platform, provider);
+        postMessage(ctx.host, { type: "clearProviderApiKeyAck", provider, requestId, ok: true });
       } catch (err) {
-        log("[SettingsHandlers] Failed to clear StepFun key:", err);
-        postMessage(ctx.host, { type: "clearStepfunApiKeyAck", requestId: msg.requestId, ok: false, error: t("Failed to clear API key") });
+        log("[SettingsHandlers] Failed to clear the %s key:", provider, err);
+        postMessage(ctx.host, { type: "clearProviderApiKeyAck", provider, requestId, ok: false, error: t("Failed to clear API key") });
       }
-    },
-
-    setDeepseekApiKey: async (msg, ctx) => {
-      if (msg.type !== "setDeepseekApiKey") return;
-      const key = msg.key.trim();
-      if (!key) {
-        postMessage(ctx.host, { type: "setDeepseekApiKeyAck", requestId: msg.requestId, ok: false, error: t("API key cannot be empty") });
-        return;
-      }
-      try {
-        await settingsManager.storeDeepseekApiKey(key);
-        postMessage(ctx.host, { type: "setDeepseekApiKeyAck", requestId: msg.requestId, ok: true });
-        broadcast({ type: "deepseekAuthStatusChanged", configured: true });
-      } catch (err) {
-        log("[SettingsHandlers] Failed to store DeepSeek key:", err);
-        postMessage(ctx.host, { type: "setDeepseekApiKeyAck", requestId: msg.requestId, ok: false, error: err instanceof Error ? err.message : "Failed to store API key" });
-      }
-    },
-
-    clearDeepseekApiKey: async (msg, ctx) => {
-      if (msg.type !== "clearDeepseekApiKey") return;
-      try {
-        await settingsManager.deleteDeepseekApiKey();
-        postMessage(ctx.host, { type: "clearDeepseekApiKeyAck", requestId: msg.requestId, ok: true });
-        broadcast({ type: "deepseekAuthStatusChanged", configured: false });
-      } catch (err) {
-        log("[SettingsHandlers] Failed to clear DeepSeek key:", err);
-        postMessage(ctx.host, { type: "clearDeepseekApiKeyAck", requestId: msg.requestId, ok: false, error: t("Failed to clear API key") });
-      }
-    },
-
-    setTypesafeApiKey: async (msg, ctx) => {
-      if (msg.type !== "setTypesafeApiKey") return;
-      const key = msg.key.trim();
-      if (!key) {
-        postMessage(ctx.host, { type: "setTypesafeApiKeyAck", requestId: msg.requestId, ok: false, error: t("API key cannot be empty") });
-        return;
-      }
-      try {
-        await storeTypesafeApiKey(platform, key);
-        postMessage(ctx.host, { type: "setTypesafeApiKeyAck", requestId: msg.requestId, ok: true });
-      } catch (err) {
-        log("[SettingsHandlers] Failed to store TypeSafe key:", err);
-        postMessage(ctx.host, { type: "setTypesafeApiKeyAck", requestId: msg.requestId, ok: false, error: err instanceof Error ? err.message : "Failed to store API key" });
-      }
-    },
-
-    clearTypesafeApiKey: async (msg, ctx) => {
-      if (msg.type !== "clearTypesafeApiKey") return;
-      try {
-        await deleteTypesafeApiKey(platform);
-        postMessage(ctx.host, { type: "clearTypesafeApiKeyAck", requestId: msg.requestId, ok: true });
-      } catch (err) {
-        log("[SettingsHandlers] Failed to clear TypeSafe key:", err);
-        postMessage(ctx.host, { type: "clearTypesafeApiKeyAck", requestId: msg.requestId, ok: false, error: t("Failed to clear API key") });
-      }
-    },
-
-    setOpenrouterApiKey: async (msg, ctx) => {
-      if (msg.type !== "setOpenrouterApiKey") return;
-      const key = msg.key.trim();
-      if (!key) {
-        postMessage(ctx.host, { type: "setOpenrouterApiKeyAck", requestId: msg.requestId, ok: false, error: t("API key cannot be empty") });
-        return;
-      }
-      try {
-        await storeOpenrouterApiKey(platform, key);
-        postMessage(ctx.host, { type: "setOpenrouterApiKeyAck", requestId: msg.requestId, ok: true });
-      } catch (err) {
-        log("[SettingsHandlers] Failed to store OpenRouter key:", err);
-        postMessage(ctx.host, { type: "setOpenrouterApiKeyAck", requestId: msg.requestId, ok: false, error: err instanceof Error ? err.message : "Failed to store API key" });
-        return;
-      }
-      await broadcastOpenrouterStatus();
-    },
-
-    clearOpenrouterApiKey: async (msg, ctx) => {
-      if (msg.type !== "clearOpenrouterApiKey") return;
-      try {
-        await deleteOpenrouterApiKey(platform);
-        postMessage(ctx.host, { type: "clearOpenrouterApiKeyAck", requestId: msg.requestId, ok: true });
-      } catch (err) {
-        log("[SettingsHandlers] Failed to clear OpenRouter key:", err);
-        postMessage(ctx.host, { type: "clearOpenrouterApiKeyAck", requestId: msg.requestId, ok: false, error: t("Failed to clear API key") });
-        return;
-      }
-      await broadcastOpenrouterStatus();
     },
 
   };

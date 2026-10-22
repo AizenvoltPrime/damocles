@@ -76,6 +76,13 @@ describe('readEnabledModels trust gate', () => {
     expect(readEnabledModels(projectWith(['probe/project-only-model']))).toEqual(['probe/project-only-model']);
   });
 
+  it('reads a project file that starts with a BOM', () => {
+    const cwd = projectWith(['probe/project-only-model']);
+    const file = path.join(cwd, '.pi', 'settings.json');
+    fs.writeFileSync(file, `\uFEFF${fs.readFileSync(file, 'utf8')}`);
+    expect(readEnabledModels(cwd)).toEqual(['probe/project-only-model']);
+  });
+
   it('ignores the project file in a restricted window', () => {
     const cwd = projectWith(['probe/project-only-model']);
     const fake = installFakePlatform({ trusted: false });

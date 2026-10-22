@@ -88,6 +88,7 @@ node_modules/**
 !node_modules/jws/**
 !node_modules/koffi/**
 !node_modules/long/**
+!node_modules/marked-cjk-friendly/**
 !node_modules/ms/**
 !node_modules/node-domexception/**
 !node_modules/node-fetch/**

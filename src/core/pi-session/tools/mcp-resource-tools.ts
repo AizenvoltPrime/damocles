@@ -1,5 +1,5 @@
 /*
- * Ported from pi-coding-agent/src/extensions/mcp/resources.ts (pi 1.3.0): `list_mcp_resources`,
+ * Ported from pi-coding-agent/src/extensions/mcp/resources.ts (pi 1.4.0): `list_mcp_resources`,
  * `list_mcp_resource_templates` and `read_mcp_resource`, the names Codex and opencode use. Each takes a
  * `server` argument and reaches every server the caller sees with resources. Listings are pi's JSON;
  * MCP App resources (`ui://` URIs, `profile=mcp-app` HTML) and icons are left out. Reads become text,

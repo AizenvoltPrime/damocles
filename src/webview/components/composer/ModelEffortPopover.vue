@@ -16,10 +16,12 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { MENU_CONTENT } from '@/components/chat-header/menuStyles';
 import SlidingIndicator from '@/components/SlidingIndicator.vue';
-import { providerLogoSvg } from '@/components/icons/provider-logos';
+import ProviderLogo from '@/components/icons/ProviderLogo.vue';
+import { hasProviderLogo } from '@/components/icons/provider-logos';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useSlidingIndicator } from '@/composables/useSlidingIndicator';
 import { modelVendor, type ModelVendor } from '@/composables/useModelIdentity';
+import { KEY_PROVIDER_NAMES } from '@shared/settings-sections';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { remPx } from '@/composables/useRemPx';
 
@@ -29,7 +31,7 @@ const settingsStore = useSettingsStore();
 const { availableModels, activeModel, defaultModel, panelThinking, panelThinkingModel } = storeToRefs(settingsStore);
 
 // Vendor names are brands, shown as written in every language.
-const VENDOR_NAMES: Record<ModelVendor, string> = { anthropic: 'Anthropic', openai: 'OpenAI', deepseek: 'DeepSeek', stepfun: 'StepFun' };
+const VENDOR_NAMES: Record<ModelVendor, string> = { anthropic: 'Anthropic', openai: 'OpenAI', ...KEY_PROVIDER_NAMES };
 
 const chatModel = computed(() => activeModel.value || defaultModel.value);
 const current = computed(() => availableModels.value.find((model) => model.value === chatModel.value));
@@ -40,7 +42,7 @@ const groups = computed(() => {
     const vendor = modelVendor(model);
     byVendor.set(vendor, [...(byVendor.get(vendor) ?? []), model]);
   }
-  return [...byVendor].map(([vendor, models]) => ({ vendor, name: VENDOR_NAMES[vendor], logo: providerLogoSvg(vendor), models }));
+  return [...byVendor].map(([vendor, models]) => ({ vendor, name: VENDOR_NAMES[vendor], models }));
 });
 
 const thinkingModel = computed(() => availableModels.value.find((model) => model.value === (panelThinkingModel.value || chatModel.value)));
@@ -69,7 +71,7 @@ function selectEffort(value: AcceptableValue): void {
   if (level) postMessage({ type: 'setPanelEffort', effort: level, model: panelThinkingModel.value || chatModel.value });
 }
 
-const currentLogo = computed(() => (current.value ? providerLogoSvg(modelVendor(current.value)) : undefined));
+const currentVendor = computed(() => (current.value ? modelVendor(current.value) : undefined));
 </script>
 
 <template>
@@ -80,14 +82,11 @@ const currentLogo = computed(() => (current.value ? providerLogoSvg(modelVendor(
       :aria-label="`${t('composer.modelFor')}: ${triggerLabel}`"
       data-testid="composer-model"
     >
-      <!-- eslint-disable vue/no-v-html -- a vendored static logo constant (provider-logos.ts) -->
-      <span
-        v-if="currentLogo"
-        class="size-3.5 shrink-0 [&>svg]:size-full"
-        aria-hidden="true"
-        v-html="currentLogo"
+      <ProviderLogo
+        v-if="currentVendor && hasProviderLogo(currentVendor)"
+        :provider="currentVendor"
+        class="size-3.5"
       />
-      <!-- eslint-enable vue/no-v-html -->
       <Cpu
         v-else
         class="size-3.5"
@@ -122,14 +121,10 @@ const currentLogo = computed(() => (current.value ? providerLogoSvg(modelVendor(
             class="flex items-center gap-1.75 px-2.25 pb-0.75 pt-1.5 text-10.5 text-(--d-faint)"
             role="presentation"
           >
-            <!-- eslint-disable vue/no-v-html -- a vendored static logo constant (provider-logos.ts) -->
-            <span
-              v-if="group.logo"
-              class="size-3 shrink-0 [&>svg]:size-full"
-              aria-hidden="true"
-              v-html="group.logo"
+            <ProviderLogo
+              :provider="group.vendor"
+              class="size-3"
             />
-            <!-- eslint-enable vue/no-v-html -->
             {{ group.name }}
           </div>
           <DropdownMenuRadioItem
@@ -140,14 +135,10 @@ const currentLogo = computed(() => (current.value ? providerLogoSvg(modelVendor(
             class="gap-2.25 rounded-7 px-2.25 py-1.5 text-13 text-(--d-text) focus:bg-(--d-hover) focus:text-(--d-text) data-[state=checked]:bg-(--d-accent-soft) [&>span:first-child]:hidden"
             data-testid="composer-model-option"
           >
-            <!-- eslint-disable vue/no-v-html -- a vendored static logo constant (provider-logos.ts) -->
-            <span
-              v-if="group.logo"
-              class="size-3.75 shrink-0 [&>svg]:size-full"
-              aria-hidden="true"
-              v-html="group.logo"
+            <ProviderLogo
+              :provider="group.vendor"
+              class="size-3.75"
             />
-            <!-- eslint-enable vue/no-v-html -->
             <span class="flex-1 truncate">{{ model.displayName }}</span>
             <Check
               class="size-3.25 shrink-0 text-(--d-accent) transition-opacity"

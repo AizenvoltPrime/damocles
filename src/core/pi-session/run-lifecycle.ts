@@ -60,7 +60,7 @@ function until(wait: Promise<unknown>, signals: readonly (AbortSignal | undefine
 export function trackRunLifecycle(session: AgentSession): RunLifecycle {
   if (bound.has(session)) throw new Error('This pi session already has a run lifecycle.');
   let stored: WindDownPhase = 'start';
-  // pi resolves an idle wait made while a run is open only after that run's settle ran the actions it deferred (agent-session.js:696-707).
+  // pi resolves an idle wait made while a run is open only after that run's settle ran the actions it deferred (agent-session.js:695-706).
   let idleAfterSettle: Promise<void> | null = null;
   const listeners = new Set<(event: AgentSessionEvent) => void>();
   const disposed = new AbortController();
@@ -88,12 +88,12 @@ export function trackRunLifecycle(session: AgentSession): RunLifecycle {
       resolve();
     });
   });
-  // pi turns `isStreaming` false as it starts the `agent_settled` handlers and publishes `agent_settled` after them (agent-session.js:686-691).
+  // pi turns `isStreaming` false as it starts the `agent_settled` handlers and publishes `agent_settled` after them (agent-session.js:685-690).
   const settlingNow = (): boolean => stored !== 'start' && !session.isStreaming;
   const lifecycle: RunLifecycle = {
     session,
     get phase() {
-      // The `agent_start` handlers run inside the agent loop, before pi publishes the event (agent-session.js:753), and the loop runs only inside `_startRun`.
+      // The `agent_start` handlers run inside the agent loop, before pi publishes the event (agent-session.js:752), and the loop runs only inside `_startRun`.
       return stored === 'start' && session.isStreaming && session.agent.state.isStreaming ? 'run' : stored;
     },
     get streaming() {
@@ -121,7 +121,7 @@ export function trackRunLifecycle(session: AgentSession): RunLifecycle {
       if ((!session.isStreaming && stored === 'start') || signal?.aborted || disposed.signal.aborted) return null;
       return (async () => {
         while (!signal?.aborted && !disposed.signal.aborted) {
-          // pi's own idle wait covers a run's preparation, whose failure publishes no `agent_settled` (agent-session.js:1398-1404).
+          // pi's own idle wait covers a run's preparation, whose failure publishes no `agent_settled` (agent-session.js:1429-1435).
           if (session.isStreaming) await until(session.waitForIdle(), [signal, disposed.signal]);
           else if (stored !== 'start') await until(idleAfterSettle ?? nextSettled(), [signal, disposed.signal]);
           else return;

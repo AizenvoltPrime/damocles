@@ -28,7 +28,7 @@ export const TOOL_POWERSHELL = "PowerShell";
 export const TOOL_STRUCTURED_OUTPUT = "StructuredOutput";
 export const TOOL_GENERATE_IMAGE = "GenerateImage";
 
-/** The cross-server MCP resource tools (pi 1.3.0's names); each call names its server in `input.server`. */
+/** The cross-server MCP resource tools (pi 1.4.0's names); each call names its server in `input.server`. */
 export const MCP_RESOURCE_TOOL_NAMES = ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource'] as const;
 export type McpResourceToolName = typeof MCP_RESOURCE_TOOL_NAMES[number];
 export function isMcpResourceToolName(name: string): name is McpResourceToolName {

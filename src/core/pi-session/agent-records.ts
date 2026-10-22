@@ -106,7 +106,7 @@ export function teamMemberSessionId(memberId: string, attempt: number): string {
   return id;
 }
 
-// pi names a session file `<timestamp>_<sessionId>.jsonl` and its timestamp holds no `_` (`session-manager.js:713`, `:1241`, `:1396` in pi 1.3.0).
+// pi names a session file `<timestamp>_<sessionId>.jsonl` and its timestamp holds no `_` (`session-manager.js:713`, `:1241`, `:1396` in pi 1.4.0).
 const SESSION_FILE_NAME = /^[^_]+_(.+)\.jsonl$/;
 
 /** The pi session id of the agent file at `path`, read from its name, so nothing opens the file to learn it. */

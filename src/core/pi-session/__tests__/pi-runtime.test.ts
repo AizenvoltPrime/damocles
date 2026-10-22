@@ -370,6 +370,11 @@ describe('subscription plugin migration', () => {
     failLegacyRemove: boolean;
     failNextFlush: boolean;
     failNextReload: boolean;
+    /** A write pi queued for a field outside `packages`, as a ChatGPT sign-in's device id is; it runs at the next flush or reload. */
+    queuedWrite: boolean;
+    /** pi's loads of the user settings file fail, as for invalid JSON: each records a load error, keeps the
+     *  previous in-memory settings, and pi drops every write until a load succeeds. */
+    unloadable: boolean;
     /** Resolves when the install may proceed; lets a case act while a swap is in flight. */
     installGate: Promise<void>;
     folders: FolderRuntime[];
@@ -377,6 +382,8 @@ describe('subscription plugin migration', () => {
     addFolder(label: string): FolderRuntime;
   }
 
+  /** V8's parse message, which quotes the settings file. */
+  const QUOTING_PARSE_MESSAGE = `Unexpected token '}', "{"token":"sk-file-text"}" is not valid JSON`;
   const tmpRoots: string[] = [];
   const spies: Array<{ mockRestore(): void }> = [];
   const restoreSpies = (): void => {
@@ -403,7 +410,8 @@ describe('subscription plugin migration', () => {
     tmpRoots.push(root);
     const calls: string[] = [];
     const runtime = PiRuntime.get(root);
-    const writeErrors: { scope: string; error: Error }[] = [];
+    const settingsErrors: { scope: string; path?: string; error: Error }[] = [];
+    let loadFailed = false;
 
     const modelRuntime = {
       registerProvider: (name: string, config: Record<string, unknown>) => {
@@ -480,6 +488,8 @@ describe('subscription plugin migration', () => {
       failLegacyRemove: false,
       failNextFlush: false,
       failNextReload: false,
+      queuedWrite: false,
+      unloadable: false,
       installGate: Promise.resolve(),
       folders: [],
       addFolder: (label) => {
@@ -512,17 +522,29 @@ describe('subscription plugin migration', () => {
         calls.push('setPackages');
         h.memory = [...packages];
       },
+      // pi queues a write only when a setter changed something, and flush awaits that queue.
       flush: async () => {
+        if (!h.queuedWrite && JSON.stringify(h.memory) === JSON.stringify(h.disk)) return;
+        h.queuedWrite = false;
         calls.push('flush');
+        if (loadFailed) return;
         if (h.failNextFlush) {
           h.failNextFlush = false;
-          writeErrors.push({ scope: 'global', error: new Error('settings.json is locked') });
+          // pi's write parses the file as it is now, which another program may have broken since the load.
+          settingsErrors.push({ scope: 'global', error: new SyntaxError(QUOTING_PARSE_MESSAGE) });
           return;
         }
         h.disk = [...h.memory];
       },
-      drainErrors: () => writeErrors.splice(0),
+      drainErrors: () => settingsErrors.splice(0),
+      // pi's reload awaits its write queue before it loads (settings-manager.js:363).
       reload: async () => {
+        await userSettings.flush();
+        loadFailed = h.unloadable;
+        if (loadFailed) {
+          settingsErrors.push({ scope: 'global', path: path.join(root, 'settings.json'), error: new SyntaxError(QUOTING_PARSE_MESSAGE) });
+          return;
+        }
         h.memory = [...h.disk];
       },
     };
@@ -799,13 +821,54 @@ describe('subscription plugin migration', () => {
   it('(l) a settings write that fails at the swap aborts before any reload or delete', async () => {
     const h = legacyInstall();
     h.failNextFlush = true;
+    const logged = logLines.length;
 
-    await expect(toggle(h, true)).rejects.toThrow('settings write failed');
+    await expect(toggle(h, true)).rejects.toThrow('settings write failed (SyntaxError)');
 
     expect(reloads(h)).toEqual([]);
     expect(diskSources(h)).toEqual([LEGACY]);
     expect(fs.existsSync(h.cloneDir(LEGACY))).toBe(true);
     expect(h.providers.get('anthropic')).toEqual({ tag: 'legacy', oauth: true });
+    expect(logLines.slice(logged).join('\n')).not.toContain('sk-file-text');
+  });
+
+  it('(l3) another writer\'s queued write that fails before a reload neither reads as an unloadable file nor fails the step', async () => {
+    const h = legacyInstall();
+    h.queuedWrite = true;
+    h.failNextFlush = true;
+    const logged = logLines.length;
+
+    await toggle(h, true);
+
+    expect(diskSources(h)).toEqual([CURRENT]);
+    expect(h.providers.get('anthropic')).toMatchObject({ tag: 'current' });
+    expect(logLines.slice(logged).join('\n')).toContain('settings write failed (global): SyntaxError');
+    expect(logLines.slice(logged).join('\n')).not.toContain('sk-file-text');
+  });
+
+  it('(l2) every settings step over a user settings file pi cannot load fails, naming the file, until pi loads it', async () => {
+    const h = legacyInstall();
+    h.unloadable = true;
+    const logged = logLines.length;
+    const unreadable = `Damocles could not read ${path.join(h.runtime.agentDir, 'settings.json')}, so pi cannot save this change to it. Fix or delete the file, then try again.`;
+
+    // pi records the load error once per load, so the second attempt is the one a drained error would let through.
+    for (const allowance of [false, false, true]) {
+      const failure = await toggle(h, allowance).then(() => null, (err: unknown) => err);
+      expect(failure).toEqual(new Error(unreadable));
+    }
+
+    expect(reloads(h)).toEqual([]);
+    expect(h.calls.filter((c) => c.startsWith('remove') || c.startsWith('addSettings') || c.startsWith('unregister'))).toEqual([]);
+    expect(h.memory.map(sourceOf)).toEqual([LEGACY]);
+    expect(fs.existsSync(h.cloneDir(LEGACY))).toBe(true);
+    expect(h.providers.get('anthropic')).toEqual({ tag: 'legacy', oauth: true });
+    expect(logLines.slice(logged).join('\n')).toContain('SyntaxError');
+    expect(logLines.slice(logged).join('\n')).not.toContain('sk-file-text');
+
+    h.unloadable = false;
+    await toggle(h, false);
+    expect(diskSources(h)).toEqual([]);
   });
 
   it('(m) a verify reload that throws rolls back to the legacy plugin', async () => {
@@ -1167,6 +1230,132 @@ describe('PiRuntime.syncCustomProviders', () => {
     expect(await runtime.syncCustomProviders(secrets({}))).toEqual({ wired: [], notWired: [], timedOut: false });
   });
 
+  it('notifies onCustomProvidersSynced after every sync, a failed one included, and not after unsubscribing', async () => {
+    const runtime = PiRuntime.get();
+    const synced = vi.fn();
+    const stop = PiRuntime.onCustomProvidersSynced(synced);
+    const readSecret = vi.fn(async () => undefined);
+    await runtime.syncCustomProviders(readSecret);
+    expect(synced).not.toHaveBeenCalled();
+
+    const getProviderAuthStatus = vi.fn(() => ({ configured: false }));
+    attach(runtime, fakeModelRuntime({ getProviderAuthStatus }));
+    await runtime.syncCustomProviders(secrets({}));
+    expect(synced).toHaveBeenCalledTimes(1);
+
+    getProviderAuthStatus.mockImplementation(() => {
+      throw new Error('provider table is corrupt');
+    });
+    await runtime.syncCustomProviders(secrets({}));
+    expect(synced).toHaveBeenCalledTimes(2);
+
+    stop();
+    await runtime.syncCustomProviders(secrets({}));
+    expect(synced).toHaveBeenCalledTimes(2);
+  });
+
+  // A key's kind decides a MiniMax chat's billing, so every open chat republishes when a credential changes.
+  it('republishes account info to every session after a sync that changed a key, and not after an unchanged one', async () => {
+    const runtime = PiRuntime.get();
+    attach(runtime, fakeModelRuntime());
+    const publishAccountInfo = vi.fn();
+    runtime.registerSessionMutator('sess-billing', { publishAccountInfo } as unknown as LiveSessionMutator);
+    const judge = vi.fn();
+    const stop = PiRuntime.onMemoryJudgeChange(judge);
+    try {
+      await runtime.syncCustomProviders(secrets({ 'damocles.minimax.apiKey': 'sk-cp-x' }));
+      expect(publishAccountInfo).toHaveBeenCalledTimes(1);
+      expect([...runtime.flatFeeKeyProviders()]).toEqual(['minimax']);
+      expect(judge).toHaveBeenCalledTimes(1);
+
+      await runtime.syncCustomProviders(secrets({ 'damocles.minimax.apiKey': 'sk-cp-x' }));
+      expect(publishAccountInfo).toHaveBeenCalledTimes(1);
+      expect(judge).toHaveBeenCalledTimes(2);
+
+      await runtime.syncCustomProviders(secrets({ 'damocles.minimax.apiKey': 'sk-api-x' }));
+      expect(publishAccountInfo).toHaveBeenCalledTimes(2);
+      expect(runtime.flatFeeKeyProviders()).toEqual(new Set());
+    } finally {
+      stop();
+      runtime.unregisterSessionMutator('sess-billing', runtime.getSessionMutator('sess-billing')!);
+    }
+  });
+
+  it('republishes account info after a failed sync, which may have changed a credential it could not report', async () => {
+    const runtime = PiRuntime.get();
+    stubTimeout(AbortSignal.abort());
+    attach(
+      runtime,
+      fakeModelRuntime({
+        getProviderAuthStatus: vi.fn(() => {
+          throw new Error('provider table is corrupt');
+        }),
+      }),
+    );
+    const publishAccountInfo = vi.fn();
+    runtime.registerSessionMutator('sess-billing', { publishAccountInfo } as unknown as LiveSessionMutator);
+    await runtime.syncCustomProviders(secrets({}));
+    expect(publishAccountInfo).toHaveBeenCalledTimes(1);
+  });
+
+  // The removal drops its cache entry before pi takes it, so a removal that then fails reports no change.
+  it('republishes account info when a failed key removal changed the flat-fee providers', async () => {
+    const runtime = PiRuntime.get();
+    attach(runtime, fakeModelRuntime({ removeRuntimeApiKey: vi.fn(async () => { throw new Error('auth.json is locked'); }) }));
+    const publishAccountInfo = vi.fn();
+    runtime.registerSessionMutator('sess-billing', { publishAccountInfo } as unknown as LiveSessionMutator);
+    const synced = vi.fn();
+    const stop = PiRuntime.onCustomProvidersSynced(synced);
+    try {
+      await runtime.syncCustomProviders(secrets({ 'damocles.minimax.apiKey': 'sk-cp-x' }));
+      expect(publishAccountInfo).toHaveBeenCalledTimes(1);
+
+      expect(await runtime.syncCustomProviders(secrets({}))).toEqual({ wired: [], notWired: ['minimax'], timedOut: false });
+      expect(runtime.flatFeeKeyProviders()).toEqual(new Set());
+      expect(publishAccountInfo).toHaveBeenCalledTimes(2);
+      expect(synced.mock.calls).toEqual([[{ accountChanged: true }], [{ accountChanged: true }]]);
+
+      await runtime.syncCustomProviders(secrets({}));
+      expect(publishAccountInfo).toHaveBeenCalledTimes(2);
+      expect(synced).toHaveBeenLastCalledWith({ accountChanged: false });
+    } finally {
+      stop();
+      runtime.unregisterSessionMutator('sess-billing', runtime.getSessionMutator('sess-billing')!);
+    }
+  });
+
+  it('resolves a sync whose listeners or account publishes throw, and still runs the ones after them', async () => {
+    const runtime = PiRuntime.get();
+    attach(runtime, fakeModelRuntime());
+    const failing = { publishAccountInfo: vi.fn(() => { throw new Error('panel is gone'); }) };
+    const healthy = { publishAccountInfo: vi.fn() };
+    runtime.registerSessionMutator('sess-failing', failing as unknown as LiveSessionMutator);
+    runtime.registerSessionMutator('sess-healthy', healthy as unknown as LiveSessionMutator);
+    const judge = vi.fn();
+    const later = vi.fn();
+    const stops = [
+      PiRuntime.onMemoryJudgeChange(() => { throw new Error('judge listener failed'); }),
+      PiRuntime.onMemoryJudgeChange(judge),
+      PiRuntime.onCustomProvidersSynced(() => { throw new Error('image settings failed'); }),
+      PiRuntime.onCustomProvidersSynced(later),
+    ];
+    try {
+      expect(await runtime.syncCustomProviders(secrets({ [DEEPSEEK_SECRET]: 'ds' }))).toEqual({ wired: ['deepseek'], notWired: [], timedOut: false });
+      expect(healthy.publishAccountInfo).toHaveBeenCalledTimes(1);
+      expect(judge).toHaveBeenCalledTimes(1);
+      expect(later).toHaveBeenCalledWith({ accountChanged: true });
+      expect(logLines.join('\n')).toContain('custom provider sync listener failed');
+    } finally {
+      for (const stop of stops) stop();
+      runtime.unregisterSessionMutator('sess-failing', runtime.getSessionMutator('sess-failing')!);
+      runtime.unregisterSessionMutator('sess-healthy', runtime.getSessionMutator('sess-healthy')!);
+    }
+  });
+
+  it('has no flat-fee key providers before the model runtime exists', () => {
+    expect(PiRuntime.get().flatFeeKeyProviders()).toEqual(new Set());
+  });
+
   it('never writes a credential carried by the failure the outer catch logs (A1)', async () => {
     const runtime = PiRuntime.get();
     stubTimeout(AbortSignal.abort());
@@ -1196,13 +1385,13 @@ describe('PiRuntime.syncCustomProviders', () => {
     type RefreshResult = { aborted: boolean; errors: Map<string, Error> };
 
     /**
-     * pi 1.3.0's OpenRouter catalog refresh as its caller can observe it. A refresh that includes the provider supersedes
-     * its running one (pi-ai models.js:122-137, 184-185), which then ends with no error and with `aborted` read off the
-     * caller's signal alone (models.js:206-215, 229). Without `allowNetwork` the runtime's `PI_OFFLINE` switch applies
-     * (pi-coding-agent core/model-runtime.js:97, 600; models.js:199). A networked refresh still current when its fetch
+     * pi 1.4.0's OpenRouter catalog refresh as its caller can observe it. A refresh that includes the provider supersedes
+     * its running one (pi-ai models.js:127-142, 189-190), which then ends with no error and with `aborted` read off the
+     * caller's signal alone (models.js:211-220, 234). Without `allowNetwork` the runtime's `PI_OFFLINE` switch applies
+     * (pi-coding-agent core/model-runtime.js:97, 603; models.js:204). A networked refresh still current when its fetch
      * ends saves `{ models, checkedAt }` (remote-catalog-provider.js:178-186) under the provider id (models-store.js:92-101)
-     * before it resolves (models.js:138-158). `registerProvider` and `unregisterProvider` each start an offline refresh of
-     * every provider (model-runtime.js:679, 686); a runtime key change refreshes only its own provider (model-runtime.js:411),
+     * before it resolves (models.js:143-163). `registerProvider` and `unregisterProvider` each start an offline refresh of
+     * every provider (model-runtime.js:682, 689); a runtime key change refreshes only its own provider (model-runtime.js:411),
      * and a runtime key is what `getProviderAuthStatus` reports first (model-runtime.js:441-443).
      */
     class PiOpenRouterModel {

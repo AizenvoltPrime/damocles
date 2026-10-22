@@ -213,7 +213,7 @@ watch(() => selectedAgent.value?.status, (newStatus, oldStatus) => {
       />
       <AgentChip
         v-if="model"
-        :logo="model.logo"
+        :logo-provider="model.logoProvider"
         :value="model.name"
       />
       <AgentChip

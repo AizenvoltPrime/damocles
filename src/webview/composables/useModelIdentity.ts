@@ -1,11 +1,11 @@
 import type { ModelInfo } from '@shared/types/settings';
 import { useSettingsStore } from '@/stores/useSettingsStore';
-import { providerLogoSvg } from '@/components/icons/provider-logos';
+import { hasProviderLogo } from '@/components/icons/provider-logos';
 
 export interface ModelIdentity {
   name: string;
-  /** Static vendored SVG markup, or undefined for a model this panel does not list. */
-  logo: string | undefined;
+  /** The provider whose logo ProviderLogo shows, or undefined for a model this panel does not list or a vendor without one. */
+  logoProvider: string | undefined;
 }
 
 export type ModelVendor = 'anthropic' | 'openai' | NonNullable<ModelInfo['piProvider']>;
@@ -21,7 +21,8 @@ export function useModelIdentity(): (model: string | null | undefined) => ModelI
   return (model) => {
     if (!model) return null;
     const info = settings.availableModels.find((candidate) => candidate.value === model || candidate.displayName === model);
-    if (!info) return { name: model, logo: undefined };
-    return { name: info.displayName, logo: providerLogoSvg(modelVendor(info)) };
+    if (!info) return { name: model, logoProvider: undefined };
+    const vendor = modelVendor(info);
+    return { name: info.displayName, logoProvider: hasProviderLogo(vendor) ? vendor : undefined };
   };
 }

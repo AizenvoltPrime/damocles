@@ -7,6 +7,7 @@ import type { AttachedView } from '../../../types';
 import type { HandlerContext, HandlerDependencies } from '../../types';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../../../../../shared/types/messages';
 import type { PanelHost } from '../../../../../platform/window-service';
+import { KEY_PROVIDER_IDS } from '../../../../../shared/settings-sections';
 
 vi.mock('../../../../logger', () => ({ log: vi.fn() }));
 vi.mock('../openai-handlers', () => ({
@@ -92,8 +93,6 @@ describe('requestSettingsState', () => {
       sendModelForPanel: vi.fn(),
       sendThinkingForPanel: vi.fn(),
       sendAvailableModels: vi.fn(async () => {}),
-      sendStepfunAuthStatus: vi.fn(async () => {}),
-      sendDeepseekAuthStatus: vi.fn(async () => {}),
       sendMcpStatus: vi.fn(async () => {}),
       sendImageGenerationSettings: vi.fn(),
       sendVoiceConfig: vi.fn(async () => {}),
@@ -113,7 +112,7 @@ describe('requestSettingsState', () => {
     const ctx = { host: {}, panelId: 'p1', folder, permissionHandler: {}, session: { publishAccountInfo: vi.fn(), getToolStatus: () => ({ tools: [] }) } } as unknown as HandlerContext;
     const handlers = createSettingsHandlers(deps);
     const request = (extra: Partial<HandlerContext> = {}): unknown => handlers.requestSettingsState!({ type: 'requestSettingsState' }, { ...ctx, ...extra });
-    return { view, posted, request, settingsManager, postSettingsFileAvailability };
+    return { view, posted, request, settingsManager, postSettingsFileAvailability, platform };
   }
 
   it('posts the state a view renders and the host prompts that view shows', async () => {
@@ -130,14 +129,15 @@ describe('requestSettingsState', () => {
     expect(posted.map((message) => message.type)).toEqual(expect.arrayContaining([
       'claudeAuthStatusChanged',
       'openaiAuthStatusChanged',
-      'typesafeAuthStatusChanged',
-      'openrouterAuthStatusChanged',
       'toolStatus',
       'voiceFilesSizeUpdate',
     ]));
+    const keyStatusAt = posted.findIndex((message) => message.type === 'providerAuthStatusChanged');
+    expect(posted.slice(keyStatusAt, keyStatusAt + KEY_PROVIDER_IDS.length + 1)).toEqual([
+      ...KEY_PROVIDER_IDS.map((provider) => ({ type: 'providerAuthStatusChanged', provider, configured: false, external: null })),
+      expect.objectContaining({ type: 'memoryJudgeStatus' }),
+    ]);
     for (const send of [
-      settingsManager.sendStepfunAuthStatus,
-      settingsManager.sendDeepseekAuthStatus,
       settingsManager.sendCurrentSettings,
       settingsManager.sendAvailableModels,
       settingsManager.sendMcpStatus,
@@ -145,6 +145,24 @@ describe('requestSettingsState', () => {
       settingsManager.sendVoiceConfig,
     ]) expect(send).toHaveBeenCalledOnce();
     expect(postSettingsFileAvailability).toHaveBeenCalledOnce();
+  });
+
+  it('reads the key statuses and the judge together, so a secret store that never answers holds the reply for one bound', async () => {
+    const { posted, request, platform } = await setup();
+    vi.spyOn(platform.secrets, 'get').mockReturnValue(new Promise<never>(() => undefined));
+    let answered = false;
+    vi.useFakeTimers();
+    try {
+      void Promise.resolve(request()).then(() => { answered = true; });
+      await vi.advanceTimersByTimeAsync(3_000);
+    } finally {
+      vi.useRealTimers();
+    }
+    await vi.waitFor(() => expect(answered).toBe(true));
+    const types = posted.map((message) => message.type);
+    expect(types).not.toContain('providerAuthStatusChanged');
+    expect(types).not.toContain('memoryJudgeStatus');
+    expect(types).toEqual(expect.arrayContaining(['toolStatus', 'voiceFilesSizeUpdate']));
   });
 
   it('posts the voice runtime status before the slow reads, such as the models and the voice folder size', async () => {

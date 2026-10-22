@@ -49,7 +49,7 @@ function makeFakeSession(initial: Partial<Totals> = {}): FakeSession {
 
 /**
  * Append, as `registerWindDownErrorRecord`'s turn_end draft does, a turn-stopped entry naming `message`'s entry, and
- * emit its `entry_appended`. pi commits the draft before listeners get that `turn_end` (`agent-session.js:515`, `:636-641`).
+ * emit its `entry_appended`. pi commits the draft before listeners get that `turn_end` (`agent-session.js:514`, `:635-640`).
  */
 function recordWindDown(session: FakeSession, message: unknown): void {
   const persisted = session.branch.find((e) => (e as { message?: unknown }).message === message) as { id: string };
@@ -206,8 +206,8 @@ describe('SubagentStreamBridge streaming', () => {
     ]);
   });
 
-  // pi appends the nested record and emits its entry_appended inside the extension pass (agent-session.js:753, :2754-2759),
-  // before listeners get the tool_execution_end of a call the abort settled at the gate (agent-loop.js:500-504).
+  // pi appends the nested record and emits its entry_appended inside the extension pass (agent-session.js:752, :2783-2788),
+  // before listeners get the tool_execution_end of a call the abort settled at the gate (agent-loop.js:506-510).
   it('shows a call the turn-stopped record names as not executed, live and in the sealing snapshot', () => {
     const sent: ExtensionToWebviewMessage[] = [];
     const bridge = makeBridge(sent);
@@ -439,9 +439,9 @@ describe('SubagentStreamBridge model and effort', () => {
 });
 
 /**
- * A failed model call in pi 1.3.0's order: `message_start` (`agent-loop.js:286`), a delta (`agent-loop.js:299`),
- * `message_end` with `stopReason: 'error'` (`agent-loop.js:319`), `turn_end` and `agent_end`
- * (`agent-loop.js:151-152`), the last stamped with `willRetry` by `AgentSession` (`agent-session.js:754`).
+ * A failed model call in pi 1.4.0's order: `message_start` (`agent-loop.js:292`), a delta (`agent-loop.js:305`),
+ * `message_end` with `stopReason: 'error'` (`agent-loop.js:325`), `turn_end` and `agent_end`
+ * (`agent-loop.js:156-157`), the last stamped with `willRetry` by `AgentSession` (`agent-session.js:753`).
  */
 function emitFailedCall(session: FakeSession, errorMessage: string, opts: { partial?: string; willRetry: boolean }): void {
   session.emit({ type: 'message_start', message: { role: 'assistant' } });
@@ -470,11 +470,11 @@ describe('SubagentStreamBridge provider failures', () => {
 
     emitFailedCall(session, '529 overloaded_error', { partial: 'Let me', willRetry: true });
     const failedId = ofType(sent, 'assistant').at(-1)!.data.message.id;
-    // `_prepareRetry` (`agent-session.js:3061`), then the retried run (`agent-loop.js:68`).
+    // `_prepareRetry` (`agent-session.js:3090`), then the retried run (`agent-loop.js:73`).
     session.emit({ type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: '529 overloaded_error' });
     session.emit({ type: 'agent_start' });
     emitAnsweredCall(session, 'done');
-    // A successful retry is reported after the retried call's `message_end` (`agent-session.js:781-786`).
+    // A successful retry is reported after the retried call's `message_end` (`agent-session.js:780-785`).
     session.emit({ type: 'auto_retry_end', success: true, attempt: 1 });
     session.emit({ type: 'turn_end' });
     session.emit({ type: 'agent_end', messages: [], willRetry: false });
@@ -527,7 +527,7 @@ describe('SubagentStreamBridge provider failures', () => {
     session.emit({ type: 'auto_retry_start', attempt: 1, maxAttempts: 1, delayMs: 2000, errorMessage: '529 first' });
     session.emit({ type: 'agent_start' });
     emitFailedCall(session, '529 second', { partial: 'b', willRetry: false });
-    // pi gives up after the last attempt's agent_end (`agent-session.js:1521-1527`).
+    // pi gives up after the last attempt's agent_end (`agent-session.js:1550-1556`).
     session.emit({ type: 'auto_retry_end', success: false, attempt: 1, finalError: '529 second' });
     session.emit({ type: 'agent_settled', aborted: false });
 
@@ -542,7 +542,7 @@ describe('SubagentStreamBridge provider failures', () => {
     bridge.attach(session as never);
 
     emitFailedCall(session, 'prompt is too long', { partial: 'x', willRetry: false });
-    // `_checkCompaction` omits the call, then runs the overflow compaction (`agent-session.js:2438-2440`).
+    // `_checkCompaction` omits the call, then runs the overflow compaction (`agent-session.js:2467-2469`).
     session.emit({ type: 'compaction_start', reason: 'overflow' });
     session.emit({ type: 'compaction_end', reason: 'overflow', aborted: false, willRetry: false, errorMessage: 'Context overflow recovery failed: boom' });
     session.emit({ type: 'agent_settled', aborted: false });
@@ -558,13 +558,13 @@ describe('SubagentStreamBridge provider failures', () => {
     bridge.attach(session as never);
 
     emitFailedCall(session, 'prompt is too long', { willRetry: false });
-    // A second overflow after one recovery: a compaction_end with no start (`agent-session.js:2416-2427`).
+    // A second overflow after one recovery: a compaction_end with no start (`agent-session.js:2445-2456`).
     session.emit({ type: 'compaction_end', reason: 'overflow', aborted: false, willRetry: false, errorMessage: 'Context overflow recovery failed after one compact-and-retry attempt.' });
 
     expect(ofType(sent, 'error')).toEqual([{ type: 'error', message: 'prompt is too long', parentToolUseId: 'toolu_parent' }]);
   });
 
-  // pi returns from the turn before executing any tool of an errored message (agent-loop.js:143-152), and its turn_end
+  // pi returns from the turn before executing any tool of an errored message (agent-loop.js:148-157), and its turn_end
   // is where the wind-down record would be, so the call's end is decided there.
   it('settles the tool cards a failed call streamed as not executed when the call ends', () => {
     const sent: ExtensionToWebviewMessage[] = [];
@@ -583,7 +583,7 @@ describe('SubagentStreamBridge provider failures', () => {
     expect(sent.indexOf(abandoned[0]!)).toBeGreaterThan(sent.indexOf(ofType(sent, 'assistant')[0]!));
   });
 
-  // pi returns before executing the tools of an aborted message too (agent-loop.js:143).
+  // pi returns before executing the tools of an aborted message too (agent-loop.js:148).
   it('settles the tool cards an aborted call streamed as stopped when the call ends', () => {
     const sent: ExtensionToWebviewMessage[] = [];
     const bridge = makeBridge(sent);
@@ -598,8 +598,8 @@ describe('SubagentStreamBridge provider failures', () => {
     expect(ofType(sent, 'error')).toEqual([]);
   });
 
-  // pi finalizes the call it was running and starts none after it (agent-loop.js:402-404, :429-431, :449-451), then
-  // makes the next call under the aborted signal, which ends aborted (:141-152); the skipped calls get no event.
+  // pi finalizes the call it was running and starts none after it (agent-loop.js:408-410, :435-437, :455-457), then
+  // makes the next call under the aborted signal, which ends aborted (:146-157); the skipped calls get no event.
   // A wind-down error stop in its place is covered under 'SubagentStreamBridge abort wind-down'.
   it('settles the calls an abort skipped as stopped when the aborted call that follows ends, live and sealed', () => {
     const sent: ExtensionToWebviewMessage[] = [];
@@ -666,12 +666,12 @@ describe('SubagentStreamBridge provider failures', () => {
 });
 
 /**
- * An abort while a subagent runs a tool, in pi 1.3.0's order: the abort kills the call, which pi records with its
- * `durationMs` (`agent-loop.js:583-591`), and the loop makes its next call under the aborted signal (`:141`). That
+ * An abort while a subagent runs a tool, in pi 1.4.0's order: the abort kills the call, which pi records with its
+ * `durationMs` (`agent-loop.js:590-598`), and the loop makes its next call under the aborted signal (`:146`). That
  * call's request setup resolves auth with the signal (`model-runtime.js:456-460`), which rejects at once
- * (`raceWithAbortSignal`), and pi-ai's lazy stream ends it on an error stop whatever the signal says (`lazy.js:41-44`):
+ * (`raceWithAbortSignal`), and pi-ai's lazy stream ends it on an error stop whatever the signal says (`lazy.js:57-62`):
  * "This operation was aborted". `registerWindDownErrorRecord` names it at its `turn_end` boundary, which pi runs after
- * the `message_end` listeners and commits before the listeners' `turn_end` (`agent-session.js:515`, `:636-641`).
+ * the `message_end` listeners and commits before the listeners' `turn_end` (`agent-session.js:514`, `:635-640`).
  */
 describe('SubagentStreamBridge abort wind-down', () => {
   const ofType = <T extends ExtensionToWebviewMessage['type']>(sent: ExtensionToWebviewMessage[], type: T) =>

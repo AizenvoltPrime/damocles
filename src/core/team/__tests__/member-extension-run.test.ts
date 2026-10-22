@@ -198,7 +198,7 @@ describe("a run a user's pi extension opens in a member's session", () => {
     expect(member.order).toEqual(['agent_settled', 'forget']);
 
     start.release();
-    // The run's request setup rejects under the aborted signal before any request (`model-runtime.js:456-460` in pi-coding-agent 1.3.0).
+    // The run's request setup rejects under the aborted signal before any request (`model-runtime.js:456-460` in pi-coding-agent 1.4.0).
     await vi.waitFor(() => expect(ends).toEqual(['error: This operation was aborted']), { timeout: 10_000 });
   }, 30_000);
 

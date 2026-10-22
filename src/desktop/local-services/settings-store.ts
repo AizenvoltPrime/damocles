@@ -8,6 +8,7 @@ import type { SettingInspection, SettingsChange, SettingsFolder, SettingsScope, 
 import type { TrustService } from '../../platform/trust-service';
 import type { WorkspaceFolders } from '../../platform/workspace-folders';
 import type { ContributedConfiguration } from '../../core/config/contributed-configuration';
+import { stripBom } from '../../core/config/bom';
 import { jsonConfigWritesSettled, writeJsonConfig } from '../../core/config/json-config-write';
 import { mergeSettingValues, parseSettingsText, type SettingsObject } from '../../core/config/settings-file';
 import { folderKey } from '../../core/workspace-folders/folder-key';
@@ -108,7 +109,7 @@ export function withDesktopConfiguration(contributed: ContributedConfiguration):
 }
 
 function isBlank(text: string): boolean {
-  return (text.charCodeAt(0) === 0xfeff ? text.slice(1) : text).trim() === '';
+  return stripBom(text).trim() === '';
 }
 
 function entryKey(folder: { readonly path: string; readonly personalPath: string }): string {

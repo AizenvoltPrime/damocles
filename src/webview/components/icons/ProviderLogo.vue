@@ -14,6 +14,7 @@ const svg = computed(() => providerLogoSvg(props.provider));
     v-if="svg"
     class="shrink-0 [&>svg]:size-full"
     aria-hidden="true"
+    data-testid="provider-logo"
     v-html="svg"
   />
   <!-- eslint-enable vue/no-v-html -->

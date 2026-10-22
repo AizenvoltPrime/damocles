@@ -5,6 +5,7 @@ import type { EffortLevel } from '../../shared/types/settings';
 import { DEFAULT_MODELS, migrateLegacyModelValue, supportedStoredEffort } from '../../shared/types/constants';
 import type { OpenAIAuthStatus } from './openai-auth';
 import { effortToPiThinking, resolvePiModel, PI_SMALL_FAST_ANTHROPIC, PI_SMALL_FAST_OPENAI, type ModelLookup } from './pi-models';
+import { CUSTOM_PROVIDER_DEFS } from './custom-providers';
 
 /** Every purpose that runs through `PiRuntime.runStructuredCompletion`; `/btw` runs as a chat turn instead. */
 export type StructuredSubCallPurpose = Exclude<SubCallPurpose, 'btw'>;
@@ -37,7 +38,11 @@ export const BACKGROUND_MODEL_SETTING = 'damocles.background.model';
 export const BACKGROUND_EFFORT_SETTING = 'damocles.background.effort';
 
 /** The models Automatic tries for background work, in order; the first one resolved and signed in wins. */
-export const AUTOMATIC_BACKGROUND_MODELS: readonly string[] = [PI_SMALL_FAST_ANTHROPIC, PI_SMALL_FAST_OPENAI, 'step-5-preview', 'deepseek-flash'];
+export const AUTOMATIC_BACKGROUND_MODELS: readonly string[] = [
+  PI_SMALL_FAST_ANTHROPIC,
+  PI_SMALL_FAST_OPENAI,
+  ...CUSTOM_PROVIDER_DEFS.flatMap((d) => d.cheapModelId ?? []),
+];
 
 /** The model a sub-call runs on, and the effort that replaces every purpose's `SUBCALL_THINKING` level when set. */
 export interface SubCallModel {

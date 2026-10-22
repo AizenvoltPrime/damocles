@@ -11,6 +11,7 @@ import { useBackgroundTaskStore } from '@/stores/useBackgroundTaskStore';
 import { subagentStatusLine, subagentToolCount, useSubagentStore } from '@/stores/useSubagentStore';
 import { useSubagentStop } from '@/composables/useSubagentStop';
 import { useModelIdentity } from '@/composables/useModelIdentity';
+import ProviderLogo from '@/components/icons/ProviderLogo.vue';
 import { agentStatusChip, formatElapsed } from '@/composables/useTeamFormatting';
 import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
 import { ownEntry } from '@/utils/ownEntry';
@@ -120,14 +121,11 @@ function statusLine(subagent: SubagentState): string | undefined {
               <template v-if="modelIdentity(subagent.model)">
                 <span>·</span>
                 <span class="flex items-center gap-1">
-                  <!-- eslint-disable vue/no-v-html -- a vendored static logo constant (provider-logos.ts) -->
-                  <span
-                    v-if="modelIdentity(subagent.model)?.logo"
-                    class="size-2.75 flex-none [&>svg]:size-full"
-                    aria-hidden="true"
-                    v-html="modelIdentity(subagent.model)?.logo"
+                  <ProviderLogo
+                    v-if="modelIdentity(subagent.model)?.logoProvider"
+                    :provider="modelIdentity(subagent.model)!.logoProvider!"
+                    class="size-2.75 flex-none"
                   />
-                  <!-- eslint-enable vue/no-v-html -->
                   {{ modelIdentity(subagent.model)?.name }}
                 </span>
               </template>

@@ -126,6 +126,15 @@ describe('runHook (real spawn)', () => {
     expect(d.reason).toBe('nope');
   });
 
+  // Windows PowerShell 5.1 starts UTF-8 output with a BOM; `parseHookOutput`'s trim drops it, since U+FEFF is ECMAScript whitespace.
+  it('JSON deny printed after a UTF-8 BOM, as Windows PowerShell 5.1 writes it', async () => {
+    const script = 'process.stdout.write(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(JSON.stringify({decision:"deny",reason:"nope"}) + "\\r\\n")]))';
+    const d = await runHook(nodeEntry(script), {}, ctx);
+    expect(d.permissionDecision).toBe('deny');
+    expect(d.reason).toBe('nope');
+    expect(d.additionalContext).toBeUndefined();
+  });
+
   it('JSON allow + updated_input', async () => {
     const script = 'process.stdout.write(JSON.stringify({decision:"allow",updated_input:{file_path:"/new"}}))';
     const d = await runHook(nodeEntry(script), {}, ctx);

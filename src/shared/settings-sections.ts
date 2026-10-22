@@ -22,8 +22,30 @@ export function isSettingsSectionId(value: unknown): value is SettingsSectionId 
   return typeof value === 'string' && (SETTINGS_SECTION_IDS as readonly string[]).includes(value);
 }
 
+// Providers whose API key lives in the host secret store and reaches pi only in memory, in account display order.
+export const KEY_PROVIDER_IDS = ['deepseek', 'stepfun', 'minimax', 'xai', 'openrouter', 'typesafe'] as const;
+
+export type KeyProviderId = (typeof KEY_PROVIDER_IDS)[number];
+
+/** Where pi's credential for a key provider comes from when Damocles did not apply it: an environment variable, or pi's own models.json or auth.json. */
+export type ExternalKeySource = 'environment' | 'piConfig';
+
+export function isKeyProviderId(value: unknown): value is KeyProviderId {
+  return typeof value === 'string' && (KEY_PROVIDER_IDS as readonly string[]).includes(value);
+}
+
+// Proper nouns, never translated.
+export const KEY_PROVIDER_NAMES: Readonly<Record<KeyProviderId, string>> = {
+  deepseek: 'DeepSeek',
+  stepfun: 'StepFun',
+  minimax: 'MiniMax',
+  xai: 'xAI',
+  openrouter: 'OpenRouter',
+  typesafe: 'TypeSafe',
+};
+
 // The Accounts section's account rows; a settings request may name one to open expanded.
-export const SETTINGS_ACCOUNT_IDS = ['anthropic', 'openai', 'deepseek', 'stepfun', 'openrouter', 'typesafe'] as const;
+export const SETTINGS_ACCOUNT_IDS: readonly ['anthropic', 'openai', ...typeof KEY_PROVIDER_IDS] = ['anthropic', 'openai', ...KEY_PROVIDER_IDS];
 
 export type SettingsAccountId = (typeof SETTINGS_ACCOUNT_IDS)[number];
 

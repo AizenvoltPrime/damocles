@@ -180,6 +180,7 @@ export const MAIN_CORE_IMPORTS = [
   'browser/net-guard',
   'chat-panel/ripgrep',
   'chat-panel/settings-file-editor',
+  'config/bom',
   'config/json-config-write',
   'config/legacy-settings-migrations',
   'config/read-contributed-configuration',

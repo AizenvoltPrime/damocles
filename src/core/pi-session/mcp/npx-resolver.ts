@@ -18,6 +18,7 @@ import {
 } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join, dirname, extname, resolve, relative, isAbsolute, sep } from 'node:path';
+import { stripBom } from '../../config/bom';
 import { runProcess, type SpawnSpec } from '../../process-launcher';
 import { findOnAbsolutePathAsync } from '../../system-tools';
 import { MCP_NPX_CACHE_PATH } from './paths';
@@ -223,7 +224,7 @@ function resolveFromNpmCache(cacheDir: string | null, packageSpec: string, binNa
 
   let pkg: { bin?: string | Record<string, string>; version?: string } | null = null;
   try {
-    pkg = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as {
+    pkg = JSON.parse(stripBom(readFileSync(packageJsonPath, 'utf-8'))) as {
       bin?: string | Record<string, string>;
       version?: string;
     };

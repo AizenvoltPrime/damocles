@@ -82,7 +82,7 @@ describe("a member's Stop while a pi extension holds its run's wind-down", () =>
     stop.abort();
     await sleep(WIND_DOWN_NOTICE_MS - 1_000);
     expect(published).toEqual([]);
-    // pi already ended the run, so only its agent_settled handlers are left (agent-session.js:686-691 in pi 1.3.0).
+    // pi already ended the run, so only its agent_settled handlers are left (agent-session.js:685-690 in pi 1.4.0).
     await vi.waitFor(() => expect(published).toEqual([{ phase: 'settle', events: ['agent_settled'], extensions: [held.extensionPath] }]), { timeout: 3_000 });
 
     settle.release();

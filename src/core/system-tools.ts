@@ -20,12 +20,21 @@ export function findOnAbsolutePath(fileName: string, platform: NodeJS.Platform, 
  * findOnAbsolutePath without blocking the thread on a slow PATH folder, such as a disconnected network drive. With several
  * names, the first PATH folder holding any of them wins, as a PATHEXT lookup picks one.
  */
-export async function findOnAbsolutePathAsync(fileNames: string | readonly string[], platform: NodeJS.Platform, env: Env): Promise<string | undefined> {
+export function findOnAbsolutePathAsync(fileNames: string | readonly string[], platform: NodeJS.Platform, env: Env): Promise<string | undefined> {
+  return findOnAbsolutePathWith(isFileAsync, fileNames, platform, env);
+}
+
+async function findOnAbsolutePathWith(
+  isFileTest: (candidate: string) => Promise<boolean>,
+  fileNames: string | readonly string[],
+  platform: NodeJS.Platform,
+  env: Env,
+): Promise<string | undefined> {
   const join = platform === 'win32' ? path.win32.join : path.posix.join;
   for (const dir of searchPathEntries(platform, env)) {
     for (const fileName of typeof fileNames === 'string' ? [fileNames] : fileNames) {
       const candidate = join(dir, fileName);
-      if (await isFileAsync(candidate)) return candidate;
+      if (await isFileTest(candidate)) return candidate;
     }
   }
   return undefined;
@@ -47,6 +56,52 @@ export async function findBash(env: Env = process.env): Promise<string | undefin
     .map((root) => path.win32.join(root, 'Git', 'bin', 'bash.exe'));
   for (const candidate of installed) if (await isFileAsync(candidate)) return candidate;
   return findOnAbsolutePathAsync('bash.exe', 'win32', env);
+}
+
+/**
+ * PowerShell 7 as pi's getPowerShellConfig finds it, without its synchronous `where`: an absolute PATH folder's pwsh, a
+ * Microsoft Store alias included, then on Windows `%ProgramFiles%\PowerShell\7\pwsh.exe`. Only pwsh accepts an alias:
+ * WindowsApps also holds WSL's bash.exe alias, which findBash must never pick. The terminal's `detectTerminalPwsh` searches
+ * the install folders VS Code lists instead, since it offers a shell rather than running the one pi would.
+ */
+export async function findPwsh(env: Env = process.env): Promise<string | undefined> {
+  if (process.platform !== 'win32') return findOnAbsolutePathAsync('pwsh', process.platform, env);
+  const isRunnable = (candidate: string): Promise<boolean> => isFileOrAppAlias(candidate).catch(() => false);
+  const onPath = await findOnAbsolutePathWith(isRunnable, 'pwsh.exe', 'win32', env);
+  if (onPath !== undefined) return onPath;
+  const programFiles = env['ProgramFiles'];
+  if (programFiles === undefined || executablePathForm(programFiles, 'win32').kind !== 'absolute') return undefined;
+  const installed = path.win32.join(programFiles, 'PowerShell', '7', 'pwsh.exe');
+  return (await isRunnable(installed)) ? installed : undefined;
+}
+
+/**
+ * Whether `file` is a file or, on Windows, an app execution alias (the Store's pwsh.exe), a link whose target stat cannot
+ * open but which still runs (nodejs/node#36790). Rejects when lstat, or stat of a link's target, fails for a reason other
+ * than a missing path.
+ */
+export async function isFileOrAppAlias(file: string): Promise<boolean> {
+  let link: fs.Stats;
+  try {
+    link = await fs.promises.lstat(file);
+  } catch (err) {
+    if (isMissing(err)) return false;
+    throw err;
+  }
+  if (!link.isSymbolicLink()) return link.isFile();
+  try {
+    return (await fs.promises.stat(file)).isFile();
+  } catch (err) {
+    // libuv's stat of an app execution alias fails with EACCES.
+    if (process.platform === 'win32' && (err as NodeJS.ErrnoException).code === 'EACCES') return true;
+    if (isMissing(err)) return false;
+    throw err;
+  }
+}
+
+function isMissing(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException).code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
 }
 
 /** `%SystemRoot%\System32`; a root that is not a local absolute path falls back to C:\Windows. */

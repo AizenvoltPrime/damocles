@@ -1,5 +1,5 @@
 /*
- * pi-mcp's StdioTransport (`@earendil-works/pi-mcp` `dist/transports/stdio.js`, 1.3.0) with its process started on the
+ * pi-mcp's StdioTransport (`@earendil-works/pi-mcp` `dist/transports/stdio.js`, 1.4.0) with its process started on the
  * process launcher, so a slow process start blocks no host thread. Keep the two in step, except for the two departures
  * docs/invariants.md "MCP client and config sources" names: the kill after a server exits during a close, and stdin errors.
  */

@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
-import type { SettingsAccountId } from '@shared/settings-sections';
+import { KEY_PROVIDER_IDS, type KeyProviderId, type SettingsAccountId } from '@shared/settings-sections';
 import { DEFAULT_MODELS } from '@shared/types/constants';
 import { MEMORY_JUDGE_CLASSIFIERS } from '@shared/memory-judge';
 import { modelVendor, type ModelVendor } from '@/composables/useModelIdentity';
@@ -27,10 +27,8 @@ const {
   claudeAuthBusy,
   openaiAuthStatus,
   openaiChatGPTAuthInFlight,
-  deepseekConfigured,
-  stepfunConfigured,
-  openrouterConfigured,
-  typesafeConfigured,
+  keyProviderConfigured,
+  keyProviderExternal,
   classifierCredentials,
   memoryJudge,
   currentSettings,
@@ -59,16 +57,28 @@ interface AccountView {
 const vendorSignedIn = computed<Record<ModelVendor, boolean>>(() => ({
   anthropic: claudeAuthMode.value !== 'none',
   openai: openaiAuthStatus.value.chatgpt.signedIn || openaiAuthStatus.value.codex.signedIn || openaiAuthStatus.value.apikey.configured,
-  deepseek: deepseekConfigured.value,
-  stepfun: stepfunConfigured.value,
+  ...(Object.fromEntries(KEY_PROVIDER_IDS.map((provider) => [provider, keySignedIn(provider)])) as Record<KeyProviderId, boolean>),
 }));
 
-const keyAccount = (provider: 'deepseek' | 'stepfun' | 'openrouter' | 'typesafe', configured: boolean): AccountView => ({
+// pi runs a provider on a key from the environment or its own config too, so that counts as signed in.
+function keySignedIn(provider: KeyProviderId): boolean {
+  return keyProviderConfigured.value[provider] || keyProviderExternal.value[provider] !== null;
+}
+
+function keyStatus(provider: KeyProviderId): string {
+  if (keyProviderConfigured.value[provider]) return t('settingsModal.account.keySaved');
+  const external = keyProviderExternal.value[provider];
+  if (external === 'environment') return t('settingsModal.account.keyFromEnvironment');
+  if (external === 'piConfig') return t('settingsModal.account.keyFromPiConfig');
+  return t('settingsModal.account.notSetUp');
+}
+
+const keyAccount = (provider: KeyProviderId): AccountView => ({
   provider,
   id: `account-${provider}`,
-  state: configured ? 'ok' : 'off',
-  status: configured ? t('settingsModal.account.keySaved') : t('settingsModal.account.notSetUp'),
-  action: configured ? t('settingsModal.account.replaceKey') : t('settingsModal.account.addKey'),
+  state: keySignedIn(provider) ? 'ok' : 'off',
+  status: keyStatus(provider),
+  action: keyProviderConfigured.value[provider] ? t('settingsModal.account.replaceKey') : t('settingsModal.account.addKey'),
 });
 
 const accounts = computed<AccountView[]>(() => {
@@ -97,10 +107,7 @@ const accounts = computed<AccountView[]>(() => {
             : t('settingsModal.account.notSetUp'),
       action: openaiConfigured ? t('settingsModal.account.manage') : t('settingsModal.account.signIn'),
     },
-    keyAccount('deepseek', vendorSignedIn.value.deepseek),
-    keyAccount('stepfun', vendorSignedIn.value.stepfun),
-    keyAccount('openrouter', openrouterConfigured.value),
-    keyAccount('typesafe', typesafeConfigured.value),
+    ...KEY_PROVIDER_IDS.map((provider) => keyAccount(provider)),
   ];
 });
 

@@ -8,6 +8,7 @@ import { agentStatusChip, formatElapsed, getAgentColor } from '@/composables/use
 import AgentUsageStats from './AgentUsageStats.vue';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
 import { useModelIdentity } from '@/composables/useModelIdentity';
+import ProviderLogo from '@/components/icons/ProviderLogo.vue';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useStopTeamAgent } from '@/composables/useStopTeam';
 import { useTeamStore } from '@/stores/useTeamStore';
@@ -133,14 +134,11 @@ function cancelAgent(): void {
         v-if="model || agent.effort"
         class="flex min-w-0 items-center gap-1.5 whitespace-nowrap text-11 text-(--d-faint)"
       >
-        <!-- eslint-disable vue/no-v-html -- a vendored static logo constant (provider-logos.ts) -->
-        <span
-          v-if="model?.logo"
-          class="size-3 flex-none [&>svg]:size-full"
-          aria-hidden="true"
-          v-html="model.logo"
+        <ProviderLogo
+          v-if="model?.logoProvider"
+          :provider="model.logoProvider"
+          class="size-3 flex-none"
         />
-        <!-- eslint-enable vue/no-v-html -->
         <span
           v-if="model"
           class="min-w-0 truncate text-(--d-text)"

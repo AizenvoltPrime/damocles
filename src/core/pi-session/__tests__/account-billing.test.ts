@@ -22,6 +22,8 @@ const openaiModel: ModelInfo = { value: 'gpt-6.1-sol', displayName: 'GPT-6.1 Sol
 const stepfunModel: ModelInfo = { value: 'step-2', displayName: 'Step 2', description: '', piProvider: 'stepfun', flatFee: true };
 const deepseekModel: ModelInfo = { value: 'deepseek-v4-pro', displayName: 'DeepSeek', description: '', piProvider: 'deepseek' };
 const anthropicModel: ModelInfo = { value: 'claude-opus-4-8', displayName: 'Opus', description: '' };
+const minimaxModel: ModelInfo = { value: 'MiniMax-M3.1-Flash', displayName: 'MiniMax M3.1 Flash', description: '', piProvider: 'minimax' };
+const TOKEN_PLAN: ReadonlySet<string> = new Set(['minimax']);
 
 function deps(overrides: Partial<AccountBillingDeps>): AccountBillingDeps {
   return {
@@ -30,6 +32,7 @@ function deps(overrides: Partial<AccountBillingDeps>): AccountBillingDeps {
     claudeAuthMode: 'allowance',
     openaiAuthStatus: { apiKey: false, chatgpt: false, codex: false } as OpenAIAuthStatus,
     preferApiKey: false,
+    flatFeeKeyProviders: new Set(),
     ...overrides,
   };
 }
@@ -140,6 +143,18 @@ describe('dollarBilled', () => {
     expect(dollarBilled(deps({ modelInfo: deepseekModel }))).toBe(true);
   });
 
+  it('MiniMax bills flat only while its applied key is a Token Plan key, which leaves StepFun and DeepSeek as they are', () => {
+    const minimax = deps({ modelValue: minimaxModel.value, modelInfo: minimaxModel });
+    expect(dollarBilled({ ...minimax, flatFeeKeyProviders: TOKEN_PLAN })).toBe(false);
+    expect(buildAccountInfo({ ...minimax, flatFeeKeyProviders: TOKEN_PLAN })).toEqual({ model: minimaxModel.value, dollarBilled: false });
+    expect(dollarBilled(minimax)).toBe(true);
+    expect(subscriptionProvider({ ...minimax, flatFeeKeyProviders: TOKEN_PLAN })).toBeUndefined();
+    expect(dollarBilled(deps({ modelInfo: stepfunModel, flatFeeKeyProviders: TOKEN_PLAN }))).toBe(false);
+    expect(dollarBilled(deps({ modelInfo: deepseekModel, flatFeeKeyProviders: TOKEN_PLAN }))).toBe(true);
+    // A first-party model is never in the set's reach.
+    expect(dollarBilled(deps({ modelInfo: anthropicModel, claudeAuthMode: 'apikey', flatFeeKeyProviders: TOKEN_PLAN }))).toBe(true);
+  });
+
   it('undefined modelInfo: billing classified purely from the Claude auth mode', () => {
     // No piProvider → isDollarBilled uses the credential label: apikey/extra are metered, allowance isn't.
     expect(dollarBilled(deps({ modelInfo: undefined, claudeAuthMode: 'apikey' }))).toBe(true);
@@ -149,12 +164,26 @@ describe('dollarBilled', () => {
 
 describe('piModelDollarBilled', () => {
   const billing = (over: Partial<ModelBillingDeps> = {}): ModelBillingDeps => ({
-    supportedModels: [openaiModel, stepfunModel, deepseekModel, anthropicModel],
+    supportedModels: [openaiModel, stepfunModel, deepseekModel, anthropicModel, minimaxModel],
     claudeAuthMode: 'allowance',
     openai: { apiKey: true, chatgpt: false, codex: true } as OpenAIAuthStatus,
     preferApiKey: false,
     registry: undefined,
+    flatFeeKeyProviders: new Set(),
     ...over,
+  });
+
+  it('bills a MiniMax model by its applied key kind, agreeing with modelDollarBilled', () => {
+    const flash = { provider: 'minimax', id: 'MiniMax-M3.1-Flash' };
+    expect(piModelDollarBilled(flash, billing({ flatFeeKeyProviders: TOKEN_PLAN }))).toBe(false);
+    expect(modelDollarBilled(flash.id, billing({ flatFeeKeyProviders: TOKEN_PLAN }))).toBe(false);
+    expect(piModelDollarBilled(flash, billing())).toBe(true);
+    expect(modelDollarBilled(flash.id, billing())).toBe(true);
+  });
+
+  // Whether a Token Plan covers a template pin outside the catalog is unknown, so it reads as a charge.
+  it('bills a MiniMax model outside the catalog whatever the key', () => {
+    expect(piModelDollarBilled({ provider: 'minimax', id: 'MiniMax-M3' }, billing({ flatFeeKeyProviders: TOKEN_PLAN }))).toBe(true);
   });
 
   it('bills an OpenAI model by the provider it resolved to, whatever the panel prefers', () => {

@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import type { Component } from 'vue';
+import ProviderLogo from '@/components/icons/ProviderLogo.vue';
 
 /** One meta chip of an agent or team overlay (Chat Panel.dc.html `chipRow`): icon, value, optional unit word. */
 withDefaults(defineProps<{
   icon?: Component | undefined;
-  /** A vendored provider logo (provider-logos.ts) shown instead of `icon`. */
-  logo?: string | undefined;
+  /** A provider whose logo shows instead of `icon`; it must have one (`hasProviderLogo`). */
+  logoProvider?: string | undefined;
   value: string | number;
   unit?: string | undefined;
   iconClass?: string | undefined;
@@ -31,14 +32,11 @@ const emit = defineEmits<{
     data-testid="agent-chip"
     @click="clickable && emit('click')"
   >
-    <!-- eslint-disable vue/no-v-html -- a vendored static logo constant (provider-logos.ts) -->
-    <span
-      v-if="logo"
-      class="size-3 flex-none [&>svg]:size-full"
-      aria-hidden="true"
-      v-html="logo"
+    <ProviderLogo
+      v-if="logoProvider"
+      :provider="logoProvider"
+      class="size-3 flex-none"
     />
-    <!-- eslint-enable vue/no-v-html -->
     <component
       :is="icon"
       v-else-if="icon"

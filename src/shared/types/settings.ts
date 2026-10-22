@@ -155,9 +155,10 @@ export interface ModelInfo {
    *  When set, resolution routes via registry.find(piProvider, value); `backend` stays unset so the
    *  non-OpenAI reasoning UI path is used. A closed union so a typo can't silently fall through to the
    *  Anthropic resolution branch. */
-  piProvider?: "stepfun" | "deepseek";
+  piProvider?: "stepfun" | "deepseek" | "minimax" | "xai";
   /** True when the provider bills a flat subscription (no per-token dollar cost), so dollar-budget
-   *  enforcement does not apply. Set for StepFun; unset (metered) for DeepSeek. */
+   *  enforcement does not apply. Set for StepFun; unset (metered) for DeepSeek, MiniMax and xAI. A MiniMax
+   *  model also bills flat while its applied key is a subscription key (`CustomProviderDef.flatFeeKey`). */
   flatFee?: boolean;
 }
 

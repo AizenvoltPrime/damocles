@@ -7,26 +7,25 @@ import type { HandlerDependencies, HandlerContext } from "../../types";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../../../../shared/types/messages";
 import { installFakePlatform } from "../../../../../__mocks__/fake-platform";
 import { PiRuntime } from "../../../../pi-session/pi-runtime";
+import { customProviderDef } from "../../../../pi-session/custom-providers";
+import { KEY_PROVIDER_IDS } from "../../../../../shared/settings-sections";
 
-/** The TypeSafe and OpenRouter key handlers: what they store, what they acknowledge, and what they leave alone. */
+/** The key provider handlers: what they store, what they acknowledge, and what they leave alone. */
 function setup(user: Record<string, unknown> = {}) {
   const platform = installFakePlatform({ settings: { user } });
   const posted: ExtensionToWebviewMessage[] = [];
   const host = {};
   const session = { getToolStatus: () => ({}) };
-  const settingsManager = {
-    sendImageGenerationSettings: vi.fn(),
-  };
   const deps = {
     postMessage: (_host: unknown, msg: ExtensionToWebviewMessage) => { posted.push(msg); },
-    settingsManager,
+    settingsManager: {},
     platform,
     getPanels: () => new Map([["a", { host, session, folder: { key: "a" } }]]),
   } as unknown as HandlerDependencies;
   const ctx = { host, session, folder: { key: "a", fsPath: "/ws/a" } } as unknown as HandlerContext;
   const handlers = createSettingsHandlers(deps);
   const send = (msg: WebviewToExtensionMessage) => handlers[msg.type]!(msg as never, ctx);
-  return { platform, posted, send, settingsManager };
+  return { platform, posted, send };
 }
 
 afterEach(async () => {
@@ -34,25 +33,38 @@ afterEach(async () => {
   await PiRuntime.disposeInstance();
 });
 
-describe("TypeSafe key handlers", () => {
+describe.each(KEY_PROVIDER_IDS)("%s key handlers", (provider) => {
+  const secretName = customProviderDef(provider).secretKey;
+
+  it("stores the trimmed key and acknowledges without echoing it, then clears it", async () => {
+    const { platform, posted, send } = setup({ "damocles.explore.model": "claude-sonnet-5-5" });
+    await send({ type: "setProviderApiKey", provider, key: "  the-secret  ", requestId: "r1" });
+    expect(await platform.secrets.get(secretName)).toBe("the-secret");
+    expect(platform.settings.get("damocles.explore.model", "")).toBe("claude-sonnet-5-5");
+    expect(posted).toEqual([{ type: "setProviderApiKeyAck", provider, requestId: "r1", ok: true }]);
+    expect(JSON.stringify(posted)).not.toContain("the-secret");
+
+    await send({ type: "clearProviderApiKey", provider, requestId: "r2" });
+    expect(await platform.secrets.get(secretName)).toBeUndefined();
+    expect(posted.at(-1)).toEqual({ type: "clearProviderApiKeyAck", provider, requestId: "r2", ok: true });
+  });
+
   it("rejects an empty key with a localized error and stores nothing", async () => {
     const { platform, posted, send } = setup();
     vi.spyOn(platform.localization, "t").mockImplementation((message: string) => `[el] ${message}`);
-    await send({ type: "setTypesafeApiKey", key: "   ", requestId: "r1" });
-    expect(posted).toEqual([{ type: "setTypesafeApiKeyAck", requestId: "r1", ok: false, error: "[el] API key cannot be empty" }]);
-    expect(await platform.secrets.get("damocles.typesafe.apiKey")).toBeUndefined();
+    await send({ type: "setProviderApiKey", provider, key: "   ", requestId: "r1" });
+    expect(posted).toEqual([{ type: "setProviderApiKeyAck", provider, requestId: "r1", ok: false, error: "[el] API key cannot be empty" }]);
+    expect(await platform.secrets.get(secretName)).toBeUndefined();
   });
 
-  it("stores the trimmed key and acknowledges without echoing it, then clears it", async () => {
+  it("acknowledges a failed save with the localized message, never the store's error text", async () => {
     const { platform, posted, send } = setup();
-    await send({ type: "setTypesafeApiKey", key: "  ts-secret  ", requestId: "r1" });
-    expect(await platform.secrets.get("damocles.typesafe.apiKey")).toBe("ts-secret");
-    expect(posted).toEqual([{ type: "setTypesafeApiKeyAck", requestId: "r1", ok: true }]);
-    expect(JSON.stringify(posted)).not.toContain("ts-secret");
+    vi.spyOn(platform.localization, "t").mockImplementation((message: string) => `[el] ${message}`);
+    vi.spyOn(platform.secrets, "store").mockRejectedValue(new Error("keyring locked at /run/user/1000/keyring"));
 
-    await send({ type: "clearTypesafeApiKey", requestId: "r2" });
-    expect(await platform.secrets.get("damocles.typesafe.apiKey")).toBeUndefined();
-    expect(posted.at(-1)).toEqual({ type: "clearTypesafeApiKeyAck", requestId: "r2", ok: true });
+    await send({ type: "setProviderApiKey", provider, key: "k", requestId: "r1" });
+
+    expect(posted.at(-1)).toEqual({ type: "setProviderApiKeyAck", provider, requestId: "r1", ok: false, error: "[el] Failed to store API key" });
   });
 
   it("acknowledges a failed clear with the localized message, never the store's error text", async () => {
@@ -60,39 +72,19 @@ describe("TypeSafe key handlers", () => {
     vi.spyOn(platform.localization, "t").mockImplementation((message: string) => `[el] ${message}`);
     vi.spyOn(platform.secrets, "delete").mockRejectedValue(new Error("keyring locked at /run/user/1000/keyring"));
 
-    await send({ type: "clearTypesafeApiKey", requestId: "r2" });
+    await send({ type: "clearProviderApiKey", provider, requestId: "r2" });
 
-    expect(posted.at(-1)).toEqual({ type: "clearTypesafeApiKeyAck", requestId: "r2", ok: false, error: "[el] Failed to clear API key" });
+    expect(posted.at(-1)).toEqual({ type: "clearProviderApiKeyAck", provider, requestId: "r2", ok: false, error: "[el] Failed to clear API key" });
   });
 });
 
-describe("OpenRouter key handlers", () => {
-  it("stores the key under its stored name for image generation and Jev, and leaves the Explore model alone", async () => {
-    const { platform, posted, send, settingsManager } = setup({ "damocles.explore.model": "claude-sonnet-5-5" });
-    await send({ type: "setOpenrouterApiKey", key: " sk-or-1 ", requestId: "r1" });
-
-    expect(await platform.secrets.get("damocles.explore.apiKey.openrouter")).toBe("sk-or-1");
-    expect(platform.settings.get("damocles.explore.model", "")).toBe("claude-sonnet-5-5");
-    expect(posted).toContainEqual({ type: "setOpenrouterApiKeyAck", requestId: "r1", ok: true });
-    expect(posted).toContainEqual({ type: "openrouterAuthStatusChanged", configured: true });
-    expect(settingsManager.sendImageGenerationSettings).toHaveBeenCalled();
-    expect(JSON.stringify(posted)).not.toContain("sk-or-1");
-  });
-
-  it("clears the key and reports OpenRouter signed out", async () => {
+describe("an unknown key provider", () => {
+  it("throws for the router to report and stores nothing", async () => {
     const { platform, posted, send } = setup();
-    await send({ type: "setOpenrouterApiKey", key: "sk-or-1", requestId: "r1" });
-
-    await send({ type: "clearOpenrouterApiKey", requestId: "r2" });
-    expect(await platform.secrets.get("damocles.explore.apiKey.openrouter")).toBeUndefined();
-    expect(posted).toContainEqual({ type: "clearOpenrouterApiKeyAck", requestId: "r2", ok: true });
-    expect(posted.filter((m) => m.type === "openrouterAuthStatusChanged").at(-1)).toEqual({ type: "openrouterAuthStatusChanged", configured: false });
-  });
-
-  it("rejects an empty key", async () => {
-    const { platform, posted, send } = setup();
-    await send({ type: "setOpenrouterApiKey", key: "", requestId: "r1" });
-    expect(posted).toEqual([{ type: "setOpenrouterApiKeyAck", requestId: "r1", ok: false, error: "API key cannot be empty" }]);
-    expect(await platform.secrets.get("damocles.explore.apiKey.openrouter")).toBeUndefined();
+    await expect(send({ type: "setProviderApiKey", provider: "nope", key: "k", requestId: "r1" } as never)).rejects.toThrow("Unknown key provider");
+    await expect(send({ type: "clearProviderApiKey", provider: "constructor", requestId: "r2" } as never)).rejects.toThrow("Unknown key provider");
+    await expect(send({ type: "setProviderApiKey", provider: "typesafe", key: 42, requestId: "r3" } as never)).rejects.toThrow("Malformed API key");
+    expect(await platform.secrets.keys()).toEqual([]);
+    expect(posted).toEqual([]);
   });
 });

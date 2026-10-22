@@ -26,7 +26,14 @@ function fakeModel(provider: string, id: string): Model<Api> {
 }
 
 /** A registry where only the listed canonical providers resolve, and Anthropic auth is toggleable. */
-function mockRegistry(opts: { anthropicAuthed: boolean; openaiResolves: boolean; deepseekResolves?: boolean; stepfunResolves?: boolean }): ModelLookup {
+function mockRegistry(opts: {
+  anthropicAuthed: boolean;
+  openaiResolves: boolean;
+  deepseekResolves?: boolean;
+  stepfunResolves?: boolean;
+  minimaxResolves?: boolean;
+  xaiResolves?: boolean;
+}): ModelLookup {
   return {
     getModel: (provider, modelId) => {
       if (provider === 'anthropic') return fakeModel(provider, modelId);
@@ -35,10 +42,12 @@ function mockRegistry(opts: { anthropicAuthed: boolean; openaiResolves: boolean;
       }
       if (provider === 'deepseek' && opts.deepseekResolves) return fakeModel(provider, modelId);
       if (provider === 'stepfun' && opts.stepfunResolves) return fakeModel(provider, modelId);
+      if (provider === 'minimax' && opts.minimaxResolves) return fakeModel(provider, modelId);
+      if (provider === 'xai' && opts.xaiResolves) return fakeModel(provider, modelId);
       return undefined;
     },
     hasConfiguredAuth: (providerId) =>
-      (providerId === 'anthropic' && opts.anthropicAuthed) || providerId === 'deepseek' || providerId === 'stepfun',
+      (providerId === 'anthropic' && opts.anthropicAuthed) || ['deepseek', 'stepfun', 'minimax', 'xai'].includes(providerId),
   };
 }
 
@@ -61,6 +70,7 @@ function deps(overrides: Partial<TeamModelDeps>): TeamModelDeps {
     activeModel: ANTHROPIC_ACTIVE,
     claudeAuthMode: 'allowance',
     supportedModels: piSupportedModels(),
+    flatFeeKeyProviders: new Set(),
     roleSettings: roles({}),
     ...overrides,
   };
@@ -319,8 +329,22 @@ describe('resolveRoleModel dollar billing', () => {
       openaiAuthStatus: openai,
       preferApiKey: false,
       resolvedProvider: res.model?.provider,
+      flatFeeKeyProviders: d.flatFeeKeyProviders,
     });
     expect(account.dollarBilled).toBe(res.dollarBilled);
+  });
+
+  it('(i7) a MiniMax role bills flat only while its applied key is a Token Plan key, and xAI is metered', () => {
+    const d = deps({
+      registry: mockRegistry({ anthropicAuthed: true, openaiResolves: false, minimaxResolves: true, xaiResolves: true }),
+      claudeAuthMode: 'apikey',
+      roleSettings: roles({ reviewer: { model: 'MiniMax-M3.1-Flash', effort: null }, implementor: { model: 'grok-4.7', effort: null } }),
+    });
+    const flat = resolveRoleModel('reviewer', { ...d, flatFeeKeyProviders: new Set(['minimax']) });
+    expect(flat.model).toMatchObject({ provider: 'minimax', id: 'MiniMax-M3.1-Flash' });
+    expect(flat.dollarBilled).toBe(false);
+    expect(resolveRoleModel('reviewer', d).dollarBilled).toBe(true);
+    expect(resolveRoleModel('implementor', d)).toMatchObject({ model: { provider: 'xai', id: 'grok-4.7' }, dollarBilled: true });
   });
 
   it('(i5) the blocking error return still carries billing', () => {

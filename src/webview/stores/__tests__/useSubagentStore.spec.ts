@@ -345,7 +345,7 @@ describe('useSubagentStore sealed transcript rehydration', () => {
     expect(nestedTool(store, 'toolu_1', 'nested-1').status).toBe('unrecorded');
   });
 
-  // The host marks the tool calls of a failed model call, which pi never ran (agent-loop.js:143-152).
+  // The host marks the tool calls of a failed model call, which pi never ran (agent-loop.js:148-157).
   it('reads a nested call of a failed model call as not executed, sealed or reloaded', () => {
     const store = useSubagentStore();
     const failedCall = [

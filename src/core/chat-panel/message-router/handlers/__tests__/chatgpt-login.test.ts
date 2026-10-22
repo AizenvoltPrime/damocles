@@ -14,7 +14,7 @@ vi.mock("../../../../pi-session/pi-loader", async () => {
     ModelRuntime: {
       create: (options: Parameters<typeof ModelRuntime.create>[0]) => ModelRuntime.create({ ...options, refreshOnCreate: false }),
     },
-    SettingsManager: { create: () => ({ getOrCreateDeviceId: () => H.deviceId }) },
+    SettingsManager: { create: () => ({ getOrCreateDeviceId: () => H.deviceId, drainErrors: () => [] }) },
   };
   return {
     initPiLoader: async () => fakePi,
@@ -26,7 +26,7 @@ vi.mock("../../../../pi-session/pi-loader", async () => {
 
 vi.mock("../../../../pi-session/agent-dir", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../../pi-session/agent-dir")>()),
-  ensurePiAgentDir: (dir: string) => dir,
+  ensurePiAgentDir: () => undefined,
 }));
 
 import { PiRuntime } from "../../../../pi-session/pi-runtime";

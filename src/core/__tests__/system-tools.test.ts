@@ -2,12 +2,13 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as ts from 'typescript';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { findBash, findOnAbsolutePath, posixTool, windowsPowerShell, windowsSystemTool } from '../system-tools';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { findBash, findOnAbsolutePath, findPwsh, isFileOrAppAlias, posixTool, windowsPowerShell, windowsSystemTool } from '../system-tools';
 
 const SRC = path.join(__dirname, '..', '..');
 
 let root: string;
+let cwdRoot: string | undefined;
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'dam-system-tools-'));
@@ -15,6 +16,8 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
+  if (cwdRoot !== undefined) fs.rmSync(cwdRoot, { recursive: true, force: true });
+  cwdRoot = undefined;
 });
 
 function folder(name: string, ...files: string[]): string {
@@ -22,6 +25,45 @@ function folder(name: string, ...files: string[]): string {
   fs.mkdirSync(dir);
   for (const file of files) fs.writeFileSync(path.join(dir, file), '');
   return dir;
+}
+
+// A relative path cannot cross drives, so a folder a relative value names is made under the working folder, not temp.
+function relativeFolder(name: string, ...files: string[]): string {
+  if (cwdRoot === undefined) {
+    const scratch = path.join(process.cwd(), 'node_modules', '.cache');
+    fs.mkdirSync(scratch, { recursive: true });
+    cwdRoot = fs.mkdtempSync(path.join(scratch, 'dam-system-tools-'));
+  }
+  const dir = path.join(cwdRoot, name);
+  fs.mkdirSync(dir);
+  for (const file of files) fs.writeFileSync(path.join(dir, file), '');
+  return path.relative(process.cwd(), dir);
+}
+
+// Each key is a link whose target stat fails with its error code; every other path reaches the real file system.
+function linksWithFailingTarget(links: Readonly<Record<string, string>>): void {
+  const realLstat = fs.promises.lstat;
+  const realStat = fs.promises.stat;
+  vi.spyOn(fs.promises, 'lstat').mockImplementation(((file: fs.PathLike, ...rest: unknown[]) =>
+    links[String(file)] !== undefined
+      ? Promise.resolve({ isSymbolicLink: () => true, isFile: () => false } as fs.Stats)
+      : (realLstat as (...args: unknown[]) => Promise<fs.Stats>)(file, ...rest)) as typeof fs.promises.lstat);
+  vi.spyOn(fs.promises, 'stat').mockImplementation(((file: fs.PathLike, ...rest: unknown[]) => {
+    const code = links[String(file)];
+    return code !== undefined
+      ? Promise.reject(Object.assign(new Error(`${code}: ${String(file)}`), { code }))
+      : (realStat as (...args: unknown[]) => Promise<fs.Stats>)(file, ...rest);
+  }) as typeof fs.promises.stat);
+}
+
+async function onPlatform<T>(platform: NodeJS.Platform, run: () => Promise<T>): Promise<T> {
+  const real = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+  try {
+    return await run();
+  } finally {
+    if (real) Object.defineProperty(process, 'platform', real);
+  }
 }
 
 const pathEnv = (...entries: string[]): Record<string, string> => ({ PATH: entries.join(path.delimiter) });
@@ -51,14 +93,14 @@ describe('windowsSystemTool', () => {
 describe('findOnAbsolutePath and posixTool', () => {
   it('never takes a tool from a relative PATH entry, which resolves against the spawn folder', () => {
     const name = process.platform === 'win32' ? 'ps.exe' : 'ps';
-    const relative = path.relative(process.cwd(), folder('planted', name));
+    const relative = relativeFolder('planted', name);
     expect(path.isAbsolute(relative)).toBe(false);
     expect(findOnAbsolutePath(name, process.platform, pathEnv(relative, '.', folder('empty')))).toBeUndefined();
   });
 
   it('finds the tool in the first absolute PATH entry that holds it', () => {
     const name = process.platform === 'win32' ? 'ps.exe' : 'ps';
-    const relative = path.relative(process.cwd(), folder('planted', name));
+    const relative = relativeFolder('planted', name);
     const bin = folder('bin', name);
     expect(findOnAbsolutePath(name, process.platform, pathEnv(relative, folder('empty'), bin))).toBe(path.join(bin, name));
   });
@@ -99,12 +141,125 @@ describe.runIf(process.platform === 'win32')('findBash', () => {
   });
 
   it('falls back to an absolute PATH folder, never a relative one or a relative Program Files', async () => {
-    const relative = path.relative(process.cwd(), folder('planted', 'bash.exe'));
-    gitBash(folder('rel-pf'));
-    const env = { ProgramFiles: path.relative(process.cwd(), path.join(root, 'rel-pf')), PATH: [relative, folder('empty')].join(';') };
+    const relative = relativeFolder('planted', 'bash.exe');
+    const relativeRoot = relativeFolder('rel-pf');
+    gitBash(path.resolve(relativeRoot));
+    const env = { ProgramFiles: relativeRoot, PATH: [relative, folder('empty')].join(';') };
     expect(await findBash(env)).toBeUndefined();
     const msys = folder('msys', 'bash.exe');
     expect(await findBash({ ...env, PATH: [relative, msys].join(';') })).toBe(path.join(msys, 'bash.exe'));
+  });
+});
+
+describe.runIf(process.platform === 'win32')('findPwsh', () => {
+  const installPwsh7 = (programFiles: string): string => {
+    const file = path.join(programFiles, 'PowerShell', '7', 'pwsh.exe');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '');
+    return file;
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('takes pwsh from an absolute PATH folder before Program Files', async () => {
+    const programFiles = folder('pf');
+    installPwsh7(programFiles);
+    const onPath = folder('ps7', 'pwsh.exe');
+    expect(await findPwsh({ ProgramFiles: programFiles, PATH: onPath })).toBe(path.join(onPath, 'pwsh.exe'));
+  });
+
+  it('finds PowerShell 7 in Program Files when no PATH folder holds pwsh', async () => {
+    const programFiles = folder('pf');
+    expect(await findPwsh({ ProgramFiles: programFiles, PATH: folder('empty') })).toBeUndefined();
+    const installed = installPwsh7(programFiles);
+    expect(await findPwsh({ ProgramFiles: programFiles, PATH: folder('empty2') })).toBe(installed);
+  });
+
+  it('ignores a relative or UNC Program Files', async () => {
+    const relativeRoot = relativeFolder('rel-pf');
+    installPwsh7(path.resolve(relativeRoot));
+    expect(await findPwsh({ ProgramFiles: relativeRoot, PATH: folder('empty') })).toBeUndefined();
+    expect(await findPwsh({ ProgramFiles: '\\\\host\\share\\Program Files', PATH: folder('empty2') })).toBeUndefined();
+  });
+
+  it('skips a PATH pwsh.exe link whose target fails for a reason an app execution alias never gives', async () => {
+    const onPath = folder('ps7');
+    linksWithFailingTarget({ [path.join(onPath, 'pwsh.exe')]: 'ELOOP' });
+    const programFiles = folder('pf');
+    const installed = installPwsh7(programFiles);
+    expect(await findPwsh({ ProgramFiles: programFiles, PATH: onPath })).toBe(installed);
+  });
+
+  it('accepts a Store alias for pwsh, which findBash never takes for bash', async () => {
+    const apps = folder('WindowsApps');
+    const aliases = new Set([path.join(apps, 'pwsh.exe'), path.join(apps, 'bash.exe')]);
+    const realLstat = fs.promises.lstat;
+    const realStat = fs.promises.stat;
+    const eacces = (file: string): Error => Object.assign(new Error(`EACCES: ${file}`), { code: 'EACCES' });
+    vi.spyOn(fs.promises, 'lstat').mockImplementation(((file: fs.PathLike, ...rest: unknown[]) =>
+      aliases.has(String(file))
+        ? Promise.resolve({ isSymbolicLink: () => true, isFile: () => false } as fs.Stats)
+        : (realLstat as (...args: unknown[]) => Promise<fs.Stats>)(file, ...rest)) as typeof fs.promises.lstat);
+    vi.spyOn(fs.promises, 'stat').mockImplementation(((file: fs.PathLike, ...rest: unknown[]) =>
+      aliases.has(String(file)) ? Promise.reject(eacces(String(file))) : (realStat as (...args: unknown[]) => Promise<fs.Stats>)(file, ...rest)) as typeof fs.promises.stat);
+
+    expect(await findPwsh({ ProgramFiles: folder('pf'), PATH: apps })).toBe(path.join(apps, 'pwsh.exe'));
+    expect(await findBash({ PATH: apps })).toBeUndefined();
+  });
+});
+
+describe('isFileOrAppAlias', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('answers for a file, a folder and a missing path', async () => {
+    const dir = folder('things', 'tool.exe');
+    expect(await isFileOrAppAlias(path.join(dir, 'tool.exe'))).toBe(true);
+    expect(await isFileOrAppAlias(dir)).toBe(false);
+    expect(await isFileOrAppAlias(path.join(dir, 'missing.exe'))).toBe(false);
+    expect(await isFileOrAppAlias(path.join(dir, 'tool.exe', 'below'))).toBe(false);
+  });
+
+  it('rejects when lstat fails for a reason other than a missing path', async () => {
+    vi.spyOn(fs.promises, 'lstat').mockRejectedValue(Object.assign(new Error('EACCES'), { code: 'EACCES' }));
+    await expect(isFileOrAppAlias(path.join(root, 'locked.exe'))).rejects.toThrow('EACCES');
+  });
+
+  it('takes a link whose target stat fails with EACCES as an app execution alias on Windows only, and rejects other failures', async () => {
+    const eacces = path.join(root, 'alias.exe');
+    const eloop = path.join(root, 'loop.exe');
+    const broken = path.join(root, 'broken.exe');
+    linksWithFailingTarget({ [eacces]: 'EACCES', [eloop]: 'ELOOP', [broken]: 'ENOENT' });
+    for (const platform of ['win32', 'linux', 'darwin'] as const) {
+      await onPlatform(platform, async () => {
+        if (platform === 'win32') expect(await isFileOrAppAlias(eacces)).toBe(true);
+        else await expect(isFileOrAppAlias(eacces)).rejects.toThrow('EACCES');
+        await expect(isFileOrAppAlias(eloop)).rejects.toThrow('ELOOP');
+        expect(await isFileOrAppAlias(broken)).toBe(false);
+      });
+    }
+  });
+
+  it.runIf(process.platform === 'win32')('takes a real app execution alias', async (ctx) => {
+    const localAppData = process.env['LOCALAPPDATA'];
+    const apps = localAppData === undefined ? undefined : path.join(localAppData, 'Microsoft', 'WindowsApps');
+    const alias = apps !== undefined && fs.existsSync(apps) ? fs.readdirSync(apps).find((name) => name.endsWith('.exe')) : undefined;
+    if (apps === undefined || alias === undefined) return ctx.skip();
+    expect(await isFileOrAppAlias(path.join(apps, alias))).toBe(true);
+  });
+});
+
+describe('findPwsh off Windows', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('takes no PATH pwsh link whose target stat fails, since only Windows has app execution aliases', async () => {
+    linksWithFailingTarget({ '/opt/ps/pwsh': 'EACCES' });
+    expect(await onPlatform('linux', () => findPwsh({ PATH: '/opt/ps' }))).toBeUndefined();
   });
 });
 

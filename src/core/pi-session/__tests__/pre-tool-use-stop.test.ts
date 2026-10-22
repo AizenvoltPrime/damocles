@@ -234,7 +234,7 @@ describe('a Stop while a PreToolUse hook runs, through real pi sessions', () => 
 
     expect(Date.now() - stoppedAt).toBeLessThan(PROMPT_MS);
     expect(hook.answered()).toBe(false);
-    // pi 1.3.0 replaces any `tool_call` result of an aborted run with this error (`agent-loop.js:500-505` in pi-agent-core).
+    // pi 1.4.0 replaces any `tool_call` result of an aborted run with this error (`agent-loop.js:506-511` in pi-agent-core).
     expect(toolResultText(session, 'call-1')).toBe('Operation aborted');
     expect(shell.runs()).toBe(0);
     expect(canUseTool).not.toHaveBeenCalled();

@@ -87,6 +87,11 @@ describe('readClaudeAuthFromDisk', () => {
     expect(readClaudeAuthFromDisk(agentDir({ auth: 'oauth', settings: withPackages(packages) })).mode).toBe('allowance');
   });
 
+  it('reads allowance from a settings file that starts with a BOM', () => {
+    const settings = `\uFEFF${withPackages([SUBSCRIPTION_SOURCE])}`;
+    expect(readClaudeAuthFromDisk(agentDir({ auth: 'oauth', settings })).mode).toBe('allowance');
+  });
+
   it('reads extra usage when only a sibling-prefix package is listed', () => {
     const settings = withPackages([`${legacyRepo}-experimental@x`, `${repo}-experimental@x`]);
     expect(readClaudeAuthFromDisk(agentDir({ auth: 'oauth', settings })).mode).toBe('extra');

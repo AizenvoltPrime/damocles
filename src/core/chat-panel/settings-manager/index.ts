@@ -53,7 +53,7 @@ export class SettingsManager {
     this.modelManager = new ModelManager(config.postMessage, config.platform);
     this.thinkingManager = new ThinkingManager(config.postMessage);
     this.voiceManager = new VoiceManager(config.postMessage, config.platform);
-    this.exploreManager = new ExploreManager(config.postMessage, config.platform);
+    this.exploreManager = new ExploreManager(config.platform);
   }
 
   setOnMcpConfigChange(callback: () => void): void {
@@ -500,29 +500,5 @@ export class SettingsManager {
 
   async setExploreEffort(effort: EffortLevel | null): Promise<SettingWrite> {
     return this.serializeSettingWrite(() => this.exploreManager.setEffort(effort));
-  }
-
-  async storeStepfunApiKey(key: string): Promise<void> {
-    return this.exploreManager.storeStepfunApiKey(key);
-  }
-
-  async deleteStepfunApiKey(): Promise<void> {
-    return this.exploreManager.deleteStepfunApiKey();
-  }
-
-  async sendStepfunAuthStatus(host: PanelHost): Promise<void> {
-    return this.exploreManager.sendStepfunAuthStatus(host);
-  }
-
-  async storeDeepseekApiKey(key: string): Promise<void> {
-    return this.exploreManager.storeDeepseekApiKey(key);
-  }
-
-  async deleteDeepseekApiKey(): Promise<void> {
-    return this.exploreManager.deleteDeepseekApiKey();
-  }
-
-  async sendDeepseekAuthStatus(host: PanelHost): Promise<void> {
-    return this.exploreManager.sendDeepseekAuthStatus(host);
   }
 }

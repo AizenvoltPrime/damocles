@@ -3,6 +3,7 @@ import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { ModelInfo, EffortLevel } from '../../shared/types/settings';
 import { DEFAULT_MODELS, DEFAULT_CONTEXT_WINDOW, thinkingDisableApplies } from '../../shared/types/constants';
 import { TOOL_ENTER_PLAN_MODE } from '../../shared/tool-names';
+import { KEY_PROVIDER_NAMES } from '../../shared/settings-sections';
 import { TEAM_MAIN_PI_TOOL_NAMES } from './tools/team-tools';
 import { OPENAI_API_PROVIDER, OPENAI_CODEX_PROVIDER, type OpenAIAuthStatus } from './openai-auth';
 
@@ -228,17 +229,17 @@ export function modelValueOfPiModel(provider: string, modelId: string): string |
 
 /** The human-readable provider name for an unauthed sign-in toast. */
 export function providerDisplayName(info?: ModelInfo): string {
-  if (info?.backend === 'openai') return 'OpenAI';
-  if (info?.piProvider === 'stepfun') return 'StepFun';
-  if (info?.piProvider === 'deepseek') return 'DeepSeek';
-  return 'Anthropic';
+  if (info?.piProvider) return KEY_PROVIDER_NAMES[info.piProvider];
+  return info?.backend === 'openai' ? 'OpenAI' : 'Anthropic';
 }
 
 /**
  * Whether the active model's credential is dollar-metered (so `maxBudgetUsd` enforcement applies), as
- * opposed to a flat subscription with no per-call dollar cost. piProvider models (StepFun/DeepSeek)
- * report their provider id as `apiKeySource`, not a first-party label, so they're classified from the
- * catalog: metered unless `flatFee` (StepFun). First-party models fall back to the credential label.
+ * opposed to a flat subscription with no per-call dollar cost. piProvider models (StepFun, DeepSeek,
+ * MiniMax, xAI) report their provider id as `apiKeySource`, not a first-party label, so they're classified
+ * from the catalog: metered unless `flatFee` (StepFun). The applied key's kind comes first and is not read
+ * here: `account-billing.ts` `dollarBilled` answers false for a provider in `flatFeeKeyProviders` (a MiniMax
+ * Token Plan key). First-party models fall back to the credential label.
  */
 export function isDollarBilled(info: ModelInfo | undefined, apiKeySource: string): boolean {
   if (info?.piProvider) return !info.flatFee;

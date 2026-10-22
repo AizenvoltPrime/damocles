@@ -132,7 +132,7 @@ const H = vi.hoisted(() => {
       };
     }),
     SessionManager: { create: vi.fn(() => ({ kind: 'persistent', getBranch: () => [] })), inMemory: vi.fn(() => ({ kind: 'memory' })) },
-    SettingsManager: { inMemory: vi.fn(() => ({ kind: 'settings' })), create: vi.fn(() => ({ kind: 'settings' })) },
+    SettingsManager: { inMemory: vi.fn(() => ({ kind: 'settings' })), create: vi.fn(() => ({ kind: 'settings', drainErrors: () => [] })) },
     ModelRuntime: { create: vi.fn(async () => services.modelRuntime) },
     DefaultPackageManager: class { getInstalledPath(): string | undefined { return undefined; } },
     defineTool: vi.fn((tool: unknown) => tool),
@@ -170,7 +170,7 @@ vi.mock('../session-title', () => ({ generateSessionTitle: async () => null }));
 // travels the production path.
 vi.mock('../agent-dir', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../agent-dir')>()),
-  ensurePiAgentDir: (dir: string) => dir,
+  ensurePiAgentDir: () => undefined,
   PI_AGENT_DIR: '/fake/agent',
 }));
 
@@ -979,6 +979,11 @@ describe('panel activity, from the same publisher', () => {
     expect(turnOutcomeOfError('429 {"type":"rate_limit_error"}')).toEqual({ kind: 'rateLimit' });
     expect(turnOutcomeOfError('Too Many Requests')).toEqual({ kind: 'rateLimit' });
     expect(turnOutcomeOfError('subscription_sharing_usage_limit_exceeded')).toEqual({ kind: 'rateLimit' });
+    // pi 1.4.0 appends its workspace hint to a ChatGPT Business per-user limit and does not retry it.
+    expect(turnOutcomeOfError(
+      'OpenAI API error: subscription_sharing_workplace_individual_usage_limit_exceeded\n' +
+        "You've reached your ChatGPT workspace's usage limit. Ask your workspace admin to increase it at admin.openai.com → Workspace → Usage limits.",
+    )).toEqual({ kind: 'rateLimit' });
     expect(turnOutcomeOfError('invalid x-api-key')).toEqual({ kind: 'error', message: 'invalid x-api-key' });
   });
 });

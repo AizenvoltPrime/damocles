@@ -12,6 +12,7 @@ import type {
   McpStdioServerConfig,
 } from "../../../../shared/types/mcp";
 import type { AssetSourcePrecedence } from "../../../asset-sources";
+import { stripBom } from "../../../config/bom";
 import type { McpServerEntry, McpServerEntryError, McpServerScope } from "../types";
 import { validateMcpServerEntry } from "./mcp-config-validate";
 import { log } from "../../../logger";
@@ -228,7 +229,7 @@ interface JsonFileRead {
 async function readJsonConfigFile(path: string): Promise<JsonFileRead> {
   let raw: string;
   try {
-    raw = await fs.readFile(path, "utf-8");
+    raw = stripBom(await fs.readFile(path, "utf-8"));
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "ENOENT") return { document: null, error: null };
@@ -438,7 +439,7 @@ export async function readCodexMcpServers(): Promise<McpServerMap> {
   const none = coerceServerMap(undefined);
   let text: string;
   try {
-    text = await fs.readFile(CODEX_CONFIG_PATH, "utf-8");
+    text = stripBom(await fs.readFile(CODEX_CONFIG_PATH, "utf-8"));
   } catch {
     return none;
   }

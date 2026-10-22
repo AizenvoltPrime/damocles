@@ -4,6 +4,7 @@ import { Type } from 'typebox';
 import type { ToolDefinition, EditToolDetails, EditToolInput } from '@earendil-works/pi-coding-agent';
 import type { PiCodingAgentModule } from '../pi-loader';
 import { TOOL_EDIT } from '../../../shared/tool-names';
+import { stripBom } from '../../config/bom';
 
 /**
  * Claude-Code-shaped Edit schema (`file_path`/`old_string`/`new_string`/`replace_all`). This REPLACES
@@ -24,7 +25,6 @@ const editSchema = Type.Object(
   {},
 );
 
-const stripBom = (s: string): string => (s.charCodeAt(0) === 0xfeff ? s.slice(1) : s);
 const toLF = (s: string): string => s.replace(/\r\n/g, '\n');
 
 /** `replace_all` on LF text: every exact occurrence of `oldString` replaced, or null when there is none. The approval diff shows this same result. */

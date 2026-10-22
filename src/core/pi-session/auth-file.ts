@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { log } from '../logger';
+import { stripBom } from '../config/bom';
 
 // pi rewrites auth.json in place (truncate, then one write of the whole JSON object), so a read that lands
 // in between is empty or an unterminated prefix and fails to parse. Retrying briefly lets the write land.
@@ -24,7 +25,7 @@ function sleepSync(ms: number): void {
 }
 
 function parseAuth(text: string, authPath: string): Record<string, unknown> {
-  const parsed: unknown = JSON.parse(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
+  const parsed: unknown = JSON.parse(stripBom(text));
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error(`${authPath} is not a JSON object`);
   return parsed as Record<string, unknown>;
 }
@@ -32,7 +33,7 @@ function parseAuth(text: string, authPath: string): Record<string, unknown> {
 /**
  * Parse `<agentDir>/auth.json` without taking pi's lock: on Windows each lock release leaves the lock directory
  * pending deletion, which fails pi's next `mkdir` of it with EPERM, and pi's writers retry EPERM only 5 times
- * (pi-coding-agent 1.3.0 `core/auth-storage.js:14-17`, `:104-106`). Undefined when there is no file. Text that does not parse is re-read a
+ * (pi-coding-agent 1.4.0 `core/auth-storage.js:14-17`, `:104-106`). Undefined when there is no file. Text that does not parse is re-read a
  * few times; if it still does not parse, returns the last content this process parsed, or throws when there
  * is none.
  */

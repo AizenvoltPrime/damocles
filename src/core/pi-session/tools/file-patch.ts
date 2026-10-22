@@ -1,6 +1,7 @@
 import { createTwoFilesPatch, FILE_HEADERS_ONLY } from 'diff';
 import { EDITOR_MAX_DOCUMENT_BYTES } from '../../../shared/types/messages';
 import type { FilePatch } from '../../../shared/types/file-patch';
+import { stripBom } from '../../config/bom';
 
 /** A file the editor will not open is not diffed either; this also bounds what a patch adds to the session file. */
 export const FILE_PATCH_MAX_BYTES: number = EDITOR_MAX_DOCUMENT_BYTES;
@@ -16,8 +17,7 @@ const BINARY_PROBE_LENGTH = 8000;
 
 /** pi's edit diffs text with the BOM split off and line endings normalized (`splitBom`, `normalizeToLF`). */
 export function normalized(text: string): string {
-  const unmarked = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
-  return unmarked.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  return stripBom(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 }
 
 /**

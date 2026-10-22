@@ -129,7 +129,8 @@ async function runGrep(
     return path.basename(filePath);
   };
 
-  const args = ['--json', '--line-number', '--color=never', '--hidden'];
+  // --no-config, as in pi's grep: a RIPGREP_CONFIG_PATH file must not change what the tool's options mean.
+  const args = ['--no-config', '--json', '--line-number', '--color=never', '--hidden'];
   if (ignoreCase) args.push('--ignore-case');
   if (literal) args.push('--fixed-strings');
   if (glob) args.push('--glob', glob);
@@ -318,7 +319,7 @@ async function listMatchingPaths(
 ): Promise<string[]> {
   if (!(await stat(searchPath)).isDirectory()) throw new Error(`Search path is not a directory: ${searchPath}`);
   if (options.limit <= 0) return [];
-  const args = ['--files', '--hidden', '--null', '--color=never'];
+  const args = ['--no-config', '--files', '--hidden', '--null', '--color=never'];
   // fd applies .gitignore outside a repository only with this flag, and pi passes it there.
   if (!(await insideGitRepo(searchPath))) args.push('--no-require-git');
   for (const glob of options.ignore) args.push('--glob', `!${glob}`);

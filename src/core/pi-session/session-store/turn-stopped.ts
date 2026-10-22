@@ -66,7 +66,7 @@ export function turnStoppedEntryIds(entry: unknown): readonly string[] {
 /**
  * Whether a turn-stopped entry after `message`'s own entry names it: the wind-down record of an error stop
  * (`registerWindDownErrorRecord`). pi commits that record before listeners get the stop's `turn_end`
- * (`agent-session.js:515`, `:636-641` in pi-coding-agent 1.3.0), so a live transcript reading it there decides
+ * (`agent-session.js:514`, `:635-640` in pi-coding-agent 1.4.0), so a live transcript reading it there decides
  * the stop exactly as a reload does.
  */
 export function windDownRecorded(branch: readonly SessionEntry[], message: unknown): boolean {

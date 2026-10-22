@@ -1775,6 +1775,40 @@
       "hint": "Pay-per-token API key, stored encrypted by your operating system's credential store; enables DeepSeek V4 Pro and V4.1 Flash."
     }
   },
+  "minimax": {
+    "apiKey": {
+      "label": "API Key",
+      "configured": "Configured",
+      "notConfigured": "Not configured",
+      "show": "Show key",
+      "hide": "Hide key",
+      "saving": "Saving...",
+      "clear": "Clear API key",
+      "placeholder": "sk-cp-… or sk-api-…",
+      "saved": "API key saved",
+      "saveFailed": "Failed to save key",
+      "cleared": "API key cleared",
+      "clearFailed": "Failed to clear key",
+      "hint": "A key from the international platform, platform.minimax.io, stored encrypted by your operating system's credential store; enables MiniMax M3.1 Flash. A Token Plan key (sk-cp-…) bills as a subscription: costs show as estimates and the budget limit does not apply. Plan usage is used first, and overflow draws your prepaid credit packs, which Damocles' budget does not track. A pay-as-you-go key (sk-api-…) bills per token, and the budget limit applies."
+    }
+  },
+  "xai": {
+    "apiKey": {
+      "label": "API Key",
+      "configured": "Configured",
+      "notConfigured": "Not configured",
+      "show": "Show key",
+      "hide": "Hide key",
+      "saving": "Saving...",
+      "clear": "Clear API key",
+      "placeholder": "xai-…",
+      "saved": "API key saved",
+      "saveFailed": "Failed to save key",
+      "cleared": "API key cleared",
+      "clearFailed": "Failed to clear key",
+      "hint": "Pay-per-token API key, stored encrypted by your operating system's credential store; enables Grok 4.7."
+    }
+  },
   "typesafe": {
     "apiKey": {
       "label": "API Key",
@@ -2373,6 +2407,8 @@
       "signedIn": "Signed in",
       "signingIn": "Signing in",
       "keySaved": "Key saved",
+      "keyFromEnvironment": "Set by environment variable",
+      "keyFromPiConfig": "Set in pi's configuration",
       "notSetUp": "Not set up",
       "addKey": "Add key",
       "replaceKey": "Replace key"
@@ -2476,6 +2512,14 @@
         "label": "StepFun",
         "description": "Step Plan subscription key."
       },
+      "minimax": {
+        "label": "MiniMax",
+        "description": "Token Plan or pay-as-you-go key."
+      },
+      "xai": {
+        "label": "xAI",
+        "description": "Per-token API key."
+      },
       "openrouter": {
         "label": "OpenRouter",
         "description": "API key for OpenRouter models, image generation and memory judges."
@@ -2493,7 +2537,7 @@
       },
       "backgroundModel": {
         "label": "Background model",
-        "description": "Runs chat titles, memory extraction, profiles, query expansion, the quality audit and the desktop app's commit messages. Automatic uses the first signed-in model of Haiku 5.5, GPT-6 Luna, Step 5 Preview and DeepSeek V4.1 Flash; a chosen model never falls back to another provider."
+        "description": "Runs chat titles, memory extraction, profiles, query expansion, the quality audit and the desktop app's commit messages. Automatic uses the first signed-in model of Haiku 5.5, GPT-6 Luna, Step 5 Preview, DeepSeek V4.1 Flash, MiniMax M3.1 Flash and Grok 4.7; a chosen model never falls back to another provider."
       },
       "backgroundEffort": {
         "label": "Background reasoning effort"

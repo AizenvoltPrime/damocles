@@ -41,6 +41,7 @@ beforeEach(() => {
 afterEach(() => {
   process.env['PATH'] = savedPath;
   if (savedCache !== undefined) process.env['NPM_CONFIG_CACHE'] = savedCache;
+  else delete process.env['NPM_CONFIG_CACHE'];
   fs.rmSync(state.dir, { recursive: true, force: true });
 });
 
@@ -67,6 +68,22 @@ describe('resolveNpxBinary', () => {
 
     expect(await resolveNpxBinary('npx', ['-y', 'some-mcp-server'])).toBeNull();
     expect(configRuns()).toHaveLength(2);
+  });
+
+  it('resolves a cached package whose package.json starts with a BOM, as npm reads it', async () => {
+    const cacheDir = path.join(state.dir, 'npm-cache');
+    const packageDir = path.join(cacheDir, '_npx', 'abc123', 'node_modules', 'some-mcp-server');
+    fs.mkdirSync(packageDir, { recursive: true });
+    fs.writeFileSync(path.join(packageDir, 'package.json'), `\uFEFF${JSON.stringify({ name: 'some-mcp-server', bin: 'cli.js' })}`);
+    fs.writeFileSync(path.join(packageDir, 'cli.js'), '#!/usr/bin/env node\n');
+    process.env['NPM_CONFIG_CACHE'] = cacheDir;
+    const { resolveNpxBinary } = await import('../npx-resolver');
+
+    expect(await resolveNpxBinary('npx', ['-y', 'some-mcp-server', '--flag'])).toEqual({
+      binPath: path.join(packageDir, 'cli.js'),
+      extraArgs: ['--flag'],
+      isJs: true,
+    });
   });
 
   it.runIf(process.platform === 'win32')('runs an npm.exe shim when the PATH folder holds no npm.cmd', async () => {

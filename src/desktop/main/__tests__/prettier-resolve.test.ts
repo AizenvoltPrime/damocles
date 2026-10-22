@@ -182,10 +182,50 @@ describe('nearestPrettierConfig', () => {
       expect(await nearestPrettierConfig(root, file, major)).toEqual({ path: parentConfig, inside: false });
     });
 
-    it('a package.json that is not JSON', async () => {
-      put(path.join(root, 'package.json'), '{ "name": ');
+    // cosmiconfig skips an empty file before parsing it, and its trim takes a lone BOM for whitespace.
+    it.each([[''], [' \n'], ['\uFEFF']])('a package.json holding only %j', async (text) => {
+      put(path.join(root, 'package.json'), text);
       expect(await nearestPrettierConfig(root, file, major)).toEqual({ path: parentConfig, inside: false });
     });
+  });
+
+  // Both majors parse package.json with parse-json, which throws on a leading BOM. Prettier 3's search skips a file that
+  // throws; Prettier 2's (cosmiconfig 7) stops at it with "JSON Error in", or for null with a TypeError, which the host
+  // reproduces by loading that file.
+  describe.each([
+    ['that is not JSON', '{ "name": '],
+    ['with a prettier key that starts with a BOM', '\uFEFF{ "name": "repo", "prettier": { "semi": false } }'],
+    ['without a prettier key that starts with a BOM', '\uFEFF{ "name": "repo" }'],
+    ['that holds null', 'null'],
+  ])('a package.json %s', (_label, text) => {
+    let parentConfig: string;
+    let root: string;
+    let file: string;
+    let manifest: string;
+
+    beforeEach(() => {
+      const parent = tempDir();
+      root = path.join(parent, 'repo');
+      file = put(path.join(root, 'a.ts'));
+      parentConfig = put(path.join(parent, 'prettier.config.js'), 'module.exports = {};');
+      manifest = put(path.join(root, 'package.json'), text);
+    });
+
+    it('is skipped under Prettier 3, which goes on to the parent folder\'s config', async () => {
+      expect(await nearestPrettierConfig(root, file, 3)).toEqual({ path: parentConfig, inside: false });
+    });
+
+    it('is the config source under Prettier 2, whose search stops there with an error', async () => {
+      expect(await nearestPrettierConfig(root, file, 2)).toEqual({ path: manifest, inside: true });
+    });
+  });
+
+  // Prettier 3 loads package.yaml with its YAML plugin's parser, which reads a leading BOM as no content.
+  it('takes a package.yaml with a prettier key that starts with a BOM under Prettier 3', async () => {
+    const root = tempDir();
+    const file = put(path.join(root, 'a.ts'));
+    const yaml = put(path.join(root, 'package.yaml'), '\uFEFFprettier:\n  semi: false\n');
+    expect(await nearestPrettierConfig(root, file, 3)).toEqual({ path: yaml, inside: true });
   });
 
   it.each([['prettier: ~'], ['prettier: null'], ['prettier: false'], ["prettier: ''"], ['prettier:'], ['name: repo']])('skips a package.yaml with %j', async (yaml) => {
@@ -261,6 +301,14 @@ describe('isPrettierConfigured', () => {
     expect(await isPrettierConfigured(root, file)).toBe(true);
     fs.rmSync(path.join(root, 'src', 'prettier.config.mjs'));
     put(path.join(root, '.prettierrc'), 'semi: false');
+    expect(await isPrettierConfigured(root, file)).toBe(true);
+  });
+
+  // npm reads package.json with json-parse-even-better-errors, which strips the BOM, so it installs these dependencies.
+  it('finds a prettier dependency in a package.json that starts with a BOM', async () => {
+    const root = tempDir();
+    const file = put(path.join(root, 'src', 'a.ts'));
+    put(path.join(root, 'package.json'), `\uFEFF${JSON.stringify({ name: 'repo', devDependencies: { prettier: '^3' } })}`);
     expect(await isPrettierConfigured(root, file)).toBe(true);
   });
 });

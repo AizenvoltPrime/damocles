@@ -20,14 +20,18 @@ vi.mock('fs', async (importOriginal) => {
 });
 
 import { cacheWarmingSetting, ensurePiAgentDir } from '../agent-dir';
+import { installLogSink } from '../../logger';
 
 describe('ensurePiAgentDir (B3 + FR-9)', () => {
   let tmp: string;
+  let logLines: string[];
 
   beforeEach(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-agentdir-'));
     fsCalls.written.length = 0;
     fsCalls.renamed.length = 0;
+    logLines = [];
+    installLogSink({ appendLine: (line) => void logLines.push(line), show: () => undefined, dispose: () => undefined });
   });
   afterEach(() => {
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -35,9 +39,7 @@ describe('ensurePiAgentDir (B3 + FR-9)', () => {
 
   it('creates the dir + extensions subdir and seeds compaction off / images unblocked', () => {
     const agentDir = path.join(tmp, 'agent');
-    const returned = ensurePiAgentDir(agentDir, 'streaming');
-
-    expect(returned).toBe(agentDir);
+    ensurePiAgentDir(agentDir, 'streaming');
     expect(fs.existsSync(path.join(agentDir, 'extensions'))).toBe(true);
 
     const settings = JSON.parse(fs.readFileSync(path.join(agentDir, 'settings.json'), 'utf8'));
@@ -50,8 +52,50 @@ describe('ensurePiAgentDir (B3 + FR-9)', () => {
     const agentDir = path.join(tmp, 'agent');
     ensurePiAgentDir(agentDir, 'streaming');
     const first = fs.readFileSync(path.join(agentDir, 'settings.json'), 'utf8');
+    fsCalls.renamed.length = 0;
     ensurePiAgentDir(agentDir, 'streaming');
+    expect(fsCalls.renamed).toEqual([]);
     expect(fs.readFileSync(path.join(agentDir, 'settings.json'), 'utf8')).toBe(first);
+  });
+
+  it.each([
+    ['is not JSON', '{ "packages": ["npm:x"], ', 'it is not valid JSON'],
+    ['holds an array', '[{ "packages": ["npm:x"] }]', 'it does not hold a JSON object'],
+    ['holds a string', '"packages"', 'it does not hold a JSON object'],
+  ])('leaves a settings file that %s as it is and logs why, without its text', (_label, text, reason) => {
+    const agentDir = path.join(tmp, 'agent');
+    const settingsPath = path.join(agentDir, 'settings.json');
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(settingsPath, text);
+    fsCalls.written.length = 0;
+
+    ensurePiAgentDir(agentDir, 'streaming');
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(text);
+    expect(fsCalls.written).toEqual([]);
+    expect(fsCalls.renamed).toEqual([]);
+    expect(logLines.join('\n')).toContain(`Left ${settingsPath} unseeded: ${reason}`);
+    expect(logLines.join('\n')).not.toContain('npm:x');
+  });
+
+  it('leaves a settings path it cannot read as it is and logs why', () => {
+    const agentDir = path.join(tmp, 'agent');
+    const settingsPath = path.join(agentDir, 'settings.json');
+    // A folder in the file's place fails the read with EISDIR on every platform.
+    fs.mkdirSync(settingsPath, { recursive: true });
+
+    ensurePiAgentDir(agentDir, 'streaming');
+    expect(fs.statSync(settingsPath).isDirectory()).toBe(true);
+    expect(fsCalls.renamed).toEqual([]);
+    expect(logLines.join('\n')).toContain(`Left ${settingsPath} unseeded: it cannot be read (EISDIR)`);
+  });
+
+  it('seeds an empty settings file, which pi reads as no settings', () => {
+    const agentDir = path.join(tmp, 'agent');
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(path.join(agentDir, 'settings.json'), '');
+
+    ensurePiAgentDir(agentDir, 'idle');
+    expect(JSON.parse(fs.readFileSync(path.join(agentDir, 'settings.json'), 'utf8')).cacheWarming).toBe('idle');
   });
 
   it('merges into existing settings without clobbering unrelated keys', () => {
@@ -72,7 +116,19 @@ describe('ensurePiAgentDir (B3 + FR-9)', () => {
     expect(settings.cacheWarming).toBe('idle');
   });
 
-  // The short-circuit compares `cacheWarming` against the caller's value, unlike the three keys that are
+  it('keeps the keys of a settings file that starts with a BOM, and writes it back without one', () => {
+    const agentDir = path.join(tmp, 'agent');
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(path.join(agentDir, 'settings.json'), `\uFEFF${JSON.stringify({ packages: ['npm:x'] })}`);
+
+    ensurePiAgentDir(agentDir, 'idle');
+
+    const text = fs.readFileSync(path.join(agentDir, 'settings.json'), 'utf8');
+    expect(text.startsWith('{')).toBe(true);
+    expect(JSON.parse(text).packages).toEqual(['npm:x']);
+  });
+
+  // The short-circuit compares `cacheWarming` against the caller's value, unlike the two keys that are
   // compared against constants. A mode change must therefore still rewrite an otherwise-correct file.
   it('rewrites cacheWarming when the configured mode changed, keeping the other seeded keys', () => {
     const agentDir = path.join(tmp, 'agent');
@@ -85,7 +141,6 @@ describe('ensurePiAgentDir (B3 + FR-9)', () => {
     expect(settings.cacheWarming).toBe('off');
     expect(settings.compaction.enabled).toBe(false);
     expect(settings.images.blockImages).toBe(false);
-    expect(settings.enableInstallTelemetry).toBe(false);
   });
 
   // pi takes a lock on this file and stops persisting global settings for the whole session if it ever

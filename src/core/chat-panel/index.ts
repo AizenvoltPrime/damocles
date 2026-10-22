@@ -25,8 +25,12 @@ import { readClaudeAuthFromDisk } from "../pi-session/subscription";
 import { OPENAI_API_KEY_SECRET, readPreferOpenAIApiKey } from "../pi-session/openai-auth";
 import { MEMORY_JUDGE_EFFORT_SETTING, MEMORY_JUDGE_SETTING } from "../../shared/memory-judge";
 import { PiRuntime } from "../pi-session/pi-runtime";
-import { typesafeAuthStatus } from "./settings-manager/managers/explore-manager";
-import { TYPESAFE_SECRET_KEY } from "../pi-session/custom-providers";
+import { memoryJudgeStatus } from "./settings-manager/managers/memory-judge-status";
+import { providerAuthStatus } from "./settings-manager/managers/provider-keys";
+import { keyProviderOfSecret, TYPESAFE_SECRET_KEY } from "../pi-session/custom-providers";
+import { KEY_PROVIDER_IDS, type KeyProviderId } from "../../shared/settings-sections";
+import { broadcastImageGenerationState } from "./message-router/handlers/settings-handlers";
+import { republishAccountInfo } from "./message-router/handlers/account-info";
 import { PROVIDER_SECRET_KEYS } from "../pi-session/explore-providers";
 import { SessionMetaIndex } from "../pi-session/session-store";
 import { WorkspaceFolderRegistry } from "../workspace-folders/folder-registry";
@@ -78,6 +82,7 @@ export class ChatPanelProvider {
   private readonly subscriptions: Disposable[];
   private readonly platform: PlatformWithWorktrees;
   private memoryJudgeReads = 0;
+  private readonly providerStatusReads = new Map<KeyProviderId, number>();
 
   constructor(platform: PlatformWithWorktrees, hostDeps: ChatPanelHostDeps) {
     this.subscriptions = hostDeps.subscriptions;
@@ -147,10 +152,22 @@ export class ChatPanelProvider {
     this.subscriptions.push(PiRuntime.watchAuthFile());
     const stopUsageThresholds = PiRuntime.onUsageThreshold((crossing) => this.panelManager.usageThresholdCrossed(crossing));
     this.subscriptions.push({ dispose: stopUsageThresholds });
-    // Before pi starts, the status is read from these secrets and the judge setting alone, so their changes are an input too.
+    // Fires for this window's own writes too, so it is the one publisher of key provider status.
     this.subscriptions.push(platform.secrets.onDidChange((key) => {
+      const provider = keyProviderOfSecret(key);
+      if (provider) this.broadcastProviderAuthStatus(provider);
+      // Before pi starts, the judge status is read from these secrets and the judge setting alone, so their changes are an input too.
       if (key === TYPESAFE_SECRET_KEY || key === PROVIDER_SECRET_KEYS.openrouter || key === OPENAI_API_KEY_SECRET) this.broadcastMemoryJudge();
     }));
+    // Image settings, Tools status and the key statuses' environment flag read the credentials pi holds, which only a finished sync reflects.
+    const stopSyncUpdates = PiRuntime.onCustomProvidersSynced(({ accountChanged }) => {
+      const getPanels = () => this.panelManager.getPanels();
+      broadcastImageGenerationState({ getPanels, settingsManager: this.settingsManager, postMessage });
+      for (const provider of KEY_PROVIDER_IDS) this.broadcastProviderAuthStatus(provider);
+      // The runtime republishes only started sessions; a panel showing a conversation it has not started needs it too.
+      if (accountChanged) republishAccountInfo(getPanels);
+    });
+    this.subscriptions.push({ dispose: stopSyncUpdates });
     this.subscriptions.push(platform.settings.onDidChange("damocles.memory", (change) => {
       if (change.affects(MEMORY_JUDGE_SETTING) || change.affects(MEMORY_JUDGE_EFFORT_SETTING)) this.broadcastMemoryJudge();
     }));
@@ -501,11 +518,22 @@ export class ChatPanelProvider {
   /** Reads overlap, so only the newest read is broadcast; an older one may have read state the newer one replaced. */
   private broadcastMemoryJudge(): void {
     const read = ++this.memoryJudgeReads;
-    typesafeAuthStatus(this.platform)
+    memoryJudgeStatus(this.platform)
       .then((msg) => {
         if (read === this.memoryJudgeReads) this.panelManager.broadcast(msg);
       })
       .catch((err: unknown) => log("[ChatPanelProvider] reading the memory judge status failed: %s", err instanceof Error ? err.message : String(err)));
+  }
+
+  /** As `broadcastMemoryJudge`, only a provider's newest read is broadcast. */
+  private broadcastProviderAuthStatus(provider: KeyProviderId): void {
+    const read = (this.providerStatusReads.get(provider) ?? 0) + 1;
+    this.providerStatusReads.set(provider, read);
+    providerAuthStatus(this.platform, provider)
+      .then((msg) => {
+        if (msg && read === this.providerStatusReads.get(provider)) this.panelManager.broadcast(msg);
+      })
+      .catch((err: unknown) => log("[ChatPanelProvider] reading the %s key status failed: %s", provider, err instanceof Error ? err.message : String(err)));
   }
 
   private postToFolderPanels(folderKey: string, message: ExtensionToWebviewMessage): void {

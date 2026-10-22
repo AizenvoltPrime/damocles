@@ -9,7 +9,7 @@ import { base64Of as b64, IMAGE_BYTES } from './image-bytes';
 const PI_MIME = path.resolve(__dirname, '../../../node_modules/@earendil-works/pi-coding-agent/dist/utils/mime.js');
 
 describe('sniffImageMediaType', () => {
-  it('agrees with pi 1.3.0 detectSupportedImageMimeType on every fixture, except BMP, which no provider takes inline', async () => {
+  it('agrees with pi 1.4.0 detectSupportedImageMimeType on every fixture, except BMP, which no provider takes inline', async () => {
     const pi = (await import(pathToFileURL(PI_MIME).href)) as { detectSupportedImageMimeType: (buffer: Uint8Array) => string | null };
     for (const [name, bytes] of Object.entries(IMAGE_BYTES)) {
       const theirs = pi.detectSupportedImageMimeType(Buffer.from(bytes));

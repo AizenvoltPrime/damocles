@@ -433,14 +433,14 @@ describe('chats section', () => {
     expect(first.attributes('data-status')).toBe('running');
     expect(first.text()).toContain('Running');
     expect(first.text()).toContain('Sonnet 5.5');
-    expect(first.find('.provider-logo svg').exists()).toBe(true);
+    expect(first.find('[data-testid="provider-logo"] svg').exists()).toBe(true);
     expect(first.get('[data-testid="chat-tag"]').text()).toBe('auth');
     // The tag sits inside the row's spans, so it is phrasing content too.
     expect(first.get('[data-testid="chat-tag"]').element.tagName).toBe('SPAN');
     expect(wrapper.get('[data-chat-id="c2"]').text()).toContain('Needs you');
     const unknown = wrapper.get('[data-chat-id="c3"]');
     expect(unknown.text()).toContain('custom-model');
-    expect(unknown.find('.provider-logo').exists()).toBe(false);
+    expect(unknown.find('[data-testid="provider-logo"]').exists()).toBe(false);
   });
 
   it('shows today\'s and yesterday\'s chat times on a 24-hour clock in English and Greek', async () => {

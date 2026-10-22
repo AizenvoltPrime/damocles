@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { stripBom } from '../config/bom';
 
 const PROBE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.vue'];
 const TSCONFIG_NAMES = ['tsconfig.json', 'tsconfig.app.json'];
@@ -90,7 +91,7 @@ export class TsconfigResolver {
 			return { paths: {}, tsconfigDir: '' };
 		}
 
-		const stripped = stripJsoncComments(raw);
+		const stripped = stripJsoncComments(stripBom(raw));
 		let data: Record<string, unknown>;
 		try {
 			data = JSON.parse(stripped);

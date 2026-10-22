@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { extractFile } from '../extractors';
 import { setGrammarDir } from '../parser-manager';
@@ -138,6 +140,19 @@ describe('ComposerPsr4Resolver', () => {
 		const resolved = resolver.resolveNamespace('Database\\Seeders\\Demo\\DemoDataConstants', CONTROLLER);
 		expect(resolved).not.toBeNull();
 		expect(resolved!.replace(/\\/g, '/').toLowerCase()).toContain('/database/seeders/demo/');
+	});
+
+	it('reads a composer.json that starts with a BOM', () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'composer-bom-'));
+		try {
+			fs.mkdirSync(path.join(root, 'src'));
+			fs.writeFileSync(path.join(root, 'src', 'Thing.php'), '<?php');
+			fs.writeFileSync(path.join(root, 'composer.json'), `\uFEFF${JSON.stringify({ autoload: { 'psr-4': { 'App\\': 'src/' } } })}`);
+			const resolved = new ComposerPsr4Resolver(root).resolveNamespace('App\\Thing', path.join(root, 'src', 'Other.php'));
+			expect(resolved).toBe(path.join(root, 'src', 'Thing.php'));
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it('caches per-directory lookups', () => {

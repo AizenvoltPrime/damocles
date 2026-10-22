@@ -7,6 +7,7 @@ import type { Platform } from "../../platform/platform";
 import { ASSET_SEGMENT_RE, INVOCABLE_ASSET_NAME_RE } from "../../shared/asset-names";
 import type { CustomSlashCommandInfo, SkillInfo } from "../../shared/types/commands";
 import { assetSourceDirs, assetSources } from "../asset-sources";
+import { stripBom } from "../config/bom";
 import { log } from "../logger";
 
 const SKILL_FILE = "SKILL.md";
@@ -249,7 +250,7 @@ export class SlashCommandService {
   }
 
   private parseMarkdownFile(content: string): ParsedMarkdownFile {
-    const frontmatterMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n([\s\S]*))?$/);
+    const frontmatterMatch = stripBom(content).match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n([\s\S]*))?$/);
 
     if (frontmatterMatch) {
       const frontmatter = frontmatterMatch[1] ?? "";

@@ -154,6 +154,28 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     supportedEffortLevels: ['low', 'high', 'max'],
     piProvider: "deepseek",
   },
+  {
+    value: "MiniMax-M3.1-Flash",
+    displayName: "MiniMax M3.1 Flash",
+    description: "Fast, cost-efficient MiniMax reasoning model",
+    contextWindow: 1_000_000,
+    supportsAdaptiveThinking: true,
+    supportsEffort: true,
+    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    thinkingAlwaysOn: true,
+    piProvider: "minimax",
+  },
+  {
+    value: "grok-4.7",
+    displayName: "Grok 4.7",
+    description: "xAI's reasoning model",
+    contextWindow: 500_000,
+    supportsAdaptiveThinking: true,
+    supportsEffort: true,
+    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh'],
+    thinkingAlwaysOn: true,
+    piProvider: "xai",
+  },
 ];
 
 /**

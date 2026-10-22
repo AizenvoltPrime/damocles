@@ -1,7 +1,7 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { listWorkspaceFiles, unpackedExecutable } from '../ripgrep';
 
@@ -39,6 +39,23 @@ describe('listWorkspaceFiles', () => {
       const noUnpackedCopy = { settings: host.settings, paths: { ...host.paths, unpackedRoot: path.join(workspace, 'unpacked') } };
       await expect(listWorkspaceFiles(noUnpackedCopy, workspace)).rejects.toThrow(/ripgrep process error/);
     } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores a ripgrep config file', async () => {
+    const workspace = mkdtempSync(path.join(os.tmpdir(), 'damocles-rg-'));
+    const config = `${workspace}.rgrc`;
+    try {
+      mkdirSync(path.join(workspace, 'nested'));
+      writeFileSync(path.join(workspace, 'nested', 'b.txt'), 'x');
+      writeFileSync(config, '--max-depth=1\n');
+      vi.stubEnv('RIPGREP_CONFIG_PATH', config);
+      const host = createFakePlatform({ appRoot: path.resolve(__dirname, '..', '..', '..', '..') });
+      expect(await listWorkspaceFiles(host, workspace)).toContainEqual({ relativePath: 'nested/b.txt', isDirectory: false });
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(config, { force: true });
       rmSync(workspace, { recursive: true, force: true });
     }
   });

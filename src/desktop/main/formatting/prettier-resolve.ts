@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
+import { stripBom } from '../../../core/config/bom';
 import { isInsideRealRoot } from '../../local-services/confine';
 
 export type PrettierResolution =
@@ -99,25 +100,39 @@ export function supportedMajor(version: string): 2 | 3 | undefined {
   return major === '2' ? 2 : major === '3' ? 3 : undefined;
 }
 
+// The dependencies npm installs from: npm's parser (json-parse-even-better-errors) strips a leading BOM.
 async function readManifest(file: string): Promise<Record<string, unknown> | undefined> {
   if (!(await exists(file))) return undefined;
-  const manifest = JSON.parse(await fs.readFile(file, 'utf8')) as unknown;
+  const manifest = JSON.parse(stripBom(await fs.readFile(file, 'utf8'))) as unknown;
   return typeof manifest === 'object' && manifest !== null && !Array.isArray(manifest) ? (manifest as Record<string, unknown>) : undefined;
 }
 
-// Prettier's filter: a package.json that does not parse is no config source.
-async function hasPrettierKey(manifestPath: string): Promise<boolean> {
+// A package.json counts with a truthy prettier key. Both majors parse it with parse-json, which throws on a leading BOM, so
+// the BOM is not stripped here: Prettier 3 skips a file that throws, and Prettier 2's search stops at a non-empty one with
+// a JSON error, which the host reproduces by loading it.
+async function packageJsonIsSource(manifestPath: string, major: 2 | 3): Promise<boolean> {
+  let text: string;
   try {
-    const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8')) as unknown;
-    return typeof manifest === 'object' && manifest !== null && Boolean((manifest as Record<string, unknown>)['prettier']);
+    text = await fs.readFile(manifestPath, 'utf8');
   } catch {
     return false;
   }
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(text);
+  } catch {
+    // cosmiconfig skips an empty file before parsing; its trim drops a lone BOM too.
+    return major === 2 && text.trim() !== '';
+  }
+  // cosmiconfig 7 reads the prettier key off `null` and throws; Prettier 3 skips it.
+  if (manifest === null) return major === 2;
+  return typeof manifest === 'object' && manifest !== null && Boolean((manifest as Record<string, unknown>)['prettier']);
 }
 
 // A top-level prettier key whose value is no falsy scalar; an empty value counts only with an indented block under it.
+// Prettier 3 loads the file with its YAML plugin's parser, which takes a leading BOM as no content.
 function yamlHasPrettierKey(text: string): boolean {
-  const lines = text.split(/\r?\n/);
+  const lines = stripBom(text).split(/\r?\n/);
   const at = lines.findIndex((line) => /^prettier\s*:/.test(line));
   if (at < 0) return false;
   const value = lines[at]!.replace(/^prettier\s*:/, '').replace(/\s#.*$/, '').trim();
@@ -127,13 +142,14 @@ function yamlHasPrettierKey(text: string): boolean {
 }
 
 // The file in dir Prettier takes its config from, tried in Prettier's order with its rules: a regular file (links
-// followed), a package.json or package.yaml only with a truthy prettier key, and under Prettier 2 no empty file.
+// followed), a package.json or package.yaml only with a truthy prettier key (or, under Prettier 2, a package.json that
+// does not parse), and under Prettier 2 no empty file.
 async function configSourceIn(dir: string, major: 2 | 3): Promise<string | undefined> {
   for (const name of CONFIG_FILES[major]) {
     const file = path.join(dir, name);
     if (!(await isFile(file))) continue;
     if (name === 'package.json') {
-      if (await hasPrettierKey(file)) return file;
+      if (await packageJsonIsSource(file, major)) return file;
     } else if (name === 'package.yaml') {
       if (yamlHasPrettierKey(await fs.readFile(file, 'utf8'))) return file;
     } else if (major === 3 || (await fs.readFile(file, 'utf8')).trim() !== '') {

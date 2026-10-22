@@ -38,6 +38,7 @@ import type { UsageStatsQuery, UsageStatsReport } from './usage-stats';
 import type { SteerTargetInfo } from './subagents';
 import type { AgentUsageTotals } from '../usage-accounting';
 import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult, UserProfile, ObservationCursor } from './memory';
+import type { ExternalKeySource, KeyProviderId } from '../settings-sections';
 import type { PendingConsolidationCandidate, ConsolidationResult, ConsolidationPhaseEvent } from './consolidation';
 import type { MemoryInjectionDisplay } from './context-injection';
 import type {
@@ -306,14 +307,8 @@ export type WebviewToExtensionMessage =
   | { type: "clearOpenAIApiKey"; requestId: string }
   | { type: "getOpenAIAuthStatus" }
   | { type: "setOpenAIPreferApiKey"; preferApiKey: boolean; requestId: string }
-  | { type: "setStepfunApiKey"; key: string; requestId: string }
-  | { type: "clearStepfunApiKey"; requestId: string }
-  | { type: "setDeepseekApiKey"; key: string; requestId: string }
-  | { type: "clearDeepseekApiKey"; requestId: string }
-  | { type: "setTypesafeApiKey"; key: string; requestId: string }
-  | { type: "clearTypesafeApiKey"; requestId: string }
-  | { type: "setOpenrouterApiKey"; key: string; requestId: string }
-  | { type: "clearOpenrouterApiKey"; requestId: string }
+  | { type: "setProviderApiKey"; provider: KeyProviderId; key: string; requestId: string }
+  | { type: "clearProviderApiKey"; provider: KeyProviderId; requestId: string }
   | { type: "startChatGPTOAuth" }
   | { type: "signOutChatGPT" }
   | { type: "signOutCodex" }
@@ -872,19 +867,12 @@ export type ExtensionToWebviewMessage =
   | { type: "setOpenAIApiKeyAck"; requestId: string; ok: boolean; validated?: boolean; modelCount?: number; warning?: string; error?: string }
   | { type: "clearOpenAIApiKeyAck"; requestId: string; ok: boolean; error?: string }
   | { type: "setOpenAIPreferApiKeyAck"; requestId: string; ok: boolean; error?: string }
-  | { type: "setStepfunApiKeyAck"; requestId: string; ok: boolean; error?: string }
-  | { type: "clearStepfunApiKeyAck"; requestId: string; ok: boolean; error?: string }
-  | { type: "stepfunAuthStatusChanged"; configured: boolean }
-  | { type: "setDeepseekApiKeyAck"; requestId: string; ok: boolean; error?: string }
-  | { type: "clearDeepseekApiKeyAck"; requestId: string; ok: boolean; error?: string }
-  | { type: "deepseekAuthStatusChanged"; configured: boolean }
-  | { type: "setTypesafeApiKeyAck"; requestId: string; ok: boolean; error?: string }
-  | { type: "clearTypesafeApiKeyAck"; requestId: string; ok: boolean; error?: string }
+  | { type: "setProviderApiKeyAck"; provider: KeyProviderId; requestId: string; ok: boolean; error?: string }
+  | { type: "clearProviderApiKeyAck"; provider: KeyProviderId; requestId: string; ok: boolean; error?: string }
+  /** `configured`: a key is in the host secret store. `external`: where pi's credential comes from when Damocles did not apply it. */
+  | { type: "providerAuthStatusChanged"; provider: KeyProviderId; configured: boolean; external: ExternalKeySource | null }
   /** `classifierCredentials`: whether each classifier provider's credential can serve a Memory judge choice. */
-  | { type: "typesafeAuthStatusChanged"; configured: boolean; memoryJudge: MemoryJudge; classifierCredentials: Record<ClassifierProvider, ClassifierCredential> }
-  | { type: "setOpenrouterApiKeyAck"; requestId: string; ok: boolean; error?: string }
-  | { type: "clearOpenrouterApiKeyAck"; requestId: string; ok: boolean; error?: string }
-  | { type: "openrouterAuthStatusChanged"; configured: boolean }
+  | { type: "memoryJudgeStatus"; memoryJudge: MemoryJudge; classifierCredentials: Record<ClassifierProvider, ClassifierCredential> }
   | { type: "openaiChatGPTAuthStarted" }
   | { type: "openaiChatGPTAuthCompleted" }
   | { type: "openaiChatGPTAuthFailed"; error: string }

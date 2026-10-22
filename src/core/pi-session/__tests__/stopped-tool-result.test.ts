@@ -58,7 +58,7 @@ describe('registerAbortSettledCallRecord', () => {
 
   const settled = { type: 'tool_execution_end', toolCallId: 't1', toolName: 'bash', result: { content: [{ type: 'text', text: 'Operation aborted' }], details: {} }, isError: true };
 
-  // agent-loop.js:500-504, :519-523 and :435-438 settle a call under the aborted signal before `execute`, with no durationMs (:646-655).
+  // agent-loop.js:506-510, :525-529 and :441-444 settle a call under the aborted signal before `execute`, with no durationMs (:652-661).
   it('records a call the aborted run settled before it ran, in the turn-stopped shape', () => {
     const { handler, appended } = recorder();
     handler(settled, { signal: aborted() });
@@ -85,7 +85,7 @@ describe('registerWindDownErrorRecord', () => {
   }
 
   const earlier = { type: 'context_edit', targetId: 'e1', replacement: { content: [] } };
-  // pi-ai's lazy stream turns a request setup rejected by the aborted signal into an error stop (lazy.js:41-44 in pi-ai 1.3.0).
+  // pi-ai's lazy stream turns a request setup rejected by the aborted signal into an error stop (lazy.js:57-62 in pi-ai 1.4.0).
   const windDown = { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'This operation was aborted' };
   const turnEnd = (message: unknown) => ({ type: 'turn_end', message, toolResults: [], messageEntryId: 'a7', entries: [earlier] });
 

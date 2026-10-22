@@ -7,7 +7,12 @@ import * as path from 'path';
 // version (the real value-import path needs Node >=22). The fake pi exposes only what _doInit uses.
 const H = vi.hoisted(() => {
   const createServicesSpy = vi.fn();
-  const settingsCreateSpy = vi.fn((_cwd: string, _agentDir: string, options?: { projectTrusted: boolean }) => ({ options }));
+  /** The load error pi records for the agent settings file at the next creation of a manager over it, as `SettingsManager.create` does. */
+  const agentSettings: { loadError: { path: string; error: Error } | null } = { loadError: null };
+  const settingsCreateSpy = vi.fn((cwd: string, agentDir: string, options?: { projectTrusted: boolean }) => {
+    const recorded = cwd === agentDir && agentSettings.loadError ? [{ scope: 'global' as const, ...agentSettings.loadError }] : [];
+    return { options, drainErrors: () => recorded.splice(0) };
+  });
   const modelRuntime = {
     getAvailableSnapshot: () => [],
     refresh: vi.fn(async () => undefined),
@@ -25,7 +30,7 @@ const H = vi.hoisted(() => {
       }
     },
   };
-  return { createServicesSpy, settingsCreateSpy, modelRuntime, fakePi, ctrl: { loadable: true }, home: '' };
+  return { createServicesSpy, settingsCreateSpy, agentSettings, modelRuntime, fakePi, ctrl: { loadable: true }, home: '' };
 });
 
 // The user-scope asset dirs are resolved through `os.homedir()`. Redirect it to a temp dir so the
@@ -47,12 +52,13 @@ vi.mock('../pi-loader', () => ({
 // travels the production path.
 vi.mock('../agent-dir', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../agent-dir')>()),
-  ensurePiAgentDir: (dir: string) => dir,
+  ensurePiAgentDir: () => undefined,
   PI_AGENT_DIR: '/fake/agent',
 }));
 
 import { PiRuntime } from '../pi-runtime';
 import { FolderRuntime } from '../folder-runtime';
+import { installLogSink } from '../../logger';
 import { installFakePlatform, type FakeFileWatcher, type FakePlatform } from '../../../__mocks__/fake-platform';
 
 let fake: FakePlatform;
@@ -172,6 +178,7 @@ describe('PiRuntime.init lifecycle', () => {
 
   beforeEach(() => {
     H.ctrl.loadable = true;
+    H.agentSettings.loadError = null;
     H.createServicesSpy.mockReset();
     H.settingsCreateSpy.mockClear();
     H.createServicesSpy.mockResolvedValue(fakeServices());
@@ -280,6 +287,27 @@ describe('PiRuntime.init lifecycle', () => {
     for (const [options] of H.createServicesSpy.mock.calls) {
       expect((options as { modelRuntime: unknown }).modelRuntime).toBe(H.modelRuntime);
     }
+  });
+
+  it('warns once, naming the file, when pi could not load the agent settings file, and not once pi loads it', async () => {
+    const settingsPath = path.join('/agent', 'settings.json');
+    const lines: string[] = [];
+    installLogSink({ appendLine: (line) => void lines.push(line), show: () => undefined, dispose: () => undefined });
+    // V8's parse message quotes the file.
+    H.agentSettings.loadError = { path: settingsPath, error: new SyntaxError(`Unexpected token '}', "{"token":"sk-file-text"}" is not valid JSON`) };
+    const runtime = PiRuntime.get('/agent');
+    await Promise.all([runtime.init(), runtime.init()]);
+
+    expect(fake.notifications.calls).toEqual([
+      expect.objectContaining({ level: 'warn', message: expect.stringContaining(`Damocles could not read ${settingsPath}`) }),
+    ]);
+    expect(lines.join('\n')).toContain('SyntaxError');
+    expect(lines.join('\n')).not.toContain('sk-file-text');
+
+    await PiRuntime.disposeInstance();
+    H.agentSettings.loadError = null;
+    await PiRuntime.get('/agent').init();
+    expect(fake.notifications.calls).toHaveLength(1);
   });
 
   it('keeps package operations on user-scope settings rooted at the agent dir', async () => {

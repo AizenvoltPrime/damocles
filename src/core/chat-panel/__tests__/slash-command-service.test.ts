@@ -557,6 +557,17 @@ describe('SlashCommandService asset-source precedence', () => {
       expect(await service?.findSkill('commit-helper')).toBeUndefined();
     });
 
+    // pi strips a BOM before reading frontmatter, so the agent loads this skill as `commit`.
+    it('names a skill whose SKILL.md starts with a BOM by its frontmatter name', async () => {
+      const file = writeSkillNamed(ws, '.damocles/skills', 'commit-helper', 'commit', 'renamed skill');
+      fs.writeFileSync(file, `\uFEFF${fs.readFileSync(file, 'utf8')}`, 'utf8');
+
+      const skills = await makeService().getSkills();
+      expect(skills.map((s) => [s.name, s.description])).toEqual([['commit', 'renamed skill']]);
+      expect(await service?.findSkill('commit')).toBeDefined();
+      expect(await service?.findSkill('commit-helper')).toBeUndefined();
+    });
+
     it('falls back to the directory name when no frontmatter name is declared', async () => {
       writeUnnamedSkill(ws, '.damocles/skills', 'plain', 'no name field');
 
@@ -649,6 +660,16 @@ describe('SlashCommandService asset-source precedence', () => {
       writeRawCommand('foo', 'description: "quoted value"', 'body');
 
       expect((await makeService().getCommands())[0]?.description).toBe('quoted value');
+    });
+
+    it('reads the frontmatter of a command file that starts with a BOM', async () => {
+      const dir = path.join(ws, '.damocles', 'commands');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'foo.md'), '\uFEFF---\ndescription: d\nargument-hint: <x>\n---\n\nbody\n', 'utf8');
+
+      const commands = await makeService().getCommands();
+      expect(commands[0]?.description).toBe('d');
+      expect(commands[0]?.argumentHint).toBe('<x>');
     });
   });
 

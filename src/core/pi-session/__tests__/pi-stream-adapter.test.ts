@@ -115,7 +115,7 @@ function assistantEntry(cost: number, timestamp = '2026-01-01T00:00:00.000Z', us
 /**
  * pi's agent loop reports a failed or aborted model call only on the assistant `message_end`
  * (`stopReason` plus `errorMessage`); it never emits a `message_update` for the stream's error event. Its
- * `turn_end` follows (pi-agent-core agent-loop.js:141-152).
+ * `turn_end` follows (pi-agent-core agent-loop.js:146-157).
  */
 function terminalAssistant(stopReason: 'error' | 'aborted', errorMessage: string, provider = 'anthropic'): unknown[] {
   const message = { role: 'assistant', content: [], provider, stopReason, errorMessage, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: {} } };
@@ -127,8 +127,8 @@ function terminalAssistant(stopReason: 'error' | 'aborted', errorMessage: string
 }
 
 /**
- * One failed model call as pi ends its run (pi-agent-core agent-loop.js:143-152), with agent-session's
- * verdict on `agent_end` (`_willRetryAfterAgentEnd`, agent-session.js:750 and :797).
+ * One failed model call as pi ends its run (pi-agent-core agent-loop.js:148-157), with agent-session's
+ * verdict on `agent_end` (`_willRetryAfterAgentEnd`, agent-session.js:753 and :799).
  */
 function failedCall(errorMessage: string, willRetry: boolean, provider = 'anthropic'): unknown[] {
   return [
@@ -137,12 +137,12 @@ function failedCall(errorMessage: string, willRetry: boolean, provider = 'anthro
   ];
 }
 
-/** pi's backoff announcement, emitted before it omits the attempt and sleeps (`_prepareRetry`, agent-session.js:3040). */
+/** pi's backoff announcement, emitted before it omits the attempt and sleeps (`_prepareRetry`, agent-session.js:3102). */
 function retryStart(attempt: number, errorMessage: string): unknown {
   return { type: 'auto_retry_start', attempt, maxAttempts: 3, delayMs: 2000 * 2 ** (attempt - 1), errorMessage };
 }
 
-/** A retried call that answered, then pi's `auto_retry_end` after the listeners saw its `message_end` (agent-session.js:750, :777). */
+/** A retried call that answered, then pi's `auto_retry_end` after the listeners saw its `message_end` (agent-session.js:753, :780). */
 function answeredRetry(attempt: number): unknown[] {
   const message = { role: 'assistant', content: [{ type: 'text', text: 'The answer' }], provider: 'anthropic', stopReason: 'stop', usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: {} } };
   return [
@@ -771,7 +771,7 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     expect(committed).toHaveLength(0);
   });
 
-  // pi emits tool_execution_start for every call it handles (agent-loop.js:378-383, :414-419), so a call without one never started.
+  // pi emits tool_execution_start for every call it handles (agent-loop.js:384-389, :420-425), so a call without one never started.
   it('abandons at a Stop only the calls pi has not started, and returns every call in flight', () => {
     const out: ExtensionToWebviewMessage[] = [];
     const adapter = makeAdapter(out);
@@ -788,7 +788,7 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     expect(out).toEqual([{ type: 'toolAbandoned', toolUseId: 't2', toolName: 'Read', parentToolUseId: null, reason: 'stopped' }]);
   });
 
-  // pi's abort settles a started call before it returns (agent-loop.js:397, :441, :446); this covers a run that settles without that end.
+  // pi's abort settles a started call before it returns (agent-loop.js:403, :447, :452); this covers a run that settles without that end.
   it('settles a started call whose end never arrived when the aborted run settles', () => {
     const out: ExtensionToWebviewMessage[] = [];
     const adapter = makeAdapter(out);
@@ -806,8 +806,8 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
   });
 
   // Order for a running call aborted mid-execute: the tool rejects (bash.js:270-271), executePreparedToolCall turns that
-  // into an error result with its durationMs (agent-loop.js:583-591), tool_result handlers run (:598-639), then
-  // tool_execution_end (:397, :646-655) and the persisted toolResult (:398-399) follow the Stop's markAborted.
+  // into an error result with its durationMs (agent-loop.js:590-598), tool_result handlers run (:604-645), then
+  // tool_execution_end (:403, :652-661) and the persisted toolResult (:404-405) follow the Stop's markAborted.
   it('shows the result pi recorded for a call it executed when the late end arrives after a Stop', () => {
     const out: ExtensionToWebviewMessage[] = [];
     const adapter = makeAdapter(out);
@@ -844,7 +844,7 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     expect(out).toEqual([{ type: 'toolCompleted', toolUseId: 't1', toolName: 'Bash', result: 'a.ts', durationMs: 40 }]);
   });
 
-  // An abort that lands while the gate holds a call settles it before execute (agent-loop.js:500-504, :519-523), so it carries no durationMs.
+  // An abort that lands while the gate holds a call settles it before execute (agent-loop.js:506-510, :525-529), so it carries no durationMs.
   it('abandons a started call pi never executed when its late end arrives after a Stop, once', () => {
     const out: ExtensionToWebviewMessage[] = [];
     const adapter = makeAdapter(out);
@@ -978,7 +978,7 @@ describe('PiStreamAdapter provider errors and pi auto-retry', () => {
   const statuses = (out: ExtensionToWebviewMessage[]) =>
     out.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'statusUpdate' }> => m.type === 'statusUpdate');
 
-  // _handlePostAgentRun finds it not retryable (:1426) and the retry counter is 0 (:1436), so no auto_retry_* follows.
+  // _handlePostAgentRun finds it not retryable (:1540) and the retry counter is 0 (:1550), so no auto_retry_* follows.
   it('a non-retryable failure shows one error card before the result, and the turn ends on it', () => {
     const { out, outcomes } = run(playing([...failedCall('400 invalid_request_error: bad tool schema', false), { type: 'agent_settled', aborted: false }]));
 
@@ -988,7 +988,7 @@ describe('PiStreamAdapter provider errors and pi auto-retry', () => {
     expect(outcomes).toEqual([{ kind: 'error', message: '400 invalid_request_error: bad tool schema' }]);
   });
 
-  // agent_end{willRetry:true} (:750), auto_retry_start (:3040), the retried call, then auto_retry_end{success:true} at its message_end (:777).
+  // agent_end{willRetry:true} (:753), auto_retry_start (:3102), the retried call, then auto_retry_end{success:true} at its message_end (:780).
   it('a failure pi retries into an answer shows no error card, says it is retrying, and the turn completes', () => {
     const { out, outcomes } = run(playing([
       ...failedCall('529 overloaded_error: Overloaded', true),
@@ -1005,7 +1005,7 @@ describe('PiStreamAdapter provider errors and pi auto-retry', () => {
     expect(outcomes).toEqual([{ kind: 'completed' }]);
   });
 
-  // pi sends nothing when the backoff sleep ends (_prepareRetry, :3050-3062); the retried call opens with its assistant message_start (agent-loop.js:286).
+  // pi sends nothing when the backoff sleep ends (_prepareRetry, :3112-3124); the retried call opens with its assistant message_start (agent-loop.js:292).
   it('the retry status ends when the retried call starts, not when it has answered', () => {
     const { out } = run(playing([
       ...failedCall('529 overloaded_error: Overloaded', true),
@@ -1019,7 +1019,7 @@ describe('PiStreamAdapter provider errors and pi auto-retry', () => {
     expect(ready).toBeLessThan(out.findIndex((m) => m.type === 'assistant'));
   });
 
-  // agent_end{willRetry:false} once the counter reaches maxRetries (:801), _prepareRetry declines (:3034), auto_retry_end{success:false} (:1436).
+  // agent_end{willRetry:false} once the counter reaches maxRetries (:803), _prepareRetry declines (:3096), auto_retry_end{success:false} (:1550).
   it('a failure that exhausts the retries shows one error card, for the final attempt', () => {
     const { out, outcomes } = run(playing([
       ...failedCall('529 overloaded (1)', true),
@@ -1039,7 +1039,7 @@ describe('PiStreamAdapter provider errors and pi auto-retry', () => {
     expect(outcomes).toEqual([{ kind: 'error', message: '529 overloaded (4)' }]);
   });
 
-  // abort() cancels the backoff (:1909-1918), _prepareRetry's sleep rejects into auto_retry_end{finalError:'Retry cancelled'} (:3012, :3053), then agent_settled{aborted:true}.
+  // abort() cancels the backoff (:1971-1980), _prepareRetry's sleep rejects into auto_retry_end{finalError:'Retry cancelled'} (:3074, :3116), then agent_settled{aborted:true}.
   it('a Stop during the retry backoff shows no error card and the turn ends cancelled', () => {
     const { out, outcomes } = run((session, adapter) => {
       replay(session, [...failedCall('529 overloaded_error', true), retryStart(1, '529 overloaded_error')]);
@@ -1055,7 +1055,7 @@ describe('PiStreamAdapter provider errors and pi auto-retry', () => {
     expect(outcomes).toEqual([{ kind: 'cancelled' }]);
   });
 
-  // With retry disabled agent_end says willRetry:false (:801) and _prepareRetry returns before counting (:3030), so no auto_retry_* events.
+  // With retry disabled agent_end says willRetry:false (:803) and _prepareRetry returns before counting (:3092), so no auto_retry_* events.
   it('a retryable failure with retries disabled shows one error card and no retry status', () => {
     const { out, outcomes } = run(playing([...failedCall('429 rate_limit_error', false), { type: 'agent_settled', aborted: false }]));
 
@@ -1064,7 +1064,7 @@ describe('PiStreamAdapter provider errors and pi auto-retry', () => {
     expect(outcomes).toEqual([{ kind: 'rateLimit' }]);
   });
 
-  // An overflow is not retryable (:2980) but _checkCompaction omits the attempt and compacts to retry it (:2404-2407, compaction_start at :2477).
+  // An overflow is not retryable (:3042) but _checkCompaction omits the attempt and compacts to retry it (:2466-2469, compaction_start at :2540).
   it('an overflow pi compacts and retries shows no error card for the overflowed attempt', () => {
     const { out, outcomes } = run(playing([
       ...failedCall('prompt is too long: 210000 tokens > 200000 maximum', false),
@@ -1078,7 +1078,7 @@ describe('PiStreamAdapter provider errors and pi auto-retry', () => {
     expect(outcomes).toEqual([{ kind: 'completed' }]);
   });
 
-  // _checkCompaction omits the attempt (:2405-2406), then _runAutoCompaction returns before compaction_start with no model or nothing to compact (:2465-2472).
+  // _checkCompaction omits the attempt (:2467-2468), then _runAutoCompaction returns before compaction_start with no model or nothing to compact (:2529-2536).
   it('an overflow pi could not start recovering shows its card at the settle', () => {
     const { out } = run(playing([
       ...failedCall('prompt is too long: 210000 tokens > 200000 maximum', false),
@@ -1088,7 +1088,7 @@ describe('PiStreamAdapter provider errors and pi auto-retry', () => {
     expect(cards(out)).toEqual([{ type: 'error', message: 'prompt is too long: 210000 tokens > 200000 maximum' }]);
   });
 
-  // The recovered call overflowed again: _checkCompaction reports a compaction_end with no compaction_start and keeps the call in context (:2383-2399).
+  // The recovered call overflowed again: _checkCompaction reports a compaction_end with no compaction_start and keeps the call in context (:2445-2461).
   it('an overflow recovery that failed a second time shows one card, the recovery failure', () => {
     const recoveryFailed = 'Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.';
     const { out, outcomes } = run(playing([
@@ -1105,7 +1105,7 @@ describe('PiStreamAdapter provider errors and pi auto-retry', () => {
     expect(outcomes).toEqual([{ kind: 'error', message: 'prompt is too long: 201000 tokens > 200000 maximum' }]);
   });
 
-  // A dropped connection ends the call with the streamed text in its content (agent-loop.js:286-319); pi then omits it and re-runs it (:3040-3048).
+  // A dropped connection ends the call with the streamed text in its content (agent-loop.js:292-325); pi then omits it and re-runs it (:3102-3110).
   it('a call pi re-runs takes back the text it streamed before failing, as the reload hides it', () => {
     const dropped = { role: 'assistant', content: [{ type: 'text', text: 'Half an ans' }], provider: 'anthropic', stopReason: 'error', errorMessage: 'terminated', usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: {} } };
     const { out } = run(playing([
@@ -1142,7 +1142,7 @@ describe('PiStreamAdapter provider errors and pi auto-retry', () => {
     expect(cards(out)).toEqual([{ type: 'error', message: 'terminated' }]);
   });
 
-  // pi returns from the turn before executing any tool of an errored message (agent-loop.js:143-152).
+  // pi returns from the turn before executing any tool of an errored message (agent-loop.js:148-157).
   const withToolCall = {
     role: 'assistant',
     content: [{ type: 'text', text: 'Reading' }, { type: 'toolCall', id: 'never-ran', name: 'read', arguments: { path: '/a.ts' } }],
@@ -1190,7 +1190,7 @@ describe('PiStreamAdapter provider errors and pi auto-retry', () => {
     expect(out.filter((m) => m.type === 'toolAbandoned')).toHaveLength(1);
   });
 
-  // An aborted message ends the turn before pi runs its tools (agent-loop.js:143), whoever aborted the run.
+  // An aborted message ends the turn before pi runs its tools (agent-loop.js:148), whoever aborted the run.
   const abortedToolCall = { ...withToolCall, stopReason: 'aborted', errorMessage: 'Request was aborted' };
   const streamedAbortedCall = [
     { type: 'message_start', message: abortedToolCall },
@@ -1216,9 +1216,9 @@ describe('PiStreamAdapter provider errors and pi auto-retry', () => {
     expect(out.filter((m) => m.type === 'toolAbandoned')).toEqual([{ type: 'toolAbandoned', toolUseId: 'never-ran', toolName: 'Read', parentToolUseId: null, reason: 'stopped' }]);
   });
 
-  // An abort during a tool batch: pi finalizes the call it was running and starts none after it (agent-loop.js:402-404
-  // sequential, :429-431 and :449-451 parallel), records the results of the calls it finalized (:398-399, :453-458), ends the turn (:179-180),
-  // and the next model call, made under the aborted signal, ends aborted (:141-152); a request setup the signal rejects first ends it on an error stop instead (pi-ai lazy.js:41-44).
+  // An abort during a tool batch: pi finalizes the call it was running and starts none after it (agent-loop.js:408-410
+  // sequential, :435-437 and :455-457 parallel), records the results of the calls it finalized (:404-405, :459-464), ends the turn (:184-185),
+  // and the next model call, made under the aborted signal, ends aborted (:146-157); a request setup the signal rejects first ends it on an error stop instead (pi-ai lazy.js:57-62).
   const batch = {
     role: 'assistant',
     content: [
@@ -1260,7 +1260,7 @@ describe('PiStreamAdapter provider errors and pi auto-retry', () => {
     expect(out.filter((m) => m.type === 'toolFailed').map((m) => (m as { toolUseId: string }).toolUseId)).toEqual(['ran']);
   });
 
-  // pi drains the steering queue into the transcript before the aborted call (agent-loop.js:186, :116-121).
+  // pi drains the steering queue into the transcript before the aborted call (agent-loop.js:191, :121-126).
   it('settles the skipped calls when pi delivered a steer before the aborted call', () => {
     const steer = { role: 'user', content: [{ type: 'text', text: 'also check c.ts' }] };
     const { out } = run(playing(batchCutShort([{ type: 'message_start', message: steer }, { type: 'message_end', message: steer }])));
@@ -1343,10 +1343,10 @@ function replay(session: ReturnType<typeof fakeSession>, events: unknown[]): voi
 
 /**
  * The model call pi makes under an aborted run signal fails its request setup (`model-runtime.js:456-460` in
- * pi-coding-agent 1.3.0), and pi-ai's lazy stream ends it on an error stop (`lazy.js:41-44` in pi-ai 1.3.0), whoever
- * aborted the run. pi persists it after the `message_end` listeners (`agent-session.js:754-768`), and the draft
+ * pi-coding-agent 1.4.0), and pi-ai's lazy stream ends it on an error stop (`lazy.js:57-62` in pi-ai 1.4.0), whoever
+ * aborted the run. pi persists it after the `message_end` listeners (`agent-session.js:753-767`), and the draft
  * `registerWindDownErrorRecord` returns at its `turn_end` boundary is committed, with its `entry_appended`, before the
- * listeners get that `turn_end` (`agent-session.js:515`, `:636-641`).
+ * listeners get that `turn_end` (`agent-session.js:514`, `:635-640`).
  */
 describe('PiStreamAdapter abort wind-down errors', () => {
   const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: {} };
@@ -1404,7 +1404,7 @@ describe('PiStreamAdapter abort wind-down errors', () => {
   const abandoned = (out: ExtensionToWebviewMessage[]) =>
     out.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'toolAbandoned' }> => m.type === 'toolAbandoned').map((m) => [m.toolUseId, m.reason]);
 
-  // An extension's ctx.abort(), a manual compaction (agent-session.js:2169) or a session replacement aborts with no Stop.
+  // An extension's ctx.abort(), a manual compaction (agent-session.js:2231) or a session replacement aborts with no Stop.
   it('an abort that is not a Stop: the recorded wind-down error shows no card, the skipped call stops, the turn ends cancelled', () => {
     const t = setup();
     const windDown = errorStop('This operation was aborted');
@@ -1975,7 +1975,7 @@ describe('PiStreamAdapter cache-miss notice (Slice 3)', () => {
   });
 
   // Same detectable miss as above, but the paying assistant message ended aborted/errored. pi's TUI
-  // suppresses the notice on those stop reasons (interactive-mode.ts:2955-2971 live, :3344 resume), so
+  // suppresses the notice on those stop reasons (interactive-mode.ts:3532-3551 live, :4031 resume), so
   // a cancelled or provider-errored turn must NOT surface a false "prompt cache expired" notice.
   const missTurnWithStop = (stopReason: 'aborted' | 'error' | 'pending'): unknown[] => [
     {

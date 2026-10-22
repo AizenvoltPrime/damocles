@@ -97,8 +97,9 @@ function settings(user: Record<string, unknown> = {}) {
 }
 
 describe('resolveBackgroundModel', () => {
-  it('tries Haiku 5.5, GPT-6 Luna, Step 5 Preview and DeepSeek V4.1 Flash in that order', () => {
-    expect(AUTOMATIC_BACKGROUND_MODELS).toEqual(['claude-haiku-5-5', 'gpt-6-luna', 'step-5-preview', 'deepseek-flash']);
+  // Existing entries stay first, so a user already on Automatic keeps the model they get.
+  it('tries Haiku 5.5, GPT-6 Luna, then each key provider cheap model in declaration order', () => {
+    expect(AUTOMATIC_BACKGROUND_MODELS).toEqual(['claude-haiku-5-5', 'gpt-6-luna', 'step-5-preview', 'deepseek-flash', 'MiniMax-M3.1-Flash', 'grok-4.7']);
   });
 
   it('takes the first signed-in candidate on Automatic, and null when none is', () => {

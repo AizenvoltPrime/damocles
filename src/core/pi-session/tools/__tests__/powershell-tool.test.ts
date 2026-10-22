@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { constants as osConstants, tmpdir } from 'node:os';
-import { delimiter, isAbsolute, join, relative } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, relative } from 'node:path';
 // The REAL pi shell definition, because every status string asserted below is pi's and a stub would
 // pin nothing but the stub. Test files may value-import the ESM pi package; extension source may not.
 import { createPowerShellToolDefinition } from '@earendil-works/pi-coding-agent';
@@ -256,12 +256,47 @@ describe('createTrackedPowerShellOperations', () => {
       setImmediate(() => child.emit('error', enoent(exe)));
       return child;
     };
-    const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== 'PATH')), PATH: relative(process.cwd(), pwshDir) };
-    expect(isAbsolute(env.PATH)).toBe(false);
+    // An empty Program Files, so an installed PowerShell 7 on this machine is not the one found.
+    const programFiles = mkdtempSync(join(tmpdir(), 'damocles-pf-'));
+    try {
+      const env = {
+        ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== 'PATH')),
+        PATH: relative(process.cwd(), pwshDir),
+        ProgramFiles: programFiles,
+      };
+      expect(isAbsolute(env.PATH)).toBe(false);
 
-    await messageOf(ops.exec('Write-Output ok', CWD, { onData: () => undefined, env }));
+      await messageOf(ops.exec('Write-Output ok', CWD, { onData: () => undefined, env }));
 
-    expect(spawnControl.calls.map((call) => call.exe)).toEqual(process.platform === 'win32' ? [windowsPowerShell()] : []);
+      expect(spawnControl.calls.map((call) => call.exe)).toEqual(process.platform === 'win32' ? [windowsPowerShell()] : []);
+    } finally {
+      rmSync(programFiles, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === 'win32')('takes PowerShell 7 from Program Files when no PATH folder holds pwsh', async () => {
+    spawnControl.fake = (exe) => {
+      const child = fakeChild(null);
+      setImmediate(() => child.emit('error', enoent(exe)));
+      return child;
+    };
+    const programFiles = mkdtempSync(join(tmpdir(), 'damocles-pf-'));
+    try {
+      const installed = join(programFiles, 'PowerShell', '7', 'pwsh.exe');
+      mkdirSync(dirname(installed), { recursive: true });
+      writeFileSync(installed, '');
+      const env = {
+        ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== 'PATH')),
+        PATH: mkdtempSync(join(programFiles, 'empty-')),
+        ProgramFiles: programFiles,
+      };
+
+      await messageOf(ops.exec('Write-Output ok', CWD, { onData: () => undefined, env }));
+
+      expect(spawnControl.calls.map((call) => call.exe)).toEqual([installed, windowsPowerShell()]);
+    } finally {
+      rmSync(programFiles, { recursive: true, force: true });
+    }
   });
 
   it.runIf(process.platform === 'win32')('falls through to Windows PowerShell when starting pwsh throws synchronously, ENOENT or not', async () => {
@@ -306,7 +341,7 @@ describe('createTrackedPowerShellOperations', () => {
     // Named candidates, because a bare "PowerShell not found" reads to a model as a command it may retry.
     expect(message).toContain(`${PWSH} on PATH`);
     expect(message).toContain(`${plantedPwsh()}: spawn ${plantedPwsh()} ENOENT`);
-    if (process.platform === 'win32') expect(message).toContain('Windows PowerShell');
+    if (process.platform === 'win32') expect(message).toContain('pwsh.exe on PATH or in %ProgramFiles%\\PowerShell\\7, then Windows PowerShell');
   });
 
   it('refuses to spawn a shell when no environment was supplied', async () => {

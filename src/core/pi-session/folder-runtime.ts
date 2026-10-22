@@ -45,7 +45,7 @@ import { TOOL_TOOL_SEARCH } from '../../shared/tool-names';
 import { deferredToolNames, initialActiveToolNames } from './tools/deferred-tools';
 import { restoredDeferredTools } from './tools/restored-tools';
 import { folderKey } from '../workspace-folders/folder-key';
-import { withQueuePolicy } from './queue-policy';
+import { withSettingsPolicy } from './settings-policy';
 import type { TrustService } from '../../platform/trust-service';
 import type { Disposable } from '../../platform/disposable';
 import type { SettingInspection } from '../../platform/settings-store';
@@ -209,6 +209,8 @@ export class FolderRuntime {
   private readonly _hooksConfig: HooksConfigService;
   /** Per-live-session active-set refreshers, keyed by pi sessionId — fired when MCP tools change. */
   private readonly _activeToolRefreshers = new Map<string, () => void>();
+  /** Per-live-session setters of the values Damocles holds on the shared settings manager, keyed by pi sessionId. */
+  private readonly _settingsReappliers = new Map<string, () => void>();
   /** Re-registers ToolSearch so pi re-wraps it and re-materializes its description getter. A SET, not a
    *  single slot: each reload mints a fresh instance while earlier panels keep their bound one, so a
    *  single slot would freeze every earlier panel's description — silently, its runtime being live
@@ -325,7 +327,7 @@ export class FolderRuntime {
       modelRuntime: this._modelRuntime,
       // pi trusts project settings by default, and they can install and run code (`.pi/settings.json`
       // packages, `.pi/extensions`). The subscription plugin is user-scope, so this does not affect it.
-      settingsManager: withQueuePolicy(pi.SettingsManager.create(this.cwd, this._agentDir, { projectTrusted: this._trust.isTrusted(this.cwd) })),
+      settingsManager: withSettingsPolicy(pi.SettingsManager.create(this.cwd, this._agentDir, { projectTrusted: this._trust.isTrusted(this.cwd) })),
       // The Damocles extension (permission gate + plan-mode injection + MCP tool registration). pi
       // re-applies extensionFactories on `resourceLoader.reload()`, so it survives reloads.
       resourceLoaderOptions: {
@@ -486,6 +488,16 @@ export class FolderRuntime {
     if (sessionId && this._activeToolRefreshers.get(sessionId) === refresh) this._activeToolRefreshers.delete(sessionId);
   }
 
+  /** Register a live session's setter for what it holds on the shared settings manager, run after each loader reload. */
+  registerSettingsReapplier(sessionId: string, reapply: () => void): void {
+    if (sessionId) this._settingsReappliers.set(sessionId, reapply);
+  }
+
+  /** Drop a session's settings setter, only if it is still `reapply`. */
+  unregisterSettingsReapplier(sessionId: string, reapply: () => void): void {
+    if (sessionId && this._settingsReappliers.get(sessionId) === reapply) this._settingsReappliers.delete(sessionId);
+  }
+
   /** The configured-hooks dispatch deps, threaded into subagent/team gate factories so PreToolUse/
    *  PostToolUse + subagent_end fire for nested agents too. */
   getHooksDispatchDeps(): DispatchDeps {
@@ -558,7 +570,7 @@ export class FolderRuntime {
    * Recompute the additional resource roots in place, so the next `reload()` rebuilds its base set
    * from the dirs that exist right now, in `assetSourceDirs` order (project ahead of user within a
    * source). pi aliases these arrays rather than copying them
-   * (`resource-loader.ts:390-391` in pi 1.3.0) and re-reads them per reload (`:600`, `:615`), which is what makes
+   * (`resource-loader.ts:390-391` in pi 1.4.0) and re-reads them per reload (`:600`, `:615`), which is what makes
    * an in-place splice reach it. Reassigning the fields, or handing pi a fresh array, would leave the
    * loader on the stale one.
    *
@@ -628,7 +640,12 @@ export class FolderRuntime {
     // Cleared BEFORE the reload: a leftover value may belong to a session-BOUND instance, and adopting
     // that below would hand the runtime a disposer for a live panel.
     this._lastAttachedInstanceDetach = null;
-    await this._services.resourceLoader.reload();
+    try {
+      await this._services.resourceLoader.reload();
+    } finally {
+      // pi's loader reload re-reads the settings manager (resource-loader.js:368) before work that can still throw.
+      for (const reapply of this._settingsReappliers.values()) reapply();
+    }
     // Only past here is the outgoing instance definitively superseded. On a throw we never arrive — pi
     // never rebuilt, so that instance is still live and stays tracked rather than retired.
     this._unboundInstanceDetach?.();
@@ -747,7 +764,7 @@ export class FolderRuntime {
     // preserved).
     const shared = this.services.settingsManager;
     // Untrusted, the subagent's own `opts.cwd` must not auto-discover `.pi/extensions`.
-    const isolatedSettings = withQueuePolicy(pi.SettingsManager.inMemory(
+    const isolatedSettings = withSettingsPolicy(pi.SettingsManager.inMemory(
       {
         ...shared.getGlobalSettings(),
         ...shared.getProjectSettings(),
@@ -768,7 +785,7 @@ export class FolderRuntime {
         appendSystemPromptOverride: () => [],
         noContextFiles: true,
         // No `agentsFilesOverride` here: pi applies it AFTER the `noContextFiles` check
-        // (resource-loader.ts:646-654 in pi 1.3.0), so an override would repopulate the list `noContextFiles`
+        // (resource-loader.ts:646-654 in pi 1.4.0), so an override would repopulate the list `noContextFiles`
         // just emptied and hand `prompt_mode: replace` agents the context they must not see.
         noSkills: true,
         noPromptTemplates: true,
@@ -841,14 +858,14 @@ export class FolderRuntime {
     // a name in `tools:` with no matching definition is dropped with no error at all.
     //
     // Residual fragility: with an allowlist set, `_refreshToolRegistry` takes the
-    // `if (allowedTools)` branch (agent-session.js:2899, pi 1.3.0) and force-activates every allowed
+    // `if (allowedTools)` branch (agent-session.js:2928, pi 1.4.0) and force-activates every allowed
     // `direct` tool, undoing this baseline. Verified it still cannot fire after this line in a nested session:
     //  - `customTools` are captured at construction (`this._customTools = config.customTools ?? []`,
-    //    agent-session.js:182) and merged into the registry INSIDE `_refreshToolRegistry` itself
-    //    (line 2850), which the constructor's `_buildRuntime` runs (line 2964). So the MCP tools are
+    //    agent-session.js:181) and merged into the registry INSIDE `_refreshToolRegistry` itself
+    //    (line 2879), which the constructor's `_buildRuntime` runs (line 2993). So the MCP tools are
     //    force-activated during construction and this `setActiveToolsByName` still lands LAST.
     //  - The only `registerTool` in a nested session is ToolSearch, during extension LOAD, where pi's
-    //    `runtime.refreshTools` is still a no-op stub (extensions/loader.js:128-129 "registerTool() is
+    //    `runtime.refreshTools` is still a no-op stub (extensions/loader.js:131-132 "registerTool() is
     //    valid during extension load; refresh is only needed post-bind").
     //  - There is no MCP registrar here by design: nested sessions never bind the Damocles extension
     //    factory, and MCP arrives as `customTools` precisely to keep it that way.
@@ -866,7 +883,7 @@ export class FolderRuntime {
     if (hasToolSearch) {
       const deferred = deferredToolNames(opts.tools, deferrableMcpToolNames);
       // Nested MCP is frozen at spawn, so a restored name not deferrable now never becomes so.
-      const restored = restoredDeferredTools(session.sessionManager.buildSessionContext().messages, new Set(deferred)).active;
+      const restored = restoredDeferredTools(session.sessionManager.getBranch(), new Set(deferred)).active;
       session.setActiveToolsByName(initialActiveToolNames(opts.tools, deferred, restored));
     }
 
@@ -938,6 +955,7 @@ export class FolderRuntime {
     this._panelRegistry.clear();
     this._checkpointRegistry.clear();
     this._activeToolRefreshers.clear();
+    this._settingsReappliers.clear();
     // Cleared alongside the refreshers, not left behind: all are per-live-instance registries, and a
     // half-cleared set invites the inference that instance attachments are somehow exempt from teardown.
     this._toolSearchRepublishers.clear();

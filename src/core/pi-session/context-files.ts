@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { stripBom } from '../config/bom';
 import { folderKey } from '../workspace-folders/folder-key';
 
 /**
@@ -9,7 +10,7 @@ import { folderKey } from '../workspace-folders/folder-key';
  * per-directory candidate order and the linked-worktree shadow suppression stay pi's, so project
  * discovery is unchanged. An untrusted workspace contributes no context file at all.
  *
- * Tracks pi `@earendil-works/pi-coding-agent@1.3.0`. Citations are line numbers in the shipped
+ * Tracks pi `@earendil-works/pi-coding-agent@1.4.0`. Citations are line numbers in the shipped
  * `dist/core/resource-loader.js`, not the `.ts` lines its source maps carry: `:116` candidate
  * names, `:136-164` the linked-worktree shadow suppression, `:165-196` `loadProjectContextFiles` (global
  * entry first, then ancestors root-first via `unshift`), `:465-473` where `agentsFilesOverride` is
@@ -54,7 +55,7 @@ function contextFileIn(dir: string): { path: string; content: string } | undefin
         );
         continue;
       }
-      return { path: filePath, content: fs.readFileSync(filePath, 'utf8') };
+      return { path: filePath, content: stripBom(fs.readFileSync(filePath, 'utf8')) };
     } catch {
       // Absent or unreadable: try the next candidate, matching pi's own per-candidate skip.
     }

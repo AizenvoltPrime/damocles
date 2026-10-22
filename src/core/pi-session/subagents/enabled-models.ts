@@ -10,6 +10,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { stripBom } from '../../config/bom';
 import { platform } from '../../platform-host';
 import { PI_AGENT_DIR } from '../agent-dir';
 import { log } from '../../logger';
@@ -36,7 +37,7 @@ function settingsPaths(cwd: string): [project: string, global: string] {
 function readField(path: string): string[] | undefined {
   if (!existsSync(path)) return undefined;
   try {
-    const raw = JSON.parse(readFileSync(path, 'utf-8'));
+    const raw = JSON.parse(stripBom(readFileSync(path, 'utf-8')));
     // A hand-edited settings.json can hold non-string entries; keep only strings so downstream
     // `.trim()`/`.indexOf()` can't throw and break the documented fail-soft contract.
     if (Array.isArray(raw?.enabledModels)) return raw.enabledModels.filter((e: unknown): e is string => typeof e === 'string');

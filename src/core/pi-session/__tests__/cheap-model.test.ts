@@ -7,7 +7,7 @@ import { PI_SMALL_FAST_ANTHROPIC, PI_SMALL_FAST_OPENAI, type ModelLookup } from 
 const ANTHROPIC_OK = { codex: false, chatgpt: false, apiKey: false } as const;
 const OPENAI_OK = { codex: true, chatgpt: false, apiKey: false } as const;
 
-const CUSTOM = new Set(['stepfun', 'deepseek', 'openrouter', 'google']);
+const CUSTOM = new Set(['stepfun', 'deepseek', 'minimax', 'xai', 'openrouter', 'google']);
 
 /** A registry that resolves first-party models only — custom providers are NOT registered (return undefined),
  *  mirroring a session with no explore keys set. */
@@ -51,5 +51,17 @@ describe('cheapModelValueForProvider', () => {
     };
     expect(cheapModelValueForProvider('deepseek-v4-pro', reg)).toBe('deepseek-flash');
     expect(cheapModelValueForProvider('deepseek-flash', reg)).toBe('deepseek-flash');
+  });
+
+  it.each([
+    ['minimax', 'MiniMax-M3.1-Flash'],
+    ['xai', 'grok-4.7'],
+  ])('maps a %s main model to its own cheap model', (provider, cheap) => {
+    const reg: ModelLookup = {
+      getModel: (p, id) => (p === provider && id === cheap ? ({ provider: p, id, name: id, contextWindow: 500_000 } as unknown as Model<Api>) : undefined),
+      hasConfiguredAuth: () => true,
+    };
+    expect(cheapModelValueForProvider(cheap, reg)).toBe(cheap);
+    expect(resolveCheapModelFor(cheap, reg, ANTHROPIC_OK, false)).toMatchObject({ value: cheap, model: { provider, id: cheap } });
   });
 });

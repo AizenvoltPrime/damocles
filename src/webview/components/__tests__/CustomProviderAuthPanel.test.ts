@@ -7,6 +7,7 @@ import CustomProviderAuthPanel from '../CustomProviderAuthPanel.vue';
 import { i18n, applyLocale } from '@/i18n';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@shared/types/messages';
+import { KEY_PROVIDER_IDS, type KeyProviderId } from '@shared/settings-sections';
 
 const bridge = vi.hoisted(() => ({
   posted: [] as WebviewToExtensionMessage[],
@@ -25,7 +26,7 @@ vi.mock('@/composables/usePlatformBridge', () => ({
 const CREDENTIALS = { typesafe: 'ok', openrouter: 'ok', openai: 'ok' } as const;
 
 const mounted: VueWrapper[] = [];
-function mountPanel(provider: 'typesafe' | 'deepseek' | 'openrouter') {
+function mountPanel(provider: KeyProviderId) {
   const wrapper = mount(CustomProviderAuthPanel, { props: { provider }, global: { plugins: [i18n] } });
   mounted.push(wrapper);
   return wrapper;
@@ -46,25 +47,25 @@ describe('CustomProviderAuthPanel (TypeSafe)', () => {
     const wrapper = mountPanel('typesafe');
     const store = useSettingsStore();
 
-    store.setTypesafeStatus(false, { kind: 'classifier', via: 'openrouter' }, CREDENTIALS);
+    store.setMemoryJudgeStatus({ kind: 'classifier', via: 'openrouter' }, CREDENTIALS);
     await nextTick();
     expect(wrapper.find('[data-testid="memory-judge"]').text()).toBe('Memory judge: Jev (OpenRouter)');
     expect(wrapper.find('[role="status"] [data-testid="memory-judge"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="memory-judge-rejected"]').exists()).toBe(false);
 
-    store.setTypesafeStatus(true, { kind: 'classifier', via: 'typesafe' }, CREDENTIALS);
+    store.setMemoryJudgeStatus({ kind: 'classifier', via: 'typesafe' }, CREDENTIALS);
     await nextTick();
     expect(wrapper.find('[data-testid="memory-judge"]').text()).toBe('Memory judge: Jev (TypeSafe)');
 
-    store.setTypesafeStatus(false, { kind: 'classifier', via: 'openai' }, CREDENTIALS);
+    store.setMemoryJudgeStatus({ kind: 'classifier', via: 'openai' }, CREDENTIALS);
     await nextTick();
     expect(wrapper.find('[data-testid="memory-judge"]').text()).toBe('Memory judge: GPT-6 Luna (Decisions API)');
 
-    store.setTypesafeStatus(false, { kind: 'model', model: 'anthropic/claude-haiku-5-5' }, CREDENTIALS);
+    store.setMemoryJudgeStatus({ kind: 'model', model: 'anthropic/claude-haiku-5-5' }, CREDENTIALS);
     await nextTick();
     expect(wrapper.find('[data-testid="memory-judge"]').text()).toBe('Memory judge: Haiku 5.5');
 
-    store.setTypesafeStatus(false, { kind: 'model', model: 'openai-codex/gpt-6-luna' }, CREDENTIALS);
+    store.setMemoryJudgeStatus({ kind: 'model', model: 'openai-codex/gpt-6-luna' }, CREDENTIALS);
     await nextTick();
     expect(wrapper.find('[data-testid="memory-judge"]').text()).toBe('Memory judge: GPT-6 Luna');
   });
@@ -72,19 +73,19 @@ describe('CustomProviderAuthPanel (TypeSafe)', () => {
   it('says why a chosen judge cannot run instead of naming another', async () => {
     const wrapper = mountPanel('typesafe');
     const store = useSettingsStore();
-    store.setTypesafeStatus(false, { kind: 'none', forced: { choice: 'jev-typesafe', reason: 'no-key' } }, CREDENTIALS);
+    store.setMemoryJudgeStatus({ kind: 'none', forced: { choice: 'jev-typesafe', reason: 'no-key' } }, CREDENTIALS);
     await nextTick();
     expect(wrapper.find('[data-testid="memory-judge"]').text()).toBe(
       'Memory judge: none. Jev (TypeSafe) is the chosen judge but cannot run: its key is not set. Merges and reranks wait until it can.',
     );
 
-    store.setTypesafeStatus(false, { kind: 'none', forced: { choice: 'gpt-6-luna-classifier', reason: 'chatgpt-active' } }, CREDENTIALS);
+    store.setMemoryJudgeStatus({ kind: 'none', forced: { choice: 'gpt-6-luna-classifier', reason: 'chatgpt-active' } }, CREDENTIALS);
     await nextTick();
     expect(wrapper.find('[data-testid="memory-judge"]').text()).toContain(
       'GPT-6 Luna (Decisions API) is the chosen judge but cannot run: Sign in with ChatGPT is the active OpenAI credential, and the Decisions API accepts only an API key.',
     );
 
-    store.setTypesafeStatus(false, { kind: 'none', forced: { choice: 'claude-sonnet-5-5', reason: 'signed-out' } }, CREDENTIALS);
+    store.setMemoryJudgeStatus({ kind: 'none', forced: { choice: 'claude-sonnet-5-5', reason: 'signed-out' } }, CREDENTIALS);
     await nextTick();
     expect(wrapper.find('[data-testid="memory-judge"]').text()).toContain('Sonnet 5.5 is the chosen judge but cannot run: its provider is signed out.');
     applyLocale('el');
@@ -96,7 +97,7 @@ describe('CustomProviderAuthPanel (TypeSafe)', () => {
 
   it('names a stored judge outside the catalog by its value and says this version does not offer it', async () => {
     const wrapper = mountPanel('typesafe');
-    useSettingsStore().setTypesafeStatus(false, { kind: 'none', forced: { choice: 'claude-opus-1', reason: 'unrecognized' } }, CREDENTIALS);
+    useSettingsStore().setMemoryJudgeStatus({ kind: 'none', forced: { choice: 'claude-opus-1', reason: 'unrecognized' } }, CREDENTIALS);
     await nextTick();
     expect(wrapper.find('[data-testid="memory-judge"]').text()).toBe(
       'Memory judge: none. claude-opus-1 is the chosen judge but cannot run: this version of Damocles does not offer it. Merges and reranks wait until it can.',
@@ -110,7 +111,7 @@ describe('CustomProviderAuthPanel (TypeSafe)', () => {
 
   it('names each refused provider and why, inside the status region', async () => {
     const wrapper = mountPanel('typesafe');
-    useSettingsStore().setTypesafeStatus(true, {
+    useSettingsStore().setMemoryJudgeStatus({
       kind: 'model',
       model: 'anthropic/claude-haiku-5-5',
       rejected: [
@@ -131,7 +132,7 @@ describe('CustomProviderAuthPanel (TypeSafe)', () => {
 
   it('says the judge model is not known yet instead of claiming none is configured', async () => {
     const wrapper = mountPanel('typesafe');
-    useSettingsStore().setTypesafeStatus(false, { kind: 'unknown' }, CREDENTIALS);
+    useSettingsStore().setMemoryJudgeStatus({ kind: 'unknown' }, CREDENTIALS);
     await nextTick();
     expect(wrapper.find('[data-testid="memory-judge"]').text()).toBe('Memory judge: the judge model, shown once a chat has started');
     applyLocale('el');
@@ -139,55 +140,62 @@ describe('CustomProviderAuthPanel (TypeSafe)', () => {
     expect(wrapper.find('[data-testid="memory-judge"]').text()).toBe('Κριτής μνήμης: το μοντέλο του κριτή, που εμφανίζεται μόλις ξεκινήσει μια συνομιλία');
   });
 
-  it('saves the key under the TypeSafe message and settles on its own ack', async () => {
-    const wrapper = mountPanel('typesafe');
-    await wrapper.find('input').setValue('  ts-key  ');
-    await wrapper.find('input').trigger('keydown.enter');
-    const set = bridge.posted.find((m) => m.type === 'setTypesafeApiKey');
-    expect(set).toMatchObject({ type: 'setTypesafeApiKey', key: 'ts-key' });
-    for (const fn of bridge.listeners) fn({ type: 'setTypesafeApiKeyAck', requestId: (set as { requestId: string }).requestId, ok: true });
-    await nextTick();
-    expect(wrapper.find('[role="status"]').text()).toBe('API key saved');
-  });
-
   it('announces a failed save as an alert', async () => {
     const wrapper = mountPanel('typesafe');
     await wrapper.find('input').setValue('ts-key');
     await wrapper.find('input').trigger('keydown.enter');
-    const set = bridge.posted.find((m) => m.type === 'setTypesafeApiKey');
-    for (const fn of bridge.listeners) fn({ type: 'setTypesafeApiKeyAck', requestId: (set as { requestId: string }).requestId, ok: false, error: 'keyring locked' });
+    const set = bridge.posted.find((m) => m.type === 'setProviderApiKey');
+    for (const fn of bridge.listeners) fn({ type: 'setProviderApiKeyAck', provider: 'typesafe', requestId: (set as { requestId: string }).requestId, ok: false, error: 'keyring locked' });
     await nextTick();
     expect(wrapper.find('[role="alert"]').text()).toBe('keyring locked');
   });
 
   it('shows no judge line on other providers', async () => {
-    useSettingsStore().setTypesafeStatus(true, { kind: 'classifier', via: 'typesafe' }, CREDENTIALS);
+    useSettingsStore().setMemoryJudgeStatus({ kind: 'classifier', via: 'typesafe' }, CREDENTIALS);
     const wrapper = mountPanel('deepseek');
     await nextTick();
     expect(wrapper.find('[data-testid="memory-judge"]').exists()).toBe(false);
   });
 });
 
-describe('CustomProviderAuthPanel (OpenRouter)', () => {
-  it('saves under the OpenRouter message from the keyboard, and shows its own state', async () => {
-    const wrapper = mountPanel('openrouter');
+describe.each(KEY_PROVIDER_IDS)('CustomProviderAuthPanel (%s)', (provider) => {
+  const other = KEY_PROVIDER_IDS.find((id) => id !== provider)!;
+
+  it('saves under its provider from the keyboard, settles only on its own ack, and shows its own state', async () => {
+    const wrapper = mountPanel(provider);
     expect(wrapper.find('input').attributes('aria-label')).toBe('API Key');
     expect(wrapper.find('button[aria-label="Show key"]').exists()).toBe(true);
 
-    await wrapper.find('input').setValue(' sk-or-1 ');
+    await wrapper.find('input').setValue(' the-key ');
     await wrapper.find('input').trigger('keydown.enter');
-    const set = bridge.posted.find((m) => m.type === 'setOpenrouterApiKey');
-    expect(set).toMatchObject({ type: 'setOpenrouterApiKey', key: 'sk-or-1' });
-    for (const fn of bridge.listeners) fn({ type: 'setOpenrouterApiKeyAck', requestId: (set as { requestId: string }).requestId, ok: true });
+    expect(bridge.posted).toHaveLength(1);
+    const set = bridge.posted[0] as Extract<WebviewToExtensionMessage, { type: 'setProviderApiKey' }>;
+    expect(set).toMatchObject({ type: 'setProviderApiKey', provider, key: 'the-key' });
 
-    useSettingsStore().setOpenrouterConfigured(true);
+    const ack = (message: ExtensionToWebviewMessage): void => {
+      for (const fn of bridge.listeners) fn(message);
+    };
+    ack({ type: 'setProviderApiKeyAck', provider, requestId: 'someone-else', ok: true });
+    ack({ type: 'setProviderApiKeyAck', provider: other, requestId: set.requestId, ok: true });
+    await nextTick();
+    expect(wrapper.find('input').attributes('disabled')).toBeDefined();
+    ack({ type: 'setProviderApiKeyAck', provider, requestId: set.requestId, ok: true });
+    await nextTick();
+    expect(wrapper.find('[role="status"]').text()).toBe('API key saved');
+    expect(wrapper.find('input').attributes('disabled')).toBeUndefined();
+
+    useSettingsStore().setKeyProviderConfigured(other, true, null);
+    await nextTick();
+    expect(wrapper.find('button[aria-label="Clear API key"]').exists()).toBe(false);
+    useSettingsStore().setKeyProviderConfigured(provider, true, null);
     await nextTick();
     expect(wrapper.text()).toContain('Configured');
-    expect(wrapper.find('button[aria-label="Clear API key"]').exists()).toBe(true);
     await wrapper.find('button[aria-label="Clear API key"]').trigger('click');
-    expect(bridge.posted.at(-1)).toMatchObject({ type: 'clearOpenrouterApiKey' });
+    expect(bridge.posted.at(-1)).toMatchObject({ type: 'clearProviderApiKey', provider });
   });
+});
 
+describe('CustomProviderAuthPanel (OpenRouter)', () => {
   it('is localized', async () => {
     applyLocale('el');
     const wrapper = mountPanel('openrouter');

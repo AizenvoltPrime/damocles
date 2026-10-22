@@ -406,7 +406,7 @@ describe('agent-records: a call pi re-ran', () => {
     const dir = tempDir();
     const file = writeAgentSession(dir, 'agent-r', 'agent-r', (sm) => {
       sm.appendMessage(user('task'));
-      // `_prepareRetry` omits the failed attempt before re-running it (`agent-session.js:3048`).
+      // `_prepareRetry` omits the failed attempt before re-running it (`agent-session.js:3110`).
       const retried = sm.appendMessage(failed('529 overloaded_error'));
       sm.appendContextEdit(retried, null);
       sm.appendMessage(assistant('done'));

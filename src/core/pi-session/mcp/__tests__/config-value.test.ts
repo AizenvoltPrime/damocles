@@ -339,6 +339,16 @@ describe('migrateOwnedMcpFile: Damocles-owned files adopt the pi format', () => 
     expect(migrated['b']?.['oauth']).toEqual({ callbackUrl: 'http://127.0.0.1:2/y' });
   });
 
+  it('migrates a legacy file that starts with a BOM, writing it back without one', async () => {
+    mkdirSync(dirname(userFile()), { recursive: true });
+    writeFileSync(userFile(), `\uFEFF${JSON.stringify({ mcpServers: { s: { command: 'x', env: { K: `$env:${VAR}` } } } })}`, 'utf-8');
+
+    await expect(migrateOwnedMcpFile(userFile())).resolves.toBe(true);
+
+    expect(readFileSync(userFile(), 'utf-8').startsWith('{')).toBe(true);
+    expect(servers(userFile())['s']).toEqual({ command: 'x', env: { K: `\${${VAR}}` } });
+  });
+
   it('is idempotent: a second run reports no change and leaves the bytes identical', async () => {
     write(userFile(), { mcpServers: { s: { command: 'x', env: { K: `$env:${VAR}` } } } });
     await migrateOwnedMcpFile(userFile());

@@ -148,16 +148,19 @@ const H = vi.hoisted(() => {
 
   function makeServices() {
     // pi's settings manager has a field asymmetry this fake reproduces on purpose: `applyOverrides`
-    // writes the effective `settings` object (dist/core/settings-manager.js:390 in pi 1.3.0) while
+    // writes the effective `settings` object (dist/core/settings-manager.js:390 in pi 1.4.0) while
     // `setCacheWarmingMode`/`getCacheWarmingMode` write and read `globalSettings` (:714-722). A mode
     // routed through `applyOverrides` is therefore invisible to the getter pi's CacheWarmer calls.
-    const globalSettings: { cacheWarming?: string } = {};
+    const globalSettings: { cacheWarming?: string; compaction?: { enabled?: boolean } } = {};
     let effectiveSettings: Record<string, unknown> = {};
     return {
       cwd: '/cwd',
       agentDir: '/fake/agent',
       settingsManager: {
-        setCompactionEnabled: vi.fn((enabled: boolean) => { if (!enabled) seq.push('compaction-off'); }),
+        setCompactionEnabled: vi.fn((enabled: boolean) => {
+          globalSettings.compaction = { ...globalSettings.compaction, enabled };
+          if (!enabled) seq.push('compaction-off');
+        }),
         applyOverrides: vi.fn((overrides: Record<string, unknown>) => { effectiveSettings = { ...effectiveSettings, ...overrides }; }),
         setCacheWarmingMode: vi.fn((mode: string) => { globalSettings.cacheWarming = mode; }),
         getCacheWarmingMode: vi.fn((): string => {
@@ -165,7 +168,7 @@ const H = vi.hoisted(() => {
           return mode !== undefined && CACHE_WARMING_MODES.includes(mode) ? mode : 'streaming';
         }),
         getCompactionSettings: vi.fn(() => ({ enabled: false, reserveTokens: 16384, keepRecentTokens: 20000 })),
-        getGlobalSettings: vi.fn(() => ({})),
+        getGlobalSettings: vi.fn((): typeof globalSettings => structuredClone(globalSettings)),
         getProjectSettings: vi.fn(() => ({})),
         getPackages: vi.fn(() => []),
         // The bash override builds its delegate during buildCustomTools, so session construction reads
@@ -219,7 +222,7 @@ const H = vi.hoisted(() => {
       let before: (() => void) | undefined;
       let rebind: ((s: unknown) => Promise<void>) | undefined;
       let disposed = false;
-      // pi emits `session_shutdown` to the session it replaces or holds, then disposes it after the invalidate hook (agent-session-runtime.js:102-113, :296-303 in pi-coding-agent 1.3.0).
+      // pi emits `session_shutdown` to the session it replaces or holds, then disposes it after the invalidate hook (agent-session-runtime.js:102-113, :296-303 in pi-coding-agent 1.4.0).
       const invalidate = (): void => {
         captured.shutdowns.push(current);
         before?.();
@@ -252,7 +255,7 @@ const H = vi.hoisted(() => {
       };
     }),
     SessionManager: { create: vi.fn(() => ({ kind: 'persistent', getBranch: () => [] })), inMemory: vi.fn(() => ({ kind: 'memory' })) },
-    SettingsManager: { inMemory: vi.fn(() => ({ kind: 'settings' })), create: vi.fn(() => ({ kind: 'settings' })) },
+    SettingsManager: { inMemory: vi.fn(() => ({ kind: 'settings' })), create: vi.fn(() => ({ kind: 'settings', drainErrors: () => [] })) },
     ModelRuntime: { create: vi.fn(async () => services.modelRuntime) },
     DefaultPackageManager: class { getInstalledPath(): string | undefined { return undefined; } },
     defineTool: vi.fn((tool: unknown) => tool),
@@ -350,7 +353,7 @@ vi.mock('../tools', async (importOriginal) => {
 // travels the production path.
 vi.mock('../agent-dir', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../agent-dir')>()),
-  ensurePiAgentDir: (dir: string) => dir,
+  ensurePiAgentDir: () => undefined,
   PI_AGENT_DIR: '/fake/agent',
 }));
 
@@ -740,6 +743,33 @@ describe('PiSession lifecycle (US-P1-4)', () => {
 
     expect(reload).toHaveBeenCalledTimes(1);
     expect(setActive.mock.calls.at(-1)?.[0] as string[]).toContain('mcp__ctx7__query_docs');
+    await session.dispose();
+  });
+
+  it('MCP orphan reload: sets auto-compaction and cache warming again where pi re-reading its settings dropped them', async () => {
+    await testPlatform.settings.update('damocles.cacheWarming', 'idle', 'user');
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    seedMcpNames(['mcp__ctx7__query_docs']);
+    const live = H.getLastSession()!;
+    const sm = H.getServices().settingsManager;
+    // pi's global layer, which its session reload replaces from the file (agent-session.js:3007); here a file
+    // pi could not load at bind, so the values lived only in memory, then fixed with neither key in it.
+    let global: { compaction?: { enabled?: boolean }; cacheWarming?: string } = { compaction: { enabled: false }, cacheWarming: 'idle' };
+    sm.getGlobalSettings.mockImplementation(() => structuredClone(global));
+    sm.setCompactionEnabled.mockImplementation((enabled: boolean) => { global = { ...global, compaction: { ...global.compaction, enabled } }; });
+    sm.setCacheWarmingMode.mockImplementation((mode: string) => { global = { ...global, cacheWarming: mode }; });
+    (live.reload as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      global = {};
+      (live.registryToolNames as Set<string>).add('mcp__ctx7__query_docs');
+    });
+    session.activateDeferredTools(['mcp__ctx7__query_docs']);
+
+    session.reloadForMcpToolChange();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(live.reload).toHaveBeenCalledTimes(1);
+    expect(global).toEqual({ compaction: { enabled: false }, cacheWarming: 'idle' });
     await session.dispose();
   });
 
@@ -1216,8 +1246,8 @@ describe('PiSession lifecycle (US-P1-4)', () => {
       (live.clearQueue as ReturnType<typeof vi.fn>).mockImplementation(() => ({ steering: [], followUp: followUps.splice(0) }));
       let release!: () => void;
       const held = new Promise<void>((resolve) => { release = resolve; });
-      // Runs that reached the model. pi 1.3.0 marks only a busy run on abort() (agent-session.js:1943-1945) and turns the
-      // mark into an agent abort at `agent_start` (:713-714), but only while connected: dispose() disconnects it (:1008).
+      // Runs that reached the model. pi 1.4.0 marks only a busy run on abort() (agent-session.js:1972-1974) and turns the
+      // mark into an agent abort at `agent_start` (:712-713), but only while connected: dispose() disconnects it (:1023).
       const runs: string[] = [];
       let abortRequested = false;
       let piDisposed = false;
@@ -1741,7 +1771,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     getBranch.mockReturnValue([]);
     const streaming = live as unknown as { isStreaming: boolean };
     let abortRequested = false;
-    // pi 1.3.0: abort() marks a busy run (agent-session.js:1943-1945), which `agent_start` then aborts before any request (:713-714).
+    // pi 1.4.0: abort() marks a busy run (agent-session.js:1972-1974), which `agent_start` then aborts before any request (:712-713).
     live.abort.mockImplementation(async () => { if (streaming.isStreaming) abortRequested = true; });
     let requests = 0;
     (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, opts: unknown) => {
@@ -4544,8 +4574,11 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
       ...(removed.length ? { toolsRemoved: removed.map((name) => ({ name })) } : {}),
       timestamp: 0,
     });
+    const entry = (message: unknown, index: number) => ({ type: 'message', id: `e${index}`, message });
+    // Only the loadout replay reads a system message's tool changes.
+    const unreadableLoadout = (reason: string) => ({ role: 'system', content: '', timestamp: 0, get toolsRemoved(): never { throw new Error(reason); } });
     const transcriptOf = (messages: unknown[]) => (s: { agent: { finishTurn?: unknown } }) => {
-      (s as unknown as { sessionManager: { buildSessionContext: () => unknown } }).sessionManager.buildSessionContext = () => ({ messages });
+      (s as unknown as { sessionManager: { getBranch: () => unknown } }).sessionManager.getBranch = () => messages.map(entry);
     };
     const browserSetting = (enabled: () => boolean) => {
       const cfg = vi.spyOn(testPlatform.settings, 'get');
@@ -4562,6 +4595,25 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
 
       expect(lastActive(H.getLastSession()!)).toContain(BROWSER_TOOL);
       expect(lastActive(H.getLastSession()!)).not.toContain(BROWSER_PI_TOOL_NAMES[1]);
+      cfg.mockRestore();
+      await session.dispose();
+    });
+
+    it('activates a tool loaded before a compaction, as pi replays the whole branch', async () => {
+      const cfg = browserSetting(() => true);
+      const compaction = { type: 'compaction', id: 'c1', summary: 'earlier work', firstKeptEntryId: 'e2', tokensBefore: 1000 };
+      H.setSessionSetup((s) => {
+        (s as unknown as { sessionManager: { getBranch: () => unknown } }).sessionManager.getBranch = () => [
+          entry(loadout(['read', TOOL_TOOL_SEARCH]), 0),
+          entry(loadout([BROWSER_TOOL]), 1),
+          compaction,
+          entry({ role: 'user', content: 'go on' }, 2),
+        ];
+      });
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+
+      expect(lastActive(H.getLastSession()!)).toContain(BROWSER_TOOL);
       cfg.mockRestore();
       await session.dispose();
     });
@@ -4593,7 +4645,7 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
       browserOn = false;
       const after = new PiSession(makeOptions([]));
       await after.initializeEarly();
-      // pi drops the restored names that did not register once it opens the run (agent-session.js:1410-1416).
+      // pi drops the restored names that did not register once it opens the run (agent-session.js:1441-1447).
       H.getLastSession()!.prompt.mockImplementationOnce((async (_text: string, opts?: { preflightResult?: (d: string) => void }) => opts?.preflightResult?.('started')) as never);
       await after.sendMessage('go', undefined, 'c1', { content: 'go' });
       browserOn = true;
@@ -4670,11 +4722,7 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
     });
 
     it('a restore that throws fails the start, which leaves neither the session nor its gate, and the next send reports it', async () => {
-      H.setSessionSetup((s) => {
-        (s as unknown as { sessionManager: { buildSessionContext: () => unknown } }).sessionManager.buildSessionContext = () => {
-          throw new Error('malformed transcript');
-        };
-      });
+      H.setSessionSetup(transcriptOf([unreadableLoadout('malformed transcript')]));
       const messages: ExtensionToWebviewMessage[] = [];
       const session = new PiSession(makeOptions(messages));
       await session.initializeEarly();
@@ -6340,8 +6388,8 @@ describe('PiSession — the on-disk invariant, against a REAL pi SessionManager'
       const block = formatMcpResourceAttachmentBlock(logo, { images: { first: 2, count: 1 } });
 
       /**
-       * pi 1.3.0's `_startRun` (agent-session.js:1472-1478): the prompt's images through pi's own `_normalizePromptImages`
-       * (:1574-1591), which drops an image `processImage` refuses and appends its hint to the text, then the stored message.
+       * pi 1.4.0's `_startRun` (agent-session.js:1503-1509): the prompt's images through pi's own `_normalizePromptImages`
+       * (:1603-1620), which drops an image `processImage` refuses and appends its hint to the text, then the stored message.
        */
       function piStartsRun(live: realPi.SessionManager) {
         return async (text: string, opts: { images?: unknown[]; preflightResult: (d: string) => void }) => {
@@ -9001,6 +9049,7 @@ describe('PiSession account state publication', () => {
       claudeAuthMode: runtime.getClaudeAuthStatus().mode,
       openaiAuthStatus: runtime.getOpenAIAuthStatus(),
       preferApiKey,
+      flatFeeKeyProviders: runtime.flatFeeKeyProviders(),
     });
   }
 
@@ -9075,6 +9124,33 @@ describe('PiSession account state publication', () => {
     session.publishAccountInfo();
 
     expect(published(messages)).toEqual({ model: 'claude-opus-5-5', dollarBilled: true });
+    await session.dispose();
+  });
+
+  // A MiniMax Token Plan key bills as a subscription: no charge shown and no budget, whatever `maxBudgetUsd` says.
+  it('bills a MiniMax chat by its applied key kind, in the account state and the budget alike', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const runtime = PiRuntime.get('/fake/agent');
+    const registry = H.getServices().modelRuntime;
+    const anthropicOnly = registry.getModel;
+    registry.getModel = (provider: string, id: string) =>
+      provider === 'minimax' && id === 'MiniMax-M3.1-Flash'
+        ? { id, name: id, api: 'anthropic-messages', provider, contextWindow: 1_000_000 }
+        : anthropicOnly(provider, id);
+    vi.spyOn(testPlatform.settings, 'get').mockImplementation(settingsReader((key: string) => (key === 'damocles.maxBudgetUsd' ? 5 : undefined)));
+    const flatFee = vi.spyOn(runtime, 'flatFeeKeyProviders').mockReturnValue(new Set(['minimax']));
+    await session.setModel('MiniMax-M3.1-Flash');
+    const budget = () => (session as unknown as { budgetLimitForEnforcement: () => number | null }).budgetLimitForEnforcement();
+
+    expect(published(messages)).toEqual({ model: 'MiniMax-M3.1-Flash', dollarBilled: false });
+    expect(budget()).toBeNull();
+
+    flatFee.mockReturnValue(new Set());
+    session.publishAccountInfo();
+    expect(published(messages)).toEqual({ model: 'MiniMax-M3.1-Flash', dollarBilled: true });
+    expect(budget()).toBe(5);
     await session.dispose();
   });
 
@@ -9887,10 +9963,10 @@ describe('PiSession: the first prompt waits for servers with Always-loaded tools
   type FakeSession = NonNullable<ReturnType<typeof H.getLastSession>>;
 
   /**
-   * pi 1.3.0's `prompt()` for a run it opens (`agent-session.js`), which the panel calls once its wait is over:
-   * `_startRun` marks the session busy (:1393), then calls `preflightResult('started')` outside both of its `try`
-   * blocks (:1410). An `abort()` while busy marks the abort (:1943-1945) and waits for idle (:1952), which resolves at
-   * once on an idle session (:1954-1958); a run that starts after it is aborted at `agent_start` (:713-714), before any request.
+   * pi 1.4.0's `prompt()` for a run it opens (`agent-session.js`), which the panel calls once its wait is over:
+   * `_startRun` marks the session busy (:1424), then calls `preflightResult('started')` outside both of its `try`
+   * blocks (:1441). An `abort()` while busy marks the abort (:1972-1974) and waits for idle (:1981), which resolves at
+   * once on an idle session (:1983-1987); a run that starts after it is aborted at `agent_start` (:712-713), before any request.
    */
   function piPromptAfterWait(live: FakeSession): { requests: number } {
     const provider = { requests: 0 };
@@ -10049,7 +10125,7 @@ describe('PiSession: the first prompt waits for servers with Always-loaded tools
     stubPanelMcp(connectingSource().source);
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     live.extensionRunner.getCommand.mockImplementation((name: string) => (name === 'todos' ? { name } : undefined));
-    // pi runs an extension command inside prompt() and reports it handled (agent-session.js:1611-1617).
+    // pi runs an extension command inside prompt() and reports it handled (agent-session.js:1640-1646).
     live.prompt.mockImplementationOnce((async (_text: string, opts?: { preflightResult?: (d: string) => void }) => opts?.preflightResult?.('handled')) as never);
 
     expect(await session.sendMessage('/todos', undefined, 'c0', { content: '/todos' })).toBe('unsent');
@@ -10095,7 +10171,7 @@ describe('PiSession: the first prompt waits for servers with Always-loaded tools
     const streaming = live as unknown as { isStreaming: boolean };
     let endRun!: () => void;
     const steered: Array<{ text: string; behavior?: string }> = [];
-    // pi 1.3.0: the prompt opens a run, busy from `_startRun` (agent-session.js:1393); a prompt while busy queues (:1636-1648).
+    // pi 1.4.0: the prompt opens a run, busy from `_startRun` (agent-session.js:1424); a prompt while busy queues (:1665-1677).
     live.prompt.mockImplementation((async (text: string, opts?: { streamingBehavior?: string; preflightResult?: (d: string) => void }) => {
       if (streaming.isStreaming) {
         steered.push({ text, ...(opts?.streamingBehavior ? { behavior: opts.streamingBehavior } : {}) });
@@ -10767,7 +10843,7 @@ describe("a resume switch pi does not install leaves the chat's model, window an
     const session = new PiSession(makeOptions(messages, { onRecordedSelection: restored, onModelChange: (model, contextWindow) => published.push([model, contextWindow]) }));
     await session.initializeEarly();
     const manager = H.fakePi.SessionManager.create.mock.results.at(-1)!.value as { getBranch: () => unknown[] };
-    // Only the switch opens the stored file; pi's newSession builds on a fresh manager (agent-session-runtime.js:155 in pi-coding-agent 1.3.0).
+    // Only the switch opens the stored file; pi's newSession builds on a fresh manager (agent-session-runtime.js:155 in pi-coding-agent 1.4.0).
     let opened = false;
     manager.getBranch = () => (opened ? [] : ((opened = true), STORED));
     const accountModels = () => messages.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'accountInfo' }> => m.type === 'accountInfo').map((m) => m.data.model);
@@ -10805,7 +10881,7 @@ describe("a resume switch pi does not install leaves the chat's model, window an
 
   it('a switch pi refuses', async () => {
     const { session, restored, published } = await panelOnOpus();
-    // pi returns a session_before_switch cancel before teardown and createRuntime (agent-session-runtime.js:128-132 in pi-coding-agent 1.3.0).
+    // pi returns a session_before_switch cancel before teardown and createRuntime (agent-session-runtime.js:128-132 in pi-coding-agent 1.4.0).
     (session as unknown as Internals).runtime!.switchSession = async () => ({ cancelled: true });
     session.setResumeSession('stored');
     await session.whenReplaced();
@@ -10815,7 +10891,7 @@ describe("a resume switch pi does not install leaves the chat's model, window an
 
   it('a switch whose session build throws', async () => {
     const { session, restored, published, accountModels } = await panelOnOpus();
-    // A createRuntime that rejects never reaches apply, so pi is left holding the session its teardown disposed (agent-session-runtime.js:136-137 in pi-coding-agent 1.3.0).
+    // A createRuntime that rejects never reaches apply, so pi is left holding the session its teardown disposed (agent-session-runtime.js:136-137 in pi-coding-agent 1.4.0).
     H.fakePi.createAgentSessionFromServices.mockRejectedValueOnce(new Error('an extension failed to load'));
     session.setResumeSession('stored');
     await session.whenReplaced();
@@ -10827,7 +10903,7 @@ describe("a resume switch pi does not install leaves the chat's model, window an
 
   it('a switch whose rebind throws after pi installed its session', async () => {
     const { session, restored, published, accountModels } = await panelOnOpus();
-    // pi installs the session before it awaits the rebind and lets the rebind's throw reject the switch (agent-session-runtime.js:114-127, :137-145 in pi-coding-agent 1.3.0).
+    // pi installs the session before it awaits the rebind and lets the rebind's throw reject the switch (agent-session-runtime.js:114-127, :137-145 in pi-coding-agent 1.4.0).
     vi.spyOn(cwdFolder()!, 'registerPanel').mockImplementationOnce(() => { throw new Error('the gate registry refused the session'); });
     session.setResumeSession('stored');
     await session.whenReplaced();
@@ -10993,7 +11069,9 @@ describe('a start or rebind that fails once pi installed its session leaves no r
     }],
     ['its recorded tool loadout cannot be read, the last step of the bind', () => {
       onFirstSession((session) => {
-        (session.sessionManager as unknown as { buildSessionContext: () => unknown }).buildSessionContext = () => { throw new Error(FAILURE); };
+        // Only the loadout replay reads a system message's tool changes.
+        const unreadable = { role: 'system', content: '', timestamp: 0, get toolsRemoved(): never { throw new Error(FAILURE); } };
+        (session.sessionManager as unknown as { getBranch: () => unknown }).getBranch = () => [{ type: 'message', id: 'e0', message: unreadable }];
       });
       return {};
     }],
@@ -11072,7 +11150,7 @@ describe('a start or rebind that fails once pi installed its session leaves no r
     seeded.appendMessage({ role: 'user', content: 'hello', timestamp: 1 } as never);
     const file = seeded.getSessionFile()!;
     const target = seeded.getSessionId();
-    // pi builds the AgentSession on the manager it is given (sdk.js:77 and :303-305 in pi-coding-agent 1.3.0), one per open of the file.
+    // pi builds the AgentSession on the manager it is given (sdk.js:77 and :302-304 in pi-coding-agent 1.4.0), one per open of the file.
     const opened: unknown[] = [];
     (H.fakePi.SessionManager as Record<string, unknown>)['open'] = () => {
       const manager = realPi.SessionManager.open(file, dir);
@@ -11147,7 +11225,7 @@ describe('a start or rebind that fails once pi installed its session leaves no r
     (H.fakePi.SessionManager as Record<string, unknown>)['open'] = () => ({ kind: 'opened', getBranch: () => [] });
     vi.mocked(resolvePiSessionFile).mockResolvedValue('/fake/agent/sessions/cwd/2026-01-01T00-00-00-000Z_stored.jsonl');
     H.setSessionSetup((s) => { (s as unknown as { sessionId: string }).sessionId = 'stored'; });
-    // pi installs the session before it awaits the rebind and lets the rebind's throw reject the switch (agent-session-runtime.js:114-127, :137-145 in pi-coding-agent 1.3.0).
+    // pi installs the session before it awaits the rebind and lets the rebind's throw reject the switch (agent-session-runtime.js:114-127, :137-145 in pi-coding-agent 1.4.0).
     vi.spyOn(cwdFolder()!, 'registerPanel').mockImplementationOnce(() => { throw new Error(FAILURE); });
 
     session.setResumeSession('stored');
@@ -11251,7 +11329,7 @@ describe('a chat disposed while its resumed conversation starts takes on none of
     const stored = fsSync.readFileSync(file, 'utf8');
     const opened = realPi.SessionManager.open(file, dir);
     (H.fakePi.SessionManager as Record<string, unknown>)['open'] = () => opened;
-    // pi builds the AgentSession on the manager it is given (sdk.js:77 and :303-305 in pi-coding-agent 1.3.0), so the panel's writes reach this file.
+    // pi builds the AgentSession on the manager it is given (sdk.js:77 and :302-304 in pi-coding-agent 1.4.0), so the panel's writes reach this file.
     H.setSessionManagerFactory(() => opened);
     vi.mocked(resolvePiSessionFile).mockResolvedValue(file);
 
@@ -11651,7 +11729,7 @@ describe('a resume shows its conversation only once pi bound it, and a send reac
     fsSync.rmSync(dir, { recursive: true, force: true });
   });
 
-  /** A conversation pi stored: pi writes the file once it holds a user or assistant message (session-manager.js:794-810 in pi-coding-agent 1.3.0). */
+  /** A conversation pi stored: pi writes the file once it holds a user or assistant message (session-manager.js:794-810 in pi-coding-agent 1.4.0). */
   function stored(text: string): { id: string; file: string } {
     const sm = realPi.SessionManager.create('/cwd', dir);
     sm.appendMessage({ role: 'user', content: [{ type: 'text', text }], timestamp: 0 } as never);
@@ -11702,10 +11780,10 @@ describe('a resume shows its conversation only once pi bound it, and a send reac
       fake.sessionId = fake.sessionManager.getSessionId();
       let disposed = false;
       fake.dispose.mockImplementation(() => { disposed = true; });
-      // pi emits the prompt's message_end, then appends it to the session's file (agent-session.js:752-768 in pi-coding-agent 1.3.0).
+      // pi emits the prompt's message_end, then appends it to the session's file (agent-session.js:751-767 in pi-coding-agent 1.4.0).
       fake.prompt.mockImplementation(async (text: string, opts?: { preflightResult?: (disposition: string) => void }) => {
         opts?.preflightResult?.('started');
-        // A disposed session is cut off from its agent and listeners, so its run reports and persists nothing (agent-session.js:1008-1009 in pi-coding-agent 1.3.0).
+        // A disposed session is cut off from its agent and listeners, so its run reports and persists nothing (agent-session.js:1023-1024 in pi-coding-agent 1.4.0).
         if (disposed) return;
         const message = { role: 'user', content: [{ type: 'text', text }], timestamp: Date.now() };
         H.fireEvent({ type: 'message_end', message });
@@ -11730,7 +11808,7 @@ describe('a resume shows its conversation only once pi bound it, and a send reac
     });
   }
 
-  /** pi's switchSession opens the target before it tears the bound session down, so a file it cannot read rejects with the old session still bound (agent-session-runtime.js:128-136 in pi-coding-agent 1.3.0). */
+  /** pi's switchSession opens the target before it tears the bound session down, so a file it cannot read rejects with the old session still bound (agent-session-runtime.js:128-136 in pi-coding-agent 1.4.0). */
   function switchesAsPi(session: PiSession): void {
     type Switching = { switchSession: (p: string, o?: { cwdOverride?: string }) => Promise<{ cancelled: boolean }> };
     const runtime = (session as unknown as { runtime: Switching }).runtime;
@@ -12061,7 +12139,7 @@ describe('a resume shows its conversation only once pi bound it, and a send reac
         opensInOrder(b.file);
         filesOnDisk(b);
         if (failure === piThrows) {
-          // pi's createAgentSessionRuntime awaits the factory, so a throw building the session rejects it (agent-session-runtime.js:311-314 in pi-coding-agent 1.3.0).
+          // pi's createAgentSessionRuntime awaits the factory, so a throw building the session rejects it (agent-session-runtime.js:311-314 in pi-coding-agent 1.4.0).
           H.fakePi.createAgentSessionFromServices.mockRejectedValueOnce(new Error(failure.reason));
         }
         const session = recordsStart(reloadableSession());
@@ -12143,7 +12221,7 @@ describe('a resume shows its conversation only once pi bound it, and a send reac
     const a = created[0]!;
     expect(session.storedSessionId).toBe(a.getSessionId());
     filesAt({ [a.getSessionId()]: a.getSessionFile()!, [b.id]: b.file });
-    // pi installs the session before it awaits the rebind and lets the rebind's throw reject the switch (agent-session-runtime.js:114-127, :137-145 in pi-coding-agent 1.3.0).
+    // pi installs the session before it awaits the rebind and lets the rebind's throw reject the switch (agent-session-runtime.js:114-127, :137-145 in pi-coding-agent 1.4.0).
     vi.spyOn(cwdFolder()!, 'registerPanel').mockImplementationOnce(() => { throw new Error('the gate registry refused the session'); });
 
     await resumeStoredSession(resumeDeps(session), 'p1', b.id);
@@ -12164,7 +12242,7 @@ describe('a resume shows its conversation only once pi bound it, and a send reac
     const BUILD_FAILURE = 'an extension failed to load';
     const panelRegistry = (): Map<string, unknown> => (cwdFolder() as unknown as { _panelRegistry: Map<string, unknown> })._panelRegistry;
 
-    /** Chat on stored conversation A whose next session build throws (once `gate` lets it) after pi tore A down (agent-session-runtime.js:136-137, :160-161 in pi-coding-agent 1.3.0). */
+    /** Chat on stored conversation A whose next session build throws (once `gate` lets it) after pi tore A down (agent-session-runtime.js:136-137, :160-161 in pi-coding-agent 1.4.0). */
     async function chatOnA(gate?: { building: () => void; held: Promise<void> }) {
       H.captured.shutdowns.length = 0;
       const created = opensWhatPiIsAsked();
@@ -12353,7 +12431,7 @@ describe('a resume shows its conversation only once pi bound it, and a send reac
       entered();
       await held;
       const runtime = await base(...args);
-      // pi returns a session_before_switch cancel as is, with nothing replaced (agent-session-runtime.js:147-151 in pi-coding-agent 1.3.0).
+      // pi returns a session_before_switch cancel as is, with nothing replaced (agent-session-runtime.js:147-151 in pi-coding-agent 1.4.0).
       runtime.newSession = async () => ({ cancelled: true });
       return runtime;
     });

@@ -4,6 +4,7 @@
 @source "../../webview/components/SlidingIndicator.vue";
 @source "../../webview/components/SegmentedToggle.vue";
 @source "../../webview/components/RollingNumber.vue";
+@source "../../webview/components/icons/ProviderLogo.vue";
 
 @theme {
   --font-mono: var(--d-mono);
@@ -47,11 +48,6 @@
 
 .bell-badge-pop {
   animation: d-badge-pop 0.34s var(--ease-spring) both;
-}
-
-.provider-logo > svg {
-  width: 100%;
-  height: 100%;
 }
 
 /* Reference section collapse (secTrans); off while a row sash drags so the section follows the pointer. */

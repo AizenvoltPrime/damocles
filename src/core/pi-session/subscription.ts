@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { stripBom } from '../config/bom';
 import { PI_AGENT_DIR } from './agent-dir';
 import { logAuthReadFailure, readAuthFile } from './auth-file';
 
@@ -77,7 +78,7 @@ export function readClaudeAuthFromDisk(agentDir: string = PI_AGENT_DIR): ClaudeA
 // A legacy-only entry reads as allowance: that is what it bills until migrated.
 function isPluginListedOnDisk(agentDir: string): boolean {
   try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(agentDir, 'settings.json'), 'utf8')) as { packages?: unknown };
+    const parsed = JSON.parse(stripBom(fs.readFileSync(path.join(agentDir, 'settings.json'), 'utf8'))) as { packages?: unknown };
     if (!Array.isArray(parsed.packages)) return false;
     const packages = parsed.packages.filter(
       (p): p is string | { source: string } =>

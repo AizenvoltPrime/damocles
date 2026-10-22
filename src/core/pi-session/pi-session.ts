@@ -436,6 +436,7 @@ export class PiSession implements ChatSession {
   private registeredGate: PanelGateContext | null = null;
   private registeredToolRefresher: (() => void) | null = null;
   private registeredRuleNoticePoster: ((notices: McpRenamedToolRuleNotice[]) => void) | null = null;
+  private registeredSettingsReapplier: (() => void) | null = null;
   /** Debounce key for `permission_required` (US-009): one notification per (sessionId, turn). */
   private _lastPermissionNotifyKey: string | null = null;
   /** The latest MCP scope fed to this panel; applied once the folder runtime exists. */
@@ -750,8 +751,8 @@ export class PiSession implements ChatSession {
     const pi = getPiCodingAgent();
     if (!pi) throw new Error("PiSession.start: pi runtime not initialized");
 
-    // Wire the key-backed providers (StepFun/DeepSeek/OpenRouter/TypeSafe) from secrets so subagents AND a
-    // saved StepFun/DeepSeek default model can resolve (Phase 5, US-018.8). Deliberately still AWAITED
+    // Wire the key-backed providers (`CUSTOM_PROVIDER_DEFS`) from secrets so subagents AND a
+    // saved key-provider default model can resolve (Phase 5, US-018.8). Deliberately still AWAITED
     // before resolveInitialModel: fire-and-forget would race the user's first prompt and route turn 1 to
     // the wrong provider. Safe to await because the sync is bounded, cancellable and fail-soft — and if
     // it does give up, the resulting model downgrade is surfaced below rather than applied silently.
@@ -823,7 +824,7 @@ export class PiSession implements ChatSession {
       // mcp__ tools (the first-connect bug). Omitting it admits every non-excluded tool into the registry;
       // the active set is governed by `applyActiveToolsForMode`. `excludeTools` still drops pi's `edit`.
       const model = recorded?.model ?? this.desiredModel;
-      // pi runs the given model as it is and the given level clamped to it (sdk.js:87, :121-144 and :253-258 in pi-coding-agent 1.3.0).
+      // pi runs the given model as it is and the given level clamped to it (sdk.js:87, :121-144 and :252-257 in pi-coding-agent 1.4.0).
       const result = await pi.createAgentSessionFromServices({
         services: shared,
         sessionManager,
@@ -901,7 +902,7 @@ export class PiSession implements ChatSession {
     this.runtime.setBeforeSessionInvalidate(() => {
       this.unsubscribe?.();
       this.unsubscribe = null;
-      // pi disposes this session right after the hook (agent-session-runtime.js:111-112 in pi-coding-agent 1.3.0).
+      // pi disposes this session right after the hook (agent-session-runtime.js:111-112 in pi-coding-agent 1.4.0).
       this.tornDown.add(runtime.session);
     });
     // A rebind that throws rejects pi's replacement, whose caller then releases the runtime (`releaseIfTornDown`).
@@ -968,7 +969,7 @@ export class PiSession implements ChatSession {
     return session !== undefined && run?.session === session ? run : null;
   }
 
-  /** pi defers a prompt made while it runs a run's `agent_settled` handlers and returns at once (agent-session.js:1603-1605), and `waitForIdle()` no longer waits then (:686, :1954-1956). */
+  /** pi defers a prompt made while it runs a run's `agent_settled` handlers and returns at once (agent-session.js:1632-1634), and `waitForIdle()` no longer waits then (:685, :1983-1985). */
   private piSettling(session: AgentSession, signal?: AbortSignal): Promise<void> | null {
     return this.runOf(session)?.untilSettled(signal) ?? null;
   }
@@ -1077,6 +1078,9 @@ export class PiSession implements ChatSession {
     };
     folder.registerActiveToolRefresher(sessionId, refreshTools);
     this.registeredToolRefresher = refreshTools;
+    const reapplySettings = (): void => this.reapplyPiSettings();
+    folder.registerSettingsReapplier(sessionId, reapplySettings);
+    this.registeredSettingsReapplier = reapplySettings;
     const postRuleNotices = (notices: McpRenamedToolRuleNotice[]): void => {
       this.options.onMessage({ type: "mcpRenamedToolRules", notices });
     };
@@ -1232,9 +1236,11 @@ export class PiSession implements ChatSession {
     PiRuntime.get().unregisterSessionMutator(sessionId, this);
     if (this.registeredToolRefresher) folder.unregisterActiveToolRefresher(sessionId, this.registeredToolRefresher);
     if (this.registeredRuleNoticePoster) folder.unregisterRuleNoticePoster(sessionId, this.registeredRuleNoticePoster);
+    if (this.registeredSettingsReapplier) folder.unregisterSettingsReapplier(sessionId, this.registeredSettingsReapplier);
     this.registeredGate = null;
     this.registeredToolRefresher = null;
     this.registeredRuleNoticePoster = null;
+    this.registeredSettingsReapplier = null;
   }
 
   /**
@@ -1614,7 +1620,7 @@ export class PiSession implements ChatSession {
       }
       hookContext = verdict?.additionalContext;
     }
-    // A run that streamed at the settle wait above can reach its `agent_settled` handlers while the steps since awaited, and pi defers a prompt made then (agent-session.js:1603-1605).
+    // A run that streamed at the settle wait above can reach its `agent_settled` handlers while the steps since awaited, and pi defers a prompt made then (agent-session.js:1632-1634).
     for (let settling = this.piSettling(session, outgoing.signal); settling; settling = this.piSettling(session, outgoing.signal)) await settling;
     if (this.sendOvertaken(outgoing, session)) return withdrawnAfterTurnBegan();
 
@@ -1741,17 +1747,17 @@ export class PiSession implements ChatSession {
     return session && pi ? resolveSlashInvocation(session, text, pi.stripFrontmatter) : { kind: "text" };
   }
 
-  /** pi opened a run on `session` and dropped the restored names that did not register (agent-session.js:1416), so this panel drops them too. */
+  /** pi opened a run on `session` and dropped the restored names that did not register (agent-session.js:1447), so this panel drops them too. */
   private runStarted(session: AgentSession): void {
     if (this.runtime?.session === session) this.pendingRestoredTools.clear();
   }
 
   /**
    * Abort the run pi just opened for a message a Stop or a replacement overtook while pi held it, at `agent_start`, before
-   * any request (agent-session.js:713-714); a session still connected keeps the message in its transcript as a stopped turn.
+   * any request (agent-session.js:712-713); a session still connected keeps the message in its transcript as a stopped turn.
    */
   private stopRunAtStart(session: AgentSession): void {
-    // pi's run takes whatever its queue holds as it starts (agent-loop.js:85), and a stopped run delivers nothing.
+    // pi's run takes whatever its queue holds as it starts (agent-loop.js:90), and a stopped run delivers nothing.
     this.dropQueue(session);
     const ending = abortRunAtStart(session).catch((err) => log("[PiSession] stopping a run at its start failed: %O", err));
     if (this.runtime?.session !== session) return;
@@ -1799,11 +1805,11 @@ export class PiSession implements ChatSession {
       .catch((err) => log("[PiSession] queueing UserPromptSubmit context failed: %O", err));
   }
 
-  /** `queueHookContext` for the prompt a run opens with, from its `started`: the run's first drain takes it (agent-loop.js:85 in pi-agent-core 1.3.0). */
+  /** `queueHookContext` for the prompt a run opens with, from its `started`: the run's first drain takes it (agent-loop.js:90 in pi-agent-core 1.4.0). */
   private steerRunStartContext(session: AgentSession, context: string | undefined): void {
     if (!context) return;
     this.queueHookContext(session, context, "steer");
-    // pi enqueued it synchronously; with steers pending, `peekQueuedMessages()` lists the whole steering queue, newest last, only under steering mode `all` (`withQueuePolicy`).
+    // pi enqueued it synchronously; with steers pending, `peekQueuedMessages()` lists the whole steering queue, newest last, only under steering mode `all` (`withSettingsPolicy`).
     const held = this.heldRunStartContexts(session);
     const message = held.at(-1);
     if (message) this.runStartContexts.push({ session, message });
@@ -2089,7 +2095,7 @@ export class PiSession implements ChatSession {
    *
    * Cancel notes go back first, in the order pi held them, then the batch, each awaited so pi's queue
    * holds exactly this order whatever its input handlers await. pi delivers every pending steer at the
-   * next boundary (`withQueuePolicy`), so that request carries the annotated result, the note, then the batch.
+   * next boundary (`withSettingsPolicy`), so that request carries the annotated result, the note, then the batch.
    */
   private async resteerOnce(session: AgentSession): Promise<void> {
     // Before reading the buffer, so the pass steers what was queued during the settle with the rest.
@@ -2600,7 +2606,7 @@ export class PiSession implements ChatSession {
       }
       if (this.abortPromise) await this.abortPromise;
       const waitedOn = this.runtime?.session;
-      // pi's `compact()` aborts and waits for idle first, which returns at once while it settles a run (agent-session.js:2202, :1954-1956).
+      // pi's `compact()` aborts and waits for idle first, which returns at once while it settles a run (agent-session.js:2231, :1983-1985).
       const settling = waitedOn ? this.piSettling(waitedOn, beforePi.signal) : null;
       if (settling) await settling;
       if (beforePi.signal.aborted) {
@@ -2608,7 +2614,7 @@ export class PiSession implements ChatSession {
         if (waitedOn && this.runtime?.session === waitedOn) this.emit({ type: "compactionAborted", trigger: "manual", willRetry: false, timestamp: Date.now() });
         return;
       }
-      // pi's `compact()` aborts the run it finds open (agent-session.js:2202), one no send opened included.
+      // pi's `compact()` aborts the run it finds open (agent-session.js:2231), one no send opened included.
       if (this.runOf(waitedOn)?.streaming) {
         this.emit({ type: "notification", message: t("Finish or stop the current turn before compacting."), notificationType: "warning" });
         return;
@@ -2629,7 +2635,7 @@ export class PiSession implements ChatSession {
       }
       onAccepted?.();
       const trimmed = instructions?.trim();
-      // From here a Stop aborts the compaction through pi (`abort()` runs `abortCompaction()`, agent-session.js:1947).
+      // From here a Stop aborts the compaction through pi (`abort()` runs `abortCompaction()`, agent-session.js:1976).
       this.compactionBeforePi = null;
       try {
         await session.compact(trimmed && trimmed.length > 0 ? trimmed : undefined);
@@ -2682,6 +2688,17 @@ export class PiSession implements ChatSession {
     if (this.folder === null) return;
     const sm = this.folder.services.settingsManager;
     sm.setCacheWarmingMode(cacheWarmingSetting());
+  }
+
+  /**
+   * Set both again where pi's re-read of the folder's settings manager dropped them: a reload replaces the
+   * global layer from the file, which lacks a value pi could not write to it while the file was unusable.
+   */
+  private reapplyPiSettings(): void {
+    if (this.folder === null) return;
+    const global = this.folder.services.settingsManager.getGlobalSettings();
+    if (global.compaction?.enabled !== this.autoCompactConfig().enabled) this.applyCompactionConfig();
+    if (global.cacheWarming !== cacheWarmingSetting()) this.applyCacheWarmingConfig();
   }
 
   /**
@@ -2917,7 +2934,7 @@ export class PiSession implements ChatSession {
     this.releaseBrowserScopes();
   }
 
-  /** A replacement that rejected after pi tore `left` down (agent-session-runtime.js:102-127 in pi-coding-agent 1.3.0) left this chat no live session, so the runtime goes and the next start builds one. */
+  /** A replacement that rejected after pi tore `left` down (agent-session-runtime.js:102-127 in pi-coding-agent 1.4.0) left this chat no live session, so the runtime goes and the next start builds one. */
   private async releaseIfTornDown(runtime: AgentSessionRuntime, left: AgentSession): Promise<boolean> {
     if (this._disposed || this.runtime !== runtime || !this.tornDown.has(left)) return false;
     await this.releaseRuntime();
@@ -2947,7 +2964,7 @@ export class PiSession implements ChatSession {
     try {
       // The runtime owns the AgentSession it created via the factory and disposes it here; the
       // session was never registered with the folder runtime (createSession), so there is nothing to forget.
-      // A session pi already tore down got its `session_shutdown`; runtime.dispose only repeats that teardown (agent-session-runtime.js:102-113, :296-303 in pi-coding-agent 1.3.0).
+      // A session pi already tore down got its `session_shutdown`; runtime.dispose only repeats that teardown (agent-session-runtime.js:102-113, :296-303 in pi-coding-agent 1.4.0).
       if (this.runtime && !this.tornDown.has(this.runtime.session)) await this.runtime.dispose();
     } catch (err) {
       log("[PiSession] dispose failed: %O", err);
@@ -3485,7 +3502,7 @@ export class PiSession implements ChatSession {
       // The switched-in session reads the current tool set on build, so a deferred reload is moot.
       this.mcpReloadPendingAfterTurn = false;
       if (target.cancelled) return RESUME_CANCELLED;
-      // pi opens a file that went missing after the lookup as a new conversation (session-manager.js:685-689 in pi-coding-agent 1.3.0).
+      // pi opens a file that went missing after the lookup as a new conversation (session-manager.js:685-689 in pi-coding-agent 1.4.0).
       return this.runtime?.session.sessionId === sessionId ? RESUME_SWITCHED : { kind: "failed", reason: t("its file was not found") };
     } finally {
       this.piReplacement = null;
@@ -3825,7 +3842,7 @@ export class PiSession implements ChatSession {
 
   /** A newly bound conversation starts from the loadout its transcript recorded, the record pi restores a resumed session from. */
   private seedRestoredTools(session: AgentSession): void {
-    const { active, pending } = restoredDeferredTools(session.sessionManager.buildSessionContext().messages, this.deferrableNow());
+    const { active, pending } = restoredDeferredTools(session.sessionManager.getBranch(), this.deferrableNow());
     for (const name of active) this.toolSearchActivated.add(name);
     for (const name of pending) this.pendingRestoredTools.add(name);
   }
@@ -4027,7 +4044,12 @@ export class PiSession implements ChatSession {
           this.refreshActiveTools();
           return;
         }
-        await session.reload();
+        try {
+          await session.reload();
+        } finally {
+          // pi's session reload re-reads the settings manager (agent-session.js:3007) before work that can still throw.
+          this.reapplyPiSettings();
+        }
         this.applyActiveToolsForMode(this.permissionMode);
       } while (this.mcpReloadRerunRequested && !this._disposed);
     })().catch((err) => log("[PiSession] MCP reload failed: %O", err));
@@ -4318,7 +4340,7 @@ export class PiSession implements ChatSession {
     // The boundary event carries no per-turn message list, so both predicates read the session
     // projection. `turnHasNonErrorExitPlanModeResult` scopes itself to the current turn; `lastAssistant`
     // does not need to, because every run reaching this boundary has appended an assistant message, a
-    // synthetic one even on hard failure (`agent.js:364-380` in pi-agent-core 1.3.0), so the last one is always this turn's.
+    // synthetic one even on hard failure (`agent.js:368-384` in pi-agent-core 1.4.0), so the last one is always this turn's.
     const messages = event.context.contextMessages;
     if (turnHasNonErrorExitPlanModeResult(messages)) return undefined;
     if (lastAssistant(messages)?.stopReason !== "stop") return undefined;
@@ -4489,6 +4511,7 @@ export class PiSession implements ChatSession {
       openai,
       preferApiKey,
       registry: piRuntime.modelRuntime ?? undefined,
+      flatFeeKeyProviders: piRuntime.flatFeeKeyProviders(),
     };
   }
 
@@ -5218,6 +5241,7 @@ export class PiSession implements ChatSession {
       activeModel,
       claudeAuthMode: piRuntime.getClaudeAuthStatus().mode,
       supportedModels: this.supportedModelsCache,
+      flatFeeKeyProviders: piRuntime.flatFeeKeyProviders(),
       roleSettings: {
         lead: roleSetting('lead'),
         implementor: roleSetting('implementor'),
@@ -5489,9 +5513,9 @@ export class PiSession implements ChatSession {
    * bounded: enforcement fires at `message_end`, which pi emits BEFORE it executes the message's tool
    * calls, so those tools still run — including an `Agent`/`create_team` call that spawns agents this
    * `abortAll()` never saw. Auto-compaction does not add to that: pi reaches `prepareNextTurn` only at
-   * the top of the next inner-loop iteration (`@earendil-works/pi-agent-core@1.3.0`,
-   * `agent-loop.ts:185-189`), and a decider answering `{ action: 'end' }` returns from the loop at
-   * `:286-291` before it. So the bound is the tool calls of the message that tripped the limit and
+   * the top of the next inner-loop iteration (`@earendil-works/pi-agent-core@1.4.0`,
+   * `agent-loop.ts:194-198`), and a decider answering `{ action: 'end' }` returns from the loop at
+   * `:295-300` before it. So the bound is the tool calls of the message that tripped the limit and
    * nothing else.
    * And an in-flight TEAM keeps running to completion: unlike `beginAbort`, this
    * deliberately does not `cancelActiveTeam()` (product decision), so a team can exceed the limit without
@@ -5503,7 +5527,7 @@ export class PiSession implements ChatSession {
     this.subagentManager?.abortAll("budget");
     // A queued steer would force one more billed round trip past the limit: the loop itself ends the run
     // without polling, but `_runBeforeSettleBoundary` continues on `hasQueuedMessages()`
-    // (`agent-session.ts:1996` in pi 1.3.0) whatever the decider answered. `queueInput` and the cancel-note delivery
+    // (`agent-session.ts:2030` in pi 1.4.0) whatever the decider answered. `queueInput` and the cancel-note delivery
     // refuse new ones from here on. Restoring a held note would let that continuation drain it and bill
     // past the limit, so its echo is corrected instead of honoured.
     this.withdrawQueue(
@@ -5543,11 +5567,13 @@ export class PiSession implements ChatSession {
       openaiAuthStatus,
       preferApiKey,
       resolvedProvider: resolvedProviderOf(this.modelValue, registry ?? undefined, openaiAuthStatus, preferApiKey),
+      flatFeeKeyProviders: piRuntime.flatFeeKeyProviders(),
     };
   }
 
   /**
-   * Publish the account state to the webview. Its five auth inputs change independently of any turn, so
+   * Publish the account state to the webview. Its auth inputs, the applied key-provider keys' kinds
+   * (`PiRuntime.flatFeeKeyProviders()`) included, change independently of any turn, so
    * every mutation of one calls this and nothing else republishes. Rebuilt on each call, never cached. A
    * caller can run late in shutdown, so a disposed session or a retired runtime publishes nothing.
    */

@@ -356,7 +356,7 @@ describe('cache dir pruning', () => {
       recentLegacy: '--work-beta--.1.2.0.json',
       oldIndex: 'index.s4.pi-1.2.0.db',
       oldIndexWal: 'index.s4.pi-1.2.0.db-wal',
-      recentIndex: 'index.s5.pi-1.4.0.db',
+      recentIndex: indexFileName(`${PI_VERSION}-other`),
       unrelated: 'notes.txt',
     };
     for (const name of Object.values(files)) fs.writeFileSync(path.join(CACHE_DIR, name), 'x');

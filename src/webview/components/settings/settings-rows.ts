@@ -1,5 +1,5 @@
 import type { Component } from 'vue';
-import type { SettingsSectionId } from '@shared/settings-sections';
+import { SETTINGS_ACCOUNT_IDS, type SettingsSectionId } from '@shared/settings-sections';
 
 /**
  * A row as search sees it. `label` and `description` are i18n keys; `keys` are the damocles.* settings the row writes
@@ -72,12 +72,7 @@ export const SETTINGS_ROWS: readonly SettingsRowMeta[] = [
   row('defaults', 'damocles.dangerouslySkipPermissions', 'defaultYolo', ['damocles.dangerouslySkipPermissions']),
   row('defaults', 'damocles.ideContext.enabled', 'ideContext', ['damocles.ideContext.enabled']),
 
-  row('accounts', 'account-anthropic', 'anthropic'),
-  row('accounts', 'account-openai', 'openai'),
-  row('accounts', 'account-deepseek', 'deepseek'),
-  row('accounts', 'account-stepfun', 'stepfun'),
-  row('accounts', 'account-openrouter', 'openrouter'),
-  row('accounts', 'account-typesafe', 'typesafe'),
+  ...SETTINGS_ACCOUNT_IDS.map((account) => row('accounts', `account-${account}`, account)),
   row('accounts', 'damocles.explore.model', 'exploreModel', ['damocles.explore.model', 'damocles.explore.effort']),
   row('accounts', 'damocles.background.model', 'backgroundModel', ['damocles.background.model', 'damocles.background.effort']),
   row('accounts', 'damocles.memory.judge', 'memoryJudge', ['damocles.memory.judge', 'damocles.memory.judgeEffort']),

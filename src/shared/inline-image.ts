@@ -21,7 +21,7 @@ export type InlineImage = { ok: true; mediaType: ImageMediaType; data: string } 
 // Anchored with one character class, so a failed match costs time linear in the length.
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-// pi 1.3.0 sniffs this many leading bytes (`IMAGE_TYPE_SNIFF_BYTES`, pi-coding-agent `dist/utils/mime.js:2`).
+// pi 1.4.0 sniffs this many leading bytes (`IMAGE_TYPE_SNIFF_BYTES`, pi-coding-agent `dist/utils/mime.js:2`).
 const SNIFF_BYTES = 4100;
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
@@ -68,7 +68,7 @@ function isAnimatedPng(bytes: Uint8Array): boolean {
   return false;
 }
 
-/** Port of pi 1.3.0's `detectSupportedImageMimeType` (`dist/utils/mime.js:4-21`) without BMP, which is not one of `IMAGE_MEDIA_TYPES`. */
+/** Port of pi 1.4.0's `detectSupportedImageMimeType` (`dist/utils/mime.js:4-21`) without BMP, which is not one of `IMAGE_MEDIA_TYPES`. */
 export function sniffImageMediaType(bytes: Uint8Array): ImageMediaType | null {
   if (startsWith(bytes, [0xff, 0xd8, 0xff])) return bytes[3] === 0xf7 ? null : 'image/jpeg';
   if (startsWith(bytes, PNG_SIGNATURE)) {

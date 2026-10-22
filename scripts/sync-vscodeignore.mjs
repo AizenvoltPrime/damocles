@@ -94,7 +94,7 @@ function computeClosure() {
     // package require()s at runtime must ship too. Uninstalled peers (host-provided) resolve to null.
     const deps = { ...(json.dependencies || {}), ...(json.optionalDependencies || {}), ...(json.peerDependencies || {}) };
     for (const dep of Object.keys(deps)) {
-      if (isUnreachableOptionalPeer(json, dep)) continue;
+      if (isUnwalkedPeer(json, dep)) continue;
       const resolved = resolveDep(dir, dep);
       if (!resolved) continue; // optional/peer dep not installed (other platform / host-provided) — nothing to ship
       if (isBuildToolPackage(dep)) buildTools.add(`${dep} (required by ${json.name}@${deps[dep]})`);
@@ -157,9 +157,17 @@ const UNREACHABLE_OPTIONAL_PEERS = new Map([
   ['@google/genai', new Set(['@modelcontextprotocol/sdk'])],
 ]);
 
-function isUnreachableOptionalPeer(json, dep) {
-  if (!UNREACHABLE_OPTIONAL_PEERS.get(json.name)?.has(dep)) return false;
+/**
+ * Required peers a shipped package names only in its type declarations, so they are not walked.
+ * marked-cjk-friendly's dist/index.js imports nothing; pi-tui only takes the tokenizer it returns into its own
+ * nested marked, and the hoisted marked is the webview's devDependency. Re-check on a pi-tui or marked-cjk-friendly bump.
+ */
+const TYPE_ONLY_PEERS = new Map([['marked-cjk-friendly', new Set(['marked'])]]);
+
+function isUnwalkedPeer(json, dep) {
   const declaredOnlyAsPeer = !Object.hasOwn(json.dependencies || {}, dep) && !Object.hasOwn(json.optionalDependencies || {}, dep);
+  if (TYPE_ONLY_PEERS.get(json.name)?.has(dep)) return declaredOnlyAsPeer;
+  if (!UNREACHABLE_OPTIONAL_PEERS.get(json.name)?.has(dep)) return false;
   return declaredOnlyAsPeer && json.peerDependenciesMeta?.[dep]?.optional === true;
 }
 

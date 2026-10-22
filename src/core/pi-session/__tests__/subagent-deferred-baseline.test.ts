@@ -36,7 +36,7 @@ const H = vi.hoisted(() => {
     setAutoCompactionEnabled: Mock<(enabled: boolean) => void>;
     dispose: Mock<() => void>;
     sessionId: string;
-    sessionManager: { buildSessionContext: () => { messages: unknown[] } };
+    sessionManager: { getBranch: () => unknown[] };
   }> = [];
 
   /**
@@ -57,7 +57,7 @@ const H = vi.hoisted(() => {
       dispose: vi.fn<() => void>(),
       sessionId: `nested-${sessions.length}`,
       // What a reopened session's transcript holds; the baseline replays its recorded loadout.
-      sessionManager: { buildSessionContext: (messages => () => ({ messages }))(restored.splice(0)) },
+      sessionManager: { getBranch: (messages => () => messages.map((message, i) => ({ type: 'message', id: `e${i}`, message })))(restored.splice(0)) },
     };
     sessions.push(session);
     return session;
@@ -98,7 +98,7 @@ const H = vi.hoisted(() => {
       return { session: makeSession(opts.tools ?? [], registered) };
     }),
     SessionManager: { create: vi.fn(() => ({ kind: 'persistent' })), inMemory: vi.fn(() => ({ kind: 'memory' })) },
-    SettingsManager: { inMemory: vi.fn(() => ({ kind: 'settings' })), create: vi.fn(() => ({ kind: 'settings' })) },
+    SettingsManager: { inMemory: vi.fn(() => ({ kind: 'settings' })), create: vi.fn(() => ({ kind: 'settings', drainErrors: () => [] })) },
     ModelRuntime: { create: vi.fn(async () => ({ getAvailableSnapshot: () => [] })) },
     DefaultPackageManager: class { getInstalledPath(): string | undefined { return undefined; } },
   };
@@ -120,7 +120,7 @@ vi.mock('../pi-loader', async () => {
 // travels the production path.
 vi.mock('../agent-dir', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../agent-dir')>()),
-  ensurePiAgentDir: (dir: string) => dir,
+  ensurePiAgentDir: () => undefined,
   PI_AGENT_DIR: '/fake/agent',
 }));
 
@@ -382,7 +382,7 @@ describe('the baseline survives to the first request (real pi AgentSession)', ()
       cwd: process.cwd(),
       resourceLoader,
       modelRuntime: { getAvailableSnapshot: () => [] } as never,
-      // Mirrors what `createAgentSessionFromServices` derives from `opts.tools` (sdk.js:153-160 in pi 1.3.0):
+      // Mirrors what `createAgentSessionFromServices` derives from `opts.tools` (sdk.js:153-160 in pi 1.4.0):
       // `tools:` becomes BOTH the allowlist and the construction-time active set.
       allowedToolNames: tools,
       initialActiveToolNames: tools,
@@ -691,7 +691,7 @@ describe('createSubagentSession — the deferred baseline covers MCP (Slice 1, c
  * registers a tool into a LIVE nested session, re-apply this baseline after it." Delivering MCP as
  * `customTools` is adjacent to exactly that. The EXPECTED finding is that it does not apply, because
  * `customTools` are read inside `_refreshToolRegistry` during CONSTRUCTION
- * (`dist/core/agent-session.js:2850` in pi 1.3.0), not through a post-bind `registerTool`.
+ * (`dist/core/agent-session.js:2879` in pi 1.4.0), not through a post-bind `registerTool`.
  *
  * This is asserted on a REAL `AgentSession` because the claim is about pi's construction order, and a
  * fake session is precisely the thing that cannot testify to it. If this suite goes red, the finding is
@@ -732,7 +732,7 @@ describe('G2 — MCP customTools do not defeat the baseline (real pi AgentSessio
       cwd: process.cwd(),
       resourceLoader,
       modelRuntime: { getAvailableSnapshot: () => [] } as never,
-      // Exactly what `createAgentSessionFromServices` derives from `opts.tools` (sdk.js:153-160 in pi 1.3.0).
+      // Exactly what `createAgentSessionFromServices` derives from `opts.tools` (sdk.js:153-160 in pi 1.4.0).
       allowedToolNames: tools,
       initialActiveToolNames: tools,
       customTools,

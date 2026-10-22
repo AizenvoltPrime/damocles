@@ -141,7 +141,7 @@ describe('piMessagesToHistoryAgentMessages: a failed model call', () => {
     expect(piMessagesToHistoryAgentMessages([{ role: 'assistant', content: [], stopReason: 'aborted', errorMessage: 'Request was aborted' }])).toEqual([]);
   });
 
-  // pi returns before executing any tool of an errored or aborted message (agent-loop.js:143).
+  // pi returns before executing any tool of an errored or aborted message (agent-loop.js:148).
   it('marks the tool calls of a failed call failed and those of an aborted call stopped', () => {
     const call = (id: string) => ({ type: 'toolCall', id, name: 'bash', arguments: { command: 'ls' } });
     const out = piMessagesToHistoryAgentMessages([
@@ -154,9 +154,9 @@ describe('piMessagesToHistoryAgentMessages: a failed model call', () => {
     ]);
   });
 
-  // pi finalizes the call it was running and starts none after it (agent-loop.js:402-404, :429-431, :449-451),
-  // then drains steers (:186) and makes the next call under the aborted signal, which ends aborted (:141-152);
-  // a request setup the signal rejects first ends it on an error stop instead (pi-ai lazy.js:41-44).
+  // pi finalizes the call it was running and starts none after it (agent-loop.js:408-410, :435-437, :455-457),
+  // then drains steers (:191) and makes the next call under the aborted signal, which ends aborted (:146-157);
+  // a request setup the signal rejects first ends it on an error stop instead (pi-ai lazy.js:57-62).
   it('marks the calls an abort skipped in a tool batch stopped when the aborted call follows', () => {
     const call = (id: string) => ({ type: 'toolCall', id, name: 'bash', arguments: { command: 'ls' } });
     const out = piMessagesToHistoryAgentMessages([
@@ -173,7 +173,7 @@ describe('piMessagesToHistoryAgentMessages: a failed model call', () => {
     expect(tools[0]).not.toHaveProperty('abandoned');
   });
 
-  // The nested turn-stopped record names a call the abort settled before `execute` (agent-loop.js:500-504), which has no durationMs.
+  // The nested turn-stopped record names a call the abort settled before `execute` (agent-loop.js:506-510), which has no durationMs.
   it('marks a call the record names as stopped without the result pi wrote, and keeps one pi executed', () => {
     const call = (id: string) => ({ type: 'toolCall', id, name: 'bash', arguments: { command: 'ls' } });
     const out = piMessagesToHistoryAgentMessages([
@@ -201,7 +201,7 @@ describe('piMessagesToHistoryAgentMessages: a Stop\'s wind-down error', () => {
   const call = (id: string) => ({ type: 'toolCall', id, name: 'bash', arguments: { command: 'sleep 20' } });
   const batch = { role: 'assistant', content: [call('ran'), call('skipped')], stopReason: 'toolUse' };
   const killed = { role: 'toolResult', toolCallId: 'ran', content: [{ type: 'text', text: 'Command aborted' }], details: { damoclesCancelled: true }, isError: true, durationMs: 700 };
-  // pi-ai's lazy stream ends a request setup the aborted signal rejected on an error stop (lazy.js:41-44 in pi-ai 1.3.0).
+  // pi-ai's lazy stream ends a request setup the aborted signal rejected on an error stop (lazy.js:57-62 in pi-ai 1.4.0).
   const windDown = { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'This operation was aborted' };
 
   it('maps no error for a wind-down error and stops the calls the abort skipped, as for an aborted stop', () => {

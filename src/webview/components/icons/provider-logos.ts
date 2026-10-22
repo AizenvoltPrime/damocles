@@ -13,6 +13,12 @@ const LOGOS = {
   // stepfun-color.svg
   stepfun:
     '<svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M22.012 0h1.032v.927H24v.968h-.956V3.78h-1.032V1.896h-1.878v-.97h1.878V0zM2.6 12.371V1.87h.969v10.502h-.97zm10.423.66h10.95v.918h-6.208v9.579h-4.742V13.03zM5.629 3.333v12.356H0v4.51h10.386V8L20.859 8l-.003-4.668-15.227.001z" fill="url(#lobe-icons-stepfun-fill)" fill-rule="evenodd"></path><defs><linearGradient gradientUnits="userSpaceOnUse" id="lobe-icons-stepfun-fill" x1="1.646" x2="18.342" y1="1.916" y2="22.091"><stop stop-color="#01A9FF"></stop><stop offset="1" stop-color="#0160FF"></stop></linearGradient></defs></svg>',
+  // minimax-color.svg
+  minimax:
+    '<svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="lobe-icons-minimax-fill" x1="0%" x2="100.182%" y1="50.057%" y2="50.057%"><stop offset="0%" stop-color="#E2167E"></stop><stop offset="100%" stop-color="#FE603C"></stop></linearGradient></defs><path d="M16.278 2c1.156 0 2.093.927 2.093 2.07v12.501a.74.74 0 00.744.709.74.74 0 00.743-.709V9.099a2.06 2.06 0 012.071-2.049A2.06 2.06 0 0124 9.1v6.561a.649.649 0 01-.652.645.649.649 0 01-.653-.645V9.1a.762.762 0 00-.766-.758.762.762 0 00-.766.758v7.472a2.037 2.037 0 01-2.048 2.026 2.037 2.037 0 01-2.048-2.026v-12.5a.785.785 0 00-.788-.753.785.785 0 00-.789.752l-.001 15.904A2.037 2.037 0 0113.441 22a2.037 2.037 0 01-2.048-2.026V18.04c0-.356.292-.645.652-.645.36 0 .652.289.652.645v1.934c0 .263.142.506.372.638.23.131.514.131.744 0a.734.734 0 00.372-.638V4.07c0-1.143.937-2.07 2.093-2.07zm-5.674 0c1.156 0 2.093.927 2.093 2.07v11.523a.648.648 0 01-.652.645.648.648 0 01-.652-.645V4.07a.785.785 0 00-.789-.78.785.785 0 00-.789.78v14.013a2.06 2.06 0 01-2.07 2.048 2.06 2.06 0 01-2.071-2.048V9.1a.762.762 0 00-.766-.758.762.762 0 00-.766.758v3.8a2.06 2.06 0 01-2.071 2.049A2.06 2.06 0 010 12.9v-1.378c0-.357.292-.646.652-.646.36 0 .653.29.653.646V12.9c0 .418.343.757.766.757s.766-.339.766-.757V9.099a2.06 2.06 0 012.07-2.048 2.06 2.06 0 012.071 2.048v8.984c0 .419.343.758.767.758.423 0 .766-.339.766-.758V4.07c0-1.143.937-2.07 2.093-2.07z" fill="url(#lobe-icons-minimax-fill)" fill-rule="nonzero"></path></svg>',
+  // xai.svg
+  xai:
+    '<svg aria-hidden="true" focusable="false" fill="currentColor" fill-rule="evenodd" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M6.469 8.776L16.512 23h-4.464L2.005 8.776H6.47zm-.004 7.9l2.233 3.164L6.467 23H2l4.465-6.324zM22 2.582V23h-3.659V7.764L22 2.582zM22 1l-9.952 14.095-2.233-3.163L17.533 1H22z"></path></svg>',
   // openrouter.svg
   openrouter:
     '<svg aria-hidden="true" focusable="false" fill="currentColor" fill-rule="evenodd" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M16.804 1.957l7.22 4.105v.087L16.73 10.21l.017-2.117-.821-.03c-1.059-.028-1.611.002-2.268.11-1.064.175-2.038.577-3.147 1.352L8.345 11.03c-.284.195-.495.336-.68.455l-.515.322-.397.234.385.23.53.338c.476.314 1.17.796 2.701 1.866 1.11.775 2.083 1.177 3.147 1.352l.3.045c.694.091 1.375.094 2.825.033l.022-2.159 7.22 4.105v.087L16.589 22l.014-1.862-.635.022c-1.386.042-2.137.002-3.138-.162-1.694-.28-3.26-.926-4.881-2.059l-2.158-1.5a21.997 21.997 0 00-.755-.498l-.467-.28a55.927 55.927 0 00-.76-.43C2.908 14.73.563 14.116 0 14.116V9.888l.14.004c.564-.007 2.91-.622 3.809-1.124l1.016-.58.438-.274c.428-.28 1.072-.726 2.686-1.853 1.621-1.133 3.186-1.78 4.881-2.059 1.152-.19 1.974-.213 3.814-.138l.02-1.907z"></path></svg>',
@@ -30,12 +36,33 @@ const PROVIDER_LOGO: Readonly<Record<string, ProviderLogoId>> = {
   'openai-codex': 'openai',
   deepseek: 'deepseek',
   stepfun: 'stepfun',
+  minimax: 'minimax',
+  xai: 'xai',
   openrouter: 'openrouter',
   google: 'gemini',
 };
 
-/** The static SVG markup of a provider's logo, or undefined for a provider without one. */
+let logoInstances = 0;
+
+function logoIdOf(provider: string): ProviderLogoId | undefined {
+  return Object.hasOwn(PROVIDER_LOGO, provider) ? PROVIDER_LOGO[provider] : undefined;
+}
+
+/** Whether `provider` has a logo, for a caller that shows something else in its place. */
+export function hasProviderLogo(provider: string): boolean {
+  return logoIdOf(provider) !== undefined;
+}
+
+/**
+ * The SVG markup of a provider's logo, or undefined for a provider without one. Each call numbers the logo's
+ * gradient ids afresh: Chromium paints no gradient whose first definition in the document is in a hidden subtree.
+ * Only ProviderLogo.vue calls it, once per rendered logo, so no two elements share one string's ids.
+ */
 export function providerLogoSvg(provider: string): string | undefined {
-  const id = Object.hasOwn(PROVIDER_LOGO, provider) ? PROVIDER_LOGO[provider] : undefined;
-  return id === undefined ? undefined : LOGOS[id];
+  const id = logoIdOf(provider);
+  if (id === undefined) return undefined;
+  const svg: string = LOGOS[id];
+  if (!svg.includes(' id="')) return svg;
+  const instance = ++logoInstances;
+  return svg.replace(/(id="|url\(#)(lobe-icons-[a-z]+-fill)/g, `$1$2-${instance}`);
 }

@@ -143,6 +143,20 @@ describe('TsconfigResolver JSONC support', () => {
 		expect(result).toBeDefined();
 		expect(result!).toContain('foo.ts');
 	});
+
+	it('reads a tsconfig.json that starts with a BOM', () => {
+		const bomDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tsconfig-bom-'));
+		try {
+			fs.mkdirSync(path.join(bomDir, 'src'));
+			fs.writeFileSync(path.join(bomDir, 'tsconfig.json'), `\uFEFF// comment\n{ "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["src/*"] } } }`);
+			fs.writeFileSync(path.join(bomDir, 'src', 'foo.ts'), 'export const x = 1;');
+			const result = new TsconfigResolver().resolveAlias('@/foo', path.join(bomDir, 'src', 'bar.ts'));
+			expect(result).toBeDefined();
+			expect(result!).toContain('foo.ts');
+		} finally {
+			fs.rmSync(bomDir, { recursive: true, force: true });
+		}
+	});
 });
 
 describe('TsconfigResolver extends', () => {

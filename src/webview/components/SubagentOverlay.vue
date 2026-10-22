@@ -259,7 +259,7 @@ function userMessageText(message: ChatMessage): string {
       />
       <AgentChip
         v-if="model"
-        :logo="model.logo"
+        :logo-provider="model.logoProvider"
         :value="model.name"
       />
       <AgentChip

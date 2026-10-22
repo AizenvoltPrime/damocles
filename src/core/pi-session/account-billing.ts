@@ -22,6 +22,8 @@ export interface AccountBillingDeps {
   preferApiKey: boolean;
   /** The pi provider the active model resolved to; undefined when it resolved to none. */
   resolvedProvider?: string | undefined;
+  /** Key providers whose applied key bills a flat subscription (`PiRuntime.flatFeeKeyProviders()`). */
+  flatFeeKeyProviders: ReadonlySet<string>;
 }
 
 /** The subscription the active credential bills, or undefined for an API key or a custom provider. */
@@ -62,6 +64,8 @@ export function buildAccountInfo(deps: AccountBillingDeps): AccountInfo {
 
 /** Whether the active credential is dollar-metered (API key or extra-usage), vs a flat subscription. */
 export function dollarBilled(deps: AccountBillingDeps): boolean {
+  const piProvider = deps.modelInfo?.piProvider;
+  if (piProvider && deps.flatFeeKeyProviders.has(piProvider)) return false;
   return isDollarBilled(deps.modelInfo, apiKeySource(deps));
 }
 
@@ -73,6 +77,8 @@ export interface ModelBillingDeps {
   preferApiKey: boolean;
   /** Decides which OpenAI provider a GPT model resolves to; undefined before pi's model runtime exists. */
   registry: ModelLookup | undefined;
+  /** Key providers whose applied key bills a flat subscription (`PiRuntime.flatFeeKeyProviders()`). */
+  flatFeeKeyProviders: ReadonlySet<string>;
 }
 
 /** Whether a catalog model value bills dollars, by the account state's rule: the provider `resolvePiModel` picks names the credential. */
@@ -84,6 +90,7 @@ export function modelDollarBilled(value: string, deps: ModelBillingDeps): boolea
     openaiAuthStatus: deps.openai,
     preferApiKey: deps.preferApiKey,
     resolvedProvider: resolvedProviderOf(value, deps.registry, deps.openai, deps.preferApiKey),
+    flatFeeKeyProviders: deps.flatFeeKeyProviders,
   });
 }
 
@@ -100,8 +107,8 @@ export function resolvedProviderOf(
 /**
  * Whether a resolved pi model bills dollars. A direct `provider/modelId` pin can choose a provider against
  * the panel's preference, so the provider decides first. `openai` bills the subscription only while ChatGPT
- * is its credential and the runtime key does not override it. A provider outside the catalog, or `openai`
- * with neither credential, has unknown billing, which reads as a charge.
+ * is its credential and the runtime key does not override it. A model outside the catalog, or `openai`
+ * with neither credential, has unknown billing, which reads as a charge: a flat-fee key's plan may not cover that model.
  */
 export function piModelDollarBilled(model: { provider: string; id: string }, deps: ModelBillingDeps): boolean {
   if (model.provider === OPENAI_CODEX_PROVIDER) return false;

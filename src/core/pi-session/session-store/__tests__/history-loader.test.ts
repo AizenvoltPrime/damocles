@@ -256,7 +256,7 @@ describe('reconstructMessages — steer chip (Slice 3)', () => {
 describe('reconstructMessages — failed model calls', () => {
   const failed = (id: string, errorMessage: string): SessionEntry =>
     ({ id, type: 'message', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage } }) as unknown as SessionEntry;
-  /** pi's `_omitRecoveryAttempt` (agent-session.js:840): a null-replacement edit taking a retried or overflow-recovered call out of model context. */
+  /** pi's `_omitRecoveryAttempt` (agent-session.js:843): a null-replacement edit taking a retried or overflow-recovered call out of model context. */
   const omitted = (targetId: string): SessionEntry =>
     ({ id: `edit-${targetId}`, type: 'context_edit', targetId, replacement: null }) as unknown as SessionEntry;
   const errors = (branch: SessionEntry[]) =>
@@ -289,7 +289,7 @@ describe('reconstructMessages — failed model calls', () => {
     expect(errors([userMsg('u1', 'hi'), silent])).toEqual(['Unknown error']);
   });
 
-  /** A call that streamed before it failed: pi keeps the partial content on the error stop (agent-loop.js:286-319). */
+  /** A call that streamed before it failed: pi keeps the partial content on the error stop (agent-loop.js:292-325). */
   const failedWith = (id: string, content: unknown[], errorMessage: string): SessionEntry =>
     ({ id, type: 'message', message: { role: 'assistant', content, stopReason: 'error', errorMessage } }) as unknown as SessionEntry;
   const PARTIAL = [
@@ -307,7 +307,7 @@ describe('reconstructMessages — failed model calls', () => {
     expect(messages[2]).toEqual({ kind: 'error', content: 'terminated' });
   });
 
-  // pi returns from the turn before executing any tool of an errored message (agent-loop.js:143-152), so the call never ran.
+  // pi returns from the turn before executing any tool of an errored message (agent-loop.js:148-157), so the call never ran.
   it('replays the tool calls of a failed call as not executed, never as an outcome that was not recorded', () => {
     const { messages } = reconstructMessages([userMsg('u1', 'hi'), failedWith('a1', PARTIAL, 'terminated')]);
 
@@ -316,7 +316,7 @@ describe('reconstructMessages — failed model calls', () => {
     expect(tools[0]).not.toHaveProperty('result');
   });
 
-  // pi returns before executing the tools of an aborted message too (agent-loop.js:143), and records the message (agent-session.js:768).
+  // pi returns before executing the tools of an aborted message too (agent-loop.js:148), and records the message (agent-session.js:767).
   it('replays the tool calls of an aborted call as not executed because the turn stopped, with no Stop record', () => {
     const aborted = { id: 'a1', type: 'message', message: { role: 'assistant', content: PARTIAL, stopReason: 'aborted', errorMessage: 'Request was aborted' } } as unknown as SessionEntry;
     const { messages } = reconstructMessages([userMsg('u1', 'hi'), aborted]);
@@ -355,13 +355,13 @@ describe('reconstructMessages — failed model calls', () => {
     const isOverflow = (message: { errorMessage?: string }): boolean => message.errorMessage === OVERFLOW;
     const kinds = (branch: SessionEntry[]) => reconstructMessages(branch, undefined, isOverflow).messages.map((m) => m.kind);
 
-    // _checkCompaction omits it (agent-session.js:2439); _runAutoCompaction returns before compacting (:2500-2507) or its compaction throws (:2587-2612).
+    // _checkCompaction omits it (agent-session.js:2468); _runAutoCompaction returns before compacting (:2529-2536) or its compaction throws (:2616-2641).
     it('shows its card when no compaction followed, as the live view does', () => {
       expect(reconstructMessages([userMsg('u1', 'hi'), failed('a1', OVERFLOW), omitted('a1')], undefined, isOverflow).messages
         .filter((m) => m.kind === 'error')).toEqual([{ kind: 'error', content: OVERFLOW }]);
     });
 
-    // A recovered overflow is followed by the compaction (:2533) and the re-run call.
+    // A recovered overflow is followed by the compaction (:2562) and the re-run call.
     it('shows the compaction and the re-run answer, not the overflow', () => {
       expect(kinds([userMsg('u1', 'hi'), failed('a1', OVERFLOW), omitted('a1'), compactionEntry('c1', 'sum'), assistantMsg('a2', 'the answer')]))
         .toEqual(['compaction', 'assistant']);
@@ -373,9 +373,9 @@ describe('reconstructMessages — failed model calls', () => {
   });
 
   describe('calls an abort skipped in a tool batch', () => {
-    // pi finalizes the call it was running and starts none after it (agent-loop.js:402-404 sequential, :429-431 and
-    // :449-451 parallel), persists only the finalized calls' results (:398-399, :453-458), and the next model call,
-    // made under the aborted signal, ends aborted and is persisted (:141-152, agent-session.js:768); a request setup the signal rejects first ends it on an error stop instead (pi-ai lazy.js:41-44).
+    // pi finalizes the call it was running and starts none after it (agent-loop.js:408-410 sequential, :435-437 and
+    // :455-457 parallel), persists only the finalized calls' results (:404-405, :459-464), and the next model call,
+    // made under the aborted signal, ends aborted and is persisted (:146-157, agent-session.js:767); a request setup the signal rejects first ends it on an error stop instead (pi-ai lazy.js:57-62).
     const call = (id: string) => ({ type: 'toolCall', id, name: 'read', arguments: { path: `/${id}.ts` } });
     const batch = (id: string, ...ids: string[]) =>
       ({ id, type: 'message', message: { role: 'assistant', content: ids.map(call), stopReason: 'toolUse' } }) as unknown as SessionEntry;
@@ -392,7 +392,7 @@ describe('reconstructMessages — failed model calls', () => {
       expect(tools[0]).toMatchObject({ isError: true });
     });
 
-    // pi drains the steering queue into the transcript before that call (agent-loop.js:186, :116-121).
+    // pi drains the steering queue into the transcript before that call (agent-loop.js:191, :121-126).
     // The wind-down record (`registerWindDownErrorRecord`) names the error whatever aborted the run, a Stop or not.
     it('replays them as stopped, with no card, when a wind-down error the record names follows', () => {
       const windDown = { id: 'a2', type: 'message', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'This operation was aborted' } } as unknown as SessionEntry;
@@ -903,7 +903,7 @@ describe('loadPiSessionHistory — subagent cards from invocation entries and ag
     expect(JSON.stringify(tool)).not.toContain('NESTEDPNG');
   });
 
-  // The nested extension records a call the abort settled at the gate (agent-loop.js:500-504) before pi writes its result.
+  // The nested extension records a call the abort settled at the gate (agent-loop.js:506-510) before pi writes its result.
   it('replays a nested call its aborted run settled before it ran as not executed, as the live card showed it', async () => {
     writeAgentFile('agent-1', 'agent-1', [
       { type: 'message', id: 'm1', parentId: 'l1', timestamp: ts(2), message: { role: 'user', content: 'look around' } },
@@ -1004,7 +1004,7 @@ describe('loadPiSessionHistory — subagent cards from invocation entries and ag
     writeAgentFile('agent-1', 'agent-1', [
       { type: 'message', id: 'm1', parentId: 'l1', timestamp: ts(2), message: { role: 'user', content: 'look around' } },
       { type: 'message', id: 'm2', parentId: 'm1', timestamp: ts(3), message: failed('Let me', '529 overloaded_error') },
-      // `_prepareRetry` omits the attempt it re-runs (`agent-session.js:3081`).
+      // `_prepareRetry` omits the attempt it re-runs (`agent-session.js:3110`).
       { type: 'context_edit', id: 'c1', parentId: 'm2', timestamp: ts(3), targetId: 'm2', replacement: null },
       { type: 'message', id: 'm3', parentId: 'c1', timestamp: ts(4), message: failed('Now I will', '400 invalid_request_error') },
       { type: 'custom', id: 's1', parentId: 'm3', timestamp: ts(5), customType: DAMOCLES_AGENT_STATUS_ENTRY, data: { status: 'error', result: '400 invalid_request_error' } },

@@ -146,7 +146,7 @@ export function planImagePruning(
       const next = Math.min(sites.length, boundary + batch);
       const gain = sites.slice(boundary, next).reduce((sum, site) => sum + site.bytes - PLACEHOLDER.length, 0);
       // Images shorter than the placeholder grow the payload, so escalating further cannot help.
-      // Reachable only through a user-defined maxRequestBytes (`dist/core/model-config.js:130` allows 1).
+      // Reachable only through a user-defined maxRequestBytes (pi-ai 1.4.0 `dist/providers/model-schema.js:54` allows 1).
       if (gain <= 0) break;
       freed += gain;
       boundary = next;

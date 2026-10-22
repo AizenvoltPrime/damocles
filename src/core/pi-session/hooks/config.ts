@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { stripBom } from '../../config/bom';
 import { log } from '../../logger';
 import { DAMOCLES_HOME_DIR } from '../../paths';
 import { hookEntrySchema, type HookEntry } from './types';
@@ -76,7 +77,7 @@ export function parseHooksFile(filePath: string): Record<string, HookEntry[]> {
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(stripJsonComments(raw));
+    parsed = JSON.parse(stripJsonComments(stripBom(raw)));
   } catch (err) {
     log('[Hooks] failed to parse %s (ignored): %O', filePath, err);
     return {};

@@ -216,6 +216,20 @@ describe("readDamoclesMcpServers (~/.damocles/mcp.json)", () => {
     expect(await readDamoclesMcpServers()).toEqual({ servers: {}, invalid: {}, error: null });
   });
 
+  it("reads a file that starts with a BOM", async () => {
+    files.set(DAMOCLES_MCP, `\uFEFF${JSON.stringify({ mcpServers: { dm: { command: "dm-cmd" } } })}`);
+    const { servers, error } = await readDamoclesMcpServers();
+    expect((servers["dm"] as McpStdioServerConfig).command).toBe("dm-cmd");
+    expect(error).toBeNull();
+  });
+
+  it("counts a syntax error's column without the BOM, as an editor shows it", async () => {
+    files.set(DAMOCLES_MCP, '\uFEFF{"a": 1,}');
+    const { error } = await readDamoclesMcpServers();
+    expect(error?.line).toBe(1);
+    expect(error?.column).toBe(9);
+  });
+
   it("reports a file that exists but does not parse, instead of dropping its servers silently", async () => {
     // A trailing comma — the mistake a hand-edit actually makes. Every server in the file disappears,
     // so the panel has to be able to say why.
@@ -406,6 +420,12 @@ description = "nothing spawnable here"
 
   it("yields an empty map when the file is absent, without logging", async () => {
     expect((await readCodexMcpServers()).servers).toEqual({});
+    expect(logMock).not.toHaveBeenCalled();
+  });
+
+  it("reads a file that starts with a BOM", async () => {
+    const config = (await codexServer('\uFEFF[mcp_servers.docs]\ncommand = "node"\n')) as McpStdioServerConfig;
+    expect(config.command).toBe("node");
     expect(logMock).not.toHaveBeenCalled();
   });
 

@@ -70,7 +70,7 @@ function toolsOver(manager: McpClientManager, filter: McpResourceRuleFilter = NO
 
 const json = (result: Result): Record<string, unknown> => JSON.parse(result.content[0]!.text!) as Record<string, unknown>;
 
-describe('MCP resource tools: parity with pi 1.3.0', () => {
+describe('MCP resource tools: parity with pi 1.4.0', () => {
   it('declares pi\u2019s names, descriptions and parameter schemas', async () => {
     const pi = (await import(pathToFileURL(PI_RESOURCES).href)) as {
       createMcpResourceToolDefinitions: (options: { servers: () => never[]; exposure: string }) => Array<{ name: string; description: string; parameters: Record<string, unknown> }>;

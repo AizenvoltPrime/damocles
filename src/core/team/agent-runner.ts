@@ -298,7 +298,7 @@ export class AgentRunner {
     // Per-run so a torn-down agent's pending frames can never fire into the next run's cards.
     const outputCoalescer = new ToolOutputCoalescer<ExtensionToWebviewMessage>((msg) => config.onMessage(msg));
 
-    /** pi opened the opening prompt's run, whose first user message is that prompt (`agent-session.js:1474-1478`, `:1664` in pi 1.3.0). */
+    /** pi opened the opening prompt's run, whose first user message is that prompt (`agent-session.js:1505-1509`, `:1693` in pi 1.4.0). */
     let openingRunStarted = false;
     /** pi queued the opening prompt into a run already open, which commits it as a user message of that text. */
     let openingQueued: string | null = null;
@@ -348,8 +348,8 @@ export class AgentRunner {
 
     let released = false;
     /**
-     * pi opens a prompt's run only after its input handlers return (`agent-session.js:1623` in pi 1.3.0), which neither
-     * `abort()` (`:1942-1951`) nor the runner letting go of the session waits for.
+     * pi opens a prompt's run only after its input handlers return (`agent-session.js:1652` in pi 1.4.0), which neither
+     * `abort()` (`:1971-1980`) nor the runner letting go of the session waits for.
      */
     const stopLateRun = (disposition: PromptDisposition): void => {
       if (disposition !== 'started' || !(released || config.abortSignal.aborted)) return;
@@ -385,7 +385,7 @@ export class AgentRunner {
 
     inbox.onArrival = () => {
       // Mid-stream, each message joins pi's steering queue in delivery order; otherwise wake the
-      // idle-wait to re-prompt. A retry's backoff runs inside the run (`agent-session.js:3085` in pi 1.3.0),
+      // idle-wait to re-prompt. A retry's backoff runs inside the run (`agent-session.js:3114` in pi 1.4.0),
       // so a message arriving then steers.
       // A stopped run would commit a steer as delivered with no answer, so after a stop nothing more is handed to pi.
       if (config.abortSignal.aborted) return;
@@ -448,8 +448,8 @@ export class AgentRunner {
     };
 
     /**
-     * pi awaits a prompt's input handlers before it reads the busy flag (`agent-session.js:1623`, `:1636` in pi 1.3.0), so a
-     * steer that reads it after its settling run cleared it (`:686`) starts a run of its own, which its prompt awaits and
+     * pi awaits a prompt's input handlers before it reads the busy flag (`agent-session.js:1652`, `:1665` in pi 1.4.0), so a
+     * steer that reads it after its settling run cleared it (`:685`) starts a run of its own, which its prompt awaits and
      * which outlives the prompt the loop awaited. The loop decides only once every prompt settled and pi is idle, whoever
      * opened the run. A stop lets go of a prompt pi still holds and of a run pi still prepares, both stopped at their start
      * (`stopLateRun`, `onAbort`), and waits for a run pi opened, which it aborts.
@@ -467,7 +467,7 @@ export class AgentRunner {
         await open;
       }
     };
-    /** A prompt made while another run is open joins that run (`agent-session.js:1636-1647`), so the loop prompts only once pi is idle; false once stopped. */
+    /** A prompt made while another run is open joins that run (`agent-session.js:1665-1676`), so the loop prompts only once pi is idle; false once stopped. */
     const idleForPrompt = async (): Promise<boolean> => {
       await run.untilIdle(config.abortSignal);
       return !config.abortSignal.aborted;
@@ -497,7 +497,7 @@ export class AgentRunner {
         if (!parked) {
           if (!(await idleForPrompt())) break;
           // Reclaims a steer pi accepted after its settling run last checked its queue, which that run left
-          // undelivered (`agent-session.js:1426`, `:1537-1539`). It is already echoed, hence `echoed: true`.
+          // undelivered (`agent-session.js:1457`, `:1566-1568`). It is already echoed, hence `echoed: true`.
           if (session.pendingMessageCount > 0) {
             const queued = session.clearQueue();
             const texts = [...queued.steering, ...queued.followUp];
@@ -618,8 +618,8 @@ export class AgentRunner {
           queueMicrotask(cb.onUsage);
         }
         break;
-      // pi emits it after every error stop (`agent-loop.js:141-152`, `agent.js:375-378` in pi-agent-core 1.3.0), once it
-      // committed the record `registerWindDownErrorRecord` returns at that boundary (`agent-session.js:515`, `:636-641`).
+      // pi emits it after every error stop (`agent-loop.js:146-157`, `agent.js:380-382` in pi-agent-core 1.4.0), once it
+      // committed the record `registerWindDownErrorRecord` returns at that boundary (`agent-session.js:514`, `:635-640`).
       case 'turn_end': {
         const failed = cb.call.undecidedError;
         if (!failed) break;

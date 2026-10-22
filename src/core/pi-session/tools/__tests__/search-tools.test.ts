@@ -122,6 +122,23 @@ describe('grep', () => {
     expect(createGrepTool(pi, root, resolveRg, noReadRules).name).toBe('grep');
   });
 
+  it('ignores a ripgrep config file, as pi grep does', async () => {
+    write('rgconfig/dots.txt', 'aXb\na.b\n');
+    const config = `${root}.rgrc`;
+    writeFileSync(config, '--fixed-strings\n');
+    try {
+      const params = { pattern: 'a.b', path: 'rgconfig', literal: false };
+      vi.stubEnv('RIPGREP_CONFIG_PATH', config);
+      const expected = await execute(piGrep(), params);
+      const actual = await execute(createGrepTool(pi, root, resolveRg, noReadRules), params);
+      expect(sortedText(actual)).toEqual(['dots.txt:1: aXb', 'dots.txt:2: a.b']);
+      expect(sortedText(actual)).toEqual(sortedText(expected));
+    } finally {
+      rmSync(config, { force: true });
+      rmSync(join(root, 'rgconfig'), { recursive: true, force: true });
+    }
+  });
+
   it('rejects a missing path and an aborted call', async () => {
     const tool = createGrepTool(pi, root, resolveRg, noReadRules);
     await expect(run(tool, { pattern: 'x', path: 'nope' })).rejects.toThrow(`Path not found: ${join(root, 'nope')}`);
@@ -165,6 +182,17 @@ describe('find', () => {
     expect(await lines({ pattern: '*.ts', path: 'src/deep' })).toEqual(['util.spec.ts']);
     expect(await find({ pattern: '*', limit: 1 })).toMatch(/\n\n\[1 results limit reached\. Use limit=2 for more, or refine pattern\]$/);
     expect(await find({ pattern: '*', limit: 0 })).toBe('No files found matching pattern');
+  });
+
+  it('ignores a ripgrep config file', async () => {
+    const config = `${root}.rgrc`;
+    writeFileSync(config, '--max-depth=1\n');
+    try {
+      vi.stubEnv('RIPGREP_CONFIG_PATH', config);
+      expect(await lines({ pattern: '*.ts' })).toEqual(['src/ spaced.ts', 'src/app.ts', 'src/deep/util.spec.ts']);
+    } finally {
+      rmSync(config, { force: true });
+    }
   });
 
   it('rejects a missing path, a file path and an aborted call', async () => {

@@ -7,7 +7,7 @@ import { Palette } from 'lucide-vue-next';
 import { i18n, initLocaleMessaging } from '@/i18n';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { VSCODE_HOST_CAPABILITIES, type WebviewToExtensionMessage } from '@shared/types/messages';
-import type { SettingsSectionId } from '@shared/settings-sections';
+import { KEY_PROVIDER_IDS, type SettingsSectionId } from '@shared/settings-sections';
 import type { EffortLevel } from '@shared/types/settings';
 import { settingsViewHandlers, type SettingsHandlerContext } from '@/composables/message-handler/handlers/settings-handlers';
 import { useUIStore } from '@/stores/useUIStore';
@@ -147,15 +147,13 @@ describe('state', () => {
     const ctx = context();
     settingsViewHandlers.claudeAuthStatusChanged({ type: 'claudeAuthStatusChanged', mode: 'allowance' }, ctx);
     settingsViewHandlers.openaiAuthStatusChanged({ type: 'openaiAuthStatusChanged', status: { chatgpt: { signedIn: true }, codex: { signedIn: false }, apikey: { configured: false } }, preferApiKey: false }, ctx);
-    settingsViewHandlers.deepseekAuthStatusChanged({ type: 'deepseekAuthStatusChanged', configured: true }, ctx);
-    settingsViewHandlers.stepfunAuthStatusChanged({ type: 'stepfunAuthStatusChanged', configured: true }, ctx);
-    settingsViewHandlers.openrouterAuthStatusChanged({ type: 'openrouterAuthStatusChanged', configured: true }, ctx);
-    settingsViewHandlers.typesafeAuthStatusChanged({ type: 'typesafeAuthStatusChanged', configured: true, memoryJudge: { kind: 'unknown' }, classifierCredentials: { typesafe: 'ok', openrouter: 'ok', openai: 'no-key' } }, ctx);
+    for (const provider of KEY_PROVIDER_IDS) settingsViewHandlers.providerAuthStatusChanged({ type: 'providerAuthStatusChanged', provider, configured: true, external: null }, ctx);
+    settingsViewHandlers.memoryJudgeStatus({ type: 'memoryJudgeStatus', memoryJudge: { kind: 'unknown' }, classifierCredentials: { typesafe: 'ok', openrouter: 'ok', openai: 'no-key' } }, ctx);
     await nextTick();
     const status = (provider: string): string => row(`account-${provider}`)!.querySelector('[role="status"]')!.textContent!.trim();
     expect(status('anthropic')).toBe(t('claudeAuth.status.allowance'));
     expect(status('openai')).toBe(t('settingsModal.account.signedIn'));
-    for (const provider of ['deepseek', 'stepfun', 'openrouter', 'typesafe']) expect(status(provider)).toBe(t('settingsModal.account.keySaved'));
+    for (const provider of KEY_PROVIDER_IDS) expect(status(provider)).toBe(t('settingsModal.account.keySaved'));
     expect([...document.querySelectorAll('[aria-expanded="true"]')]).toEqual([]);
     expect(posted).toEqual([{ type: 'requestSettingsState' }]);
   });
@@ -750,8 +748,7 @@ describe('Models & accounts model and effort rows', () => {
     const store = useSettingsStore();
     store.setClaudeAuthMode('apikey');
     store.setOpenAIAuthStatus({ chatgpt: { signedIn: true }, codex: { signedIn: false }, apikey: { configured: false } }, false);
-    store.setDeepseekConfigured(true);
-    store.setStepfunConfigured(true);
+    for (const provider of KEY_PROVIDER_IDS) store.setKeyProviderConfigured(provider, true, null);
   }
 
   const trigger = (rowId: string, label: string): HTMLElement => row(rowId)!.querySelector<HTMLElement>(`button[aria-label="${label}"]`)!;
@@ -806,7 +803,7 @@ describe('Models & accounts model and effort rows', () => {
   });
 
   it.each(PAIRS)('$name: a model whose provider is signed out is listed disabled with the reason, and shows it when selected', async (pair) => {
-    useSettingsStore().setStepfunConfigured(true);
+    useSettingsStore().setKeyProviderConfigured('stepfun', true, null);
     setPair(pair, 'claude-sonnet-5-5', null);
     await open(NO_HOST_SETTINGS, 'accounts');
     const selected = trigger(pair.id, pair.model);
@@ -828,7 +825,7 @@ describe('Models & accounts model and effort rows', () => {
   });
 
   it('keeps an unavailable option reachable by keyboard, announces its reason, and never selects it', async () => {
-    useSettingsStore().setStepfunConfigured(true);
+    useSettingsStore().setKeyProviderConfigured('stepfun', true, null);
     setPair(PAIRS[0]!, 'step-5-preview', null);
     await open(NO_HOST_SETTINGS, 'accounts');
     await openSelect(PAIRS[0]!.id, PAIRS[0]!.model);
@@ -842,8 +839,30 @@ describe('Models & accounts model and effort rows', () => {
     expect(posted.filter((message) => message.type === PAIRS[0]!.modelMessage)).toEqual([]);
   });
 
+  // pi runs a model on a key from the environment or its own config, and Automatic picks it, so the choices count it as signed in.
+  it('counts a key pi reads outside Damocles as signed in, and names where it comes from apart from a saved key', async () => {
+    const ctx = context();
+    settingsViewHandlers.providerAuthStatusChanged({ type: 'providerAuthStatusChanged', provider: 'minimax', configured: false, external: 'environment' }, ctx);
+    settingsViewHandlers.providerAuthStatusChanged({ type: 'providerAuthStatusChanged', provider: 'stepfun', configured: false, external: 'piConfig' }, ctx);
+    settingsViewHandlers.providerAuthStatusChanged({ type: 'providerAuthStatusChanged', provider: 'xai', configured: true, external: 'environment' }, ctx);
+    setPair(PAIRS[0]!, 'claude-sonnet-5-5', null);
+    await open(NO_HOST_SETTINGS, 'accounts');
+    const status = (provider: string): Element => row(`account-${provider}`)!.querySelector('[role="status"]')!;
+    expect(status('minimax').textContent!.trim()).toBe(t('settingsModal.account.keyFromEnvironment'));
+    expect(status('minimax').getAttribute('data-state')).toBe('ok');
+    expect(status('stepfun').textContent!.trim()).toBe(t('settingsModal.account.keyFromPiConfig'));
+    expect(status('stepfun').getAttribute('data-state')).toBe('ok');
+    expect(status('xai').textContent!.trim()).toBe(t('settingsModal.account.keySaved'));
+    expect(status('deepseek').getAttribute('data-state')).toBe('off');
+
+    await openSelect(PAIRS[0]!.id, PAIRS[0]!.model);
+    expect(option('MiniMax M3.1 Flash').getAttribute('aria-disabled') === 'true').toBe(false);
+    expect(option('Grok 4.7').getAttribute('aria-disabled') === 'true').toBe(false);
+    expect(option('DeepSeek V4 Pro').getAttribute('aria-disabled') === 'true').toBe(true);
+  });
+
   it('lists a classifier whose credential cannot serve it as disabled, with the reason', async () => {
-    useSettingsStore().setTypesafeStatus(false, { kind: 'unknown' }, { typesafe: 'no-key', openrouter: 'ok', openai: 'chatgpt-active' });
+    useSettingsStore().setMemoryJudgeStatus({ kind: 'unknown' }, { typesafe: 'no-key', openrouter: 'ok', openai: 'chatgpt-active' });
     await open(NO_HOST_SETTINGS, 'accounts');
     await openSelect('damocles.memory.judge', 'Memory judge');
     expect(option('Jev (TypeSafe)').getAttribute('aria-disabled') === 'true').toBe(true);
@@ -857,7 +876,7 @@ describe('Models & accounts model and effort rows', () => {
     const store = useSettingsStore();
     const credentials = { typesafe: 'no-key', openrouter: 'ok', openai: 'ok' } as const;
     store.setJudgeSettings({ choice: 'jev-typesafe', effort: null });
-    store.setTypesafeStatus(false, { kind: 'none', forced: { choice: 'jev-typesafe', reason: 'no-key' } }, credentials);
+    store.setMemoryJudgeStatus({ kind: 'none', forced: { choice: 'jev-typesafe', reason: 'no-key' } }, credentials);
     await open(NO_HOST_SETTINGS, 'accounts');
     const warning = (): HTMLElement | null => row('damocles.memory.judge')!.querySelector<HTMLElement>('[role="status"][data-testid="memory-judge-warning"]');
     expect(warning()!.textContent!.trim()).toBe(
@@ -866,16 +885,16 @@ describe('Models & accounts model and effort rows', () => {
     expect(trigger('damocles.memory.judge', 'Memory judge').textContent).toContain(t('settings.memoryJudge.unavailable.no-key'));
 
     store.setJudgeSettings({ choice: 'claude-sonnet-5-5', effort: null });
-    store.setTypesafeStatus(false, { kind: 'none', forced: { choice: 'claude-sonnet-5-5', reason: 'signed-out' } }, credentials);
+    store.setMemoryJudgeStatus({ kind: 'none', forced: { choice: 'claude-sonnet-5-5', reason: 'signed-out' } }, credentials);
     await nextTick();
     expect(warning()!.textContent).toContain('Sonnet 5.5 is the chosen judge but cannot run: its provider is signed out.');
 
     store.setJudgeSettings({ choice: 'claude-opus-1', effort: null });
-    store.setTypesafeStatus(false, { kind: 'none', forced: { choice: 'claude-opus-1', reason: 'unrecognized' } }, credentials);
+    store.setMemoryJudgeStatus({ kind: 'none', forced: { choice: 'claude-opus-1', reason: 'unrecognized' } }, credentials);
     await nextTick();
     expect(warning()!.textContent).toContain('claude-opus-1 is the chosen judge but cannot run: this version of Damocles does not offer it.');
 
-    store.setTypesafeStatus(false, { kind: 'classifier', via: 'openrouter' }, credentials);
+    store.setMemoryJudgeStatus({ kind: 'classifier', via: 'openrouter' }, credentials);
     await nextTick();
     expect(warning()!.textContent!.trim()).toBe('');
   });
@@ -898,7 +917,7 @@ describe('Models & accounts model and effort rows', () => {
 describe('always-thinking models', () => {
   const thinking = { thinkingDisabled: false, effort: null };
 
-  it.each(['step-5-preview', 'claude-sonnet-5-5'])('This chat disables the thinking switch for %s and says why', async (model) => {
+  it.each(['step-5-preview', 'claude-sonnet-5-5', 'MiniMax-M3.1-Flash', 'grok-4.7'])('This chat disables the thinking switch for %s and says why', async (model) => {
     const store = useSettingsStore();
     store.setModelState(model, model);
     store.setPanelThinking(thinking, model);
@@ -908,7 +927,7 @@ describe('always-thinking models', () => {
     expect(row('disable-thinking')!.querySelector('.sm-row-desc')!.textContent).toContain(t('settings.thinkingAlwaysOn'));
   });
 
-  it.each(['step-5-preview', 'claude-sonnet-5-5'])('Defaults disables the thinking switch for %s and says why', async (model) => {
+  it.each(['step-5-preview', 'claude-sonnet-5-5', 'MiniMax-M3.1-Flash', 'grok-4.7'])('Defaults disables the thinking switch for %s and says why', async (model) => {
     const store = useSettingsStore();
     store.setModelState('', model);
     store.setDefaultThinking(thinking, model);

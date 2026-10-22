@@ -8,6 +8,7 @@ import {
   type McpWriteErrorInfo,
 } from "../../../../shared/types/mcp";
 import { DAMOCLES_MCP_CONFIG_PATH } from "./mcp-config-import";
+import { stripBom } from "../../../config/bom";
 import { JsonConfigWriteError, writeJsonConfig } from "../../../config/json-config-write";
 import { assertValidMcpServerConfig, assertValidMcpServerName } from "./mcp-config-validate";
 import { log } from "../../../logger";
@@ -77,7 +78,7 @@ function parseDocument(text: string | undefined): DamoclesMcpDocument {
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text);
+    parsed = JSON.parse(stripBom(text));
   } catch {
     throw new McpWriteError("fileUnparseable", "~/.damocles/mcp.json is not valid JSON; fix the file by hand and try again");
   }
@@ -285,7 +286,7 @@ function migratedText(text: string | undefined): string | undefined {
   if (text === undefined) return undefined;
   let root: unknown;
   try {
-    root = JSON.parse(text);
+    root = JSON.parse(stripBom(text));
   } catch {
     return undefined;
   }

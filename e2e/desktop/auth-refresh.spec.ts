@@ -34,17 +34,23 @@ test('a login written by another process updates the billing the chat shows and 
   }
 });
 
-test('an API key entered in the modal reaches the account without ever showing in the page', async ({ launch }) => {
-  const { app } = await launch();
-  await expect(chatInput(await activeChat(app))).toBeVisible();
-  const overlay = await openSettingsModal(app, 'accounts');
-  const deepseek = settingsRow(overlay, 'account-deepseek');
-  await deepseek.getByRole('button', { name: /Add key/ }).click();
-  const key = deepseek.getByLabel('API key', { exact: false }).first();
-  await expect(key).toHaveAttribute('type', 'password');
-  await key.fill('sk-e2e-deepseek-not-real');
-  await key.press('Enter');
-  await expect(deepseek.getByRole('status').first()).toHaveText('Key saved');
-  await expect(key).toHaveValue('');
-  expect(await overlay.content()).not.toContain('sk-e2e-deepseek-not-real');
-});
+for (const [provider, secret] of [
+  ['deepseek', 'sk-e2e-deepseek-not-real'],
+  ['minimax', 'sk-cp-e2e-minimax-not-real'],
+  ['xai', 'xai-e2e-not-real'],
+] as const) {
+  test(`a ${provider} API key entered in the modal reaches the account without ever showing in the page`, async ({ launch }) => {
+    const { app } = await launch();
+    await expect(chatInput(await activeChat(app))).toBeVisible();
+    const overlay = await openSettingsModal(app, 'accounts');
+    const account = settingsRow(overlay, `account-${provider}`);
+    await account.getByRole('button', { name: /Add key/ }).click();
+    const key = account.getByLabel('API key', { exact: false }).first();
+    await expect(key).toHaveAttribute('type', 'password');
+    await key.fill(secret);
+    await key.press('Enter');
+    await expect(account.getByRole('status').first()).toHaveText('Key saved');
+    await expect(key).toHaveValue('');
+    expect(await overlay.content()).not.toContain(secret);
+  });
+}

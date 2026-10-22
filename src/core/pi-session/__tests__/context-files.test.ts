@@ -12,7 +12,7 @@ import {
 
 /**
  * Copied by hand from pi `packages/coding-agent/src/core/resource-loader.ts:184-185`
- * (`loadContextFileFromDir`) at the pinned `@earendil-works/pi-coding-agent@1.3.0`. It is a literal, not an import,
+ * (`loadContextFileFromDir`) at the pinned `@earendil-works/pi-coding-agent@1.4.0`. It is a literal, not an import,
  * so a pi upgrade that changes the candidate order fails here instead of silently diverging.
  */
 const PI_CONTEXT_FILE_CANDIDATES = [
@@ -97,6 +97,12 @@ describe('context-files', () => {
         path: path.join(damoclesDir, 'AGENTS.md'),
         content: 'global agents',
       });
+    });
+
+    it('drops a leading BOM, as pi\'s loadContextFileFromDir does', () => {
+      fs.writeFileSync(path.join(damoclesDir, 'AGENTS.md'), '\uFEFFglobal agents');
+
+      expect(resolveGlobalContextFile(home)?.content).toBe('global agents');
     });
 
     it('reads CLAUDE.md when it is the only candidate present', () => {

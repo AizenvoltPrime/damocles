@@ -1,4 +1,4 @@
-import type { TranscriptMessages } from '@earendil-works/pi-ai';
+import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import { loadedPiAi } from '../pi-loader';
 import { isMcpToolName } from '../mcp/naming';
 import { BUILTIN_DEFERRED_GROUPS } from './deferred-tools';
@@ -16,17 +16,18 @@ const BUILTIN_DEFERRABLE = new Set(BUILTIN_DEFERRED_GROUPS.flatMap((group) => [.
 const canBecomeDeferrable = (name: string): boolean => BUILTIN_DEFERRABLE.has(name) || isMcpToolName(name);
 
 /**
- * The tools a transcript's recorded loadout had declared at the branch tip, replayed by pi-ai's
- * `getCurrentTools` from its `toolsAdded`/`toolsRemoved` system messages, the record pi restores a
- * resumed session from.
+ * The tools a branch's recorded loadout had declared at its tip, replayed by pi-ai's `getCurrentTools` from
+ * the `toolsAdded`/`toolsRemoved` system messages of every branch entry, those before a compaction included.
+ * That is the record pi's `_restoreToolsFromTranscript` restores a resumed session from.
  */
-export function restoredDeferredTools(messages: TranscriptMessages, deferrable: ReadonlySet<string>): RestoredDeferredTools {
+export function restoredDeferredTools(branch: readonly SessionEntry[], deferrable: ReadonlySet<string>): RestoredDeferredTools {
   const piAi = loadedPiAi();
   // `initPiLoader` loads pi-ai with pi, so a live session always has it.
   if (!piAi) throw new Error('pi-ai is not loaded');
+  const systemMessages = branch.flatMap((entry) => (entry.type === 'message' && entry.message.role === 'system' ? [entry.message] : []));
   const active = new Set<string>();
   const pending = new Set<string>();
-  for (const { name } of piAi.getCurrentTools(messages)) {
+  for (const { name } of piAi.getCurrentTools(systemMessages)) {
     if (deferrable.has(name)) active.add(name);
     else if (canBecomeDeferrable(name)) pending.add(name);
   }
