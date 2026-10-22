@@ -7,7 +7,7 @@ import { activeChat, expect, IPC_HANDLER_ERROR_ANNOTATION, nextChat, test } from
 import { seedStubModel, writeUserSettings, type HermeticHome } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { dismissedToasts, recordedToasts, recordToasts, selectedProjectKey, shellPage, shellState } from './support/shell';
-import { chatInput, clickMenu, sendAndAwaitEcho } from './support/ui';
+import { awaitTurnEnd, chatInput, clickMenu, sendAndAwaitEcho } from './support/ui';
 
 // The notices main shows for a core crash (src/desktop/main/index.ts coreCrashed).
 const RESTARTED = 'The Damocles engine stopped unexpectedly and was restarted.';
@@ -131,6 +131,7 @@ test('a chat keeps its permission mode and YOLO through an engine crash, with an
     await expect(prompt).toContainText('echo after-the-crash');
     await prompt.getByRole('option', { name: 'Yes', exact: true }).click();
     await expect(askingAfterCrash!.getByText('Command done')).toBeVisible();
+    await awaitTurnEnd(askingAfterCrash!);
     chats[1]!.text = 'Command done';
 
     // Restart Engine replaces the running engine; the chats come back as the user left them again.

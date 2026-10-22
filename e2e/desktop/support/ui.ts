@@ -202,10 +202,19 @@ export async function addProject(app: ElectronApplication, dir: string, trust: b
 }
 
 /** Sends `text` from the tab and waits for the stub's echo of it to render. */
+/**
+ * Waits until the chat's turn has ended. A reply shows while it streams, and pi saves it to the session file only at its
+ * message_end, before core lowers the spinner; with an empty composer the send button reads Stop until then.
+ */
+export async function awaitTurnEnd(tab: Page): Promise<void> {
+  await expect(tab.getByTestId('composer-send')).toHaveAttribute('aria-label', 'Send (Enter)');
+}
+
 export async function sendAndAwaitEcho(tab: Page, text: string): Promise<void> {
   await chatInput(tab).fill(text);
   await chatInput(tab).press('Enter');
   await tab.getByText(`Echo: ${text}`, { exact: true }).waitFor();
+  await awaitTurnEnd(tab);
 }
 
 /** Posts a webview message through the tab's own bridge, exactly as a webview control does. */

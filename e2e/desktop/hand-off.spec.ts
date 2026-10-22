@@ -69,7 +69,7 @@ test('Move to a worktree moves the chat\'s two files, leaves the user\'s third, 
 
     // The row's time and model line swaps for the branch; its logo keeps its own size through the swap.
     const shell = await shellPage(app);
-    await expect(shell.locator('[data-testid="chat-list"] [aria-selected="true"] .provider-logo')).toBeVisible();
+    await expect(shell.locator('[data-testid="chat-list"] [aria-selected="true"]').getByTestId('provider-logo')).toBeVisible();
     await recordChatRow(shell, 'selected');
     const record = await moveToWorktree(app, home, tab, ['a.ts', 'b.ts']);
     await expect(shell.locator('[data-testid="chat-list"] [aria-selected="true"]')).toHaveAttribute('data-worktree', 'live');

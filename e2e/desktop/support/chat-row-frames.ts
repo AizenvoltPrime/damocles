@@ -30,7 +30,7 @@ export async function recordChatRow(shell: Page, title: string | 'selected'): Pr
       const row = [...document.querySelectorAll('[data-testid="chat-list"] [role="option"]')]
         .find((option) => (title === 'selected' ? option.getAttribute('aria-selected') === 'true' : option.querySelector('[data-testid="chat-title"]')?.textContent === title));
       if (row) {
-        const logos = [...row.querySelectorAll('.provider-logo > svg')].map((svg) => {
+        const logos = [...row.querySelectorAll('[data-testid="provider-logo"] > svg')].map((svg) => {
           const box = svg.getBoundingClientRect();
           return { width: box.width, height: box.height };
         });
