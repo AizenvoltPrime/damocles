@@ -88,6 +88,24 @@ describe('ProfileManager', () => {
     expect(profile.dynamic).toBe(PROFILE_VALUE.dynamic);
   });
 
+  it('updateProfile makes no model call and writes nothing while damocles.memory.profile.enabled is off', async () => {
+    seedFact(db, 'f1', 'Uses esbuild for bundling', WORKSPACE);
+    let calls = 0;
+    const runner: MemorySubCallRunner = {
+      async run<T>(): Promise<MemorySubCallResult<T>> {
+        calls += 1;
+        return { value: PROFILE_VALUE as unknown as T };
+      },
+    };
+    const settings = createFakePlatform({ settings: { user: { 'damocles.memory.profile.enabled': false } } }).settings;
+    const manager = new ProfileManager(db, new MemoryWriteQueue(), runner, settings);
+
+    await manager.updateProfile('project', WORKSPACE);
+
+    expect(calls).toBe(0);
+    expect(sectionRows(db, WORKSPACE)).toEqual(new Set());
+  });
+
   it('the update prompt names the scope and lists its preferences as already injected, never as source memories', async () => {
     const now = Date.now();
     const insert = db.prepare(

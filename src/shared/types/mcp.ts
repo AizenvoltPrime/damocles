@@ -1,3 +1,5 @@
+import type { AssetSourcePrecedence } from "./settings";
+
 /** OAuth configuration for a remote MCP server (US-014.5). */
 export interface McpOAuthConfig {
   /** OAuth grant type (defaults to authorization_code). */
@@ -140,11 +142,7 @@ type SameMemberSet<A extends string, B extends string> = [A] extends [B] ? ([B] 
 type SlotsOf<Order> = { readonly [Slot in keyof Order]: SameMemberSet<McpServerSource, (typeof SOURCE_ORDER_CODEX_WINS)[number]> };
 export type McpSourceOrder = SlotsOf<typeof SOURCE_ORDER_CLAUDE_WINS>;
 
-/**
- * The precedence argument is spelled structurally rather than imported as `AssetSourcePrecedence`,
- * because that type lives in the extension host and this module is also bundled into the webview.
- */
-export function mcpSourceOrder(precedence: "claude" | "codex"): McpSourceOrder {
+export function mcpSourceOrder(precedence: AssetSourcePrecedence): McpSourceOrder {
   return precedence === "codex" ? SOURCE_ORDER_CODEX_WINS : SOURCE_ORDER_CLAUDE_WINS;
 }
 

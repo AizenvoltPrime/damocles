@@ -6,7 +6,22 @@ import type { PanelHost } from "../../../../platform/window-service";
 import type { ExtensionSettings, PermissionMode, AutoCompactConfig, CacheWarmingMode, EffortLevel, TeamRoleSettings } from "../../../../shared/types/settings";
 import type { PostMessageFn } from "../types";
 import { updateConfigAtEffectiveScope, assertEffortSupported, coerceEffortForModel, type SettingWrite } from "../utils";
-import { migrateLegacyModelValue, migrateLegacyEffortValue, parseEffortLevel, parseCacheWarmingMode, supportedStoredEffort, effortByModelIds, DEFAULT_MODELS, DEFAULT_FALLBACK_MODEL } from "../../../../shared/types/constants";
+import {
+  migrateLegacyModelValue,
+  migrateLegacyEffortValue,
+  parseEffortLevel,
+  parseCacheWarmingMode,
+  parseAssetSourcePrecedence,
+  supportedStoredEffort,
+  effortByModelIds,
+  ASSET_SOURCE_PRECEDENCES,
+  DEFAULT_MODELS,
+  DEFAULT_FALLBACK_MODEL,
+  DEFAULT_SUBAGENT_CONCURRENCY,
+  SUBAGENT_CONCURRENCY_MAX,
+  SUBAGENT_CONCURRENCY_MIN,
+  clampSubagentConcurrency,
+} from "../../../../shared/types/constants";
 import type { TeamRole } from "../../../pi-session/team-model-resolution";
 import { BACKGROUND_EFFORT_SETTING, BACKGROUND_MODEL_SETTING } from "../../../pi-session/subcall-model";
 import { MEMORY_JUDGE_EFFORT_SETTING, MEMORY_JUDGE_SETTING, isKnownMemoryJudgeChoice } from "../../../../shared/memory-judge";
@@ -18,6 +33,11 @@ import { t } from "../../../l10n";
 
 // A hundred years; the bound keeps a typed number from overflowing the retention arithmetic.
 const MAX_RETENTION_DAYS = 36500;
+
+// A setter's value arrives from a renderer, and a truthy non-boolean in a settings file reads as on.
+function assertBoolean(value: unknown): asserts value is boolean {
+  if (typeof value !== "boolean") throw new Error(t("A switch setting must be true or false"));
+}
 
 export class ConfigManager {
   private readonly postMessage: PostMessageFn;
@@ -95,14 +115,18 @@ export class ConfigManager {
     const judge = { choice: judgeChoice, effort: supportedStoredEffort(judgeChoice, config.get<string>(MEMORY_JUDGE_EFFORT_SETTING, "")) };
 
     const settings: ExtensionSettings = {
-      maxTurns: config.get<number>("damocles.maxTurns", 100),
       maxBudgetUsd: config.get<number | null>("damocles.maxBudgetUsd", null, folder),
       taskBudget: config.get<number | null>("damocles.taskBudget", null, folder),
       permissionMode: permissionHandler.getPermissionMode(),
       defaultPermissionMode: config.get<PermissionMode>("damocles.permissionMode", "default", folder),
-      enableFileCheckpointing: config.get<boolean>("damocles.enableFileCheckpointing", true),
-      sandbox: config.get<{ enabled: boolean }>("damocles.sandbox", { enabled: false }),
       autoCompact: config.get<AutoCompactConfig>("damocles.autoCompact", defaultAutoCompact, folder),
+      subagentsMaxConcurrent: clampSubagentConcurrency(config.get<unknown>("damocles.subagents.maxConcurrent", DEFAULT_SUBAGENT_CONCURRENCY, folder)),
+      showCacheMissNotices: config.get<boolean>("damocles.showCacheMissNotices", false, folder),
+      showThinkingDroppedNotices: config.get<boolean>("damocles.showThinkingDroppedNotices", true, folder),
+      assetSourcePrecedence: parseAssetSourcePrecedence(config.get<string>("damocles.assetSourcePrecedence", "claude")),
+      memoryAutoExtract: config.get<boolean>("damocles.memory.autoExtract.enabled", true),
+      memoryProfile: config.get<boolean>("damocles.memory.profile.enabled", true),
+      browserHeadless: config.get<boolean>("damocles.browser.headless", true),
       cacheWarming: parseCacheWarmingMode(config.get("damocles.cacheWarming")),
       checkpointRetentionDays: config.get<number>("damocles.checkpoints.retentionDays", 30),
       dangerouslySkipPermissions: permissionHandler.getDangerouslySkipPermissions(),
@@ -153,10 +177,12 @@ export class ConfigManager {
   }
 
   async handleSetDefaultThinkingDisabled(disabled: boolean, folder: SettingsFolder | undefined): Promise<SettingWrite> {
+    assertBoolean(disabled);
     return updateConfigAtEffectiveScope(this.platform, "damocles.thinkingDisabled", disabled, { folder });
   }
 
   async handleSetPinnedHeaderHidden(hidden: boolean): Promise<void> {
+    assertBoolean(hidden);
     await this.platform.settings.update("damocles.pinnedHeaderHidden", hidden, "user");
   }
 
@@ -256,11 +282,30 @@ export class ConfigManager {
     return updateConfigAtEffectiveScope(this.platform, "damocles.autoCompact", config, this.workspaceScope(folder));
   }
 
+  async handleSetSubagentsMaxConcurrent(count: number, folder: SettingsFolder | undefined): Promise<SettingWrite> {
+    if (!Number.isInteger(count) || count < SUBAGENT_CONCURRENCY_MIN || count > SUBAGENT_CONCURRENCY_MAX) {
+      throw new Error(t("Subagents at once must be a whole number from {0} to {1}", SUBAGENT_CONCURRENCY_MIN, SUBAGENT_CONCURRENCY_MAX));
+    }
+    return updateConfigAtEffectiveScope(this.platform, "damocles.subagents.maxConcurrent", count, this.workspaceScope(folder));
+  }
+
+  async handleSetShowCacheMissNotices(enabled: boolean, folder: SettingsFolder | undefined): Promise<SettingWrite> {
+    assertBoolean(enabled);
+    return updateConfigAtEffectiveScope(this.platform, "damocles.showCacheMissNotices", enabled, this.workspaceScope(folder));
+  }
+
+  async handleSetShowThinkingDroppedNotices(enabled: boolean, folder: SettingsFolder | undefined): Promise<SettingWrite> {
+    assertBoolean(enabled);
+    return updateConfigAtEffectiveScope(this.platform, "damocles.showThinkingDroppedNotices", enabled, this.workspaceScope(folder));
+  }
+
+  /** One sweep covers every project's checkpoints, so retention is user-level only (application scope). */
   async handleSetCheckpointRetentionDays(days: number): Promise<SettingWrite> {
     if (!Number.isInteger(days) || days < 0 || days > MAX_RETENTION_DAYS) {
       throw new Error(`Checkpoint retention must be a whole number of days from 0 to ${MAX_RETENTION_DAYS}`);
     }
-    return updateConfigAtEffectiveScope(this.platform, "damocles.checkpoints.retentionDays", days);
+    await this.platform.settings.update("damocles.checkpoints.retentionDays", days, "user");
+    return { key: "damocles.checkpoints.retentionDays", home: "user" };
   }
 
   /** Warming spends money, so the mode is user-level only and never follows the effective scope: a repo's
@@ -284,11 +329,37 @@ export class ConfigManager {
   }
 
   async handleSetDefaultDangerouslySkipPermissions(enabled: boolean, folder: SettingsFolder | undefined): Promise<SettingWrite> {
+    assertBoolean(enabled);
     return updateConfigAtEffectiveScope(this.platform, "damocles.dangerouslySkipPermissions", enabled, { folder });
   }
 
   async handleSetIdeContextEnabled(enabled: boolean): Promise<SettingWrite> {
+    assertBoolean(enabled);
     return updateConfigAtEffectiveScope(this.platform, "damocles.ideContext.enabled", enabled);
+  }
+
+  /** The precedence also orders the user's own `~/.claude` and `~/.codex` assets and MCP servers, so it is user-level only (application scope). */
+  async handleSetAssetSourcePrecedence(precedence: string): Promise<SettingWrite> {
+    if (!(ASSET_SOURCE_PRECEDENCES as readonly string[]).includes(precedence)) {
+      throw new Error(t("\"{0}\" is not a skill and command source", precedence));
+    }
+    await this.platform.settings.update("damocles.assetSourcePrecedence", precedence, "user");
+    return { key: "damocles.assetSourcePrecedence", home: "user" };
+  }
+
+  async handleSetMemoryAutoExtract(enabled: boolean): Promise<SettingWrite> {
+    assertBoolean(enabled);
+    return updateConfigAtEffectiveScope(this.platform, "damocles.memory.autoExtract.enabled", enabled);
+  }
+
+  async handleSetMemoryProfile(enabled: boolean): Promise<SettingWrite> {
+    assertBoolean(enabled);
+    return updateConfigAtEffectiveScope(this.platform, "damocles.memory.profile.enabled", enabled);
+  }
+
+  async handleSetBrowserHeadless(headless: boolean): Promise<SettingWrite> {
+    assertBoolean(headless);
+    return updateConfigAtEffectiveScope(this.platform, "damocles.browser.headless", headless);
   }
 
   handleSetDangerouslySkipPermissions(permissionHandler: PermissionHandler, enabled: boolean): void {

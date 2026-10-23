@@ -219,13 +219,6 @@
           ],
           "description": "%configuration.permissionMode.description%"
         },
-        "damocles.maxTurns": {
-          "type": "number",
-          "default": 300,
-          "minimum": 1,
-          "maximum": 1000,
-          "description": "%configuration.maxTurns.description%"
-        },
         "damocles.model": {
           "type": "string",
           "default": "",
@@ -279,13 +272,9 @@
           },
           "description": "%configuration.effortByModel.description%"
         },
-        "damocles.enableFileCheckpointing": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.enableFileCheckpointing.description%"
-        },
         "damocles.checkpoints.retentionDays": {
           "type": "number",
+          "scope": "application",
           "default": 30,
           "minimum": 0,
           "description": "%configuration.checkpoints.retentionDays.description%"
@@ -333,54 +322,12 @@
           "scope": "application",
           "description": "%configuration.pinnedHeaderHidden.description%"
         },
-        "damocles.agentProgressSummaries": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable agent progress summaries (~30s interval status updates from subagents)"
-        },
         "damocles.maxIndexedFiles": {
           "type": "number",
           "default": 5000,
           "minimum": 100,
           "maximum": 50000,
           "description": "%configuration.maxIndexedFiles.description%"
-        },
-        "damocles.sandbox": {
-          "type": "object",
-          "default": {
-            "enabled": false
-          },
-          "description": "%configuration.sandbox.description%",
-          "properties": {
-            "enabled": {
-              "type": "boolean",
-              "default": false,
-              "description": "%configuration.sandbox.enabled.description%"
-            },
-            "autoAllowBashIfSandboxed": {
-              "type": "boolean",
-              "default": true,
-              "description": "%configuration.sandbox.autoAllowBashIfSandboxed.description%"
-            },
-            "allowUnsandboxedCommands": {
-              "type": "boolean",
-              "default": false,
-              "description": "%configuration.sandbox.allowUnsandboxedCommands.description%"
-            },
-            "networkAllowedDomains": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": [],
-              "description": "%configuration.sandbox.networkAllowedDomains.description%"
-            },
-            "networkAllowLocalBinding": {
-              "type": "boolean",
-              "default": false,
-              "description": "%configuration.sandbox.networkAllowLocalBinding.description%"
-            }
-          }
         },
         "damocles.debug": {
           "type": "boolean",
@@ -934,8 +881,9 @@
             "claude",
             "codex"
           ],
+          "scope": "application",
           "default": "claude",
-          "description": "Breaks a tie between .claude and .codex when a skill or slash command with the same name exists in both. .damocles always outranks both and is not affected by this setting. Applies to the agent's loaded resources and the slash-command menu."
+          "description": "Breaks a tie between .claude and .codex when a skill, slash command or MCP server with the same name exists in both. .damocles always outranks both and is not affected by this setting. Applies to every project, open chats included."
         },
         "damocles.tools.disabled": {
           "type": "array",
@@ -951,7 +899,7 @@
           "default": 4,
           "minimum": 1,
           "maximum": 16,
-          "description": "Maximum number of background subagents that run concurrently. Excess spawns queue and drain as slots free."
+          "description": "Maximum number of subagents a chat runs at once, foreground and background together. Further spawns wait until one finishes. Team members are not counted."
         },
         "damocles.explore.model": {
           "scope": "application",

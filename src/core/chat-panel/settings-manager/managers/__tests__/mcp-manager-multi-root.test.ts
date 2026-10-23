@@ -583,3 +583,21 @@ describe("a worktree chat's working folder overriding its own config's enabled:f
     expect(enabledConfigs(manager, W.key).folder).toHaveProperty("alpha");
   });
 });
+
+describe("a source precedence change", () => {
+  it("reloads, so a server both Claude Code and Codex define switches to the preferred one's definition", async () => {
+    writeJson(path.join(fakeHome, ".claude.json"), { mcpServers: { tie: { command: "claude-tie" } } });
+    fs.mkdirSync(path.join(fakeHome, ".codex"), { recursive: true });
+    fs.writeFileSync(path.join(fakeHome, ".codex", "config.toml"), '[mcp_servers.tie]\ncommand = "codex-tie"\n', "utf-8");
+    const manager = await loaded(memento());
+    manager.setupWatcher();
+    expect(enabledConfigs(manager, A.key).userUnion.tie).toEqual({ command: "claude-tie" });
+
+    let reloaded = false;
+    manager.setOnConfigChange(() => { reloaded = true; });
+    await platform.settings.update("damocles.assetSourcePrecedence", "codex", "user");
+    await vi.waitFor(() => expect(reloaded).toBe(true));
+    expect(enabledConfigs(manager, A.key).userUnion.tie).toEqual({ command: "codex-tie" });
+    manager.dispose();
+  });
+});

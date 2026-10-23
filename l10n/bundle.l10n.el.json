@@ -1075,5 +1075,15 @@
   "Restart": "Επανεκκίνηση",
   "The Damocles engine stopped unexpectedly and was restarted.": "Η μηχανή του Damocles σταμάτησε απροσδόκητα και επανεκκινήθηκε.",
   "The Damocles engine stopped unexpectedly {0} times in 5 minutes, so it was not restarted.": "Η μηχανή του Damocles σταμάτησε απροσδόκητα {0} φορές σε 5 λεπτά, οπότε δεν επανεκκινήθηκε.",
-  "Restart Engine": "Επανεκκίνηση μηχανής"
+  "Restart Engine": "Επανεκκίνηση μηχανής",
+  "Subagents at once must be a whole number from {0} to {1}": "Οι ταυτόχρονοι υποπράκτορες πρέπει να είναι ακέραιος αριθμός από {0} έως {1}",
+  "\"{0}\" is not a skill and command source": "Το \"{0}\" δεν είναι πηγή skills και εντολών",
+  "Failed to save the subagent limit: {0}": "Αποτυχία αποθήκευσης του ορίου υποπρακτόρων: {0}",
+  "Failed to save the cost notice setting: {0}": "Αποτυχία αποθήκευσης της ρύθμισης ειδοποιήσεων κόστους: {0}",
+  "Failed to save the dropped thinking notice setting: {0}": "Αποτυχία αποθήκευσης της ρύθμισης ειδοποιήσεων απορριφθείσας σκέψης: {0}",
+  "Failed to save the skill and command source setting: {0}": "Αποτυχία αποθήκευσης της ρύθμισης πηγής skills και εντολών: {0}",
+  "Failed to save the memory extraction setting: {0}": "Αποτυχία αποθήκευσης της ρύθμισης εξαγωγής μνημών: {0}",
+  "Failed to save the user profile setting: {0}": "Αποτυχία αποθήκευσης της ρύθμισης προφίλ χρήστη: {0}",
+  "Failed to save the headless browser setting: {0}": "Αποτυχία αποθήκευσης της ρύθμισης περιήγησης χωρίς παράθυρο: {0}",
+  "A switch setting must be true or false": "Μια ρύθμιση διακόπτη πρέπει να είναι true ή false"
 }

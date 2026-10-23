@@ -366,6 +366,9 @@ describe('controls write their messages', () => {
     expect(row('damocles.maxBudgetUsd')!.querySelector('input')!.disabled).toBe(true);
     expect(row('damocles.taskBudget')!.querySelector('input')!.disabled).toBe(true);
     expect(row('damocles.autoCompact')!.querySelector<HTMLButtonElement>('[role="switch"]')!.disabled).toBe(true);
+    expect(row('damocles.subagents.maxConcurrent')!.querySelector('input')!.disabled).toBe(true);
+    expect(row('damocles.showCacheMissNotices')!.querySelector<HTMLButtonElement>('[role="switch"]')!.disabled).toBe(true);
+    expect(row('damocles.showThinkingDroppedNotices')!.querySelector<HTMLButtonElement>('[role="switch"]')!.disabled).toBe(true);
     const notice = document.querySelector<HTMLElement>('[data-testid="settings-workspace-untrusted"]')!;
     expect(notice.textContent).toContain(t('settingsModal.workspaceUntrusted'));
     notice.querySelector('button')!.click();
@@ -494,6 +497,74 @@ describe('shared controls', () => {
   });
 });
 
+describe('subagent, notice and source rows', () => {
+  it('the subagent slider saves its whole number on release, not while dragging, within 1 to 16', async () => {
+    await open(NO_HOST_SETTINGS, 'workspace');
+    const range = row('damocles.subagents.maxConcurrent')!.querySelector<HTMLInputElement>('input[type="range"]')!;
+    expect([range.min, range.max, range.value]).toEqual(['1', '16', '4']);
+    range.value = '9';
+    range.dispatchEvent(new Event('input'));
+    await nextTick();
+    expect(posted.filter((m) => m.type === 'setSubagentsMaxConcurrent')).toEqual([]);
+    range.dispatchEvent(new Event('change'));
+    expect(posted).toContainEqual({ type: 'setSubagentsMaxConcurrent', count: 9 });
+    expect(useSettingsStore().currentSettings.subagentsMaxConcurrent).toBe(9);
+  });
+
+  it('the notice switches write their own keys', async () => {
+    await open(NO_HOST_SETTINGS, 'workspace');
+    row('damocles.showCacheMissNotices')!.querySelector<HTMLElement>('[role="switch"]')!.click();
+    row('damocles.showThinkingDroppedNotices')!.querySelector<HTMLElement>('[role="switch"]')!.click();
+    expect(posted).toContainEqual({ type: 'setShowCacheMissNotices', enabled: true });
+    expect(posted).toContainEqual({ type: 'setShowThinkingDroppedNotices', enabled: false });
+  });
+
+  it('the preferred source segment writes the precedence it shows', async () => {
+    await open(NO_HOST_SETTINGS, 'application');
+    const codex = [...row('damocles.assetSourcePrecedence')!.querySelectorAll<HTMLElement>('button[aria-pressed]')].find((el) => el.textContent?.includes('.codex'))!;
+    codex.click();
+    expect(posted).toContainEqual({ type: 'setAssetSourcePrecedence', precedence: 'codex' });
+    expect(useSettingsStore().currentSettings.assetSourcePrecedence).toBe('codex');
+  });
+});
+
+describe('integration sub-rows', () => {
+  function groups(memory: boolean, browser: boolean): void {
+    useSettingsStore().setToolsSnapshot({
+      groups: [
+        { group: 'memory', enabled: memory, available: true },
+        { group: 'browser', enabled: browser, available: true },
+      ],
+      tools: [],
+    });
+  }
+
+  it('shows the memory and browser rows only while their feature is on', async () => {
+    groups(true, false);
+    await open(NO_HOST_SETTINGS, 'integrations');
+    expect(row('damocles.memory.autoExtract.enabled')).not.toBeNull();
+    expect(row('damocles.memory.profile.enabled')).not.toBeNull();
+    expect(row('damocles.browser.headless')).toBeNull();
+
+    groups(false, true);
+    await nextTick();
+    expect(row('damocles.memory.autoExtract.enabled')).toBeNull();
+    expect(row('damocles.memory.profile.enabled')).toBeNull();
+    expect(row('damocles.browser.headless')).not.toBeNull();
+  });
+
+  it('each switch writes its own setting', async () => {
+    groups(true, true);
+    await open(NO_HOST_SETTINGS, 'integrations');
+    row('damocles.memory.autoExtract.enabled')!.querySelector<HTMLElement>('[role="switch"]')!.click();
+    row('damocles.memory.profile.enabled')!.querySelector<HTMLElement>('[role="switch"]')!.click();
+    row('damocles.browser.headless')!.querySelector<HTMLElement>('[role="switch"]')!.click();
+    expect(posted).toContainEqual({ type: 'setMemoryAutoExtract', enabled: false });
+    expect(posted).toContainEqual({ type: 'setMemoryProfile', enabled: false });
+    expect(posted).toContainEqual({ type: 'setBrowserHeadless', headless: false });
+  });
+});
+
 describe('auto-compact rows', () => {
   it('shows the setting\'s Saved hint and source badge on its own row only, and the slider\'s chip names its field', async () => {
     const store = useSettingsStore();
@@ -526,15 +597,15 @@ describe('values from settings files', () => {
     const store = useSettingsStore();
     store.setHostCapabilities(DESKTOP_CAPABILITIES);
     store.updateSettings(store.currentSettings, {
-      'damocles.maxTurns': { scope: 'project', path: PROJECT, value: 7 },
+      'damocles.maxIndexedFiles': { scope: 'project', path: PROJECT, value: 7000 },
       'damocles.maxBudgetUsd': { scope: 'local', path: '/w/a/.damocles/settings.local.json', value: 3 },
       'damocles.voice.mode': { scope: 'project', path: PROJECT, value: 'wake-word' },
     });
     const wrapper = await open(NO_HOST_SETTINGS, 'workspace', 'settingsFiles');
     const entries = [...document.querySelectorAll<HTMLElement>('[data-testid="settings-file-value"]')];
     // Voice has rows, but its section is hidden on a host without a voice path.
-    expect(entries.map((entry) => entry.dataset['key'])).toEqual(['damocles.maxTurns', 'damocles.voice.mode']);
-    expect(entries[0]!.textContent).toContain('7');
+    expect(entries.map((entry) => entry.dataset['key'])).toEqual(['damocles.maxIndexedFiles', 'damocles.voice.mode']);
+    expect(entries[0]!.textContent).toContain('7000');
     expect(entries[1]!.textContent).toContain('"wake-word"');
     expect(entries[0]!.querySelector('[data-testid="setting-source"]')!.textContent).toContain('.damocles/settings.json');
     expect(row('damocles.maxBudgetUsd')!.querySelector('[data-testid="setting-source"]')).not.toBeNull();
@@ -553,7 +624,7 @@ describe('values from settings files', () => {
     await open(NO_HOST_SETTINGS, 'workspace');
     expect(document.querySelector('[data-testid="settings-file-values"]')).toBeNull();
 
-    store.updateSettings(store.currentSettings, { 'damocles.maxTurns': { scope: 'project', path: PROJECT, value: 7 } });
+    store.updateSettings(store.currentSettings, { 'damocles.maxIndexedFiles': { scope: 'project', path: PROJECT, value: 7000 } });
     await nextTick();
     expect(document.querySelector('[data-testid="settings-file-values"]')).not.toBeNull();
     await type('budget');

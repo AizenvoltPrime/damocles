@@ -354,6 +354,55 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
+    setSubagentsMaxConcurrent: async (msg, ctx) => {
+      if (msg.type !== "setSubagentsMaxConcurrent") return;
+      await writeSetting(deps, ctx, "damocles.subagents.maxConcurrent", (detail) => t("Failed to save the subagent limit: {0}", detail), () =>
+        settingsManager.handleSetSubagentsMaxConcurrent(msg.count, ctx.folder));
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
+    },
+
+    setShowCacheMissNotices: async (msg, ctx) => {
+      if (msg.type !== "setShowCacheMissNotices") return;
+      await writeSetting(deps, ctx, "damocles.showCacheMissNotices", (detail) => t("Failed to save the cost notice setting: {0}", detail), () =>
+        settingsManager.handleSetShowCacheMissNotices(msg.enabled, ctx.folder));
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
+    },
+
+    setShowThinkingDroppedNotices: async (msg, ctx) => {
+      if (msg.type !== "setShowThinkingDroppedNotices") return;
+      await writeSetting(deps, ctx, "damocles.showThinkingDroppedNotices", (detail) => t("Failed to save the dropped thinking notice setting: {0}", detail), () =>
+        settingsManager.handleSetShowThinkingDroppedNotices(msg.enabled, ctx.folder));
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
+    },
+
+    setAssetSourcePrecedence: async (msg, ctx) => {
+      if (msg.type !== "setAssetSourcePrecedence") return;
+      await writeSetting(deps, ctx, "damocles.assetSourcePrecedence", (detail) => t("Failed to save the skill and command source setting: {0}", detail), () =>
+        settingsManager.handleSetAssetSourcePrecedence(msg.precedence));
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
+    },
+
+    setMemoryAutoExtract: async (msg, ctx) => {
+      if (msg.type !== "setMemoryAutoExtract") return;
+      await writeSetting(deps, ctx, "damocles.memory.autoExtract.enabled", (detail) => t("Failed to save the memory extraction setting: {0}", detail), () =>
+        settingsManager.handleSetMemoryAutoExtract(msg.enabled));
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
+    },
+
+    setMemoryProfile: async (msg, ctx) => {
+      if (msg.type !== "setMemoryProfile") return;
+      await writeSetting(deps, ctx, "damocles.memory.profile.enabled", (detail) => t("Failed to save the user profile setting: {0}", detail), () =>
+        settingsManager.handleSetMemoryProfile(msg.enabled));
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
+    },
+
+    setBrowserHeadless: async (msg, ctx) => {
+      if (msg.type !== "setBrowserHeadless") return;
+      await writeSetting(deps, ctx, "damocles.browser.headless", (detail) => t("Failed to save the headless browser setting: {0}", detail), () =>
+        settingsManager.handleSetBrowserHeadless(msg.headless));
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
+    },
+
     setCacheWarming: async (msg, ctx) => {
       if (msg.type !== "setCacheWarming") return;
       await writeSetting(deps, ctx, "damocles.cacheWarming", (detail) => t("Failed to save cache warming setting: {0}", detail), () =>

@@ -3,6 +3,7 @@ import { computed, useId } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
 import type { AutoCompactConfig } from '@shared/types/settings';
+import { SUBAGENT_CONCURRENCY_MAX, SUBAGENT_CONCURRENCY_MIN } from '@shared/types/constants';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import SettingSourceBadge from '@/components/SettingSourceBadge.vue';
@@ -49,6 +50,28 @@ function setAutoCompact(config: AutoCompactConfig): void {
   write('damocles.autoCompact', { type: 'setAutoCompact', config }, {
     apply: () => settingsStore.updateAutoCompactConfig(config),
     revert: () => settingsStore.updateAutoCompactConfig(before),
+  });
+}
+
+function setMaxConcurrent(count: number): void {
+  const before = currentSettings.value.subagentsMaxConcurrent;
+  write('damocles.subagents.maxConcurrent', { type: 'setSubagentsMaxConcurrent', count }, {
+    apply: () => settingsStore.setSetting('subagentsMaxConcurrent', count),
+    revert: () => settingsStore.setSetting('subagentsMaxConcurrent', before),
+  });
+}
+
+function setCacheMissNotices(enabled: boolean): void {
+  write('damocles.showCacheMissNotices', { type: 'setShowCacheMissNotices', enabled }, {
+    apply: () => settingsStore.setSetting('showCacheMissNotices', enabled),
+    revert: () => settingsStore.setSetting('showCacheMissNotices', !enabled),
+  });
+}
+
+function setThinkingDroppedNotices(enabled: boolean): void {
+  write('damocles.showThinkingDroppedNotices', { type: 'setShowThinkingDroppedNotices', enabled }, {
+    apply: () => settingsStore.setSetting('showThinkingDroppedNotices', enabled),
+    revert: () => settingsStore.setSetting('showThinkingDroppedNotices', !enabled),
   });
 }
 </script>
@@ -112,6 +135,32 @@ function setAutoCompact(config: AutoCompactConfig): void {
       inputmode="numeric"
       :disabled="!workspaceWritable"
       @commit="setTaskBudget"
+    />
+  </SettingsRow>
+  <SettingsRow id="damocles.subagents.maxConcurrent">
+    <SettingSlider
+      :model-value="currentSettings.subagentsMaxConcurrent"
+      :min="SUBAGENT_CONCURRENCY_MIN"
+      :max="SUBAGENT_CONCURRENCY_MAX"
+      :label="t('settingsModal.rows.subagentsMaxConcurrent.label')"
+      :disabled="!workspaceWritable"
+      @update:model-value="setMaxConcurrent"
+    />
+  </SettingsRow>
+  <SettingsRow id="damocles.showCacheMissNotices">
+    <SettingSwitch
+      :model-value="currentSettings.showCacheMissNotices"
+      :label="t('settingsModal.rows.cacheMissNotices.label')"
+      :disabled="!workspaceWritable"
+      @update:model-value="setCacheMissNotices"
+    />
+  </SettingsRow>
+  <SettingsRow id="damocles.showThinkingDroppedNotices">
+    <SettingSwitch
+      :model-value="currentSettings.showThinkingDroppedNotices"
+      :label="t('settingsModal.rows.thinkingDroppedNotices.label')"
+      :disabled="!workspaceWritable"
+      @update:model-value="setThinkingDroppedNotices"
     />
   </SettingsRow>
   <template v-if="fileValues.length > 0 && !page.query">

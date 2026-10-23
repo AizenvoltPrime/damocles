@@ -10,7 +10,7 @@ import { timed } from '../perf';
 import { initPiLoader, getPiCodingAgent, loadPiAi, loadedPiAi, type PiCodingAgentModule } from './pi-loader';
 import { cacheWarmingSetting, ensurePiAgentDir, PI_AGENT_DIR } from './agent-dir';
 import { CONTEXT_FILE_CANDIDATES } from './context-files';
-import { assetSources } from '../asset-sources';
+import { ASSET_SOURCE_PRECEDENCE_SETTING, assetSources } from '../asset-sources';
 import { renamePiSession, type LiveSessionMetaSource } from './session-store';
 import { writeUnderSessionLease } from './session-store/session-lease';
 import { McpClientManager } from './mcp/mcp-client-manager';
@@ -364,6 +364,8 @@ export class PiRuntime {
   private _disabledToolsListener: Disposable | null = null;
   /** `damocles.memory.judge` and `.judgeEffort` pick the memory judge, which the judge status names. */
   private _memoryJudgeSettingsListener: Disposable | null = null;
+  /** `damocles.assetSourcePrecedence` orders every loader's `.claude` and `.codex` roots. */
+  private _assetPrecedenceListener: Disposable | null = null;
   /** Set once a custom-provider sync has applied the stored keys, which `hasConfiguredAuth` reads. */
   private _customProvidersSynced = false;
   /** Read once from the host-installed accessor: this process singleton has no owner to inject it. */
@@ -729,14 +731,7 @@ export class PiRuntime {
    * there. Anchoring the watcher on the dir itself is what makes these fire.
    */
   private _setupUserWatchers(): void {
-    const onChange = () => {
-      if (this._userDebounce) clearTimeout(this._userDebounce);
-      this._userDebounce = setTimeout(() => {
-        for (const folder of this.folders()) {
-          folder.reloadBare().catch((err) => log('[PiRuntime] user asset watcher reload failed (%s): %O', folder.cwd, err));
-        }
-      }, 300);
-    };
+    const onChange = () => this._scheduleFolderReloads();
     for (const source of assetSources()) {
       for (const sub of [source.skills, source.commands]) {
         this._userWatchers.push(this._platform.fileWatchers.watch(path.join(os.homedir(), sub), '**'));
@@ -750,6 +745,16 @@ export class PiRuntime {
       watcher.onDidChange(onChange);
       watcher.onDidDelete(onChange);
     }
+  }
+
+  /** Reloads every folder's loader once a burst of user asset or precedence changes settles. */
+  private _scheduleFolderReloads(): void {
+    if (this._userDebounce) clearTimeout(this._userDebounce);
+    this._userDebounce = setTimeout(() => {
+      for (const folder of this.folders()) {
+        folder.reloadBare().catch((err) => log('[PiRuntime] user asset reload failed (%s): %O', folder.cwd, err));
+      }
+    }, 300);
   }
 
   /**
@@ -887,6 +892,7 @@ export class PiRuntime {
     this._memoryJudgeSettingsListener = this._platform.settings.onDidChange('damocles.memory', (change) => {
       if (change.affects(MEMORY_JUDGE_SETTING) || change.affects(MEMORY_JUDGE_EFFORT_SETTING)) notifyMemoryJudgeListeners();
     });
+    this._assetPrecedenceListener = this._platform.settings.onDidChange(ASSET_SOURCE_PRECEDENCE_SETTING, () => this._scheduleFolderReloads());
     log('[PiRuntime] initialized (agentDir=%s)', this._agentDir);
   }
 
@@ -2058,6 +2064,8 @@ export class PiRuntime {
     this._resourceExposureListener = null;
     this._memoryJudgeSettingsListener?.dispose();
     this._memoryJudgeSettingsListener = null;
+    this._assetPrecedenceListener?.dispose();
+    this._assetPrecedenceListener = null;
     this._modelRuntime = null;
     this._userSettings = null;
     this._initPromise = null;

@@ -16,14 +16,14 @@ type Layer = Readonly<Record<string, unknown>>;
 const FIXTURE: { readonly defaults: Layer; readonly user: Layer; readonly project: Layer } = {
   defaults: {
     'damocles.model': 'default-model',
-    'damocles.maxTurns': 100,
+    'damocles.maxIndexedFiles': 100,
     'damocles.sandbox': { enabled: false },
     'damocles.debug': false,
     'damocles.autoCompact': { enabled: false, triggerPercent: 80 },
   },
   user: {
     'damocles.model': 'user-model',
-    'damocles.maxTurns': 20,
+    'damocles.maxIndexedFiles': 20,
     'damocles.effort': 'high',
     'damocles.maxBudgetUsd': null,
     'damocles.effortByModel': { 'gpt-6-luna': 'high' },
@@ -104,7 +104,7 @@ describe('SettingsStore scope parity: VS Code vs desktop', () => {
   it('agree after the same writes at every shared scope, removals included', async () => {
     const writes: ReadonlyArray<readonly [string, unknown, SettingsScope]> = [
       ['damocles.model', undefined, 'project'],
-      ['damocles.maxTurns', 7, 'project'],
+      ['damocles.maxIndexedFiles', 7, 'project'],
       ['damocles.effort', undefined, 'user'],
       ['damocles.debug', true, 'user'],
       ['damocles.sandbox', undefined, 'project'],

@@ -2,7 +2,8 @@
 import { computed } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
-import type { CacheWarmingMode } from '@shared/types/settings';
+import type { AssetSourcePrecedence, CacheWarmingMode } from '@shared/types/settings';
+import { ASSET_SOURCE_PRECEDENCES } from '@shared/types/constants';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import SettingsRow from '../SettingsRow.vue';
 import SettingSeg from '../controls/SettingSeg.vue';
@@ -26,6 +27,16 @@ function setCacheWarming(mode: CacheWarmingMode): void {
   write('damocles.cacheWarming', { type: 'setCacheWarming', mode }, {
     apply: () => settingsStore.setCacheWarmingMode(mode),
     revert: () => settingsStore.setCacheWarmingMode(before),
+  });
+}
+
+const precedenceOptions = ASSET_SOURCE_PRECEDENCES.map((value) => ({ value, label: `.${value}` }));
+
+function setPrecedence(precedence: AssetSourcePrecedence): void {
+  const before = currentSettings.value.assetSourcePrecedence;
+  write('damocles.assetSourcePrecedence', { type: 'setAssetSourcePrecedence', precedence }, {
+    apply: () => settingsStore.setSetting('assetSourcePrecedence', precedence),
+    revert: () => settingsStore.setSetting('assetSourcePrecedence', before),
   });
 }
 
@@ -55,6 +66,14 @@ function setRetention(days: number): void {
       :suffix="t('settingsModal.units.days')"
       inputmode="numeric"
       @commit="setRetention"
+    />
+  </SettingsRow>
+  <SettingsRow id="damocles.assetSourcePrecedence">
+    <SettingSeg
+      :model-value="currentSettings.assetSourcePrecedence"
+      :options="precedenceOptions"
+      :label="t('settingsModal.rows.assetSourcePrecedence.label')"
+      @update:model-value="setPrecedence"
     />
   </SettingsRow>
 </template>

@@ -970,13 +970,17 @@ export async function runConsolidation(ctx: ConsolidationCtx): Promise<Consolida
 
     // PHASE 5 — PROFILES (2 LLM calls). A failure here doesn't downgrade the pass — the memories are
     // already persisted, so the status stays `extracted`.
-    phase({ phase: 'profiles', status: 'active', meta: { total: 2 } });
-    try {
-      await updateProfiles(round.answered[0]!.pass);
-      phase({ phase: 'profiles', status: 'done', meta: { done: 2, total: 2 } });
-    } catch (err) {
-      phase({ phase: 'profiles', status: 'failed', meta: { reason: errorDetail(err) } });
-      log('[MemoryConsolidation] profile regeneration failed (memories already persisted): %O', err);
+    if (!ctx.profileManager.isEnabled()) {
+      phase({ phase: 'profiles', status: 'skipped', meta: { reason: 'profile-off' } });
+    } else {
+      phase({ phase: 'profiles', status: 'active', meta: { total: 2 } });
+      try {
+        await updateProfiles(round.answered[0]!.pass);
+        phase({ phase: 'profiles', status: 'done', meta: { done: 2, total: 2 } });
+      } catch (err) {
+        phase({ phase: 'profiles', status: 'failed', meta: { reason: errorDetail(err) } });
+        log('[MemoryConsolidation] profile regeneration failed (memories already persisted): %O', err);
+      }
     }
 
     return done({ status: extracted.length > 0 ? 'extracted' : 'empty', extracted });

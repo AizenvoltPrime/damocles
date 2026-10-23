@@ -17,7 +17,7 @@ vi.mock('../../logger', () => ({ log: vi.fn() }));
 
 import { installFakePlatform, type FakeFileWatcher, type FakePlatform } from '../../../__mocks__/fake-platform';
 import { SlashCommandService } from '../slash-command-service';
-import type { AssetSourcePrecedence } from '../../asset-sources';
+import type { AssetSourcePrecedence } from '../../../shared/types/settings';
 
 /** The three asset sources' on-disk folder names, stated here rather than read from the source. */
 const SOURCE_FOLDERS = [

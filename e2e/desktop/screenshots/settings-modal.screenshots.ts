@@ -4,7 +4,7 @@ import { chooseSegment, closeSettingsModal, openSettingsModal, setContentSize, s
 import { shellPage } from '../support/shell';
 import { chatInput } from '../support/ui';
 
-test('the settings modal in Dark and Light, searched, narrow, and with the restart banner', async ({ launch }, testInfo) => {
+test('the settings modal in Dark and Light, searched, on Tools & integrations and Application, narrow, and with the restart banner', async ({ launch }, testInfo) => {
   const { app } = await launch();
   await expect(chatInput(await activeChat(app))).toBeVisible();
   await setContentSize(app, 1280, 800);
@@ -28,6 +28,15 @@ test('the settings modal in Dark and Light, searched, narrow, and with the resta
   await chip.evaluate((element) => Object.assign((element as HTMLElement).style, { transform: 'scale(3)', transformOrigin: 'left top', position: 'relative', zIndex: '1' }));
   await saveScreenshot(overlay, testInfo, 'settings-search-key-chip-3x', chip);
   await chip.evaluate((element) => Object.assign((element as HTMLElement).style, { transform: '', transformOrigin: '', position: '', zIndex: '' }));
+  await overlay.getByTestId('settings-search').fill('');
+  await settingsNav(overlay, 'integrations').click();
+  await expect(settingsRow(overlay, 'damocles.memory.profile.enabled')).toBeVisible();
+  await settled(overlay);
+  await saveScreenshot(overlay, testInfo, 'settings-integrations-dark');
+  await settingsNav(overlay, 'application').click();
+  await expect(settingsRow(overlay, 'damocles.assetSourcePrecedence')).toBeVisible();
+  await settled(overlay);
+  await saveScreenshot(overlay, testInfo, 'settings-application-dark');
   await closeSettingsModal(overlay);
 
   overlay = await openSettingsModal(app, 'application');

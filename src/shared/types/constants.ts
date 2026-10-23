@@ -1,4 +1,4 @@
-import type { CacheWarmingMode, EffortLevel, ModelInfo } from './settings';
+import type { AssetSourcePrecedence, CacheWarmingMode, EffortLevel, ModelInfo } from './settings';
 
 /** Sentinel marking a block the HUMAN made at an approval prompt. The text after it is their reason. */
 export const FEEDBACK_MARKER = "The user provided the following reason for the rejection:";
@@ -259,6 +259,25 @@ export const DEFAULT_CACHE_WARMING: CacheWarmingMode = 'streaming';
  *  Replaces unchecked `as CacheWarmingMode` casts on config reads and webview input. */
 export function parseCacheWarmingMode(value: unknown): CacheWarmingMode {
   return (CACHE_WARMING_MODES as readonly unknown[]).includes(value) ? (value as CacheWarmingMode) : DEFAULT_CACHE_WARMING;
+}
+
+/** `damocles.subagents.maxConcurrent`'s range; its package.json `minimum`, `maximum` and `default` must equal these. */
+export const SUBAGENT_CONCURRENCY_MIN = 1;
+export const SUBAGENT_CONCURRENCY_MAX = 16;
+export const DEFAULT_SUBAGENT_CONCURRENCY = 4;
+
+/** The limit a stored `damocles.subagents.maxConcurrent` value runs with: a whole number in range, else the default. */
+export function clampSubagentConcurrency(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_SUBAGENT_CONCURRENCY;
+  return Math.min(SUBAGENT_CONCURRENCY_MAX, Math.max(SUBAGENT_CONCURRENCY_MIN, Math.floor(value)));
+}
+
+/** `damocles.assetSourcePrecedence`'s values, in the order the settings UI offers them; package.json's enum must match. */
+export const ASSET_SOURCE_PRECEDENCES: readonly ['claude', 'codex'] = ['claude', 'codex'];
+
+/** Any value outside the enum reads as `claude`, the contributed default. */
+export function parseAssetSourcePrecedence(value: unknown): AssetSourcePrecedence {
+  return value === 'codex' ? 'codex' : 'claude';
 }
 
 /** Apply a model's pi-metadata effort rename (e.g. DeepSeek `xhigh → max` in pi 0.80.6) to a stored

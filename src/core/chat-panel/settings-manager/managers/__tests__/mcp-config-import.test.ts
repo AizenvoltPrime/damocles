@@ -29,7 +29,7 @@ import {
   type McpSourceServers,
 } from "../mcp-config-import";
 import { SHADOWING_SOURCES } from "../../../../../shared/types/mcp";
-import type { AssetSourcePrecedence } from "../../../../asset-sources";
+import type { AssetSourcePrecedence } from "../../../../../shared/types/settings";
 import type {
   McpServerConfig,
   McpServerSource,

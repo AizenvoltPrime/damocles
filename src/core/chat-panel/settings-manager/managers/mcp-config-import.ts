@@ -11,7 +11,7 @@ import type {
   McpServerSource,
   McpStdioServerConfig,
 } from "../../../../shared/types/mcp";
-import type { AssetSourcePrecedence } from "../../../asset-sources";
+import type { AssetSourcePrecedence } from "../../../../shared/types/settings";
 import { stripBom } from "../../../config/bom";
 import type { McpServerEntry, McpServerEntryError, McpServerScope } from "../types";
 import { validateMcpServerEntry } from "./mcp-config-validate";

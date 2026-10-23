@@ -2257,6 +2257,7 @@
       "reason": {
         "autoExtractOff": "auto-extract off",
         "noQueuedTurns": "no queued turns",
+        "profileOff": "user profile off",
         "unanswered": "the model gave no answer",
         "rejected": "the provider refused the request",
         "invalidShape": "the answer had an invalid shape",
@@ -2584,6 +2585,18 @@
         "label": "Task budget",
         "description": "Token budget per task, shown to the model. Empty means none."
       },
+      "subagentsMaxConcurrent": {
+        "label": "Subagents at once",
+        "description": "How many subagents a chat runs at the same time. Further ones wait for a free slot. Team members are not counted."
+      },
+      "cacheMissNotices": {
+        "label": "Show cache miss costs",
+        "description": "Add a notice when a prompt cache miss bills tokens again, and show what each compaction cost."
+      },
+      "thinkingDroppedNotices": {
+        "label": "Show dropped thinking",
+        "description": "Add a notice when Anthropic drops earlier thinking because the conversation changed."
+      },
       "cacheWarming": {
         "label": "Prompt cache warming",
         "description": "Keeps the provider cache warm so the next request is a cheap cache read."
@@ -2591,6 +2604,10 @@
       "checkpointRetention": {
         "label": "Keep checkpoints for",
         "description": "Rewind history older than this is removed. 0 keeps it forever."
+      },
+      "assetSourcePrecedence": {
+        "label": "Preferred source on a name clash",
+        "description": "Which wins when .claude and .codex both define a skill, slash command or MCP server with the same name. Both still load, and .damocles always wins. Applies to open chats at once."
       },
       "panelLanguage": {
         "label": "Language",
@@ -2604,6 +2621,14 @@
         "label": "Memory",
         "description": "Remember facts and preferences across conversations."
       },
+      "memoryAutoExtract": {
+        "label": "Learn from conversations",
+        "description": "When a conversation goes idle, save the facts and preferences it contains."
+      },
+      "memoryProfile": {
+        "label": "User profile",
+        "description": "Keep a short profile of you, built from your memories, and add it to each conversation."
+      },
       "compass": {
         "label": "Compass",
         "description": "Index the code so the agent can search symbols and trace their impact."
@@ -2611,6 +2636,10 @@
       "browser": {
         "label": "Browser",
         "description": "Let the agent open and drive web pages."
+      },
+      "browserHeadless": {
+        "label": "Headless browser",
+        "description": "Run Chrome with no window. Off runs a real window kept off screen, which fewer sites detect as automation. Applies the next time the browser starts."
       },
       "webSearch": {
         "label": "Web search",

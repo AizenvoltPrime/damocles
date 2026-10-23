@@ -394,6 +394,34 @@ export class SettingsManager {
     return this.configManager.handleSetAutoCompact(config, settingsFolderOf(folder));
   }
 
+  async handleSetSubagentsMaxConcurrent(count: number, folder: FolderTarget): Promise<SettingWrite> {
+    return this.configManager.handleSetSubagentsMaxConcurrent(count, settingsFolderOf(folder));
+  }
+
+  async handleSetShowCacheMissNotices(enabled: boolean, folder: FolderTarget): Promise<SettingWrite> {
+    return this.configManager.handleSetShowCacheMissNotices(enabled, settingsFolderOf(folder));
+  }
+
+  async handleSetShowThinkingDroppedNotices(enabled: boolean, folder: FolderTarget): Promise<SettingWrite> {
+    return this.configManager.handleSetShowThinkingDroppedNotices(enabled, settingsFolderOf(folder));
+  }
+
+  async handleSetAssetSourcePrecedence(precedence: string): Promise<SettingWrite> {
+    return this.configManager.handleSetAssetSourcePrecedence(precedence);
+  }
+
+  async handleSetMemoryAutoExtract(enabled: boolean): Promise<SettingWrite> {
+    return this.configManager.handleSetMemoryAutoExtract(enabled);
+  }
+
+  async handleSetMemoryProfile(enabled: boolean): Promise<SettingWrite> {
+    return this.configManager.handleSetMemoryProfile(enabled);
+  }
+
+  async handleSetBrowserHeadless(headless: boolean): Promise<SettingWrite> {
+    return this.configManager.handleSetBrowserHeadless(headless);
+  }
+
   async handleSetCheckpointRetentionDays(days: number): Promise<SettingWrite> {
     return this.configManager.handleSetCheckpointRetentionDays(days);
   }

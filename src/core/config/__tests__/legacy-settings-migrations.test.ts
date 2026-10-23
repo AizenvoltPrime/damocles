@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { DEFAULT_MODELS, LEGACY_MODEL_MAP, migrateLegacyModelValue } from '../../../shared/types/constants';
-import { migrateExploreSettings, migrateLegacyEffortSetting, migrateLegacyModelSetting, removeMaxThinkingTokensSetting, runLegacySettingsMigrations } from '../legacy-settings-migrations';
+import { UNREAD_SETTINGS, migrateExploreSettings, migrateLegacyEffortSetting, migrateLegacyModelSetting, removeUnreadSettings, runLegacySettingsMigrations } from '../legacy-settings-migrations';
 import type { SettingsScope, SettingsStore } from '../../../platform/settings-store';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { installLogSink } from '../../logger';
@@ -656,24 +656,25 @@ describe('migrateExploreSettings', () => {
   });
 });
 
-describe('removeMaxThinkingTokensSetting', () => {
-  it('removes a stored damocles.maxThinkingTokens at every scope that holds one', async () => {
+describe('removeUnreadSettings', () => {
+  it('removes each stored unread setting at every scope that holds one, and keeps the rest of the file', async () => {
     const { settings } = createFakePlatform({
       settings: {
-        user: { 'damocles.maxThinkingTokens': 32000 },
-        project: { 'damocles.maxThinkingTokens': 8000 },
-        local: { 'damocles.maxThinkingTokens': 1000 },
+        user: { 'damocles.maxThinkingTokens': 32000, 'damocles.maxTurns': 50, 'damocles.model': 'claude-haiku-5-5' },
+        project: { 'damocles.enableFileCheckpointing': false, 'damocles.sandbox': { enabled: true } },
+        local: { 'damocles.agentProgressSummaries': true, 'damocles.maxThinkingTokens': 1000 },
       },
     });
-    await removeMaxThinkingTokensSetting(settings);
+    await removeUnreadSettings(settings);
 
-    expect(settings.inspect('damocles.maxThinkingTokens')).toStrictEqual({});
+    for (const key of UNREAD_SETTINGS) expect(settings.inspect(key)).toStrictEqual({});
+    expect(settings.inspect('damocles.model')).toStrictEqual({ userValue: 'claude-haiku-5-5' });
   });
 
-  it('writes nothing when no scope holds the setting', async () => {
+  it('writes nothing when no scope holds one', async () => {
     const { settings } = createFakePlatform({ settings: { user: { 'damocles.model': 'claude-haiku-5-5' } } });
     const update = vi.spyOn(settings, 'update');
-    await removeMaxThinkingTokensSetting(settings);
+    await removeUnreadSettings(settings);
 
     expect(update).not.toHaveBeenCalled();
   });

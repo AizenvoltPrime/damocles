@@ -6,7 +6,7 @@ import type { ExtensionToWebviewMessage } from "../../../../../shared/types/mess
 const permStub = { getPermissionMode: () => "default", getDangerouslySkipPermissions: () => false } as never;
 
 const settingsInit: NonNullable<FakePlatformInit["settings"]> = {
-  user: { "damocles.maxTurns": 5, "damocles.model": "user-model" },
+  user: { "damocles.maxIndexedFiles": 5, "damocles.model": "user-model" },
   project: { "damocles.model": "project-model", "damocles.debug": true },
   local: { "damocles.debug": false },
   scopeFiles: { user: "/home/.damocles/settings.json", project: "/ws/.damocles/settings.json", local: "/ws/.damocles/settings.local.json" },

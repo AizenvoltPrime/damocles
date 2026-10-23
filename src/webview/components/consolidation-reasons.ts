@@ -2,6 +2,7 @@
 const REASON_KEYS: Readonly<Record<string, string>> = {
   'auto-extract-off': 'consolidation.stepper.reason.autoExtractOff',
   'no-queued-turns': 'consolidation.stepper.reason.noQueuedTurns',
+  'profile-off': 'consolidation.stepper.reason.profileOff',
   unanswered: 'consolidation.stepper.reason.unanswered',
   rejected: 'consolidation.stepper.reason.rejected',
   'invalid-shape': 'consolidation.stepper.reason.invalidShape',

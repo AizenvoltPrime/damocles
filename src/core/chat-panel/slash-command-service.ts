@@ -6,7 +6,7 @@ import type { FileWatcher } from "../../platform/file-watcher";
 import type { Platform } from "../../platform/platform";
 import { ASSET_SEGMENT_RE, INVOCABLE_ASSET_NAME_RE } from "../../shared/asset-names";
 import type { CustomSlashCommandInfo, SkillInfo } from "../../shared/types/commands";
-import { assetSourceDirs, assetSources } from "../asset-sources";
+import { ASSET_SOURCE_PRECEDENCE_SETTING, assetSourceDirs, assetSources } from "../asset-sources";
 import { stripBom } from "../config/bom";
 import { log } from "../logger";
 
@@ -55,7 +55,7 @@ export class SlashCommandService {
       this.invalidateAll();
     });
     // Precedence decides which source claims a contested name, and the winner is already in the cache.
-    this.configListener = platform.settings.onDidChange("damocles.assetSourcePrecedence", () => {
+    this.configListener = platform.settings.onDidChange(ASSET_SOURCE_PRECEDENCE_SETTING, () => {
       this.invalidateAll();
     });
   }

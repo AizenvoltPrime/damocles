@@ -1075,5 +1075,15 @@
   "Restart": "Restart",
   "The Damocles engine stopped unexpectedly and was restarted.": "The Damocles engine stopped unexpectedly and was restarted.",
   "The Damocles engine stopped unexpectedly {0} times in 5 minutes, so it was not restarted.": "The Damocles engine stopped unexpectedly {0} times in 5 minutes, so it was not restarted.",
-  "Restart Engine": "Restart Engine"
+  "Restart Engine": "Restart Engine",
+  "Subagents at once must be a whole number from {0} to {1}": "Subagents at once must be a whole number from {0} to {1}",
+  "\"{0}\" is not a skill and command source": "\"{0}\" is not a skill and command source",
+  "Failed to save the subagent limit: {0}": "Failed to save the subagent limit: {0}",
+  "Failed to save the cost notice setting: {0}": "Failed to save the cost notice setting: {0}",
+  "Failed to save the dropped thinking notice setting: {0}": "Failed to save the dropped thinking notice setting: {0}",
+  "Failed to save the skill and command source setting: {0}": "Failed to save the skill and command source setting: {0}",
+  "Failed to save the memory extraction setting: {0}": "Failed to save the memory extraction setting: {0}",
+  "Failed to save the user profile setting: {0}": "Failed to save the user profile setting: {0}",
+  "Failed to save the headless browser setting: {0}": "Failed to save the headless browser setting: {0}",
+  "A switch setting must be true or false": "A switch setting must be true or false"
 }

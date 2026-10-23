@@ -265,6 +265,22 @@ describe('memory quality audit', () => {
     });
   });
 
+  describe('with the user profile off', () => {
+    it('leaves the stored profiles out of the estimate and the run, so no profile rewrite is priced or called', async () => {
+      seed(db, { kind: 'fact' });
+      await profileManager.setProfileSection('global', '', 'static', 'likes tea');
+      const settings = createFakePlatform().settings;
+      await settings.update('damocles.memory.profile.enabled', false, 'user');
+      profileManager = new ProfileManager(db, writeQueue, { run: scriptedRunner({}) }, settings);
+
+      expect(estimateAudit({ db, profileManager }, [WS_A, WS_B], null)).toMatchObject({ memoryCount: 1, profileCount: 0, batchCount: 1 });
+      const runner = scriptedRunner({});
+      const runId = await audit(runner);
+      expect(runner).toHaveBeenCalledTimes(1);
+      expect(proposals(runId).filter(p => p.action === 'profile_rewrite')).toEqual([]);
+    });
+  });
+
   describe('grade validation', () => {
     it('ignores foreign ids, keeps missing ids and verdicts invalid for the kind, and returns the DB spelling', () => {
       const fact = row(db, seed(db, { kind: 'fact' }));

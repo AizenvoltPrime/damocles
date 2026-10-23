@@ -13,7 +13,7 @@ import {
   DEFAULT_MAX_UTTERANCE_MS,
 } from '@shared/types/voice';
 import { DEFAULT_WAKE_PHRASE } from '@shared/wake-phrase';
-import { DEFAULT_MODELS, DEFAULT_CACHE_WARMING } from '@shared/types/constants';
+import { DEFAULT_MODELS, DEFAULT_CACHE_WARMING, DEFAULT_SUBAGENT_CONCURRENCY } from '@shared/types/constants';
 import { KEY_PROVIDER_IDS, type ExternalKeySource, type KeyProviderId } from '@shared/settings-sections';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 
@@ -43,14 +43,18 @@ const DEFAULT_AUTO_COMPACT: AutoCompactConfig = {
 };
 
 const DEFAULT_SETTINGS: ExtensionSettings = {
-  maxTurns: 50,
   maxBudgetUsd: null,
   taskBudget: null,
   permissionMode: 'default',
   defaultPermissionMode: 'default',
-  enableFileCheckpointing: true,
-  sandbox: { enabled: false },
   autoCompact: DEFAULT_AUTO_COMPACT,
+  subagentsMaxConcurrent: DEFAULT_SUBAGENT_CONCURRENCY,
+  showCacheMissNotices: false,
+  showThinkingDroppedNotices: true,
+  assetSourcePrecedence: 'claude',
+  memoryAutoExtract: true,
+  memoryProfile: true,
+  browserHeadless: true,
   cacheWarming: DEFAULT_CACHE_WARMING,
   dangerouslySkipPermissions: false,
   defaultDangerouslySkipPermissions: false,
@@ -405,6 +409,10 @@ export const useSettingsStore = defineStore('settings', () => {
     currentSettings.value.checkpointRetentionDays = days;
   }
 
+  function setSetting<K extends keyof ExtensionSettings>(key: K, value: ExtensionSettings[K]) {
+    currentSettings.value[key] = value;
+  }
+
   function setModelState(active: string, newDefault: string) {
     activeModel.value = active;
     defaultModel.value = newDefault;
@@ -596,6 +604,7 @@ export const useSettingsStore = defineStore('settings', () => {
     updateAutoCompactConfig,
     setCacheWarmingMode,
     setCheckpointRetentionDays,
+    setSetting,
     setTeamSettings,
     setBackgroundSettings,
     setJudgeSettings,

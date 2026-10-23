@@ -610,6 +610,31 @@ describe('PiRuntime.init lifecycle', () => {
     expect(reloadB).not.toHaveBeenCalled();
   });
 
+  // Each loader's .claude and .codex roots are ordered by the precedence, and only a reload recomputes them.
+  it('reloads every folder once a source precedence change settles, and none after dispose', async () => {
+    trackLoader();
+    const runtime = PiRuntime.get('/agent');
+    const a = await runtime.folder('/a');
+    const b = await runtime.folder('/b');
+    const reloadA = vi.spyOn(a, 'reloadBare');
+    const reloadB = vi.spyOn(b, 'reloadBare');
+
+    vi.useFakeTimers();
+    try {
+      await fake.settings.update('damocles.assetSourcePrecedence', 'codex', 'user');
+      await vi.advanceTimersByTimeAsync(300);
+      expect(reloadA).toHaveBeenCalledTimes(1);
+      expect(reloadB).toHaveBeenCalledTimes(1);
+
+      await PiRuntime.disposeInstance();
+      await fake.settings.update('damocles.assetSourcePrecedence', 'claude', 'user');
+      await vi.advanceTimersByTimeAsync(300);
+      expect(reloadA).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // VS Code reports no event from a workspace glob outside the opened workspace folders, so a
   // user-scope watcher registered that way never fires and the edit only lands on the next reload.
   it('anchors every user-scope asset watcher on its dir and registers no workspace glob', async () => {

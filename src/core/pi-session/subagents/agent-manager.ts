@@ -72,8 +72,7 @@ import { extractImages } from '../branch-text';
 import type { ImageBlock } from '../../../shared/types/content';
 import { emptyAgentUsage, type AgentUsageTotals } from '../../../shared/usage-accounting';
 import { sessionEffort, type EffortBadgeLevel } from '../../../shared/effort-badge';
-
-export const DEFAULT_MAX_CONCURRENT = 4;
+import { DEFAULT_SUBAGENT_CONCURRENCY } from '../../../shared/types/constants';
 
 /** `randomUUID().slice(0, 17)`: 8 hex, dash, 4 hex, dash, the v4 version nibble and 2 hex. Keep the
  *  pattern in step with `newSubagentId`; ids reach `isSubagentId` from the model. */
@@ -291,7 +290,7 @@ export class AgentManager {
   /** Bumped by `abortAll`, so a resume that was validating across an ESC, reset or dispose never starts. */
   private abortEpoch = 0;
 
-  constructor(engine: SubagentEngine, maxConcurrent: number = DEFAULT_MAX_CONCURRENT) {
+  constructor(engine: SubagentEngine, maxConcurrent: number = DEFAULT_SUBAGENT_CONCURRENCY) {
     this.engine = engine;
     this.maxConcurrent = Math.max(1, maxConcurrent);
   }

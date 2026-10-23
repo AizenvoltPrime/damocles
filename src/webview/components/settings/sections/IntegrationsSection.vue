@@ -13,7 +13,7 @@ import { useSettingsPage } from '../settings-view';
 const { t } = useI18n();
 const page = useSettingsPage();
 const settingsStore = useSettingsStore();
-const { mcpEnabled, imageGeneration } = storeToRefs(settingsStore);
+const { mcpEnabled, imageGeneration, currentSettings } = storeToRefs(settingsStore);
 const write = useSettingWrite();
 
 const groups: { group: SwitchableToolGroup; id: string; name: string }[] = [
@@ -28,6 +28,27 @@ function setMcp(enabled: boolean): void {
   write('damocles.mcp.enabled', { type: 'setMcpEnabled', enabled }, {
     apply: () => settingsStore.setMcpEnabled(enabled),
     revert: () => settingsStore.setMcpEnabled(!enabled),
+  });
+}
+
+function setMemoryAutoExtract(enabled: boolean): void {
+  write('damocles.memory.autoExtract.enabled', { type: 'setMemoryAutoExtract', enabled }, {
+    apply: () => settingsStore.setSetting('memoryAutoExtract', enabled),
+    revert: () => settingsStore.setSetting('memoryAutoExtract', !enabled),
+  });
+}
+
+function setMemoryProfile(enabled: boolean): void {
+  write('damocles.memory.profile.enabled', { type: 'setMemoryProfile', enabled }, {
+    apply: () => settingsStore.setSetting('memoryProfile', enabled),
+    revert: () => settingsStore.setSetting('memoryProfile', !enabled),
+  });
+}
+
+function setBrowserHeadless(headless: boolean): void {
+  write('damocles.browser.headless', { type: 'setBrowserHeadless', headless }, {
+    apply: () => settingsStore.setSetting('browserHeadless', headless),
+    revert: () => settingsStore.setSetting('browserHeadless', !headless),
   });
 }
 
@@ -77,6 +98,32 @@ function setImageModel(model: string): void {
         :model-value="entry.control.status.value.enabled"
         :label="t(`settingsModal.rows.${entry.name}.label`)"
         @update:model-value="entry.control.set"
+      />
+    </SettingsRow>
+    <template v-if="entry.group === 'memory' && entry.control.status.value?.enabled">
+      <SettingsRow id="damocles.memory.autoExtract.enabled">
+        <SettingSwitch
+          :model-value="currentSettings.memoryAutoExtract"
+          :label="t('settingsModal.rows.memoryAutoExtract.label')"
+          @update:model-value="setMemoryAutoExtract"
+        />
+      </SettingsRow>
+      <SettingsRow id="damocles.memory.profile.enabled">
+        <SettingSwitch
+          :model-value="currentSettings.memoryProfile"
+          :label="t('settingsModal.rows.memoryProfile.label')"
+          @update:model-value="setMemoryProfile"
+        />
+      </SettingsRow>
+    </template>
+    <SettingsRow
+      v-if="entry.group === 'browser' && entry.control.status.value?.enabled"
+      id="damocles.browser.headless"
+    >
+      <SettingSwitch
+        :model-value="currentSettings.browserHeadless"
+        :label="t('settingsModal.rows.browserHeadless.label')"
+        @update:model-value="setBrowserHeadless"
       />
     </SettingsRow>
   </template>

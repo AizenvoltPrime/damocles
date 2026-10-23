@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import type { ElectronApplication, Page } from '@playwright/test';
 import { activeChat, expect, nextChat, test } from './support/fixtures';
 import { DEFAULT_GRID_LAYOUT, SIDEBAR_SECTIONS } from '../../src/desktop/preload/shell-channels';
-import { seedStubModel, writeAuth, writeUserSettings, type HermeticHome } from './support/hermetic';
+import { readSettingsFile, readUserSettings, seedStubModel, writeAuth, writeUserSettings, type HermeticHome } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { listChats, projectKeyOf } from './support/shell-ui';
 import { addProject, answerDialogs, askHostPassword, chatInput, askedDialogs, hostPromptAnswer, sendAndAwaitEcho } from './support/ui';
@@ -12,11 +12,6 @@ import { OVERLAY_URL, overlayPage, pressKeys, PRIMARY, shellPage, shellState, vi
 import { logBeforeQuit } from './support/app';
 import { OVERLAY_ACK_TIMEOUT_MS } from '../../src/desktop/preload/overlay-channels';
 import { chooseSegment, closeSettingsModal, openSettingsModal, settingsModal, settingsNav, settingsRow, waitForSettingsState } from './support/settings';
-
-const userSettings = (dir: string): Record<string, unknown> => {
-  const file = path.join(dir, 'settings.json');
-  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown> : {};
-};
 
 test('the title-bar gear opens settings over the window, and This chat changes the selected chat', async ({ foreground: _foreground, launch }) => {
   const { app } = await launch();
@@ -120,9 +115,42 @@ test('a Workspace value lands in the project personal file and its badge names t
   await budget.getByRole('textbox').fill('7.5');
   await budget.getByRole('textbox').press('Enter');
   const local = path.join(home.project, '.damocles', 'settings.local.json');
-  await expect.poll(() => (fs.existsSync(local) ? JSON.parse(fs.readFileSync(local, 'utf8'))['damocles.maxBudgetUsd'] : undefined)).toBe(7.5);
+  await expect.poll(() => readSettingsFile(local)['damocles.maxBudgetUsd']).toBe(7.5);
   await expect(budget.getByTestId('setting-saved')).toHaveAttribute('title', /\.damocles[\\/]settings\.local\.json$/);
   await expect(budget.getByTestId('setting-source')).toContainText('.damocles/settings.local.json');
+  await closeSettingsModal(overlay);
+});
+
+test('the subagent and notice rows save for the project folder, the source, memory and browser rows in user settings', async ({ home, launch }) => {
+  const { app } = await launch();
+  const first = await activeChat(app);
+  await expect(chatInput(first)).toBeVisible();
+  const opened = nextChat(app, [first]);
+  await addProject(app, home.project, true);
+  await expect(chatInput(await opened)).toBeVisible();
+  const local = path.join(home.project, '.damocles', 'settings.local.json');
+
+  const overlay = await openSettingsModal(app, 'workspace');
+  await settingsRow(overlay, 'damocles.subagents.maxConcurrent').locator('input[type="range"]').fill('9');
+  await expect.poll(() => readSettingsFile(local)['damocles.subagents.maxConcurrent']).toBe(9);
+  await settingsRow(overlay, 'damocles.showCacheMissNotices').getByRole('switch').click();
+  await expect.poll(() => readSettingsFile(local)['damocles.showCacheMissNotices']).toBe(true);
+
+  await settingsNav(overlay, 'application').click();
+  await chooseSegment(settingsRow(overlay, 'damocles.assetSourcePrecedence'), '.codex');
+  await expect.poll(() => readUserSettings(home)['damocles.assetSourcePrecedence']).toBe('codex');
+
+  await settingsNav(overlay, 'integrations').click();
+  const profile = settingsRow(overlay, 'damocles.memory.profile.enabled');
+  await expect(profile.getByRole('switch')).toHaveAttribute('aria-checked', 'true');
+  await profile.getByRole('switch').click();
+  await expect.poll(() => readUserSettings(home)['damocles.memory.profile.enabled']).toBe(false);
+  // The browser is off by default, so its headless row is hidden until it is turned on.
+  await expect(settingsRow(overlay, 'damocles.browser.headless')).toHaveCount(0);
+  await settingsRow(overlay, 'damocles.browser.enabled').getByRole('switch').click();
+  const headless = settingsRow(overlay, 'damocles.browser.headless');
+  await headless.getByRole('switch').click();
+  await expect.poll(() => readUserSettings(home)['damocles.browser.headless']).toBe(false);
   await closeSettingsModal(overlay);
 });
 
@@ -133,14 +161,14 @@ test('Appearance applies live, and the modal re-attaches to the chat the user se
 
   const overlay = await openSettingsModal(app, 'appearance');
   await chooseSegment(settingsRow(overlay, 'damocles.desktop.theme'), 'Light');
-  await expect.poll(() => userSettings(home.damoclesDir)['damocles.desktop.theme']).toBe('light');
+  await expect.poll(() => readUserSettings(home)['damocles.desktop.theme']).toBe('light');
   await expect.poll(() => app.evaluate(({ nativeTheme }) => nativeTheme.themeSource)).toBe('light');
   await chooseSegment(settingsRow(overlay, 'damocles.desktop.theme'), 'Dark');
   await expect.poll(() => app.evaluate(({ nativeTheme }) => nativeTheme.themeSource)).toBe('dark');
   const shellRoot = (await shellPage(app)).locator('html');
   await expect(shellRoot).toHaveAttribute('data-file-icon-theme', 'material');
   await chooseSegment(settingsRow(overlay, 'damocles.desktop.fileIconTheme'), 'Minimal');
-  await expect.poll(() => userSettings(home.damoclesDir)['damocles.desktop.fileIconTheme']).toBe('minimal');
+  await expect.poll(() => readUserSettings(home)['damocles.desktop.fileIconTheme']).toBe('minimal');
   await expect(shellRoot).toHaveAttribute('data-file-icon-theme', 'minimal');
   await expect(overlay.locator('html')).toHaveAttribute('data-file-icon-theme', 'minimal');
   await chooseSegment(settingsRow(overlay, 'damocles.desktop.fileIconTheme'), 'Material');
@@ -166,7 +194,7 @@ test('choosing Ελληνικά saves the language and offers Restart now', asyn
   await expect(chatInput(await activeChat(app))).toBeVisible();
   const overlay = await openSettingsModal(app, 'application');
   await chooseSegment(settingsRow(overlay, 'damocles.desktop.language'), 'Ελληνικά');
-  await expect.poll(() => userSettings(home.damoclesDir)['damocles.desktop.language']).toBe('el');
+  await expect.poll(() => readUserSettings(home)['damocles.desktop.language']).toBe('el');
   const banner = overlay.getByTestId('settings-restart-banner');
   await expect(banner).toBeVisible();
   await expect(banner.getByRole('button', { name: 'Restart now' })).toBeVisible();
@@ -203,17 +231,17 @@ test('Background work defaults to Automatic, marks signed-out models, and a pick
   await expect(stepfun).toHaveAttribute('aria-disabled', 'true');
   await expect(stepfun).toContainText(NOT_SIGNED_IN);
   await overlay.getByRole('option', { name: 'Haiku 5.5', exact: true }).click();
-  await expect.poll(() => userSettings(home.damoclesDir)['damocles.background.model']).toBe('claude-haiku-5-5');
+  await expect.poll(() => readUserSettings(home)['damocles.background.model']).toBe('claude-haiku-5-5');
   await expect(effort).toHaveText('Per job');
   await effort.click();
   await expect(overlay.getByRole('option')).toHaveText(['Per job', 'Low', 'Medium', 'High', 'Extra High', 'Max', 'Ultracode']);
   await overlay.getByRole('option', { name: 'High', exact: true }).click();
-  await expect.poll(() => userSettings(home.damoclesDir)['damocles.background.effort']).toBe('high');
+  await expect.poll(() => readUserSettings(home)['damocles.background.effort']).toBe('high');
 
   await model.click();
   await overlay.getByRole('option', { name: 'Automatic', exact: true }).click();
   await expect(effort).toHaveCount(0);
-  await expect.poll(() => Object.keys(userSettings(home.damoclesDir)).filter((key) => key.startsWith('damocles.background.'))).toEqual([]);
+  await expect.poll(() => Object.keys(readUserSettings(home)).filter((key) => key.startsWith('damocles.background.'))).toEqual([]);
   await closeSettingsModal(overlay);
 });
 
@@ -237,19 +265,19 @@ test('Memory judge defaults to Automatic, lists a classifier without its key as 
     await expect(option).toContainText('No key saved');
   }
   await overlay.getByRole('option', { name: 'Sonnet 5.5', exact: true }).click();
-  await expect.poll(() => userSettings(home.damoclesDir)['damocles.memory.judge']).toBe('claude-sonnet-5-5');
+  await expect.poll(() => readUserSettings(home)['damocles.memory.judge']).toBe('claude-sonnet-5-5');
   await expect(effort).toHaveText('Per job');
   await effort.click();
   await expect(overlay.getByRole('option')).toHaveText(['Per job', 'Low', 'Medium', 'High', 'Extra High', 'Max', 'Ultracode']);
   await overlay.getByRole('option', { name: 'High', exact: true }).click();
-  await expect.poll(() => userSettings(home.damoclesDir)['damocles.memory.judgeEffort']).toBe('high');
+  await expect.poll(() => readUserSettings(home)['damocles.memory.judgeEffort']).toBe('high');
   // The Background row is a separate setting.
-  expect(userSettings(home.damoclesDir)['damocles.background.model']).toBeUndefined();
+  expect(readUserSettings(home)['damocles.background.model']).toBeUndefined();
 
   await judge.click();
   await overlay.getByRole('option', { name: 'Automatic', exact: true }).click();
   await expect(effort).toHaveCount(0);
-  await expect.poll(() => Object.keys(userSettings(home.damoclesDir)).filter((key) => key.startsWith('damocles.memory.judge'))).toEqual([]);
+  await expect.poll(() => Object.keys(readUserSettings(home)).filter((key) => key.startsWith('damocles.memory.judge'))).toEqual([]);
   await closeSettingsModal(overlay);
 });
 
@@ -276,7 +304,7 @@ test('Explore moves a StepFun selection with no StepFun key to Default, and offe
   signInToAnthropic(home);
   const { app } = await launch();
   await expect(chatInput(await activeChat(app))).toBeVisible();
-  const exploreKeys = (): Record<string, unknown> => Object.fromEntries(Object.entries(userSettings(home.damoclesDir)).filter(([key]) => key.startsWith('damocles.explore.')));
+  const exploreKeys = (): Record<string, unknown> => Object.fromEntries(Object.entries(readUserSettings(home)).filter(([key]) => key.startsWith('damocles.explore.')));
   expect(exploreKeys()).toEqual({});
 
   const overlay = await openSettingsModal(app, 'accounts');
@@ -350,7 +378,7 @@ test('Restore default layout resets window-layout.json, and with Reopen where I 
     const reopen = settingsRow(overlay, 'damocles.desktop.restoreLayout').getByRole('switch');
     await expect(reopen).toHaveAttribute('aria-checked', 'true');
     await reopen.click();
-    await expect.poll(() => userSettings(home.damoclesDir)['damocles.desktop.restoreLayout']).toBe(false);
+    await expect.poll(() => readUserSettings(home)['damocles.desktop.restoreLayout']).toBe(false);
     await closeSettingsModal(overlay);
     await shell.evaluate(() => window.damoclesShell!.toggleSidebar());
     await expect.poll(() => readLayout(home.userData)?.sidebarVisible).toBe(false);

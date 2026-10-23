@@ -239,7 +239,9 @@ function loadEligibleRows(db: DatabaseInstance): MemoryRow[] {
     .all() as MemoryRow[];
 }
 
-function loadProfileTargets(db: DatabaseInstance): AuditProfileTarget[] {
+/** The stored profiles a run rewrites; none while the profile is off, since nothing reads it then. */
+function loadProfileTargets(db: DatabaseInstance, profileManager: ProfileManager): AuditProfileTarget[] {
+  if (!profileManager.isEnabled()) return [];
   return db
     .prepare(
       `SELECT scope, workspace FROM memory_profile
@@ -346,7 +348,7 @@ export function estimateAudit(
 ): MemoryAuditEstimate {
   const rows = loadEligibleRows(deps.db);
   const batches = buildAuditBatches(rows);
-  const profiles = loadProfileTargets(deps.db);
+  const profiles = loadProfileTargets(deps.db, deps.profileManager);
   const schema = gradeSchema(knownWorkspaces);
   let inputTokens = 0;
   for (const batch of batches) inputTokens += estimateCallInputTokens(AUDIT_SYSTEM_PROMPT, schema, gradePrompt(batch, knownWorkspaces));
@@ -430,7 +432,7 @@ function isLeaseLive(run: Pick<RunRow, 'status' | 'heartbeat_at'>, now: number):
 export async function beginAuditRun(deps: AuditRunDeps): Promise<AuditPlan | null> {
   const { db, writeQueue } = deps;
   const batches = buildAuditBatches(loadEligibleRows(db));
-  const profiles = loadProfileTargets(db);
+  const profiles = loadProfileTargets(db, deps.profileManager);
   const total = batches.reduce((sum, b) => sum + b.rows.length, 0) + profiles.length;
   const runId = crypto.randomUUID();
   const started = await writeQueue.run(() => {

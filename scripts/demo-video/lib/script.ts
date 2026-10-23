@@ -40,8 +40,10 @@ const MODELS: ModelInfo[] = [
 
 export function settings(permissionMode: PermissionMode = 'default', yolo = false): ExtensionSettings {
   return {
-    maxTurns: 100, maxBudgetUsd: null, taskBudget: null, permissionMode, defaultPermissionMode: 'default',
-    enableFileCheckpointing: true, checkpointRetentionDays: 30, sandbox: { enabled: false }, autoCompact: { enabled: false, triggerPercent: 80 },
+    maxBudgetUsd: null, taskBudget: null, permissionMode, defaultPermissionMode: 'default',
+    checkpointRetentionDays: 30, autoCompact: { enabled: false, triggerPercent: 80 },
+    subagentsMaxConcurrent: 4, showCacheMissNotices: false, showThinkingDroppedNotices: true, assetSourcePrecedence: 'claude',
+    memoryAutoExtract: true, memoryProfile: true, browserHeadless: true,
     cacheWarming: 'off', dangerouslySkipPermissions: yolo, defaultDangerouslySkipPermissions: false,
     ideContextEnabled: true, pinnedHeaderHidden: false,
     team: { leadModel: '', leadEffort: null, implementorModel: '', implementorEffort: null, reviewerModel: '', reviewerEffort: null },

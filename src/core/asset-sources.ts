@@ -1,8 +1,7 @@
 import * as path from "path";
 import { platform } from "./platform-host";
-
-/** Which compat asset source wins on a name collision between equivalently-shaped Claude and Codex assets. */
-export type AssetSourcePrecedence = "claude" | "codex";
+import { parseAssetSourcePrecedence } from "../shared/types/constants";
+import type { AssetSourcePrecedence } from "../shared/types/settings";
 
 /** Every asset source Damocles discovers. `.damocles` outranks the compat sources unconditionally. */
 export type AssetSourceName = "damocles" | AssetSourcePrecedence;
@@ -30,10 +29,12 @@ const DAMOCLES_SOURCE: AssetSource = {
 const CLAUDE_SOURCE: AssetSource = { name: "claude", commands: ".claude/commands", skills: ".claude/skills" };
 const CODEX_SOURCE: AssetSource = { name: "codex", commands: ".codex/prompts", skills: ".codex/skills" };
 
-/** The configured Claude-vs-Codex precedence (`damocles.assetSourcePrecedence`, default `claude`). */
+/** User-only (application scope). Every reader caches by it, so each one listens for a change. */
+export const ASSET_SOURCE_PRECEDENCE_SETTING = "damocles.assetSourcePrecedence";
+
+/** The configured Claude-vs-Codex precedence (default `claude`). */
 export function getAssetSourcePrecedence(): AssetSourcePrecedence {
-  const value = platform().settings.get<string>("damocles.assetSourcePrecedence", "claude");
-  return value === "codex" ? "codex" : "claude";
+  return parseAssetSourcePrecedence(platform().settings.get<string>(ASSET_SOURCE_PRECEDENCE_SETTING, "claude"));
 }
 
 /**

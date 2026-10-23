@@ -115,9 +115,13 @@ export function writeAuth(h: HermeticHome, auth: Record<string, unknown>): void 
 }
 
 /** ~/.damocles/settings.json, the desktop user settings scope; empty until something writes it. Main writes it by rename, so a read never sees half a file. */
-export function readUserSettings(h: HermeticHome): Record<string, unknown> {
-  const file = path.join(h.damoclesDir, 'settings.json');
+/** A settings file's flat keys; `{}` while the file does not exist. */
+export function readSettingsFile(file: string): Record<string, unknown> {
   return fs.existsSync(file) ? (JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>) : {};
+}
+
+export function readUserSettings(h: HermeticHome): Record<string, unknown> {
+  return readSettingsFile(path.join(h.damoclesDir, 'settings.json'));
 }
 
 /** Merges flat dotted keys into ~/.damocles/settings.json. */

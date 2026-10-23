@@ -22,7 +22,7 @@ const contributed = parseContributedConfiguration({
       properties: {
         'damocles.model': { default: 'default-model' },
         'damocles.debug': { default: false },
-        'damocles.maxTurns': { default: 100 },
+        'damocles.maxIndexedFiles': { default: 100 },
         'damocles.permissionMode': { default: 'default' },
         'damocles.compass.enabled': { default: false },
         'damocles.voice.runtimePath': { default: '', scope: 'machine' },
@@ -216,15 +216,15 @@ describe('DesktopSettingsStore user scope', () => {
 
 describe('DesktopSettingsStore project and local scopes', () => {
   it('applies local over project over user over the default for a trusted default project, and inspect reports every layer', () => {
-    writeJson(userFile, { 'damocles.model': 'user', 'damocles.maxTurns': 5 });
+    writeJson(userFile, { 'damocles.model': 'user', 'damocles.maxIndexedFiles': 5 });
     writeJson(projectFile(projectA), { 'damocles.model': 'project', 'damocles.debug': true });
     writeJson(localFile(projectA), { 'damocles.model': 'local' });
     const { store } = harness({ trusted: [projectA] });
     expect(store.inspect('damocles.model')).toStrictEqual({ defaultValue: 'default-model', userValue: 'user', projectValue: 'project', localValue: 'local' });
     expect(store.get('damocles.model')).toBe('local');
     expect(store.get('damocles.debug')).toBe(true);
-    expect(store.get('damocles.maxTurns')).toBe(5);
-    expect(store.inspect('damocles.maxTurns')).toStrictEqual({ defaultValue: 100, userValue: 5 });
+    expect(store.get('damocles.maxIndexedFiles')).toBe(5);
+    expect(store.inspect('damocles.maxIndexedFiles')).toStrictEqual({ defaultValue: 100, userValue: 5 });
     expect(store.scopeFile('project')).toBe(projectFile(projectA));
     expect(store.scopeFile('local')).toBe(localFile(projectA));
     expect(store.scopeFile('user')).toBe(userFile);
@@ -330,25 +330,25 @@ describe('DesktopSettingsStore project and local scopes', () => {
   });
 
   it('keeps UI toggles of user-only keys and of keys in an untrusted folder on the user file', async () => {
-    writeJson(projectFile(projectA), { 'damocles.permissionMode': 'plan', 'damocles.maxTurns': 3 });
+    writeJson(projectFile(projectA), { 'damocles.permissionMode': 'plan', 'damocles.maxIndexedFiles': 3 });
     const trustedFolder = harness({ trusted: [projectA] });
     const platform = { settings: trustedFolder.store };
     await updateConfigAtEffectiveScope(platform, 'damocles.permissionMode', 'acceptEdits');
     expect(readJson(userFile)).toEqual({ 'damocles.permissionMode': 'acceptEdits' });
-    await updateConfigAtEffectiveScope(platform, 'damocles.maxTurns', 9);
-    expect(readJson(projectFile(projectA))).toMatchObject({ 'damocles.maxTurns': 9 });
+    await updateConfigAtEffectiveScope(platform, 'damocles.maxIndexedFiles', 9);
+    expect(readJson(projectFile(projectA))).toMatchObject({ 'damocles.maxIndexedFiles': 9 });
 
     const untrusted = harness();
-    await updateConfigAtEffectiveScope({ settings: untrusted.store }, 'damocles.maxTurns', 4);
-    expect(readJson(userFile)).toEqual({ 'damocles.permissionMode': 'acceptEdits', 'damocles.maxTurns': 4 });
+    await updateConfigAtEffectiveScope({ settings: untrusted.store }, 'damocles.maxIndexedFiles', 4);
+    expect(readJson(userFile)).toEqual({ 'damocles.permissionMode': 'acceptEdits', 'damocles.maxIndexedFiles': 4 });
   });
 
   it('writes a UI toggle to the local file that supplies the value, with two projects open', async () => {
-    writeJson(localFile(projectA), { 'damocles.maxTurns': 3 });
+    writeJson(localFile(projectA), { 'damocles.maxIndexedFiles': 3 });
     const { store } = harness({ trusted: [projectA, projectB], projects: [projectA, projectB] });
-    await updateConfigAtEffectiveScope({ settings: store }, 'damocles.maxTurns', 9);
-    expect(readJson(localFile(projectA))).toEqual({ 'damocles.maxTurns': 9 });
-    expect(store.get('damocles.maxTurns')).toBe(9);
+    await updateConfigAtEffectiveScope({ settings: store }, 'damocles.maxIndexedFiles', 9);
+    expect(readJson(localFile(projectA))).toEqual({ 'damocles.maxIndexedFiles': 9 });
+    expect(store.get('damocles.maxIndexedFiles')).toBe(9);
     expect(fs.existsSync(userFile)).toBe(false);
   });
 
@@ -386,11 +386,11 @@ describe('DesktopSettingsStore project and local scopes', () => {
   it('reloads on an external edit of a project or local file', () => {
     const { store, watchers } = harness({ trusted: [projectA] });
     const listener = vi.fn();
-    store.onDidChange('damocles.maxTurns', listener);
-    writeJson(localFile(projectA), { 'damocles.maxTurns': 12 });
+    store.onDidChange('damocles.maxIndexedFiles', listener);
+    writeJson(localFile(projectA), { 'damocles.maxIndexedFiles': 12 });
     watchers.watcher(projectA, PROJECT_GLOB).fireCreate(localFile(projectA));
     expect(listener).toHaveBeenCalledTimes(1);
-    expect(store.get('damocles.maxTurns')).toBe(12);
+    expect(store.get('damocles.maxIndexedFiles')).toBe(12);
   });
 
   it('reads the project layer again when the project list changes', () => {
@@ -530,12 +530,12 @@ describe('DesktopSettingsStore file problems', () => {
 
 describe('DesktopSettingsStore per-folder reads (D38)', () => {
   it('reads a folder\'s own project and local layers whichever project is the default', () => {
-    writeJson(projectFile(projectA), { 'damocles.maxTurns': 1 });
-    writeJson(projectFile(projectB), { 'damocles.maxTurns': 2 });
+    writeJson(projectFile(projectA), { 'damocles.maxIndexedFiles': 1 });
+    writeJson(projectFile(projectB), { 'damocles.maxIndexedFiles': 2 });
     writeJson(localFile(projectB), { 'damocles.model': 'b-local' });
     const { store } = harness({ trusted: [projectA, projectB], projects: [projectA, projectB], defaultFolder: projectA });
-    expect(store.get('damocles.maxTurns')).toBe(1);
-    expect(store.get('damocles.maxTurns', 100, { path: projectB })).toBe(2);
+    expect(store.get('damocles.maxIndexedFiles')).toBe(1);
+    expect(store.get('damocles.maxIndexedFiles', 100, { path: projectB })).toBe(2);
     expect(store.inspect('damocles.model', { path: projectB })).toStrictEqual({ defaultValue: 'default-model', localValue: 'b-local' });
     expect(store.scopeFile('project', { path: projectB })).toBe(projectFile(projectB));
     expect(store.scopeFile('local', { path: projectB })).toBe(localFile(projectB));
@@ -543,62 +543,62 @@ describe('DesktopSettingsStore per-folder reads (D38)', () => {
 
   it('applies a folder\'s layers only while that folder is trusted, never by a trusted parent', () => {
     const child = path.join(projectA, 'child');
-    writeJson(projectFile(child), { 'damocles.maxTurns': 7 });
-    writeJson(projectFile(projectB), { 'damocles.maxTurns': 8 });
+    writeJson(projectFile(child), { 'damocles.maxIndexedFiles': 7 });
+    writeJson(projectFile(projectB), { 'damocles.maxIndexedFiles': 8 });
     const { store, trust } = harness({ trusted: [projectA], projects: [projectA, projectB] });
-    expect(store.get('damocles.maxTurns', 100, { path: child })).toBe(100);
-    expect(store.get('damocles.maxTurns', 100, { path: projectB })).toBe(100);
+    expect(store.get('damocles.maxIndexedFiles', 100, { path: child })).toBe(100);
+    expect(store.get('damocles.maxIndexedFiles', 100, { path: projectB })).toBe(100);
     const listener = vi.fn();
-    store.onDidChange('damocles.maxTurns', listener);
+    store.onDidChange('damocles.maxIndexedFiles', listener);
     trust.grant(projectB);
-    expect(store.get('damocles.maxTurns', 100, { path: projectB })).toBe(8);
+    expect(store.get('damocles.maxIndexedFiles', 100, { path: projectB })).toBe(8);
     expect(listener).toHaveBeenCalledTimes(1);
   });
 
   it('splits a worktree chat: the project layer from the worktree, the local layer and trust from the project folder (D34)', async () => {
     const worktree = path.join(dir, 'worktree');
     writeJson(projectFile(worktree), { 'damocles.model': 'worktree-project' });
-    writeJson(localFile(worktree), { 'damocles.maxTurns': 99 });
-    writeJson(localFile(projectA), { 'damocles.maxTurns': 4 });
+    writeJson(localFile(worktree), { 'damocles.maxIndexedFiles': 99 });
+    writeJson(localFile(projectA), { 'damocles.maxIndexedFiles': 4 });
     const folder = { path: worktree, personalPath: projectA };
     const untrusted = harness({ trusted: [worktree] });
     expect(untrusted.store.inspect('damocles.model', folder)).toStrictEqual({ defaultValue: 'default-model' });
 
     const { store } = harness({ trusted: [projectA] });
     expect(store.get('damocles.model', undefined, folder)).toBe('worktree-project');
-    expect(store.inspect('damocles.maxTurns', folder)).toStrictEqual({ defaultValue: 100, localValue: 4 });
-    await store.update('damocles.maxTurns', 5, 'local', folder);
-    expect(readJson(localFile(projectA))).toEqual({ 'damocles.maxTurns': 5 });
-    expect(readJson(localFile(worktree))).toEqual({ 'damocles.maxTurns': 99 });
+    expect(store.inspect('damocles.maxIndexedFiles', folder)).toStrictEqual({ defaultValue: 100, localValue: 4 });
+    await store.update('damocles.maxIndexedFiles', 5, 'local', folder);
+    expect(readJson(localFile(projectA))).toEqual({ 'damocles.maxIndexedFiles': 5 });
+    expect(readJson(localFile(worktree))).toEqual({ 'damocles.maxIndexedFiles': 99 });
     expect(store.scopeFile('project', folder)).toBe(projectFile(worktree));
     expect(store.scopeFile('local', folder)).toBe(localFile(projectA));
   });
 
   it('writes a folder\'s local value into that folder, and refuses one for an untrusted folder', async () => {
     const { store } = harness({ trusted: [projectA], projects: [projectA, projectB], defaultFolder: projectA });
-    await store.update('damocles.maxTurns', 6, 'local', { path: projectA });
-    expect(readJson(localFile(projectA))).toEqual({ 'damocles.maxTurns': 6 });
-    await expect(store.update('damocles.maxTurns', 6, 'local', { path: projectB })).rejects.toThrow(/not trusted/);
+    await store.update('damocles.maxIndexedFiles', 6, 'local', { path: projectA });
+    expect(readJson(localFile(projectA))).toEqual({ 'damocles.maxIndexedFiles': 6 });
+    await expect(store.update('damocles.maxIndexedFiles', 6, 'local', { path: projectB })).rejects.toThrow(/not trusted/);
     expect(fs.existsSync(localFile(projectB))).toBe(false);
   });
 
   it('watches a loaded folder, fires for its edits, and drops its watcher once no chat uses it', () => {
     const { store, watchers, setChatFolders } = harness({ trusted: [projectA, projectB], projects: [projectA, projectB], defaultFolder: projectA });
     setChatFolders([{ path: projectB }]);
-    expect(store.get('damocles.maxTurns', 100, { path: projectB })).toBe(100);
+    expect(store.get('damocles.maxIndexedFiles', 100, { path: projectB })).toBe(100);
     const listener = vi.fn();
-    store.onDidChange('damocles.maxTurns', listener);
-    writeJson(localFile(projectB), { 'damocles.maxTurns': 3 });
+    store.onDidChange('damocles.maxIndexedFiles', listener);
+    writeJson(localFile(projectB), { 'damocles.maxIndexedFiles': 3 });
     const watcherB = watchers.watcher(projectB, PROJECT_GLOB);
     watcherB.fireChange(localFile(projectB));
     expect(listener).toHaveBeenCalledTimes(1);
-    expect(store.get('damocles.maxTurns', 100, { path: projectB })).toBe(3);
+    expect(store.get('damocles.maxIndexedFiles', 100, { path: projectB })).toBe(3);
 
     setChatFolders([]);
     expect(() => watchers.watcher(projectB, PROJECT_GLOB)).toThrow();
     expect(watchers.watcher(projectA, PROJECT_GLOB)).toBeDefined();
-    writeJson(localFile(projectB), { 'damocles.maxTurns': 4 });
-    expect(store.get('damocles.maxTurns', 100, { path: projectB })).toBe(4);
+    writeJson(localFile(projectB), { 'damocles.maxIndexedFiles': 4 });
+    expect(store.get('damocles.maxIndexedFiles', 100, { path: projectB })).toBe(4);
   });
 });
 

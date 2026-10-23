@@ -14,7 +14,7 @@ import type {
 import type { SlashCommandInfo, SlashCommandItem, CustomAgentInfo, WorkspaceFileInfo } from './commands';
 import type { Question, PermissionUpdate, QuestionAnnotations, PromptOwner, PendingPromptOwner, PromptApprover } from './permissions';
 import type { FormSchema, FormValues } from './forms';
-import type { PermissionMode, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, CacheWarmingMode, EffortLevel, PanelThinkingState, TeamRole, MemoryJudge, ClassifierProvider, ClassifierCredential, ImageGenerationSettings } from './settings';
+import type { PermissionMode, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, AssetSourcePrecedence, CacheWarmingMode, EffortLevel, PanelThinkingState, TeamRole, MemoryJudge, ClassifierProvider, ClassifierCredential, ImageGenerationSettings } from './settings';
 import type {
   SystemInitData,
   QueuedMessage,
@@ -94,6 +94,13 @@ export type WebviewToExtensionMessage =
   | { type: "setTaskBudget"; budget: number | null }
   | { type: "setAutoCompact"; config: AutoCompactConfig }
   | { type: "setCacheWarming"; mode: CacheWarmingMode }
+  | { type: "setSubagentsMaxConcurrent"; count: number }
+  | { type: "setShowCacheMissNotices"; enabled: boolean }
+  | { type: "setShowThinkingDroppedNotices"; enabled: boolean }
+  | { type: "setAssetSourcePrecedence"; precedence: AssetSourcePrecedence }
+  | { type: "setMemoryAutoExtract"; enabled: boolean }
+  | { type: "setMemoryProfile"; enabled: boolean }
+  | { type: "setBrowserHeadless"; headless: boolean }
   /** Whole days, 0 keeps checkpoints forever. */
   | { type: "setCheckpointRetentionDays"; days: number }
   | { type: "setPermissionMode"; mode: PermissionMode }

@@ -119,6 +119,11 @@ export class ProfileManager {
     this.runner = runner;
   }
 
+  /** Off means no profile model call anywhere and no profile in any conversation. */
+  isEnabled(): boolean {
+    return this.settings.get<boolean>('damocles.memory.profile.enabled', true) ?? true;
+  }
+
   /** Read both sections for one scope; missing sections resolve to ''. Pass workspace='' for global. */
   getProfile(scope: ProfileScope, workspace: string): UserProfile {
     const rows = this.db
@@ -146,6 +151,7 @@ export class ProfileManager {
    * degrade); otherwise upserts both sections atomically under the write queue, hard-capping length.
    */
   async updateProfile(scope: ProfileScope, workspace: string): Promise<void> {
+    if (!this.isEnabled()) return;
     const prior = this.getProfile(scope, workspace);
 
     // CAS: snapshot each section's updated_at before the ~45s LLM call. A concurrent user edit bumps
@@ -188,8 +194,7 @@ export class ProfileManager {
    * boundaries, keeping the project's facts longest because they are the more specific.
    */
   buildProfileInjection(workspace: string, tokenBudget: number): string {
-    const enabled = this.settings.get<boolean>('damocles.memory.profile.enabled', true) ?? true;
-    if (!enabled) return '';
+    if (!this.isEnabled()) return '';
 
     const project = this.getProfile('project', workspace);
     const global = this.getProfile('global', '');

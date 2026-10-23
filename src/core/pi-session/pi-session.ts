@@ -24,7 +24,16 @@ import {
   type ImageBlock,
   type UserContentBlock,
 } from "../../shared/types/content";
-import { DEFAULT_CONTEXT_WINDOW, DEFAULT_MODELS, MODEL_SUBSTITUTES, migrateLegacyModelValue, migrateLegacyEffortValue, parseEffortLevel } from "../../shared/types/constants";
+import {
+  DEFAULT_CONTEXT_WINDOW,
+  DEFAULT_MODELS,
+  DEFAULT_SUBAGENT_CONCURRENCY,
+  MODEL_SUBSTITUTES,
+  clampSubagentConcurrency,
+  migrateLegacyModelValue,
+  migrateLegacyEffortValue,
+  parseEffortLevel,
+} from "../../shared/types/constants";
 import { PLAN_MODE_TOOLS, WRITE_TOOLS } from "../../shared/tool-names";
 import { ChatReview, type ChatChangeTotals, type ChatReviewSnapshot, type CommentPlace, type DraftComment, type ReviewSubmitOutcome } from "./chat-review";
 import { SessionWorktree } from "./session-worktree";
@@ -4116,10 +4125,9 @@ export class PiSession implements ChatSession {
 
   // ---- subagents (Phase 5) ------------------------------------------------
 
-  /** The background-subagent concurrency cap (`damocles.subagents.maxConcurrent`, default 4, clamped 1–16). */
+  /** The subagent concurrency cap (`damocles.subagents.maxConcurrent`), clamped to its declared range. */
   private maxConcurrentSetting(): number {
-    const n = this.options.platform.settings.get<number>("damocles.subagents.maxConcurrent", 4, this.options.settingsFolder);
-    return Math.min(16, Math.max(1, Number.isFinite(n) ? Math.floor(n) : 4));
+    return clampSubagentConcurrency(this.options.platform.settings.get<unknown>("damocles.subagents.maxConcurrent", DEFAULT_SUBAGENT_CONCURRENCY, this.options.settingsFolder));
   }
 
   /** Whether project-scope agents/skills may load — gated on this folder's trust (US-022). */

@@ -1,4 +1,4 @@
-import type { CACHE_WARMING_MODES } from "./constants";
+import type { ASSET_SOURCE_PRECEDENCES, CACHE_WARMING_MODES } from "./constants";
 
 export type PermissionMode = "default" | "acceptEdits" | "plan";
 
@@ -13,14 +13,6 @@ export type SpecialistKind = "implementor" | "reviewer";
  *  role identifiers never drift across the message boundary. */
 export type TeamRole = "lead" | SpecialistKind;
 
-export interface SandboxConfig {
-  enabled: boolean;
-  autoAllowBashIfSandboxed?: boolean;
-  allowUnsandboxedCommands?: boolean;
-  networkAllowedDomains?: string[];
-  networkAllowLocalBinding?: boolean;
-}
-
 export interface AutoCompactConfig {
   enabled: boolean;
   /** Compact when context usage crosses this percentage of the window (maps to pi's reserveTokens). */
@@ -32,6 +24,9 @@ export interface AutoCompactConfig {
 /** Derived from the runtime tuple so a mode added to one is a compile error in the other. */
 export type CacheWarmingMode = (typeof CACHE_WARMING_MODES)[number];
 
+/** Which compat asset source wins on a name collision between equivalently-shaped Claude and Codex assets. */
+export type AssetSourcePrecedence = (typeof ASSET_SOURCE_PRECEDENCES)[number];
+
 export type ContextWarningLevel = 'none' | 'warning' | 'soft' | 'critical';
 
 export interface SessionSettings {
@@ -40,14 +35,24 @@ export interface SessionSettings {
 }
 
 export interface ExtensionSettings {
-  maxTurns: number;
   maxBudgetUsd: number | null;
   taskBudget: number | null;
   permissionMode: PermissionMode;
   defaultPermissionMode: PermissionMode;
-  enableFileCheckpointing: boolean;
-  sandbox: SandboxConfig;
   autoCompact: AutoCompactConfig;
+  /** `damocles.subagents.maxConcurrent`, read for the chat's folder. */
+  subagentsMaxConcurrent: number;
+  /** `damocles.showCacheMissNotices`, read for the chat's folder. */
+  showCacheMissNotices: boolean;
+  /** `damocles.showThinkingDroppedNotices`, read for the chat's folder. */
+  showThinkingDroppedNotices: boolean;
+  assetSourcePrecedence: AssetSourcePrecedence;
+  /** `damocles.memory.autoExtract.enabled` */
+  memoryAutoExtract: boolean;
+  /** `damocles.memory.profile.enabled` */
+  memoryProfile: boolean;
+  /** `damocles.browser.headless` */
+  browserHeadless: boolean;
   cacheWarming: CacheWarmingMode;
   /** `damocles.checkpoints.retentionDays`; 0 keeps checkpoints forever. */
   checkpointRetentionDays: number;

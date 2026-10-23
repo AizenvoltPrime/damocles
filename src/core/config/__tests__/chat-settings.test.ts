@@ -168,11 +168,11 @@ describe('per-chat settings (D38)', () => {
   it('sees a folder passed through any receiver, and exempts a computed key only inside settingSources', () => {
     const configManager = KEY_FORWARDING_METHODS[0]!.file;
     const sample = [
-      'function a(store, folder, key) { store.get("damocles.maxTurns", 1, folder); other.inspect(key, chatFolder); db.prepare(q).get(x, y, z); }',
+      'function a(store, folder, key) { store.get("damocles.maxIndexedFiles", 1, folder); other.inspect(key, chatFolder); db.prepare(q).get(x, y, z); }',
       'class C { private settingSources(folder: F): R { return this.platform.settings.inspect(key, folder); } }',
     ].join('\n');
     expect(accessesIn(configManager, sample).map((access) => [access.call, access.keys?.source, access.inForwardingMethod])).toEqual([
-      ['.get(', '^damocles\\.maxTurns$', false],
+      ['.get(', '^damocles\\.maxIndexedFiles$', false],
       ['.inspect(', undefined, false],
       ['.inspect(', undefined, true],
     ]);

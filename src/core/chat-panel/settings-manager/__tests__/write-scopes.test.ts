@@ -90,6 +90,99 @@ describe('D37 write scopes', () => {
   });
 });
 
+describe('subagent, notice, source, memory and browser setters', () => {
+  const permissionHandler = { getPermissionMode: () => 'default', getDangerouslySkipPermissions: () => false } as never;
+
+  it('saves the per-chat keys in the chat folder\'s local layer, and refuses them in an untrusted folder', async () => {
+    const { platform, manager } = setup();
+    await manager.handleSetSubagentsMaxConcurrent(8, folderA);
+    await manager.handleSetShowCacheMissNotices(true, folderA);
+    await manager.handleSetShowThinkingDroppedNotices(false, folderA);
+    expect(platform.settings.inspect('damocles.subagents.maxConcurrent', folderA)).toStrictEqual({ localValue: 8 });
+    expect(platform.settings.inspect('damocles.showCacheMissNotices', folderA)).toStrictEqual({ localValue: true });
+    expect(platform.settings.inspect('damocles.showThinkingDroppedNotices', folderA)).toStrictEqual({ localValue: false });
+
+    platform.trust.setTrusted(false);
+    await expect(manager.handleSetSubagentsMaxConcurrent(2, folderA)).rejects.toThrow('not trusted');
+    await expect(manager.handleSetShowCacheMissNotices(false, folderA)).rejects.toThrow('not trusted');
+    await expect(manager.handleSetShowThinkingDroppedNotices(true, folderA)).rejects.toThrow('not trusted');
+  });
+
+  it('saves the window-level keys in user settings', async () => {
+    const { platform, manager } = setup();
+    await manager.handleSetAssetSourcePrecedence('codex');
+    await manager.handleSetMemoryAutoExtract(false);
+    await manager.handleSetMemoryProfile(false);
+    await manager.handleSetBrowserHeadless(false);
+    expect(platform.settings.inspect('damocles.assetSourcePrecedence')).toStrictEqual({ userValue: 'codex' });
+    expect(platform.settings.inspect('damocles.memory.autoExtract.enabled')).toStrictEqual({ userValue: false });
+    expect(platform.settings.inspect('damocles.memory.profile.enabled')).toStrictEqual({ userValue: false });
+    expect(platform.settings.inspect('damocles.browser.headless')).toStrictEqual({ userValue: false });
+  });
+
+  it('saves the source and checkpoint retention in user settings even where a project file holds them, since both are user-only', async () => {
+    const { platform, manager } = setup({}, { 'damocles.assetSourcePrecedence': 'claude', 'damocles.checkpoints.retentionDays': 7 });
+    expect(await manager.handleSetAssetSourcePrecedence('codex')).toStrictEqual({ key: 'damocles.assetSourcePrecedence', home: 'user' });
+    expect(await manager.handleSetCheckpointRetentionDays(3)).toStrictEqual({ key: 'damocles.checkpoints.retentionDays', home: 'user' });
+    expect(platform.settings.inspect('damocles.assetSourcePrecedence')).toMatchObject({ userValue: 'codex', projectValue: 'claude' });
+    expect(platform.settings.inspect('damocles.checkpoints.retentionDays')).toMatchObject({ userValue: 3, projectValue: 7 });
+  });
+
+  it('refuses a switch value that is not a boolean and writes nothing', async () => {
+    const { platform, manager } = setup();
+    const switches: [string, (value: never) => Promise<unknown>][] = [
+      ['damocles.showCacheMissNotices', (v) => manager.handleSetShowCacheMissNotices(v, folderA)],
+      ['damocles.showThinkingDroppedNotices', (v) => manager.handleSetShowThinkingDroppedNotices(v, folderA)],
+      ['damocles.memory.autoExtract.enabled', (v) => manager.handleSetMemoryAutoExtract(v)],
+      ['damocles.memory.profile.enabled', (v) => manager.handleSetMemoryProfile(v)],
+      ['damocles.browser.headless', (v) => manager.handleSetBrowserHeadless(v)],
+      ['damocles.dangerouslySkipPermissions', (v) => manager.handleSetDefaultDangerouslySkipPermissions(v, folderA)],
+      ['damocles.thinkingDisabled', (v) => manager.handleSetDefaultThinkingDisabled(v, folderA)],
+      ['damocles.ideContext.enabled', (v) => manager.handleSetIdeContextEnabled(v)],
+      ['damocles.pinnedHeaderHidden', (v) => manager.handleSetPinnedHeaderHidden(v)],
+    ];
+    for (const [key, set] of switches) {
+      for (const bad of ['false', 1, null, undefined, {}]) await expect(set(bad as never)).rejects.toThrow('A switch setting must be true or false');
+      expect(platform.settings.inspect(key, folderA)).toStrictEqual({});
+    }
+  });
+
+  it('rejects a subagent limit outside 1 to 16 or not whole, and an unknown source', async () => {
+    const { platform, manager } = setup();
+    for (const bad of [0, 17, 1.5, Number.NaN]) await expect(manager.handleSetSubagentsMaxConcurrent(bad, folderA)).rejects.toThrow(/whole number from 1 to 16/);
+    await expect(manager.handleSetAssetSourcePrecedence('pi')).rejects.toThrow(/not a skill and command source/);
+    expect(platform.settings.inspect('damocles.subagents.maxConcurrent', folderA)).toStrictEqual({});
+    expect(platform.settings.inspect('damocles.assetSourcePrecedence')).toStrictEqual({});
+  });
+
+  it('sends the per-chat keys for the chat\'s folder and the defaults when nothing is set', async () => {
+    const sent = async (folders: Parameters<typeof setup>[0]) => {
+      const { manager, posted } = setup(folders);
+      await manager.sendCurrentSettings({} as never, permissionHandler, folderA);
+      const update = posted.find((m) => m.type === 'settingsUpdate');
+      if (update?.type !== 'settingsUpdate') throw new Error('no settingsUpdate posted');
+      const { subagentsMaxConcurrent, showCacheMissNotices, showThinkingDroppedNotices, assetSourcePrecedence, memoryAutoExtract, memoryProfile, browserHeadless } = update.settings;
+      return { subagentsMaxConcurrent, showCacheMissNotices, showThinkingDroppedNotices, assetSourcePrecedence, memoryAutoExtract, memoryProfile, browserHeadless };
+    };
+    expect(await sent({})).toStrictEqual({
+      subagentsMaxConcurrent: 4,
+      showCacheMissNotices: false,
+      showThinkingDroppedNotices: true,
+      assetSourcePrecedence: 'claude',
+      memoryAutoExtract: true,
+      memoryProfile: true,
+      browserHeadless: true,
+    });
+    expect(await sent({ [A]: { local: { 'damocles.subagents.maxConcurrent': 9, 'damocles.showCacheMissNotices': true } } })).toMatchObject({
+      subagentsMaxConcurrent: 9,
+      showCacheMissNotices: true,
+    });
+    // The row shows the limit the engine runs with, not a stored value outside it.
+    expect(await sent({ [A]: { local: { 'damocles.subagents.maxConcurrent': 32 } } })).toMatchObject({ subagentsMaxConcurrent: 16 });
+    expect(await sent({ [A]: { local: { 'damocles.subagents.maxConcurrent': '8' } } })).toMatchObject({ subagentsMaxConcurrent: 4 });
+  });
+});
+
 describe('Background model setters', () => {
   it('saves the model and effort in user settings', async () => {
     const { platform, manager } = setup();

@@ -109,15 +109,26 @@ async function migrateLegacyModelScope(
   }
 }
 
-/** Removes a stored `damocles.maxThinkingTokens`, a setting pi never read, at every scope that holds one. */
-export async function removeMaxThinkingTokensSetting(settings: SettingsStore): Promise<void> {
-  const inspect = settings.inspect<number | null>("damocles.maxThinkingTokens");
-  for (const scope of MIGRATED_SCOPES) {
-    if (inspect[SCOPE_VALUE[scope]] === undefined) continue;
-    await inScope("damocles.maxThinkingTokens", scope, async () => {
-      await settings.update("damocles.maxThinkingTokens", undefined, scope);
-      log(`[Migration] Removed damocles.maxThinkingTokens (scope=${scope})`);
-    });
+/** Retired settings whose values nothing ever acted on, so removing a stored one changes no behaviour. */
+export const UNREAD_SETTINGS = [
+  "damocles.maxThinkingTokens",
+  "damocles.maxTurns",
+  "damocles.enableFileCheckpointing",
+  "damocles.sandbox",
+  "damocles.agentProgressSummaries",
+] as const;
+
+/** Removes each stored `UNREAD_SETTINGS` value at every scope that holds one. */
+export async function removeUnreadSettings(settings: SettingsStore): Promise<void> {
+  for (const key of UNREAD_SETTINGS) {
+    const inspect = settings.inspect<unknown>(key);
+    for (const scope of MIGRATED_SCOPES) {
+      if (inspect[SCOPE_VALUE[scope]] === undefined) continue;
+      await inScope(key, scope, async () => {
+        await settings.update(key, undefined, scope);
+        log(`[Migration] Removed ${key} (scope=${scope})`);
+      });
+    }
   }
 }
 
@@ -191,7 +202,7 @@ export async function runLegacySettingsMigrations(settings: SettingsStore, stepf
   const migrations: readonly (readonly [string, () => Promise<void>])[] = [
     ["damocles.effort", () => migrateLegacyEffortSetting(settings)],
     ["retired model ids", () => migrateLegacyModelSetting(settings)],
-    ["damocles.maxThinkingTokens", () => removeMaxThinkingTokensSetting(settings)],
+    ["unread settings", () => removeUnreadSettings(settings)],
     ["retired Explore provider settings", () => migrateExploreSettings(settings, stepfunKeyStored)],
   ];
   for (const [name, migrate] of migrations) {

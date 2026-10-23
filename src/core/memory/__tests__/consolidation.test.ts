@@ -402,6 +402,7 @@ describe('runConsolidation — terminal-result guarantees (no silent failure)', 
     const { runner } = makeRunner(ESBUILD_EXTRACTION);
     const ctx = makeCtx(db, runner);
     const brokenProfile = {
+      isEnabled: () => true,
       updateProfile: vi.fn(async () => {
         throw new Error('profiles boom');
       }),
@@ -457,6 +458,21 @@ describe('runConsolidation — terminal-result guarantees (no silent failure)', 
     expect(seq.indexOf('persist:active')).toBeGreaterThan(seq.indexOf('extract:done'));
     expect(seq.indexOf('maintain:active')).toBeGreaterThan(seq.indexOf('persist:done'));
     expect(seq.indexOf('profiles:active')).toBeGreaterThan(seq.indexOf('maintain:done'));
+  });
+
+  it('skips the profile phase with its reason and makes no profile call while the user profile is off', async () => {
+    seedCandidate(db, SESSION_ID, 'Which bundler?', 'esbuild.');
+    const { runner, run } = makeRunner(ESBUILD_EXTRACTION);
+    const { onPhase, events } = makePhaseCollector();
+    const settings = createFakePlatform().settings;
+    await settings.update('damocles.memory.profile.enabled', false, 'user');
+    const profileManager = new ProfileManager(db, new MemoryWriteQueue(), runner, settings);
+
+    const result = await runConsolidation(makeCtx(db, runner, { onPhase, profileManager }));
+
+    expect(result.status).toBe('extracted');
+    expect(events.filter((e) => e.phase === 'profiles')).toEqual([{ phase: 'profiles', status: 'skipped', meta: { reason: 'profile-off' } }]);
+    expect(run.mock.calls.map(([req]) => req.purpose)).not.toContain('profile');
   });
 
   it('streams persist done/total as each extracted memory resolves', async () => {

@@ -4,8 +4,8 @@ import {
   assetSourceDirs,
   assetSources,
   getAssetSourcePrecedence,
-  type AssetSourcePrecedence,
 } from '../asset-sources';
+import type { AssetSourcePrecedence } from '../../shared/types/settings';
 import { installFakePlatform } from '../../__mocks__/fake-platform';
 
 /** Point `damocles.assetSourcePrecedence` at `value` for the duration of one test. */

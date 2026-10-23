@@ -21,13 +21,13 @@ async function replaceText(editor: Locator, text: string): Promise<void> {
   }, text);
 }
 
-const ORIGINAL = '{\n  "damocles.maxTurns": 40\n}\n';
-const MINE = '{\n  "damocles.maxTurns": 12\n}\n';
-const THEIRS = '{\n  "damocles.maxTurns": 40,\n  "damocles.taskBudget": 5000\n}\n';
+const ORIGINAL = '{\n  "damocles.maxBudgetUsd": 40\n}\n';
+const MINE = '{\n  "damocles.maxBudgetUsd": 12\n}\n';
+const THEIRS = '{\n  "damocles.maxBudgetUsd": 40,\n  "damocles.taskBudget": 5000\n}\n';
 
 test('Edit settings.json opens a pane tab: the schema flags unknown keys, a valid save writes the text verbatim, text that does not parse is refused', async ({ foreground: _foreground, home, launch }) => {
   const userFile = path.join(home.damoclesDir, 'settings.json');
-  writeUserSettings(home, { 'damocles.maxTurns': 40, 'damocles.notARealSetting': true });
+  writeUserSettings(home, { 'damocles.maxBudgetUsd': 40, 'damocles.notARealSetting': true });
   const { app } = await launch();
   await openProjectChat(app, home.project);
   const shell = await shellPage(app);
@@ -46,7 +46,7 @@ test('Edit settings.json opens a pane tab: the schema flags unknown keys, a vali
   await expect.poll(() => fs.readFileSync(userFile, 'utf8')).toBe(MINE);
   await expect.poll(async () => (await activeTab(app))?.dirty).toBe(false);
 
-  await replaceText(editor, '{\n  "damocles.maxTurns": \n');
+  await replaceText(editor, '{\n  "damocles.maxBudgetUsd": \n');
   await saveWithKeyboard(app);
   await expect(shell.getByTestId('editor-save-error')).toBeVisible();
   expect(fs.readFileSync(userFile, 'utf8')).toBe(MINE);
@@ -64,7 +64,7 @@ test('a settings file changed on disk under unsaved edits shows the conflict bar
 
   await editSettingsFile(app, 'user');
   const editor = codeEditor(shell);
-  await expect(editor.locator('.view-line', { hasText: 'damocles.maxTurns' })).toBeVisible();
+  await expect(editor.locator('.view-line', { hasText: 'damocles.maxBudgetUsd' })).toBeVisible();
   await replaceText(editor, MINE);
   await expect.poll(async () => (await activeTab(app))?.dirty).toBe(true);
   fs.writeFileSync(userFile, THEIRS);
@@ -81,13 +81,13 @@ test('a settings file changed on disk under unsaved edits shows the conflict bar
   await conflictBar(shell).getByTestId('conflict-compare').click();
   await expect.poll(async () => (await activeTab(app))?.kind).toBe('diff');
   await expect(diffEditor(shell).locator('.editor.original .view-line', { hasText: 'damocles.taskBudget' })).toBeVisible();
-  await expect(diffEditor(shell).locator('.editor.modified .view-line', { hasText: '"damocles.maxTurns": 12' })).toBeVisible();
+  await expect(diffEditor(shell).locator('.editor.modified .view-line', { hasText: '"damocles.maxBudgetUsd": 12' })).toBeVisible();
 });
 
 test('a project settings tab validates against the project schema, which flags a user-only key, and the Files and search row opens settings.json', async ({ home, launch }) => {
   const projectFile = path.join(home.project, '.damocles', 'settings.json');
   fs.mkdirSync(path.dirname(projectFile), { recursive: true });
-  fs.writeFileSync(projectFile, JSON.stringify({ 'damocles.maxTurns': 7, 'damocles.permissionMode': 'plan' }, null, 2));
+  fs.writeFileSync(projectFile, JSON.stringify({ 'damocles.maxBudgetUsd': 7, 'damocles.permissionMode': 'plan' }, null, 2));
   const { app } = await launch();
   await openProjectChat(app, home.project);
   const shell = await shellPage(app);

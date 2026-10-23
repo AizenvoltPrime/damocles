@@ -1,4 +1,5 @@
 import type { FileWatcher } from "../../../../platform/file-watcher";
+import type { Disposable } from "../../../../platform/disposable";
 import type { Memento } from "../../../../platform/key-value-state";
 import type { Platform } from "../../../../platform/platform";
 import type { SettingsScope } from "../../../../platform/settings-store";
@@ -41,7 +42,7 @@ import { isFormEditableMcpServerConfig } from "./mcp-config-validate";
 import { createMcpToolName, legacyServerPrefixMap, parseLegacyMcpToolName } from "../../../pi-session/mcp/naming";
 import { resolveConfigPath } from "../../../pi-session/mcp/utils";
 import { stripControlChars } from "../../../pi-session/untrusted-text";
-import { getAssetSourcePrecedence } from "../../../asset-sources";
+import { ASSET_SOURCE_PRECEDENCE_SETTING, getAssetSourcePrecedence } from "../../../asset-sources";
 import { serializeSettingWrite } from "../../../settings-write-chain";
 import { log } from "../../../logger";
 
@@ -190,6 +191,7 @@ export class McpManager {
   private loadGeneration = 0;
   private userWatchers: FileWatcher[] = [];
   private readonly folderWatchers = new Map<string, FileWatcher[]>();
+  private precedenceListener: Disposable | null = null;
   private toggleLock: Promise<void> = Promise.resolve();
   private onConfigChange?: () => void;
   private readonly platform: Platform;
@@ -219,6 +221,10 @@ export class McpManager {
       this.userWatchers = [DAMOCLES_MCP_CONFIG_PATH, CODEX_CONFIG_PATH, PI_MCP_CONFIG_PATH].map(file =>
         this.watch(path.dirname(file), path.basename(file)));
     }
+    // The precedence breaks Claude-vs-Codex server name ties, which the loaded snapshot has already settled.
+    this.precedenceListener ??= this.platform.settings.onDidChange(ASSET_SOURCE_PRECEDENCE_SETTING, () => {
+      this.reload().catch(err => log("[McpManager] Reload after a source precedence change failed:", err));
+    });
     this.syncFolderWatchers();
   }
 
@@ -267,6 +273,8 @@ export class McpManager {
   dispose(): void {
     for (const watcher of this.userWatchers) watcher.dispose();
     this.userWatchers = [];
+    this.precedenceListener?.dispose();
+    this.precedenceListener = null;
     for (const watchers of this.folderWatchers.values()) {
       for (const watcher of watchers) watcher.dispose();
     }

@@ -5,7 +5,7 @@
  * onto Damocles' runtime, permission gate, and webview. Facade for the rest of pi-session.
  */
 
-export { AgentManager, DEFAULT_MAX_CONCURRENT } from './agent-manager';
+export { AgentManager } from './agent-manager';
 export type { SubagentEngine, ResolvedSubagentModel } from './agent-manager';
 export { AgentRegistry, BUILTIN_TOOL_NAMES } from './agent-types';
 export { WorkspaceAgentRegistry } from './workspace-agent-registry';
