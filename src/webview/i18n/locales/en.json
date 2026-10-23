@@ -1352,7 +1352,8 @@
     "modelDefault": "Default",
     "steered": "Steered",
     "resuming": "Resuming {id}",
-    "resumed": "Resumed"
+    "resumed": "Resumed",
+    "queued": "Waiting for a free slot (Subagents at once)"
   },
   "steerTool": {
     "title": "Steer subagent",

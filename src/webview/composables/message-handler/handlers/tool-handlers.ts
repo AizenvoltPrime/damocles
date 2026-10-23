@@ -85,7 +85,7 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
       if (msg.toolName === TOOL_AGENT && subagentStore.hasSubagent(msg.toolUseId)) {
         try {
           const parsed = JSON.parse(msg.result);
-          if (parsed.status === 'queued_to_running' || parsed.status === 'async_launched') {
+          if (parsed.status === 'async_launched') {
             uiStore.setCurrentRunningTool(null);
             return;
           }

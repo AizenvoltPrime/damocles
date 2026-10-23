@@ -293,6 +293,30 @@ describe('DesktopSettingsStore project and local scopes', () => {
     expect(store.inspect('damocles.voice')).toStrictEqual({});
   });
 
+  it('logs the user-only keys a project file sets once per change of that list, not on every read', () => {
+    writeJson(projectFile(projectA), { 'damocles.cacheWarming': '1h', 'damocles.model': 'p' });
+    const { store, watchers, lines } = harness({ trusted: [projectA] });
+    const ignoredLines = (): string[] => lines.filter((line) => line.includes('apply from user settings only'));
+    const fire = (): void => watchers.watcher(projectA, PROJECT_GLOB).fireChange(projectFile(projectA));
+    store.get('damocles.model', undefined, { path: projectA });
+    fire();
+    fire();
+    expect(ignoredLines()).toEqual([`[settings] ${projectFile(projectA)}: ignoring damocles.cacheWarming; these apply from user settings only`]);
+
+    writeJson(projectFile(projectA), { 'damocles.voice.runtimePath': '/evil', 'damocles.cacheWarming': '1h' });
+    fire();
+    writeJson(projectFile(projectA), { 'damocles.cacheWarming': '1h', 'damocles.voice.runtimePath': '/evil' });
+    fire();
+    expect(ignoredLines()).toHaveLength(2);
+    expect(ignoredLines()[1]).toContain('ignoring damocles.cacheWarming, damocles.voice.runtimePath;');
+
+    writeJson(projectFile(projectA), { 'damocles.model': 'p' });
+    fire();
+    writeJson(projectFile(projectA), { 'damocles.cacheWarming': '1h' });
+    fire();
+    expect(ignoredLines()).toHaveLength(3);
+  });
+
   it('ignores a project settings path it cannot read, so a trust grant still applies the rest', () => {
     fs.mkdirSync(projectFile(projectA), { recursive: true });
     writeJson(localFile(projectA), { 'damocles.model': 'local' });

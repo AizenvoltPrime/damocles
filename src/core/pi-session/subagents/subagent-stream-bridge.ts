@@ -77,7 +77,7 @@ export function buildAgentResultJson(opts: {
     totalTokens: opts.totalTokens,
     totalToolUseCount: opts.totalToolUseCount,
     agentId: opts.agentId,
-    // Not `status`: the webview reads that key as the queued_to_running/async_launched acknowledgement.
+    // Not `status`: the webview reads that key as the async_launched acknowledgement.
     agentStatus: opts.agentStatus,
   });
 }

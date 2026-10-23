@@ -151,6 +151,11 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
         nestedTranscript(ctx.stores, msg.parentToolUseId)?.setWindDown(msg.windDown);
         return;
       }
+      // Only subagents queue for a slot; team members are not counted.
+      if (msg.status === "queued") {
+        ctx.stores.subagentStore.setSubagentQueued(msg.parentToolUseId, msg.queued);
+        return;
+      }
       if (msg.parentToolUseId !== undefined) {
         nestedTranscript(ctx.stores, msg.parentToolUseId)?.setRetry(msg.status === "retrying" ? { attempt: msg.attempt, maxAttempts: msg.maxAttempts } : null);
         return;

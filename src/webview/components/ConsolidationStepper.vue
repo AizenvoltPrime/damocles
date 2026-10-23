@@ -73,77 +73,79 @@ const rows = computed(() =>
 </script>
 
 <template>
-  <ol
-    class="grid grid-cols-5 gap-1.5"
-    :aria-label="t('consolidation.stepper.label')"
-  >
-    <li
-      v-for="row in rows"
-      :key="row.id"
-      class="flex min-w-0 flex-col gap-1.75"
-      :aria-current="row.status === 'active' ? 'step' : undefined"
-      :data-status="row.status"
-      data-testid="consolidation-phase"
+  <!-- Below 36rem each phase is a row (label, detail, bar beneath); from 36rem the phases are five columns. -->
+  <div class="@container">
+    <ol
+      class="grid gap-2.5 @min-[36rem]:grid-cols-5 @min-[36rem]:gap-1.5"
+      :aria-label="t('consolidation.stepper.label')"
     >
-      <div
-        class="relative h-1 overflow-hidden rounded-full bg-(--d-hover)"
-        :class="row.sweep && 'd-sweep-bar text-(--d-accent)'"
-        aria-hidden="true"
+      <li
+        v-for="row in rows"
+        :key="row.id"
+        class="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-1.25 @min-[36rem]:flex @min-[36rem]:flex-col @min-[36rem]:items-stretch @min-[36rem]:gap-1.75"
+        :aria-current="row.status === 'active' ? 'step' : undefined"
+        :data-status="row.status"
+        data-testid="consolidation-phase"
       >
         <div
-          v-if="!row.sweep"
-          class="absolute inset-0 origin-left rounded-full transition-transform duration-500 ease-out rtl:origin-right"
+          class="relative col-span-2 row-start-2 h-1 overflow-hidden rounded-full bg-(--d-hover)"
+          :class="row.sweep && 'd-sweep-bar text-(--d-accent)'"
+          aria-hidden="true"
+        >
+          <div
+            v-if="!row.sweep"
+            class="absolute inset-0 origin-left rounded-full transition-transform duration-500 ease-out rtl:origin-right"
+            :class="{
+              'bg-(--d-success)': row.status === 'done',
+              'bg-(--d-accent)': row.status === 'active',
+              'bg-(--d-danger)': row.status === 'failed',
+              'bg-(--d-border2)': row.status === 'skipped' || row.status === 'pending',
+            }"
+            :style="{ transform: `scaleX(${row.fill})` }"
+          />
+        </div>
+        <div
+          class="flex min-w-0 items-center gap-1.25 text-xs font-semibold"
           :class="{
-            'bg-(--d-success)': row.status === 'done',
-            'bg-(--d-accent)': row.status === 'active',
-            'bg-(--d-danger)': row.status === 'failed',
-            'bg-(--d-border2)': row.status === 'skipped' || row.status === 'pending',
+            'text-(--d-text)': row.status === 'done',
+            'text-(--d-accent)': row.status === 'active',
+            'text-(--d-danger)': row.status === 'failed',
+            'text-(--d-faint)': row.status === 'pending' || row.status === 'skipped',
           }"
-          :style="{ transform: `scaleX(${row.fill})` }"
-        />
-      </div>
-      <div
-        class="flex min-w-0 items-center gap-1.25 text-xs font-semibold"
-        :class="{
-          'text-(--d-text)': row.status === 'done',
-          'text-(--d-accent)': row.status === 'active',
-          'text-(--d-danger)': row.status === 'failed',
-          'text-(--d-faint)': row.status === 'pending' || row.status === 'skipped',
-        }"
-      >
-        <LoaderCircle
-          v-if="row.status === 'active'"
-          class="size-3 d-spinning flex-none"
-          aria-hidden="true"
-        />
-        <CircleCheck
-          v-else-if="row.status === 'done'"
-          class="size-3 flex-none text-(--d-success)"
-          aria-hidden="true"
-        />
-        <CircleX
-          v-else-if="row.status === 'failed'"
-          class="size-3 flex-none"
-          aria-hidden="true"
-        />
-        <Ban
-          v-else-if="row.status === 'skipped'"
-          class="size-3 flex-none"
-          aria-hidden="true"
-        />
-        <Circle
-          v-else
-          class="size-3 flex-none"
-          aria-hidden="true"
-        />
-        <span class="truncate">{{ row.label }}</span>
-      </div>
-      <div
-        class="truncate text-11 text-(--d-faint) tabular-nums"
-        :title="row.trailing"
-      >
-        {{ row.trailing }}
-      </div>
-    </li>
-  </ol>
+        >
+          <LoaderCircle
+            v-if="row.status === 'active'"
+            class="size-3 d-spinning flex-none"
+            aria-hidden="true"
+          />
+          <CircleCheck
+            v-else-if="row.status === 'done'"
+            class="size-3 flex-none text-(--d-success)"
+            aria-hidden="true"
+          />
+          <CircleX
+            v-else-if="row.status === 'failed'"
+            class="size-3 flex-none"
+            aria-hidden="true"
+          />
+          <Ban
+            v-else-if="row.status === 'skipped'"
+            class="size-3 flex-none"
+            aria-hidden="true"
+          />
+          <Circle
+            v-else
+            class="size-3 flex-none"
+            aria-hidden="true"
+          />
+          <span class="truncate">{{ row.label }}</span>
+        </div>
+        <div
+          class="min-w-0 text-end text-11 text-(--d-faint) tabular-nums wrap-break-word @min-[36rem]:text-start"
+        >
+          {{ row.trailing }}
+        </div>
+      </li>
+    </ol>
+  </div>
 </template>

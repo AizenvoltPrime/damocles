@@ -474,6 +474,7 @@ export class AgentManager {
     bridge.start();
     if (willQueue) {
       this.queue.push({ id, spec, bridge });
+      this.postQueued(record, true);
     } else {
       this.startRecord(id, record, spec, bridge);
     }
@@ -640,9 +641,11 @@ export class AgentManager {
 
   /** Begin running a subagent record (immediate spawn or queue drain). */
   private startRecord(id: string, record: AgentRecord, spec: RunSpec, bridge: SubagentStreamBridge): void {
+    const wasQueued = record.status === 'queued';
     record.status = 'running';
     record.startedAt = Date.now();
     this.running++;
+    if (wasQueued) this.postQueued(record, false);
 
     const type = runType(spec);
     const background = runInBackground(spec);
@@ -900,6 +903,12 @@ export class AgentManager {
     this.engine.postMessage({ type: 'statusUpdate', status: 'windingDown', windDown, parentToolUseId: record.toolCallId });
   }
 
+  /** The one writer of a card's queue wait: on at the cap, off when its run starts, and again at a webview reload. */
+  private postQueued(record: AgentRecord, queued: boolean): void {
+    if (this.disposed || this.agents.get(record.id) !== record) return;
+    this.engine.postMessage({ type: 'statusUpdate', status: 'queued', queued, parentToolUseId: record.toolCallId });
+  }
+
   /**
    * A reloaded webview rebuilt the bound session's cards from their files, which end a run that has not settled. Each such
    * run's card is running again, with its Background Tasks row and the wind-down it shows, until the run's own outcome.
@@ -910,7 +919,8 @@ export class AgentManager {
       if (!this.doneResolvers.has(record)) continue;
       this.engine.postMessage({ type: 'taskStarted', taskId: record.id, toolUseId: record.toolCallId, description: record.description, taskType: record.type, isBackground: record.background === true });
       // A queued run has no row until it starts (`startRecord`).
-      if (record.background && record.status !== 'queued') this.emitBackgroundTaskStarted(record);
+      if (record.status === 'queued') this.postQueued(record, true);
+      else if (record.background) this.emitBackgroundTaskStarted(record);
       if (record.shownWindDown) this.postWindDown(record, record.shownWindDown);
     }
   }

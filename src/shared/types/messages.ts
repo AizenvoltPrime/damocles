@@ -802,6 +802,8 @@ export type ExtensionToWebviewMessage =
   | { type: "statusUpdate"; status: "retrying"; attempt: number; maxAttempts: number; parentToolUseId?: string }
   /** A stopped nested agent whose run outlasted `WIND_DOWN_NOTICE_MS` winding down, and what pi awaits; null once the run settled. Display only. */
   | { type: "statusUpdate"; status: "windingDown"; windDown: import('./wind-down').AgentWindDown | null; parentToolUseId: string }
+  /** A subagent waiting for a free slot under `damocles.subagents.maxConcurrent`; false once its run starts. Display only. */
+  | { type: "statusUpdate"; status: "queued"; queued: boolean; parentToolUseId: string }
   | { type: "taskStarted"; taskId: string; toolUseId?: string; description: string; taskType?: string; isBackground?: boolean }
   | { type: "taskNotification"; taskId: string; toolUseId?: string; status: "completed" | "failed" | "stopped"; summary: string; outputFile: string | null; usage?: { totalTokens: number; toolUses: number; durationMs: number } }
   | { type: "toolProgress"; toolUseId: string; toolName: string; parentToolUseId: string | null; elapsedTimeSeconds: number; taskId?: string; output?: string; outputTruncated?: boolean }

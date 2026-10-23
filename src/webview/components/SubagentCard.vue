@@ -8,7 +8,7 @@ import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useSubagentStop } from '@/composables/useSubagentStop';
 import { useModelIdentity } from '@/composables/useModelIdentity';
 import ProviderLogo from '@/components/icons/ProviderLogo.vue';
-import { agentStatusChip } from '@/composables/useTeamFormatting';
+import { subagentStatusChip } from '@/composables/useTeamFormatting';
 import { useBackgroundTaskStore } from '@/stores/useBackgroundTaskStore';
 import { effortBadgeLabelKey } from '@shared/effort-badge';
 import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
@@ -97,7 +97,7 @@ const cardClass = computed(() => {
   }
 });
 
-const chip = computed(() => agentStatusChip(props.subagent.status));
+const chip = computed(() => subagentStatusChip(props.subagent));
 
 const displayAgentType = computed((): string | null => {
   const type = props.subagent.agentType;
@@ -170,7 +170,7 @@ function stop(): void {
             >
               <Loader
                 class="size-2.5"
-                :class="subagent.status === 'running' && 'd-spinning'"
+                :class="chip.live && 'd-spinning'"
                 aria-hidden="true"
               />{{ t('backgroundTask.background') }}
             </button>
@@ -223,7 +223,10 @@ function stop(): void {
       data-testid="subagent-stats"
     >
       <span>{{ formattedToolCount }}</span>
-      <span class="tabular-nums">{{ formattedDuration }}</span>
+      <span
+        v-if="!subagent.queued"
+        class="tabular-nums"
+      >{{ formattedDuration }}</span>
       <AgentUsageStats
         v-if="subagent.usage"
         :usage="subagent.usage"

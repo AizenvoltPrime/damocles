@@ -31,12 +31,13 @@ export function subagentHeading(
   return { title: subagent.description, resumed: subagent.resume !== undefined };
 }
 
-/** A running card's status line: a stopped run's wind-down, the retry pi waits out before re-sending a failed call, else the progress summary. */
+/** A running card's status line: a stopped run's wind-down, the wait for a free slot, the retry pi waits out before re-sending a failed call, else the progress summary. */
 export function subagentStatusLine(
   subagent: SubagentState,
   t: (key: string, params: Record<string, unknown>) => string,
 ): string | undefined {
   if (subagent.windDown) return windDownText(subagent.windDown, t);
+  if (subagent.queued) return t('subagentDisplay.queued', {});
   if (subagent.retry) return t('status.retrying', { attempt: subagent.retry.attempt, max: subagent.retry.maxAttempts });
   return subagent.progressSummary || undefined;
 }
@@ -153,6 +154,12 @@ function buildChatMessagesFromHistory(
  * collapsible, so drop the duplicated leading user message here. Drop by role, not text-equality —
  * robust to any IDE-context prefix the mapper merges into the leading user text.
  */
+/** A card without its live sub-states (retry wait, wind-down, queue wait), which no ended or restarted run keeps. */
+function withoutLiveState(subagent: SubagentState): SubagentState {
+  const { retry: _retry, windDown: _windDown, queued: _queued, ...rest } = subagent;
+  return rest;
+}
+
 function stripLeadingUserMessage(messages: ChatMessage[]): ChatMessage[] {
   return messages[0]?.role === 'user' ? messages.slice(1) : messages;
 }
@@ -280,7 +287,7 @@ export const useSubagentStore = defineStore('subagent', () => {
     const subagent = subagents.value[toolId];
     if (!subagent) return;
     // The stale end time is dropped, not set to undefined, so a later spread cannot resurrect it.
-    const { endTime: _clearedEndTime, retry: _clearedRetry, windDown: _clearedWindDown, ...withoutEndTime } = subagent;
+    const { endTime: _clearedEndTime, ...withoutEndTime } = withoutLiveState(subagent);
     subagents.value = {
       ...subagents.value,
       [toolId]: {
@@ -295,11 +302,10 @@ export const useSubagentStore = defineStore('subagent', () => {
   function endSubagent(agentToolId: string, status: EndedSubagentStatus): void {
     const subagent = subagents.value[agentToolId];
     if (subagent && subagent.status === 'running') {
-      const { retry: _clearedRetry, windDown: _clearedWindDown, ...withoutRetry } = subagent;
       subagents.value = {
         ...subagents.value,
         [agentToolId]: {
-          ...withoutRetry,
+          ...withoutLiveState(subagent),
           status,
           endTime: Date.now(),
         },
@@ -325,8 +331,7 @@ export const useSubagentStore = defineStore('subagent', () => {
 
     for (const [id, subagent] of entries) {
       if (subagent.status === 'running') {
-        const { retry: _clearedRetry, windDown: _clearedWindDown, ...withoutRetry } = subagent;
-        updated[id] = { ...withoutRetry, status: 'cancelled', endTime: now };
+        updated[id] = { ...withoutLiveState(subagent), status: 'cancelled', endTime: now };
         hasChanges = true;
       } else {
         updated[id] = subagent;
@@ -345,10 +350,9 @@ export const useSubagentStore = defineStore('subagent', () => {
       subagents.value = {
         ...subagents.value,
         [agentToolId]: {
-          ...subagent,
+          ...(subagent.status === 'running' ? { ...withoutLiveState(subagent), status: 'completed' as const, endTime: Date.now() } : subagent),
           result,
           ...(result.sdkAgentId ? { sdkAgentId: result.sdkAgentId } : {}),
-          ...(subagent.status === 'running' ? { status: 'completed' as const, endTime: Date.now() } : {}),
         },
       };
     }
@@ -420,6 +424,19 @@ export const useSubagentStore = defineStore('subagent', () => {
     const { retry: _clearedRetry, ...withoutRetry } = subagent;
     const next = retry && subagent.status === 'running' ? { ...withoutRetry, retry } : withoutRetry;
     subagents.value = { ...subagents.value, [toolUseId]: next };
+  }
+
+  /** A running card's wait for a free slot. Its timer counts the run, so it restarts when the wait ends. */
+  function setSubagentQueued(toolUseId: string, queued: boolean): void {
+    const subagent = subagents.value[toolUseId];
+    if (!subagent || subagent.status !== 'running') return;
+    if (queued) {
+      subagents.value = { ...subagents.value, [toolUseId]: { ...subagent, queued: true } };
+      return;
+    }
+    if (!subagent.queued) return;
+    const { queued: _clearedQueued, ...started } = subagent;
+    subagents.value = { ...subagents.value, [toolUseId]: { ...started, startTime: Date.now() } };
   }
 
   function addUserMessageToSubagent(toolUseId: string, message: string, images?: ImageBlock[]): void {
@@ -890,6 +907,7 @@ export const useSubagentStore = defineStore('subagent', () => {
     addSubagentError,
     retractSubagentMessage,
     setSubagentRetry,
+    setSubagentQueued,
     setSubagentWindDown,
     updateSubagentStreaming,
     getSubagentStreaming,

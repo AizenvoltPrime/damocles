@@ -37,6 +37,8 @@ export interface SubagentState {
   retry?: { attempt: number; maxAttempts: number };
   /** Set while a stopped run outlasts core's notice delay winding down; never persisted. */
   windDown?: AgentWindDown;
+  /** Set while the agent waits for a free slot (`damocles.subagents.maxConcurrent`); `startTime` restarts when it gets one. Never persisted. */
+  queued?: true;
   isBackground?: boolean;
   /** Set on a resume call's card. `loaded` turns true once the agent's own details replace the id. */
   resume?: { agentId: string; loaded: boolean };

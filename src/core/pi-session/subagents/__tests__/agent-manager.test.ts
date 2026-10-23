@@ -243,6 +243,28 @@ describe('AgentManager concurrency', () => {
   });
 
   // The panel's `background` activity reads `hasUnsettledRuns` when this callback reaches the publisher.
+  it('tells the card of a run over the cap that it waits, again at a webview reload, and that it stopped waiting when it starts', async () => {
+    const { engine, gates } = makeEngine();
+    const posted: ExtensionToWebviewMessage[] = [];
+    engine.postMessage = (m) => void posted.push(m);
+    const queueWaits = () => posted.flatMap((m) => (m.type === 'statusUpdate' && m.status === 'queued' ? [[m.parentToolUseId, m.queued]] : []));
+    const mgr = new AgentManager(engine, 1);
+    mgr.spawn(spec(0));
+    mgr.spawn(spec(1));
+    expect(queueWaits()).toEqual([['tc1', true]]);
+
+    mgr.replayLive();
+    expect(queueWaits()).toEqual([['tc1', true], ['tc1', true]]);
+
+    await flush();
+    gateAt(gates, 0).resolve();
+    await flush();
+    expect(queueWaits()).toEqual([['tc1', true], ['tc1', true], ['tc1', false]]);
+    mgr.replayLive();
+    expect(queueWaits()).toHaveLength(3);
+    mgr.dispose();
+  });
+
   it('reports a run when it is created and again when it settles, a queued one included', async () => {
     const { engine, gates } = makeEngine();
     const unsettled: boolean[] = [];

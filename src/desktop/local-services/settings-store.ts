@@ -136,6 +136,8 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
   private readonly lastParsed = new Map<string, SettingsObject>();
   // files the user has been told do not parse, until they parse again
   private readonly reportedBroken = new Set<string>();
+  // the user-only keys last logged as ignored, per project file, until that list changes
+  private readonly reportedIgnored = new Map<string, string>();
   private readonly folders = new Map<string, FolderEntry>();
   // every file update wrote, kept after its folder's entry is released so a quit still waits for it
   private readonly written = new Set<string>();
@@ -354,9 +356,15 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
 
   private readProjectLayer(filePath: string, acceptEmpty: boolean): SettingsObject {
     const settings = this.readLayer(filePath, acceptEmpty);
-    const ignored = Object.keys(settings).filter((key) => this.isUserOnly(key));
+    const ignored = Object.keys(settings).filter((key) => this.isUserOnly(key)).sort();
     for (const key of ignored) delete settings[key];
-    if (ignored.length > 0) this.deps.log(`[settings] ${filePath}: ignoring ${ignored.join(', ')}; these apply from user settings only`);
+    const list = ignored.join(', ');
+    if (list === '') {
+      this.reportedIgnored.delete(filePath);
+    } else if (this.reportedIgnored.get(filePath) !== list) {
+      this.reportedIgnored.set(filePath, list);
+      this.deps.log(`[settings] ${filePath}: ignoring ${list}; these apply from user settings only`);
+    }
     return settings;
   }
 

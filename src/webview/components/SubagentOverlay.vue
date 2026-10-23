@@ -6,7 +6,7 @@ import type { ChatMessage, ToolCall } from '@shared/types/session';
 import { isImageBlock, type ContentBlock, type ImageBlock } from '@shared/types/content';
 import { effortBadgeLabelKey } from '@shared/effort-badge';
 import { agentCacheHitRate, agentTotalTokens } from '@shared/usage-accounting';
-import { Bot, CircleAlert, ClipboardList, Compass, Database, FileText, Gauge, Loader, LoaderCircle, Receipt, SearchCheck, Send, Square, Timer, Wrench, Zap } from 'lucide-vue-next';
+import { Bot, CircleAlert, ClipboardList, Compass, Database, FileText, Gauge, Loader, Receipt, SearchCheck, Send, Square, Timer, Wrench, Zap } from 'lucide-vue-next';
 import ToolCallCard from './ToolCallCard.vue';
 import TranscriptNotice from './TranscriptNotice.vue';
 import ErrorMessageText from './ErrorMessageText.vue';
@@ -27,7 +27,7 @@ import { useModelIdentity } from '@/composables/useModelIdentity';
 import { useOverlaySteer } from '@/composables/useOverlaySteer';
 import { useSubagentStop } from '@/composables/useSubagentStop';
 import { useAppendedIds } from '@/composables/useAppendedIds';
-import { agentStatusChip, formatElapsed, formatTokenCount } from '@/composables/useTeamFormatting';
+import { formatElapsed, formatTokenCount, subagentStatusChip } from '@/composables/useTeamFormatting';
 import { useBackgroundTaskStore } from '@/stores/useBackgroundTaskStore';
 import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
 import { ownEntry } from '@/utils/ownEntry';
@@ -95,7 +95,7 @@ const agentIcon = computed((): Component => {
   return (type !== undefined ? ownEntry(AGENT_ICONS, type) : undefined) ?? Bot;
 });
 
-const chip = computed(() => agentStatusChip(props.subagent.status));
+const chip = computed(() => subagentStatusChip(props.subagent));
 const isRunning = computed(() => props.subagent.status === 'running');
 const workingLine = computed(() => subagentStatusLine(props.subagent, t) ?? t('overlays.agent.working'));
 
@@ -269,6 +269,7 @@ function userMessageText(message: ChatMessage): string {
         :unit="t('overlays.agent.unit.effort')"
       />
       <AgentChip
+        v-if="!subagent.queued"
         :icon="Timer"
         data-part="elapsed"
         :value="formatElapsed(elapsedSeconds * 1000)"
@@ -408,8 +409,10 @@ function userMessageText(message: ChatMessage): string {
           class="flex items-center gap-2 p-0.5 text-12.5"
           data-testid="agent-working"
         >
-          <LoaderCircle
-            class="size-3.5 d-spinning flex-none text-(--d-accent)"
+          <component
+            :is="chip.icon"
+            class="size-3.5 flex-none text-(--d-accent)"
+            :class="chip.live && 'd-spinning'"
             aria-hidden="true"
           />
           <span
@@ -420,7 +423,10 @@ function userMessageText(message: ChatMessage): string {
             aria-hidden="true"
           ><span>{{ workingLine }}</span></span></span>
           <span class="flex-1" />
-          <span class="font-mono text-11 text-(--d-faint)">{{ formatElapsed(elapsedSeconds * 1000) }}</span>
+          <span
+            v-if="!subagent.queued"
+            class="font-mono text-11 text-(--d-faint)"
+          >{{ formatElapsed(elapsedSeconds * 1000) }}</span>
         </div>
 
         <p

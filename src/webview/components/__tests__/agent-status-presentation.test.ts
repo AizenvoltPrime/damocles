@@ -73,6 +73,16 @@ describe('one status presentation', () => {
     expect(onCard).toEqual(inOverlay);
   });
 
+  it('a subagent waiting for a free slot reads Pending on its card and in its overlay', () => {
+    const state = subagent({ queued: true });
+    useSubagentStore().subagents = { tc1: state };
+    const onCard = read(mount(SubagentCard, { props: { subagent: state }, global }).get('[data-testid="subagent-status"]'));
+    const inOverlay = read(mount(SubagentOverlay, { props: { subagent: state }, global }).get('[data-testid="badge"]'));
+
+    expect(onCard.text).toBe('Pending');
+    expect(onCard).toEqual(inOverlay);
+  });
+
   it.each([
     ['running', 'Running'],
     ['completed', 'Completed'],

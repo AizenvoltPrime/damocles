@@ -1,6 +1,7 @@
 import type { Component } from 'vue';
 import { Ban, CircleAlert, CircleCheck, CircleX, Clock, Eye, LoaderCircle } from 'lucide-vue-next';
 import type { TeamAgent, TeamAgentStatus } from '@shared/types/team';
+import type { SubagentState } from '@shared/types/subagents';
 
 // `avatar` colours an initial on a tint of its own colour (style.css `.d-tone-*`).
 const AGENT_COLORS = [
@@ -94,6 +95,11 @@ const NEEDS_YOU_CHIP: AgentStatusChip = { icon: CircleAlert, color: 'd-tone-warn
 /** `awaitingUser`: the session state names a pending prompt of this agent, or of a member of this team, which outranks the status. */
 export function agentStatusChip(status: TeamAgentStatus, awaitingUser = false): AgentStatusChip {
   return awaitingUser ? NEEDS_YOU_CHIP : { ...AGENT_STATUS_CHIPS[status], attention: false, labelKey: `team.statusLabel.${status}` };
+}
+
+/** A subagent's chip: one waiting for a free slot is pending, as a team member that has not started is. */
+export function subagentStatusChip(subagent: Pick<SubagentState, 'status' | 'queued'>): AgentStatusChip {
+  return agentStatusChip(subagent.status === 'running' && subagent.queued ? 'pending' : subagent.status);
 }
 
 const WORKING: ReadonlySet<TeamAgentStatus> = new Set(['pending', 'running', 'awaiting-review', 'standby', 'monitoring']);
