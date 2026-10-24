@@ -166,8 +166,16 @@ function closeLightbox(): void {
         <span class="font-mono text-xs wrap-break-word">{{ tool.errorMessage }}</span>
       </div>
 
+      <p
+        v-if="tool.status === 'blocked' && tool.feedback"
+        class="py-3 text-12.5 text-pretty wrap-anywhere text-(--d-muted)"
+        data-testid="tool-overlay-blocked-reason"
+      >
+        {{ tool.feedback }}
+      </p>
+
       <section
-        v-if="hasResult"
+        v-else-if="hasResult"
         class="overflow-hidden rounded-10 border border-(--d-border) bg-(--d-card)"
       >
         <button

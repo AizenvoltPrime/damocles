@@ -119,7 +119,7 @@ describe('a session\'s worktree facts', () => {
     await registry.remove(record.id);
     const isolation = s.worktree.isolation();
     expect(isolation).toMatchObject({ workingFolder: record.workingFolder, projectPath: project, repositoryRoot: project });
-    expect(worktreeIsolationBlock('Edit', { file_path: path.join(project, 'a.ts') }, isolation!)).toContain(WORKTREE_ISOLATION_REASON);
+    expect(worktreeIsolationBlock('Edit', { file_path: path.join(project, 'a.ts') }, { ...isolation!, environment: {} })).toContain(WORKTREE_ISOLATION_REASON);
     expect(s.worktree.readOnly()).toBe(true);
   });
 

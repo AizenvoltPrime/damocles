@@ -243,7 +243,7 @@ export class SessionWorktree implements Disposable {
    * session in a worktree folder (a turn running as registry.json is removed), the chat stays isolated: from the record this
    * session was made with, else from the entry's project as both project folder and repository.
    */
-  isolation(): WorktreeIsolation | undefined {
+  isolation(): Omit<WorktreeIsolation, 'environment' | 'commandPrefix' | 'shellPath'> | undefined {
     const registry = this.deps.host()?.registry;
     if (!registry) return undefined;
     const live = this.inLiveWorktree();

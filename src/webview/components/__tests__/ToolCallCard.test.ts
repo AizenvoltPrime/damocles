@@ -436,3 +436,24 @@ describe('an MCP resource tool call', () => {
     expect(wrapper.findComponent(ToolCardFrame).props('expandable')).toBe(true);
   });
 });
+
+// History restores a blocked call with the refusal the agent got as its result; the card shows the reason instead.
+describe('a blocked tool call restored from history', () => {
+  const reason = 'This chat works in its worktree. This git command runs in the project folder.';
+  const blocked: ToolCall = {
+    id: 't-1',
+    name: 'PowerShell',
+    input: { command: 'git -C C:\\proj status' },
+    status: 'blocked',
+    feedback: reason,
+    result: `This tool call was blocked automatically and the user was not consulted. Blocked by Damocles policy: ${reason}`,
+    isError: true,
+  };
+
+  it('shows the reason once and never the refusal text as its output', () => {
+    const wrapper = card(blocked);
+    expect(wrapper.find('[data-testid="tool-card-blocked-reason"]').text()).toBe(reason);
+    expect(wrapper.text()).not.toContain('blocked automatically');
+    expect(wrapper.text()).toContain('git -C');
+  });
+});

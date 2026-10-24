@@ -11387,26 +11387,43 @@ describe("PiSession's worktree isolation (D62)", () => {
     await session.dispose();
   });
 
-  it('reads only the command prefix, and nothing for a chat without isolation', async () => {
+  it('reads the shell options the tools get, and nothing for a chat without isolation', async () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
     const live = H.getLastSession()!;
     const gate = (cwdFolder() as unknown as { _panelRegistry: Map<string, PanelGateContext> })._panelRegistry.get(live.sessionId as string)!;
     const settings = H.getServices().settingsManager;
     const prefix = settings.getShellCommandPrefix as ReturnType<typeof vi.fn>;
-    const shellPath = settings.getShellPath as ReturnType<typeof vi.fn>;
     const environment = vi.spyOn(session.worktree, 'shellEnvironment');
     const isolation = vi.spyOn(session.worktree, 'isolation').mockReturnValue(undefined);
     prefix.mockClear();
-    shellPath.mockClear();
     expect(gate.worktreeIsolation!()).toBeUndefined();
     expect(prefix).not.toHaveBeenCalled();
+    expect(environment).not.toHaveBeenCalled();
     const project = path.resolve('/projects/app');
     isolation.mockReturnValue({ workingFolder: path.resolve('/worktrees/app/aaaaaaaa'), projectPath: project, repositoryRoot: project, otherWorktrees: [], homeDir: path.resolve('/home') });
-    gate.worktreeIsolation!();
-    expect(prefix).toHaveBeenCalledTimes(1);
-    expect(shellPath).not.toHaveBeenCalled();
-    expect(environment).not.toHaveBeenCalled();
+    vi.stubEnv('DAMOCLES_TEST_SHARED', 'from-process');
+    vi.stubEnv('DAMOCLES_TEST_INHERITED', 'inherited');
+    vi.stubEnv('PI_MODEL', 'from-process');
+    environment.mockReturnValue({ DAMOCLES_WORKTREE_INDEX: '1', DAMOCLES_TEST_SHARED: 'from-worktree' });
+    (settings.getShellPath as ReturnType<typeof vi.fn>).mockReturnValue('/usr/bin/zsh');
+    try {
+      const checked = gate.worktreeIsolation!();
+      expect(prefix).toHaveBeenCalledTimes(1);
+      expect(environment).toHaveBeenCalledTimes(1);
+      // The tools' shells start with process.env plus the worktree's variables, which win, so the check starts from the same.
+      expect(checked?.environment).toMatchObject({ DAMOCLES_WORKTREE_INDEX: '1', DAMOCLES_TEST_SHARED: 'from-worktree', DAMOCLES_TEST_INHERITED: 'inherited' });
+      // pi sets PATH and its session variables per call, so they are present with no value the check can read.
+      const pathKey = Object.keys(process.env).find((name) => name.toLowerCase() === 'path') ?? 'PATH';
+      for (const name of [pathKey, 'PI_SESSION_ID', 'PI_SESSION_FILE', 'PI_PROVIDER', 'PI_MODEL', 'PI_REASONING_LEVEL']) {
+        expect(Object.hasOwn(checked!.environment, name), name).toBe(true);
+        expect(checked!.environment[name], name).toBeUndefined();
+      }
+      expect(checked?.shellPath).toBe('/usr/bin/zsh');
+    } finally {
+      (settings.getShellPath as ReturnType<typeof vi.fn>).mockReturnValue(undefined);
+      vi.unstubAllEnvs();
+    }
     await session.dispose();
   });
 });

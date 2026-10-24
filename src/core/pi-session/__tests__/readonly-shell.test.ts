@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyReadOnlyShellCommand, stripNoOpRedirections } from '../readonly-shell';
+import { classifyReadOnlyShellCommand, parseShellStructure, stripNoOpRedirections } from '../readonly-shell';
 
 const BASH_ALLOWED: readonly [string][] = [
     ['git status'],
@@ -323,6 +323,130 @@ describe('classifyReadOnlyShellCommand — PowerShell denials (fail-closed, cate
     expect(verdict.readOnly).toBe(false);
     if (!verdict.readOnly) {
       expect(verdict.reason).toContain(reasonSubstring);
+    }
+  });
+});
+
+describe('parseShellStructure — loops, and the commands that run once where they stand', () => {
+  const words = (command: string) => parseShellStructure(command).segments.map((s) => s.words);
+  const unconditional = (command: string) => parseShellStructure(command).segments.map((s) => s.unconditional);
+  const substituted = (command: string) => parseShellStructure(command).segments.map((s) => s.substitutions.map((sub) => sub.segments[0]!.words));
+
+  it('records each loop over its segments, a for header apart from the body it repeats', () => {
+    const parsed = parseShellStructure('for f in a "b c" ~ $x "$(pwd)"; do cd "$f"; done; git status');
+    expect(parsed.unparsable).toBe(false);
+    expect(parsed.segments.map((s) => s.words)).toEqual([[], ['cd', undefined], ['git', 'status']]);
+    expect(parsed.loops).toEqual([
+      {
+        start: 1,
+        end: 2,
+        header: 0,
+        variable: 'f',
+        items: [['a'], ['b c'], [{ tilde: true }], [{ variable: 'x', quoted: false }], [expect.objectContaining({ body: 'pwd', quoted: true })]],
+      },
+    ]);
+    expect(parseShellStructure('while read l; do cd ..; done').loops).toEqual([{ start: 0, end: 2 }]);
+    expect(parseShellStructure('for a in x; do until false; do :; done; done').loops).toEqual([
+      { start: 1, end: 3, header: 0, variable: 'a', items: [['x']] },
+      { start: 1, end: 3 },
+    ]);
+  });
+
+  it.each([['*.ts'], ['{a,b}'], ["$'a'"], ['${x:-y}'], ['$1'], ['"$@"'], ['~user'], ['`pwd`'], ['$((1))'], ['<(pwd)']])('gives a for loop no items when one is %s', (item) => {
+    const parsed = parseShellStructure(`for f in a ${item}; do :; done`);
+    expect(parsed.loops).toHaveLength(1);
+    expect(parsed.loops[0]).toMatchObject({ variable: 'f' });
+    expect(parsed.loops[0]!.items).toBeUndefined();
+  });
+
+  it('marks the commands that run exactly once where they stand', () => {
+    expect(unconditional('a; b && c || d | e & f\ng')).toEqual([true, true, false, false, false, true, true]);
+    expect(unconditional('a &> out; b')).toEqual([true, true]);
+    expect(unconditional('(cd x); y')).toEqual([false, true]);
+    expect(unconditional('if a; then b; else c; fi; d')).toEqual([false, false, false, true]);
+    expect(unconditional('{ a; }; b')).toEqual([false, true]);
+    expect(unconditional('while a; do b; done; c')).toEqual([false, false, true]);
+  });
+
+  it('marks the operator that guards a command after a lone simple command, and the commands that run once per walk', () => {
+    const guards = (command: string) => parseShellStructure(command).segments.map((s) => s.guard);
+    const sequential = (command: string) => parseShellStructure(command).segments.map((s) => s.sequential);
+    expect(guards('a && b || c; d')).toEqual([undefined, '&&', '||', undefined]);
+    expect(guards('a &&\n\n# x\nb')).toEqual([undefined, '&&']);
+    expect(guards('! a && b; { a; } && b; (a) || b')).toEqual([undefined, undefined, undefined, undefined, undefined, undefined]);
+    expect(guards('a && if b; then c; fi; a && time b; a && { b; }')).toEqual([undefined, undefined, undefined, undefined, undefined, undefined, undefined]);
+    expect(guards('a | b && c')).toEqual([undefined, undefined, '&&']);
+    expect(sequential('a; b && c; if d; then e; else f; fi; g | h; i & j')).toEqual([true, true, true, true, false, false, false, false, false, true]);
+    expect(sequential('x && { y; }; (z); { w; } | v; for d in a; do u; done')).toEqual([true, false, true, false, false, true, true]);
+    expect(parseShellStructure('(a; (b)); c').subshells).toEqual([{ start: 0, end: 2 }, { start: 1, end: 2 }]);
+    // A compound command's redirection runs before it, inside the subshell around it.
+    expect(parseShellStructure('( { a; } > $(b) )').subshells).toEqual([{ start: 0, end: 2 }]);
+  });
+
+  // Git Bash reads an alias defined on an earlier line at each of these breaks, and none defined on the same line.
+  it('numbers the complete commands bash reads whole before it runs any of them', () => {
+    const lines = (command: string) => parseShellStructure(command).segments.map((s) => s.line);
+    expect(lines('a; b\nc && d\ne')).toEqual([0, 0, 1, 1, 2]);
+    expect(lines('a &&\nb\nc |\nd\ne \\\nf\ng')).toEqual([0, 0, 1, 1, 2, 3]);
+    expect(lines('if a; then\nb\nfi\nc\n{\nd\n}\ne')).toEqual([0, 0, 1, 2, 3]);
+    expect(lines('a <<E\n$(b)\nE\nc # x\n\nd')).toEqual([0, 1, 3]);
+    expect(lines('for i in x; do\na\ndone > >(b)\nc')).toEqual([0, 0, 0, 1]);
+  });
+
+  it('reads a reserved word only where a command starts, before any assignment or redirection', () => {
+    const loop = parseShellStructure('for f in a b; do X=1 done; >/dev/null done; X=1 for y; X=1 while :; done; cd ..');
+    expect(loop.unparsable).toBe(false);
+    expect(loop.segments.map((s) => s.words)).toEqual([[], ['done'], ['done'], ['for', 'y'], ['while', ':'], ['cd', '..']]);
+    expect(loop.loops).toEqual([{ start: 1, end: 5, header: 0, variable: 'f', items: [['a'], ['b']] }]);
+    expect(unconditional('if a; then X=1 fi; cd x; fi; y')).toEqual([false, false, false, true]);
+    expect(unconditional('{ X=1 }; cd x; }; y')).toEqual([false, false, true]);
+    expect(words('X=1 if a; X=1 then b; >x fi; 2>&1 {')).toEqual([['if', 'a'], ['then', 'b'], ['fi'], ['{']]);
+    expect(parseShellStructure('{ X=1 }').unparsable).toBe(true);
+    expect(parseShellStructure('for f in a; do X=1 done').unparsable).toBe(true);
+  });
+
+  it("puts a compound command's redirections before its first segment, where bash performs them", () => {
+    const procsub = 'for d in $(ls); do cd "$d"; done < <(git status); pwd';
+    expect(parseShellStructure(procsub).unparsable).toBe(false);
+    expect(substituted(procsub)).toEqual([[['git', 'status']], [['ls']], [], []]);
+    expect(unconditional(procsub)).toEqual([true, false, false, true]);
+    expect(parseShellStructure(procsub).loops).toMatchObject([{ header: 1, start: 2, end: 3 }]);
+    const heredoc = 'while read l; do echo "$l"; done <<EOF\n$(git status)\nEOF\npwd';
+    expect(substituted(heredoc)).toEqual([[['git', 'status']], [], [], []]);
+    expect(parseShellStructure(heredoc).loops).toEqual([{ start: 1, end: 3 }]);
+    // The body belongs to cat, inside the loop.
+    const inside = 'while read l; do cat <<EOF; done\n$(git status)\nEOF\npwd';
+    expect(substituted(inside)).toEqual([[], [['git', 'status']], []]);
+    expect(parseShellStructure(inside).loops).toEqual([{ start: 0, end: 2 }]);
+    expect(words('a && if b; then c; fi > >(d)')).toEqual([['a'], [], ['b'], ['c']]);
+    expect(unconditional('a && if b; then c; fi > >(d)')).toEqual([true, false, false, false]);
+    expect(unconditional('{ cd x; } < <(pwd) &')).toEqual([false, false]);
+    expect(unconditional('(cd x) < <(pwd); y')).toEqual([true, false, true]);
+    const nested = parseShellStructure('for a in x; do while b; do c; done < <(d); done');
+    expect(nested.segments.map((s) => s.words)).toEqual([[], [], ['b'], ['c']]);
+    expect(nested.loops).toEqual([
+      { start: 1, end: 4, header: 0, variable: 'a', items: [['x']] },
+      { start: 2, end: 4 },
+    ]);
+  });
+
+  it.each([['fi'], ['a)'], ['(a'], ['if a; then b'], ['if a; then b; done'], ['{ a; )'], ['if a; then b; fi c'], ['while a; do b; done < x c']])(
+    'marks an unbalanced or misplaced compound command unparsable: %s',
+    (command) => {
+      expect(parseShellStructure(command).unparsable).toBe(true);
+    },
+  );
+
+  it.each([['for a in 1; do for b in 2; do :; done done'], ['if false; then :; else for x in 1; do :; done fi'], ['{ for x in 1; do :; done }'], ['( if a; then b; fi )']])(
+    'reads a closing word right after another compound command: %s',
+    (command) => {
+      expect(parseShellStructure(command).unparsable).toBe(false);
+    },
+  );
+
+  it('runs the substitutions a declaration builtin evaluates in a subscript, whatever gives the name', () => {
+    for (const name of ['a', '$n', '"$n"', '${n}', '$-', '${n:-a}']) {
+      expect(substituted(`declare ${name}'[$(git status)]=1'`), name).toEqual([[['git', 'status']]]);
     }
   });
 });

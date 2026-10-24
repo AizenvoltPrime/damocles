@@ -240,6 +240,9 @@ const ABORTED_AGENTS_SETTLE_TIMEOUT_MS = 10_000;
  *  records the last turn; a first baseline of a large folder can take longer and is dropped. */
 const CHECKPOINT_DRAIN_MS = 2_000;
 
+/** The variables pi's `resolveSpawnContext` gives both shell tools from the calling session; keep equal to pi's list. */
+const PI_SPAWN_VARIABLES = ["PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL"];
+
 // The webview's contextInjection.viewContext button label; view-context-label.test.ts keeps every language's two equal.
 export const VIEW_CONTEXT_BUTTON = "View injected context";
 
@@ -2746,12 +2749,23 @@ export class PiSession implements ChatSession {
     };
   }
 
-  /** D62's isolation for this chat and its agents, with the prefix pi's bash tool runs before every command. */
+  /**
+   * D62's isolation for this chat and its agents, with the prefix and shell pi's bash tool runs from `shellOptions()`, and
+   * the environment both shell tools start with: `process.env`, then PATH and pi's session variables, which pi's
+   * `resolveSpawnContext` sets per call and so are left without a value, then the worktree's variables. Built per call,
+   * since `process.env` and the worktree may change; it holds secrets, so it is never logged.
+   */
   private worktreeIsolation(): WorktreeIsolation | undefined {
     const isolation = this.worktree.isolation();
     if (!isolation) return undefined;
-    const commandPrefix = this.folder?.services.settingsManager.getShellCommandPrefix();
-    return commandPrefix ? { ...isolation, commandPrefix } : isolation;
+    const { commandPrefix, shellPath, env } = this.shellOptions();
+    const environment: Record<string, string | undefined> = {};
+    for (const [name, value] of Object.entries(process.env)) if (value !== undefined) environment[name] = value;
+    // pi's getShellEnv adds its bin folder under the spelling process.env gives PATH.
+    const pathKey = Object.keys(process.env).find((name) => name.toLowerCase() === "path") ?? "PATH";
+    for (const name of [pathKey, ...PI_SPAWN_VARIABLES]) environment[name] = undefined;
+    Object.assign(environment, env);
+    return { ...isolation, environment, ...(commandPrefix ? { commandPrefix } : {}), ...(shellPath !== undefined ? { shellPath } : {}) };
   }
 
   reset(): void {

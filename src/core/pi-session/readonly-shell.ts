@@ -1348,7 +1348,7 @@ function classifyPowershell(command: string): ReadOnlyVerdict {
  * editor-freeze time proportional to its length. No legitimate read-only command approaches this, and
  * refusing early is both cheaper and more honest than classifying it.
  */
-const MAX_COMMAND_LENGTH = 8192;
+export const MAX_COMMAND_LENGTH = 8192;
 
 /**
  * Classify a shell command as provably read-only (safe to auto-run in plan mode) or not. Fails closed:
@@ -1371,32 +1371,123 @@ export const COMPUTED_TEXT = '\u0000';
 /** The builtins whose `NAME=value` operands are assignments. */
 export const DECLARATION_BUILTINS: ReadonlySet<string> = new Set(['export', 'declare', 'local', 'readonly', 'typeset']);
 
+/**
+ * A word's literal text, a variable it expands as `$NAME` or `${NAME}` (`quoted` inside double quotes), a `~` it
+ * expands to the shell's HOME, or a `$(...)` command substitution: its parsed body (also in the segment's
+ * `substitutions`) and the body as written.
+ */
+export type ShellPart =
+  | string
+  | { readonly variable: string; readonly quoted: boolean }
+  | { readonly tilde: true }
+  | { readonly substitution: ShellStructure; readonly body: string; readonly quoted: boolean };
+
+export interface ShellAssignment {
+  readonly name: string;
+  readonly value: string | undefined;
+  /** The value as written, quotes and expansions included; absent when the text does not give it (a `for` variable). */
+  readonly raw?: string;
+  /** The offset of the name in the parsed text. */
+  readonly offset: number;
+  /** Written `+=`. */
+  readonly append: boolean;
+  /** The value's parts, when only variables, `~` and `$(...)` make it computed. */
+  readonly template?: readonly ShellPart[];
+}
+
 /** One simple command: its leading assignments and its words, each undefined when any part of it is computed. */
 export interface ShellSegment {
-  /** `raw` is the value as written, quotes and expansions included; absent when the text does not give it (a `for` variable). */
-  readonly assignments: ReadonlyArray<{ readonly name: string; readonly value: string | undefined; readonly raw?: string }>;
+  readonly assignments: readonly ShellAssignment[];
   readonly words: ReadonlyArray<string | undefined>;
   /** Each word as written, quotes and expansions included. */
   readonly rawWords: readonly string[];
+  /** Each computed word's parts, when only variables, `~` and `$(...)` make it computed; undefined for the other words. */
+  readonly templates: ReadonlyArray<readonly ShellPart[] | undefined>;
+  /** Each word's offset in the parsed text. */
+  readonly offsets: readonly number[];
   /** The parsed bodies of `$()`, backticks and process substitutions in this command; they run before it. */
   readonly substitutions: readonly ShellStructure[];
+  /**
+   * Whether the command runs exactly once where it stands: outside every compound command and `( )`, not after `&&`, `||`
+   * or `|`, and neither piped nor put in the background.
+   */
+  readonly unconditional: boolean;
+  /**
+   * `&&` or `||` when the command runs only where the segment before it succeeded or failed: it follows that operator
+   * directly, after a simple command that is not negated, with no compound command or reserved word between.
+   */
+  readonly guard?: '&&' | '||';
+  /**
+   * Whether the command runs exactly once each time a walk passes it, given its guard: not in an `if`'s branches, not in
+   * a pipeline or a background job, and not in a compound command that follows `&&`, `||` or `|`, is piped or is put in
+   * the background.
+   */
+  readonly sequential: boolean;
+  /**
+   * The complete command it belongs to, counted from 0: bash reads one whole, up to a line break outside every compound
+   * command and after no `&&`, `||` or `|`, before it runs any of it.
+   */
+  readonly line: number;
+}
+
+/** A run of segments, which stay flat in `ShellStructure.segments`. */
+export interface ShellRange {
+  readonly start: number;
+  /** The index after the range's last segment. */
+  readonly end: number;
+}
+
+/** A `for`, `while` or `until` loop over a run of segments, which stay flat in `ShellStructure.segments`. */
+export interface ShellLoop {
+  /** The first segment that repeats: a `while` or `until` condition, or the body after a `for` header. */
+  readonly start: number;
+  /** The index after the loop's last segment. */
+  readonly end: number;
+  /** A `for` header's segment, which runs once: its variable's assignment and the substitutions in its list. */
+  readonly header?: number;
+  readonly variable?: string;
+  /**
+   * Each list item's parts, a literal item as one string; absent without an `in` list, for `for ((`, and when an item is
+   * a glob or a brace expansion or has any part that is not literal text, a plain variable, `~` or `$(...)`.
+   */
+  readonly items?: ReadonlyArray<readonly ShellPart[]>;
 }
 
 export interface ShellStructure {
+  /** In the order they run; a compound command's redirections are a segment before its first one, run once. */
   readonly segments: readonly ShellSegment[];
-  /** Syntax the parse cannot follow: an unbalanced quote or substitution, a heredoc without its end, a function or `case`. */
+  /** In the order they open, so an outer loop comes before the loops inside it. */
+  readonly loops: readonly ShellLoop[];
+  /** The `( )` subshells, in the order they open. */
+  readonly subshells: readonly ShellRange[];
+  /**
+   * Syntax the parse cannot follow: an unbalanced quote, substitution or compound command, a word after a compound
+   * command's closing word, a heredoc without its end, a function or `case`.
+   */
   readonly unparsable: boolean;
 }
 
+type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+
 const RESERVED_SKIP: ReadonlySet<string> = new Set(['if', 'then', 'else', 'elif', 'fi', 'do', 'done', 'while', 'until', '!', '{', '}', 'time']);
+// The reserved words that open a compound command, each with the word that closes it.
+const COMPOUND_CLOSER: ReadonlyMap<string, string> = new Map([
+  ['if', 'fi'],
+  ['while', 'done'],
+  ['until', 'done'],
+  ['for', 'done'],
+  ['{', '}'],
+]);
+const COMPOUND_CLOSE: ReadonlySet<string> = new Set(COMPOUND_CLOSER.values());
 const RESERVED_UNPARSABLE: ReadonlySet<string> = new Set(['case', 'esac', 'function', 'select', 'coproc']);
-// Unquoted, these make a word a glob or a brace expansion, whose value the text does not give.
-const PATTERN_CHARS = '*?[{}';
+// Unquoted, these make a word a glob, whose value the text does not give.
+const GLOB_CHARS = '*?[';
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
 // A declaration builtin's operand that assigns, an array element included.
 const DECLARED = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/;
 const ARITHMETIC_TEST = /^-(eq|ne|lt|le|gt|ge)$/;
 const VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const NAME_AT = /[A-Za-z_][A-Za-z0-9_]*/y;
 
 /** Index of the `'` closing the `$'` quote whose `'` is at `open`, where a backslash escapes the next character; -1 when unbalanced. */
 function closingAnsiQuote(text: string, open: number): number {
@@ -1614,48 +1705,168 @@ function heredocDelimiter(text: string): { delimiter: string; quoted: boolean; l
 
 /** The bash structure of `command`, for checks that need the targets of particular commands; see ShellStructure. Bounded by MAX_COMMAND_LENGTH like the classifier. */
 export function parseShellStructure(command: string, depth = 0): ShellStructure {
-  if (command.length > MAX_COMMAND_LENGTH || depth > 8) return { segments: [], unparsable: true };
+  if (command.length > MAX_COMMAND_LENGTH || depth > 8) return { segments: [], loops: [], subshells: [], unparsable: true };
   const segments: ShellSegment[] = [];
   let unparsable = false;
-  let assignments: Array<{ name: string; value: string | undefined; raw?: string }> = [];
+  let assignments: ShellAssignment[] = [];
   let words: Array<string | undefined> = [];
   let rawWords: string[] = [];
+  let templates: Array<readonly ShellPart[] | undefined> = [];
+  let offsets: number[] = [];
   // Each word's literal text, computed parts left out.
   let literals: string[] = [];
   let substitutions: ShellStructure[] = [];
+  // Whether `&&`, `||` or `|` runs the next command conditionally.
+  let chained = false;
+  // The operator the next command is guarded by (ShellSegment.guard), kept across blank lines and comments.
+  let guard: '&&' | '||' | undefined;
+  // Whether the last command ended was a simple command whose exit status is its own, so an `&&` or `||` after it guards.
+  let guardable = false;
+  // A `!` before the current command, which inverts its exit status.
+  let negated = false;
+  // The current word's parts; undefined once a part is neither literal nor a plain variable.
+  let parts: ShellPart[] | undefined = [];
   let ignoredSegment = false;
   // A `for` header assigns its variable each item of the list. Its first word is the variable, then `in` and the list up
   // to `;` or a newline, or `do`, which ends a header without a list.
   let forHeader: 'none' | 'variable' | 'afterVariable' | 'list' = 'none';
+  type OpenLoop = Mutable<ShellLoop> & { items?: Array<readonly ShellPart[]> };
+  const loops: OpenLoop[] = [];
+  const subshells: Array<Mutable<ShellRange>> = [];
+  // The compound commands and subshells open here, innermost last: the word that closes each, the index of its first
+  // segment, how many loops and subshells opened before it, whether it runs exactly once where it stands, whether its
+  // segments run once per walk (ShellSegment.sequential), whether an `if` has reached its branches, and the loop or
+  // subshell it is.
+  type Compound = {
+    close: string;
+    at: number;
+    loops: number;
+    subshells: number;
+    unconditional: boolean;
+    sequential: boolean;
+    branch: boolean;
+    loop?: OpenLoop;
+    subshell?: Mutable<ShellRange>;
+  };
+  const compounds: Compound[] = [];
+  const sequentialHere = (): boolean => compounds.every((compound) => compound.sequential && !compound.branch);
+  // The compound command whose closing word the current command follows: its redirections are the rest of that command.
+  let closed: Compound | undefined;
+  // Whether the current command has a redirection, after which bash reads no reserved word.
+  let redirected = false;
   // bash's `time -p`: the -p belongs to the keyword.
   let timed = false;
+  // ShellSegment.line of the command being read.
+  let line = 0;
   let value = '';
   let computed = false;
   let pattern = false;
+  // How far the word has come toward a brace expansion, which bash makes only of an unquoted `{`, then an unquoted `,`
+  // or `..`, then `}`; any other braces are literal text.
+  let brace: 'none' | 'open' | 'separated' = 'none';
   let inWord = false;
   let wordStart = 0;
+  // The index of the last character read as unquoted literal text.
+  let plainAt = -1;
   let redirectTarget = false;
-  const heredocs: Array<{ delimiter: string; stripTabs: boolean; quoted: boolean }> = [];
+  // `owner` is the substitutions of the command that read the heredoc, which its body's `$()` run with.
+  const heredocs: Array<{ delimiter: string; stripTabs: boolean; quoted: boolean; owner: ShellStructure[] }> = [];
 
-  const sub = (body: string): void => {
+  const sub = (body: string, into: ShellStructure[] = substitutions): ShellStructure => {
     const parsed = parseShellStructure(body, depth + 1);
     if (parsed.unparsable) unparsable = true;
-    substitutions.push(parsed);
+    into.push(parsed);
+    return parsed;
   };
+  const openCompound = (close: string, loop?: OpenLoop): void => {
+    const subshell = close === ')' ? { start: segments.length, end: segments.length } : undefined;
+    compounds.push({
+      close,
+      at: segments.length,
+      loops: loops.length,
+      subshells: subshells.length,
+      unconditional: compounds.length === 0 && !chained,
+      sequential: sequentialHere() && !chained,
+      branch: false,
+      ...(loop === undefined ? {} : { loop }),
+      ...(subshell === undefined ? {} : { subshell }),
+    });
+    if (loop !== undefined) loops.push(loop);
+    if (subshell !== undefined) subshells.push(subshell);
+    guard = undefined;
+  };
+  const closeCompound = (close: string): void => {
+    const compound = compounds.pop();
+    if (compound?.close !== close) unparsable = true;
+    if (compound?.loop !== undefined) compound.loop.end = segments.length;
+    if (compound?.subshell !== undefined) compound.subshell.end = segments.length;
+    closed = compound;
+  };
+  /** Puts `segment`, the redirections of `compound`, before the compound command's first segment, where bash performs them. */
+  const insertBefore = (compound: Compound, segment: ShellSegment): void => {
+    segments.splice(compound.at, 0, segment);
+    // `compound`'s own loops shift past the segment; a loop enclosing it keeps a start at `at`, so the segment repeats with that body.
+    const shift = (index: number, inside: boolean): number => (index > compound.at || (index === compound.at && inside) ? index + 1 : index);
+    loops.forEach((loop, k) => {
+      const inside = k >= compound.loops;
+      loop.start = shift(loop.start, inside);
+      loop.end = shift(loop.end, inside);
+      if (loop.header !== undefined) loop.header = shift(loop.header, inside);
+    });
+    subshells.forEach((subshell, k) => {
+      const inside = k >= compound.subshells;
+      subshell.start = shift(subshell.start, inside);
+      subshell.end = shift(subshell.end, inside);
+    });
+  };
+  /** The loop whose `for` header is being read. */
+  const headerLoop = (): OpenLoop => compounds.at(-1)!.loop!;
   const fail = (): void => {
     unparsable = true;
+  };
+  /** Literal text of the current word. */
+  const append = (text: string): void => {
+    value += text;
+    if (parts === undefined || text === '') return;
+    const last = parts.at(-1);
+    if (typeof last === 'string') parts[parts.length - 1] = last + text;
+    else parts.push(text);
+  };
+  const reference = (variable: string, quoted: boolean): void => {
+    computed = true;
+    parts?.push({ variable, quoted });
+  };
+  /** A computed part that is not a plain variable. */
+  const opaque = (): void => {
+    computed = true;
+    parts = undefined;
+  };
+  /** The variable a `${...}` from `open` to `close` names, when it holds nothing else. */
+  const bracedName = (open: number, close: number): string | undefined => {
+    const name = command.slice(open + 2, close);
+    return VARIABLE_NAME.test(name) ? name : undefined;
   };
   // Arithmetic runs the `$()` in an array subscript of text it evaluates: a variable's value, as `$((x))` evaluates it, or
   // an operand of `let` or of a `[[` comparison. An unbalanced one never runs.
   const runsInArithmetic = (text: string): void => {
     if (/\$\(|`/.test(text)) substitutionsIn(text, sub, () => undefined);
   };
-  /** Handles the `$(` at `at`: a command substitution is parsed, an arithmetic one searched; the closing index, or -1. */
-  const dollarParen = (at: number): number => {
+  /**
+   * Handles the `$(` at `at`: a command substitution is parsed and becomes a part of the word, an arithmetic one is
+   * searched and makes the word opaque; the closing index, or -1.
+   */
+  const dollarParen = (at: number, quoted: boolean): number => {
     const end = substitutionEnd(command, at);
     if (end < 0) return -1;
-    if (isArithmetic(command, at, end)) substitutionsIn(command.slice(at + 3, end - 1), sub, fail);
-    else sub(command.slice(at + 2, end));
+    if (isArithmetic(command, at, end)) {
+      substitutionsIn(command.slice(at + 3, end - 1), sub, fail);
+      opaque();
+    } else {
+      const body = command.slice(at + 2, end);
+      const substitution = sub(body);
+      computed = true;
+      parts?.push({ substitution, body, quoted });
+    }
     return end;
   };
   /** Handles the `${` at `at`: its word may hold substitutions; the closing index, or -1. */
@@ -1669,24 +1880,31 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
     inWord = false;
     const raw = command.slice(wordStart, end);
     // `~user` names another user's home, which the text does not give.
-    const expands = (pattern && !['{', '}', '[', ']', '[[', ']]'].includes(raw)) || /^~[^/]/.test(raw);
+    const expands = (pattern && !['[', ']', '[[', ']]'].includes(raw)) || /^~[^/]/.test(raw);
     const literal = value;
     const word = computed || expands || literal.includes(COMPUTED_TEXT) ? undefined : literal;
+    const template = computed && !expands && !literal.includes(COMPUTED_TEXT) ? parts : undefined;
     value = '';
     computed = false;
     pattern = false;
+    brace = 'none';
+    parts = [];
     if (redirectTarget) {
       redirectTarget = false;
       return;
     }
     if (forHeader === 'variable') {
       forHeader = 'afterVariable';
-      if (VARIABLE_NAME.test(raw)) assignments.push({ name: raw, value: undefined });
+      if (VARIABLE_NAME.test(raw)) {
+        assignments.push({ name: raw, value: undefined, offset: wordStart, append: false });
+        headerLoop().variable = raw;
+      }
       return;
     }
     if (forHeader === 'afterVariable') {
       if (raw === 'in') {
         forHeader = 'list';
+        headerLoop().items = [];
       } else if (raw === 'do') {
         endSegment(end);
       } else {
@@ -1694,24 +1912,58 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
       }
       return;
     }
+    if (forHeader === 'list') {
+      const loop = headerLoop();
+      const item = word === undefined ? template : [word];
+      if (item === undefined) delete loop.items;
+      else loop.items?.push(item);
+      return;
+    }
     if (ignoredSegment) return;
     if (words.length === 0 && ASSIGNMENT.test(raw)) {
       const eq = raw.indexOf('=');
-      const name = raw.slice(0, raw[eq - 1] === '+' ? eq - 1 : eq);
-      assignments.push({ name, value: word === undefined ? undefined : word.slice(word.indexOf('=') + 1), raw: raw.slice(eq + 1) });
+      const append = raw[eq - 1] === '+';
+      const name = raw.slice(0, append ? eq - 1 : eq);
+      // The name and `=` are unquoted literal text, so they begin the first part.
+      const [head, ...rest] = template ?? [];
+      const valueTemplate = template === undefined ? undefined : [(head as string).slice(eq + 1), ...rest].filter((part) => part !== '');
+      assignments.push({
+        name,
+        value: word === undefined ? undefined : word.slice(word.indexOf('=') + 1),
+        raw: raw.slice(eq + 1),
+        offset: wordStart,
+        append,
+        ...(valueTemplate === undefined ? {} : { template: valueTemplate }),
+      });
       runsInArithmetic(literal);
       return;
     }
     const head = words[0];
-    if (head === 'let' || (head !== undefined && DECLARATION_BUILTINS.has(head) && DECLARED.test(literal))) runsInArithmetic(literal);
+    // A computed part may give the operand's name.
+    if (head === 'let' || (head !== undefined && DECLARATION_BUILTINS.has(head) && (word === undefined || DECLARED.test(literal)))) runsInArithmetic(literal);
     if (head === '[[' && word !== undefined && ARITHMETIC_TEST.test(word)) runsInArithmetic(literals.at(-1) ?? '');
     else if (head === '[[' && ARITHMETIC_TEST.test(words.at(-1) ?? '')) runsInArithmetic(literal);
-    if (words.length === 0 && word !== undefined && raw === word) {
+    if (words.length === 0 && assignments.length === 0 && !redirected && word !== undefined && raw === word) {
       if (timed && word === '-p') {
         timed = false;
         return;
       }
       timed = word === 'time';
+      if (COMPOUND_CLOSE.has(word)) {
+        closeCompound(word);
+        return;
+      }
+      // A reserved word right after a closing word starts the next command, as `else` does after `done`.
+      if (RESERVED_SKIP.has(word) || word === 'for') {
+        closed = undefined;
+        guard = undefined;
+      }
+      if (word === '!') negated = true;
+      // An `if`'s condition runs once; what follows its `then` may not run.
+      if ((word === 'then' || word === 'else' || word === 'elif') && compounds.at(-1)?.close === 'fi') compounds.at(-1)!.branch = true;
+      const close = COMPOUND_CLOSER.get(word);
+      // A `for` loop's repeated part starts after its header, where endSegment moves `start`.
+      if (close !== undefined) openCompound(close, close === 'done' ? { start: segments.length, end: segments.length } : undefined);
       if (RESERVED_SKIP.has(word)) return;
       if (RESERVED_UNPARSABLE.has(word)) {
         unparsable = true;
@@ -1726,18 +1978,61 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
     }
     words.push(word);
     rawWords.push(raw);
+    templates.push(template);
+    offsets.push(wordStart);
     literals.push(literal);
   };
-  const endSegment = (end: number): void => {
+  /** Ends the current command, `detached` when it is piped or put in the background. */
+  const endSegment = (end: number, detached = false): void => {
     endWord(end);
     if (redirectTarget) unparsable = true;
-    // An ignored `for` header still runs the substitutions in its list and assigns its variable.
-    if (ignoredSegment ? assignments.length > 0 || substitutions.length > 0 : words.length > 0 || assignments.length > 0 || substitutions.length > 0) {
-      segments.push({ assignments, words: ignoredSegment ? [] : words, rawWords: ignoredSegment ? [] : rawWords, substitutions });
+    if (closed !== undefined && (words.length > 0 || assignments.length > 0)) unparsable = true;
+    // An ignored `for` header still runs the substitutions in its list and assigns its variable; a heredoc whose body is
+    // still to come may add substitutions.
+    const kept =
+      (!ignoredSegment && words.length > 0) || assignments.length > 0 || substitutions.length > 0 || heredocs.some((doc) => !doc.quoted && doc.owner === substitutions);
+    // A piped or backgrounded compound command may run in a subshell, so none of its segments runs once in this shell.
+    if (closed !== undefined && detached) {
+      for (let k = closed.at; k < segments.length; k++) segments[k] = { ...segments[k]!, sequential: false };
     }
+    // A blank line or a comment ends nothing, so an `&&` before it still guards the command after it.
+    const ended = kept || closed !== undefined || redirected || ignoredSegment;
+    if (kept) {
+      const ignored = ignoredSegment;
+      const guarded = closed === undefined ? guard : undefined;
+      const segment: ShellSegment = {
+        assignments,
+        words: ignored ? [] : words,
+        rawWords: ignored ? [] : rawWords,
+        templates: ignored ? [] : templates,
+        offsets: ignored ? [] : offsets,
+        substitutions,
+        unconditional: (closed === undefined ? compounds.length === 0 && !chained : closed.unconditional) && !detached,
+        ...(guarded === undefined ? {} : { guard: guarded }),
+        sequential: closed === undefined && sequentialHere() && !detached && (!chained || guarded !== undefined),
+        line,
+      };
+      if (closed === undefined) segments.push(segment);
+      else insertBefore(closed, segment);
+      chained = false;
+    }
+    if (ended) {
+      guardable = kept && closed === undefined && !ignoredSegment && !negated;
+      guard = undefined;
+      negated = false;
+    }
+    if (forHeader !== 'none') {
+      const loop = headerLoop();
+      if (kept) loop.header = segments.length - 1;
+      loop.start = segments.length;
+    }
+    closed = undefined;
+    redirected = false;
     assignments = [];
     words = [];
     rawWords = [];
+    templates = [];
+    offsets = [];
     literals = [];
     substitutions = [];
     ignoredSegment = false;
@@ -1767,11 +2062,12 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
             break;
           }
           // An unquoted delimiter leaves `$()` and backticks in the body running.
-          if (!doc.quoted) substitutionsIn(line, sub, fail);
+          if (!doc.quoted) substitutionsIn(line, (body) => sub(body, doc.owner), fail);
         }
         if (!found) unparsable = true;
       }
       endSegment(i);
+      if (compounds.length === 0 && !chained) line++;
       continue;
     }
     if (ch === ' ' || ch === '\t' || ch === '\r') {
@@ -1789,14 +2085,14 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
         continue;
       }
       startWord(i);
-      if (i + 1 < command.length) value += command[++i];
+      if (i + 1 < command.length) append(command[++i]!);
       continue;
     }
     if (ch === "'") {
       startWord(i);
       const end = command.indexOf("'", i + 1);
-      if (end < 0) return { segments, unparsable: true };
-      value += command.slice(i + 1, end);
+      if (end < 0) return { segments, loops, subshells, unparsable: true };
+      append(command.slice(i + 1, end));
       i = end;
       continue;
     }
@@ -1807,53 +2103,77 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
         const c = command[j]!;
         if (c === '\\' && j + 1 < command.length) {
           const next = command[j + 1]!;
-          value += '$`"\\\n'.includes(next) ? next : `\\${next}`;
+          append('$`"\\\n'.includes(next) ? next : `\\${next}`);
           j++;
         } else if (c === '`') {
           const end = closingBacktick(command, j);
-          if (end < 0) return { segments, unparsable: true };
+          if (end < 0) return { segments, loops, subshells, unparsable: true };
           sub(command.slice(j + 1, end).replace(/\\`/g, '`'));
-          computed = true;
+          opaque();
           j = end;
         } else if (c === '$' && /[A-Za-z_{(0-9?@*#!$-]/.test(command[j + 1] ?? '')) {
-          computed = true;
-          if (command[j + 1] === '(' || command[j + 1] === '{') {
-            const end = command[j + 1] === '(' ? dollarParen(j) : dollarBrace(j);
-            if (end < 0) return { segments, unparsable: true };
+          if (command[j + 1] === '(') {
+            const end = dollarParen(j, true);
+            if (end < 0) return { segments, loops, subshells, unparsable: true };
             j = end;
+          } else if (command[j + 1] === '{') {
+            const end = dollarBrace(j);
+            if (end < 0) return { segments, loops, subshells, unparsable: true };
+            const name = bracedName(j, end);
+            if (name === undefined) opaque();
+            else reference(name, true);
+            j = end;
+          } else {
+            NAME_AT.lastIndex = j + 1;
+            const name = NAME_AT.exec(command)?.[0];
+            if (name === undefined) {
+              opaque();
+            } else {
+              reference(name, true);
+              j += name.length;
+            }
           }
         } else {
-          value += c;
+          append(c);
         }
       }
-      if (j >= command.length) return { segments, unparsable: true };
+      if (j >= command.length) return { segments, loops, subshells, unparsable: true };
       i = j;
       continue;
     }
     if (ch === '`') {
       startWord(i);
       const end = closingBacktick(command, i);
-      if (end < 0) return { segments, unparsable: true };
+      if (end < 0) return { segments, loops, subshells, unparsable: true };
       sub(command.slice(i + 1, end).replace(/\\`/g, '`'));
-      computed = true;
+      opaque();
       i = end;
       continue;
     }
     if (ch === '$') {
       const next = command[i + 1] ?? '';
-      if (next === '(' || next === '{') {
+      if (next === '(') {
         startWord(i);
-        const end = next === '(' ? dollarParen(i) : dollarBrace(i);
-        if (end < 0) return { segments, unparsable: true };
-        computed = true;
+        const end = dollarParen(i, false);
+        if (end < 0) return { segments, loops, subshells, unparsable: true };
+        i = end;
+        continue;
+      }
+      if (next === '{') {
+        startWord(i);
+        const end = dollarBrace(i);
+        if (end < 0) return { segments, loops, subshells, unparsable: true };
+        const name = bracedName(i, end);
+        if (name === undefined) opaque();
+        else reference(name, false);
         i = end;
         continue;
       }
       if (next === "'") {
         startWord(i);
         const end = closingAnsiQuote(command, i + 1);
-        if (end < 0) return { segments, unparsable: true };
-        computed = true;
+        if (end < 0) return { segments, loops, subshells, unparsable: true };
+        opaque();
         i = end;
         continue;
       }
@@ -1864,13 +2184,14 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
       }
       if (/[A-Za-z_0-9?@*#!$-]/.test(next)) {
         startWord(i);
-        computed = true;
-        i++;
+        const start = ++i;
         while (/[A-Za-z_0-9]/.test(command[i + 1] ?? '') && /[A-Za-z_]/.test(next)) i++;
+        if (/[A-Za-z_]/.test(next)) reference(command.slice(start, i + 1), false);
+        else opaque();
         continue;
       }
       startWord(i);
-      value += ch;
+      append(ch);
       continue;
     }
     if (ch === ';' || ch === '|' || ch === '&') {
@@ -1879,20 +2200,26 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
         endWord(i);
         i += command[i + 2] === '>' ? 2 : 1;
         redirectTarget = true;
+        redirected = true;
         continue;
       }
-      endSegment(i);
-      if ((command[i + 1] === ch && ch !== ';') || (ch === '|' && command[i + 1] === '&')) i++;
+      const list = command[i + 1] === ch && ch !== ';';
+      const pipe = ch === '|' && !list;
+      // A piped or backgrounded command may run in a subshell, and the command after `&&`, `||` or `|` may not run.
+      endSegment(i, pipe || (ch === '&' && !list));
+      if (pipe || list) chained = true;
+      guard = list && guardable ? (ch === '&' ? '&&' : '||') : undefined;
+      if (list || (ch === '|' && command[i + 1] === '&')) i++;
       continue;
     }
     if (ch === '(' && inWord && /^[A-Za-z_][A-Za-z0-9_]*\+?=$/.test(command.slice(wordStart, i))) {
       // An array assignment: its elements are data, but the substitutions among them run.
       const end = closingParen(command, i, true);
-      if (end < 0) return { segments, unparsable: true };
+      if (end < 0) return { segments, loops, subshells, unparsable: true };
       const elements = parseShellStructure(command.slice(i + 1, end), depth + 1);
       if (elements.unparsable) unparsable = true;
       for (const element of elements.segments) substitutions.push(...element.substitutions);
-      computed = true;
+      opaque();
       i = end;
       continue;
     }
@@ -1902,6 +2229,8 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
         unparsable = true;
       }
       endSegment(i);
+      if (ch === '(') openCompound(')');
+      else closeCompound(')');
       continue;
     }
     if (ch === '<' || ch === '>') {
@@ -1909,13 +2238,13 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
       if (command[i + 1] === '(') {
         endWord(i);
         const end = closingParen(command, i + 1, true);
-        if (end < 0) return { segments, unparsable: true };
+        if (end < 0) return { segments, loops, subshells, unparsable: true };
         sub(command.slice(i + 2, end));
         if (redirectTarget) {
           redirectTarget = false;
         } else {
           startWord(i);
-          computed = true;
+          opaque();
         }
         i = end;
         continue;
@@ -1924,9 +2253,11 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
       if (inWord && !computed && /^\d+$/.test(value) && command.slice(wordStart, i) === value) {
         inWord = false;
         value = '';
+        parts = [];
       } else {
         endWord(i);
       }
+      redirected = true;
       if (ch === '<' && command[i + 1] === '<' && command[i + 2] === '<') {
         i += 2;
         redirectTarget = true;
@@ -1936,8 +2267,8 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
         const stripTabs = command[i + 2] === '-';
         i += stripTabs ? 2 : 1;
         const word = heredocDelimiter(command.slice(i + 1));
-        if (!word) return { segments, unparsable: true };
-        heredocs.push({ delimiter: word.delimiter, stripTabs, quoted: word.quoted });
+        if (!word) return { segments, loops, subshells, unparsable: true };
+        heredocs.push({ delimiter: word.delimiter, stripTabs, quoted: word.quoted, owner: substitutions });
         i += word.length;
         continue;
       }
@@ -1945,11 +2276,33 @@ export function parseShellStructure(command: string, depth = 0): ShellStructure 
       redirectTarget = true;
       continue;
     }
+    if (ch === '~') {
+      // bash expands a `~` that starts a word, or follows an assignment word's first `=` or an unquoted `:` in it; its
+      // prefix runs to `/`, the word's end, or there `:`, and a longer one names another user's home.
+      const before = inWord ? command.slice(wordStart, i) : '';
+      const assigned = ASSIGNMENT.exec(before)?.[0];
+      const assigning = assigned !== undefined && (assigned === before || (command[i - 1] === ':' && plainAt === i - 1));
+      if (!inWord || assigning) {
+        startWord(i);
+        if (/^(?:[\s/;&|()<>]|$)/.test(command[i + 1] ?? '') || (assigning && command[i + 1] === ':')) {
+          computed = true;
+          parts?.push({ tilde: true });
+        } else {
+          opaque();
+          append(ch);
+        }
+        continue;
+      }
+    }
     startWord(i);
-    if (PATTERN_CHARS.includes(ch)) pattern = true;
-    value += ch;
+    if (GLOB_CHARS.includes(ch)) pattern = true;
+    if (ch === '{' && brace === 'none') brace = 'open';
+    else if (brace === 'open' && (ch === ',' || (ch === '.' && plainAt === i - 1 && command[i - 1] === '.'))) brace = 'separated';
+    else if (ch === '}' && brace === 'separated') pattern = true;
+    plainAt = i;
+    append(ch);
   }
   endSegment(command.length);
-  if (heredocs.length > 0) unparsable = true;
-  return { segments, unparsable };
+  if (heredocs.length > 0 || compounds.length > 0) unparsable = true;
+  return { segments, loops, subshells, unparsable };
 }

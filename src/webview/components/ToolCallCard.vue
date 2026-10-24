@@ -345,6 +345,8 @@ const outputSummary = computed(() => {
       : t('toolOverlay.cronInfo.noJobs');
   }
   if (isFailed.value && props.toolCall.errorMessage) return '';
+  // A blocked call's result is the refusal the agent got; the reason under the card says it.
+  if (isBlocked.value && props.toolCall.feedback) return '';
   return resultSummary.value;
 });
 
