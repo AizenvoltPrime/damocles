@@ -1269,13 +1269,14 @@ describe('worktree isolation (D62)', () => {
       ['pwsh -Version', 'pwsh prints its version'],
       ['pwsh -v', 'pwsh prints its version'],
       ["pwsh -NoProfile -Version -Command \"git -C '<P>' add .\"", 'pwsh prints its version'],
-      ['pwsh -?', 'pwsh prints its help'],
+      // pwsh on Linux and macOS globs an unquoted native argument, so there `-?` names whatever files match it.
+      ...(process.platform === 'win32' ? [['pwsh -?', 'pwsh prints its help'] as const] : [["pwsh '-?'", 'pwsh prints its help'] as const, ['pwsh -?'] as const]),
       ['pwsh -Help', 'pwsh prints its help'],
       ['powershell -Help', 'Windows PowerShell prints its help'],
       ["powershell -Version 5.1 -NoProfile -Command \"git -C '<P>' add .\"", REACHES],
       ["pwsh -NoProfile -Command \"git -C '<P>' add .\" -Version", REACHES],
-      ['cmd /?', 'cmd prints its help'],
-      ['cmd /d /? /c "git -C <P> add ."', 'cmd prints its help'],
+      // cmd is a Windows program, and pwsh elsewhere globs `/?`.
+      ...(process.platform === 'win32' ? [['cmd /?', 'cmd prints its help'] as const, ['cmd /d /? /c "git -C <P> add ."', 'cmd prints its help'] as const] : []),
     ]);
   });
 
@@ -1966,7 +1967,7 @@ describe('worktree isolation (D62)', () => {
       ['Set-Location `\r<QP>', REACHES],
       ['git -C \u201a<P>\u201b status', REACHES],
       ['git -C \u201b<P>\u2018 status', REACHES],
-      ['git --git-dir=\u201a<P>\\.git\u201b status', REACHES],
+      ['git --git-dir=\u201a<P><S>.git\u201b status', REACHES],
       ['& \u201agit\u201b -C <P> status', REACHES],
       ['git -C \u201e<P>\u201c status', REACHES],
       ['git -C \u201e<P>\u201e status', REACHES],
@@ -2059,9 +2060,11 @@ describe('worktree isolation (D62)', () => {
       [`$env:${profile} = '<W>'; pwsh -NoProfile -c 'cd ~; git status'`, 'the child starts with the worktree as its home'],
       ["pwsh -NoProfile -c 'cd ~/../project; git status'", REACHES],
     ]);
+    // Off Windows the child's home is Bash's own HOME, which an assignment leaves with two possible values.
+    const exported = `export ${profile}=<QP>; pwsh -NoProfile -c 'Set-Location $HOME; git status'`;
     check(bash, [
       [`${profile}=<QP> pwsh -NoProfile -c 'cd ~'`],
-      [`export ${profile}=<QP>; pwsh -NoProfile -c 'Set-Location $HOME; git status'`, REACHES],
+      process.platform === 'win32' ? [exported, REACHES] : [exported],
     ]);
   });
 
@@ -2190,7 +2193,7 @@ describe('worktree isolation (D62)', () => {
     check(bash, rows);
     check(ps, [
       ["git worktree add -b x '<UP>/x'", REACHES],
-      ["git clone https://example.com/r.git '<P>\\vendor'", REACHES],
+      ["git clone https://example.com/r.git '<P><S>vendor'", REACHES],
       ['git config core.worktree x'],
       ["git worktree add -b x '../x'", 'the new worktree is a sibling of this one'],
       ['git config --get core.worktree', 'it reads'],
@@ -2198,7 +2201,7 @@ describe('worktree isolation (D62)', () => {
     ]);
   });
 
-  it('reads the links ln, mklink, New-Item and .NET make, and where each one reaches', () => {
+  it('reads the links ln, New-Item and .NET make, and where each one reaches', () => {
     check(bash, [
       ['ln -s <QP> link && cd link && git status', REACHES],
       ['ln -s <QP>/src s', REACHES],
@@ -2248,8 +2251,6 @@ describe('worktree isolation (D62)', () => {
       ["[IO.Directory]::CreateSymbolicLink('l', '<P>')"],
       ["[System.IO.File]::CreateSymbolicLink('l', 'x')"],
       ["(Get-Item x).CreateAsSymbolicLink('<P>')"],
-      ["cmd /c mklink /J out '<P>'", REACHES],
-      ['cmd /c mklink /J out $d'],
       ['New-Item -ItemType Directory x', 'it makes a folder'],
       ["New-Item -ItemType File a.txt -Value '<P>'", 'the value is the file\'s text'],
       ['New-Item -ItemType SymbolicLink -Path l -Value src', 'the target is in the worktree'],
@@ -2257,7 +2258,6 @@ describe('worktree isolation (D62)', () => {
       ['ni x -ItemType Dir', 'it makes a folder'],
       ["New-Item -ItemType SymbolicLinkX -Path l -Value '<P>'", 'PowerShell knows no such type'],
       ["[IO.Directory]::CreateDirectory('x')", 'it makes a folder'],
-      ['cmd /c mklink /J out build', 'the target is in the worktree'],
     ]);
   });
 
@@ -2274,7 +2274,7 @@ describe('worktree isolation (D62)', () => {
       ['cmd /c mklink /J a b c', 'mklink refuses a third operand'],
       ['cmd /c mklink /X out <UP>', 'mklink refuses an unknown switch'],
     ];
-    check(ps, rows);
+    check(ps, [...rows, ["cmd /c mklink /J out '<P>'", REACHES], ['cmd /c mklink /J out $d']]);
     check(bash, rows.map(([command, verdict]) => [command.replace('cmd /c ', 'cmd //c ').replaceAll('\\', '\\\\'), verdict] as Row));
   });
 
